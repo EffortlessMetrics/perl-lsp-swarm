@@ -229,20 +229,30 @@ fn validate_ledger_identity(ledger: &Ledger, config: &CheckConfig) -> Result<()>
 }
 
 fn validate_source_ref(source: &str) -> Result<()> {
-    let commit_ref = format!("{source}^{{commit}}");
-    git_output(["rev-parse", "--verify", "--quiet", &commit_ref])
-        .with_context(|| format!("validating --source ref `{source}`"))?;
+    resolve_commit_ref("source", source)?;
     Ok(())
 }
 
 fn target_unique_commits(base: &str, target: &str) -> Result<Vec<CherryCommit>> {
-    let output = git_output(["cherry", base, target])?;
+    target_unique_commits_in(base, target, None)
+}
+
+fn target_unique_commits_in(
+    base: &str,
+    target: &str,
+    directory: Option<&Path>,
+) -> Result<Vec<CherryCommit>> {
+    let base = resolve_commit_ref_in("base", base, directory)?;
+    let target = resolve_commit_ref_in("target", target, directory)?;
+    let output = git_output_in(["cherry", &base, &target, &base], directory)?;
     let mut commits = Vec::new();
     for commit in parse_cherry_plus_lines(&output) {
         let commit = commit.to_string();
-        let subject = git_output(["show", "-s", "--format=%s", &commit])?.trim().to_string();
-        let parents =
-            git_output(["rev-list", "--parents", "-n", "1", &commit])?.split_whitespace().count();
+        let subject =
+            git_output_in(["show", "-s", "--format=%s", &commit], directory)?.trim().to_string();
+        let parents = git_output_in(["rev-list", "--parents", "-n", "1", &commit], directory)?
+            .split_whitespace()
+            .count();
         commits.push(CherryCommit { commit, subject, is_merge: parents > 2 });
     }
     Ok(commits)
@@ -256,8 +266,26 @@ fn normalize_subject(subject: &str) -> String {
     subject.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn resolve_commit_ref(label: &str, reference: &str) -> Result<String> {
+    resolve_commit_ref_in(label, reference, None)
+}
+
+fn resolve_commit_ref_in(label: &str, reference: &str, directory: Option<&Path>) -> Result<String> {
+    let commit_ref = format!("{reference}^{{commit}}");
+    let resolved = git_output_in(
+        ["rev-parse", "--verify", "--quiet", "--end-of-options", &commit_ref],
+        directory,
+    )?
+    .trim()
+    .to_string();
+    if resolved.is_empty() {
+        return Err(eyre!("{label} ref `{reference}` resolved to an empty commit"));
+    }
+    Ok(resolved)
+}
+
 fn fail_with_receipt(config: &CheckConfig, error: Report) -> Result<()> {
-    let message = error.to_string();
+    let message = format!("{error:#}");
     let receipt = Receipt {
         schema_version: 1,
         base: config.base.clone(),
@@ -277,11 +305,13 @@ fn fail_with_receipt(config: &CheckConfig, error: Report) -> Result<()> {
     ))
 }
 
-fn git_output<const N: usize>(args: [&str; N]) -> Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .output()
-        .context("running git for sync-divergence preflight")?;
+fn git_output_in<const N: usize>(args: [&str; N], directory: Option<&Path>) -> Result<String> {
+    let mut command = Command::new("git");
+    command.args(args);
+    if let Some(directory) = directory {
+        command.current_dir(directory);
+    }
+    let output = command.output().context("running git for sync-divergence preflight")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(eyre!("git command failed: {stderr}"));
@@ -418,11 +448,29 @@ mod tests {
 
     #[test]
     fn target_unique_commits_reads_a_real_git_cherry_plus_line() -> Result<()> {
-        let commits = target_unique_commits("HEAD~1", "HEAD")?;
+        let directory = tempfile::tempdir()?;
+        run_git_fixture(directory.path(), &["init", "--quiet"])?;
+        run_git_fixture(directory.path(), &["config", "user.email", "test@example.com"])?;
+        run_git_fixture(directory.path(), &["config", "user.name", "sync-test"])?;
+        fs::write(directory.path().join("file.txt"), "base\n")?;
+        run_git_fixture(directory.path(), &["add", "file.txt"])?;
+        run_git_fixture(directory.path(), &["commit", "--quiet", "-m", "base"])?;
+        fs::write(directory.path().join("file.txt"), "target\n")?;
+        run_git_fixture(directory.path(), &["commit", "--quiet", "-am", "target"])?;
+
+        let commits = target_unique_commits_in("HEAD~1", "HEAD", Some(directory.path()))?;
         assert_eq!(commits.len(), 1);
         assert!(!commits[0].is_merge);
         assert!(!commits[0].subject.is_empty());
         Ok(())
+    }
+
+    fn run_git_fixture(directory: &Path, args: &[&str]) -> Result<()> {
+        let output = Command::new("git").current_dir(directory).args(args).output()?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(eyre!("git fixture command failed: {}", String::from_utf8_lossy(&output.stderr).trim()))
     }
 
     #[test]

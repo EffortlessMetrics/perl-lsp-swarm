@@ -172,6 +172,10 @@ check. Missing or otherwise invalid refs fail closed and are recorded in the
 receipt, so a stale or malformed source ref cannot be mistaken for a valid
 promotion input.
 
+The checker also resolves `--base` and `--target` before invoking Git and passes
+the resolved base as `git cherry`'s explicit limit, keeping the comparison
+bounded to the intended base-to-target range.
+
 `release_lineage_only` is an explicit exclusion, not an implicit escape hatch.
 Missing rows, unclassified rows, invalid classifications, missing evidence, or
 ledger rows that are not target-unique non-merge commits fail the command. The
