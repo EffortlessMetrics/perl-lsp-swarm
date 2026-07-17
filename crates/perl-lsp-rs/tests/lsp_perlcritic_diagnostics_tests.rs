@@ -29,12 +29,15 @@ use std::sync::Arc;
 
 /// Open `uri` with `text` via `didOpen`, then issue a pull-diagnostics request
 /// and return the result.
-fn pull_diagnostics(server: &LspServer, uri: &str, text: &str) -> serde_json::Value {
-    if let Ok(parsed_uri) = url::Url::parse(uri) {
-        if let Ok(path) = parsed_uri.to_file_path() {
-            let _ = std::fs::write(path, text);
-        }
-    }
+fn pull_diagnostics(
+    server: &LspServer,
+    runtime: &MockSubprocessRuntime,
+    uri: &str,
+    text: &str,
+) -> serde_json::Value {
+    let parsed_uri = url::Url::parse(uri).expect("test URI should parse");
+    let path = parsed_uri.to_file_path().expect("test URI should point to a file");
+    std::fs::write(path, text).expect("write test fixture");
 
     server
         .test_handle_did_open(Some(json!({
@@ -42,10 +45,20 @@ fn pull_diagnostics(server: &LspServer, uri: &str, text: &str) -> serde_json::Va
         })))
         .expect("didOpen should succeed");
 
+    // Legacy didOpen publishes push diagnostics synchronously. Keep the
+    // pull-diagnostics assertion scoped to the invocation made by this request.
+    runtime.clear_invocations();
+
     must(server.test_handle_document_diagnostic(Some(json!({
         "textDocument": { "uri": uri }
     }))))
     .unwrap_or(json!({"items": []}))
+}
+
+fn fixture_uri(tempdir: &tempfile::TempDir, filename: &str) -> String {
+    url::Url::from_file_path(tempdir.path().join(filename))
+        .expect("fixture path should convert to a file URI")
+        .to_string()
 }
 
 // ── Test A ────────────────────────────────────────────────────────────────────
@@ -68,17 +81,18 @@ fn test_a_violations_appear_in_pull_diagnostics_when_enabled() {
         b"test.pl:5:1:3:TestingAndDebugging::RequireUseStrict:Code does not use strict\n";
     runtime.add_response(MockResponse::success(mock_line.to_vec()));
     runtime.add_response(MockResponse::success(mock_line.to_vec()));
-    server.test_install_mock_critic_runtime(runtime);
+    server.test_install_mock_critic_runtime(runtime.clone());
     server.test_bypass_perlcritic_command_check();
 
-    // Use a file:// URI that resolves to a real-looking path.
-    #[cfg(windows)]
-    let uri = "file:///C:/tmp/test.pl";
-    #[cfg(not(windows))]
-    let uri = "file:///tmp/test.pl";
+    let tempdir = tempfile::tempdir().expect("create test fixture directory");
+    let uri = fixture_uri(&tempdir, "test.pl");
 
-    let result =
-        pull_diagnostics(&server, uri, "# line 1\n# line 2\n# line 3\n# line 4\nprint 'hello';\n");
+    let result = pull_diagnostics(
+        &server,
+        runtime.as_ref(),
+        &uri,
+        "# line 1\n# line 2\n# line 3\n# line 4\nprint 'hello';\n",
+    );
 
     // There must be at least one diagnostic with code
     // "TestingAndDebugging::RequireUseStrict", severity 2 (Warning),
@@ -91,6 +105,7 @@ fn test_a_violations_appear_in_pull_diagnostics_when_enabled() {
     let found = diags.iter().any(|d| {
         d["code"].as_str() == Some("TestingAndDebugging::RequireUseStrict")
             && d["severity"].as_u64() == Some(2)
+            && d["source"].as_str() == Some("perlcritic")
             && d["data"]["fixable"].as_bool() == Some(true)
     });
 
@@ -115,15 +130,13 @@ fn test_a1_severity_five_maps_to_error() {
     runtime.add_response(MockResponse::success(
         b"test.pl:2:1:5:InputOutput::RequireThreeArgOpen:Use three-arg open\n".to_vec(),
     ));
-    server.test_install_mock_critic_runtime(runtime);
+    server.test_install_mock_critic_runtime(runtime.clone());
     server.test_bypass_perlcritic_command_check();
 
-    #[cfg(windows)]
-    let uri = "file:///C:/tmp/test_sev5.pl";
-    #[cfg(not(windows))]
-    let uri = "file:///tmp/test_sev5.pl";
+    let tempdir = tempfile::tempdir().expect("create test fixture directory");
+    let uri = fixture_uri(&tempdir, "test_sev5.pl");
 
-    let result = pull_diagnostics(&server, uri, "# line 1\nopen FH, $path;\n");
+    let result = pull_diagnostics(&server, runtime.as_ref(), &uri, "# line 1\nopen FH, $path;\n");
     let diags = result["items"].as_array().cloned().unwrap_or_default();
     assert!(
         diags.iter().any(|d| {
@@ -151,15 +164,13 @@ fn test_a_malformed_range_is_dropped_from_pull_diagnostics() {
     // external perlcritic invocation exercised by this pull-path test.
     runtime.add_response(mock_response.clone());
     runtime.add_response(mock_response);
-    server.test_install_mock_critic_runtime(runtime);
+    server.test_install_mock_critic_runtime(runtime.clone());
     server.test_bypass_perlcritic_command_check();
 
-    #[cfg(windows)]
-    let uri = "file:///C:/tmp/test_malformed_range.pl";
-    #[cfg(not(windows))]
-    let uri = "file:///tmp/test_malformed_range.pl";
+    let tempdir = tempfile::tempdir().expect("create test fixture directory");
+    let uri = fixture_uri(&tempdir, "test_malformed_range.pl");
 
-    let result = pull_diagnostics(&server, uri, "print 'hello';\n");
+    let result = pull_diagnostics(&server, runtime.as_ref(), &uri, "print 'hello';\n");
     let diags = result["items"].as_array().cloned().unwrap_or_default();
     assert!(
         diags.iter().any(|diagnostic| diagnostic["message"].as_str() == Some("valid range")),
@@ -188,15 +199,13 @@ fn test_a2_severity_one_maps_to_hint() {
         b"test.pl:2:1:1:InputOutput::ProhibitBarewordFileHandles:Bareword filehandle 'FH'\n"
             .to_vec(),
     ));
-    server.test_install_mock_critic_runtime(runtime);
+    server.test_install_mock_critic_runtime(runtime.clone());
     server.test_bypass_perlcritic_command_check();
 
-    #[cfg(windows)]
-    let uri = "file:///C:/tmp/test_sev1.pl";
-    #[cfg(not(windows))]
-    let uri = "file:///tmp/test_sev1.pl";
+    let tempdir = tempfile::tempdir().expect("create test fixture directory");
+    let uri = fixture_uri(&tempdir, "test_sev1.pl");
 
-    let result = pull_diagnostics(&server, uri, "# line 1\nopen FH, $path;\n");
+    let result = pull_diagnostics(&server, runtime.as_ref(), &uri, "# line 1\nopen FH, $path;\n");
     let diags = result["items"].as_array().cloned().unwrap_or_default();
     assert!(
         diags.iter().any(|d| {
@@ -221,12 +230,10 @@ fn test_b_no_subprocess_invocation_for_default_native_critic() {
     // The default critic engine is native, so the external Perl::Critic
     // subprocess path must not run.
 
-    #[cfg(windows)]
-    let uri = "file:///C:/tmp/test_disabled.pl";
-    #[cfg(not(windows))]
-    let uri = "file:///tmp/test_disabled.pl";
+    let tempdir = tempfile::tempdir().expect("create test fixture directory");
+    let uri = fixture_uri(&tempdir, "test_disabled.pl");
 
-    pull_diagnostics(&server, uri, "use strict;\nuse warnings;\n");
+    pull_diagnostics(&server, runtime.as_ref(), &uri, "use strict;\nuse warnings;\n");
 
     assert_eq!(
         runtime.invocations().len(),
@@ -258,12 +265,10 @@ fn test_c_graceful_skip_when_perlcritic_not_installed() {
     runtime.add_response(MockResponse::success(b"".to_vec()));
     server.test_install_mock_critic_runtime(runtime.clone());
 
-    #[cfg(windows)]
-    let uri = "file:///C:/tmp/test_not_installed.pl";
-    #[cfg(not(windows))]
-    let uri = "file:///tmp/test_not_installed.pl";
+    let tempdir = tempfile::tempdir().expect("create test fixture directory");
+    let uri = fixture_uri(&tempdir, "test_not_installed.pl");
 
-    pull_diagnostics(&server, uri, "use strict;\n");
+    pull_diagnostics(&server, runtime.as_ref(), &uri, "use strict;\n");
 
     // Legacy mode may still emit built-in policy diagnostics. The subprocess
     // guard is the contract this test owns: no external invocation occurs.
@@ -313,15 +318,15 @@ fn test_d_perlcriticrc_walkup_finds_workspace_root_config() {
 
     let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
 
-    pull_diagnostics(&server, &uri, "package MyModule;\n1;\n");
+    pull_diagnostics(&server, runtime.as_ref(), &uri, "package MyModule;\n1;\n");
 
     let invocations = runtime.invocations();
-    assert!(!invocations.is_empty(), "mock runtime should be called; got: {invocations:?}");
+    assert_eq!(invocations.len(), 1, "pull should make one invocation; got: {invocations:?}");
 
     let expected_profile = rc_path.to_string_lossy().to_string();
     let profile_arg = format!("--profile={expected_profile}");
     assert!(
-        invocations.iter().any(|invocation| invocation.args.contains(&profile_arg)),
+        invocations[0].args.contains(&profile_arg),
         "perlcritic must be invoked with --profile pointing to the workspace root \
          .perlcriticrc; args: {:?}",
         invocations[0].args
@@ -356,18 +361,15 @@ fn test_e_empty_profile_falls_back_to_walkup_config() {
 
     let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
 
-    pull_diagnostics(&server, &uri, "package MyModule;\n1;\n");
+    pull_diagnostics(&server, runtime.as_ref(), &uri, "package MyModule;\n1;\n");
 
     let invocations = runtime.invocations();
-    assert!(
-        !invocations.is_empty(),
-        "empty profile values should not suppress perlcritic execution; got: {invocations:?}"
-    );
+    assert_eq!(invocations.len(), 1, "pull should make one invocation; got: {invocations:?}");
 
     let expected_profile = rc_path.to_string_lossy().to_string();
     let profile_arg = format!("--profile={expected_profile}");
     assert!(
-        invocations.iter().any(|invocation| invocation.args.contains(&profile_arg)),
+        invocations[0].args.contains(&profile_arg),
         "empty profile should fall back to workspace walk-up .perlcriticrc; args: {:?}",
         invocations[0].args
     );
@@ -394,7 +396,7 @@ fn test_f_missing_configured_profile_skips_subprocess_and_diagnostics() {
     server.test_bypass_perlcritic_command_check();
 
     let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
-    pull_diagnostics(&server, &uri, "package NoProfile;\n1;\n");
+    pull_diagnostics(&server, runtime.as_ref(), &uri, "package NoProfile;\n1;\n");
 
     // Legacy mode may still emit built-in policy diagnostics. A missing
     // configured profile must prevent the external subprocess from running.
@@ -432,20 +434,21 @@ fn test_f2_relative_configured_profile_resolves_from_workspace_root() {
     server.test_install_mock_critic_runtime(runtime.clone());
 
     let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
-    pull_diagnostics(&server, &uri, "package RelativeProfile;\n1;\n");
+    pull_diagnostics(&server, runtime.as_ref(), &uri, "package RelativeProfile;\n1;\n");
 
     let invocations = runtime.invocations();
-    assert!(
-        !invocations.is_empty(),
-        "expected perlcritic subprocess invocation; got: {invocations:?}"
-    );
+    assert_eq!(invocations.len(), 1, "pull should make one invocation; got: {invocations:?}");
 
-    let expected_profile = profile_path.to_string_lossy().to_string();
-    let profile_arg = format!("--profile={expected_profile}");
+    let expected_profile = profile_path.to_string_lossy().replace('\\', "/");
     assert!(
-        invocations.last().is_some_and(|invocation| invocation.args.contains(&profile_arg)),
+        invocations[0].args.iter().any(|argument| {
+            argument
+                .strip_prefix("--profile=")
+                .map(|value| value.replace('\\', "/") == expected_profile)
+                .unwrap_or(false)
+        }),
         "relative configured profile should resolve from workspace root; args: {:?}",
-        invocations.last().map(|invocation| &invocation.args)
+        invocations[0].args
     );
 }
 
@@ -476,7 +479,7 @@ fn test_f3_walkup_finds_perlcriticrc_without_dot_prefix() {
     server.test_install_mock_critic_runtime(runtime.clone());
 
     let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
-    pull_diagnostics(&server, &uri, "package NoDotRc;\n1;\n");
+    pull_diagnostics(&server, runtime.as_ref(), &uri, "package NoDotRc;\n1;\n");
 
     let invocations = runtime.invocations();
     assert!(
