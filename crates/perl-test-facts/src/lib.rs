@@ -2,6 +2,8 @@
 //!
 //! This crate parses TAP text only. Test execution, subprocess management, and
 //! source-file discovery belong to runtime adapters and workspace consumers.
+//! Runner-emitted source locations are retained as facts when they appear in
+//! TAP diagnostics; retaining them does not inspect or discover source files.
 
 #![deny(unsafe_code)]
 #![warn(rust_2018_idioms)]
@@ -85,9 +87,11 @@ pub struct TapAssertion {
     pub diagnostics: Vec<String>,
     /// Non-YAML diagnostic lines associated with this assertion.
     pub diagnostic_lines: Vec<String>,
-    /// Source file parsed from an `at FILE line N.` diagnostic, when present.
+    /// Runner-emitted source file parsed from an `at FILE line N.` diagnostic,
+    /// when present; this does not discover or inspect the file.
     pub source_file: Option<String>,
-    /// Source line parsed from an `at FILE line N.` diagnostic, when present.
+    /// Runner-emitted source line parsed from an `at FILE line N.` diagnostic,
+    /// when present; this does not discover or inspect the file.
     pub source_line: Option<usize>,
     /// First value parsed from a `got:` or `received:` diagnostic, when present.
     pub got: Option<String>,
@@ -179,8 +183,9 @@ impl TapReport {
 /// Parse TAP text into stable, execution-independent facts.
 ///
 /// The parser intentionally retains unsupported or malformed constructs as
-/// diagnostics. It does not execute commands, interpret YAML, or infer source
-/// locations beyond TAP line numbers.
+/// diagnostics. It does not execute commands, interpret YAML, or discover
+/// source files. Runner-emitted locations in `at FILE line N.` diagnostics are
+/// parsed as reported facts; TAP stream line numbers remain separate.
 #[must_use]
 pub fn parse_tap(source: &str) -> TapReport {
     let mut report = TapReport::default();
@@ -314,7 +319,7 @@ pub fn parse_tap(source: &str) -> TapReport {
             if let Some(plan) = parse_plan(trimmed, line_number) {
                 if let Some(existing) = report.plan.as_ref() {
                     report.diagnostics.push(format!(
-                        "line {line_number}: duplicate TAP plan; first plan was on line {}",
+                        "line {line_number}: duplicate TAP plan; previous plan was on line {}",
                         existing.line
                     ));
                     report.plan = Some(plan);
@@ -695,12 +700,13 @@ mod tests {
 
     #[test]
     fn duplicate_plans_replace_the_stored_plan() {
-        let report = parse_tap("1..1\n1..2\n");
+        let report = parse_tap("1..1\n1..2\n1..3\n");
 
-        assert_eq!(report.plan.as_ref().map(|plan| plan.end), Some(2));
-        assert!(
-            report.diagnostics.iter().any(|diagnostic| diagnostic.contains("duplicate TAP plan"))
-        );
+        assert_eq!(report.plan.as_ref().map(|plan| plan.end), Some(3));
+        assert_eq!(report.diagnostics.len(), 3);
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.contains("line 3: duplicate TAP plan; previous plan was on line 2")
+        }));
     }
 
     #[test]
