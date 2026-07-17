@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "repository": "EffortlessMetrics/perl-lsp-swarm",
+  "pr": 3988,
+  "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "merge_group_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "draft": false,
+  "required_check_names": [
+    "Perl LSP Rust Small Result",
+    "ripr+ New Gap Gate"
+  ],
+  "checks": [
+    {
+      "name": "Perl LSP Rust Small Result",
+      "evaluated_sha": "dddddddddddddddddddddddddddddddddddddddd",
+      "result": "SUCCESS"
+    },
+    {
+      "name": "ripr+ New Gap Gate",
+      "evaluated_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "result": "SUCCESS"
+    }
+  ],
+  "review": {
+    "evaluated_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "result": "SUCCESS",
+    "converged": true,
+    "unresolved_conversations": 0,
+    "evidenced_dispositions": true,
+    "required_review_in_flight": false
+  },
+  "changelog": {
+    "evaluated_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "result": "SUCCESS",
+    "disposition": "exemption: ci",
+    "blocking": false
+  },
+  "protection": {
+    "evaluated_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evaluated_merge_group_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "result": "SUCCESS",
+    "merge_permitted": true
+  }
+}
