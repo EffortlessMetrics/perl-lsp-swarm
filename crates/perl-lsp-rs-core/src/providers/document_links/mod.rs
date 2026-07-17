@@ -133,7 +133,7 @@ fn collect_module_runtime_links(uri: &str, line_number: u32, line: &str, out: &m
         {
             let start = byte_to_utf16_col(line, content_start);
             let end = byte_to_utf16_col(line, content_end);
-            if let Some(link) = make_deferred_module_link(uri, line_number, &module, start, end) {
+            if let Some(link) = make_deferred_module_link(uri, line_number, module, start, end) {
                 out.push(link);
             }
             offset = next_offset;
@@ -152,7 +152,7 @@ fn match_module_runtime_call(line: &str, start: usize, code: &[bool]) -> Option<
     {
         return None;
     }
-    if start >= 2 && line.get(..start).is_some_and(|prefix| prefix.ends_with("->")) {
+    if preceded_by_method_operator(line, start) {
         return None;
     }
 
@@ -201,7 +201,7 @@ fn match_module_runtime_call(line: &str, start: usize, code: &[bool]) -> Option<
 fn parse_module_runtime_argument(
     line: &str,
     name_end: usize,
-) -> Option<(String, usize, usize, usize)> {
+) -> Option<(&str, usize, usize, usize)> {
     let open = skip_ascii_whitespace(line, name_end);
     if line.as_bytes().get(open) != Some(&b'(') {
         return None;
@@ -222,8 +222,8 @@ fn parse_module_runtime_argument(
         }
         if byte == quote {
             let content_end = offset;
-            let module = line.get(content_start..content_end)?.to_owned();
-            if !is_perl_module_name(&module) {
+            let module = line.get(content_start..content_end)?;
+            if !is_perl_module_name(module) {
                 return None;
             }
 
@@ -238,6 +238,20 @@ fn parse_module_runtime_argument(
     }
 
     None
+}
+
+fn preceded_by_method_operator(line: &str, start: usize) -> bool {
+    let bytes = line.as_bytes();
+    let mut offset = start;
+    while offset > 0 {
+        offset -= 1;
+        match bytes.get(offset) {
+            Some(b' ' | b'\t') => {}
+            Some(b'>') if offset > 0 => return bytes.get(offset - 1) == Some(&b'-'),
+            _ => return false,
+        }
+    }
+    false
 }
 
 fn code_mask(line: &str) -> Vec<bool> {
@@ -726,7 +740,7 @@ mod tests {
     #[test]
     fn module_runtime_call_boundaries_are_exact() -> Result<(), String> {
         let text = "my $source = \"use_module('No::Link')\"; ".to_owned()
-            + "obj->use_module('No::Method'); "
+            + "obj->use_module('No::Method'); obj->   use_module('No::SpacedMethod'); "
             + "Other::use_module('No::Other'); "
             + "use_module_extra('No::Extra');";
         let links = compute_links(uri(), &text, &[]);
