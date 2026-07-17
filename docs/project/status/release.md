@@ -5,16 +5,15 @@
 
 ## Current Release Call
 
-**Current release train**: `v0.15.2` hotfix — shipped 2026-05-26
-**Workspace version line**: `v0.15.0` (Cargo.toml workspace.package.version)
-**Published crate surface**: 31 crates
-**Release target**: `v0.16.0` is the next planned train
-**Ship readiness**: `v0.15.0` (2026-05-22), `v0.15.1` (2026-05-26), and `v0.15.2` (2026-05-26) are tagged; channel receipts (crates.io, VS Code Marketplace, Docker) are pending reconciliation.
+**Current release train**: `v0.17.0` — shipped 2026-06-28
+**Workspace version line**: `v0.17.0` (Cargo.toml workspace.package.version)
+**Published crate surface**: 32 crates
+**Release target**: `v0.17.0` is the current train; the next minor is planned but not yet cut
+**Ship readiness**: `v0.17.0` (2026-06-28) is tagged; prior `v0.16.0` shipped 2026-06-06. See `docs/releases/v0.17.0.md` for the ship-readiness record and `RELEASE_HISTORY.md` for the canonical cross-channel ledger.
 
 ## Active Blockers
 
-- Channel receipt reconciliation for v0.15.x (crates.io, Marketplace, Docker)
-- `docs/releases/v0.15.1.md` status is draft; channel receipts remain pending
+- None currently tracked for the shipped `v0.17.0` train. Record new blockers here as they are identified.
 
 ## 0.15.2 Hotfix Receipts (2026-05-26)
 
@@ -115,4 +114,4 @@ Native + Bridge preview. Harden preview flows is active work.
 
 ---
 
-*Last Updated: 2026-06-05*
+*Last Updated: 2026-07-17*

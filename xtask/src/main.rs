@@ -160,8 +160,8 @@ enum Commands {
         #[arg(long)]
         json: bool,
 
-        /// Override the auto-detected default program (falls back to
-        /// `.perl-lsp/goals/active.toml`'s `default_program`/`active_program`).
+        /// Stamp an explicit program id into the receipt. Portfolio state does
+        /// not auto-select a repository-global program.
         #[arg(long)]
         program: Option<String>,
 
@@ -215,6 +215,13 @@ enum Commands {
     PrLedger {
         #[command(subcommand)]
         command: PrLedgerCommand,
+    },
+
+    /// Check target-only development commits before a release sync.
+    #[command(name = "sync-divergence")]
+    SyncDivergence {
+        #[command(subcommand)]
+        command: SyncDivergenceCommand,
     },
 
     /// Issue Research / Plan Review Desk tooling (report-only audit, etc.).
@@ -881,6 +888,82 @@ enum Commands {
         format: String,
     },
 
+    /// Run the thin exact-head repository contract advisory (issue #3987).
+    CiContract {
+        /// Base git ref or full SHA for the evaluated range.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+        /// Head git ref or full SHA for the evaluated range.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+        /// JSON receipt output path.
+        #[arg(long, default_value = "target/receipts/ci-contract.json")]
+        receipt: PathBuf,
+        /// Markdown summary output path.
+        #[arg(long, default_value = "target/receipts/ci-contract.md")]
+        summary: PathBuf,
+    },
+
+    /// Resolve a change set (base/head SHAs + changed paths) via the single
+    /// #3985 `change_set::resolve_change_set` base-resolver + diff — the
+    /// runtime-neutral interface `hooks/pre-push` consumes (#3985 Slice 3A)
+    /// so the hook never needs its own shell base-resolution algorithm.
+    ///
+    /// `--base auto` (the default) walks the main-first candidate chain
+    /// (`origin/main`, `main`, `HEAD~1`) and never falls back to
+    /// `origin/master` (issue #3985: that ref does not exist on this
+    /// remote). An explicit `--base` must resolve on its own — an
+    /// unresolvable explicit base is a loud, non-zero-exit error, never a
+    /// silent substitution or an empty-changed-paths "success".
+    ///
+    /// `--format json` (default) emits the bounded contract
+    /// `{base_sha, head_sha, changed_paths}`. `--format paths` emits one
+    /// changed path per line and nothing else — the lean, `jq`-free shape
+    /// `hooks/pre-push` parses.
+    ///
+    /// Example: `cargo xtask change-set --base auto --head HEAD --format paths`
+    ChangeSet {
+        /// Base git ref to diff against. `"auto"` (default) triggers
+        /// main-first candidate resolution; any other value is treated as
+        /// an explicit base that must resolve on its own.
+        #[arg(long, default_value = "auto")]
+        base: String,
+
+        /// Head git ref/SHA to diff to.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+
+        /// Output format: `json` (default, bounded contract) or `paths`
+        /// (one changed path per line, no SHAs). Any other value is a
+        /// loud error, never a silent fallback to `json`.
+        #[arg(long, default_value = "json")]
+        format: String,
+
+        /// Repository root to resolve the change set against. Defaults to
+        /// the perl-lsp workspace root. Override for testing against a
+        /// fixture repository.
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+
+    /// Shadow-parity measurement: compare the pre-push shell selector's
+    /// doc-only/single-crate taxonomy against `ci_scope::classify_files`'s
+    /// Rust taxonomy across a fixed corpus of 11 representative
+    /// changed-path scenarios (#3985 Slice 3B).
+    ///
+    /// MEASUREMENT ONLY — selects, skips, and routes nothing. `hooks/pre-push`
+    /// and `ci_scope.rs` are untouched; this command only reports where the
+    /// two selectors agree or differ, and in which direction, to feed the
+    /// maintainer's pending coverage decision (see #3985 comments).
+    ///
+    /// Example: `cargo xtask change-set-parity --format markdown`
+    ChangeSetParity {
+        /// Output format: `text` (default, human-readable), `markdown` (the
+        /// committed-report table shape), or `json`.
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
     /// Emit a markdown PR gate summary (dry-run: stdout only, no GitHub posting).
     ///
     /// Computes what CI would run for the current branch diff against `--base`,
@@ -1406,6 +1489,18 @@ enum Commands {
         /// characters; see `profile_slug_parser`).
         #[arg(long, value_parser = profile_slug_parser)]
         profile: Option<String>,
+    },
+
+    /// Run deterministic fresh-vs-token-replay proof and write a machine-readable receipt.
+    #[command(name = "tree-sitter-incremental-proof")]
+    TreeSitterIncrementalProof {
+        /// Measurement profile controlling fixture breadth and iteration count.
+        #[arg(long, value_enum, default_value_t = incremental_proof::Profile::Pr)]
+        profile: incremental_proof::Profile,
+
+        /// Receipt JSON path. Defaults to target/receipts/tree-sitter-incremental-proof-<profile>.json.
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
 
     /// Run upstream Perl core test harness against perl-lsp compiler modes.
@@ -2561,6 +2656,15 @@ enum FreshnessCheckMode {
 
 #[derive(Subcommand)]
 enum MergeReadyCommand {
+    /// Evaluate a live current-head fan-in snapshot without mutating GitHub state.
+    Evaluate {
+        /// JSON snapshot produced by the live GitHub collector.
+        #[arg(long)]
+        snapshot: PathBuf,
+        /// Optional output path for the deterministic evaluation JSON.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Emit a merge-readiness receipt for a PR.
     Emit {
         /// Pull request number.
@@ -3161,6 +3265,28 @@ enum PrLedgerCommand {
 }
 
 #[derive(Subcommand)]
+enum SyncDivergenceCommand {
+    /// Validate the target-only commit reconciliation ledger and write a receipt.
+    Check {
+        /// Common source/target base used for the git cherry comparison.
+        #[arg(long)]
+        base: String,
+        /// Active swarm source ref.
+        #[arg(long)]
+        source: String,
+        /// Release-repo target ref, normally the first parent of the sync merge.
+        #[arg(long)]
+        target: String,
+        /// Machine-readable reconciliation ledger.
+        #[arg(long)]
+        ledger: PathBuf,
+        /// Output source-sync receipt JSON.
+        #[arg(long)]
+        receipt: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum IssuePlanSubcommand {
     /// Report-only audit of issue-plan quality (builder-ready completeness,
     /// label drift, `#0000` placeholder references). Always exits 0.
@@ -3242,8 +3368,8 @@ enum GoalsCommand {
     /// READ-ONLY: never creates a branch, worktree, or PR.
     Next {
         /// Explicitly select a program by id (`.perl-lsp/goals/programs/<id>.toml`).
-        /// Defaults to `active.toml`'s governed `default_program`
-        /// (falling back to `active_program`).
+        /// No implicit repository-global program is selected; pass `--program`
+        /// to inspect one program explicitly.
         #[arg(long)]
         program: Option<String>,
 
@@ -3263,8 +3389,8 @@ enum GoalsCommand {
     /// Exits non-zero when findings exist.
     Reconcile {
         /// Explicitly select a program by id (`.perl-lsp/goals/programs/<id>.toml`).
-        /// Defaults to `active.toml`'s governed `default_program`
-        /// (falling back to `active_program`).
+        /// No implicit repository-global program is selected; pass `--program`
+        /// to reconcile one program explicitly.
         #[arg(long)]
         program: Option<String>,
 
@@ -3493,6 +3619,17 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::PrLedger { command } => match command {
             PrLedgerCommand::Generate { repos, out, fixture } => {
                 tasks::pr_ledger::generate(tasks::pr_ledger::GenerateConfig { repos, out, fixture })
+            }
+        },
+        Commands::SyncDivergence { command } => match command {
+            SyncDivergenceCommand::Check { base, source, target, ledger, receipt } => {
+                tasks::sync_divergence::check(tasks::sync_divergence::CheckConfig {
+                    base,
+                    source,
+                    target,
+                    ledger,
+                    receipt,
+                })
             }
         },
         Commands::Build { release, features, c_scanner, rust_scanner } => {
@@ -3748,12 +3885,27 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CiScope { base, format } => {
             ci_scope::run(ci_scope::CiScopeConfig { base, format })
         }
+        Commands::CiContract { base, head, receipt, summary } => {
+            ci_contract::run(ci_contract::CiContractConfig { base, head, receipt, summary })
+        }
+        Commands::ChangeSet { base, head, format, root } => {
+            change_set::run(change_set::ChangeSetConfig { base, head, format, root })
+        }
+        Commands::ChangeSetParity { format } => {
+            shadow_parity::run(shadow_parity::ShadowParityConfig { format })
+        }
         Commands::CiPrSummary { base, dry_run } => {
             ci_pr_summary::run(ci_pr_summary::CiPrSummaryConfig { base, dry_run })
         }
 
         Commands::WorkflowTriggerLint { policy, receipt, fixture, format } => {
-            workflow_trigger_lint::run(policy, receipt, fixture, format)
+            match workflow_trigger_lint::run(policy, receipt, fixture, format) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    eprintln!("workflow-trigger-lint: instrument failure: {error}");
+                    std::process::exit(2);
+                }
+            }
         }
         Commands::CheckVersionSync => check_version_sync::run(),
         Commands::SyncReleaseDocs { write } => sync_release_docs::run(write),
@@ -3942,6 +4094,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         } => parser_corpus_sweep::run(build_parser_corpus_sweep_config(
             roots, manifest, output, baseline, enforce, verbose, receipt, profile,
         )),
+        Commands::TreeSitterIncrementalProof { profile, output } => {
+            incremental_proof::run(profile, output)
+        }
         Commands::PerlCoreHarness { command } => match command {
             PerlCoreHarnessCommand::Prepare { perl_ref, output_dir } => {
                 perl_core_harness::prepare(perl_core_harness::PrepareConfig {
@@ -4084,6 +4239,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             })
         }
         Commands::MergeReady { command } => match command {
+            MergeReadyCommand::Evaluate { snapshot, output } => {
+                merge_ready::evaluate_snapshot_file(&snapshot, output.as_deref())
+            }
             MergeReadyCommand::Emit { pr, receipt } => merge_ready::emit(pr, receipt),
             MergeReadyCommand::Verify { pr, fixture } => merge_ready::verify(pr, fixture),
             MergeReadyCommand::Reconcile { apply, dry_run } => {
@@ -4296,7 +4454,13 @@ fn run_cli(cli: Cli) -> Result<()> {
             ..gates::GateRunnerConfig::default()
         }),
         Commands::GatePolicy { command } => match command {
-            GatePolicyCommand::Check => tasks::gate_policy::check(),
+            GatePolicyCommand::Check => match tasks::gate_policy::check() {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    eprintln!("gate-policy: instrument failure: {error}");
+                    std::process::exit(2);
+                }
+            },
             GatePolicyCommand::Effective { profile } => tasks::gate_policy::effective(profile),
         },
         Commands::Changelog { command } => match command {

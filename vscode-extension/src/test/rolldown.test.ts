@@ -59,6 +59,13 @@ describe('Rolldown bundle configuration', () => {
     expect(source).toContain("platform: 'node'");
   });
 
+  test('development maps are retained while the VSIX excludes them', () => {
+    const config = fs.readFileSync(path.join(EXT_ROOT, 'rolldown.config.mjs'), 'utf8');
+    const vscodeIgnore = fs.readFileSync(path.join(EXT_ROOT, '.vscodeignore'), 'utf8');
+    expect(config).toContain('sourcemap: true');
+    expect(vscodeIgnore).toContain('**/*.map');
+  });
+
   test('package.json prepublish verifies the toolchain, typechecks all surfaces, then compiles', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(EXT_ROOT, 'package.json'), 'utf8'));
     // "clean:out" first: out/ is a shared build directory (the integration/
@@ -82,6 +89,17 @@ describe('Rolldown bundle configuration', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(EXT_ROOT, 'package.json'), 'utf8'));
     expect(pkg.devDependencies).toHaveProperty('rolldown');
     expect(pkg.devDependencies.rolldown).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  test('package and lockfile declare the Node 26 toolchain authority', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(EXT_ROOT, 'package.json'), 'utf8'));
+    const lock = JSON.parse(fs.readFileSync(path.join(EXT_ROOT, 'package-lock.json'), 'utf8'));
+
+    expect(pkg.engines.node).toBe('>=26.0.0 <27');
+    expect(pkg.engines.npm).toBe('11.18.0');
+    expect(pkg.packageManager).toBe('npm@11.18.0');
+    expect(pkg.devDependencies['@types/node']).toMatch(/^\^26(?:\.|$)/);
+    expect(lock.packages[''].engines).toEqual(pkg.engines);
   });
 });
 

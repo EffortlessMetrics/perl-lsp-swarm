@@ -9,9 +9,10 @@
 //! - **Building/Degraded state**: Same-file semantic analysis + open document scan
 
 use super::super::{byte_to_utf16_col, *};
-use crate::protocol::{req_position, req_uri};
+use crate::protocol::{JsonRpcError, JsonRpcId, REQUEST_CANCELLED, req_position, req_uri};
 use crate::state::{reference_search_deadline, references_cap};
 use crate::util::{is_word_boundary, token_under_cursor};
+use std::collections::BinaryHeap;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -30,6 +31,9 @@ use crate::runtime::readiness::IndexReadinessPolicy;
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
 
 static QUALIFIED_NAME_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
+
+const REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS: usize = 128;
+const REFERENCE_TEXT_FALLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// Rollback anchor for the first Phase 2 references provider promotion.
 ///
@@ -80,6 +84,154 @@ pub(crate) enum ReferencesAnsweringTier {
     SemanticAnalyzer,
     /// No tier produced a non-empty result.
     Empty,
+}
+
+/// Outcome of attempting the live semantic source-backed references path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SourceBackedReferenceAttempt {
+    /// The source-backed path produced exact locations.
+    Exact(Vec<Value>),
+    /// The source-backed path declined with a named first-failure stage.
+    Declined(SourceBackedReferenceDecline),
+}
+
+/// Named first-failure stages for the source-backed references attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SourceBackedReferenceDecline {
+    /// The request byte offset could not be represented by the semantic query API.
+    ByteOffsetOutOfRange,
+    /// No workspace index was available.
+    WorkspaceIndexUnavailable,
+    /// Semantic queries could not be opened for the request URI.
+    SemanticQueriesUnavailableForUri,
+    /// Entity resolution did not produce one exact entity.
+    EntityUnresolved { symbol_at_found: bool, exact_candidate_count: usize },
+    /// The semantic cutover returned a non-exact class.
+    CutoverNotExact { result_class: &'static str },
+    /// The entity had no usable declaration anchor.
+    DeclarationAnchorUnavailable,
+    /// The declaration anchor had no wire location.
+    DeclarationLocationUnavailable,
+    /// The declaration location could not be serialized for the wire response.
+    DeclarationSerializationFailed,
+    /// The initialized lexical declaration gate rejected the source shape.
+    InitializedLexicalGateRejected,
+    /// An occurrence had no wire location anchor.
+    OccurrenceLocationUnavailable,
+    /// An occurrence location could not be serialized for the wire response.
+    OccurrenceSerializationFailed,
+    /// The exact path produced no locations after filtering.
+    EmptyExactResult,
+}
+
+impl SourceBackedReferenceAttempt {
+    fn receipt_fields(&self) -> SourceBackedReceiptFields {
+        match self {
+            Self::Exact(_) => SourceBackedReceiptFields {
+                attempted: true,
+                outcome: "exact",
+                decline_stage: None,
+                symbol_at_found: false,
+                exact_candidate_count: 0,
+                cutover_result: Some("exact"),
+            },
+            Self::Declined(decline) => {
+                let (stage, symbol_at_found, exact_candidate_count, cutover_result) = match decline
+                {
+                    SourceBackedReferenceDecline::ByteOffsetOutOfRange => {
+                        ("byte_offset", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::WorkspaceIndexUnavailable => {
+                        ("workspace_index", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::SemanticQueriesUnavailableForUri => {
+                        ("semantic_queries", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::EntityUnresolved {
+                        symbol_at_found,
+                        exact_candidate_count,
+                    } => ("entity_resolution", *symbol_at_found, *exact_candidate_count, None),
+                    SourceBackedReferenceDecline::CutoverNotExact { result_class } => {
+                        ("cutover", false, 0, Some(*result_class))
+                    }
+                    SourceBackedReferenceDecline::DeclarationAnchorUnavailable => {
+                        ("declaration_anchor", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::DeclarationLocationUnavailable => {
+                        ("declaration_location", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::DeclarationSerializationFailed => {
+                        ("declaration_serialization", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::InitializedLexicalGateRejected => {
+                        ("initialized_lexical_gate", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::OccurrenceLocationUnavailable => {
+                        ("occurrence_location", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::OccurrenceSerializationFailed => {
+                        ("occurrence_serialization", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::EmptyExactResult => {
+                        ("empty_exact_result", false, 0, None)
+                    }
+                };
+                SourceBackedReceiptFields {
+                    attempted: true,
+                    outcome: "declined",
+                    decline_stage: Some(stage),
+                    symbol_at_found,
+                    exact_candidate_count,
+                    cutover_result,
+                }
+            }
+        }
+    }
+}
+
+/// Stable receipt fields derived from a source-backed references attempt.
+pub(crate) struct SourceBackedReceiptFields {
+    pub(crate) attempted: bool,
+    pub(crate) outcome: &'static str,
+    pub(crate) decline_stage: Option<&'static str>,
+    pub(crate) symbol_at_found: bool,
+    pub(crate) exact_candidate_count: usize,
+    pub(crate) cutover_result: Option<&'static str>,
+}
+
+#[derive(Debug, Clone)]
+struct ReferenceTextFallbackReceipt {
+    scanned_documents: usize,
+    scanned_bytes: usize,
+    scan_budget_documents: usize,
+    scan_budget_bytes: usize,
+    budget_exhausted: bool,
+    deadline_exhausted: bool,
+    cancellation_observed: bool,
+    fallback_completeness: &'static str,
+    fallback_reason: Option<String>,
+}
+
+impl Default for ReferenceTextFallbackReceipt {
+    fn default() -> Self {
+        Self {
+            scanned_documents: 0,
+            scanned_bytes: 0,
+            scan_budget_documents: REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS,
+            scan_budget_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
+            budget_exhausted: false,
+            deadline_exhausted: false,
+            cancellation_observed: false,
+            fallback_completeness: "not_attempted",
+            fallback_reason: None,
+        }
+    }
+}
+
+struct ReferenceTextFallbackBudget {
+    max_documents: usize,
+    max_bytes: usize,
+    deadline: Instant,
 }
 
 impl ReferencesAnsweringTier {
@@ -283,6 +435,28 @@ fn should_skip_text_reference_match(
 }
 
 impl LspServer {
+    fn check_references_cancellation(
+        &self,
+        request_id: Option<&JsonRpcId>,
+        receipt: &mut ReferenceTextFallbackReceipt,
+    ) -> Result<(), JsonRpcError> {
+        let Some(request_id) = request_id else {
+            return Ok(());
+        };
+        if !self.is_cancelled(request_id) {
+            return Ok(());
+        }
+        receipt.cancellation_observed = true;
+        receipt.fallback_completeness = "cancelled";
+        receipt.fallback_reason = Some("request_cancelled_during_text_fallback".to_owned());
+        self.cancel_clear(request_id);
+        Err(JsonRpcError {
+            code: REQUEST_CANCELLED,
+            message: "Request cancelled during references text fallback".to_owned(),
+            data: None,
+        })
+    }
+
     fn references_decision_trace_context(
         params: Option<&Value>,
     ) -> Result<Option<ReferencesDecisionTraceContext>, JsonRpcError> {
@@ -309,6 +483,8 @@ impl LspServer {
         index_result_count: usize,
         text_result_count: usize,
         latency_us: u128,
+        source_backed_attempt: Option<&SourceBackedReferenceAttempt>,
+        fallback_receipt: &ReferenceTextFallbackReceipt,
     ) {
         let Some(context) = context else {
             return;
@@ -325,6 +501,25 @@ impl LspServer {
         // source_backed_result_count is the total result count only for source-backed answers
         let source_backed_result_count: usize =
             if tier.is_source_backed() { result_count } else { 0 };
+
+        let SourceBackedReceiptFields {
+            attempted: source_backed_attempted,
+            outcome: source_backed_outcome,
+            decline_stage: source_backed_decline_stage,
+            symbol_at_found: source_backed_symbol_at_found,
+            exact_candidate_count: source_backed_exact_candidate_count,
+            cutover_result: source_backed_cutover_result,
+        } = match source_backed_attempt {
+            Some(attempt) => attempt.receipt_fields(),
+            None => SourceBackedReceiptFields {
+                attempted: false,
+                outcome: "not_attempted",
+                decline_stage: None,
+                symbol_at_found: false,
+                exact_candidate_count: 0,
+                cutover_result: None,
+            },
+        };
 
         self.record_provider_decision_trace(
             "references",
@@ -352,6 +547,21 @@ impl LspServer {
                 "fallback_state": fallback_state,
                 "dynamic_boundary": false,
                 "trace_only_no_live_behavior_change": true,
+                "source_backed_attempted": source_backed_attempted,
+                "source_backed_outcome": source_backed_outcome,
+                "source_backed_decline_stage": source_backed_decline_stage,
+                "source_backed_symbol_at_found": source_backed_symbol_at_found,
+                "source_backed_exact_candidate_count": source_backed_exact_candidate_count,
+                "source_backed_cutover_result": source_backed_cutover_result,
+                "scanned_documents": fallback_receipt.scanned_documents,
+                "scanned_bytes": fallback_receipt.scanned_bytes,
+                "scan_budget_documents": fallback_receipt.scan_budget_documents,
+                "scan_budget_bytes": fallback_receipt.scan_budget_bytes,
+                "budget_exhausted": fallback_receipt.budget_exhausted,
+                "deadline_exhausted": fallback_receipt.deadline_exhausted,
+                "cancellation_observed": fallback_receipt.cancellation_observed,
+                "fallback_completeness": fallback_receipt.fallback_completeness,
+                "fallback_reason": fallback_receipt.fallback_reason,
                 "claim_boundary": "records existing references response only; no broader live references cutover"
             }),
         );
@@ -364,13 +574,30 @@ impl LspServer {
     /// - **Building/Degraded state**: Same-file semantic analysis only
     ///
     /// Includes deadline enforcement to prevent blocking on large workspaces.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) fn handle_references(
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        self.handle_references_with_request_id(params, None)
+    }
+
+    pub(crate) fn handle_references_with_request_id(
+        &self,
+        params: Option<Value>,
+        request_id: Option<&Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
         let trace_context = Self::references_decision_trace_context(params.as_ref())?;
-        let (result, tier, index_state, index_result_count, text_result_count, latency_us) =
-            self.handle_references_inner(params)?;
+        let (
+            result,
+            tier,
+            index_state,
+            index_result_count,
+            text_result_count,
+            latency_us,
+            source_backed_attempt,
+            fallback_receipt,
+        ) = self.handle_references_inner(params, request_id)?;
         self.record_references_provider_decision_trace(
             trace_context.as_ref(),
             result.as_ref(),
@@ -379,11 +606,14 @@ impl LspServer {
             index_result_count,
             text_result_count,
             latency_us,
+            source_backed_attempt.as_ref(),
+            &fallback_receipt,
         );
         Ok(result)
     }
 
-    /// Returns `(result, tier, index_state, index_result_count, text_result_count, latency_us)`.
+    /// Returns the provider result, tier, index/text counts, latency, source-backed attempt,
+    /// and bounded fallback receipt.
     ///
     /// - `index_state`: `"full" | "partial" | "none"` derived from the observed `IndexAccessMode`
     ///   at the branch point — NOT inferred from the tier (a Full index can still fall through
@@ -395,13 +625,32 @@ impl LspServer {
     fn handle_references_inner(
         &self,
         params: Option<Value>,
+        request_id: Option<&Value>,
     ) -> Result<
-        (Option<Value>, ReferencesAnsweringTier, &'static str, usize, usize, u128),
+        (
+            Option<Value>,
+            ReferencesAnsweringTier,
+            &'static str,
+            usize,
+            usize,
+            u128,
+            Option<SourceBackedReferenceAttempt>,
+            ReferenceTextFallbackReceipt,
+        ),
         JsonRpcError,
     > {
         let start = Instant::now();
         let deadline = reference_search_deadline();
         let cap = references_cap();
+        let mut source_backed_attempt: Option<SourceBackedReferenceAttempt> = None;
+        let mut fallback_receipt = ReferenceTextFallbackReceipt::default();
+        let fallback_budget = ReferenceTextFallbackBudget {
+            max_documents: REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS,
+            max_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
+            deadline: start + deadline,
+        };
+        let typed_request_id = request_id.and_then(JsonRpcId::try_from_value);
+        self.check_references_cancellation(typed_request_id.as_ref(), &mut fallback_receipt)?;
 
         if let Some(params) = params {
             let uri = req_uri(&params)?;
@@ -528,7 +777,7 @@ impl LspServer {
                                         symbol_is_variable,
                                         include_declaration,
                                     ) {
-                                        if let Some(mut live_locations) = self
+                                        let live_attempt = self
                                             .live_source_backed_reference_locations(
                                                 uri,
                                                 symbol_key.name.as_ref(),
@@ -536,29 +785,46 @@ impl LspServer {
                                                 symbol_key.sigil,
                                                 offset,
                                                 include_declaration,
-                                            )
-                                        {
-                                            live_locations.truncate(cap);
-                                            // Precompute before the tracing macro so these
-                                            // expressions are unconditionally instrumented
-                                            // rather than lazily evaluated only when the
-                                            // debug subscriber is active.
-                                            let ref_count = live_locations.len();
-                                            let elapsed = start.elapsed();
-                                            tracing::debug!(
-                                                ref_count,
-                                                elapsed = ?elapsed,
-                                                "References: returned live source-backed compiler facts"
                                             );
-                                            let result_count = live_locations.len();
-                                            return Ok((
-                                                Some(json!(live_locations)),
-                                                ReferencesAnsweringTier::SemanticSourceBacked,
-                                                index_state,
-                                                result_count,
-                                                0,
-                                                start.elapsed().as_micros(),
-                                            ));
+                                        match live_attempt {
+                                            SourceBackedReferenceAttempt::Exact(
+                                                mut live_locations,
+                                            ) => {
+                                                // The receipt only needs the outcome marker. Keep
+                                                // its vector empty so the exact response is not
+                                                // cloned solely for observability.
+                                                source_backed_attempt = Some(
+                                                    SourceBackedReferenceAttempt::Exact(Vec::new()),
+                                                );
+                                                live_locations.truncate(cap);
+                                                // Precompute before the tracing macro so these
+                                                // expressions are unconditionally instrumented
+                                                // rather than lazily evaluated only when the
+                                                // debug subscriber is active.
+                                                let ref_count = live_locations.len();
+                                                let elapsed = start.elapsed();
+                                                tracing::debug!(
+                                                    ref_count,
+                                                    elapsed = ?elapsed,
+                                                    "References: returned live source-backed compiler facts"
+                                                );
+                                                let result_count = live_locations.len();
+                                                return Ok((
+                                                    Some(json!(live_locations)),
+                                                    ReferencesAnsweringTier::SemanticSourceBacked,
+                                                    index_state,
+                                                    result_count,
+                                                    0,
+                                                    start.elapsed().as_micros(),
+                                                    source_backed_attempt,
+                                                    fallback_receipt.clone(),
+                                                ));
+                                            }
+                                            SourceBackedReferenceAttempt::Declined(decline) => {
+                                                source_backed_attempt = Some(
+                                                    SourceBackedReferenceAttempt::Declined(decline),
+                                                );
+                                            }
                                         }
                                     }
 
@@ -604,6 +870,8 @@ impl LspServer {
                                             index_count,
                                             0,
                                             start.elapsed().as_micros(),
+                                            source_backed_attempt.clone(),
+                                            fallback_receipt.clone(),
                                         ));
                                     }
 
@@ -623,19 +891,13 @@ impl LspServer {
                                     // generation-N identity with generation-N+1 text for the same
                                     // document. Every other open document is unaffected by this and
                                     // still gets the freshest available read.
-                                    let docs_snapshot: Vec<(String, String)> = {
-                                        let documents = self.documents_guard();
-                                        documents
-                                            .iter()
-                                            .map(|(k, v)| {
-                                                if k.as_str() == uri {
-                                                    (k.clone(), doc.text.clone())
-                                                } else {
-                                                    (k.clone(), v.text.clone())
-                                                }
-                                            })
-                                            .collect()
-                                    };
+                                    let docs_snapshot = self.bounded_open_document_snapshot(
+                                        uri,
+                                        &doc.text,
+                                        &fallback_budget,
+                                        &mut fallback_receipt,
+                                        typed_request_id.as_ref(),
+                                    )?;
 
                                     let mut enhanced_locations = Vec::new();
                                     let symbol_name = &symbol_key.name;
@@ -652,8 +914,17 @@ impl LspServer {
                                     ];
 
                                     'pattern_loop: for pattern in patterns {
+                                        self.check_references_cancellation(
+                                            typed_request_id.as_ref(),
+                                            &mut fallback_receipt,
+                                        )?;
                                         // Check deadline between patterns
                                         if start.elapsed() >= deadline {
+                                            fallback_receipt.deadline_exhausted = true;
+                                            fallback_receipt.fallback_completeness = "partial";
+                                            fallback_receipt.fallback_reason = Some(
+                                                "reference_scan_deadline_during_search".to_owned(),
+                                            );
                                             tracing::debug!(
                                                 "References: deadline exceeded during text search"
                                             );
@@ -661,6 +932,10 @@ impl LspServer {
                                         }
                                         if let Ok(search_regex) = regex::Regex::new(&pattern) {
                                             for (doc_uri, doc_text) in &docs_snapshot {
+                                                self.check_references_cancellation(
+                                                    typed_request_id.as_ref(),
+                                                    &mut fallback_receipt,
+                                                )?;
                                                 // Early exit on cap
                                                 if enhanced_locations.len() >= cap {
                                                     break 'pattern_loop;
@@ -725,6 +1000,8 @@ impl LspServer {
                                             index_count,
                                             text_count,
                                             start.elapsed().as_micros(),
+                                            source_backed_attempt.clone(),
+                                            fallback_receipt.clone(),
                                         ));
                                     }
 
@@ -762,6 +1039,8 @@ impl LspServer {
                                                 result_count,
                                                 0,
                                                 start.elapsed().as_micros(),
+                                                source_backed_attempt.clone(),
+                                                fallback_receipt.clone(),
                                             ));
                                         }
                                     }
@@ -849,6 +1128,8 @@ impl LspServer {
                                                                 result_count,
                                                                 0,
                                                                 start.elapsed().as_micros(),
+                                                                source_backed_attempt.clone(),
+                                                                fallback_receipt.clone(),
                                                             ));
                                                         }
                                                     }
@@ -864,19 +1145,14 @@ impl LspServer {
                                                     // snapshot above: `qualified_name` was derived from
                                                     // that same capture, so this document must not be
                                                     // re-read at a fresher generation for this search.
-                                                    let docs_snapshot: Vec<(String, String)> = {
-                                                        let documents = self.documents_guard();
-                                                        documents
-                                                            .iter()
-                                                            .map(|(k, v)| {
-                                                                if k.as_str() == uri {
-                                                                    (k.clone(), doc.text.clone())
-                                                                } else {
-                                                                    (k.clone(), v.text.clone())
-                                                                }
-                                                            })
-                                                            .collect()
-                                                    };
+                                                    let docs_snapshot = self
+                                                        .bounded_open_document_snapshot(
+                                                            uri,
+                                                            &doc.text,
+                                                            &fallback_budget,
+                                                            &mut fallback_receipt,
+                                                            typed_request_id.as_ref(),
+                                                        )?;
 
                                                     let mut all_locations = Vec::new();
                                                     let qualified_name =
@@ -893,8 +1169,20 @@ impl LspServer {
                                                     'doc_scan: for (doc_uri, doc_text) in
                                                         docs_snapshot
                                                     {
+                                                        self.check_references_cancellation(
+                                                            typed_request_id.as_ref(),
+                                                            &mut fallback_receipt,
+                                                        )?;
                                                         // Check deadline
                                                         if start.elapsed() >= deadline {
+                                                            fallback_receipt.deadline_exhausted =
+                                                                true;
+                                                            fallback_receipt
+                                                                .fallback_completeness = "partial";
+                                                            fallback_receipt.fallback_reason = Some(
+                                                                "reference_scan_deadline_during_search"
+                                                                    .to_owned(),
+                                                            );
                                                             break 'doc_scan;
                                                         }
                                                         let lines: Vec<&str> =
@@ -945,6 +1233,8 @@ impl LspServer {
                                                             0,
                                                             text_count,
                                                             start.elapsed().as_micros(),
+                                                            source_backed_attempt.clone(),
+                                                            fallback_receipt.clone(),
                                                         ));
                                                     }
                                                 }
@@ -990,6 +1280,8 @@ impl LspServer {
                                                 result_count,
                                                 0,
                                                 start.elapsed().as_micros(),
+                                                source_backed_attempt.clone(),
+                                                fallback_receipt.clone(),
                                             ));
                                         }
                                     }
@@ -1007,19 +1299,13 @@ impl LspServer {
                                     // above), so this document must not be re-read at a fresher
                                     // generation for this search. Every other open document still
                                     // gets the freshest available read.
-                                    let docs_snapshot: Vec<(String, String)> = {
-                                        let documents = self.documents_guard();
-                                        documents
-                                            .iter()
-                                            .map(|(k, v)| {
-                                                if k.as_str() == uri {
-                                                    (k.clone(), doc.text.clone())
-                                                } else {
-                                                    (k.clone(), v.text.clone())
-                                                }
-                                            })
-                                            .collect()
-                                    };
+                                    let docs_snapshot = self.bounded_open_document_snapshot(
+                                        uri,
+                                        &doc.text,
+                                        &fallback_budget,
+                                        &mut fallback_receipt,
+                                        typed_request_id.as_ref(),
+                                    )?;
                                     let open_doc_locations = search_document_texts_for_references(
                                         docs_snapshot.iter().map(|(doc_uri, doc_text)| {
                                             (doc_uri.as_str(), doc_text.as_str())
@@ -1041,6 +1327,8 @@ impl LspServer {
                                             0,
                                             result_count,
                                             start.elapsed().as_micros(),
+                                            source_backed_attempt.clone(),
+                                            fallback_receipt.clone(),
                                         ));
                                     }
                                 }
@@ -1096,6 +1384,8 @@ impl LspServer {
                             0,
                             0,
                             start.elapsed().as_micros(),
+                            source_backed_attempt.clone(),
+                            fallback_receipt.clone(),
                         ));
                     }
                 }
@@ -1109,7 +1399,123 @@ impl LspServer {
             0,
             0,
             start.elapsed().as_micros(),
+            source_backed_attempt.clone(),
+            fallback_receipt,
         ))
+    }
+
+    fn bounded_open_document_snapshot(
+        &self,
+        current_uri: &str,
+        current_text: &str,
+        budget: &ReferenceTextFallbackBudget,
+        receipt: &mut ReferenceTextFallbackReceipt,
+        request_id: Option<&JsonRpcId>,
+    ) -> Result<Vec<(String, String)>, JsonRpcError> {
+        receipt.fallback_completeness = "partial";
+        receipt.fallback_reason = Some("bounded_open_document_text_scan".to_owned());
+        receipt.scan_budget_documents = budget.max_documents;
+        receipt.scan_budget_bytes = budget.max_bytes;
+
+        self.check_references_cancellation(request_id, receipt)?;
+        if Instant::now() >= budget.deadline {
+            receipt.deadline_exhausted = true;
+            receipt.fallback_reason = Some("reference_scan_deadline_before_snapshot".to_owned());
+            return Ok(Vec::new());
+        }
+        if receipt.scanned_documents >= budget.max_documents
+            || receipt.scanned_bytes.saturating_add(current_text.len()) > budget.max_bytes
+        {
+            receipt.budget_exhausted = true;
+            receipt.fallback_reason = Some("current_document_exceeds_scan_byte_budget".to_owned());
+            return Ok(Vec::new());
+        }
+
+        let mut snapshot = vec![(current_uri.to_owned(), current_text.to_owned())];
+        receipt.scanned_documents += 1;
+        receipt.scanned_bytes += current_text.len();
+
+        let candidate_limit = budget.max_documents.saturating_sub(1);
+        let mut candidates = BinaryHeap::with_capacity(candidate_limit);
+        let mut candidate_overflowed = false;
+        {
+            let documents = self.documents_guard();
+            for uri in documents.keys() {
+                if uri.as_str() == current_uri {
+                    continue;
+                }
+                self.check_references_cancellation(request_id, receipt)?;
+                if Instant::now() >= budget.deadline {
+                    receipt.deadline_exhausted = true;
+                    receipt.fallback_reason =
+                        Some("reference_scan_deadline_during_snapshot".to_owned());
+                    break;
+                }
+                if candidate_limit == 0 {
+                    candidate_overflowed = true;
+                    break;
+                }
+
+                let uri = uri.clone();
+                if candidates.len() < candidate_limit {
+                    candidates.push(uri);
+                } else if let Some(largest) = candidates.peek()
+                    && uri.as_str() < largest.as_str()
+                {
+                    candidates.pop();
+                    candidates.push(uri);
+                    candidate_overflowed = true;
+                } else {
+                    candidate_overflowed = true;
+                }
+            }
+        }
+        let mut candidates = candidates.into_vec();
+        candidates.sort();
+
+        if candidate_overflowed {
+            receipt.budget_exhausted = true;
+            receipt.fallback_reason = Some("reference_scan_document_budget".to_owned());
+        }
+
+        for document_uri in candidates {
+            self.check_references_cancellation(request_id, receipt)?;
+            if Instant::now() >= budget.deadline {
+                receipt.deadline_exhausted = true;
+                receipt.fallback_reason =
+                    Some("reference_scan_deadline_during_snapshot".to_owned());
+                break;
+            }
+            if receipt.scanned_documents >= budget.max_documents {
+                receipt.budget_exhausted = true;
+                receipt.fallback_reason = Some("reference_scan_document_budget".to_owned());
+                break;
+            }
+            let document_text = {
+                let documents = self.documents_guard();
+                let Some(document) = documents.get(&document_uri) else {
+                    continue;
+                };
+                if receipt.scanned_bytes.saturating_add(document.text.len()) > budget.max_bytes {
+                    None
+                } else {
+                    Some(document.text.clone())
+                }
+            };
+            let Some(document_text) = document_text else {
+                receipt.budget_exhausted = true;
+                receipt.fallback_reason = Some("reference_scan_byte_budget".to_owned());
+                break;
+            };
+            receipt.scanned_documents += 1;
+            receipt.scanned_bytes += document_text.len();
+            snapshot.push((document_uri, document_text));
+        }
+
+        if !receipt.budget_exhausted && !receipt.deadline_exhausted {
+            receipt.fallback_completeness = "complete";
+        }
+        Ok(snapshot)
     }
 
     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -1121,14 +1527,25 @@ impl LspServer {
         sigil: Option<char>,
         byte_offset: usize,
         include_declaration: bool,
-    ) -> Option<Vec<Value>> {
-        let byte_offset = u32::try_from(byte_offset).ok()?;
-        let workspace_index = self.workspace_index()?;
+    ) -> SourceBackedReferenceAttempt {
+        let byte_offset = match u32::try_from(byte_offset) {
+            Ok(byte_offset) => byte_offset,
+            Err(_) => {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::ByteOffsetOutOfRange,
+                );
+            }
+        };
+        let Some(workspace_index) = self.workspace_index() else {
+            return SourceBackedReferenceAttempt::Declined(
+                SourceBackedReferenceDecline::WorkspaceIndexUnavailable,
+            );
+        };
 
         // Resolve the semantic outcome plus the declaration anchor when either
         // the caller wants it included or the P8 lexical slice needs to prove
         // this entity is an initialized lexical declaration.
-        let (outcome, decl_anchor) = workspace_index
+        let semantic_resolution = workspace_index
             .with_semantic_queries_for_uri(uri, |file_id, queries| {
                 let ctx = QueryContext::new(file_id, None, Some(byte_offset));
 
@@ -1137,9 +1554,11 @@ impl LspServer {
                 // candidate.  When resolving via definitions we keep the
                 // anchor around so we can include it as the declaration site.
                 let symbol_at = queries.symbol_at(file_id, byte_offset);
+                let symbol_at_found = symbol_at.is_some();
                 let entity_id =
-                    symbol_at.as_ref().and_then(|(_, occurrence)| occurrence.entity_id).or_else(
-                        || {
+                    match symbol_at.as_ref().and_then(|(_, occurrence)| occurrence.entity_id) {
+                        Some(entity_id) => entity_id,
+                        None => {
                             let exact_candidates: Vec<_> = queries
                                 .definitions(symbol, &ctx)
                                 .into_iter()
@@ -1156,11 +1575,18 @@ impl LspServer {
                                 })
                                 .collect();
                             match exact_candidates.as_slice() {
-                                [candidate] => Some(candidate.entity_id),
-                                _ => None,
+                                [candidate] => candidate.entity_id,
+                                _ => {
+                                    return Some(Err(
+                                        SourceBackedReferenceDecline::EntityUnresolved {
+                                            symbol_at_found,
+                                            exact_candidate_count: exact_candidates.len(),
+                                        },
+                                    ));
+                                }
                             }
-                        },
-                    )?;
+                        }
+                    };
 
                 // Find the declaration anchor for this entity.  We accept the
                 // anchor from `symbol_at` if the occurrence is a definition
@@ -1196,30 +1622,80 @@ impl LspServer {
                     symbol,
                     entity_id,
                 );
-                Some((outcome, decl_anchor))
+                Some(Ok((outcome, decl_anchor)))
             })
-            .flatten()?;
+            .flatten();
+        let Some(semantic_resolution) = semantic_resolution else {
+            return SourceBackedReferenceAttempt::Declined(
+                SourceBackedReferenceDecline::SemanticQueriesUnavailableForUri,
+            );
+        };
+        let (outcome, decl_anchor) = match semantic_resolution {
+            Ok(resolution) => resolution,
+            Err(decline) => return SourceBackedReferenceAttempt::Declined(decline),
+        };
 
-        let ReferencesCutoverResult::Exact(occurrences) = outcome.result else {
-            return None;
+        let occurrences = match outcome.result {
+            ReferencesCutoverResult::Exact(occurrences) => occurrences,
+            ReferencesCutoverResult::Ambiguous(_) => {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::CutoverNotExact { result_class: "ambiguous" },
+                );
+            }
+            ReferencesCutoverResult::LegacyFallback(_) => {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::CutoverNotExact {
+                        result_class: "legacy_fallback",
+                    },
+                );
+            }
         };
 
         if let Some(sigil) = sigil {
-            let decl_anchor = decl_anchor?;
-            let wire_location = workspace_index.semantic_anchor_wire_location(decl_anchor)?;
-            let decl_line = usize::try_from(wire_location.range.start.line).ok()?;
-            let line = source.lines().nth(decl_line)?;
+            let Some(decl_anchor) = decl_anchor else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::DeclarationAnchorUnavailable,
+                );
+            };
+            let Some(wire_location) = workspace_index.semantic_anchor_wire_location(decl_anchor)
+            else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::DeclarationLocationUnavailable,
+                );
+            };
+            let Ok(decl_line) = usize::try_from(wire_location.range.start.line) else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::DeclarationLocationUnavailable,
+                );
+            };
+            let Some(line) = source.lines().nth(decl_line) else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::DeclarationLocationUnavailable,
+                );
+            };
             if !line_has_initialized_lexical_declaration(line, sigil, symbol) {
-                return None;
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::InitializedLexicalGateRejected,
+                );
             }
         }
 
         let mut locations = Vec::with_capacity(occurrences.len() + 1);
         for occurrence in occurrences {
-            let wire_location =
-                workspace_index.semantic_anchor_wire_location(occurrence.anchor_id)?;
+            let Some(wire_location) =
+                workspace_index.semantic_anchor_wire_location(occurrence.anchor_id)
+            else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::OccurrenceLocationUnavailable,
+                );
+            };
             let location: lsp_types::Location = wire_location.into();
-            locations.push(serde_json::to_value(location).ok()?);
+            let Ok(location) = serde_json::to_value(location) else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::OccurrenceSerializationFailed,
+                );
+            };
+            locations.push(location);
         }
 
         // Include the declaration location when requested, deduped against the
@@ -1230,7 +1706,11 @@ impl LspServer {
                     workspace_index.semantic_anchor_wire_location(anchor_id)
                 {
                     let decl_location: lsp_types::Location = wire_location.into();
-                    let decl_value = serde_json::to_value(&decl_location).ok()?;
+                    let Ok(decl_value) = serde_json::to_value(&decl_location) else {
+                        return SourceBackedReferenceAttempt::Declined(
+                            SourceBackedReferenceDecline::DeclarationSerializationFailed,
+                        );
+                    };
                     let already_present = locations.iter().any(|loc| loc == &decl_value);
                     if !already_present {
                         locations.push(decl_value);
@@ -1239,7 +1719,11 @@ impl LspServer {
             }
         }
 
-        if locations.is_empty() { None } else { Some(locations) }
+        if locations.is_empty() {
+            SourceBackedReferenceAttempt::Declined(SourceBackedReferenceDecline::EmptyExactResult)
+        } else {
+            SourceBackedReferenceAttempt::Exact(locations)
+        }
     }
 
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -1449,6 +1933,7 @@ impl LspServer {
     pub(crate) fn on_references(
         &self,
         params: serde_json::Value,
+        request_id: Option<&Value>,
     ) -> Result<serde_json::Value, JsonRpcError> {
         let uri = params.pointer("/textDocument/uri").and_then(|v| v.as_str()).unwrap_or("");
         let line = params.pointer("/position/line").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
@@ -1461,12 +1946,25 @@ impl LspServer {
             return Ok(serde_json::json!([]));
         }
 
-        // Fallback: search all open docs with word boundary checking
-        let docs_snapshot = self.iter_open_buffers();
+        let start = Instant::now();
+        let budget = ReferenceTextFallbackBudget {
+            max_documents: REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS,
+            max_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
+            deadline: start + reference_search_deadline(),
+        };
+        let typed_request_id = request_id.and_then(JsonRpcId::try_from_value);
+        let mut receipt = ReferenceTextFallbackReceipt::default();
+        let docs_snapshot = self.bounded_open_document_snapshot(
+            uri,
+            &text,
+            &budget,
+            &mut receipt,
+            typed_request_id.as_ref(),
+        )?;
         let out = search_document_texts_for_references(
             docs_snapshot.iter().map(|(doc_uri, doc_text)| (doc_uri.as_str(), doc_text.as_str())),
             &needle,
-            usize::MAX,
+            references_cap(),
         );
 
         Ok(serde_json::Value::Array(out))
@@ -1541,6 +2039,103 @@ mod tests {
             assert_eq!(tier.fallback_state(1), "legacy_provider");
             assert_eq!(tier.fallback_state(0), "no_result");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn source_backed_attempt_receipt_preserves_named_decline_stage() -> Result<(), Box<dyn Error>> {
+        let cases = [
+            (SourceBackedReferenceDecline::ByteOffsetOutOfRange, "byte_offset", false, 0, None),
+            (
+                SourceBackedReferenceDecline::WorkspaceIndexUnavailable,
+                "workspace_index",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::SemanticQueriesUnavailableForUri,
+                "semantic_queries",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::EntityUnresolved {
+                    symbol_at_found: true,
+                    exact_candidate_count: 2,
+                },
+                "entity_resolution",
+                true,
+                2,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::CutoverNotExact { result_class: "partial" },
+                "cutover",
+                false,
+                0,
+                Some("partial"),
+            ),
+            (
+                SourceBackedReferenceDecline::DeclarationAnchorUnavailable,
+                "declaration_anchor",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::DeclarationLocationUnavailable,
+                "declaration_location",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::DeclarationSerializationFailed,
+                "declaration_serialization",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::InitializedLexicalGateRejected,
+                "initialized_lexical_gate",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::OccurrenceLocationUnavailable,
+                "occurrence_location",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::OccurrenceSerializationFailed,
+                "occurrence_serialization",
+                false,
+                0,
+                None,
+            ),
+            (SourceBackedReferenceDecline::EmptyExactResult, "empty_exact_result", false, 0, None),
+        ];
+        for (decline, stage, symbol_at_found, exact_candidate_count, cutover_result) in cases {
+            let fields = SourceBackedReferenceAttempt::Declined(decline).receipt_fields();
+            assert!(fields.attempted);
+            assert_eq!(fields.outcome, "declined");
+            assert_eq!(fields.decline_stage, Some(stage));
+            assert_eq!(fields.symbol_at_found, symbol_at_found);
+            assert_eq!(fields.exact_candidate_count, exact_candidate_count);
+            assert_eq!(fields.cutover_result, cutover_result);
+        }
+
+        let fields = SourceBackedReferenceAttempt::Exact(Vec::new()).receipt_fields();
+        assert!(fields.attempted);
+        assert_eq!(fields.outcome, "exact");
+        assert_eq!(fields.decline_stage, None);
+        assert_eq!(fields.cutover_result, Some("exact"));
         Ok(())
     }
 
@@ -1663,6 +2258,268 @@ mod tests {
     }
 
     // ── Handler trace tests (--lib reachable) ────────────────────────────
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn bounded_reference_snapshot_is_deterministic_and_respects_budgets()
+    -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let current_uri = "file:///current.pl";
+        server.test_apply_did_open(current_uri, "cur", 1)?;
+        server.test_apply_did_open("file:///b.pl", "bb", 1)?;
+        server.test_apply_did_open("file:///a.pl", "a", 1)?;
+
+        let budget = ReferenceTextFallbackBudget {
+            max_documents: 2,
+            max_bytes: 4,
+            deadline: Instant::now() + Duration::from_secs(1),
+        };
+        let mut receipt = ReferenceTextFallbackReceipt::default();
+        let snapshot = server.bounded_open_document_snapshot(
+            current_uri,
+            "cur",
+            &budget,
+            &mut receipt,
+            None,
+        )?;
+
+        let uris = snapshot.iter().map(|(uri, _)| uri.as_str()).collect::<Vec<_>>();
+        if uris != [current_uri, "file:///a.pl"] {
+            return Err(format!("unexpected deterministic snapshot order: {uris:?}").into());
+        }
+        if receipt.scanned_documents != 2 || receipt.scanned_bytes != 4 {
+            return Err(format!(
+                "unexpected scan accounting: documents={}, bytes={}",
+                receipt.scanned_documents, receipt.scanned_bytes
+            )
+            .into());
+        }
+        if receipt.scan_budget_documents != budget.max_documents
+            || receipt.scan_budget_bytes != budget.max_bytes
+        {
+            return Err(format!(
+                "receipt budget did not match enforcement: documents={}, bytes={}",
+                receipt.scan_budget_documents, receipt.scan_budget_bytes
+            )
+            .into());
+        }
+        if !receipt.budget_exhausted || receipt.fallback_completeness != "partial" {
+            return Err(format!(
+                "budget exhaustion was not recorded: exhausted={}, completeness={}",
+                receipt.budget_exhausted, receipt.fallback_completeness
+            )
+            .into());
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn bounded_reference_snapshot_accumulates_across_fallback_passes() -> Result<(), Box<dyn Error>>
+    {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let current_uri = "file:///current-accumulated.pl";
+        server.test_apply_did_open(current_uri, "cur", 1)?;
+        server.test_apply_did_open("file:///a-accumulated.pl", "a", 1)?;
+
+        let budget = ReferenceTextFallbackBudget {
+            max_documents: 3,
+            max_bytes: 8,
+            deadline: Instant::now() + Duration::from_secs(1),
+        };
+        let mut receipt = ReferenceTextFallbackReceipt::default();
+        server.bounded_open_document_snapshot(current_uri, "cur", &budget, &mut receipt, None)?;
+        server.bounded_open_document_snapshot(current_uri, "cur", &budget, &mut receipt, None)?;
+
+        if receipt.scanned_documents != 3 || receipt.scanned_bytes != 7 {
+            return Err(format!(
+                "repeated fallback pass exceeded or reset accounting: documents={}, bytes={}",
+                receipt.scanned_documents, receipt.scanned_bytes
+            )
+            .into());
+        }
+        if receipt.scan_budget_documents != budget.max_documents
+            || receipt.scan_budget_bytes != budget.max_bytes
+            || !receipt.budget_exhausted
+            || receipt.fallback_completeness != "partial"
+        {
+            return Err(format!(
+                "repeated fallback budget receipt was incomplete: documents={}, bytes={}, exhausted={}, completeness={}",
+                receipt.scan_budget_documents,
+                receipt.scan_budget_bytes,
+                receipt.budget_exhausted,
+                receipt.fallback_completeness
+            )
+            .into());
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn bounded_reference_snapshot_accounts_for_live_document_length() -> Result<(), Box<dyn Error>>
+    {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let current_uri = "file:///current-live-length.pl";
+        server.test_apply_did_open(current_uri, "cur", 1)?;
+        server.test_apply_did_open("file:///b-live-length.pl", "b", 1)?;
+        server.test_apply_did_change("file:///b-live-length.pl", "bbbb", 2)?;
+        server.test_apply_did_open("file:///a-live-length.pl", "a", 1)?;
+
+        let budget = ReferenceTextFallbackBudget {
+            max_documents: 3,
+            max_bytes: 4,
+            deadline: Instant::now() + Duration::from_secs(1),
+        };
+        let mut receipt = ReferenceTextFallbackReceipt::default();
+        let snapshot = server.bounded_open_document_snapshot(
+            current_uri,
+            "cur",
+            &budget,
+            &mut receipt,
+            None,
+        )?;
+
+        let uris = snapshot.iter().map(|(uri, _)| uri.as_str()).collect::<Vec<_>>();
+        if uris != [current_uri, "file:///a-live-length.pl"] {
+            return Err(format!("snapshot ignored the live document length: {uris:?}").into());
+        }
+        if receipt.scanned_documents != 2
+            || receipt.scanned_bytes != 4
+            || !receipt.budget_exhausted
+            || receipt.fallback_completeness != "partial"
+        {
+            return Err(format!(
+                "live-length budget accounting was incomplete: documents={}, bytes={}, exhausted={}, completeness={}",
+                receipt.scanned_documents,
+                receipt.scanned_bytes,
+                receipt.budget_exhausted,
+                receipt.fallback_completeness
+            )
+            .into());
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn bounded_reference_snapshot_stops_on_cancellation() -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let current_uri = "file:///cancelled.pl";
+        server.test_apply_did_open(current_uri, "cur", 1)?;
+        let request_id = JsonRpcId::Integer(4046);
+        server.cancel_mark(&request_id);
+
+        let budget = ReferenceTextFallbackBudget {
+            max_documents: 128,
+            max_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
+            deadline: Instant::now() + Duration::from_secs(1),
+        };
+        let mut receipt = ReferenceTextFallbackReceipt::default();
+        let error = server
+            .bounded_open_document_snapshot(
+                current_uri,
+                "cur",
+                &budget,
+                &mut receipt,
+                Some(&request_id),
+            )
+            .err()
+            .ok_or("cancelled snapshot unexpectedly succeeded")?;
+
+        if error.code != REQUEST_CANCELLED
+            || !receipt.cancellation_observed
+            || receipt.fallback_completeness != "cancelled"
+        {
+            return Err(format!(
+                "cancellation receipt was incomplete: code={}, observed={}, completeness={}",
+                error.code, receipt.cancellation_observed, receipt.fallback_completeness
+            )
+            .into());
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn legacy_reference_fallback_respects_document_cap() -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let current_uri = "file:///current-legacy-fallback.pl";
+        server.test_apply_did_open(current_uri, "target\n", 1)?;
+        for index in 0..127 {
+            server.test_apply_did_open(
+                &format!("file:///{index:03}-legacy-filler.pl"),
+                "other\n",
+                1,
+            )?;
+        }
+        let late_uri = "file:///999-legacy-late.pl";
+        server.test_apply_did_open(late_uri, "target\n", 1)?;
+
+        let result = server.on_references(
+            json!({
+                "textDocument": {"uri": current_uri},
+                "position": {"line": 0, "character": 2}
+            }),
+            None,
+        )?;
+        let locations = result.as_array().ok_or("legacy fallback did not return an array")?;
+        if locations.iter().any(|location| location["uri"] == late_uri) {
+            return Err("legacy fallback scanned beyond the bounded document set".into());
+        }
+        if locations.iter().all(|location| location["uri"] != current_uri) {
+            return Err("legacy fallback did not retain the current document".into());
+        }
+        Ok(())
+    }
 
     #[cfg(feature = "workspace")]
     #[test]
@@ -1855,6 +2712,36 @@ mod tests {
             "P8 lexical references result must be recorded as source-backed"
         );
         assert_eq!(
+            receipt.get("source_backed_attempted").and_then(serde_json::Value::as_bool),
+            Some(true),
+            "source-backed lexical references must record an attempted semantic path"
+        );
+        assert_eq!(
+            receipt.get("source_backed_outcome").and_then(serde_json::Value::as_str),
+            Some("exact"),
+            "source-backed lexical references must record the exact attempt outcome"
+        );
+        assert_eq!(
+            receipt.get("scanned_documents").and_then(serde_json::Value::as_u64),
+            Some(0),
+            "source-backed exact references must not scan open documents"
+        );
+        assert_eq!(
+            receipt.get("scanned_bytes").and_then(serde_json::Value::as_u64),
+            Some(0),
+            "source-backed exact references must not clone fallback text"
+        );
+        assert_eq!(
+            receipt.get("fallback_completeness").and_then(serde_json::Value::as_str),
+            Some("not_attempted"),
+            "source-backed exact references must identify fallback as unused"
+        );
+        assert_eq!(
+            receipt.get("source_backed_decline_stage"),
+            Some(&serde_json::Value::Null),
+            "exact source-backed references must not report a decline stage"
+        );
+        assert_eq!(
             receipt.get("include_declaration").and_then(serde_json::Value::as_bool),
             Some(false),
             "provider trace must record includeDeclaration=false"
@@ -1928,6 +2815,21 @@ mod tests {
             receipt.get("source_backed").and_then(serde_json::Value::as_bool),
             Some(false),
             "bare lexical fallback must not be recorded as source-backed"
+        );
+        assert_eq!(
+            receipt.get("source_backed_attempted").and_then(serde_json::Value::as_bool),
+            Some(true),
+            "eligible bare lexical requests must record the attempted semantic path"
+        );
+        assert_eq!(
+            receipt.get("source_backed_outcome").and_then(serde_json::Value::as_str),
+            Some("declined"),
+            "bare lexical requests must expose the semantic decline rather than generic None"
+        );
+        assert_eq!(
+            receipt.get("source_backed_decline_stage").and_then(serde_json::Value::as_str),
+            Some("initialized_lexical_gate"),
+            "bare lexical requests must identify the initialized lexical gate as first failure"
         );
 
         Ok(())

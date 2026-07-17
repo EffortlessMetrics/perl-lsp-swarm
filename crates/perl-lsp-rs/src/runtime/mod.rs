@@ -116,6 +116,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+use std::sync::atomic::AtomicU64;
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
@@ -233,6 +235,17 @@ pub struct LspServer {
     /// the `initialized` gate fired, without needing to set up a real
     /// workspace on disk.
     pub(crate) workspace_indexing_invocation_count: Arc<std::sync::atomic::AtomicUsize>,
+    /// Test-only routing key for the workspace readiness receipt observer.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(crate) readiness_receipt_observer_id: AtomicU64,
+    /// Shared startup-readiness receipt updated by indexing and probe hooks.
+    #[cfg(feature = "workspace")]
+    pub(crate) workspace_readiness_receipt:
+        Arc<Mutex<crate::runtime::readiness::WorkspaceReadinessReceipt>>,
+    /// Test-only per-server barrier for deterministic pre-index probes.
+    #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+    pub(crate) workspace_indexing_start_gate:
+        Arc<std::sync::Mutex<Option<crate::runtime::readiness::WorkspaceIndexingStartGate>>>,
     /// Cache of extracted POD documentation keyed by resolved file path.
     pod_cache: Arc<Mutex<HashMap<PathBuf, PodCacheEntry>>>,
     /// Last provider-local decision receipt by provider name.
@@ -328,6 +341,11 @@ pub struct LspServer {
     /// Initialized to `false`; only the test helper methods flip this.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) skip_perlcritic_command_check: AtomicBool,
+    /// When `true`, force the perlcritic availability check to report that the
+    /// binary is missing.  Always `false` in production; only the test API can
+    /// set this flag so unavailable-binary tests do not depend on PATH.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) force_perlcritic_command_unavailable: AtomicBool,
     /// Deduplication set for workspace-scoped Perl::Critic warning notifications.
     ///
     /// Keys are stable identifiers (for example, `missing-binary` or

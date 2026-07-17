@@ -15,11 +15,12 @@ use super::model::{
     BlockShell, BranchKeyword, BranchShell, CallExpr, CallForm, CompileConfidence,
     CompileDirective, CompileDirectiveAction, CompileDirectiveKind, CompileEnvironment,
     CompileEnvironmentBoundary, CompileEnvironmentBoundaryKind, CompilePhase, CompilePhaseBlock,
-    CompileProvenance, ControlTransfer, ControlTransferKind, DynamicBoundary, DynamicBoundaryKind,
-    ExportDeclaration, ExportDeclarationKind, GlobSlot, GlobSlotKind, GlobSlotSource,
-    HIR_BODY_MODEL_VERSION, HirBindingId, HirFile, HirId, HirItem, HirKind, HirScopeId,
-    IncRootAction, IncRootFact, IncRootKind, IndirectCallExpr, InheritanceSource, LiteralExpr,
-    LiteralKind, LoopKind, LoopShell, MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind,
+    CompileProvenance, ControlTransfer, ControlTransferKind, DerefAggregateKind, DerefExpr,
+    DerefOperandKind, DynamicBoundary, DynamicBoundaryKind, ExportDeclaration,
+    ExportDeclarationKind, GlobSlot, GlobSlotKind, GlobSlotSource, HIR_BODY_MODEL_VERSION,
+    HirBindingId, HirFile, HirId, HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact,
+    IncRootKind, IndirectCallExpr, InheritanceSource, LiteralExpr, LiteralKind, LoopKind,
+    LoopShell, MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind,
     ModuleResolutionStatus, PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind,
     PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable, RecoveryConfidence, RequireDecl,
     ScopeFrame, ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary,
@@ -576,27 +577,38 @@ impl Lowerer {
                 self.visit_children(node, confidence);
             }
             NodeKind::Unary { op, operand } => {
-                if is_symbolic_reference_deref_op(op)
-                    && !self.strict_refs_enabled_at(node.location.start)
-                {
-                    let reason = "symbolic reference dereference is not statically known";
-                    let item_id = self.push_item(
+                if let Some(aggregate_kind) = deref_aggregate_kind(op) {
+                    let operand_kind = deref_operand_kind(operand);
+                    self.push_item(
                         node,
                         None,
                         confidence,
-                        HirKind::DynamicBoundary(DynamicBoundary {
-                            kind: DynamicBoundaryKind::SymbolicReferenceDeref,
-                            reason: reason.to_string(),
-                        }),
+                        HirKind::DerefExpr(DerefExpr { aggregate_kind, operand_kind }),
                         self.package_context.clone(),
                         Some(self.current_scope()),
                     );
-                    self.record_compile_environment_boundary(
-                        CompileEnvironmentBoundaryKind::SymbolicReferenceDeref,
-                        node.location,
-                        Some(item_id),
-                        reason,
-                    );
+                    if !self.strict_refs_enabled_at(node.location.start)
+                        && is_proven_symbolic_name(operand)
+                    {
+                        let reason = "symbolic reference dereference is deferred to runtime";
+                        let item_id = self.push_item(
+                            node,
+                            None,
+                            confidence,
+                            HirKind::DynamicBoundary(DynamicBoundary {
+                                kind: DynamicBoundaryKind::SymbolicReferenceDeref,
+                                reason: reason.to_string(),
+                            }),
+                            self.package_context.clone(),
+                            Some(self.current_scope()),
+                        );
+                        self.record_compile_environment_boundary(
+                            CompileEnvironmentBoundaryKind::SymbolicReferenceDeref,
+                            node.location,
+                            Some(item_id),
+                            reason,
+                        );
+                    }
                 }
                 self.visit(operand, confidence);
             }
@@ -1541,11 +1553,19 @@ impl Lowerer {
         range: SourceLocation,
     ) {
         let phase = compile_phase(phase);
-        // INIT and END bodies are compiled with the surrounding program but execute
-        // later in Perl's lifecycle. Preserve their phase facts without treating
-        // ordinary compile analysis as an attempt to execute those bodies.
-        if matches!(phase, CompilePhase::Init | CompilePhase::End)
-            || !phase_block_requires_compile_execution(block)
+        // Only BEGIN executes immediately, at parse time. Per perlmod
+        // (https://perldoc.perl.org/perlmod), the compile/run phase order is
+        // BEGIN -> UNITCHECK -> CHECK -> INIT -> END: UNITCHECK, CHECK, INIT,
+        // and END bodies are all compiled with the surrounding program but
+        // execute later in Perl's lifecycle (UNITCHECK right after their
+        // compilation unit finishes compiling, CHECK at the end of
+        // compilation, INIT just before the main runtime, END at the end).
+        // Preserve their phase facts without treating ordinary compile
+        // analysis as an attempt to execute those bodies.
+        if matches!(
+            phase,
+            CompilePhase::UnitCheck | CompilePhase::Check | CompilePhase::Init | CompilePhase::End
+        ) || !phase_block_requires_compile_execution(block)
         {
             return;
         }
@@ -2150,27 +2170,37 @@ fn contains_interpolation_marker(value: &str) -> bool {
     value.contains('$') || value.contains('@') || value.contains('%')
 }
 
-/// Whether `op` is a block/sigil dereference form (`${}` / `@{}` / `%{}` /
-/// `&{}` / `*{}`) that Perl treats as a *symbolic* reference dereference when
-/// `strict 'refs'` is disabled — see perlref.
-///
-/// Per perlref, hard-vs-symbolic dereference is a **runtime-value** decision,
-/// not an AST-shape one: `$name = "foo"; $$name = 1;` dereferences a
-/// *variable* operand and still sets the package global `$foo` symbolically,
-/// because the variable's string contents are the referent's name. So this
-/// classifier intentionally does not special-case `Variable` operands (e.g.
-/// `${$x}`, `@$x`) as "always a hard reference" — under `no strict 'refs'`,
-/// any block/sigil dereference is *potentially* a symbolic reference,
-/// regardless of whether its operand is a literal, a variable, or an
-/// expression. This is a conservative, fail-closed heuristic (flag when
-/// unsure), not a proof that the operand is actually used as a symbol name at
-/// runtime — some idiomatic forms (`$$_`, `@$tuple` over an already-a-ref
-/// value) are always hard references in practice and never resolve a symbol
-/// table entry, but that can only be known from the runtime value, so callers
-/// that need to suppress known-safe idioms do so narrowly (e.g. the CPAN
-/// corpus test-runner's per-file allowlist), not by weakening this check.
-fn is_symbolic_reference_deref_op(op: &str) -> bool {
-    matches!(op, "${}" | "@{}" | "%{}" | "&{}" | "*{}")
+/// Map a Perl block/sigil dereference operator to its selected runtime slot.
+fn deref_aggregate_kind(op: &str) -> Option<DerefAggregateKind> {
+    match op {
+        "${}" => Some(DerefAggregateKind::Scalar),
+        "@{}" => Some(DerefAggregateKind::Array),
+        "%{}" => Some(DerefAggregateKind::Hash),
+        "&{}" => Some(DerefAggregateKind::Code),
+        "*{}" => Some(DerefAggregateKind::Glob),
+        _ => None,
+    }
+}
+
+/// Whether this syntax guarantees that `no strict 'refs'` can use a symbol
+/// name at runtime. Variables remain ordinary runtime dereferences because
+/// their values may be hard references; string literals (including interpolated
+/// strings) and concatenations are explicitly string-valued and therefore retain
+/// a deferred symbolic fact.
+fn is_proven_symbolic_name(operand: &Node) -> bool {
+    match &operand.kind {
+        NodeKind::String { .. } => true,
+        NodeKind::Binary { op, .. } => op == ".",
+        _ => false,
+    }
+}
+
+fn deref_operand_kind(operand: &Node) -> DerefOperandKind {
+    match operand.kind {
+        NodeKind::Variable { .. } => DerefOperandKind::Variable,
+        NodeKind::String { .. } => DerefOperandKind::StringLiteral,
+        _ => DerefOperandKind::Expression,
+    }
 }
 
 fn pragma_state_fact(

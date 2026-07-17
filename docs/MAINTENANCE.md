@@ -1,8 +1,13 @@
-# Perl LSP v0.9.x Maintenance Plan
+# Perl LSP Maintenance Plan
 
-> **Status**: Active
-> **Last Updated**: 2026-02-14
-> **Applies To**: perl-parser 0.9.x, perl-lsp 0.9.x, perl-lexer 0.9.x, perl-dap 0.9.x
+> **Status**: Active (process runbook — release-independent)
+> **Last Updated**: 2026-07-17
+> **Applies To**: the current public-alpha line (workspace `v0.17.0`; see [project/CURRENT_STATUS.md](project/CURRENT_STATUS.md) for the live version)
+>
+> The maintenance schedule, support policy, and runbooks below are process
+> guidance that applies across releases. Any `v0.9.x`/`v0.10.0`-labeled schedule
+> or roadmap entries further down are a historical planning snapshot retained for
+> reference, not current release posture.
 
 ---
 

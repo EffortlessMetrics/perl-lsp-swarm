@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { describeWorkspaceTopology } from '../../workspaceTopology';
 
 interface MomentResult {
   classification: 'cold' | 'warm' | 'post_restart';
@@ -357,6 +358,34 @@ suite('First-hour VS Code receipt', function () {
         `extension must be loaded from the clean installed profile: ${extensionPath}`,
       );
     }
+    const topology = describeWorkspaceTopology({
+      folders: vscode.workspace.workspaceFolders ?? [],
+      documents: vscode.workspace.textDocuments,
+      isTrusted: vscode.workspace.isTrusted,
+      remoteName: vscode.env.remoteName,
+    });
+    const expectedMode = process.env.PERL_LSP_EXPECTED_WORKSPACE_MODE?.trim();
+    if (expectedMode) {
+      assert.equal(topology.mode, expectedMode, 'workspace smoke mode should match its claim');
+    }
+    const expectedTrust = process.env.PERL_LSP_EXPECTED_WORKSPACE_TRUST?.trim();
+    if (expectedTrust) {
+      assert.equal(topology.trust, expectedTrust, 'workspace smoke trust should match its claim');
+    }
+    const expectedFolderCount = process.env.PERL_LSP_EXPECTED_FOLDER_COUNT?.trim();
+    if (expectedFolderCount) {
+      const parsedFolderCount = Number(expectedFolderCount);
+      assert.ok(
+        Number.isSafeInteger(parsedFolderCount),
+        'workspace smoke folder count must be an integer',
+      );
+      assert.equal(
+        topology.folder_count,
+        parsedFolderCount,
+        'workspace smoke folder count should match its claim',
+      );
+    }
+
     const baseReceipt = {
       schema_version: 1,
       sample_count: 1,
@@ -365,7 +394,11 @@ suite('First-hour VS Code receipt', function () {
       environment: {
         platform: process.platform,
         arch: process.arch,
+        toolchain_node_version: process.env.PERL_LSP_TOOLCHAIN_NODE_VERSION ?? null,
+        toolchain_npm_version: process.env.PERL_LSP_TOOLCHAIN_NPM_VERSION ?? null,
+        extension_host_node_version: process.version,
         node_version: process.version,
+        requested_vscode_version: process.env.PERL_LSP_VSCODE_VERSION ?? 'stable',
         vscode_version: vscode.version,
         extension_id: 'EffortlessMetrics.perl-lsp-rs',
         extension_version: extension.packageJSON?.version ?? null,
@@ -373,10 +406,12 @@ suite('First-hour VS Code receipt', function () {
         server_path: serverPath,
         source_revision: process.env.PERL_LSP_CURRENT_SOURCE_SHA ?? null,
         server_source_revision: process.env.PERL_LSP_SERVER_SOURCE_SHA ?? null,
+        server_artifact_sha256: process.env.PERL_LSP_SERVER_ARTIFACT_SHA256 ?? null,
         vsix_sha256: process.env.PERL_LSP_VSIX_SHA256 ?? null,
       },
       workspace: {
         path: workspacePath,
+        topology,
         file_count_sampled: walkFiles(workspacePath, 10_000).length,
         perl_file_count_sampled: perlFiles.length,
         module_under_probe: moduleName,
@@ -424,6 +459,7 @@ suite('First-hour VS Code receipt', function () {
     const extensionApi = (activationExports ?? extension.exports) as
       | {
           getLanguageClientStartupMetrics?: () => Record<string, unknown>;
+          getFeatureActivationMetrics?: () => Record<string, unknown>;
           markLanguageClientStartupMilestone?: (milestone: string) => void;
           stop?: () => Promise<void>;
         }
@@ -660,6 +696,10 @@ suite('First-hour VS Code receipt', function () {
         extension_activated_within_30s: activationMs <= 30_000,
         command_registration_ms: commandRegistrationMs,
         language_client: receiptLanguageClientMetrics,
+        feature_activation: extensionApi?.getFeatureActivationMetrics?.() ?? {
+          status: 'unavailable',
+          limitation: 'extension activation API did not expose feature metrics',
+        },
         health,
         indexing_announcement_observed: 'not_observable_from_extension_host_public_api',
         failure_guidance: failureGuidance,

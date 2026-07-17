@@ -12,6 +12,7 @@
 
 use perl_semantic_facts::{EdgeKind, EntityId, FileId, OccurrenceKind, ReferenceEdge};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::workspace::workspace_index::FileFactShard;
 
@@ -24,11 +25,14 @@ use crate::workspace::workspace_index::FileFactShard;
 pub struct ReferenceIndex {
     /// Symbol-key → reference edges. The key is the bare or qualified name
     /// carried on each [`ReferenceEdge::symbol_key`].
-    references_by_name: HashMap<String, Vec<ReferenceEdge>>,
+    references_by_name: HashMap<String, Vec<Arc<ReferenceEdge>>>,
 
     /// Entity → reference edges. One entry per target candidate in each
     /// [`ReferenceEdge::target_candidates`].
-    references_by_entity: HashMap<EntityId, Vec<ReferenceEdge>>,
+    ///
+    /// Each `Arc<ReferenceEdge>` is shared with `references_by_name`, so an
+    /// edge with N target candidates costs one allocation instead of N+1.
+    references_by_entity: HashMap<EntityId, Vec<Arc<ReferenceEdge>>>,
 
     /// Tracks which file URIs have been indexed so that [`remove_file`](Self::remove_file)
     /// can efficiently purge stale entries.
@@ -61,6 +65,17 @@ impl ReferenceIndex {
             }
         }
 
+        // A unique occurrence ID allows the candidate vector to move out of
+        // the temporary lookup. Preserve the previous clone-based behavior
+        // for malformed or hand-built shards that repeat an ID so every
+        // occurrence still sees the same targets.
+        let mut occurrence_counts = HashMap::new();
+        for occ in &shard.occurrences {
+            if occ.kind != OccurrenceKind::Definition {
+                *occurrence_counts.entry(occ.id.0).or_default() += 1;
+            }
+        }
+
         for occ in &shard.occurrences {
             // Skip definition occurrences — they are not references.
             if occ.kind == OccurrenceKind::Definition {
@@ -69,9 +84,15 @@ impl ReferenceIndex {
 
             // Build the target_candidates list from edges, falling back to the
             // occurrence's own entity_id when no edge exists.
-            let target_candidates = match edge_targets.get(&occ.id.0) {
-                Some(targets) => targets.clone(),
-                None => occ.entity_id.into_iter().collect(),
+            let target_candidates = if occurrence_counts.get(&occ.id.0) == Some(&1) {
+                edge_targets
+                    .remove(&occ.id.0)
+                    .unwrap_or_else(|| occ.entity_id.into_iter().collect())
+            } else {
+                edge_targets
+                    .get(&occ.id.0)
+                    .cloned()
+                    .unwrap_or_else(|| occ.entity_id.into_iter().collect())
             };
 
             // Derive the symbol_key from the entity canonical name when
@@ -80,24 +101,31 @@ impl ReferenceIndex {
             // lookup will not match these, but entity-based lookup still works.
             let symbol_key = self.derive_symbol_key(shard, occ);
 
-            let ref_edge = ReferenceEdge::new(
+            // Wrap in Arc so the name and entity indexes share one allocation.
+            // target_candidates is moved in (no clone); subsequent access via Deref.
+            let ref_edge = Arc::new(ReferenceEdge::new(
                 occ.id,
                 occ.anchor_id,
                 shard.file_id,
                 symbol_key.clone(),
-                target_candidates.clone(),
+                target_candidates,
                 occ.kind,
                 occ.provenance,
                 occ.confidence,
-            );
+            ));
 
-            // Insert into name index.
-            self.references_by_name.entry(symbol_key).or_default().push(ref_edge.clone());
-
-            // Insert into entity index — one entry per target candidate.
-            for entity_id in &target_candidates {
-                self.references_by_entity.entry(*entity_id).or_default().push(ref_edge.clone());
+            // Insert into entity index — one Arc::clone per target candidate
+            // instead of a full ReferenceEdge clone.
+            for entity_id in &ref_edge.target_candidates {
+                self.references_by_entity
+                    .entry(*entity_id)
+                    .or_default()
+                    .push(Arc::clone(&ref_edge));
             }
+
+            // Insert into name index after the entity index has borrowed the
+            // Arc, so this final insertion can move it without another clone.
+            self.references_by_name.entry(symbol_key).or_default().push(ref_edge);
         }
     }
 
@@ -125,12 +153,18 @@ impl ReferenceIndex {
     }
 
     /// Look up all reference edges for a given symbol key (bare or qualified name).
-    pub fn get_by_name(&self, symbol_key: &str) -> &[ReferenceEdge] {
+    ///
+    /// Returns `Arc<ReferenceEdge>` entries; callers may access fields via
+    /// [`Deref`](std::ops::Deref) without unwrapping.
+    pub fn get_by_name(&self, symbol_key: &str) -> &[Arc<ReferenceEdge>] {
         self.references_by_name.get(symbol_key).map(Vec::as_slice).unwrap_or_default()
     }
 
     /// Look up all reference edges targeting a given entity.
-    pub fn get_by_entity(&self, entity_id: EntityId) -> &[ReferenceEdge] {
+    ///
+    /// Returns `Arc<ReferenceEdge>` entries shared with the name index; no
+    /// additional allocation per lookup.
+    pub fn get_by_entity(&self, entity_id: EntityId) -> &[Arc<ReferenceEdge>] {
         self.references_by_entity.get(&entity_id).map(Vec::as_slice).unwrap_or_default()
     }
 
@@ -554,6 +588,41 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_occurrence_ids_retain_edge_targets() -> Result<(), Box<dyn std::error::Error>> {
+        let mut shard = sample_shard();
+        shard.entities.push(EntityFact {
+            id: EntityId(101),
+            kind: EntityKind::Subroutine,
+            canonical_name: "Foo::bar".to_string(),
+            anchor_id: None,
+            scope_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        });
+        shard.occurrences.push(OccurrenceFact {
+            id: OccurrenceId(400),
+            kind: OccurrenceKind::Call,
+            entity_id: Some(EntityId(101)),
+            anchor_id: AnchorId(21),
+            scope_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        });
+
+        let mut index = ReferenceIndex::new();
+        index.add_file(&shard);
+
+        let by_name = index.get_by_name("Foo::bar");
+        assert_eq!(by_name.len(), 2);
+        assert!(
+            by_name.iter().all(|reference| { reference.target_candidates == vec![EntityId(100)] })
+        );
+        assert_eq!(index.get_by_entity(EntityId(100)).len(), 2);
+        assert!(index.get_by_entity(EntityId(101)).is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn multiple_edge_targets_produce_multiple_entity_entries()
     -> Result<(), Box<dyn std::error::Error>> {
         let file_id = FileId(4);
@@ -647,6 +716,8 @@ mod tests {
         let refs_name = index.get_by_name("ambig_func");
         assert_eq!(refs_name.len(), 1);
         assert_eq!(refs_name[0].target_candidates.len(), 2);
+        assert!(Arc::ptr_eq(&refs_a[0], &refs_name[0]));
+        assert!(Arc::ptr_eq(&refs_b[0], &refs_name[0]));
 
         Ok(())
     }

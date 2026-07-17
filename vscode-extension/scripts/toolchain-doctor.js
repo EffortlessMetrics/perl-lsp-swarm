@@ -3,6 +3,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { createReporter } = require('./reporter');
+
+const reporter = createReporter('toolchain-doctor');
 
 const extensionRoot = path.resolve(__dirname, '..');
 const packageJsonPath = path.join(extensionRoot, 'package.json');
@@ -80,7 +83,7 @@ function describeError(error) {
 }
 
 function fail(message) {
-  console.error(`Toolchain doctor failed: ${message}`);
+  reporter.error(`Toolchain doctor failed: ${message}`);
   process.exitCode = 1;
 }
 
@@ -110,8 +113,12 @@ function main() {
     return;
   }
   const nodeVersion = parseVersion(process.versions.node);
-  if (compareVersions(nodeVersion, nodeFloor) < 0) {
-    fail(`Node ${process.versions.node} is below the declared floor ${packageJson.engines.node}`);
+  // The repository policy is an exact Node major, derived from engines.node.
+  // Changing that declared target changes the doctor acceptance major in lockstep.
+  if (compareVersions(nodeVersion, nodeFloor) < 0 || nodeVersion[0] !== nodeFloor[0]) {
+    fail(
+      `Node ${process.versions.node} does not satisfy the declared target ${packageJson.engines.node}`,
+    );
     return;
   }
 
@@ -127,7 +134,7 @@ function main() {
     return;
   }
 
-  console.log(
+  reporter.info(
     `Toolchain doctor passed: Node ${process.versions.node}, npm ${npmVersion}, packageManager npm@${expectedNpmVersion}`,
   );
 }
