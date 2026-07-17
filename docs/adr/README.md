@@ -117,7 +117,7 @@ Architecture Decision Records (ADRs) capture important architectural decisions a
 ## Status Definitions
 
 - **Proposed**: Under consideration
-- **Accepted**: Decision made and implemented
+- **Accepted**: Decision made; implementation is landed or explicitly tracked as a deferred follow-up
 - **Deprecated**: No longer current but kept for historical context
 - **Superseded**: Replaced by a newer decision
 

@@ -3,6 +3,7 @@
 Status: accepted  
 Date: 2026-07-15  
 Owner: perl-lsp maintainers  
+Implementation: deferred to PR 7B
 Relates to:
 
 - [PLSP-ADR-0006](PLSP-ADR-0006-perl-workspace-core-facts-substrate.md)
