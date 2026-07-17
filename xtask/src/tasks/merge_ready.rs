@@ -1348,7 +1348,12 @@ mod tests {
 
     #[test]
     fn fan_in_advisory_changelog_failures_remain_blocking() -> color_eyre::eyre::Result<()> {
-        for result in [EvidenceClass::NotProven, EvidenceClass::Pending, EvidenceClass::Cancelled] {
+        for result in [
+            EvidenceClass::NotProven,
+            EvidenceClass::Pending,
+            EvidenceClass::Cancelled,
+            EvidenceClass::NotApplicable,
+        ] {
             let mut snapshot = fan_in_snapshot();
             snapshot.changelog.result = result;
             snapshot.changelog.blocking = false;

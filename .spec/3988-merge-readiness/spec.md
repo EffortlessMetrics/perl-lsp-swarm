@@ -25,8 +25,9 @@ When multiple blocking findings are present, status precedence is deterministic:
 `STALE` > `NOT_PROVEN` > `CANCELLED` > `PENDING` > `NOT_APPLICABLE` >
 `DRAFT_SKIP` > `BLOCKED` > `READY`. `BLOCKED` is the emitted status for a
 blocking `POLICY_FINDING`; advisory Changie `POLICY_FINDING` entries remain
-visible without changing the status. Non-policy Changie failures and missing
-or blank dispositions are always blocking.
+visible without changing the status. Non-policy Changie failures and a
+successful Changie result with a missing or blank disposition are always
+blocking.
 
 ## Snapshot contract
 
