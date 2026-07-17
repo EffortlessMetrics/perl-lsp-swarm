@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use serde::{Deserialize, Serialize};
@@ -213,7 +213,7 @@ fn select_checks(
 
 fn run_check(root: &Path, spec: &CheckSpec) -> ContractCheck {
     let command = format_command(spec.program, &spec.args);
-    match Command::new(spec.program).args(&spec.args).current_dir(root).output() {
+    match execute_check(root, spec) {
         Ok(output) => {
             let detail = command_output(&output.stdout, &output.stderr);
             let result = result_for_exit(output.status.code());
@@ -233,6 +233,14 @@ fn run_check(root: &Path, spec: &CheckSpec) -> ContractCheck {
             detail: format!("failed to start check: {error}"),
         },
     }
+}
+
+fn execute_check(root: &Path, spec: &CheckSpec) -> std::io::Result<Output> {
+    if spec.program == "cargo" && spec.args.first().is_some_and(|arg| arg == "xtask") {
+        let executable = std::env::current_exe()?;
+        return Command::new(executable).args(spec.args.iter().skip(1)).current_dir(root).output();
+    }
+    Command::new(spec.program).args(&spec.args).current_dir(root).output()
 }
 
 fn result_for_exit(code: Option<i32>) -> ContractResultClass {
