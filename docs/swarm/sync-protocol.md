@@ -167,6 +167,11 @@ deliberately_abandoned
 release_lineage_only
 ```
 
+The `--source` value must resolve to a commit in the repository running the
+check. Missing or otherwise invalid refs fail closed and are recorded in the
+receipt, so a stale or malformed source ref cannot be mistaken for a valid
+promotion input.
+
 `release_lineage_only` is an explicit exclusion, not an implicit escape hatch.
 Missing rows, unclassified rows, invalid classifications, missing evidence, or
 ledger rows that are not target-unique non-merge commits fail the command. The

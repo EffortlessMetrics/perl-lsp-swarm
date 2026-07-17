@@ -1,13 +1,13 @@
 //! `cargo xtask sync-divergence check` — fail closed on unclassified target commits.
 
-use color_eyre::eyre::{Context, Result, eyre};
+use color_eyre::eyre::{Context, Report, Result, eyre};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const CLASSIFICATIONS: &[&str] = &[
+const CLASSIFICATIONS: [&str; 5] = [
     "port_to_swarm",
     "already_equivalent_in_swarm",
     "superseded_by_newer_architecture",
@@ -76,27 +76,35 @@ struct CherryCommit {
 
 /// Run the preflight and write a receipt even when validation fails.
 pub fn check(config: CheckConfig) -> Result<()> {
-    let ledger = load_ledger(&config.ledger)?;
-    validate_ledger_identity(&ledger, &config)?;
-    let target_unique = target_unique_commits(&config.base, &config.target)?;
+    let ledger = match load_ledger(&config.ledger) {
+        Ok(ledger) => ledger,
+        Err(error) => return fail_with_receipt(&config, error),
+    };
+    if let Err(error) = validate_ledger_identity(&ledger, &config) {
+        return fail_with_receipt(&config, error);
+    }
+    if let Err(error) = validate_source_ref(&config.source) {
+        return fail_with_receipt(&config, error);
+    }
+    let target_unique = match target_unique_commits(&config.base, &config.target) {
+        Ok(commits) => commits,
+        Err(error) => return fail_with_receipt(&config, error),
+    };
 
-    let entries = ledger
-        .entries
-        .iter()
-        .map(|entry| (entry.commit.as_str(), entry))
-        .collect::<BTreeMap<_, _>>();
+    let mut errors = Vec::new();
+    let mut entries = BTreeMap::new();
+    for entry in &ledger.entries {
+        if entries.contains_key(entry.commit.as_str()) {
+            errors.push(format!("commit {} appears more than once", entry.commit));
+        } else {
+            entries.insert(entry.commit.as_str(), entry);
+        }
+    }
     let mut seen = BTreeSet::new();
     let mut receipt_commits = Vec::new();
     let mut excluded_merge_commits = Vec::new();
     let mut excluded_release_lineage_commits = Vec::new();
     let mut accepted_commits = Vec::new();
-    let mut errors = Vec::new();
-    let mut ledger_commits = BTreeSet::new();
-    for entry in &ledger.entries {
-        if !ledger_commits.insert(entry.commit.as_str()) {
-            errors.push(format!("commit {} appears more than once", entry.commit));
-        }
-    }
 
     for commit in &target_unique {
         if commit.is_merge {
@@ -113,10 +121,10 @@ pub fn check(config: CheckConfig) -> Result<()> {
         };
 
         seen.insert(commit.commit.as_str());
-        if entry.subject != commit.subject {
+        if normalize_subject(&entry.subject) != normalize_subject(&commit.subject) {
             errors.push(format!(
-                "ledger subject for {} does not match Git: `{}`",
-                commit.commit, commit.subject
+                "ledger subject for {} does not match Git: ledger=`{}` Git=`{}`",
+                commit.commit, entry.subject, commit.subject
             ));
         }
         receipt_commits.push(ReceiptCommit {
@@ -207,20 +215,53 @@ fn validate_ledger_identity(ledger: &Ledger, config: &CheckConfig) -> Result<()>
     Ok(())
 }
 
+fn validate_source_ref(source: &str) -> Result<()> {
+    let commit_ref = format!("{source}^{{commit}}");
+    git_output(["rev-parse", "--verify", "--quiet", &commit_ref])
+        .with_context(|| format!("validating --source ref `{source}`"))?;
+    Ok(())
+}
+
 fn target_unique_commits(base: &str, target: &str) -> Result<Vec<CherryCommit>> {
     let output = git_output(["cherry", base, target])?;
     let mut commits = Vec::new();
-    for line in output.lines() {
-        let Some(rest) = line.strip_prefix("+ ") else {
-            continue;
-        };
-        let commit = rest.trim().to_string();
+    for commit in parse_cherry_plus_lines(&output) {
+        let commit = commit.to_string();
         let subject = git_output(["show", "-s", "--format=%s", &commit])?.trim().to_string();
         let parents =
             git_output(["rev-list", "--parents", "-n", "1", &commit])?.split_whitespace().count();
         commits.push(CherryCommit { commit, subject, is_merge: parents > 2 });
     }
     Ok(commits)
+}
+
+fn parse_cherry_plus_lines(output: &str) -> Vec<&str> {
+    output.lines().filter_map(|line| line.strip_prefix("+ ").map(str::trim)).collect()
+}
+
+fn normalize_subject(subject: &str) -> String {
+    subject.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn fail_with_receipt(config: &CheckConfig, error: Report) -> Result<()> {
+    let message = error.to_string();
+    let receipt = Receipt {
+        schema_version: 1,
+        base: config.base.clone(),
+        source: config.source.clone(),
+        target: config.target.clone(),
+        ledger: config.ledger.display().to_string(),
+        target_unique_commits: Vec::new(),
+        excluded_merge_commits: Vec::new(),
+        excluded_release_lineage_commits: Vec::new(),
+        accepted_commits: Vec::new(),
+        errors: vec![message.clone()],
+    };
+    write_receipt(&config.receipt, &receipt)?;
+    Err(eyre!(
+        "sync-divergence preflight failed before comparison: {message}; see {}",
+        config.receipt.display()
+    ))
 }
 
 fn git_output<const N: usize>(args: [&str; N]) -> Result<String> {
@@ -253,8 +294,75 @@ mod tests {
     #[test]
     fn only_plus_lines_are_target_unique() -> Result<()> {
         let output = "+ abc\n- def\n  ghi\n";
-        let plus = output.lines().filter_map(|line| line.strip_prefix("+ ")).collect::<Vec<_>>();
-        assert_eq!(plus, vec!["abc"]);
+        assert_eq!(parse_cherry_plus_lines(output), vec!["abc"]);
+        Ok(())
+    }
+
+    #[test]
+    fn early_failures_write_a_receipt() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let ledger = directory.path().join("missing.json");
+        let receipt = directory.path().join("receipt.json");
+        let error = check(CheckConfig {
+            base: "HEAD".to_string(),
+            source: "HEAD".to_string(),
+            target: "HEAD".to_string(),
+            ledger,
+            receipt: receipt.clone(),
+        });
+        assert!(error.is_err());
+
+        let content = fs::read_to_string(receipt)?;
+        let receipt: serde_json::Value = serde_json::from_str(&content)?;
+        assert_eq!(receipt["target_unique_commits"].as_array().map(Vec::len), Some(0));
+        assert_eq!(receipt["errors"].as_array().map(Vec::len), Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn valid_refs_write_a_success_receipt() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let ledger = directory.path().join("ledger.json");
+        let receipt = directory.path().join("receipt.json");
+        fs::write(
+            &ledger,
+            r#"{
+  "schema_version": 1,
+  "base": "HEAD",
+  "source": "HEAD",
+  "target": "HEAD",
+  "entries": []
+}"#,
+        )?;
+
+        check(CheckConfig {
+            base: "HEAD".to_string(),
+            source: "HEAD".to_string(),
+            target: "HEAD".to_string(),
+            ledger,
+            receipt: receipt.clone(),
+        })?;
+
+        let content = fs::read_to_string(receipt)?;
+        let receipt: serde_json::Value = serde_json::from_str(&content)?;
+        assert_eq!(receipt["target_unique_commits"].as_array().map(Vec::len), Some(0));
+        assert_eq!(receipt["errors"].as_array().map(Vec::len), Some(0));
+        Ok(())
+    }
+
+    #[test]
+    fn source_ref_must_resolve() -> Result<()> {
+        let error = validate_source_ref("refs/heads/does-not-exist-for-sync-divergence");
+        assert!(error.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn subject_comparison_normalizes_whitespace() -> Result<()> {
+        assert_eq!(
+            normalize_subject("fix:   preserve  the subject"),
+            normalize_subject("fix: preserve the subject")
+        );
         Ok(())
     }
 
