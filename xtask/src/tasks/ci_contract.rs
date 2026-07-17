@@ -375,11 +375,10 @@ fn classify_check_output(
 ) -> (ContractResultClass, String) {
     let raw_detail = command_output(stdout, stderr);
     let detail = if code.is_none() {
-        format!("process terminated without an exit code; {raw_detail}")
+        bounded_output_with_prefix("process terminated without an exit code; ", &raw_detail)
     } else {
-        raw_detail.clone()
+        bounded_output(&raw_detail)
     };
-    let detail = bounded_output(&detail);
     (result_for_exit(code, &raw_detail), detail)
 }
 
@@ -561,6 +560,13 @@ fn command_output(stdout: &[u8], stderr: &[u8]) -> String {
 
 fn bounded_output(detail: &str) -> String {
     detail.chars().take(2000).collect()
+}
+
+fn bounded_output_with_prefix(prefix: &str, detail: &str) -> String {
+    let remaining = 2000usize.saturating_sub(prefix.chars().count());
+    let mut bounded = prefix.chars().take(2000).collect::<String>();
+    bounded.extend(detail.chars().take(remaining));
+    bounded
 }
 
 #[cfg(test)]
