@@ -4,10 +4,12 @@ Status: accepted
 Date: 2026-07-15  
 Owner: perl-lsp maintainers  
 Relates to:
+
 - [PLSP-ADR-0006](PLSP-ADR-0006-perl-workspace-core-facts-substrate.md)
 - `crates/perl-workspace-core/src/test.rs`
 - `crates/perl-tdd-support/src/tdd/test_runner.rs`
 - `crates/perl-core-test-runner/src/main.rs`
+- `crates/perl-lsp-rs-core/src/providers/testing/tap.rs`
 
 ## Context
 
@@ -31,6 +33,31 @@ LSP-shaped test results, while `perl-core-test-runner` owns execution and
 emits only aggregate assertion counts in its runner record. Neither is a
 stable, dependency-light result model for CLI, LSP, Kwalitee, and future test
 adapters.
+
+The existing editor-facing TAP reader in `perl-lsp-rs-core` is an additional
+consumer contract that the extraction must preserve. Its relevant semantics
+are:
+
+- `TapTest.number` is the optional 1-based protocol test number, `depth` is
+  derived from TAP indentation (four spaces or one tab per level), and
+  `TapTest.line` is the optional 1-based source line from an `# at FILE line N`
+  diagnostic. A source line is not the same thing as the TAP stream line on
+  which the record appeared.
+- A buffered subtest owns its contiguous indented test records until the
+  following depth-zero summary record. The reader retains both the nested
+  records and summary, and `focus_subtest` attributes the immediately
+  preceding nested failures to that summary without double-counting them in
+  the focus result.
+- Unrecognized or malformed non-comment protocol lines are currently ignored;
+  recognized diagnostics are retained verbatim. The extracted facts crate
+  must make malformed records visible as structural diagnostics rather than
+  silently losing evidence. Duplicate plans currently replace the stored
+  plan, while the first parsed `file`, `line`, `got`, or `expected` diagnostic
+  value wins and all diagnostic text remains available to callers.
+- `passed()` means no hard assertion failures and no bail-out. A plan mismatch
+  is reported independently by `plan_mismatch()` and does not by itself make
+  `passed()` false; a skip-all plan is not a mismatch. Adapters must preserve
+  these independent meanings.
 
 ## Options considered
 
