@@ -366,6 +366,24 @@ fn builtin_formatter_ignores_regex_character_class_delimiters() {
     assert_eq!(formatted, "if ($x =~ /[[]/) {\n    print 1;\n}\nprint 2;\n");
 }
 
+#[test]
+fn builtin_formatter_ignores_bare_and_quote_like_regex_delimiters() {
+    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
+    let formatted =
+        formatter.format("if (/[()]/) {\nprint 1;\n}\nif (m{[()]}) {\nprint 2;\n}\nprint 3;\n");
+    assert_eq!(
+        formatted,
+        "if (/[()]/) {\n    print 1;\n}\nif (m{[()]}) {\n    print 2;\n}\nprint 3;\n"
+    );
+}
+
+#[test]
+fn builtin_formatter_carries_multiline_regex_state() {
+    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
+    let formatted = formatter.format("if (/[\n()]/) {\nprint 1;\n}\nprint 2;\n");
+    assert_eq!(formatted, "if (/[\n    ()]/) {\n    print 1;\n}\nprint 2;\n");
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn with_os_runtime_clamps_zero_timeout() {

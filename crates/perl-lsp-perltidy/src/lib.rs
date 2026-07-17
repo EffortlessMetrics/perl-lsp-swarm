@@ -371,6 +371,7 @@ impl BuiltInFormatter {
     pub fn format(&self, code: &str) -> String {
         let mut result = String::new();
         let mut delimiter_stack = Vec::new();
+        let mut delimiter_scan_state = DelimiterScanState::default();
         let lines: Vec<&str> = code.lines().collect();
         let had_trailing_newline = code.ends_with('\n');
         let indent_str = if self.config.tabs.unwrap_or(false) {
@@ -396,7 +397,11 @@ impl BuiltInFormatter {
                 result.push('\n');
             }
 
-            apply_delimiter_events(trimmed, &mut delimiter_stack);
+            apply_delimiter_events_with_state(
+                trimmed,
+                &mut delimiter_stack,
+                &mut delimiter_scan_state,
+            );
         }
 
         result
@@ -423,8 +428,12 @@ fn count_matching_leading_closers(line: &str, delimiter_stack: &[char]) -> usize
     matched
 }
 
-fn apply_delimiter_events(line: &str, delimiter_stack: &mut Vec<char>) {
-    for delimiter in significant_delimiters(line) {
+fn apply_delimiter_events_with_state(
+    line: &str,
+    delimiter_stack: &mut Vec<char>,
+    state: &mut DelimiterScanState,
+) {
+    for delimiter in significant_delimiters_with_state(line, state) {
         match delimiter {
             opening @ ('{' | '(' | '[') => delimiter_stack.push(opening),
             closer @ ('}' | ')' | ']') => {
@@ -446,71 +455,107 @@ fn matching_closer(opening: char) -> Option<char> {
     }
 }
 
-fn significant_delimiters(line: &str) -> Vec<char> {
-    let mut delimiters = Vec::new();
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut in_regex = false;
-    let mut in_regex_char_class = false;
-    let mut escaped = false;
-    let mut last_non_whitespace = None;
-    let mut second_last_non_whitespace = None;
+#[derive(Default)]
+struct DelimiterScanState {
+    in_single: bool,
+    in_double: bool,
+    regex_closer: Option<char>,
+    regex_opener: Option<char>,
+    regex_nesting: usize,
+    regex_char_class: bool,
+    escaped: bool,
+    last_non_whitespace: Option<char>,
+    second_last_non_whitespace: Option<char>,
+}
 
-    for ch in line.chars() {
-        if escaped {
-            escaped = false;
+impl DelimiterScanState {
+    fn record_non_whitespace(&mut self, ch: char) {
+        self.second_last_non_whitespace = self.last_non_whitespace;
+        self.last_non_whitespace = Some(ch);
+    }
+
+    fn clear_regex(&mut self) {
+        self.regex_closer = None;
+        self.regex_opener = None;
+        self.regex_nesting = 0;
+        self.regex_char_class = false;
+    }
+}
+
+fn significant_delimiters_with_state(line: &str, state: &mut DelimiterScanState) -> Vec<char> {
+    let mut delimiters = Vec::new();
+    let chars: Vec<char> = line.chars().collect();
+
+    for (index, ch) in chars.iter().copied().enumerate() {
+        if state.escaped {
+            state.escaped = false;
             continue;
         }
 
         if ch == '\\' {
-            escaped = true;
+            state.escaped = true;
             continue;
         }
 
-        if in_regex {
+        if state.regex_closer.is_some() {
             if ch == '[' {
-                in_regex_char_class = true;
-            } else if ch == ']' && in_regex_char_class {
-                in_regex_char_class = false;
-            } else if ch == '/' && !in_regex_char_class {
-                in_regex = false;
+                state.regex_char_class = true;
+            } else if ch == ']' && state.regex_char_class {
+                state.regex_char_class = false;
+            } else if !state.regex_char_class {
+                if state.regex_opener.is_some() && Some(ch) == state.regex_opener {
+                    state.regex_nesting += 1;
+                } else if Some(ch) == state.regex_closer {
+                    if state.regex_opener.is_some() && state.regex_nesting > 1 {
+                        state.regex_nesting -= 1;
+                    } else {
+                        state.clear_regex();
+                    }
+                    state.record_non_whitespace(ch);
+                }
             }
             continue;
         }
 
-        if in_single {
+        if state.in_single {
             if ch == '\'' {
-                in_single = false;
+                state.in_single = false;
+                state.record_non_whitespace(ch);
             }
             continue;
         }
 
-        if in_double {
+        if state.in_double {
             if ch == '"' {
-                in_double = false;
+                state.in_double = false;
+                state.record_non_whitespace(ch);
             }
             continue;
         }
 
-        if ch == '/'
-            && last_non_whitespace == Some('~')
-            && matches!(second_last_non_whitespace, Some('=') | Some('!'))
+        if let Some((regex_opener, regex_closer, regex_nesting)) =
+            regex_start(&chars, index, ch, state)
         {
-            // Ignore delimiters inside the common /pattern/ regex form. In
-            // particular, a character class such as /[[]/ is not Perl's
-            // array-ref delimiter syntax.
-            in_regex = true;
-            in_regex_char_class = false;
+            // Ignore delimiters inside Perl regex and quote-like forms. The
+            // state is carried across physical lines so a multiline pattern
+            // cannot leak its contents into the formatter's stack.
+            state.regex_opener = regex_opener;
+            state.regex_closer = Some(regex_closer);
+            state.regex_nesting = regex_nesting;
+            state.regex_char_class = false;
+            state.record_non_whitespace(ch);
             continue;
         }
 
         if ch == '\'' {
-            in_single = true;
+            state.in_single = true;
+            state.record_non_whitespace(ch);
             continue;
         }
 
         if ch == '"' {
-            in_double = true;
+            state.in_double = true;
+            state.record_non_whitespace(ch);
             continue;
         }
 
@@ -523,17 +568,67 @@ fn significant_delimiters(line: &str) -> Vec<char> {
         }
 
         if !ch.is_whitespace() {
-            second_last_non_whitespace = last_non_whitespace;
-            last_non_whitespace = Some(ch);
+            state.record_non_whitespace(ch);
         }
     }
 
     delimiters
 }
 
+fn regex_start(
+    chars: &[char],
+    index: usize,
+    ch: char,
+    state: &DelimiterScanState,
+) -> Option<(Option<char>, char, usize)> {
+    let quote_like = preceding_word(chars, index);
+    let is_quote_like = matches!(quote_like.as_deref(), Some("m" | "q" | "qr" | "s" | "tr" | "y"));
+
+    if is_quote_like && matches!(ch, '/' | '{' | '(' | '[') {
+        let closer = match ch {
+            '{' => '}',
+            '(' => ')',
+            '[' => ']',
+            _ => '/',
+        };
+        let nesting = usize::from(ch != '/');
+        return Some((Some(ch).filter(|_| ch != '/'), closer, nesting));
+    }
+
+    if ch != '/' {
+        return None;
+    }
+
+    let starts_expression = state.last_non_whitespace.is_none()
+        || matches!(
+            state.last_non_whitespace,
+            Some('(' | '[' | '{' | '=' | '!' | '?' | ':' | ',' | ';' | '~')
+        )
+        || (state.last_non_whitespace == Some('~')
+            && matches!(state.second_last_non_whitespace, Some('=') | Some('!')))
+        || matches!(quote_like.as_deref(), Some("m" | "q" | "qr" | "s" | "tr" | "y"));
+
+    starts_expression.then_some((None, '/', 0))
+}
+
+fn preceding_word(chars: &[char], index: usize) -> Option<String> {
+    let mut end = index;
+    while end > 0 && chars[end - 1].is_whitespace() {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && chars[start - 1].is_ascii_alphabetic() {
+        start -= 1;
+    }
+    (start < end).then(|| chars[start..end].iter().collect())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{apply_delimiter_events, count_matching_leading_closers, significant_delimiters};
+    use super::{
+        DelimiterScanState, apply_delimiter_events_with_state, count_matching_leading_closers,
+        significant_delimiters_with_state,
+    };
 
     #[test]
     fn count_matching_leading_closers_requires_typed_matches() {
@@ -546,14 +641,20 @@ mod tests {
     #[test]
     fn apply_delimiter_events_preserves_unmatched_closers() {
         let mut stack = vec!['{', '('];
+        let mut state = DelimiterScanState::default();
 
-        apply_delimiter_events("})", &mut stack);
+        apply_delimiter_events_with_state("})", &mut stack, &mut state);
 
         assert_eq!(stack, vec!['{']);
     }
 
     #[test]
     fn significant_delimiters_ignores_regex_character_classes() {
-        assert_eq!(significant_delimiters("if ($x =~ /[[]/) {"), vec!['(', ')', '{']);
+        let mut state = DelimiterScanState::default();
+
+        assert_eq!(
+            significant_delimiters_with_state("if ($x =~ /[[]/) {", &mut state),
+            vec!['(', ')', '{']
+        );
     }
 }
