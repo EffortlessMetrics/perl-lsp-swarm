@@ -1278,7 +1278,7 @@ impl LspServer {
                         0,
                         "no_edit",
                     );
-                    return Ok(Some(json!({"changes": {}})));
+                    return Ok(Some(self.to_workspace_edit_format(json!({"changes": {}}))));
                 }
 
                 // Check index access mode using routing helper
@@ -1475,7 +1475,7 @@ impl LspServer {
                                                     0,
                                                     "no_edit",
                                                 );
-                                                return Ok(Some(json!({"changes": {}})));
+                                                return Ok(Some(self.to_workspace_edit_format(json!({"changes": {}}))));
                                             };
 
                                             let guard_edits =
@@ -1566,7 +1566,7 @@ impl LspServer {
                                                 0,
                                                 "no_edit",
                                             );
-                                            return Ok(Some(json!({"changes": {}})));
+                                            return Ok(Some(self.to_workspace_edit_format(json!({"changes": {}}))));
                                         }
                                         Some(Err(
                                             RenamePackagePilotIneligibleReason::UnsupportedEditCategory,
@@ -1587,7 +1587,7 @@ impl LspServer {
                                                 0,
                                                 "no_edit",
                                             );
-                                            return Ok(Some(json!({"changes": {}})));
+                                            return Ok(Some(self.to_workspace_edit_format(json!({"changes": {}}))));
                                         }
                                         None => {}
                                     }
@@ -1743,7 +1743,9 @@ impl LspServer {
                                         0,
                                         "no_edit",
                                     );
-                                    return Ok(Some(json!({"changes": {}})));
+                                    return Ok(Some(
+                                        self.to_workspace_edit_format(json!({"changes": {}})),
+                                    ));
                                 };
                                 if current_symbol_bare == current_symbol
                                     && sub_declaration_keyword_before(&doc.text, edit_start)
@@ -1773,7 +1775,9 @@ impl LspServer {
                                     0,
                                     "no_edit",
                                 );
-                                return Ok(Some(json!({"changes": {}})));
+                                return Ok(Some(
+                                    self.to_workspace_edit_format(json!({"changes": {}})),
+                                ));
                             }
 
                             // Return WorkspaceEdit with same-file changes only

@@ -257,7 +257,7 @@ impl LspServer {
                 caps.prepare_support_default_behavior = params
                     .pointer("/capabilities/textDocument/rename/prepareSupportDefaultBehavior")
                     .and_then(Value::as_u64)
-                    .map(|v| v as u8)
+                    .map(|v| u8::from(v == 1))
                     .unwrap_or(0);
 
                 // Check if client supports markdown message content in diagnostics (LSP 3.18)
@@ -1726,6 +1726,24 @@ mod tests {
             "capabilities": {
                 "textDocument": {
                     "rename": { "prepareSupport": true }
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+        assert_eq!(server.client_capabilities.lock().prepare_support_default_behavior, 0);
+    }
+
+    #[test]
+    fn initialize_ignores_out_of_range_prepare_support_default_behavior() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "textDocument": {
+                    "rename": {
+                        "prepareSupport": true,
+                        "prepareSupportDefaultBehavior": 257
+                    }
                 }
             }
         });

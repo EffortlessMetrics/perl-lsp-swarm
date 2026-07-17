@@ -1164,11 +1164,13 @@ fn test_rename_uses_legacy_changes_without_documentchanges_capability() -> TestR
 
     assert!(response.is_object(), "rename response must be an object; got: {response:?}");
     // Without documentChanges capability, expect legacy changes format
-    if response.get("changes").is_some() {
-        assert!(
-            response.get("documentChanges").is_none(),
-            "without documentChanges capability, response must not use documentChanges format; got: {response:?}"
-        );
-    }
+    assert!(
+        response.get("changes").is_some_and(Value::is_object),
+        "without documentChanges capability, response must use an object-valued changes map; got: {response:?}"
+    );
+    assert!(
+        response.get("documentChanges").is_none(),
+        "without documentChanges capability, response must not use documentChanges format; got: {response:?}"
+    );
     Ok(())
 }
