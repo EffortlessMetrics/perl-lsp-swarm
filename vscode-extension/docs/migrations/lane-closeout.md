@@ -1,12 +1,13 @@
 # VS Code client/toolchain modernization lane closeout
 
-Status: implementation hardening is current on `main`; cross-repository sync is
-REMAINING. This reconciliation supersedes the earlier premature sync claim and
-records the remaining handoff boundary.
+Status: implementation hardening and history-preserving cross-repository sync
+are complete on `main`. The earlier synchronized code cut is recorded in
+target PR [#10001](https://github.com/EffortlessMetrics/perl-lsp/pull/10001),
+and the final hardening cut is ready for the next target ledger entry.
 
-This closeout records the reviewable PR trail and the evidence boundary for
-the modernization lane. It does not publish, tag, release, or synchronize this
-repository; the two-parent history-preserving sync remains a later operation.
+This closeout records the reviewable PR trail, the evidence boundary, and the
+completed handoff for the modernization lane. It does not publish, tag, or
+release either repository.
 
 ## Delivered PR trail
 
@@ -63,6 +64,7 @@ repository; the two-parent history-preserving sync remains a later operation.
 | #4302 | Typed POD preview contract                           | Merged |
 | #4333 | VS Code host-floor compatibility proof               | Merged |
 | #4335 | Workspace topology capability receipts               | Merged |
+| #4375 | Workspace capability host-mode proof                 | Merged |
 | #4336 | Bundle source-map evidence archive                   | Merged |
 | #4338 | Feature activation timing attribution                | Merged |
 | #4339 | Server command composition                           | Merged |
@@ -77,6 +79,8 @@ repository; the two-parent history-preserving sync remains a later operation.
 | #4365 | Refactoring command composition                      | Merged |
 | #4366 | Final VSIX inventory baseline refresh                | Merged |
 | #4368 | Support/report issue command composition             | Merged |
+| #4384 | Workspace runtime-state ownership                    | Merged |
+| #4389 | Diagnostic command boundary and focused tests        | Merged |
 
 Each slice was refreshed from current `origin/main` when necessary and kept
 to its owned production seam, direct proof, and required generated artifacts.
@@ -124,14 +128,22 @@ npm run test:ci
 ```
 
 The focused downloader run passed 113 tests; the latest full extension gate on
-the current hardening head passed 791 tests with one documented packaged-server
+the current hardening head passed 797 tests with one documented packaged-server
 skip. The focused command-composition slices add isolated delegation and
 disposal proof for the server, critic, test, onboarding, navigation,
-diagnostic, document, refactoring, and support groups. The final package
-evidence contains 28 inventoried files, 1,472,417 bytes total, and a
-1,314,887-byte bundle; the inventory and source-map checks pass. These checks prove the
-exercised behavior and packaging paths; they do not establish a performance
-budget or prove every platform-specific release condition.
+diagnostic, document, refactoring, and support groups. The runtime-state and
+diagnostic command boundaries add direct tests for injected lifecycle state,
+output, unavailable-state messaging, and request failures. The final package
+evidence contains 28 inventoried files, 1,474,277 bytes total, and a
+1,316,660-byte bundle; the inventory and source-map checks pass. These checks
+prove the exercised behavior and packaging paths; they do not establish a
+performance budget or prove every platform-specific release condition.
+
+The workspace capability proof also records exact-source Windows host receipts
+for trusted multi-root workspaces (two folders) and genuinely untrusted
+single-root workspaces (one folder), including initialization, provider,
+restart, and shutdown. Receipts retain separate Git source identity and server
+artifact SHA-256 fields.
 
 PR #4042's required routed Rust result was merged through the maintainer
 override path because both routed attempts failed in the unchanged
@@ -143,14 +155,22 @@ was kept as a separate workflow PR.
 
 ## Handoff and release boundary
 
-The modernization implementation has not yet been synchronized into
-`perl-lsp`. No immutable sync cut, target synchronization merge, or target
-sync ledger exists for this current history. The next handoff must pin the
-tested `swarm/main` SHA, rerun the final extension/workspace proofs against
-that cut, and then use the documented two-parent complete-tree merge with the
-target-repository exclusions rather than an opaque content-state snapshot.
+The reviewed implementation cut `bd3eb11b221e18e9914c326326ee1515620bfae2`
+was pinned, tested, and synchronized into `perl-lsp` through target PR #10001.
+Its two-parent target merge is `90d6fb5614841a621a5950e0f9b92044406320a8`,
+with the target-owned `.claude/`, swarm-only cleanup scripts, and sync ledgers
+as the only approved tree differences. The exact ancestry and tree audit are
+recorded in `perl-lsp/docs/swarm/source-syncs/2026-07-15-workspace-capabilities-bd3eb11b2.md`.
+The final target ledger update merged as target PR #10002.
+
+The post-sync hardening slices #4384 and #4389 are merged on `main` and are
+included in the final stable cut used for the next history-preserving target
+sync. That cut retains the complete swarm commit trail; its target ledger will
+record the exact SHA, two-parent merge, approved exclusions, and target-side
+proofs.
+
 Issue #4120 was closed by merged PR #4121; that historical issue state does not
-mean the current swarm history has already been synchronized.
+change the current Node 26/npm 11 authority.
 
 No publish, tag, or release operation has been performed. Historical receipts
 retain the toolchain versions they actually tested; current development and

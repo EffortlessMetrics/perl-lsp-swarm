@@ -98,8 +98,10 @@ fn build_scoped_body(
 ) {
     let saved_state = current_state.clone();
     build_ranges(body, current_state, ranges);
+    if *current_state != saved_state {
+        ranges.push((body.location.end..body.location.end, saved_state.clone()));
+    }
     *current_state = saved_state;
-    ranges.push((body.location.end..body.location.end, current_state.clone()));
 }
 
 fn build_statement_block(
@@ -112,6 +114,46 @@ fn build_statement_block(
     for stmt in statements {
         build_ranges(stmt, current_state, ranges);
     }
+    if *current_state != saved_state {
+        ranges.push((end..end, saved_state.clone()));
+    }
     *current_state = saved_state;
-    ranges.push((end..end, current_state.clone()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use perl_ast::SourceLocation;
+
+    #[test]
+    fn changed_scoped_body_emits_restore_entry_and_restores_state() {
+        let saved_state = PragmaState::default();
+        let mut current_state = saved_state.clone();
+        let body = Node::new(
+            NodeKind::Use {
+                module: "strict".to_string(),
+                args: Vec::new(),
+                has_filter_risk: false,
+            },
+            SourceLocation { start: 10, end: 42 },
+        );
+        let mut ranges = Vec::new();
+
+        build_scoped_body(&body, &mut current_state, &mut ranges);
+
+        assert_eq!(
+            ranges.len(),
+            2,
+            "changed scoped body should emit its directive and restore entries",
+        );
+        assert_eq!(
+            ranges.last().map(|(range, state)| (range.clone(), state.clone())),
+            Some((42..42, saved_state.clone())),
+            "restore entry should be zero-length at the body end and hold the saved state",
+        );
+        assert_eq!(
+            current_state, saved_state,
+            "scoped body should restore the caller state after building its ranges",
+        );
+    }
 }
