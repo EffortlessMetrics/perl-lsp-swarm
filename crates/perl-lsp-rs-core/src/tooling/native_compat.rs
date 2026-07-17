@@ -99,7 +99,7 @@ pub struct PerlcriticCompatReport {
 pub struct PerlcriticNativeConfigSuggestion {
     /// Native critic engine to use for the migrated config.
     pub engine: &'static str,
-    /// Conservative native profile used as the migration target.
+    /// Native profile used as the migration target.
     pub profile: &'static str,
     /// Project config severity derived from `severity`, when present and valid.
     pub perlcritic_severity: Option<u8>,
@@ -161,7 +161,7 @@ pub fn classify_perlcritic_profile(raw: &str) -> PerlcriticCompatReport {
     let mut items = Vec::new();
     let mut suggested_config = PerlcriticNativeConfigSuggestion {
         engine: "native",
-        profile: "recommended",
+        profile: "strict",
         perlcritic_severity: None,
         include: Vec::new(),
         exclude: Vec::new(),
@@ -989,7 +989,7 @@ color = 1
         assert_eq!(report.items[5].native_rule, Some("native.io.two_arg_open"));
         assert_eq!(report.items[6].native_rule, Some("native.io.unchecked_open_close"));
         assert_eq!(report.suggested_config.engine, "native");
-        assert_eq!(report.suggested_config.profile, "recommended");
+        assert_eq!(report.suggested_config.profile, "strict");
         assert_eq!(report.suggested_config.perlcritic_severity, Some(3));
         assert_eq!(report.suggested_config.include, vec!["native.testing.require_use_strict"]);
         assert_eq!(
@@ -1027,6 +1027,20 @@ exclude = InputOutput::ProhibitTwoArgOpen Variables::ProhibitUnusedVariables
             "exclude = [\"native.io.two_arg_open\", \"native.variables.unused_lexical\"]"
         ));
         assert!(markdown.contains("- include: `Unknown::Policy`"));
+    }
+
+    #[test]
+    fn perlcritic_strict_only_include_selects_strict_profile() {
+        let report = classify_perlcritic_profile("include = Documentation::RequirePodSections\n");
+
+        assert_eq!(report.suggested_config.profile, "strict");
+        assert_eq!(
+            report.suggested_config.include,
+            vec!["native.documentation.require_pod_sections"]
+        );
+
+        let markdown = render_perlcritic_compat_markdown(".perlcriticrc", &report);
+        assert!(markdown.contains("profile = \"strict\""));
     }
 
     #[test]

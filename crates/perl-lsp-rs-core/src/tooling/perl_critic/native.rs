@@ -2755,6 +2755,9 @@ mod tests {
         assert!(!recommended_ids.contains(&"native.variables.unused_lexical"));
         assert!(!recommended_ids.contains(&"native.syntax.unquoted_bareword"));
         assert!(recommended_ids.len() < strict_ids.len());
+        assert!(recommended_ids.iter().all(|id| strict_ids.contains(id)));
+        assert!(strict_ids.contains(&"native.documentation.require_pod_sections"));
+        assert!(!recommended_ids.contains(&"native.documentation.require_pod_sections"));
         assert_eq!(recommended_ids.len(), NativeCriticRegistry::recommended().len());
     }
 
