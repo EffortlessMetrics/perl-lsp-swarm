@@ -299,6 +299,23 @@ my $mysql = Mojo::mysql->strict_mode;
 }
 
 #[test]
+fn mojo_adapter_symbols_survive_both_import_orders() {
+    for imports in ["use Mojo::Pg;\nuse Mojo::mysql;", "use Mojo::mysql;\nuse Mojo::Pg;"] {
+        let code = format!("{imports}\n\nMojo::Pg->new;\nMojo::mysql->strict_mode;\n");
+        let table = extract_symbols(&code);
+
+        assert!(
+            has_symbol(&table, "Mojo::Pg", SymbolKind::Class),
+            "expected Mojo::Pg synthesis for imports {imports:?}"
+        );
+        assert!(
+            has_symbol(&table, "Mojo::mysql", SymbolKind::Class),
+            "expected Mojo::mysql synthesis for imports {imports:?}"
+        );
+    }
+}
+
+#[test]
 fn future_use_synthesizes_class_symbol_for_method_calls() {
     let code = r#"
 use Future;

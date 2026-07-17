@@ -37,6 +37,9 @@ fn mojo_mysql_static_catalog_and_prefix_filter() {
     for method in ["new", "db", "from_string", "strict_mode", "close_idle_connections"] {
         assert!(has_label(&imported, method), "Mojo::mysql should offer {method}: {imported:?}");
     }
+    for method in ["isa", "can", "DOES", "VERSION"] {
+        assert!(has_label(&imported, method), "generic method {method} should remain available");
+    }
 
     let filtered = labels(&completions_at_end("use Mojo::mysql;\nMojo::mysql->st"));
     assert!(has_label(&filtered, "strict_mode"), "strict_mode should match st: {filtered:?}");
@@ -46,5 +49,11 @@ fn mojo_mysql_static_catalog_and_prefix_filter() {
     assert!(
         !has_label(&unimported, "strict_mode"),
         "Mojo::mysql::strict_mode must be gated by an explicit import: {unimported:?}"
+    );
+
+    let unknown = labels(&completions_at_end("Mojo::Unknown->st"));
+    assert!(
+        !has_label(&unknown, "strict_mode"),
+        "unknown adapters must not inherit Mojo::mysql methods: {unknown:?}"
     );
 }

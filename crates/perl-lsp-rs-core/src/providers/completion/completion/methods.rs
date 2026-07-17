@@ -161,6 +161,16 @@ pub const MOJO_MYSQL_METHODS: &[(&str, &str)] = &[
     ("close_idle_connections", "Close idle database connections"),
 ];
 
+const GENERIC_OBJECT_METHODS: &[(&str, &str)] = &[
+    ("new", "Constructor"),
+    ("isa", "Check if object is of given class"),
+    ("can", "Check if object can call method"),
+    ("DOES", "Check if object does role"),
+    ("VERSION", "Get version"),
+    ("DESTROY", "Called when the last reference to the object is released (garbage collected)"),
+    ("AUTOLOAD", "Automatic method dispatcher for undefined methods"),
+];
+
 /// Look up DBI method documentation by receiver hint and method name.
 ///
 /// `receiver_hint` is the variable name or token before `->` (e.g. `"$dbh"`, `"$sth"`).
@@ -447,31 +457,21 @@ pub fn add_method_completions(
 
     // Choose methods based on inferred type
     let methods: Vec<(&str, &str)> = if let Some(methods) = static_framework_methods {
-        methods.to_vec()
+        let mut methods = methods.to_vec();
+        methods.extend_from_slice(GENERIC_OBJECT_METHODS);
+        methods
     } else {
         match receiver_type.as_deref() {
             Some("DBI::db") => DBI_DB_METHODS.to_vec(),
             Some("DBI::st") => DBI_ST_METHODS.to_vec(),
-            _ => {
-                // Default common object methods
-                vec![
-                    ("new", "Constructor"),
-                    ("isa", "Check if object is of given class"),
-                    ("can", "Check if object can call method"),
-                    ("DOES", "Check if object does role"),
-                    ("VERSION", "Get version"),
-                    (
-                        "DESTROY",
-                        "Called when the last reference to the object is released (garbage collected)",
-                    ),
-                    ("AUTOLOAD", "Automatic method dispatcher for undefined methods"),
-                ]
-            }
+            _ => GENERIC_OBJECT_METHODS.to_vec(),
         }
     };
 
     for (method, desc) in methods {
-        if static_framework_methods.is_some()
+        let is_static_framework_method = static_framework_methods
+            .is_some_and(|catalog| catalog.iter().any(|(name, _)| *name == method));
+        if is_static_framework_method
             && !method_prefix.is_empty()
             && !method.starts_with(method_prefix)
         {
