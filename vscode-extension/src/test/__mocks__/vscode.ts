@@ -39,6 +39,22 @@ export enum TestRunProfileKind {
   Coverage = 3,
 }
 
+export enum TaskScope {
+  Global = 1,
+}
+
+export enum TaskRevealKind {
+  Always = 1,
+  Silent = 2,
+  Never = 3,
+}
+
+export enum TaskPanelKind {
+  Shared = 1,
+  Dedicated = 2,
+  New = 3,
+}
+
 export enum ProgressLocation {
   SourceControl = 1,
   Window = 10,
@@ -98,6 +114,26 @@ export class CancellationTokenSource {
   dispose() {}
 }
 
+export class ProcessExecution {
+  constructor(
+    public command: string,
+    public args: string[],
+    public options?: unknown,
+  ) {}
+}
+
+export class Task {
+  presentationOptions: unknown;
+
+  constructor(
+    public definition: unknown,
+    public scope: unknown,
+    public name: string,
+    public source: string,
+    public execution: ProcessExecution,
+  ) {}
+}
+
 type CommandCallback = (...args: unknown[]) => unknown | Promise<unknown>;
 type ProgressReporter = { report: jest.Mock };
 type CancellationToken = { isCancellationRequested: boolean };
@@ -121,6 +157,7 @@ export const commands = {
 
 export const window = {
   createOutputChannel: jest.fn(() => ({
+    clear: jest.fn(),
     appendLine: jest.fn(),
     show: jest.fn(),
     dispose: jest.fn(),
@@ -167,13 +204,22 @@ export const workspace = {
   onDidCreateFiles: jest.fn(() => ({ dispose: jest.fn() })),
   onWillSaveTextDocument: jest.fn(() => ({ dispose: jest.fn() })),
   onDidChangeConfiguration: jest.fn(() => ({ dispose: jest.fn() })),
+  getWorkspaceFolder: jest.fn(
+    (_uri: unknown) => undefined as { uri: { fsPath: string } } | undefined,
+  ),
+  asRelativePath: jest.fn((uri: { fsPath: string }) => uri.fsPath),
   textDocuments: [],
   findFiles: jest.fn(async () => []),
   openTextDocument: jest.fn(async (value: string | { fsPath: string }) => ({
     uri: typeof value === 'string' ? { fsPath: value } : value,
     getText: jest.fn(() => ''),
   })),
+  applyEdit: jest.fn(async () => true),
   workspaceFolders: undefined as Array<{ uri: { fsPath: string } }> | undefined,
+};
+
+export const tasks = {
+  executeTask: jest.fn(async (task: Task) => task),
 };
 
 export const tests = {
