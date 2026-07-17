@@ -502,12 +502,12 @@ fn significant_delimiters_with_state(line: &str, state: &mut DelimiterScanState)
 
         if state.regex_closer.is_none() {
             if let Some((replacement_opener, replacement_closer)) = state.pending_replacement {
-                if let Some(opener) = replacement_opener {
-                    if ch == opener {
+                if replacement_opener.is_some() {
+                    if let Some((opener, closer, nesting)) = replacement_delimiter(ch) {
                         state.pending_replacement = None;
-                        state.regex_opener = Some(opener);
-                        state.regex_closer = Some(replacement_closer);
-                        state.regex_nesting = 1;
+                        state.regex_opener = opener;
+                        state.regex_closer = Some(closer);
+                        state.regex_nesting = nesting;
                         state.regex_char_class = false;
                         state.regex_is_substitution = false;
                         state.record_non_whitespace(ch);
@@ -624,15 +624,10 @@ fn regex_start(
     );
     let is_substitution = matches!(quote_like.as_deref(), Some("s" | "tr" | "y"));
 
-    if is_quote_like && matches!(ch, '/' | '{' | '(' | '[') {
-        let closer = match ch {
-            '{' => '}',
-            '(' => ')',
-            '[' => ']',
-            _ => '/',
-        };
-        let nesting = usize::from(ch != '/');
-        return Some((Some(ch).filter(|_| ch != '/'), closer, nesting, is_substitution));
+    if is_quote_like {
+        if let Some((opener, closer, nesting)) = replacement_delimiter(ch) {
+            return Some((opener, closer, nesting, is_substitution));
+        }
     }
 
     if ch != '/' {
@@ -652,6 +647,16 @@ fn regex_start(
         );
 
     starts_expression.then_some((None, '/', 0, false))
+}
+
+fn replacement_delimiter(ch: char) -> Option<(Option<char>, char, usize)> {
+    match ch {
+        '{' => Some((Some('{'), '}', 1)),
+        '(' => Some((Some('('), ')', 1)),
+        '[' => Some((Some('['), ']', 1)),
+        '/' => Some((None, '/', 0)),
+        _ => None,
+    }
 }
 
 fn preceding_word(chars: &[char], index: usize) -> Option<String> {
