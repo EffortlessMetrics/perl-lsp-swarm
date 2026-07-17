@@ -393,7 +393,7 @@ fn evaluate_changelog(
         findings.push(MergeReadinessFinding {
             source: "changelog".to_string(),
             class: changelog.result,
-            blocking: changelog.blocking,
+            blocking: changelog.result != EvidenceClass::PolicyFinding || changelog.blocking,
             detail: "Changie disposition is not current-head success".to_string(),
         });
     } else if changelog
@@ -404,7 +404,7 @@ fn evaluate_changelog(
         findings.push(MergeReadinessFinding {
             source: "changelog".to_string(),
             class: EvidenceClass::NotProven,
-            blocking: changelog.blocking,
+            blocking: true,
             detail: "Changie evidence succeeded without a disposition".to_string(),
         });
     }
@@ -1342,6 +1342,37 @@ mod tests {
         color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::NotProven);
         color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
             finding.source == "changelog" && finding.class == EvidenceClass::NotProven
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_advisory_changelog_failures_remain_blocking() -> color_eyre::eyre::Result<()> {
+        for result in [EvidenceClass::NotProven, EvidenceClass::Pending, EvidenceClass::Cancelled] {
+            let mut snapshot = fan_in_snapshot();
+            snapshot.changelog.result = result;
+            snapshot.changelog.blocking = false;
+            let evaluation = evaluate_snapshot(&snapshot)?;
+            color_eyre::eyre::ensure!(evaluation.status != MergeReadinessStatus::Ready);
+            color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+                finding.source == "changelog" && finding.class == result && finding.blocking
+            }));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_advisory_blank_changelog_disposition_remains_blocking() -> color_eyre::eyre::Result<()>
+    {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.changelog.disposition = Some("  ".to_string());
+        snapshot.changelog.blocking = false;
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::NotProven);
+        color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+            finding.source == "changelog"
+                && finding.class == EvidenceClass::NotProven
+                && finding.blocking
         }));
         Ok(())
     }

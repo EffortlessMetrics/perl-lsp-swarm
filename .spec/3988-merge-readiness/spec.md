@@ -21,6 +21,13 @@ The evaluator emits one status: `READY`, `BLOCKED`, `PENDING`, `NOT_PROVEN`,
 input class and a human-readable finding. A missing, malformed, or
 instrument-failed input is never treated as success.
 
+When multiple blocking findings are present, status precedence is deterministic:
+`STALE` > `NOT_PROVEN` > `CANCELLED` > `PENDING` > `NOT_APPLICABLE` >
+`DRAFT_SKIP` > `BLOCKED` > `READY`. `BLOCKED` is the emitted status for a
+blocking `POLICY_FINDING`; advisory Changie `POLICY_FINDING` entries remain
+visible without changing the status. Non-policy Changie failures and missing
+or blank dispositions are always blocking.
+
 ## Snapshot contract
 
 The JSON input contains repository/PR/base/head identity, an optional merge
