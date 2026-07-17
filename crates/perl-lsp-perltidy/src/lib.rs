@@ -530,3 +530,30 @@ fn significant_delimiters(line: &str) -> Vec<char> {
 
     delimiters
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_delimiter_events, count_matching_leading_closers, significant_delimiters};
+
+    #[test]
+    fn count_matching_leading_closers_requires_typed_matches() {
+        let stack = vec!['{', '('];
+
+        assert_eq!(count_matching_leading_closers(")", &stack), 1);
+        assert_eq!(count_matching_leading_closers("})", &stack), 0);
+    }
+
+    #[test]
+    fn apply_delimiter_events_preserves_unmatched_closers() {
+        let mut stack = vec!['{', '('];
+
+        apply_delimiter_events("})", &mut stack);
+
+        assert_eq!(stack, vec!['{']);
+    }
+
+    #[test]
+    fn significant_delimiters_ignores_regex_character_classes() {
+        assert_eq!(significant_delimiters("if ($x =~ /[[]/) {"), vec!['(', ')', '{']);
+    }
+}
