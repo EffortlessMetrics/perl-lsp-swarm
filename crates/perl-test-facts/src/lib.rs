@@ -39,6 +39,16 @@ impl TapAssertionStatus {
     }
 }
 
+/// The raw pass/fail outcome before TODO or SKIP classification.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TapAssertionOutcome {
+    /// The assertion line began with `ok`.
+    Pass,
+    /// The assertion line began with `not ok`.
+    Fail,
+}
+
 /// A TAP plan declaration.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,12 +75,20 @@ pub struct TapAssertion {
     pub number: Option<u32>,
     /// Classified assertion outcome.
     pub status: TapAssertionStatus,
+    /// Raw pass/fail outcome preserved independently from directives.
+    pub outcome: TapAssertionOutcome,
     /// Optional assertion description.
     pub name: Option<String>,
     /// Optional directive, including its reason.
     pub directive: Option<String>,
     /// Raw YAML diagnostic block lines associated with this assertion.
     pub diagnostics: Vec<String>,
+    /// Non-YAML diagnostic lines associated with this assertion.
+    pub diagnostic_lines: Vec<String>,
+    /// Source file parsed from an `at FILE line N.` diagnostic, when present.
+    pub source_file: Option<String>,
+    /// Source line parsed from an `at FILE line N.` diagnostic, when present.
+    pub source_line: Option<usize>,
 }
 
 /// Parsed TAP output.
@@ -101,13 +119,26 @@ impl TapReport {
     /// Return the number of passing assertions.
     #[must_use]
     pub fn passed_count(&self) -> usize {
-        self.count(TapAssertionStatus::Pass)
+        self.assertions
+            .iter()
+            .filter(|assertion| {
+                assertion.outcome == TapAssertionOutcome::Pass
+                    && assertion.status != TapAssertionStatus::Skip
+            })
+            .count()
     }
 
     /// Return the number of failing assertions.
     #[must_use]
     pub fn failed_count(&self) -> usize {
-        self.count(TapAssertionStatus::Fail)
+        self.assertions
+            .iter()
+            .filter(|assertion| {
+                assertion.outcome == TapAssertionOutcome::Fail
+                    && assertion.status != TapAssertionStatus::Todo
+                    && assertion.status != TapAssertionStatus::Skip
+            })
+            .count()
     }
 
     /// Return the number of skipped assertions.
@@ -191,7 +222,15 @@ pub fn parse_tap(source: &str) -> TapReport {
         }
 
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with('#') {
+            if let Some((assertion_index, _)) = last_assertion
+                && let Some(assertion) = report.assertions.get_mut(assertion_index)
+            {
+                apply_diagnostic(assertion, trimmed);
+            }
             continue;
         }
 
@@ -274,6 +313,7 @@ pub fn parse_tap(source: &str) -> TapReport {
                         "line {line_number}: duplicate TAP plan; first plan was on line {}",
                         existing.line
                     ));
+                    report.plan = Some(plan);
                 } else {
                     report.plan = Some(plan);
                 }
@@ -390,6 +430,11 @@ fn parse_assertion(line: &str, line_number: usize, depth: usize) -> Option<TapAs
         return None;
     };
 
+    let outcome = if status == TapAssertionStatus::Pass {
+        TapAssertionOutcome::Pass
+    } else {
+        TapAssertionOutcome::Fail
+    };
     let (number, remainder) = parse_number(remainder);
     let (name, directive) = split_directive(remainder);
     let (status, directive) = classify_directive(status, directive);
@@ -398,10 +443,47 @@ fn parse_assertion(line: &str, line_number: usize, depth: usize) -> Option<TapAs
         depth,
         number,
         status,
+        outcome,
         name,
         directive,
         diagnostics: Vec::new(),
+        diagnostic_lines: Vec::new(),
+        source_file: None,
+        source_line: None,
     })
+}
+
+fn apply_diagnostic(assertion: &mut TapAssertion, line: &str) {
+    let diagnostic = line.strip_prefix('#').map_or(line, str::trim);
+    assertion.diagnostic_lines.push(diagnostic.to_owned());
+    let Some((file, source_line)) = parse_source_location(diagnostic) else {
+        return;
+    };
+    if assertion.source_file.is_none() {
+        assertion.source_file = Some(file);
+    }
+    if assertion.source_line.is_none() {
+        assertion.source_line = Some(source_line);
+    }
+}
+
+fn parse_source_location(diagnostic: &str) -> Option<(String, usize)> {
+    let prefix = diagnostic.get(..3)?;
+    if !prefix.eq_ignore_ascii_case("at ") {
+        return None;
+    }
+    let rest = &diagnostic[3..];
+    let lower = rest.to_ascii_lowercase();
+    let marker = " line ";
+    let marker_index = lower.rfind(marker)?;
+    let file = rest[..marker_index].trim();
+    let source_line = rest[marker_index + marker.len()..]
+        .trim()
+        .trim_end_matches('.')
+        .trim()
+        .parse::<usize>()
+        .ok()?;
+    (!file.is_empty()).then(|| (file.to_owned(), source_line))
 }
 
 fn status_remainder<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
@@ -424,8 +506,7 @@ fn parse_number(remainder: &str) -> (Option<u32>, &str) {
 fn split_directive(remainder: &str) -> (Option<String>, Option<String>) {
     let Some(hash_index) = remainder.char_indices().find_map(|(index, character)| {
         (character == '#'
-            && index > 0
-            && remainder[..index].chars().last().is_some_and(char::is_whitespace))
+            && (index == 0 || remainder[..index].chars().last().is_some_and(char::is_whitespace)))
         .then_some(index)
     }) else {
         return (normalize_name(remainder), None);
@@ -528,7 +609,7 @@ fn validate_plan(report: &mut TapReport) {
 
 #[cfg(test)]
 mod tests {
-    use super::{TapAssertionStatus, parse_tap};
+    use super::{TapAssertionOutcome, TapAssertionStatus, parse_tap};
 
     #[test]
     fn parses_passing_named_assertions() {
@@ -573,6 +654,41 @@ mod tests {
         assert_eq!(report.assertions.len(), 1);
         assert_eq!(report.diagnostics.len(), 1);
         assert!(!report.is_success());
+    }
+
+    #[test]
+    fn retains_non_yaml_diagnostics_and_source_locations() {
+        let report = parse_tap("not ok 1 - computes\n# at t/example.t line 12.\n# got: 2\n1..1\n");
+
+        assert_eq!(
+            report.assertions[0].diagnostic_lines,
+            vec!["at t/example.t line 12.", "got: 2"]
+        );
+        assert_eq!(report.assertions[0].source_file.as_deref(), Some("t/example.t"));
+        assert_eq!(report.assertions[0].source_line, Some(12));
+    }
+
+    #[test]
+    fn duplicate_plans_replace_the_stored_plan() {
+        let report = parse_tap("1..1\n1..2\n");
+
+        assert_eq!(report.plan.as_ref().map(|plan| plan.end), Some(2));
+        assert!(
+            report.diagnostics.iter().any(|diagnostic| diagnostic.contains("duplicate TAP plan"))
+        );
+    }
+
+    #[test]
+    fn unnamed_directives_and_raw_outcomes_remain_distinct() {
+        let report = parse_tap("ok 1 # TODO later\nnot ok 2 # TODO pending\n1..2\n");
+
+        assert_eq!(report.assertions[0].status, TapAssertionStatus::Todo);
+        assert_eq!(report.assertions[0].outcome, TapAssertionOutcome::Pass);
+        assert_eq!(report.assertions[1].status, TapAssertionStatus::Todo);
+        assert_eq!(report.assertions[1].outcome, TapAssertionOutcome::Fail);
+        assert_eq!(report.passed_count(), 1);
+        assert_eq!(report.failed_count(), 0);
+        assert!(report.is_success());
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! identify the public behavior that must remain exposed when parser branches
 //! change.
 
-use perl_test_facts::{TapAssertionStatus, parse_tap};
+use perl_test_facts::{TapAssertionOutcome, TapAssertionStatus, parse_tap};
 
 // ── SEAM A: indentation belongs to nested TAP streams ───────────────────────
 
@@ -205,4 +205,46 @@ fn seam_yaml_marker_rejection_clears_adjacency() {
             .iter()
             .any(|diagnostic| diagnostic.contains("not attached to the preceding assertion"))
     );
+}
+
+// ── SEAM M: diagnostic/source facts survive projection ───────────────────────
+
+/// Non-YAML diagnostics remain available and `at FILE line N.` is separated
+/// from the TAP stream line number.
+#[test]
+fn seam_source_location_diagnostic_is_retained() {
+    let report = parse_tap("not ok 1 - computes\n# at t/example.t line 12.\n# got: 2\n1..1\n");
+
+    assert_eq!(report.assertions[0].diagnostic_lines, vec!["at t/example.t line 12.", "got: 2"]);
+    assert_eq!(report.assertions[0].source_file.as_deref(), Some("t/example.t"));
+    assert_eq!(report.assertions[0].source_line, Some(12));
+    assert_eq!(report.assertions[0].line, 1);
+}
+
+// ── SEAM N: duplicate plans retain last-plan-wins compatibility ──────────────
+
+/// Duplicate plans remain diagnosable while the final plan replaces the
+/// stored plan, matching the existing editor-facing reader contract.
+#[test]
+fn seam_duplicate_plan_keeps_the_final_plan() {
+    let report = parse_tap("1..1\n1..2\n");
+
+    assert_eq!(report.plan.as_ref().map(|plan| plan.end), Some(2));
+    assert!(report.diagnostics.iter().any(|diagnostic| diagnostic.contains("duplicate TAP plan")));
+}
+
+// ── SEAM O: directive classification does not erase raw outcome ──────────────
+
+/// Unnamed TODO directives are recognized, while `ok`/`not ok` remains
+/// independently observable for counts and downstream projections.
+#[test]
+fn seam_directive_status_preserves_raw_pass_fail_outcome() {
+    let report = parse_tap("ok 1 # TODO later\nnot ok 2 # TODO pending\n1..2\n");
+
+    assert_eq!(report.assertions[0].status, TapAssertionStatus::Todo);
+    assert_eq!(report.assertions[0].outcome, TapAssertionOutcome::Pass);
+    assert_eq!(report.assertions[1].status, TapAssertionStatus::Todo);
+    assert_eq!(report.assertions[1].outcome, TapAssertionOutcome::Fail);
+    assert_eq!(report.passed_count(), 1);
+    assert_eq!(report.failed_count(), 0);
 }
