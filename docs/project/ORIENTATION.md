@@ -186,6 +186,6 @@ The perl-lsp project has clear paths forward. Your contributions will help make 
 
 ---
 
-*This guide is kept up-to-date as the project evolves. Last updated: 2026-02-17*
+*This guide is kept up-to-date as the project evolves. Last updated: 2026-07-17*
 
 *For detailed status, see: [CURRENT_STATUS.md](CURRENT_STATUS.md)*

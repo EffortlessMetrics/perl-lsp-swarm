@@ -20,11 +20,12 @@
 //!   line like `0.13.3 (31 crates)` in a past-release receipt is never flagged.
 //!   Each claim is anchored to a labeled *current* line (e.g. `**Published
 //!   crate surface**`), not to any bare version/count token.
-//! - **A moved anchor is a hard failure**, not a silent pass: if an expected
-//!   claim marker is present in the repo but its value can no longer be
-//!   extracted, the check fails so the guard cannot be silently disabled by a
-//!   doc refactor. A missing *file* is skipped (fork-friendly), mirroring
-//!   `version_sync`.
+//! - **A moved or duplicated anchor is a hard failure**, not a silent pass: if
+//!   an expected claim marker is missing from an existing file, or matches more
+//!   than once (so a historical line reusing the label could stand in for the
+//!   current one), the check fails so the guard cannot be silently disabled by
+//!   a doc refactor. Only a genuinely-absent *file* is skipped (fork-friendly),
+//!   mirroring `version_sync`; an existing-but-invalid path errors out.
 //!
 //! Provenance (issue #3023): the active-doc baseline this guard enforces was
 //! reconciled to workspace `0.17.0` and the 32-entry publish allowlist as
@@ -180,6 +181,11 @@ enum ClaimOutcome {
     Mismatch { found: String, expected: String },
     /// The anchor marker could not be located in an existing file.
     AnchorMissing,
+    /// The anchor matched more than once, so no single "current" claim can be
+    /// identified. Treated as a failure: a duplicated label (e.g. a historical
+    /// receipt reusing the current label) must not be able to satisfy the guard
+    /// in place of the real current line.
+    Ambiguous { count: usize },
 }
 
 /// Evaluate one claim against the on-disk file.
@@ -189,14 +195,27 @@ fn evaluate_claim(
     claim: &ActiveClaim,
 ) -> Result<ClaimOutcome> {
     let abs = repo_root.join(claim.path);
-    if !abs.is_file() {
+    // Skip only genuinely-absent paths (fork-friendly). An existing-but-invalid
+    // path (e.g. a directory where a file is expected) is NOT silently skipped:
+    // it falls through to `read_to_string`, which surfaces it as a hard error.
+    if !abs.exists() {
         return Ok(ClaimOutcome::FileMissing);
     }
     let raw = fs::read_to_string(&abs).map_err(|e| eyre!("reading {}: {e}", abs.display()))?;
-    let Some(caps) = claim.pattern.captures(&raw) else {
+
+    // The anchor must be unique. `captures_iter` (not `captures`) so a stale
+    // historical line reusing the same label cannot stand in for the current
+    // claim when the real current line is removed or reworded.
+    let mut matches = claim.pattern.captures_iter(&raw);
+    let Some(first) = matches.next() else {
         return Ok(ClaimOutcome::AnchorMissing);
     };
-    let found = caps
+    let extra = matches.count();
+    if extra > 0 {
+        return Ok(ClaimOutcome::Ambiguous { count: extra + 1 });
+    }
+
+    let found = first
         .get(1)
         .ok_or_else(|| eyre!("claim pattern for {} has no capture group", claim.description))?
         .as_str()
@@ -244,6 +263,13 @@ pub(crate) fn check_doc_drift(repo_root: &Path) -> Result<i32> {
                 problems.push(format!(
                     "  {}:{} — expected claim marker not found; the check anchor moved. \
                      Update crates/perl-ci-hygiene/src/commands/doc_drift.rs",
+                    claim.path, claim.description
+                ));
+            }
+            ClaimOutcome::Ambiguous { count } => {
+                problems.push(format!(
+                    "  {}:{} — anchor matched {count} times; the current claim is not unique \
+                     (a historical line may reuse the label). Keep exactly one labeled current line",
                     claim.path, claim.description
                 ));
             }
@@ -427,6 +453,54 @@ mod tests {
         let code = check_doc_drift(&root)?;
         assert_eq!(code, 0, "missing active-surface files are skipped, not failed");
         fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn fails_on_duplicate_anchor() -> Result<()> {
+        // Two labeled current lines (e.g. a historical receipt reusing the
+        // *current* label) → the current claim is not unique → fail, even if
+        // the first match happens to carry the correct value.
+        let root = unique_temp_dir("dup-anchor")?;
+        fs::write(root.join("Cargo.toml"), cargo_toml("0.17.0", &["a", "b"]))
+            .map_err(|e| eyre!("write: {e}"))?;
+        let dir = root.join("docs/project");
+        fs::create_dir_all(&dir).map_err(|e| eyre!("mkdir: {e}"))?;
+        let doc = "# perl-lsp Current Status\n\n\
+             | **Workspace version line** | `v0.17.0` | src |\n\
+             | **Published crate surface** | 2 crates | src |\n\n\
+             ## Snapshot copied by mistake\n\n\
+             | **Workspace version line** | `v0.17.0` | src |\n";
+        fs::write(dir.join("CURRENT_STATUS.md"), doc).map_err(|e| eyre!("write: {e}"))?;
+        let code = check_doc_drift(&root)?;
+        assert_eq!(code, 1, "a duplicated current anchor must fail the check");
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    /// Enforcement test: run the guard against the *actual* repository docs so
+    /// real drift fails an already-required Rust test gate — not only the
+    /// advisory `just status-check` recipe. This is what makes the guard
+    /// fail-closed in CI. If this fails, an active status doc has drifted from
+    /// `Cargo.toml`; run `cargo run -p perl-ci-hygiene -- check-doc-drift` for
+    /// the specific mismatch and reconcile the doc (do not weaken this test).
+    #[test]
+    fn real_repo_active_docs_agree_with_cargo_toml() -> Result<()> {
+        // CARGO_MANIFEST_DIR is `<repo>/crates/perl-ci-hygiene`; the workspace
+        // root is two levels up.
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = manifest_dir
+            .parent()
+            .and_then(|p| p.parent())
+            .ok_or_else(|| eyre!("cannot locate repo root from {}", manifest_dir.display()))?
+            .to_path_buf();
+        // Guard against being run outside the repo layout (e.g. a packaged
+        // crate) — only assert when the canonical inputs are actually present.
+        if !repo_root.join("Cargo.toml").is_file() {
+            return Ok(());
+        }
+        let code = check_doc_drift(&repo_root)?;
+        assert_eq!(code, 0, "active status docs must agree with Cargo.toml (see #3023)");
         Ok(())
     }
 }
