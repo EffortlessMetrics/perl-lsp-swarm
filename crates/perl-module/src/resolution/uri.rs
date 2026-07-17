@@ -670,6 +670,16 @@ mod tests {
         assert!(report.candidates[1].uri.ends_with("workspace-a/lib/Foo/Bar.pm"));
         assert_eq!(report.candidates[2].search_order, 2);
         assert!(report.candidates[2].uri.ends_with("workspace-b/lib/Foo/Bar.pm"));
+        assert_eq!(
+            resolve_module_uri_with_effective_inc(
+                "Foo::Bar",
+                &[],
+                &workspace_uris,
+                &roots,
+                std::time::Duration::from_secs(1),
+            ),
+            ModuleUriResolution::Resolved(report.candidates[0].uri.clone())
+        );
         Ok(())
     }
 
