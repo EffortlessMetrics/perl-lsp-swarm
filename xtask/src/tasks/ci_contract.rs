@@ -315,10 +315,33 @@ fn terminate_process_tree(child: &mut std::process::Child) {
     }
     #[cfg(unix)]
     {
-        let _ = Command::new("pkill").args(["-TERM", "-P", &pid]).status();
-        let _ = Command::new("pkill").args(["-KILL", "-P", &pid]).status();
+        let descendants = unix_descendants(&pid);
+        for descendant in descendants.iter().rev() {
+            let _ = Command::new("kill").args(["-TERM", descendant]).status();
+        }
+        for descendant in descendants.iter().rev() {
+            let _ = Command::new("kill").args(["-KILL", descendant]).status();
+        }
     }
     let _ = child.kill();
+}
+
+#[cfg(unix)]
+fn unix_descendants(root: &str) -> Vec<String> {
+    let mut descendants = Vec::new();
+    let mut pending = vec![root.to_string()];
+    while let Some(parent) = pending.pop() {
+        let Ok(output) = Command::new("pgrep").args(["-P", &parent]).output() else { continue };
+        for child in String::from_utf8_lossy(&output.stdout).lines().map(str::trim) {
+            if child.is_empty() || descendants.iter().any(|pid| pid == child) {
+                continue;
+            }
+            let child = child.to_string();
+            pending.push(child.clone());
+            descendants.push(child);
+        }
+    }
+    descendants
 }
 
 fn join_output(
@@ -351,10 +374,12 @@ fn classify_check_output(
     stderr: &[u8],
 ) -> (ContractResultClass, String) {
     let raw_detail = command_output(stdout, stderr);
-    let mut detail = bounded_output(&raw_detail);
-    if code.is_none() {
-        detail = format!("process terminated without an exit code; {detail}");
-    }
+    let detail = if code.is_none() {
+        format!("process terminated without an exit code; {raw_detail}")
+    } else {
+        raw_detail.clone()
+    };
+    let detail = bounded_output(&detail);
     (result_for_exit(code, &raw_detail), detail)
 }
 
@@ -729,6 +754,11 @@ mod tests {
             "late advisory output must be classified before receipt truncation"
         );
         ensure!(late_detail.len() == 2000, "late advisory detail was not bounded");
+        let (_, terminated_detail) = classify_check_output(None, &vec![b'x'; 2000], &[]);
+        ensure!(
+            terminated_detail.len() == 2000,
+            "termination detail was not bounded after adding its prefix"
+        );
         Ok(())
     }
 
