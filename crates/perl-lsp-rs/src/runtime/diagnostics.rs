@@ -217,8 +217,8 @@ impl PullDiagnosticsOrchestrator {
         let skip_check = server.skip_perlcritic_command_check.load(Ordering::Relaxed);
         let force_unavailable =
             server.force_perlcritic_command_unavailable.load(std::sync::atomic::Ordering::Relaxed);
-        if !skip_check
-            && (force_unavailable || !crate::execute_command::command_exists("perlcritic"))
+        if force_unavailable
+            || (!skip_check && !crate::execute_command::command_exists("perlcritic"))
         {
             self.emit_warning(
                 server,
@@ -1889,8 +1889,8 @@ impl LspServer {
             self.skip_perlcritic_command_check.load(std::sync::atomic::Ordering::Relaxed);
         let force_unavailable =
             self.force_perlcritic_command_unavailable.load(std::sync::atomic::Ordering::Relaxed);
-        if !skip_check
-            && (force_unavailable || !crate::execute_command::command_exists("perlcritic"))
+        if force_unavailable
+            || (!skip_check && !crate::execute_command::command_exists("perlcritic"))
         {
             self.emit_perlcritic_workspace_warning(
                 "missing-binary".to_string(),
