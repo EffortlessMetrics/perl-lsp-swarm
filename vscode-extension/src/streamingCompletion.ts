@@ -21,12 +21,24 @@ interface StreamProgressValue {
   items: StreamCandidateItem[];
 }
 
-/** Snapshot of the most recent candidate received from the server. */
-interface CachedCandidate {
+/** Identity of the specific request that owns a progress stream. */
+interface RequestIdentity {
   uri: string;
   version: number;
   line: number;
   character: number;
+}
+
+/** Snapshot of the most recent candidate received from the server. */
+interface CachedCandidate {
+  requestUri: string;
+  requestVersion: number;
+  requestLine: number;
+  requestCharacter: number;
+  serverRange?: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  };
   text: string;
   sessionId: string;
   sequence: number;
@@ -54,6 +66,7 @@ const streamProgressType = new ProgressType<StreamProgressValue>();
 export class StreamingCompletionController implements vscode.Disposable {
   private client: LanguageClient;
   private cachedCandidate: CachedCandidate | null = null;
+  private activeRequestIdentity: RequestIdentity | null = null;
   private activeTokenSource: vscode.CancellationTokenSource | null = null;
   private activeProgressToken: string | null = null;
   private activeProgressDisposable: vscode.Disposable | null = null;
@@ -108,8 +121,19 @@ export class StreamingCompletionController implements vscode.Disposable {
     );
   }
 
-  private handleProgress(value: unknown): void {
+  private handleProgress(value: unknown, requestIdentity: RequestIdentity): void {
     if (!this.isStreamProgressValue(value)) {
+      return;
+    }
+
+    // Ignore progress from a superseded or cancelled request
+    if (
+      !this.activeRequestIdentity ||
+      this.activeRequestIdentity.uri !== requestIdentity.uri ||
+      this.activeRequestIdentity.version !== requestIdentity.version ||
+      this.activeRequestIdentity.line !== requestIdentity.line ||
+      this.activeRequestIdentity.character !== requestIdentity.character
+    ) {
       return;
     }
 
@@ -131,16 +155,21 @@ export class StreamingCompletionController implements vscode.Disposable {
       return; // Stale update
     }
 
-    this.cachedCandidate = {
-      uri: '',
-      version: 0,
-      line: item.range?.start.line ?? 0,
-      character: item.range?.start.character ?? 0,
+    // Populate cache from the captured request identity, not from item.range.start
+    const candidate: CachedCandidate = {
+      requestUri: requestIdentity.uri,
+      requestVersion: requestIdentity.version,
+      requestLine: requestIdentity.line,
+      requestCharacter: requestIdentity.character,
       text: item.insertText,
       sessionId: value.sessionId,
       sequence: value.sequence,
       isFinal: value.isFinal,
     };
+    if (item.range !== undefined) {
+      candidate.serverRange = item.range;
+    }
+    this.cachedCandidate = candidate;
 
     // Trigger re-evaluation of inline completions
     void vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
@@ -161,22 +190,32 @@ export class StreamingCompletionController implements vscode.Disposable {
       return undefined; // Let the server handle via standard path
     }
 
-    // If we have a cached candidate for this position, return it
+    const uri = document.uri.toString();
+    const version = document.version;
+
+    // Return cached candidate only when the full request identity matches
     if (
       this.cachedCandidate &&
-      this.cachedCandidate.line === position.line &&
-      this.cachedCandidate.character === position.character
+      this.cachedCandidate.requestUri === uri &&
+      this.cachedCandidate.requestVersion === version &&
+      this.cachedCandidate.requestLine === position.line &&
+      this.cachedCandidate.requestCharacter === position.character
     ) {
-      const insertPosition = new vscode.Position(
-        this.cachedCandidate.line,
-        this.cachedCandidate.character,
-      );
-      return [
-        new vscode.InlineCompletionItem(
-          this.cachedCandidate.text,
-          new vscode.Range(insertPosition, insertPosition),
-        ),
-      ];
+      const candidate = this.cachedCandidate;
+      const requestStart = new vscode.Position(candidate.requestLine, candidate.requestCharacter);
+      const range = candidate.serverRange
+        ? new vscode.Range(
+            new vscode.Position(
+              candidate.serverRange.start.line,
+              candidate.serverRange.start.character,
+            ),
+            new vscode.Position(
+              candidate.serverRange.end.line,
+              candidate.serverRange.end.character,
+            ),
+          )
+        : new vscode.Range(requestStart, requestStart);
+      return [new vscode.InlineCompletionItem(candidate.text, range)];
     }
 
     // Start a new stream request
@@ -189,18 +228,27 @@ export class StreamingCompletionController implements vscode.Disposable {
     // Cancel any existing stream
     this.cancelActiveStream();
 
+    // Capture the full request identity; the progress handler closes over it
+    const requestIdentity: RequestIdentity = {
+      uri: document.uri.toString(),
+      version: document.version,
+      line: position.line,
+      character: position.character,
+    };
+    this.activeRequestIdentity = requestIdentity;
+
     // Create cancellation token
     this.activeTokenSource = new vscode.CancellationTokenSource();
 
     const partialResultToken = `stream-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     this.activeProgressToken = partialResultToken;
 
-    // Register progress handler for this specific token
+    // Register progress handler for this specific token, capturing the request identity
     this.activeProgressDisposable = this.client.onProgress(
       streamProgressType,
       partialResultToken,
       (value: unknown) => {
-        this.handleProgress(value);
+        this.handleProgress(value, requestIdentity);
       },
     );
 
@@ -234,6 +282,7 @@ export class StreamingCompletionController implements vscode.Disposable {
 
   private cancelActiveStream(): void {
     this.cachedCandidate = null;
+    this.activeRequestIdentity = null;
     if (this.activeProgressDisposable) {
       this.activeProgressDisposable.dispose();
       this.activeProgressDisposable = null;
