@@ -593,6 +593,19 @@ mod tests {
     }
 
     #[test]
+    fn shell_selection_does_not_claim_trigger_policy_linting() -> Result<()> {
+        let checks = select_checks(
+            &["scripts/check-contract.sh".to_string()],
+            "base",
+            "head",
+            Path::new("files.txt"),
+        );
+        let ids = checks.iter().map(|check| check.id).collect::<Vec<_>>();
+        ensure!(ids == vec!["diff_check", "workflow_contract"], "shell selection was {ids:?}");
+        Ok(())
+    }
+
+    #[test]
     fn command_results_map_to_documented_classes() -> Result<()> {
         ensure!(
             result_for_exit(Some(0), "ok") == ContractResultClass::Success,

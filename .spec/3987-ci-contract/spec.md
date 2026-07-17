@@ -77,10 +77,11 @@ checks, selected from the changed surface:
 
 - all changes: exact-range `git diff --check`;
 - Rust changes: repository formatting check;
-- workflow or shell changes: the repository workflow-contract self-test and
-  trigger-policy checks; the self-test intentionally preserves the existing
-  unarmed advisory boundary, while the separately owned workflow-contracts
-  job remains responsible for external actionlint/zizmor execution;
+- workflow changes: the repository workflow-contract self-test and
+  trigger-policy checks; shell changes: the workflow-contract self-test only;
+  the self-test intentionally preserves the existing unarmed advisory boundary,
+  while the separately owned workflow-contracts job remains responsible for
+  external actionlint/zizmor execution;
 - `.ci/` and `policy/` changes: the existing repository gate-policy checker;
 - changelog changes: the existing Changie disposition checker.
 
