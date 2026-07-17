@@ -661,6 +661,8 @@ fn native_formatter_expands_simple_subroutine_blocks() {
 fn native_formatter_handles_consecutive_empty_statements() {
     let formatter = NativeFormatter::new();
     let sources = [
+        ";\n",
+        "print 1;;;\n",
         "if($ok){;}\n",
         "if($ok){;;}\n",
         "if($ok){print 1;;}\n",
@@ -674,11 +676,19 @@ fn native_formatter_handles_consecutive_empty_statements() {
         "if($ok){print 1;}else{;;}\n",
     ];
 
+    let assert_unchanged = |source: &str| {
+        let result = formatter.format_document(source, &FormatConfig::default());
+        assert_eq!(result.formatted, source, "unsupported input must remain unchanged: {source:?}");
+        assert!(!result.changed, "unsupported input must not report changes: {source:?}");
+        assert!(result.edits.is_empty(), "unsupported input must not emit edits: {source:?}");
+        assert!(
+            result.diagnostics.is_empty(),
+            "valid unsupported input must stay diagnostic-free: {source:?}"
+        );
+    };
+
     for source in sources {
-        let result = std::panic::catch_unwind(|| {
-            formatter.format_document(source, &FormatConfig::default())
-        });
-        assert!(result.is_ok(), "native formatter panicked for {source:?}");
+        assert_unchanged(source);
     }
 
     let bodies = [
@@ -693,12 +703,15 @@ fn native_formatter_handles_consecutive_empty_statements() {
     ];
     for body in bodies {
         for source in [format!("sub answer{{{body}}}\n"), format!("if($ok){{{body}}}\n")] {
-            let result = std::panic::catch_unwind(|| {
-                formatter.format_document(&source, &FormatConfig::default())
-            });
-            assert!(result.is_ok(), "native formatter panicked for {source:?}");
+            assert_unchanged(&source);
         }
     }
+
+    let valid_source = "if($ok){return 1;}\n";
+    let result = formatter.format_document(valid_source, &FormatConfig::default());
+    assert!(result.changed, "valid statements should still be formatted");
+    assert_eq!(result.formatted, "if ($ok) {\n    return 1;\n}\n");
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
