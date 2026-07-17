@@ -186,3 +186,23 @@ fn seam_yaml_comment_gap_and_bailout_delimiter_are_checked() {
     assert_eq!(prefixed.assertions.len(), 1);
     assert_eq!(prefixed.raw_lines, vec!["Bail out!ish text"]);
 }
+
+// ── SEAM L: rejected YAML markers cannot revive old adjacency ────────────────
+
+/// A malformed marker clears the previous assertion association, and
+/// non-ASCII whitespace is not accepted as TAP/YAML indentation.
+#[test]
+fn seam_yaml_marker_rejection_clears_adjacency() {
+    let malformed = parse_tap("not ok 1 - broken\n   ---\n  ---\n  message: raw\n  ...\n");
+    assert_eq!(malformed.assertions[0].diagnostics, Vec::<String>::new());
+    assert_eq!(malformed.diagnostics.len(), 2);
+
+    let non_ascii = parse_tap("not ok 1 - broken\n\u{00a0}  ---\n  message: raw\n  ...\n");
+    assert_eq!(non_ascii.assertions[0].diagnostics, Vec::<String>::new());
+    assert!(
+        non_ascii
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("not attached to the preceding assertion"))
+    );
+}

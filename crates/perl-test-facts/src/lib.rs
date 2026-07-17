@@ -220,12 +220,14 @@ pub fn parse_tap(source: &str) -> TapReport {
                     report.diagnostics.push(format!(
                         "line {line_number}: YAML diagnostics are not attached to the preceding assertion"
                     ));
+                    last_assertion = None;
                 }
             } else {
                 report.raw_lines.push(line.to_owned());
                 report.diagnostics.push(format!(
                     "line {line_number}: YAML diagnostics have no preceding assertion"
                 ));
+                last_assertion = None;
             }
             continue;
         }
@@ -326,7 +328,7 @@ struct PendingYaml {
 
 fn leading_indent_width(line: &str) -> usize {
     line.chars()
-        .take_while(|character| character.is_whitespace())
+        .take_while(|character| matches!(character, ' ' | '\t'))
         .map(|character| if character == '\t' { 4 } else { 1 })
         .sum()
 }
@@ -685,6 +687,29 @@ mod tests {
             vec!["  ---".to_owned(), "  message: raw".to_owned(), "  ...".to_owned()]
         );
         assert!(report.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn rejected_yaml_marker_clears_adjacency_for_later_markers() {
+        let report = parse_tap("not ok 1 - broken\n   ---\n  ---\n  message: raw\n  ...\n");
+
+        assert_eq!(report.assertions[0].diagnostics, Vec::<String>::new());
+        assert_eq!(report.raw_lines, vec!["   ---", "  ---", "  message: raw", "  ..."]);
+        assert_eq!(report.diagnostics.len(), 2);
+    }
+
+    #[test]
+    fn rejects_non_ascii_yaml_indentation() {
+        let report = parse_tap("not ok 1 - broken\n\u{00a0}  ---\n  message: raw\n  ...\n");
+
+        assert_eq!(report.assertions[0].diagnostics, Vec::<String>::new());
+        assert!(report.raw_lines.iter().any(|line| line.contains("---")));
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("not attached to the preceding assertion"))
+        );
     }
 
     #[test]
