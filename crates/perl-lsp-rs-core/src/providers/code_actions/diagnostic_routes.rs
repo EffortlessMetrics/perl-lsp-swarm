@@ -50,7 +50,9 @@ fn quick_fixes_for_diagnostic(
     let mut actions = Vec::new();
     let qf_diag = to_quick_fix_diagnostic(
         diagnostic,
-        printf_metadata.and_then(|metadata| metadata.get(&diagnostic.range)),
+        printf_metadata.and_then(|metadata| {
+            printf_metadata_for_diagnostic(source, metadata, diagnostic.range)
+        }),
     );
 
     let Some(code) = &diagnostic.code else {
@@ -236,6 +238,25 @@ fn quick_fixes_for_diagnostic(
     }
 
     actions
+}
+
+fn printf_metadata_for_diagnostic<'a>(
+    source: &str,
+    metadata: &'a std::collections::HashMap<(usize, usize), QuickFixMetadata>,
+    diagnostic_range: (usize, usize),
+) -> Option<&'a QuickFixMetadata> {
+    if let Some(value) = metadata.get(&diagnostic_range) {
+        return Some(value);
+    }
+
+    let (diagnostic_start, diagnostic_end) = diagnostic_range;
+    metadata.iter().find_map(|(&(call_start, call_end), value)| {
+        if call_start != diagnostic_start || call_end >= diagnostic_end {
+            return None;
+        }
+        let suffix = source.get(call_end..diagnostic_end)?;
+        (suffix.trim() == ";").then_some(value)
+    })
 }
 
 #[cfg(test)]

@@ -1066,8 +1066,8 @@ mod tests {
         let mut parser = Parser::new(source);
         let ast = must(parser.parse());
         let call_start = must_some(source.find("printf"));
-        // Call node range ends before the ';'
-        let call_end = call_start + "printf \"%s %s\", $name".len();
+        // Diagnostics may include the statement ';' even though the call node does not.
+        let call_end = call_start + "printf \"%s %s\", $name;".len();
         let diagnostics = vec![make_diagnostic(
             call_start,
             call_end,
