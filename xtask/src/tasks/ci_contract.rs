@@ -176,8 +176,23 @@ fn select_checks(
                 "xtask".to_string(),
                 "workflows".to_string(),
                 "check".to_string(),
+                "--self-test".to_string(),
                 "--base".to_string(),
                 base.to_string(),
+            ],
+        });
+    }
+
+    if changed_files.iter().any(|file| is_workflow(file)) {
+        checks.push(CheckSpec {
+            id: "workflow_trigger_policy",
+            reason: "GitHub workflow trigger surface changed".to_string(),
+            program: "cargo",
+            args: vec![
+                "xtask".to_string(),
+                "workflow-trigger-lint".to_string(),
+                "--format".to_string(),
+                "json".to_string(),
             ],
         });
     }
@@ -289,12 +304,16 @@ fn changed_surfaces(files: &[String]) -> Vec<String> {
 }
 
 fn is_workflow_or_shell(file: &str) -> bool {
-    file.starts_with(".github/workflows/")
+    is_workflow(file)
         || file.starts_with(".github/actions/")
         || file.starts_with("scripts/")
         || file.starts_with("hooks/")
         || file.ends_with(".sh")
         || file == "justfile"
+}
+
+fn is_workflow(file: &str) -> bool {
+    file.starts_with(".github/workflows/")
 }
 
 fn is_policy(file: &str) -> bool {
@@ -473,7 +492,12 @@ mod tests {
         let checks = select_checks(&files, "base", "head", Path::new("files.txt"));
         let ids = checks.iter().map(|check| check.id).collect::<Vec<_>>();
         ensure!(
-            ids == vec!["diff_check", "workflow_contract", "gate_policy"],
+            ids == vec![
+                "diff_check",
+                "workflow_contract",
+                "workflow_trigger_policy",
+                "gate_policy"
+            ],
             "workflow/policy selection was {ids:?}"
         );
         Ok(())
