@@ -2465,7 +2465,6 @@ fn printf_format_arity_metadata_for_call(
 
 pub(super) struct PrintfFormatArityMetadata {
     by_range: HashMap<(usize, usize), QuickFixMetadata>,
-    by_start: HashMap<usize, Vec<(usize, QuickFixMetadata)>>,
 }
 
 impl PrintfFormatArityMetadata {
@@ -2483,20 +2482,19 @@ impl PrintfFormatArityMetadata {
         }
 
         let (diagnostic_start, diagnostic_end) = diagnostic_range;
-        self.by_start.get(&diagnostic_start)?.iter().find_map(|(call_end, value)| {
-            if *call_end >= diagnostic_end {
-                return None;
-            }
-            let suffix = source.get(*call_end..diagnostic_end)?;
-            (suffix.trim() == ";").then_some(value)
+        let diagnostic_text = source.get(diagnostic_start..diagnostic_end)?.trim_end();
+        let before_semicolon = diagnostic_text.strip_suffix(';')?;
+        let semicolon_start = diagnostic_start + before_semicolon.len();
+        self.by_range.get(&(diagnostic_start, semicolon_start)).or_else(|| {
+            let call_end = diagnostic_start + before_semicolon.trim_end().len();
+            self.by_range.get(&(diagnostic_start, call_end))
         })
     }
 }
 
 /// Derive printf metadata for every statically analyzable call in one AST walk.
 pub(super) fn printf_format_arity_metadata_by_range(ast: &Node) -> PrintfFormatArityMetadata {
-    let mut metadata =
-        PrintfFormatArityMetadata { by_range: HashMap::new(), by_start: HashMap::new() };
+    let mut metadata = PrintfFormatArityMetadata { by_range: HashMap::new() };
     collect_printf_format_arity_metadata(ast, &mut metadata);
     metadata
 }
@@ -2515,7 +2513,6 @@ fn collect_printf_format_arity_metadata(node: &Node, metadata: &mut PrintfFormat
     if let Some((call_name, args)) = call {
         if let Some(value) = printf_format_arity_metadata_for_call(call_name, args) {
             let range = (node.location.start, node.location.end);
-            metadata.by_start.entry(range.0).or_default().push((range.1, value.clone()));
             metadata.by_range.insert(range, value);
         }
     }
