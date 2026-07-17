@@ -1028,6 +1028,40 @@ fn test_prepare_rename_returns_default_behavior_variant() -> TestResult {
         Some(true),
         "client with prepareSupportDefaultBehavior=1 should receive {{defaultBehavior: true}} for plain identifier; got: {response:?}"
     );
+    assert!(
+        response.get("range").is_none() && response.get("placeholder").is_none(),
+        "defaultBehavior variant must not include range or placeholder; got: {response:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_prepare_rename_rejects_keyword_with_default_behavior() -> TestResult {
+    let mut harness = LspHarness::new();
+    let caps = json!({
+        "textDocument": {
+            "rename": {
+                "prepareSupport": true,
+                "prepareSupportDefaultBehavior": 1
+            }
+        }
+    });
+    harness.initialize(Some(caps))?;
+
+    let doc_uri = "file:///test_prepare_keyword.pl";
+    harness.open(doc_uri, "use strict;\n")?;
+    let response = harness.request(
+        "textDocument/prepareRename",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 0, "character": 1 }
+        }),
+    )?;
+
+    assert!(
+        response.is_null(),
+        "prepareRename must reject a Perl keyword rather than delegate it to default behavior; got: {response:?}"
+    );
     Ok(())
 }
 
@@ -1072,6 +1106,12 @@ fn test_prepare_rename_sigiled_variable_always_returns_range_placeholder() -> Te
         response.get("defaultBehavior").is_none(),
         "sigiled variable response must not include defaultBehavior; got: {response:?}"
     );
+    assert_eq!(
+        response.get("placeholder").and_then(Value::as_str),
+        Some("$count"),
+        "sigiled variable placeholder must include the sigil; got: {response:?}"
+    );
+    assert_eq!(response["range"]["start"]["character"], 3);
     Ok(())
 }
 
@@ -1171,11 +1211,6 @@ fn test_rename_uses_legacy_changes_without_documentchanges_capability() -> TestR
             "newName": "$y"
         }),
     )?;
-
-    if response.is_null() {
-        // null is valid when same-file rename cannot find a safe edit
-        return Ok(());
-    }
 
     assert!(response.is_object(), "rename response must be an object; got: {response:?}");
     // Without documentChanges capability, expect legacy changes format

@@ -1031,6 +1031,9 @@ impl LspServer {
                         let is_sigiled = token.starts_with('$')
                             || token.starts_with('@')
                             || token.starts_with('%');
+                        if !is_sigiled && is_rename_keyword(&token) {
+                            return Ok(Some(json!(null)));
+                        }
                         let prefers_default_behavior =
                             self.client_capabilities.lock().prepare_support_default_behavior == 1;
                         if prefers_default_behavior && !is_sigiled {
