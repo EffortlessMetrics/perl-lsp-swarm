@@ -82,7 +82,7 @@ pub struct PerlcriticCompatReport {
     pub native_equivalent_count: usize,
     /// Items where native critic behavior is broader or more precise.
     pub native_superset_count: usize,
-    /// Items approximated by the current native recommended profile.
+    /// Items approximated by the current native strict profile.
     pub approximated_count: usize,
     /// Settings that are safe to ignore for structured native diagnostics.
     pub unsupported_safe_count: usize,
@@ -631,7 +631,7 @@ fn classify_perlcritic_policy(
             None,
             "external_only",
             Some(native_rule),
-            "mapped native rule is not currently present in the recommended registry",
+            "mapped native rule is not currently present in the strict registry",
         ),
         None => perlcritic_item(
             "policy",
@@ -861,7 +861,7 @@ fn classify_perlcritic_theme_setting(value: Option<String>) -> PerlcriticCompatI
             value,
             "approximated",
             None,
-            "native critic recommended profile approximates common perlcritic themes with currently implemented native rules",
+            "native critic strict profile approximates common perlcritic themes with currently implemented native rules",
         )
     } else {
         perlcritic_item(
