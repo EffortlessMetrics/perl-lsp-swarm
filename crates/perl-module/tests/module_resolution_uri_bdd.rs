@@ -94,7 +94,7 @@ fn given_system_inc_disabled_when_resolving_then_system_paths_are_ignored()
 }
 
 #[test]
-fn given_workspace_roots_when_collecting_then_workspace_folder_order_is_legacy_compatible()
+fn given_workspace_roots_when_collecting_then_root_precedence_is_workspace_expanded()
 -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;
     let workspace_a = temp.path().join("workspace-a");
