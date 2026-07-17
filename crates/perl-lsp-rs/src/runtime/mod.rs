@@ -341,6 +341,11 @@ pub struct LspServer {
     /// Initialized to `false`; only the test helper methods flip this.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) skip_perlcritic_command_check: AtomicBool,
+    /// When `true`, force the perlcritic availability check to report that the
+    /// binary is missing.  Always `false` in production; only the test API can
+    /// set this flag so unavailable-binary tests do not depend on PATH.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) force_perlcritic_command_unavailable: AtomicBool,
     /// Deduplication set for workspace-scoped Perl::Critic warning notifications.
     ///
     /// Keys are stable identifiers (for example, `missing-binary` or

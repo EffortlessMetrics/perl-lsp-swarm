@@ -643,6 +643,15 @@ impl LspServer {
         self.skip_perlcritic_command_check.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Force the perlcritic availability check to report a missing binary.
+    ///
+    /// This keeps unavailable-binary tests deterministic on hosts where
+    /// `perlcritic` is installed, without changing the process `PATH`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn test_force_perlcritic_command_unavailable(&self) {
+        self.force_perlcritic_command_unavailable.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Set the server root path (used for `.perlcriticrc` walk-up discovery).
     pub fn test_set_root_path(&self, path: std::path::PathBuf) {
         *self.root_path.lock() = Some(path);

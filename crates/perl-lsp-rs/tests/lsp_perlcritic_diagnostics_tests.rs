@@ -35,15 +35,13 @@ fn pull_diagnostics(
     uri: &str,
     text: &str,
 ) -> serde_json::Value {
-    let parsed_uri = url::Url::parse(uri).expect("test URI should parse");
-    let path = parsed_uri.to_file_path().expect("test URI should point to a file");
-    std::fs::write(path, text).expect("write test fixture");
+    let parsed_uri = must(url::Url::parse(uri));
+    let path = must(parsed_uri.to_file_path());
+    must(std::fs::write(path, text));
 
-    server
-        .test_handle_did_open(Some(json!({
-            "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": text }
-        })))
-        .expect("didOpen should succeed");
+    must(server.test_handle_did_open(Some(json!({
+        "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": text }
+    }))));
 
     // Legacy didOpen publishes push diagnostics synchronously. Keep the
     // pull-diagnostics assertion scoped to the invocation made by this request.
@@ -56,9 +54,7 @@ fn pull_diagnostics(
 }
 
 fn fixture_uri(tempdir: &tempfile::TempDir, filename: &str) -> String {
-    url::Url::from_file_path(tempdir.path().join(filename))
-        .expect("fixture path should convert to a file URI")
-        .to_string()
+    must(url::Url::from_file_path(tempdir.path().join(filename))).to_string()
 }
 
 // ── Test A ────────────────────────────────────────────────────────────────────
@@ -142,9 +138,12 @@ fn test_a1_severity_five_maps_to_error() {
         diags.iter().any(|d| {
             d["code"].as_str() == Some("InputOutput::RequireThreeArgOpen")
                 && d["severity"].as_u64() == Some(1)
+                && d["source"].as_str() == Some("perlcritic")
         }),
         "expected severity-5 external diagnostic; got: {result}"
     );
+    let invocations = runtime.invocations();
+    assert_eq!(invocations.len(), 1, "expected one pull invocation; got: {invocations:?}");
 }
 
 #[test]
@@ -211,9 +210,12 @@ fn test_a2_severity_one_maps_to_hint() {
         diags.iter().any(|d| {
             d["code"].as_str() == Some("InputOutput::ProhibitBarewordFileHandles")
                 && d["severity"].as_u64() == Some(4)
+                && d["source"].as_str() == Some("perlcritic")
         }),
         "expected severity-1 external diagnostic; got: {result}"
     );
+    let invocations = runtime.invocations();
+    assert_eq!(invocations.len(), 1, "expected one pull invocation; got: {invocations:?}");
 }
 
 // ── Test B ────────────────────────────────────────────────────────────────────
@@ -247,19 +249,14 @@ fn test_b_no_subprocess_invocation_for_default_native_critic() {
 /// When the `perlcritic` binary is absent from PATH, diagnostics are empty and
 /// no subprocess runs.
 ///
-/// This test is skipped when perlcritic *is* installed because there is no
-/// portable way to temporarily hide a binary from PATH in a single test.
+/// The test hook forces the availability check false so this contract is
+/// deterministic regardless of the host's PATH.
 #[test]
 fn test_c_graceful_skip_when_perlcritic_not_installed() {
-    // Only meaningful when perlcritic is NOT on the PATH.
-    if which::which("perlcritic").is_ok() {
-        return;
-    }
-
     let server = LspServer::new();
     server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
     server.test_configure_perlcritic(true, 3, None);
-    // Do NOT call test_bypass_perlcritic_command_check — let the guard fire.
+    server.test_force_perlcritic_command_unavailable();
 
     let runtime = Arc::new(MockSubprocessRuntime::new());
     runtime.add_response(MockResponse::success(b"".to_vec()));

@@ -215,7 +215,11 @@ impl PullDiagnosticsOrchestrator {
 
         // Check if perlcritic is available (unless bypassed for tests)
         let skip_check = server.skip_perlcritic_command_check.load(Ordering::Relaxed);
-        if !skip_check && !crate::execute_command::command_exists("perlcritic") {
+        let force_unavailable =
+            server.force_perlcritic_command_unavailable.load(std::sync::atomic::Ordering::Relaxed);
+        if !skip_check
+            && (force_unavailable || !crate::execute_command::command_exists("perlcritic"))
+        {
             self.emit_warning(
                 server,
                 "missing-binary".to_string(),
@@ -1883,7 +1887,11 @@ impl LspServer {
         // injection without a real `perlcritic` binary.
         let skip_check =
             self.skip_perlcritic_command_check.load(std::sync::atomic::Ordering::Relaxed);
-        if !skip_check && !crate::execute_command::command_exists("perlcritic") {
+        let force_unavailable =
+            self.force_perlcritic_command_unavailable.load(std::sync::atomic::Ordering::Relaxed);
+        if !skip_check
+            && (force_unavailable || !crate::execute_command::command_exists("perlcritic"))
+        {
             self.emit_perlcritic_workspace_warning(
                 "missing-binary".to_string(),
                 "Perl::Critic is enabled but `perlcritic` was not found on PATH. Install Perl::Critic (for example: `cpanm Perl::Critic`) or disable perl.perlcritic.enabled.",
