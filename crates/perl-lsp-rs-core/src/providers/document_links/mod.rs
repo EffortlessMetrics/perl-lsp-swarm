@@ -19,6 +19,7 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
     let mut out = Vec::new();
     let current_package = current_package_name(text);
     let mut in_pod = false;
+    let mut quote_like_state = None;
 
     for (i, line) in text.lines().enumerate() {
         if in_pod && line.starts_with("=cut") {
@@ -35,7 +36,8 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
             continue;
         }
 
-        collect_module_runtime_links(uri, i as u32, line, &mut out);
+        let code = code_mask(line, &mut quote_like_state);
+        collect_module_runtime_links(uri, i as u32, line, &code, &mut out);
 
         if let Some(import) = parse_module_import_head(line) {
             match import.kind {
@@ -108,8 +110,13 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
     out
 }
 
-fn collect_module_runtime_links(uri: &str, line_number: u32, line: &str, out: &mut Vec<Value>) {
-    let code = code_mask(line);
+fn collect_module_runtime_links(
+    uri: &str,
+    line_number: u32,
+    line: &str,
+    code: &[bool],
+    out: &mut Vec<Value>,
+) {
     let mut offset = 0;
 
     while offset < line.len() {
@@ -122,7 +129,7 @@ fn collect_module_runtime_links(uri: &str, line_number: u32, line: &str, out: &m
             continue;
         }
 
-        let Some(name_end) = match_module_runtime_call(line, offset, &code) else {
+        let Some(name_end) = match_module_runtime_call(line, offset, code) else {
             offset += rest.chars().next().map_or(1, char::len_utf8);
             continue;
         };
@@ -247,15 +254,99 @@ fn preceded_by_method_operator(line: &str, start: usize) -> bool {
     offset > 0 && bytes.get(offset - 1) == Some(&b'-')
 }
 
-fn code_mask(line: &str) -> Vec<bool> {
+#[derive(Clone, Copy)]
+enum QuoteLikeState {
+    Delimited {
+        delimiter: u8,
+        close: u8,
+        paired: bool,
+        depth: usize,
+        escaped: bool,
+        parts_remaining: usize,
+    },
+    NeedDelimiter {
+        parts_remaining: usize,
+    },
+}
+
+fn code_mask(line: &str, state: &mut Option<QuoteLikeState>) -> Vec<bool> {
     let mut code = vec![true; line.len()];
     let bytes = line.as_bytes();
     let mut offset = 0;
 
     while offset < bytes.len() {
-        if let Some(end) = quote_like_literal_end(bytes, offset) {
-            code[offset..end].fill(false);
-            offset = end;
+        if let Some(current) = state.as_mut() {
+            code[offset] = false;
+            match current {
+                QuoteLikeState::NeedDelimiter { parts_remaining } => {
+                    let delimiter = bytes[offset];
+                    if delimiter.is_ascii_alphanumeric() || delimiter.is_ascii_whitespace() {
+                        code[offset..].fill(false);
+                        *state = None;
+                        break;
+                    }
+                    let (close, paired) = quote_like_delimiters(delimiter);
+                    *current = QuoteLikeState::Delimited {
+                        delimiter,
+                        close,
+                        paired,
+                        depth: 1,
+                        escaped: false,
+                        parts_remaining: *parts_remaining,
+                    };
+                    offset += 1;
+                }
+                QuoteLikeState::Delimited {
+                    delimiter,
+                    close,
+                    paired,
+                    depth,
+                    escaped,
+                    parts_remaining,
+                } => {
+                    if *escaped {
+                        *escaped = false;
+                        offset += 1;
+                        continue;
+                    }
+                    if bytes[offset] == b'\\' {
+                        *escaped = true;
+                        offset += 1;
+                        continue;
+                    }
+                    if *paired && bytes[offset] == *delimiter {
+                        *depth += 1;
+                    } else if bytes[offset] == *close {
+                        if *depth > 1 {
+                            *depth -= 1;
+                        } else if *parts_remaining > 0 {
+                            *state = Some(QuoteLikeState::NeedDelimiter {
+                                parts_remaining: *parts_remaining - 1,
+                            });
+                        } else {
+                            *state = None;
+                        }
+                    }
+                    offset += 1;
+                }
+            }
+            continue;
+        }
+
+        if let Some((operator_len, parts_remaining)) = quote_like_operator(bytes, offset) {
+            let delimiter_offset = offset + operator_len;
+            let delimiter = bytes[delimiter_offset];
+            let (close, paired) = quote_like_delimiters(delimiter);
+            code[offset..=delimiter_offset].fill(false);
+            *state = Some(QuoteLikeState::Delimited {
+                delimiter,
+                close,
+                paired,
+                depth: 1,
+                escaped: false,
+                parts_remaining,
+            });
+            offset = delimiter_offset + 1;
             continue;
         }
 
@@ -295,7 +386,7 @@ fn code_mask(line: &str) -> Vec<bool> {
     code
 }
 
-fn quote_like_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
+fn quote_like_operator(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
     if start > 0 && bytes.get(start - 1).copied().is_some_and(is_identifier_byte) {
         return None;
     }
@@ -307,40 +398,26 @@ fn quote_like_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
         };
         bytes.get(start..end).is_some_and(|candidate| candidate == operator.as_bytes())
     })?;
-    let parts = if matches!(*operator, "s" | "tr" | "y") { 2 } else { 1 };
-    let mut offset = start + operator.len();
 
-    for _ in 0..parts {
-        let delimiter = *bytes.get(offset)?;
-        if delimiter.is_ascii_alphanumeric() || delimiter.is_ascii_whitespace() {
-            return None;
-        }
-        let (close, paired) = quote_like_delimiters(delimiter);
-        let mut depth = 1usize;
-        offset += 1;
-        while offset < bytes.len() {
-            if bytes[offset] == b'\\' {
-                offset = offset.saturating_add(2);
-                continue;
-            }
-            if paired && bytes[offset] == delimiter {
-                depth += 1;
-            } else if bytes[offset] == close {
-                depth -= 1;
-                offset += 1;
-                if depth == 0 {
-                    break;
-                }
-                continue;
-            }
-            offset += 1;
-        }
-        if depth != 0 {
-            return None;
-        }
+    if preceded_by_subroutine_keyword(bytes, start) {
+        return None;
     }
 
-    Some(offset)
+    let delimiter_offset = start.checked_add(operator.len())?;
+    let delimiter = *bytes.get(delimiter_offset)?;
+    if delimiter.is_ascii_alphanumeric() || delimiter.is_ascii_whitespace() {
+        return None;
+    }
+
+    Some((operator.len(), usize::from(matches!(*operator, "s" | "tr" | "y"))))
+}
+
+fn preceded_by_subroutine_keyword(bytes: &[u8], start: usize) -> bool {
+    let prefix = bytes.get(..start).unwrap_or_default();
+    let end = prefix.iter().rposition(|byte| !byte.is_ascii_whitespace()).map_or(0, |i| i + 1);
+    let start =
+        prefix[..end].iter().rposition(|byte| !is_identifier_byte(*byte)).map_or(0, |i| i + 1);
+    &prefix[start..end] == b"sub"
 }
 
 fn quote_like_delimiters(delimiter: u8) -> (u8, bool) {
@@ -800,6 +877,24 @@ mod tests {
     }
 
     #[test]
+    fn multiline_quote_like_source_is_ignored_but_subroutine_body_is_code() -> Result<(), String> {
+        let quoted = "my $source = q{\nuse_module('No::Multiline');\n};\n";
+        if !compute_links(uri(), quoted, &[]).is_empty() {
+            return Err("multiline quote-like source produced a module link".to_owned());
+        }
+
+        let subroutine = "sub q{\nuse_module('Foo::Bar');\n}\n";
+        let links = compute_links(uri(), subroutine, &[]);
+        let [link] = links.as_slice() else {
+            return Err(format!("subroutine body produced an unexpected result: {links:?}"));
+        };
+        if data_str(link, "/data/module") != Some("Foo::Bar") {
+            return Err(format!("unexpected subroutine-body link: {link:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn module_runtime_call_boundaries_are_exact() -> Result<(), String> {
         let text = "my $source = \"use_module('No::Link')\"; ".to_owned()
             + "obj->use_module('No::Method'); obj->   use_module('No::SpacedMethod'); "
@@ -839,6 +934,7 @@ mod tests {
         let cases = [
             "use_module('Foo::Bar);",
             "require_module(\"Baz::Qux);",
+            "my $source = q{use_module('No::Link');",
             r#"use_module('Foo\'Bar');"#,
             r#"require_module("Baz\"Qux");"#,
         ];
