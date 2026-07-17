@@ -29,6 +29,12 @@ step output and job summary. It treats runner-group API failure or a missing
 either execution job remains a real failure; only routing/capacity failures
 select the hosted fallback.
 
+The YAML contract test is covered by the repository's narrow, expiring RIPR
+test-surface suppression for #4056. The suppression covers only the six
+diff-scoped false positives in the fallible test harness; workflow behavior is
+still proven by the focused contract test, workflow-policy lint, and exact-head
+GitHub execution.
+
 ## Alternatives rejected
 
 - A dynamic `runs-on` expression is rejected because GitHub runner selection

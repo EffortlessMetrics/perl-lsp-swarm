@@ -168,6 +168,22 @@ review_after = "2026-07-10"
 expires = "2026-09-30"
 
 # -----------------------------------------------------------------------------
+# Agent capability workflow contract test: diff-scoped RIPR currently treats
+# fallible YAML contract-test plumbing as a production seam.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-agent-capability-workflow-contract-test"
+kind = "test_receipt_surface"
+paths = ["xtask/tests/agent_capability_gate_workflow_policy.rs"]
+classification = ["weakly_exposed", "reachable_unrevealed", "error_path", "call_deletion", "return_value", "field_construction", "predicate"]
+owner = "ci"
+issue = "#4056"
+reason = "PR #4056 adds a fallible YAML contract test whose six diff-scoped RIPR gaps are test-harness plumbing (mapping/sequence parsing, Result propagation, exact contract values, and the terminal Ok(()) marker), not production behavior. The test directly observes the workflow's static runner, routing, fallback, trigger, permission, action-pin, and command-presence contracts; the production workflow remains subject to the normal workflow-policy and exact-head checks. This is the ripr#1428 test-surface limitation already covered by the repository's seam-proof suppressions. Remove when RIPR can distinguish contract-test plumbing from production seams."
+created = "2026-07-17"
+review_after = "2026-08-17"
+expires = "2026-09-30"
+
+# -----------------------------------------------------------------------------
 # goals-selector --json CLI regression test: same ripr#1428 class as
 # ripr-suppress-seam-proof-tests, one file.
 #

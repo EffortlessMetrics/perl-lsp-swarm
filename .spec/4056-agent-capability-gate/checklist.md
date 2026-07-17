@@ -28,9 +28,12 @@
 ### Step 4: Reconcile governed documentation
 
 - **Files:** `policy/ci-lane-whitelist.toml`, `docs/ci/inventory.md`,
-  `docs/ci/ci-lane-map.md`, `docs/reference/PIPELINE_GATES.md`
+  `docs/ci/ci-lane-map.md`, `docs/reference/PIPELINE_GATES.md`,
+  `policy/ripr-suppressions.toml`
 - **Change:** Describe the mixed runner route, explicit fallback, and claim
-  boundary without promoting the lane to a required merge check.
+  boundary without promoting the lane to a required merge check. Record only
+  the narrow, expiring test-harness RIPR suppression justified by the focused
+  workflow contract test.
 - **Verify:** `python3 scripts/ci/validate_risk_packs.py --strict`,
   `python3 scripts/ci/validate_gate_lane_mapping.py --strict`, TOML parse,
   workflow-policy lint, and documentation diff review.
