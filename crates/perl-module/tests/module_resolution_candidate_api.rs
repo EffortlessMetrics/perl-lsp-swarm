@@ -134,6 +134,15 @@ fn public_candidate_api_preserves_partial_timeout_and_resolution_compatibility()
     assert_eq!(partial.candidates.len(), 1);
     assert_eq!(partial.candidates[0].uri, open_document_uri);
 
+    let resolved_open_document = resolve_module_uri_with_effective_inc(
+        "Foo'Bar",
+        std::slice::from_ref(&open_document_uri),
+        &[],
+        &roots,
+        Duration::ZERO,
+    );
+    assert_eq!(resolved_open_document, ModuleUriResolution::Resolved(open_document_uri.clone()));
+
     let resolved =
         resolve_module_uri_with_effective_inc("Foo'Bar", &[], &[], &roots, Duration::from_secs(1));
     assert_eq!(resolved, ModuleUriResolution::Resolved(file_uri(&module)?));

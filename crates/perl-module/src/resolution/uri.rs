@@ -332,14 +332,14 @@ fn collect_module_uri_candidates(
     ordered_roots.sort_by_key(|r| r.precedence);
 
     for inc_root in &ordered_roots {
-        if start_time.elapsed() > timeout {
+        if start_time.elapsed() >= timeout {
             return candidate_report(&canonical_module_name, &relative_path, candidates, true);
         }
 
         match inc_root.kind {
             IncRootKind::FileLocalLexical | IncRootKind::WorkspaceRelative => {
                 for workspace_folder in workspace_folders {
-                    if start_time.elapsed() > timeout {
+                    if start_time.elapsed() >= timeout {
                         return candidate_report(
                             &canonical_module_name,
                             &relative_path,
