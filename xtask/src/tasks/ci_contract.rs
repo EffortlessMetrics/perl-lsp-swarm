@@ -86,8 +86,8 @@ pub fn run(config: CiContractConfig) -> Result<()> {
         ArtifactIdentity::CommitRange { base: config.base, head: config.head },
         &root,
     )?;
-    let (base, head) = match &resolved.identity {
-        ArtifactIdentity::CommitRange { base, head } => (base.clone(), head.clone()),
+    let head = match &resolved.identity {
+        ArtifactIdentity::CommitRange { head, .. } => head.clone(),
         ArtifactIdentity::StagedTree { .. } => bail!("ci-contract requires a commit range"),
     };
     let base_sha = resolved.base_sha.ok_or_else(|| eyre!("base SHA was not resolved"))?;
@@ -104,7 +104,7 @@ pub fn run(config: CiContractConfig) -> Result<()> {
     let changed_files_path = root.join("target/ci-contract/changed-files.txt");
     write_changed_files(&changed_files_path, &resolved.changed_paths)?;
 
-    let specs = select_checks(&resolved.changed_paths, &base, &head, &changed_files_path);
+    let specs = select_checks(&resolved.changed_paths, &base_sha, &head_sha, &changed_files_path);
     let mut checks = Vec::with_capacity(specs.len());
     for spec in specs {
         checks.push(run_check(&root, &spec));

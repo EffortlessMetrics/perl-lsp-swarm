@@ -42,6 +42,7 @@ The receipt uses `ci-contract.v1` and contains:
 
 ```text
 repository
+provider_action
 base_sha
 head_sha
 changed_files
