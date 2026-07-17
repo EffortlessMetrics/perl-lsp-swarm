@@ -2640,6 +2640,15 @@ enum FreshnessCheckMode {
 
 #[derive(Subcommand)]
 enum MergeReadyCommand {
+    /// Evaluate a live current-head fan-in snapshot without mutating GitHub state.
+    Evaluate {
+        /// JSON snapshot produced by the live GitHub collector.
+        #[arg(long)]
+        snapshot: PathBuf,
+        /// Optional output path for the deterministic evaluation JSON.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Emit a merge-readiness receipt for a PR.
     Emit {
         /// Pull request number.
@@ -4205,6 +4214,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             })
         }
         Commands::MergeReady { command } => match command {
+            MergeReadyCommand::Evaluate { snapshot, output } => {
+                merge_ready::evaluate_snapshot_file(snapshot, output)
+            }
             MergeReadyCommand::Emit { pr, receipt } => merge_ready::emit(pr, receipt),
             MergeReadyCommand::Verify { pr, fixture } => merge_ready::verify(pr, fixture),
             MergeReadyCommand::Reconcile { apply, dry_run } => {
