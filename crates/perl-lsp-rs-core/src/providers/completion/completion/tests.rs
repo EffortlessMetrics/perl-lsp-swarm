@@ -1661,6 +1661,33 @@ $self->"#;
 }
 
 #[test]
+fn test_typed_arrow_preserves_workspace_receiver_lookup() -> Result<(), Box<dyn std::error::Error>>
+{
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/TypedService.pm")?,
+        r#"package TypedService;
+sub process_request { }
+1;
+"#
+        .to_string(),
+    )?;
+
+    let code = "package TypedService;\nmy $self = bless {}, 'TypedService';\n$self->pro";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        completions.iter().any(|item| item.label == "process_request"),
+        "typed method prefix must preserve receiver lookup; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
 fn test_this_arrow_resolves_workspace_methods() -> Result<(), Box<dyn std::error::Error>> {
     // Same as above but using $this as the invocant variable.
     let index = Arc::new(WorkspaceIndex::new());

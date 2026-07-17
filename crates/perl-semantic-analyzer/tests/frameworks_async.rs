@@ -264,6 +264,58 @@ my $pg = Mojo::Pg->new;
 }
 
 #[test]
+fn mojo_mysql_use_synthesizes_framework_class_symbol() {
+    let code = r#"
+use Mojo::mysql;
+
+my $mysql = Mojo::mysql->strict_mode;
+"#;
+
+    let table = extract_symbols(code);
+
+    assert!(
+        has_symbol(&table, "Mojo::mysql", SymbolKind::Class),
+        "expected Mojo::mysql class symbol when framework is in use"
+    );
+    let attrs = symbol_attrs(&table, "Mojo::mysql", SymbolKind::Class);
+    assert!(
+        attrs.iter().any(|attr| attr == "framework=Mojo::mysql"),
+        "expected `framework=Mojo::mysql` on Mojo::mysql, got {attrs:?}"
+    );
+}
+
+#[test]
+fn mojo_mysql_names_are_not_synthesized_without_framework_use() {
+    let code = r#"
+my $mysql = Mojo::mysql->strict_mode;
+"#;
+
+    let table = extract_symbols(code);
+
+    assert!(
+        !has_symbol(&table, "Mojo::mysql", SymbolKind::Class),
+        "did not expect Mojo::mysql class synthesis without `use Mojo::mysql`"
+    );
+}
+
+#[test]
+fn mojo_adapter_symbols_survive_both_import_orders() {
+    for imports in ["use Mojo::Pg;\nuse Mojo::mysql;", "use Mojo::mysql;\nuse Mojo::Pg;"] {
+        let code = format!("{imports}\n\nMojo::Pg->new;\nMojo::mysql->strict_mode;\n");
+        let table = extract_symbols(&code);
+
+        assert!(
+            has_symbol(&table, "Mojo::Pg", SymbolKind::Class),
+            "expected Mojo::Pg synthesis for imports {imports:?}"
+        );
+        assert!(
+            has_symbol(&table, "Mojo::mysql", SymbolKind::Class),
+            "expected Mojo::mysql synthesis for imports {imports:?}"
+        );
+    }
+}
+
+#[test]
 fn future_use_synthesizes_class_symbol_for_method_calls() {
     let code = r#"
 use Future;
