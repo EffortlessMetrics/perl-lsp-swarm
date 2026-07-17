@@ -52,7 +52,8 @@ pub struct IncRoot {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleUriCandidate {
-    /// Canonical file URI for the candidate.
+    /// File URI for the candidate. Filesystem candidates are canonicalized;
+    /// open-document candidates preserve the supplied URI spelling.
     pub uri: String,
     /// Source label inherited from the effective include root, or
     /// `open-document` for an in-memory document.

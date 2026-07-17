@@ -50,7 +50,15 @@ proptest! {
 #[test]
 fn candidate_report_deduplicates_repeated_open_documents_and_keeps_stable_order()
 -> Result<(), Box<dyn std::error::Error>> {
-    for module_name in ["Acme::Widget", "Nested::Acme::Widget"] {
+    let generated_module_names = (1..=4)
+        .map(|depth| (0..depth).map(|_| "Segment").collect::<Vec<_>>().join("::"))
+        .collect::<Vec<_>>();
+    let module_names = generated_module_names
+        .iter()
+        .map(String::as_str)
+        .chain(["Acme::Widget", "Nested::Acme::Widget"]);
+
+    for module_name in module_names {
         for duplicate_count in 1usize..=8 {
             let relative_path = module_name_to_path(module_name).replace('\\', "/");
             let open_uri = format!("file:///open/{relative_path}");
