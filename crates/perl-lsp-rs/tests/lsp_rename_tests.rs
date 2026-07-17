@@ -1036,6 +1036,35 @@ fn test_prepare_rename_returns_default_behavior_variant() -> TestResult {
 }
 
 #[test]
+fn test_prepare_rename_ignores_out_of_range_default_behavior() -> TestResult {
+    let mut harness = LspHarness::new();
+    let caps = json!({
+        "textDocument": {
+            "rename": {
+                "prepareSupport": true,
+                "prepareSupportDefaultBehavior": 257
+            }
+        }
+    });
+    harness.initialize(Some(caps))?;
+
+    let doc_uri = "file:///test_prepare_out_of_range.pl";
+    harness.open(doc_uri, "sub greet {\n    return \"hello\";\n}\n")?;
+    let response = harness.request(
+        "textDocument/prepareRename",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 0, "character": 4 }
+        }),
+    )?;
+
+    assert!(response.get("range").is_some());
+    assert!(response.get("placeholder").is_some());
+    assert!(response.get("defaultBehavior").is_none());
+    Ok(())
+}
+
+#[test]
 fn test_prepare_rename_rejects_keyword_with_default_behavior() -> TestResult {
     let mut harness = LspHarness::new();
     let caps = json!({
@@ -1112,6 +1141,8 @@ fn test_prepare_rename_sigiled_variable_always_returns_range_placeholder() -> Te
         "sigiled variable placeholder must include the sigil; got: {response:?}"
     );
     assert_eq!(response["range"]["start"]["character"], 3);
+    assert_eq!(response["range"]["end"]["character"], 9);
+    assert_eq!(response.as_object().map(|object| object.len()), Some(2));
     Ok(())
 }
 
