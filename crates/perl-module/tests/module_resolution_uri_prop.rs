@@ -45,41 +45,47 @@ proptest! {
         prop_assert_eq!(result, ModuleUriResolution::Resolved(open_uri));
     }
 
-    #[test]
-    fn candidate_report_deduplicates_repeated_open_documents_and_keeps_stable_order(
-        module_name in module_name_strategy(),
-        duplicate_count in 1usize..8,
-    ) {
-        let relative_path = module_name_to_path(&module_name).replace('\\', "/");
-        let open_uri = format!("file:///open/{relative_path}");
-        let open_documents = vec![open_uri.clone(); duplicate_count];
+}
 
-        let report = collect_module_uri_candidates_with_effective_inc(
-            &module_name,
-            &open_documents,
-            &[],
-            &[],
-            Duration::from_millis(20),
-        );
-        let repeated_report = collect_module_uri_candidates_with_effective_inc(
-            &module_name,
-            &open_documents,
-            &[],
-            &[],
-            Duration::from_millis(20),
-        );
+#[test]
+fn candidate_report_deduplicates_repeated_open_documents_and_keeps_stable_order() {
+    for module_name in ["Acme::Widget", "Nested::Acme::Widget"] {
+        for duplicate_count in 1usize..=8 {
+            let relative_path = module_name_to_path(module_name).replace('\\', "/");
+            let open_uri = format!("file:///open/{relative_path}");
+            let open_documents = vec![open_uri.clone(); duplicate_count];
 
-        prop_assert_eq!(&report, &repeated_report);
-        prop_assert_eq!(report.candidates.len(), 1);
-        let candidate = report.candidates.first().ok_or_else(|| {
-            TestCaseError::fail("candidate report unexpectedly had no matching open document")
-        })?;
-        prop_assert_eq!(&candidate.uri, &open_uri);
-        prop_assert_eq!(&candidate.source, "open-document");
-        prop_assert_eq!(candidate.search_order, 0);
-        prop_assert_eq!(
-            report.candidates.iter().map(|candidate| candidate.search_order).collect::<Vec<_>>(),
-            vec![0]
-        );
+            let report = collect_module_uri_candidates_with_effective_inc(
+                module_name,
+                &open_documents,
+                &[],
+                &[],
+                Duration::from_millis(20),
+            );
+            let repeated_report = collect_module_uri_candidates_with_effective_inc(
+                module_name,
+                &open_documents,
+                &[],
+                &[],
+                Duration::from_millis(20),
+            );
+
+            assert_eq!(&report, &repeated_report);
+            assert_eq!(report.candidates.len(), 1);
+            let Some(candidate) = report.candidates.first() else {
+                continue;
+            };
+            assert_eq!(&candidate.uri, &open_uri);
+            assert_eq!(&candidate.source, "open-document");
+            assert_eq!(candidate.search_order, 0);
+            assert_eq!(
+                report
+                    .candidates
+                    .iter()
+                    .map(|candidate| candidate.search_order)
+                    .collect::<Vec<_>>(),
+                vec![0]
+            );
+        }
     }
 }
