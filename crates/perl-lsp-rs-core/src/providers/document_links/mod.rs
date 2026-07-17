@@ -129,13 +129,13 @@ fn collect_module_runtime_links(
             continue;
         }
 
-        let Some(name_end) = match_module_runtime_call(line, offset, code) else {
+        let Some((name_end, allows_version)) = match_module_runtime_call(line, offset, code) else {
             offset += rest.chars().next().map_or(1, char::len_utf8);
             continue;
         };
 
         if let Some((module, content_start, content_end, next_offset)) =
-            parse_module_runtime_argument(line, name_end, code)
+            parse_module_runtime_argument(line, name_end, code, allows_version)
         {
             let start = byte_to_utf16_col(line, content_start);
             let end = byte_to_utf16_col(line, content_end);
@@ -149,7 +149,7 @@ fn collect_module_runtime_links(
     }
 }
 
-fn match_module_runtime_call(line: &str, start: usize, code: &[bool]) -> Option<usize> {
+fn match_module_runtime_call(line: &str, start: usize, code: &[bool]) -> Option<(usize, bool)> {
     let prefix = line.get(..start)?.trim_end();
     if !prefix.is_empty() && prefix.chars().next_back().is_some_and(is_identifier_boundary) {
         return None;
@@ -179,10 +179,12 @@ fn match_module_runtime_call(line: &str, start: usize, code: &[bool]) -> Option<
         pos = skip_ascii_whitespace(line, pos);
     }
 
-    if line.get(pos..)?.starts_with("use_module") {
+    let allows_version = if line.get(pos..)?.starts_with("use_module") {
         pos += "use_module".len();
+        true
     } else if line.get(pos..)?.starts_with("require_module") {
         pos += "require_module".len();
+        false
     } else {
         return None;
     };
@@ -193,13 +195,14 @@ fn match_module_runtime_call(line: &str, start: usize, code: &[bool]) -> Option<
         return None;
     }
 
-    Some(pos)
+    Some((pos, allows_version))
 }
 
 fn parse_module_runtime_argument<'a>(
     line: &'a str,
     name_end: usize,
     code: &[bool],
+    allows_version: bool,
 ) -> Option<(&'a str, usize, usize, usize)> {
     let open = skip_ascii_whitespace(line, name_end);
     if line.as_bytes().get(open) != Some(&b'(') {
@@ -229,7 +232,7 @@ fn parse_module_runtime_argument<'a>(
             let after_module = skip_ascii_whitespace(line, offset + 1);
             let close = match line.as_bytes().get(after_module) {
                 Some(b')') => after_module,
-                Some(b',') => {
+                Some(b',') if allows_version => {
                     let version_start = skip_ascii_whitespace(line, after_module + 1);
                     let version_end = find_code_call_close(line, version_start, code)?;
                     if line.get(version_start..version_end)?.trim().is_empty()
@@ -1062,6 +1065,7 @@ mod tests {
             "require_module(\"Baz::Qux);",
             "my $source = q{use_module('No::Link');",
             "use_module('Foo::Bar', 1 # )",
+            "require_module('Foo::Bar', 1.23)",
             r#"use_module('Foo\'Bar');"#,
             r#"require_module("Baz\"Qux");"#,
         ];
