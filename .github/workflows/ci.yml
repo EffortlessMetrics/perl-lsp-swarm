@@ -126,6 +126,57 @@ jobs:
   # ── Conflict-marker guard: <1s, no toolchain needed ─────────────────
   # Prevents committed conflict markers reaching master (see #7183).
   # Two incidents on 2026-04-28 each cost 1-3h of orchestrator + builder time.
+  # Repository-owned cheap exact-head contracts (#3987). Advisory in C1;
+  # existing required checks remain unchanged until parity is proven.
+  repository-contract:
+    name: Repository Contract (advisory)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    continue-on-error: true
+    needs: [draft-pr-check, preflight-latest-check]
+    if: >-
+      (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
+      needs.draft-pr-check.outputs.run_ci == 'true' &&
+      needs.preflight-latest-check.outputs.is_latest == 'true'
+    env:
+      CONTRACT_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      CONTRACT_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ env.CONTRACT_HEAD }}
+          fetch-depth: 0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+          shared-key: ci-contract-${{ hashFiles('Cargo.lock') }}
+      - name: Run Repository Contract
+        run: >-
+          cargo run -p xtask --locked -- ci-contract
+          --base "$CONTRACT_BASE"
+          --head "$CONTRACT_HEAD"
+          --receipt target/receipts/ci-contract.json
+          --summary target/receipts/ci-contract.md
+      - name: Upload Repository Contract receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: repository-contract-${{ github.sha }}
+          path: |
+            target/receipts/ci-contract.json
+            target/receipts/ci-contract.md
+            target/ci-contract/changed-files.txt
+          if-no-files-found: warn
+          retention-days: 7
+
   conflict-markers:
     name: Conflict marker check
     runs-on: ubuntu-24.04
