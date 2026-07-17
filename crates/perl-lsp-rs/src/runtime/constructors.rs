@@ -106,6 +106,8 @@ impl LspServer {
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
+            force_perlcritic_command_unavailable: AtomicBool::new(false),
+            #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
@@ -272,6 +274,8 @@ impl LspServer {
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
+            force_perlcritic_command_unavailable: AtomicBool::new(false),
+            #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
@@ -378,6 +382,8 @@ impl LspServer {
             critic_runtime_override: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
+            #[cfg(not(target_arch = "wasm32"))]
+            force_perlcritic_command_unavailable: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
