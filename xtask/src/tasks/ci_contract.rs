@@ -86,10 +86,9 @@ pub fn run(config: CiContractConfig) -> Result<()> {
         ArtifactIdentity::CommitRange { base: config.base, head: config.head },
         &root,
     )?;
-    let head = match &resolved.identity {
-        ArtifactIdentity::CommitRange { head, .. } => head.clone(),
-        ArtifactIdentity::StagedTree { .. } => bail!("ci-contract requires a commit range"),
-    };
+    if !matches!(resolved.identity, ArtifactIdentity::CommitRange { .. }) {
+        bail!("ci-contract requires a commit range");
+    }
     let base_sha = resolved.base_sha.ok_or_else(|| eyre!("base SHA was not resolved"))?;
     let head_sha = resolved.head_sha.ok_or_else(|| eyre!("head SHA was not resolved"))?;
     validate_object_id(&base_sha, "base SHA")?;
@@ -104,21 +103,22 @@ pub fn run(config: CiContractConfig) -> Result<()> {
     let changed_files_path = root.join("target/ci-contract/changed-files.txt");
     write_changed_files(&changed_files_path, &resolved.changed_paths)?;
 
-    let specs = select_checks(&resolved.changed_paths, &base_sha, &head_sha, &changed_files_path);
-    let mut checks = Vec::with_capacity(specs.len());
-    for spec in specs {
-        checks.push(run_check(&root, &spec));
+    let checkout_head = resolve_sha(&root, "HEAD")?;
+    let mut checks = Vec::new();
+    if checkout_head != head_sha {
+        checks.push(head_identity_check(&head_sha, &checkout_head));
+    } else {
+        let specs =
+            select_checks(&resolved.changed_paths, &base_sha, &head_sha, &changed_files_path);
+        checks.reserve(specs.len() + 1);
+        for spec in specs {
+            checks.push(run_check(&root, &spec));
+        }
     }
 
-    let current_head = resolve_sha(&root, &head)?;
+    let current_head = resolve_sha(&root, "HEAD")?;
     if current_head != head_sha {
-        checks.push(ContractCheck {
-            id: "head_identity".to_string(),
-            reason: "the evaluated head changed while contracts were running".to_string(),
-            command: format!("git rev-parse --verify {head}^{{commit}}"),
-            result: ContractResultClass::Stale,
-            detail: format!("evaluated={head_sha}, current={current_head}"),
-        });
+        checks.push(head_identity_check(&head_sha, &current_head));
     }
 
     let receipt = ContractReceipt {
@@ -151,11 +151,15 @@ fn select_checks(
     head: &str,
     changed_files_path: &Path,
 ) -> Vec<CheckSpec> {
+    if changed_files.is_empty() {
+        return Vec::new();
+    }
+
     let mut checks = vec![CheckSpec {
         id: "diff_check",
         reason: "every exact-head candidate must have a clean binary diff".to_string(),
         program: "git",
-        args: vec!["diff".to_string(), "--check".to_string(), format!("{base}...{head}")],
+        args: vec!["diff".to_string(), "--check".to_string(), format!("{base}..{head}")],
     }];
 
     if changed_files.iter().any(|file| file.ends_with(".rs") || file.ends_with("Cargo.toml")) {
@@ -230,8 +234,11 @@ fn run_check(root: &Path, spec: &CheckSpec) -> ContractCheck {
     let command = format_command(spec.program, &spec.args);
     match execute_check(root, spec) {
         Ok(output) => {
-            let detail = command_output(&output.stdout, &output.stderr);
-            let result = result_for_exit(output.status.code());
+            let mut detail = command_output(&output.stdout, &output.stderr);
+            if output.status.code().is_none() {
+                detail = format!("process terminated without an exit code; {detail}");
+            }
+            let result = result_for_exit(output.status.code(), &detail);
             ContractCheck {
                 id: spec.id.to_string(),
                 reason: spec.reason.clone(),
@@ -252,17 +259,46 @@ fn run_check(root: &Path, spec: &CheckSpec) -> ContractCheck {
 
 fn execute_check(root: &Path, spec: &CheckSpec) -> std::io::Result<Output> {
     if spec.program == "cargo" && spec.args.first().is_some_and(|arg| arg == "xtask") {
+        // Reuse the current executable so inherited CARGO_*/RUSTFLAGS settings remain
+        // intact and Cargo does not try to replace the running xtask binary on Windows.
         let executable = std::env::current_exe()?;
         return Command::new(executable).args(spec.args.iter().skip(1)).current_dir(root).output();
     }
     Command::new(spec.program).args(&spec.args).current_dir(root).output()
 }
 
-fn result_for_exit(code: Option<i32>) -> ContractResultClass {
+fn result_for_exit(code: Option<i32>, detail: &str) -> ContractResultClass {
     match code {
         Some(0) => ContractResultClass::Success,
+        Some(1) if is_instrument_failure(detail) => ContractResultClass::NotProven,
         Some(1) => ContractResultClass::PolicyFinding,
         _ => ContractResultClass::NotProven,
+    }
+}
+
+fn is_instrument_failure(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    [
+        "instrument failure",
+        "failed to start check",
+        "failed to read",
+        "failed to parse",
+        "reading policy file",
+        "parsing policy file",
+        "could not resolve",
+        "not found on path",
+    ]
+    .iter()
+    .any(|marker| detail.contains(marker))
+}
+
+fn head_identity_check(expected: &str, current: &str) -> ContractCheck {
+    ContractCheck {
+        id: "head_identity".to_string(),
+        reason: "the checkout does not match the evaluated head".to_string(),
+        command: "git rev-parse --verify HEAD^{commit}".to_string(),
+        result: ContractResultClass::Stale,
+        detail: format!("evaluated={expected}, current={current}"),
     }
 }
 
@@ -464,7 +500,7 @@ mod tests {
         ensure!(ids == vec!["diff_check"], "docs-only selection was {ids:?}");
         let diff_check = checks.first().ok_or_else(|| eyre!("docs-only selection was empty"))?;
         ensure!(
-            diff_check.args == vec!["diff", "--check", "base...head"],
+            diff_check.args == vec!["diff", "--check", "base..head"],
             "diff check must use the exact requested head"
         );
         Ok(())
@@ -506,20 +542,37 @@ mod tests {
     #[test]
     fn command_results_map_to_documented_classes() -> Result<()> {
         ensure!(
-            result_for_exit(Some(0)) == ContractResultClass::Success,
+            result_for_exit(Some(0), "ok") == ContractResultClass::Success,
             "zero exit must be success"
         );
         ensure!(
-            result_for_exit(Some(1)) == ContractResultClass::PolicyFinding,
+            result_for_exit(Some(1), "policy finding") == ContractResultClass::PolicyFinding,
             "one exit must be a policy finding"
         );
         ensure!(
-            result_for_exit(Some(2)) == ContractResultClass::NotProven,
+            result_for_exit(Some(2), "tool failed") == ContractResultClass::NotProven,
             "other exits must be not-proven"
         );
         ensure!(
-            result_for_exit(None) == ContractResultClass::NotProven,
+            result_for_exit(None, "process terminated") == ContractResultClass::NotProven,
             "missing exit code must be not-proven"
+        );
+        ensure!(
+            result_for_exit(Some(1), "Error: instrument failure") == ContractResultClass::NotProven,
+            "instrument failure must be not-proven"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_change_range_is_not_applicable() -> Result<()> {
+        ensure!(
+            select_checks(&[], "base", "head", Path::new("files.txt")).is_empty(),
+            "empty ranges must not select checks"
+        );
+        ensure!(
+            status_from_checks(&[]) == ContractStatus::NotApplicable,
+            "empty ranges must be not-applicable"
         );
         Ok(())
     }
