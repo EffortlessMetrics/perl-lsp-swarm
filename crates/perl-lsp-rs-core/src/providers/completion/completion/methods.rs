@@ -144,6 +144,23 @@ pub const DBI_ST_METHOD_SIGS: &[(&str, &str, &str)] = &[
     ("rows", "rows()", "Return the number of rows affected or returned"),
 ];
 
+/// Static methods documented by `Mojo::Pg`.
+pub const MOJO_PG_METHODS: &[(&str, &str)] = &[
+    ("new", "Create a Mojo::Pg database wrapper"),
+    ("db", "Get a cached database handle"),
+    ("from_string", "Configure the database from a connection string"),
+    ("reset", "Reset cached database handles"),
+];
+
+/// Static methods documented by `Mojo::mysql`.
+pub const MOJO_MYSQL_METHODS: &[(&str, &str)] = &[
+    ("new", "Create a Mojo::mysql database wrapper"),
+    ("db", "Get a cached database handle"),
+    ("from_string", "Configure the database from a connection string"),
+    ("strict_mode", "Create a database wrapper with strict mode enabled"),
+    ("close_idle_connections", "Close idle database connections"),
+];
+
 /// Look up DBI method documentation by receiver hint and method name.
 ///
 /// `receiver_hint` is the variable name or token before `->` (e.g. `"$dbh"`, `"$sth"`).
@@ -207,6 +224,22 @@ pub fn infer_receiver_type(context: &CompletionContext, source: &str) -> Option<
     }
 
     None
+}
+
+fn imported_framework_methods(
+    prefix: &str,
+    used_modules: &HashSet<String>,
+) -> Option<&'static [(&'static str, &'static str)]> {
+    let module = static_receiver_module(prefix)?;
+    if !used_modules.contains(module) {
+        return None;
+    }
+
+    match module {
+        "Mojo::Pg" => Some(MOJO_PG_METHODS),
+        "Mojo::mysql" => Some(MOJO_MYSQL_METHODS),
+        _ => None,
+    }
 }
 
 /// Build rich documentation for a Moo/Moose accessor from its symbol attributes.
@@ -343,6 +376,7 @@ pub fn add_method_completions(
     context: &CompletionContext,
     source: &str,
     symbol_table: &SymbolTable,
+    used_modules: &HashSet<String>,
 ) {
     let mut seen: HashSet<&str> = HashSet::new();
 
@@ -409,28 +443,40 @@ pub fn add_method_completions(
     let auto_import_edit =
         import_module.and_then(|m| auto_import::build_auto_import_edit(source, m));
 
+    let static_framework_methods = imported_framework_methods(&context.prefix, used_modules);
+
     // Choose methods based on inferred type
-    let methods: Vec<(&str, &str)> = match receiver_type.as_deref() {
-        Some("DBI::db") => DBI_DB_METHODS.to_vec(),
-        Some("DBI::st") => DBI_ST_METHODS.to_vec(),
-        _ => {
-            // Default common object methods
-            vec![
-                ("new", "Constructor"),
-                ("isa", "Check if object is of given class"),
-                ("can", "Check if object can call method"),
-                ("DOES", "Check if object does role"),
-                ("VERSION", "Get version"),
-                (
-                    "DESTROY",
-                    "Called when the last reference to the object is released (garbage collected)",
-                ),
-                ("AUTOLOAD", "Automatic method dispatcher for undefined methods"),
-            ]
+    let methods: Vec<(&str, &str)> = if let Some(methods) = static_framework_methods {
+        methods.to_vec()
+    } else {
+        match receiver_type.as_deref() {
+            Some("DBI::db") => DBI_DB_METHODS.to_vec(),
+            Some("DBI::st") => DBI_ST_METHODS.to_vec(),
+            _ => {
+                // Default common object methods
+                vec![
+                    ("new", "Constructor"),
+                    ("isa", "Check if object is of given class"),
+                    ("can", "Check if object can call method"),
+                    ("DOES", "Check if object does role"),
+                    ("VERSION", "Get version"),
+                    (
+                        "DESTROY",
+                        "Called when the last reference to the object is released (garbage collected)",
+                    ),
+                    ("AUTOLOAD", "Automatic method dispatcher for undefined methods"),
+                ]
+            }
         }
     };
 
     for (method, desc) in methods {
+        if static_framework_methods.is_some()
+            && !method_prefix.is_empty()
+            && !method.starts_with(method_prefix)
+        {
+            continue;
+        }
         if seen.insert(method) {
             let additional_edits =
                 auto_import_edit.as_ref().map(|e| vec![e.clone()]).unwrap_or_default();

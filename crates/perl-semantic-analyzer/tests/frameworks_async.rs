@@ -264,6 +264,41 @@ my $pg = Mojo::Pg->new;
 }
 
 #[test]
+fn mojo_mysql_use_synthesizes_framework_class_symbol() {
+    let code = r#"
+use Mojo::mysql;
+
+my $mysql = Mojo::mysql->strict_mode;
+"#;
+
+    let table = extract_symbols(code);
+
+    assert!(
+        has_symbol(&table, "Mojo::mysql", SymbolKind::Class),
+        "expected Mojo::mysql class symbol when framework is in use"
+    );
+    let attrs = symbol_attrs(&table, "Mojo::mysql", SymbolKind::Class);
+    assert!(
+        attrs.iter().any(|attr| attr == "framework=Mojo::mysql"),
+        "expected `framework=Mojo::mysql` on Mojo::mysql, got {attrs:?}"
+    );
+}
+
+#[test]
+fn mojo_mysql_names_are_not_synthesized_without_framework_use() {
+    let code = r#"
+my $mysql = Mojo::mysql->strict_mode;
+"#;
+
+    let table = extract_symbols(code);
+
+    assert!(
+        !has_symbol(&table, "Mojo::mysql", SymbolKind::Class),
+        "did not expect Mojo::mysql class synthesis without `use Mojo::mysql`"
+    );
+}
+
+#[test]
 fn future_use_synthesizes_class_symbol_for_method_calls() {
     let code = r#"
 use Future;

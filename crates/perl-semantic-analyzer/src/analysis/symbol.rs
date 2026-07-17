@@ -430,6 +430,8 @@ pub enum AsyncFrameworkKind {
     MojoRedis,
     /// `use Mojo::Pg;`
     MojoPg,
+    /// `use Mojo::mysql;`
+    MojoMysql,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2139,6 +2141,7 @@ impl SymbolExtractor {
             Some(AsyncFrameworkKind::IOAsync) => ("IO::Async", "IO::Async", false),
             Some(AsyncFrameworkKind::MojoRedis) => ("Mojo::Redis", "Mojo::Redis", true),
             Some(AsyncFrameworkKind::MojoPg) => ("Mojo::Pg", "Mojo::Pg", true),
+            Some(AsyncFrameworkKind::MojoMysql) => ("Mojo::mysql", "Mojo::mysql", true),
             None => return false,
         };
 
@@ -2443,6 +2446,12 @@ impl SymbolExtractor {
         if module == "Mojo::Pg" {
             self.framework_flags.entry(pkg.clone()).or_default().async_framework =
                 Some(AsyncFrameworkKind::MojoPg);
+            return;
+        }
+
+        if module == "Mojo::mysql" {
+            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
+                Some(AsyncFrameworkKind::MojoMysql);
             return;
         }
 

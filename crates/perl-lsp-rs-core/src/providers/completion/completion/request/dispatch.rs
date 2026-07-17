@@ -108,7 +108,13 @@ fn complete_use_or_structural_context(
     }
 
     if !context.in_string && is_method_arrow_context(context) {
-        methods::add_method_completions(completions, context, source, &provider.symbol_table);
+        methods::add_method_completions(
+            completions,
+            context,
+            source,
+            &provider.symbol_table,
+            &provider.used_modules,
+        );
         workspace::add_workspace_method_completions(
             completions,
             context,
@@ -128,9 +134,14 @@ fn complete_use_or_structural_context(
 }
 
 fn is_method_arrow_context(context: &CompletionContext) -> bool {
-    (context.trigger_character == Some('>') || context.trigger_character == Some('-'))
-        && context.prefix.ends_with("->")
-        && context.prefix.len() > 2
+    let Some(arrow) = context.prefix.rfind("->") else {
+        return false;
+    };
+    if arrow == 0 || context.prefix.len() <= arrow + 2 {
+        return context.prefix.ends_with("->") && arrow > 0;
+    }
+
+    context.prefix[arrow + 2..].chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 /// Statement-level keywords and I/O builtins that look like a bareword method
@@ -308,7 +319,13 @@ fn complete_indirect_method_context(
     }
 
     let inserted_start = completions.len();
-    methods::add_method_completions(completions, &synth, source, &provider.symbol_table);
+    methods::add_method_completions(
+        completions,
+        &synth,
+        source,
+        &provider.symbol_table,
+        &provider.used_modules,
+    );
     workspace::add_workspace_method_completions(
         completions,
         &synth,
