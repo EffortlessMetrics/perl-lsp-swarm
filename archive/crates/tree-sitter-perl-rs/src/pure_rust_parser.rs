@@ -2874,6 +2874,29 @@ mod tests {
     }
 
     #[test]
+    fn test_regression_q_string_heredoc_marker_adjacent_boundary_extracts_empty_content() {
+        // #3917 follow-up: exercise the start_idx + 12 == end_idx boundary,
+        // where the opening "{__HEREDOC__" marker is immediately followed by
+        // a fresh "__HEREDOC__}" match with nothing between them. This is a
+        // *valid* zero-length slice (not an inversion), so the guard must
+        // use `<=` rather than `<` -- extraction should succeed with an
+        // empty string rather than falling back to the raw literal text
+        // "q{__HEREDOC____HEREDOC__}".
+        let mut parser = PureRustPerlParser::new();
+        let source = "q{__HEREDOC____HEREDOC__}";
+        let ast = must(parser.parse(source));
+        let sexp = parser.to_sexp(&ast);
+        assert!(
+            sexp.contains("(string_literal )"),
+            "expected the heredoc markers to extract to an empty string; got: {sexp}"
+        );
+        assert!(
+            !sexp.contains("__HEREDOC__"),
+            "expected extraction, not a raw-content fallback; got: {sexp}"
+        );
+    }
+
+    #[test]
     fn test_array_assignment() {
         let mut parser = PureRustPerlParser::new();
         let source = "@array = (1, 2, 3);";
