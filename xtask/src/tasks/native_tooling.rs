@@ -1878,7 +1878,7 @@ color = 1
         assert_eq!(receipt["items"][11]["name"], "color");
         assert_eq!(receipt["items"][11]["classification"], "unsupported_safe");
         assert_eq!(receipt["suggested_config"]["engine"], "native");
-        assert_eq!(receipt["suggested_config"]["profile"], "recommended");
+        assert_eq!(receipt["suggested_config"]["profile"], "strict");
         assert_eq!(receipt["suggested_config"]["perlcritic_severity"], 3);
         assert_eq!(receipt["suggested_config"]["include"][0], "native.testing.require_use_strict");
         assert_eq!(
