@@ -100,7 +100,9 @@ Add one advisory `Repository Contract` job to the existing PR workflow. It runs
 only for non-draft current heads after the existing latest-SHA preflight,
 uploads the receipt and summary, and leaves all current required jobs unchanged.
 The job must use the exact event base/head SHAs and must not use a mutable
-`origin/main` fallback for the evaluated identity.
+`origin/main` fallback for the evaluated identity. The wrapper may demote only a
+receipt whose status is `POLICY_FINDING`; `NOT_PROVEN` and `STALE` exit statuses
+remain visible as job failures.
 
 ## Tests and proof
 

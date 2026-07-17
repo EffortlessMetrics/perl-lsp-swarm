@@ -168,9 +168,12 @@ jobs:
             --summary target/receipts/ci-contract.md
           status=$?
           set -e
-          if [ "$status" -eq 1 ]; then
-            echo "Repository Contract reported advisory policy findings; receipt is authoritative."
-            exit 0
+          if [ "$status" -eq 1 ] && [ -f target/receipts/ci-contract.json ]; then
+            contract_status="$(jq -r '.status // empty' target/receipts/ci-contract.json 2>/dev/null || true)"
+            if [ "$contract_status" = "POLICY_FINDING" ]; then
+              echo "Repository Contract reported advisory policy findings; receipt is authoritative."
+              exit 0
+            fi
           fi
           exit "$status"
       - name: Upload Repository Contract receipt
