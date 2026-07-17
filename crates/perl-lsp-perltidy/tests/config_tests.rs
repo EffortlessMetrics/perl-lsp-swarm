@@ -370,10 +370,10 @@ fn builtin_formatter_ignores_regex_character_class_delimiters() {
 fn builtin_formatter_ignores_bare_and_quote_like_regex_delimiters() {
     let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
     let formatted =
-        formatter.format("if (/[()]/) {\nprint 1;\n}\nif (m{[()]}) {\nprint 2;\n}\nprint 3;\n");
+        formatter.format("if (/[()]/) {\nprint 1;\n}\nif (m{[()]}) {\nprint 2;\n}\nif (qr/[{]/) {\nprint 3;\n}\nprint 4;\n");
     assert_eq!(
         formatted,
-        "if (/[()]/) {\n    print 1;\n}\nif (m{[()]}) {\n    print 2;\n}\nprint 3;\n"
+        "if (/[()]/) {\n    print 1;\n}\nif (m{[()]}) {\n    print 2;\n}\nif (qr/[{]/) {\n    print 3;\n}\nprint 4;\n"
     );
 }
 
