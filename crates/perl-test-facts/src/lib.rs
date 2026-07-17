@@ -151,8 +151,9 @@ pub fn parse_tap(source: &str) -> TapReport {
     let mut report = TapReport::default();
     let mut yaml_block: Option<PendingYaml> = None;
     let mut last_assertion: Option<(usize, usize)> = None;
+    let normalized_source = source.replace("\r\n", "\n").replace('\r', "\n");
 
-    for (index, raw_line) in source.lines().enumerate() {
+    for (index, raw_line) in normalized_source.lines().enumerate() {
         let line_number = index + 1;
         let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
 
@@ -177,13 +178,7 @@ pub fn parse_tap(source: &str) -> TapReport {
                 continue;
             }
 
-            let is_protocol_record = trimmed == "TAP version 13"
-                || parse_bailout(trimmed).is_some()
-                || looks_like_plan(trimmed)
-                || indentation_depth(line)
-                    .and_then(|depth| parse_assertion(trimmed, line_number, depth))
-                    .is_some();
-            if !is_protocol_record {
+            if indentation >= block.indentation {
                 block.lines.push(line.to_owned());
                 yaml_block = Some(block);
                 continue;
@@ -197,6 +192,7 @@ pub fn parse_tap(source: &str) -> TapReport {
 
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
+            last_assertion = None;
             continue;
         }
 
@@ -357,7 +353,12 @@ fn indentation_depth(line: &str) -> Option<usize> {
 fn parse_bailout(line: &str) -> Option<&str> {
     const PREFIX: &str = "Bail out!";
     let prefix = line.get(..PREFIX.len())?;
-    prefix.eq_ignore_ascii_case(PREFIX).then(|| line[PREFIX.len()..].trim())
+    if !prefix.eq_ignore_ascii_case(PREFIX) {
+        return None;
+    }
+    let remainder = &line[PREFIX.len()..];
+    (remainder.is_empty() || remainder.chars().next().is_some_and(char::is_whitespace))
+        .then(|| remainder.trim())
 }
 
 fn parse_plan(line: &str, line_number: usize) -> Option<TapPlan> {
@@ -595,6 +596,16 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_lone_carriage_return_line_endings() {
+        let report = parse_tap("ok 1 - lone CR\r1..1\r");
+
+        assert_eq!(report.assertions.len(), 1);
+        assert_eq!(report.assertions[0].name.as_deref(), Some("lone CR"));
+        assert_eq!(report.plan.as_ref().map(|plan| plan.end), Some(1));
+        assert!(report.diagnostics.is_empty());
+    }
+
+    #[test]
     fn stops_semantic_parsing_after_a_case_insensitive_bailout() {
         let report = parse_tap("ok 1 - starts\nbAIL OUT! stopped\nok 2 - after\n1..2\n");
 
@@ -655,6 +666,38 @@ mod tests {
         );
         assert_eq!(interrupted.assertions.len(), 1);
         assert_eq!(interrupted.assertions[0].diagnostics, Vec::<String>::new());
+    }
+
+    #[test]
+    fn treats_tap_looking_yaml_scalars_as_yaml_content() {
+        let report = parse_tap("not ok 1 - broken\n  ---\n  ok 2\n  ...\n1..1\n");
+
+        assert_eq!(report.assertions.len(), 1);
+        assert_eq!(report.assertions[0].diagnostics, vec!["  ---", "  ok 2", "  ..."]);
+        assert!(report.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn does_not_attach_yaml_after_blank_or_comment_lines() {
+        let report = parse_tap("not ok 1 - broken\n\n# separated\n  ---\n  message: raw\n  ...\n");
+
+        assert_eq!(report.assertions[0].diagnostics, Vec::<String>::new());
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("no preceding assertion"))
+        );
+    }
+
+    #[test]
+    fn does_not_treat_a_bailout_prefix_as_a_bailout() {
+        let report = parse_tap("Bail out!ish text\nok 1 - valid\n1..1\n");
+
+        assert_eq!(report.bail_out, None);
+        assert_eq!(report.assertions.len(), 1);
+        assert_eq!(report.raw_lines, vec!["Bail out!ish text"]);
+        assert!(report.is_success());
     }
 
     #[test]

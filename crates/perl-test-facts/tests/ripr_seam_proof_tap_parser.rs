@@ -145,3 +145,48 @@ fn seam_partial_indentation_is_not_a_top_level_assertion() {
     assert_eq!(report.raw_lines, vec!["  ok 1 - malformed"]);
     assert!(report.diagnostics.is_empty());
 }
+
+// ── SEAM I: line-ending normalization preserves stream records ───────────────
+
+/// TAP streams using lone carriage returns still produce separate records and
+/// preserve the same line-oriented facts as LF input.
+#[test]
+fn seam_lone_carriage_returns_are_normalized() {
+    let report = parse_tap("ok 1 - lone CR\r1..1\r");
+
+    assert_eq!(report.assertions.len(), 1);
+    assert_eq!(report.assertions[0].name.as_deref(), Some("lone CR"));
+    assert_eq!(report.plan.as_ref().map(|plan| plan.end), Some(1));
+}
+
+// ── SEAM J: YAML content is delimited by indentation ────────────────────────
+
+/// YAML scalar text that resembles TAP remains attached to the YAML block.
+#[test]
+fn seam_yaml_tap_looking_scalar_is_not_an_assertion() {
+    let report = parse_tap("not ok 1 - broken\n  ---\n  ok 2\n  ...\n1..1\n");
+
+    assert_eq!(report.assertions.len(), 1);
+    assert_eq!(report.assertions[0].diagnostics[1], "  ok 2");
+    assert!(report.diagnostics.is_empty());
+}
+
+// ── SEAM K: adjacency and bailout grammar are explicit ──────────────────────
+
+/// A separated YAML marker is not attached, and a non-delimited bailout
+/// prefix remains raw evidence rather than terminating the report.
+#[test]
+fn seam_yaml_adjacency_and_bailout_delimiter_are_checked() {
+    let separated = parse_tap("not ok 1 - broken\n\n# separated\n  ---\n  message: raw\n  ...\n");
+    assert!(
+        separated
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("no preceding assertion"))
+    );
+
+    let prefixed = parse_tap("Bail out!ish text\nok 1 - valid\n1..1\n");
+    assert_eq!(prefixed.bail_out, None);
+    assert_eq!(prefixed.assertions.len(), 1);
+    assert_eq!(prefixed.raw_lines, vec!["Bail out!ish text"]);
+}
