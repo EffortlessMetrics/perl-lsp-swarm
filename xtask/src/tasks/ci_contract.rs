@@ -234,12 +234,8 @@ fn run_check(root: &Path, spec: &CheckSpec) -> ContractCheck {
     let command = format_command(spec.program, &spec.args);
     match execute_check(root, spec) {
         Ok(output) => {
-            let raw_detail = command_output(&output.stdout, &output.stderr);
-            let mut detail = bounded_output(&raw_detail);
-            if output.status.code().is_none() {
-                detail = format!("process terminated without an exit code; {detail}");
-            }
-            let result = result_for_exit(output.status.code(), &raw_detail);
+            let (result, detail) =
+                classify_check_output(output.status.code(), &output.stdout, &output.stderr);
             ContractCheck {
                 id: spec.id.to_string(),
                 reason: spec.reason.clone(),
@@ -298,7 +294,7 @@ fn run_with_timeout(mut command: Command) -> io::Result<Output> {
             return Ok(Output { status, stdout, stderr });
         }
         if started.elapsed() >= CHECK_TIMEOUT {
-            let _ = child.kill();
+            terminate_process_tree(&mut child);
             let _ = child.wait();
             let _ = join_output(stdout_handle.take(), "stdout");
             let _ = join_output(stderr_handle.take(), "stderr");
@@ -309,6 +305,20 @@ fn run_with_timeout(mut command: Command) -> io::Result<Output> {
         }
         thread::sleep(Duration::from_millis(50));
     }
+}
+
+fn terminate_process_tree(child: &mut std::process::Child) {
+    let pid = child.id().to_string();
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill").args(["/PID", &pid, "/T", "/F"]).status();
+    }
+    #[cfg(unix)]
+    {
+        let _ = Command::new("pkill").args(["-TERM", "-P", &pid]).status();
+        let _ = Command::new("pkill").args(["-KILL", "-P", &pid]).status();
+    }
+    let _ = child.kill();
 }
 
 fn join_output(
@@ -333,6 +343,19 @@ fn has_policy_finding(detail: &str) -> bool {
         let line = line.trim_start();
         line.starts_with("WARN ") || line.starts_with("[WARN]")
     })
+}
+
+fn classify_check_output(
+    code: Option<i32>,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> (ContractResultClass, String) {
+    let raw_detail = command_output(stdout, stderr);
+    let mut detail = bounded_output(&raw_detail);
+    if code.is_none() {
+        detail = format!("process terminated without an exit code; {detail}");
+    }
+    (result_for_exit(code, &raw_detail), detail)
 }
 
 fn head_identity_check(expected: &str, current: &str) -> ContractCheck {
@@ -691,17 +714,21 @@ mod tests {
 
     #[test]
     fn shell_output_is_bounded_and_preserves_streams() -> Result<()> {
-        let detail = command_output(b"out", b"err");
+        let (result, detail) = classify_check_output(Some(0), b"out", b"err");
+        ensure!(result == ContractResultClass::Success, "ordinary output was not successful");
         ensure!(detail == "stdout: out; stderr: err", "combined output was {detail:?}");
         ensure!(
             bounded_output(&command_output(&vec![b'x'; 3000], &[])).len() == 2000,
             "output was not bounded"
         );
         let late_warning = format!("{}\nWARN late advisory", "x".repeat(2000));
+        let (late_result, late_detail) =
+            classify_check_output(Some(0), late_warning.as_bytes(), &[]);
         ensure!(
-            result_for_exit(Some(0), &late_warning) == ContractResultClass::PolicyFinding,
+            late_result == ContractResultClass::PolicyFinding,
             "late advisory output must be classified before receipt truncation"
         );
+        ensure!(late_detail.len() == 2000, "late advisory detail was not bounded");
         Ok(())
     }
 
