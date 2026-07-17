@@ -231,12 +231,7 @@ fn parse_module_runtime_argument<'a>(
                 Some(b')') => after_module,
                 Some(b',') => {
                     let version_start = skip_ascii_whitespace(line, after_module + 1);
-                    let version_end = line
-                        .as_bytes()
-                        .get(version_start..)?
-                        .iter()
-                        .position(|byte| *byte == b')')?
-                        + version_start;
+                    let version_end = find_code_call_close(line, version_start, code)?;
                     if line.get(version_start..version_end)?.trim().is_empty()
                         || !is_code_range(code, version_start, version_end)
                     {
@@ -252,6 +247,22 @@ fn parse_module_runtime_argument<'a>(
         offset += 1;
     }
 
+    None
+}
+
+fn find_code_call_close(line: &str, start: usize, code: &[bool]) -> Option<usize> {
+    let mut depth = 0usize;
+    for offset in start..line.len() {
+        if code.get(offset).copied() != Some(true) {
+            continue;
+        }
+        match line.as_bytes().get(offset).copied()? {
+            b'(' => depth = depth.saturating_add(1),
+            b')' if depth == 0 => return Some(offset),
+            b')' => depth -= 1,
+            _ => {}
+        }
+    }
     None
 }
 
@@ -450,7 +461,7 @@ fn quote_like_operator(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
         }
         return None;
     };
-    if delimiter.is_ascii_alphanumeric() {
+    if delimiter.is_ascii_alphanumeric() || delimiter == b'=' {
         return None;
     }
 
@@ -1002,11 +1013,24 @@ mod tests {
             + "obj->use_module('No::Method'); obj->   use_module('No::SpacedMethod'); "
             + "obj -> use_module('No::SpacedArrow'); Other::use_module('No::Other'); "
             + "Other :: use_module('No::SpacedNamespace'); "
+            + "(s => 1, q => 2); use_module('Foo::Bar'); "
             + "use_module_extra('No::Extra');";
         let links = compute_links(uri(), &text, &[]);
 
-        if !links.is_empty() {
-            return Err(format!("unrelated call names produced links: {links:?}"));
+        if links.len() != 1 || data_str(&links[0], "/data/module") != Some("Foo::Bar") {
+            return Err(format!("unrelated call names produced unexpected links: {links:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn module_runtime_version_expression_consumes_nested_parentheses() -> Result<(), String> {
+        let text = "use_module('Foo::Bar', MyVer->new(1)); use_module('Baz::Qux');";
+        let links = compute_links(uri(), text, &[]);
+        let modules: Vec<_> =
+            links.iter().filter_map(|link| data_str(link, "/data/module")).collect();
+        if modules != ["Foo::Bar", "Baz::Qux"] {
+            return Err(format!("nested version expression produced unexpected links: {links:?}"));
         }
         Ok(())
     }
