@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -277,14 +277,30 @@ fn execute_check(root: &Path, spec: &CheckSpec) -> std::io::Result<Output> {
 
 fn run_with_timeout(mut command: Command) -> io::Result<Output> {
     let mut child = command.spawn()?;
+    let mut stdout_handle = child.stdout.take().map(|mut stream| {
+        thread::spawn(move || {
+            let mut buffer = Vec::new();
+            stream.read_to_end(&mut buffer).map(|_| buffer)
+        })
+    });
+    let mut stderr_handle = child.stderr.take().map(|mut stream| {
+        thread::spawn(move || {
+            let mut buffer = Vec::new();
+            stream.read_to_end(&mut buffer).map(|_| buffer)
+        })
+    });
     let started = Instant::now();
     loop {
         if let Some(status) = child.try_wait()? {
-            return collect_output(&mut child, status);
+            let stdout = join_output(stdout_handle.take(), "stdout")?;
+            let stderr = join_output(stderr_handle.take(), "stderr")?;
+            return Ok(Output { status, stdout, stderr });
         }
         if started.elapsed() >= CHECK_TIMEOUT {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = join_output(stdout_handle.take(), "stdout");
+            let _ = join_output(stderr_handle.take(), "stderr");
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!("check exceeded {} seconds", CHECK_TIMEOUT.as_secs()),
@@ -294,16 +310,12 @@ fn run_with_timeout(mut command: Command) -> io::Result<Output> {
     }
 }
 
-fn collect_output(child: &mut Child, status: std::process::ExitStatus) -> io::Result<Output> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    if let Some(mut stream) = child.stdout.take() {
-        stream.read_to_end(&mut stdout)?;
-    }
-    if let Some(mut stream) = child.stderr.take() {
-        stream.read_to_end(&mut stderr)?;
-    }
-    Ok(Output { status, stdout, stderr })
+fn join_output(
+    handle: Option<thread::JoinHandle<io::Result<Vec<u8>>>>,
+    stream: &str,
+) -> io::Result<Vec<u8>> {
+    let Some(handle) = handle else { return Ok(Vec::new()) };
+    handle.join().map_err(|_| io::Error::other(format!("{stream} reader panicked")))?
 }
 
 fn result_for_exit(code: Option<i32>, detail: &str) -> ContractResultClass {
