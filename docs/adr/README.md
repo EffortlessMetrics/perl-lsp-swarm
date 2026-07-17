@@ -37,6 +37,7 @@ Current generated and human-owned status sources include:
 | [PLSP-ADR-0003](PLSP-ADR-0003-preview-before-edit.md) | Accepted | 2026-05-19 | Preview Before Edit | Edit-producing providers require preview/no-edit, receipt, rollback, and blocker proof before broader live cutover |
 | [PLSP-ADR-0004](PLSP-ADR-0004-lsp-stack-extraction.md) | Accepted | 2026-05-26 | LSP Stack Extraction Boundary | Future lsp-stack extraction may start only after current-app protocol/runtime hardening; Perl-specific behavior stays in the current app |
 | [PLSP-ADR-0005](PLSP-ADR-0005-hir-body-pir-eir-boundaries.md) | Accepted | 2026-06-21 | HIR-body / PIR-A / EIR Boundaries | Canonical terminology: HIR body items are L0, PIR-A evolves the existing tooling PIR, EIR branches off PIR-A under a separate ADR |
+| [PLSP-ADR-0006](PLSP-ADR-0006-perl-workspace-core-facts-substrate.md) | Accepted | 2026-07-03 | perl-workspace-core Facts Substrate | LSP-free project-facts substrate that every product surface consumes, replacing per-product re-extraction |
 | [PLSP-ADR-0007](PLSP-ADR-0007-tap-facts-seam.md) | Accepted | 2026-07-15 | TAP Result Facts Seam | Pure result-time TAP facts are separate from workspace source-time test facts and runner execution |
 
 ### Legacy Series (0001–0002)
