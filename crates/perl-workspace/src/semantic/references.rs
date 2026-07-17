@@ -65,6 +65,17 @@ impl ReferenceIndex {
             }
         }
 
+        // A unique occurrence ID allows the candidate vector to move out of
+        // the temporary lookup. Preserve the previous clone-based behavior
+        // for malformed or hand-built shards that repeat an ID so every
+        // occurrence still sees the same targets.
+        let mut occurrence_counts = HashMap::new();
+        for occ in &shard.occurrences {
+            if occ.kind != OccurrenceKind::Definition {
+                *occurrence_counts.entry(occ.id.0).or_default() += 1;
+            }
+        }
+
         for occ in &shard.occurrences {
             // Skip definition occurrences — they are not references.
             if occ.kind == OccurrenceKind::Definition {
@@ -73,9 +84,16 @@ impl ReferenceIndex {
 
             // Build the target_candidates list from edges, falling back to the
             // occurrence's own entity_id when no edge exists.
-            let target_candidates = edge_targets
-                .remove(&occ.id.0)
-                .unwrap_or_else(|| occ.entity_id.into_iter().collect());
+            let target_candidates = if occurrence_counts.get(&occ.id.0) == Some(&1) {
+                edge_targets
+                    .remove(&occ.id.0)
+                    .unwrap_or_else(|| occ.entity_id.into_iter().collect())
+            } else {
+                edge_targets
+                    .get(&occ.id.0)
+                    .cloned()
+                    .unwrap_or_else(|| occ.entity_id.into_iter().collect())
+            };
 
             // Derive the symbol_key from the entity canonical name when
             // available. For occurrences without a resolved entity we use the
@@ -570,6 +588,41 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_occurrence_ids_retain_edge_targets() -> Result<(), Box<dyn std::error::Error>> {
+        let mut shard = sample_shard();
+        shard.entities.push(EntityFact {
+            id: EntityId(101),
+            kind: EntityKind::Subroutine,
+            canonical_name: "Foo::bar".to_string(),
+            anchor_id: None,
+            scope_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        });
+        shard.occurrences.push(OccurrenceFact {
+            id: OccurrenceId(400),
+            kind: OccurrenceKind::Call,
+            entity_id: Some(EntityId(101)),
+            anchor_id: AnchorId(21),
+            scope_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        });
+
+        let mut index = ReferenceIndex::new();
+        index.add_file(&shard);
+
+        let by_name = index.get_by_name("Foo::bar");
+        assert_eq!(by_name.len(), 2);
+        assert!(
+            by_name.iter().all(|reference| { reference.target_candidates == vec![EntityId(100)] })
+        );
+        assert_eq!(index.get_by_entity(EntityId(100)).len(), 2);
+        assert!(index.get_by_entity(EntityId(101)).is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn multiple_edge_targets_produce_multiple_entity_entries()
     -> Result<(), Box<dyn std::error::Error>> {
         let file_id = FileId(4);
@@ -663,6 +716,8 @@ mod tests {
         let refs_name = index.get_by_name("ambig_func");
         assert_eq!(refs_name.len(), 1);
         assert_eq!(refs_name[0].target_candidates.len(), 2);
+        assert!(Arc::ptr_eq(&refs_a[0], &refs_name[0]));
+        assert!(Arc::ptr_eq(&refs_b[0], &refs_name[0]));
 
         Ok(())
     }
