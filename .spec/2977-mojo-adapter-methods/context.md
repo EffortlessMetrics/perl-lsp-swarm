@@ -4,7 +4,7 @@
 
 The completion provider has DBI-specific receiver catalogs and the semantic
 analyzer synthesizes a `Mojo::Pg` framework symbol, but static calls such as
-`Mojo::Pg->db` and `Mojo::mysql->strict_mode` do not have source-backed
+`Mojo::Pg->new` and `Mojo::mysql->strict_mode` do not have source-backed
 adapter-specific method catalogs. The original issue also combines adapter
 methods, result-object flow, promise/callback inference, and pub/sub behavior;
 this first slice separates the static adapter contract from those deeper
@@ -19,13 +19,13 @@ inference problems.
 - Upstream API references: [Mojo::Pg](https://metacpan.org/pod/Mojo::Pg) and
   [Mojo::mysql](https://metacpan.org/pod/Mojo::mysql).
 
-The upstream references document these top-level adapter methods for the first
-catalog:
+The upstream references document these class-callable adapter methods for the
+first static catalog. Instance methods remain a separate inference concern:
 
 | Adapter | Static method names |
 | --- | --- |
-| `Mojo::Pg` | `new`, `db`, `from_string`, `reset` |
-| `Mojo::mysql` | `new`, `db`, `from_string`, `strict_mode`, `close_idle_connections` |
+| `Mojo::Pg` | `new` |
+| `Mojo::mysql` | `new`, `strict_mode` |
 
 `query`, `hash`, `hashes`, `pubsub`, and migration methods belong to returned
 database/result/publisher objects or chained-flow inference and are not part of
@@ -50,4 +50,3 @@ This spec covers static adapter method completion for imported `Mojo::Pg` and
 `Mojo::mysql` class receivers. It does not claim result-object typing, chained
 return-type inference, hover/signature support unless the existing provider
 seam can reuse the catalog without widening the slice, or runtime reflection.
-

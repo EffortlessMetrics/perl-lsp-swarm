@@ -20,8 +20,12 @@ fn has_label(labels: &[String], expected: &str) -> bool {
 #[test]
 fn mojo_pg_static_catalog_requires_import() {
     let imported = labels(&completions_at_end("use Mojo::Pg;\nMojo::Pg->"));
-    for method in ["new", "db", "from_string", "reset"] {
-        assert!(has_label(&imported, method), "Mojo::Pg should offer {method}: {imported:?}");
+    assert!(has_label(&imported, "new"), "Mojo::Pg should offer new: {imported:?}");
+    for method in ["db", "from_string", "reset"] {
+        assert!(
+            !has_label(&imported, method),
+            "instance method {method} must not be offered on Mojo::Pg->"
+        );
     }
 
     let unimported = labels(&completions_at_end("Mojo::Pg->d"));
@@ -34,8 +38,14 @@ fn mojo_pg_static_catalog_requires_import() {
 #[test]
 fn mojo_mysql_static_catalog_and_prefix_filter() {
     let imported = labels(&completions_at_end("use Mojo::mysql;\nMojo::mysql->"));
-    for method in ["new", "db", "from_string", "strict_mode", "close_idle_connections"] {
+    for method in ["new", "strict_mode"] {
         assert!(has_label(&imported, method), "Mojo::mysql should offer {method}: {imported:?}");
+    }
+    for method in ["db", "from_string", "close_idle_connections"] {
+        assert!(
+            !has_label(&imported, method),
+            "instance method {method} must not be offered on Mojo::mysql->"
+        );
     }
     for method in ["isa", "can", "DOES", "VERSION"] {
         assert!(has_label(&imported, method), "generic method {method} should remain available");

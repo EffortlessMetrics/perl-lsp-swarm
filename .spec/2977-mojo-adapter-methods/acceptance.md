@@ -6,8 +6,8 @@
    first-slice `Mojo::Pg` catalog plus existing generic behavior.
 2. With `use Mojo::mysql`, static completion for `Mojo::mysql->` offers only
    the first-slice `Mojo::mysql` catalog plus existing generic behavior.
-3. Prefixes such as `Mojo::Pg->re` and `Mojo::mysql->st` narrow results to the
-   matching adapter methods.
+3. Prefixes such as `Mojo::mysql->st` narrow results to the matching
+   class-callable adapter methods.
 4. Without the corresponding import, adapter-specific methods are not offered
    solely because the receiver text names the adapter.
 5. DBI receiver catalogs and generic method completion retain their current
@@ -25,6 +25,6 @@
 ## Non-claims
 
 - No result-object or chained query inference.
+- No instance-only adapter method completion from a bare class receiver.
 - No promise, callback, pub/sub, or migration-flow inference.
 - No dynamic module or runtime-reflection support.
-

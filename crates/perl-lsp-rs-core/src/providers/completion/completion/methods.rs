@@ -145,20 +145,12 @@ pub const DBI_ST_METHOD_SIGS: &[(&str, &str, &str)] = &[
 ];
 
 /// Static methods documented by `Mojo::Pg`.
-pub const MOJO_PG_METHODS: &[(&str, &str)] = &[
-    ("new", "Create a Mojo::Pg database wrapper"),
-    ("db", "Get a cached database handle"),
-    ("from_string", "Configure the database from a connection string"),
-    ("reset", "Reset cached database handles"),
-];
+pub const MOJO_PG_METHODS: &[(&str, &str)] = &[("new", "Create a Mojo::Pg database wrapper")];
 
 /// Static methods documented by `Mojo::mysql`.
 pub const MOJO_MYSQL_METHODS: &[(&str, &str)] = &[
     ("new", "Create a Mojo::mysql database wrapper"),
-    ("db", "Get a cached database handle"),
-    ("from_string", "Configure the database from a connection string"),
     ("strict_mode", "Create a database wrapper with strict mode enabled"),
-    ("close_idle_connections", "Close idle database connections"),
 ];
 
 const GENERIC_OBJECT_METHODS: &[(&str, &str)] = &[
@@ -204,7 +196,7 @@ pub fn get_dbi_method_documentation(
 /// Infer receiver type from context (for DBI method completion)
 pub fn infer_receiver_type(context: &CompletionContext, source: &str) -> Option<String> {
     // Look backwards from the position to find the receiver
-    let prefix = context.prefix.trim_end_matches("->");
+    let prefix = context.receiver_prefix().trim_end_matches("->");
 
     // Simple heuristics for DBI types based on variable name
     if prefix.ends_with("$dbh") {
@@ -453,7 +445,8 @@ pub fn add_method_completions(
     let auto_import_edit =
         import_module.and_then(|m| auto_import::build_auto_import_edit(source, m));
 
-    let static_framework_methods = imported_framework_methods(&context.prefix, used_modules);
+    let static_framework_methods =
+        imported_framework_methods(context.receiver_prefix(), used_modules);
 
     // Choose methods based on inferred type
     let methods: Vec<(&str, &str)> = if let Some(methods) = static_framework_methods {
