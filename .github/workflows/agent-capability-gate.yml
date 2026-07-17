@@ -43,7 +43,7 @@ jobs:
         id: route
         env:
           GH_TOKEN: ${{ secrets.EM_RUNNER_READ_TOKEN }}
-          ORG: EffortlessMetrics
+          ORG: ${{ github.repository_owner }}
           IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
           IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
           PR_AUTHOR_LOGIN: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login || '' }}
@@ -108,9 +108,13 @@ jobs:
             exit 0
           fi
 
-          nano_group_id="$(jq -r \
+          if ! nano_group_id="$(jq -r \
             '[.[].runner_groups[]? | select(.name == "em-ci-nano") | .id][0] // empty' \
-            "$group_response")"
+            "$group_response")"; then
+            echo "::warning::runner group response parse failed; falling back to GitHub-hosted"
+            emit "github" "runner_group_response_parse_failed" "true" "true"
+            exit 0
+          fi
           if [ -z "$nano_group_id" ]; then
             echo "::warning::runner group em-ci-nano was not found; falling back to GitHub-hosted"
             emit "github" "runner_group_missing" "true" "true"
@@ -144,7 +148,11 @@ jobs:
             ' "$response"
           }
 
-          idle_runner_count_value="$(idle_runner_count)"
+          if ! idle_runner_count_value="$(idle_runner_count)"; then
+            echo "::warning::runner response parse failed; falling back to GitHub-hosted"
+            emit "github" "runner_response_parse_failed" "true" "true"
+            exit 0
+          fi
           echo "idle_workflow_nano=${idle_runner_count_value:-0}"
 
           if [ "${idle_runner_count_value:-0}" -gt 0 ]; then
