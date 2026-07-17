@@ -91,6 +91,29 @@ pub fn check(config: CheckConfig) -> Result<()> {
         Err(error) => return fail_with_receipt(&config, error),
     };
 
+    let (receipt, errors) = reconcile(&config, &ledger, &target_unique);
+    write_receipt(&config.receipt, &receipt)?;
+
+    if errors.is_empty() {
+        println!(
+            "sync-divergence: checked {} target-unique non-merge commit(s)",
+            receipt.target_unique_commits.len()
+        );
+        Ok(())
+    } else {
+        Err(eyre!(
+            "sync-divergence preflight failed with {} error(s); see {}",
+            errors.len(),
+            config.receipt.display()
+        ))
+    }
+}
+
+fn reconcile(
+    config: &CheckConfig,
+    ledger: &Ledger,
+    target_unique: &[CherryCommit],
+) -> (Receipt, Vec<String>) {
     let mut errors = Vec::new();
     let mut entries = BTreeMap::new();
     for entry in &ledger.entries {
@@ -106,7 +129,7 @@ pub fn check(config: CheckConfig) -> Result<()> {
     let mut excluded_release_lineage_commits = Vec::new();
     let mut accepted_commits = Vec::new();
 
-    for commit in &target_unique {
+    for commit in target_unique {
         if commit.is_merge {
             excluded_merge_commits.push(commit.commit.clone());
             continue;
@@ -149,7 +172,7 @@ pub fn check(config: CheckConfig) -> Result<()> {
     }
 
     for entry in &ledger.entries {
-        if entry.evidence.is_empty() {
+        if !has_evidence(entry) {
             errors.push(format!("commit {} has no evidence", entry.commit));
         }
         if !seen.contains(entry.commit.as_str()) {
@@ -172,21 +195,11 @@ pub fn check(config: CheckConfig) -> Result<()> {
         accepted_commits,
         errors: errors.clone(),
     };
-    write_receipt(&config.receipt, &receipt)?;
+    (receipt, errors)
+}
 
-    if errors.is_empty() {
-        println!(
-            "sync-divergence: checked {} target-unique non-merge commit(s)",
-            receipt.target_unique_commits.len()
-        );
-        Ok(())
-    } else {
-        Err(eyre!(
-            "sync-divergence preflight failed with {} error(s); see {}",
-            errors.len(),
-            config.receipt.display()
-        ))
-    }
+fn has_evidence(entry: &LedgerEntry) -> bool {
+    entry.evidence.iter().any(|evidence| !evidence.trim().is_empty())
 }
 
 fn load_ledger(path: &Path) -> Result<Ledger> {
@@ -347,6 +360,68 @@ mod tests {
         let receipt: serde_json::Value = serde_json::from_str(&content)?;
         assert_eq!(receipt["target_unique_commits"].as_array().map(Vec::len), Some(0));
         assert_eq!(receipt["errors"].as_array().map(Vec::len), Some(0));
+        Ok(())
+    }
+
+    #[test]
+    fn reconciliation_rejects_ambiguous_rows_and_skips_merges() -> Result<()> {
+        let config = CheckConfig {
+            base: "base".to_string(),
+            source: "source".to_string(),
+            target: "target".to_string(),
+            ledger: PathBuf::from("ledger.json"),
+            receipt: PathBuf::from("receipt.json"),
+        };
+        let ledger = Ledger {
+            schema_version: 1,
+            base: config.base.clone(),
+            source: config.source.clone(),
+            target: config.target.clone(),
+            entries: vec![
+                LedgerEntry {
+                    commit: "abc".to_string(),
+                    subject: "different subject".to_string(),
+                    classification: "not-valid".to_string(),
+                    evidence: vec!["   ".to_string()],
+                },
+                LedgerEntry {
+                    commit: "abc".to_string(),
+                    subject: "subject".to_string(),
+                    classification: "port_to_swarm".to_string(),
+                    evidence: vec!["valid evidence".to_string()],
+                },
+            ],
+        };
+        let target_unique = vec![
+            CherryCommit {
+                commit: "abc".to_string(),
+                subject: "subject".to_string(),
+                is_merge: false,
+            },
+            CherryCommit {
+                commit: "merge".to_string(),
+                subject: "merge subject".to_string(),
+                is_merge: true,
+            },
+        ];
+
+        let (receipt, errors) = reconcile(&config, &ledger, &target_unique);
+        assert_eq!(receipt.target_unique_commits.len(), 1);
+        assert_eq!(receipt.excluded_merge_commits, vec!["merge"]);
+        assert!(receipt.accepted_commits.is_empty());
+        assert!(errors.iter().any(|error| error.contains("appears more than once")));
+        assert!(errors.iter().any(|error| error.contains("invalid classification")));
+        assert!(errors.iter().any(|error| error.contains("has no evidence")));
+        assert!(errors.iter().any(|error| error.contains("does not match Git")));
+        Ok(())
+    }
+
+    #[test]
+    fn target_unique_commits_reads_a_real_git_cherry_plus_line() -> Result<()> {
+        let commits = target_unique_commits("HEAD~1", "HEAD")?;
+        assert_eq!(commits.len(), 1);
+        assert!(!commits[0].is_merge);
+        assert!(!commits[0].subject.is_empty());
         Ok(())
     }
 
