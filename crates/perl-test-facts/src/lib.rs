@@ -89,6 +89,10 @@ pub struct TapAssertion {
     pub source_file: Option<String>,
     /// Source line parsed from an `at FILE line N.` diagnostic, when present.
     pub source_line: Option<usize>,
+    /// First value parsed from a `got:` or `received:` diagnostic, when present.
+    pub got: Option<String>,
+    /// First value parsed from an `expected:` or `wanted:` diagnostic, when present.
+    pub expected: Option<String>,
 }
 
 /// Parsed TAP output.
@@ -450,21 +454,38 @@ fn parse_assertion(line: &str, line_number: usize, depth: usize) -> Option<TapAs
         diagnostic_lines: Vec::new(),
         source_file: None,
         source_line: None,
+        got: None,
+        expected: None,
     })
 }
 
 fn apply_diagnostic(assertion: &mut TapAssertion, line: &str) {
     let diagnostic = line.strip_prefix('#').map_or(line, str::trim);
     assertion.diagnostic_lines.push(diagnostic.to_owned());
-    let Some((file, source_line)) = parse_source_location(diagnostic) else {
-        return;
-    };
-    if assertion.source_file.is_none() {
-        assertion.source_file = Some(file);
+    if let Some((file, source_line)) = parse_source_location(diagnostic) {
+        if assertion.source_file.is_none() {
+            assertion.source_file = Some(file);
+        }
+        if assertion.source_line.is_none() {
+            assertion.source_line = Some(source_line);
+        }
     }
-    if assertion.source_line.is_none() {
-        assertion.source_line = Some(source_line);
+    if assertion.got.is_none() {
+        assertion.got = diagnostic_value(diagnostic, &["got:", "received:"]);
     }
+    if assertion.expected.is_none() {
+        assertion.expected = diagnostic_value(diagnostic, &["expected:", "wanted:"]);
+    }
+}
+
+fn diagnostic_value(diagnostic: &str, labels: &[&str]) -> Option<String> {
+    let lower = diagnostic.to_ascii_lowercase();
+    labels.iter().find_map(|label| {
+        lower.strip_prefix(label).and_then(|_| {
+            let value = diagnostic[label.len()..].trim();
+            (!value.is_empty()).then(|| value.to_owned())
+        })
+    })
 }
 
 fn parse_source_location(diagnostic: &str) -> Option<(String, usize)> {
@@ -658,14 +679,18 @@ mod tests {
 
     #[test]
     fn retains_non_yaml_diagnostics_and_source_locations() {
-        let report = parse_tap("not ok 1 - computes\n# at t/example.t line 12.\n# got: 2\n1..1\n");
+        let report = parse_tap(
+            "not ok 1 - computes\n# at t/example.t line 12.\n# got: 2\n# expected: 3\n# got: later\n1..1\n",
+        );
 
         assert_eq!(
             report.assertions[0].diagnostic_lines,
-            vec!["at t/example.t line 12.", "got: 2"]
+            vec!["at t/example.t line 12.", "got: 2", "expected: 3", "got: later"]
         );
         assert_eq!(report.assertions[0].source_file.as_deref(), Some("t/example.t"));
         assert_eq!(report.assertions[0].source_line, Some(12));
+        assert_eq!(report.assertions[0].got.as_deref(), Some("2"));
+        assert_eq!(report.assertions[0].expected.as_deref(), Some("3"));
     }
 
     #[test]

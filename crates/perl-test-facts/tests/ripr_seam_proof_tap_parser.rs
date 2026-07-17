@@ -213,11 +213,18 @@ fn seam_yaml_marker_rejection_clears_adjacency() {
 /// from the TAP stream line number.
 #[test]
 fn seam_source_location_diagnostic_is_retained() {
-    let report = parse_tap("not ok 1 - computes\n# at t/example.t line 12.\n# got: 2\n1..1\n");
+    let report = parse_tap(
+        "not ok 1 - computes\n# at t/example.t line 12.\n# got: 2\n# expected: 3\n# got: later\n1..1\n",
+    );
 
-    assert_eq!(report.assertions[0].diagnostic_lines, vec!["at t/example.t line 12.", "got: 2"]);
+    assert_eq!(
+        report.assertions[0].diagnostic_lines,
+        vec!["at t/example.t line 12.", "got: 2", "expected: 3", "got: later"]
+    );
     assert_eq!(report.assertions[0].source_file.as_deref(), Some("t/example.t"));
     assert_eq!(report.assertions[0].source_line, Some(12));
+    assert_eq!(report.assertions[0].got.as_deref(), Some("2"));
+    assert_eq!(report.assertions[0].expected.as_deref(), Some("3"));
     assert_eq!(report.assertions[0].line, 1);
 }
 
