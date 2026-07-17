@@ -31,6 +31,16 @@ and meant to stay in sync with it.
 **Default-PR LEM sum (Linux+Windows weighted):** ≈ 93 LEM today. After PR 17 with
 risk-pack routing, expected ordinary-PR LEM ≈ 30–40.
 
+## Event-routed lanes
+
+These lanes may observe pull requests but are not default-PR lanes in the
+whitelist; they run only when their workflow trigger and route conditions admit
+them.
+
+| Lane id | Workflow | Job | Runner | Base LEM | Blocking? |
+|---|---|---|---|---:|---:|
+| `agent_capability_gate` | `agent-capability-gate.yml` | router + `agent-capability-gate-self-hosted` / `agent-capability-gate-hosted` | mixed (`workflow-nano` / `ubuntu-24.04` fallback) | 2 | no |
+
 ## Label-gated lanes
 
 | Lane id | Trigger labels | Base LEM |
