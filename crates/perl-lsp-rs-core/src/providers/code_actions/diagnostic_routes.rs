@@ -8,7 +8,8 @@ use perl_parser_core::Node;
 
 /// Convert Diagnostic to QuickFixDiagnostic.
 ///
-/// Since Diagnostic already uses byte offsets, this is a simple copy.
+/// Copies byte-offset fields and, for supported diagnostic codes, derives
+/// structured `QuickFixMetadata` from the AST when available.
 fn to_quick_fix_diagnostic(diag: &Diagnostic, ast: Option<&Node>) -> QuickFixDiagnostic {
     let metadata = diag.code.as_deref().and_then(|code| {
         matches!(code, "PL405" | "native.common.printf_format_arity")
