@@ -1299,6 +1299,7 @@ impl PureRustPerlParser {
                     // Extract actual heredoc content from q{__HEREDOC__content__HEREDOC__}
                     if let Some(start_idx) = content.find("{__HEREDOC__")
                         && let Some(end_idx) = content.rfind("__HEREDOC__}")
+                        && start_idx + 12 <= end_idx
                     {
                         let heredoc_content = &content[start_idx + 12..end_idx];
                         return Ok(Some(AstNode::String(Arc::from(heredoc_content))));
@@ -1314,6 +1315,7 @@ impl PureRustPerlParser {
                     // Extract actual heredoc content from qq{__HEREDOC__content__HEREDOC__}
                     if let Some(start_idx) = content.find("{__HEREDOC__")
                         && let Some(end_idx) = content.rfind("__HEREDOC__}")
+                        && start_idx + 12 <= end_idx
                     {
                         let heredoc_content = &content[start_idx + 12..end_idx];
                         return Ok(Some(AstNode::QqString(Arc::from(heredoc_content))));
@@ -2847,6 +2849,26 @@ mod tests {
     fn test_regression_percent_string_in_if_assignment() {
         let mut parser = PureRustPerlParser::new();
         let source = r#"if ($a > 0) { $a = "%"; }"#;
+        let result = parser.parse(source);
+        assert!(result.is_ok(), "Failed to parse regression input: {source}");
+    }
+
+    #[test]
+    fn test_regression_q_string_heredoc_marker_no_content_does_not_panic() {
+        // #3917: a literal "{__HEREDOC__" .. "__HEREDOC__}" span with no
+        // room for content in between (start_idx + 12 > end_idx) used to
+        // panic on an inverted slice range instead of falling back to the
+        // raw content.
+        let mut parser = PureRustPerlParser::new();
+        let source = "q{__HEREDOC__}";
+        let result = parser.parse(source);
+        assert!(result.is_ok(), "Failed to parse regression input: {source}");
+    }
+
+    #[test]
+    fn test_regression_qq_string_heredoc_marker_no_content_does_not_panic() {
+        let mut parser = PureRustPerlParser::new();
+        let source = "qq{__HEREDOC__}";
         let result = parser.parse(source);
         assert!(result.is_ok(), "Failed to parse regression input: {source}");
     }
