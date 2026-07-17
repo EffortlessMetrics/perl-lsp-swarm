@@ -463,6 +463,8 @@ struct DelimiterScanState {
     regex_opener: Option<char>,
     regex_nesting: usize,
     regex_char_class: bool,
+    regex_is_substitution: bool,
+    pending_replacement: Option<(Option<char>, char)>,
     escaped: bool,
     last_non_whitespace: Option<char>,
     second_last_non_whitespace: Option<char>,
@@ -479,6 +481,7 @@ impl DelimiterScanState {
         self.regex_opener = None;
         self.regex_nesting = 0;
         self.regex_char_class = false;
+        self.regex_is_substitution = false;
     }
 }
 
@@ -497,6 +500,30 @@ fn significant_delimiters_with_state(line: &str, state: &mut DelimiterScanState)
             continue;
         }
 
+        if state.regex_closer.is_none() {
+            if let Some((replacement_opener, replacement_closer)) = state.pending_replacement {
+                if let Some(opener) = replacement_opener {
+                    if ch == opener {
+                        state.pending_replacement = None;
+                        state.regex_opener = Some(opener);
+                        state.regex_closer = Some(replacement_closer);
+                        state.regex_nesting = 1;
+                        state.regex_char_class = false;
+                        state.regex_is_substitution = false;
+                        state.record_non_whitespace(ch);
+                        continue;
+                    }
+                } else {
+                    state.pending_replacement = None;
+                    state.regex_opener = None;
+                    state.regex_closer = Some(replacement_closer);
+                    state.regex_nesting = 0;
+                    state.regex_char_class = false;
+                    state.regex_is_substitution = false;
+                }
+            }
+        }
+
         if state.regex_closer.is_some() {
             if ch == '[' {
                 state.regex_char_class = true;
@@ -506,10 +533,18 @@ fn significant_delimiters_with_state(line: &str, state: &mut DelimiterScanState)
                 if state.regex_opener.is_some() && Some(ch) == state.regex_opener {
                     state.regex_nesting += 1;
                 } else if Some(ch) == state.regex_closer {
+                    let replacement = state.regex_is_substitution;
+                    let replacement_opener = state.regex_opener;
+                    let replacement_closer = state.regex_closer;
                     if state.regex_opener.is_some() && state.regex_nesting > 1 {
                         state.regex_nesting -= 1;
                     } else {
                         state.clear_regex();
+                        if replacement {
+                            if let Some(closer) = replacement_closer {
+                                state.pending_replacement = Some((replacement_opener, closer));
+                            }
+                        }
                     }
                     state.record_non_whitespace(ch);
                 }
@@ -533,7 +568,7 @@ fn significant_delimiters_with_state(line: &str, state: &mut DelimiterScanState)
             continue;
         }
 
-        if let Some((regex_opener, regex_closer, regex_nesting)) =
+        if let Some((regex_opener, regex_closer, regex_nesting, regex_is_substitution)) =
             regex_start(&chars, index, ch, state)
         {
             // Ignore delimiters inside Perl regex and quote-like forms. The
@@ -543,6 +578,7 @@ fn significant_delimiters_with_state(line: &str, state: &mut DelimiterScanState)
             state.regex_closer = Some(regex_closer);
             state.regex_nesting = regex_nesting;
             state.regex_char_class = false;
+            state.regex_is_substitution = regex_is_substitution;
             state.record_non_whitespace(ch);
             continue;
         }
@@ -580,9 +616,13 @@ fn regex_start(
     index: usize,
     ch: char,
     state: &DelimiterScanState,
-) -> Option<(Option<char>, char, usize)> {
+) -> Option<(Option<char>, char, usize, bool)> {
     let quote_like = preceding_word(chars, index);
-    let is_quote_like = matches!(quote_like.as_deref(), Some("m" | "q" | "qr" | "s" | "tr" | "y"));
+    let is_quote_like = matches!(
+        quote_like.as_deref(),
+        Some("m" | "q" | "qr" | "qq" | "qw" | "qx" | "s" | "tr" | "y")
+    );
+    let is_substitution = matches!(quote_like.as_deref(), Some("s" | "tr" | "y"));
 
     if is_quote_like && matches!(ch, '/' | '{' | '(' | '[') {
         let closer = match ch {
@@ -592,7 +632,7 @@ fn regex_start(
             _ => '/',
         };
         let nesting = usize::from(ch != '/');
-        return Some((Some(ch).filter(|_| ch != '/'), closer, nesting));
+        return Some((Some(ch).filter(|_| ch != '/'), closer, nesting, is_substitution));
     }
 
     if ch != '/' {
@@ -606,9 +646,12 @@ fn regex_start(
         )
         || (state.last_non_whitespace == Some('~')
             && matches!(state.second_last_non_whitespace, Some('=') | Some('!')))
-        || matches!(quote_like.as_deref(), Some("m" | "q" | "qr" | "s" | "tr" | "y"));
+        || matches!(
+            quote_like.as_deref(),
+            Some("m" | "q" | "qr" | "qq" | "qw" | "qx" | "s" | "tr" | "y")
+        );
 
-    starts_expression.then_some((None, '/', 0))
+    starts_expression.then_some((None, '/', 0, false))
 }
 
 fn preceding_word(chars: &[char], index: usize) -> Option<String> {

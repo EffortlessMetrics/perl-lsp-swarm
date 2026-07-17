@@ -378,6 +378,18 @@ fn builtin_formatter_ignores_bare_and_quote_like_regex_delimiters() {
 }
 
 #[test]
+fn builtin_formatter_ignores_extended_quote_like_and_replacement_delimiters() {
+    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
+    let formatted = formatter.format(
+        "if (qq{[()]}) {\nprint 1;\n}\nif (qw{[()]}) {\nprint 2;\n}\nif (qx{[()]}) {\nprint 3;\n}\nif ($x =~ s/a/{/) {\nprint 4;\n}\nif ($x =~ tr/a/{/) {\nprint 5;\n}\nprint 6;\n",
+    );
+    assert_eq!(
+        formatted,
+        "if (qq{[()]}) {\n    print 1;\n}\nif (qw{[()]}) {\n    print 2;\n}\nif (qx{[()]}) {\n    print 3;\n}\nif ($x =~ s/a/{/) {\n    print 4;\n}\nif ($x =~ tr/a/{/) {\n    print 5;\n}\nprint 6;\n"
+    );
+}
+
+#[test]
 fn builtin_formatter_carries_multiline_regex_state() {
     let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
     let formatted = formatter.format("if (/[\n()]/) {\nprint 1;\n}\nprint 2;\n");
