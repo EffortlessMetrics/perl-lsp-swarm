@@ -48,7 +48,8 @@ proptest! {
 }
 
 #[test]
-fn candidate_report_deduplicates_repeated_open_documents_and_keeps_stable_order() {
+fn candidate_report_deduplicates_repeated_open_documents_and_keeps_stable_order()
+-> Result<(), Box<dyn std::error::Error>> {
     for module_name in ["Acme::Widget", "Nested::Acme::Widget"] {
         for duplicate_count in 1usize..=8 {
             let relative_path = module_name_to_path(module_name).replace('\\', "/");
@@ -72,9 +73,7 @@ fn candidate_report_deduplicates_repeated_open_documents_and_keeps_stable_order(
 
             assert_eq!(&report, &repeated_report);
             assert_eq!(report.candidates.len(), 1);
-            let Some(candidate) = report.candidates.first() else {
-                continue;
-            };
+            let candidate = report.candidates.first().ok_or("candidate report has no candidate")?;
             assert_eq!(&candidate.uri, &open_uri);
             assert_eq!(&candidate.source, "open-document");
             assert_eq!(candidate.search_order, 0);
@@ -88,4 +87,6 @@ fn candidate_report_deduplicates_repeated_open_documents_and_keeps_stable_order(
             );
         }
     }
+
+    Ok(())
 }
