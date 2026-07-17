@@ -483,27 +483,18 @@ fn evaluate_protection(
 
 fn status_from_findings(findings: &[MergeReadinessFinding]) -> MergeReadinessStatus {
     let class_order = [
-        EvidenceClass::Stale,
-        EvidenceClass::NotProven,
-        EvidenceClass::Cancelled,
-        EvidenceClass::Pending,
-        EvidenceClass::NotApplicable,
-        EvidenceClass::DraftSkip,
-        EvidenceClass::PolicyFinding,
+        (EvidenceClass::Stale, MergeReadinessStatus::Stale),
+        (EvidenceClass::NotProven, MergeReadinessStatus::NotProven),
+        (EvidenceClass::Cancelled, MergeReadinessStatus::Cancelled),
+        (EvidenceClass::Pending, MergeReadinessStatus::Pending),
+        (EvidenceClass::NotApplicable, MergeReadinessStatus::NotApplicable),
+        (EvidenceClass::DraftSkip, MergeReadinessStatus::DraftSkip),
+        (EvidenceClass::PolicyFinding, MergeReadinessStatus::Blocked),
     ];
 
-    for class in class_order {
+    for (class, status) in class_order {
         if findings.iter().any(|finding| finding.blocking && finding.class == class) {
-            return match class {
-                EvidenceClass::NotProven => MergeReadinessStatus::NotProven,
-                EvidenceClass::Stale => MergeReadinessStatus::Stale,
-                EvidenceClass::Cancelled => MergeReadinessStatus::Cancelled,
-                EvidenceClass::Pending => MergeReadinessStatus::Pending,
-                EvidenceClass::NotApplicable => MergeReadinessStatus::NotApplicable,
-                EvidenceClass::DraftSkip => MergeReadinessStatus::DraftSkip,
-                EvidenceClass::PolicyFinding => MergeReadinessStatus::Blocked,
-                EvidenceClass::Success => MergeReadinessStatus::Ready,
-            };
+            return status;
         }
     }
 
