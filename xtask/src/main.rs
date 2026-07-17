@@ -888,6 +888,22 @@ enum Commands {
         format: String,
     },
 
+    /// Run the thin exact-head repository contract advisory (issue #3987).
+    CiContract {
+        /// Base git ref or full SHA for the evaluated range.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+        /// Head git ref or full SHA for the evaluated range.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+        /// JSON receipt output path.
+        #[arg(long, default_value = "target/receipts/ci-contract.json")]
+        receipt: PathBuf,
+        /// Markdown summary output path.
+        #[arg(long, default_value = "target/receipts/ci-contract.md")]
+        summary: PathBuf,
+    },
+
     /// Resolve a change set (base/head SHAs + changed paths) via the single
     /// #3985 `change_set::resolve_change_set` base-resolver + diff — the
     /// runtime-neutral interface `hooks/pre-push` consumes (#3985 Slice 3A)
@@ -3869,6 +3885,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CiScope { base, format } => {
             ci_scope::run(ci_scope::CiScopeConfig { base, format })
         }
+        Commands::CiContract { base, head, receipt, summary } => {
+            ci_contract::run(ci_contract::CiContractConfig { base, head, receipt, summary })
+        }
         Commands::ChangeSet { base, head, format, root } => {
             change_set::run(change_set::ChangeSetConfig { base, head, format, root })
         }
@@ -3880,7 +3899,13 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
 
         Commands::WorkflowTriggerLint { policy, receipt, fixture, format } => {
-            workflow_trigger_lint::run(policy, receipt, fixture, format)
+            match workflow_trigger_lint::run(policy, receipt, fixture, format) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    eprintln!("workflow-trigger-lint: instrument failure: {error}");
+                    std::process::exit(2);
+                }
+            }
         }
         Commands::CheckVersionSync => check_version_sync::run(),
         Commands::SyncReleaseDocs { write } => sync_release_docs::run(write),
@@ -4429,7 +4454,13 @@ fn run_cli(cli: Cli) -> Result<()> {
             ..gates::GateRunnerConfig::default()
         }),
         Commands::GatePolicy { command } => match command {
-            GatePolicyCommand::Check => tasks::gate_policy::check(),
+            GatePolicyCommand::Check => match tasks::gate_policy::check() {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    eprintln!("gate-policy: instrument failure: {error}");
+                    std::process::exit(2);
+                }
+            },
             GatePolicyCommand::Effective { profile } => tasks::gate_policy::effective(profile),
         },
         Commands::Changelog { command } => match command {
