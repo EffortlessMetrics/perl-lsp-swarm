@@ -3899,7 +3899,13 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
 
         Commands::WorkflowTriggerLint { policy, receipt, fixture, format } => {
-            workflow_trigger_lint::run(policy, receipt, fixture, format)
+            match workflow_trigger_lint::run(policy, receipt, fixture, format) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    eprintln!("workflow-trigger-lint: instrument failure: {error}");
+                    std::process::exit(2);
+                }
+            }
         }
         Commands::CheckVersionSync => check_version_sync::run(),
         Commands::SyncReleaseDocs { write } => sync_release_docs::run(write),
@@ -4448,7 +4454,13 @@ fn run_cli(cli: Cli) -> Result<()> {
             ..gates::GateRunnerConfig::default()
         }),
         Commands::GatePolicy { command } => match command {
-            GatePolicyCommand::Check => tasks::gate_policy::check(),
+            GatePolicyCommand::Check => match tasks::gate_policy::check() {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    eprintln!("gate-policy: instrument failure: {error}");
+                    std::process::exit(2);
+                }
+            },
             GatePolicyCommand::Effective { profile } => tasks::gate_policy::effective(profile),
         },
         Commands::Changelog { command } => match command {

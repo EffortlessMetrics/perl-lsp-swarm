@@ -7,8 +7,11 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use serde::{Deserialize, Serialize};
@@ -18,6 +21,7 @@ use crate::tasks::ci_scope::{self, ScopeOutput};
 use crate::utils::project_root;
 
 const SCHEMA_VERSION: &str = "ci-contract.v1";
+const CHECK_TIMEOUT: Duration = Duration::from_mins(2);
 const CLAIM_BOUNDARY: &str =
     "Advisory exact-head repository contracts; no behavioral proof, review, or merge authorization";
 
@@ -111,11 +115,10 @@ pub fn run(config: CiContractConfig) -> Result<()> {
         for spec in specs {
             checks.push(run_check(&root, &spec));
         }
-    }
-
-    let current_head = resolve_sha(&root, "HEAD")?;
-    if current_head != head_sha {
-        checks.push(head_identity_check(&head_sha, &current_head));
+        let current_head = resolve_sha(&root, "HEAD")?;
+        if current_head != head_sha {
+            checks.push(head_identity_check(&head_sha, &current_head));
+        }
     }
 
     let receipt = ContractReceipt {
@@ -255,20 +258,58 @@ fn run_check(root: &Path, spec: &CheckSpec) -> ContractCheck {
 }
 
 fn execute_check(root: &Path, spec: &CheckSpec) -> std::io::Result<Output> {
-    if spec.program == "cargo" && spec.args.first().is_some_and(|arg| arg == "xtask") {
-        // Reuse the current executable so inherited CARGO_*/RUSTFLAGS settings remain
-        // intact and Cargo does not try to replace the running xtask binary on Windows.
-        let executable = std::env::current_exe()?;
-        return Command::new(executable).args(spec.args.iter().skip(1)).current_dir(root).output();
+    let mut command =
+        if spec.program == "cargo" && spec.args.first().is_some_and(|arg| arg == "xtask") {
+            // Reuse the current executable so inherited CARGO_*/RUSTFLAGS settings remain
+            // intact and Cargo does not try to replace the running xtask binary on Windows.
+            let executable = std::env::current_exe()?;
+            let mut command = Command::new(executable);
+            command.args(spec.args.iter().skip(1));
+            command
+        } else {
+            let mut command = Command::new(spec.program);
+            command.args(&spec.args);
+            command
+        };
+    command.current_dir(root).stdout(Stdio::piped()).stderr(Stdio::piped());
+    run_with_timeout(command)
+}
+
+fn run_with_timeout(mut command: Command) -> io::Result<Output> {
+    let mut child = command.spawn()?;
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return collect_output(&mut child, status);
+        }
+        if started.elapsed() >= CHECK_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("check exceeded {} seconds", CHECK_TIMEOUT.as_secs()),
+            ));
+        }
+        thread::sleep(Duration::from_millis(50));
     }
-    Command::new(spec.program).args(&spec.args).current_dir(root).output()
+}
+
+fn collect_output(child: &mut Child, status: std::process::ExitStatus) -> io::Result<Output> {
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    if let Some(mut stream) = child.stdout.take() {
+        stream.read_to_end(&mut stdout)?;
+    }
+    if let Some(mut stream) = child.stderr.take() {
+        stream.read_to_end(&mut stderr)?;
+    }
+    Ok(Output { status, stdout, stderr })
 }
 
 fn result_for_exit(code: Option<i32>, detail: &str) -> ContractResultClass {
     match code {
         Some(0) if has_policy_finding(detail) => ContractResultClass::PolicyFinding,
         Some(0) => ContractResultClass::Success,
-        Some(1) if is_instrument_failure(detail) => ContractResultClass::NotProven,
         Some(1) => ContractResultClass::PolicyFinding,
         _ => ContractResultClass::NotProven,
     }
@@ -279,22 +320,6 @@ fn has_policy_finding(detail: &str) -> bool {
         let line = line.trim_start();
         line.starts_with("WARN ") || line.starts_with("[WARN]")
     })
-}
-
-fn is_instrument_failure(detail: &str) -> bool {
-    let detail = detail.to_ascii_lowercase();
-    [
-        "instrument failure",
-        "failed to start check",
-        "failed to read",
-        "failed to parse",
-        "reading policy file",
-        "parsing policy file",
-        "could not resolve",
-        "not found on path",
-    ]
-    .iter()
-    .any(|marker| detail.contains(marker))
 }
 
 fn head_identity_check(expected: &str, current: &str) -> ContractCheck {
@@ -579,8 +604,13 @@ mod tests {
             "missing exit code must be not-proven"
         );
         ensure!(
-            result_for_exit(Some(1), "Error: instrument failure") == ContractResultClass::NotProven,
-            "instrument failure must be not-proven"
+            result_for_exit(Some(2), "instrument failure") == ContractResultClass::NotProven,
+            "instrument exit status must be not-proven"
+        );
+        ensure!(
+            result_for_exit(Some(1), "policy finding: failed to read expected file")
+                == ContractResultClass::PolicyFinding,
+            "policy output must not be downgraded by incidental wording"
         );
         Ok(())
     }
