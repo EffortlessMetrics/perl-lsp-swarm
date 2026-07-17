@@ -111,6 +111,9 @@ export class TestMessage {
 
 export class CancellationTokenSource {
   token = { isCancellationRequested: false };
+  cancel() {
+    this.token.isCancellationRequested = true;
+  }
   dispose() {}
 }
 
