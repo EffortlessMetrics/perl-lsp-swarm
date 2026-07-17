@@ -27,7 +27,8 @@ The JSON input contains repository/PR/base/head identity, an optional merge
 group SHA, the live required-check name list, check evidence, #3693 review
 evidence, #3784 Changie evidence, and protected-integration evidence. Every
 evidence producer records the SHA it evaluated. Any mismatch with the current
-PR `head_sha` is `STALE`.
+PR `head_sha` is `STALE` and blocks readiness, including when the underlying
+policy is otherwise advisory.
 
 ## Proof
 

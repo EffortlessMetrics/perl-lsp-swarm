@@ -4215,7 +4215,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::MergeReady { command } => match command {
             MergeReadyCommand::Evaluate { snapshot, output } => {
-                merge_ready::evaluate_snapshot_file(snapshot, output)
+                merge_ready::evaluate_snapshot_file(&snapshot, output.as_deref())
             }
             MergeReadyCommand::Emit { pr, receipt } => merge_ready::emit(pr, receipt),
             MergeReadyCommand::Verify { pr, fixture } => merge_ready::verify(pr, fixture),
