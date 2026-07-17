@@ -47,7 +47,7 @@ pub struct TapPlan {
     pub end: u32,
     /// Optional plan directive, including its reason.
     pub directive: Option<String>,
-    /// Source line containing the plan.
+    /// TAP stream line containing the plan.
     pub line: usize,
 }
 
@@ -55,8 +55,10 @@ pub struct TapPlan {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TapAssertion {
-    /// Source line containing the assertion.
+    /// TAP stream line containing the assertion.
     pub line: usize,
+    /// Nesting depth from TAP indentation (zero for top-level assertions).
+    pub depth: usize,
     /// Optional assertion number.
     pub number: Option<u32>,
     /// Classified assertion outcome.
@@ -83,6 +85,8 @@ pub struct TapReport {
     pub bail_out: Option<String>,
     /// Parser and structural diagnostics that prevent a fully trusted result.
     pub diagnostics: Vec<String>,
+    /// Unrecognized non-comment lines retained as non-fatal raw evidence.
+    pub raw_lines: Vec<String>,
 }
 
 impl TapReport {
@@ -122,14 +126,14 @@ impl TapReport {
         self.count(TapAssertionStatus::Unknown)
     }
 
-    /// Return whether the report is complete and contains no failed assertions.
+    /// Return whether the report has no hard assertion failures or bailout.
+    ///
+    /// Plan mismatches and structural diagnostics are reported independently;
+    /// callers that require a structurally valid report must inspect
+    /// [`Self::diagnostics`] and the plan separately.
     #[must_use]
     pub fn is_success(&self) -> bool {
-        self.plan.is_some()
-            && self.bail_out.is_none()
-            && self.failed_count() == 0
-            && self.unknown_count() == 0
-            && self.diagnostics.is_empty()
+        self.bail_out.is_none() && self.failed_count() == 0
     }
 }
 
@@ -146,6 +150,7 @@ pub fn parse_tap(source: &str) -> TapReport {
     for (index, raw_line) in source.lines().enumerate() {
         let line_number = index + 1;
         let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        let depth = indentation_depth(line);
 
         if let Some(block) = yaml_block.as_mut() {
             block.push(line.to_owned());
@@ -168,6 +173,10 @@ pub fn parse_tap(source: &str) -> TapReport {
         }
 
         if let Some(rest) = trimmed.strip_prefix("TAP version") {
+            if depth != 0 {
+                report.raw_lines.push(line.to_owned());
+                continue;
+            }
             if report.version.is_some() {
                 report.diagnostics.push(format!("line {line_number}: duplicate TAP version"));
             }
@@ -194,38 +203,37 @@ pub fn parse_tap(source: &str) -> TapReport {
             continue;
         }
 
-        if let Some(plan) = parse_plan(trimmed, line_number) {
-            if let Some(existing) = report.plan.as_ref() {
-                report.diagnostics.push(format!(
-                    "line {line_number}: duplicate TAP plan; first plan was on line {}",
-                    existing.line
-                ));
-            } else {
-                report.plan = Some(plan);
+        if depth == 0 {
+            if let Some(plan) = parse_plan(trimmed, line_number) {
+                if let Some(existing) = report.plan.as_ref() {
+                    report.diagnostics.push(format!(
+                        "line {line_number}: duplicate TAP plan; first plan was on line {}",
+                        existing.line
+                    ));
+                } else {
+                    report.plan = Some(plan);
+                }
+                continue;
             }
+
+            if looks_like_plan(trimmed) {
+                report.diagnostics.push(format!("line {line_number}: invalid TAP plan"));
+                continue;
+            }
+        } else if looks_like_plan(trimmed) {
+            // A subtest owns its own plan. The first implementation exposes
+            // the top-level plan and retains nested protocol records as raw
+            // evidence until nested-plan facts have a dedicated model.
+            report.raw_lines.push(line.to_owned());
             continue;
         }
 
-        if looks_like_plan(trimmed) {
-            report.diagnostics.push(format!("line {line_number}: invalid TAP plan"));
-            continue;
-        }
-
-        if let Some(assertion) = parse_assertion(trimmed, line_number) {
-            if assertion.status == TapAssertionStatus::Unknown {
-                report.diagnostics.push(format!(
-                    "line {line_number}: unsupported TAP directive{}",
-                    assertion
-                        .directive
-                        .as_deref()
-                        .map_or_else(String::new, |directive| format!(": {directive}"))
-                ));
-            }
+        if let Some(assertion) = parse_assertion(trimmed, line_number, depth) {
             report.assertions.push(assertion);
             continue;
         }
 
-        report.diagnostics.push(format!("line {line_number}: unrecognized TAP output"));
+        report.raw_lines.push(line.to_owned());
     }
 
     if let Some(block) = yaml_block {
@@ -241,12 +249,29 @@ pub fn parse_tap(source: &str) -> TapReport {
     report
 }
 
+fn indentation_depth(line: &str) -> usize {
+    let mut spaces = 0usize;
+    for character in line.chars() {
+        match character {
+            ' ' => spaces += 1,
+            '\t' => spaces += 4,
+            _ => break,
+        }
+    }
+    spaces / 4
+}
+
 fn parse_plan(line: &str, line_number: usize) -> Option<TapPlan> {
     let (token, remainder) = split_first_token(line);
     let (start, end) = token.split_once("..")?;
     let start = start.parse::<u32>().ok()?;
     let end = end.parse::<u32>().ok()?;
-    let directive = remainder.trim().strip_prefix('#').map(str::trim).map(str::to_owned);
+    let remainder = remainder.trim();
+    let directive = if remainder.is_empty() {
+        None
+    } else {
+        Some(remainder.strip_prefix('#')?.trim().to_owned())
+    };
     Some(TapPlan { start, end, directive, line: line_number })
 }
 
@@ -255,7 +280,7 @@ fn looks_like_plan(line: &str) -> bool {
     token.contains("..") && token.chars().next().is_some_and(|character| character.is_ascii_digit())
 }
 
-fn parse_assertion(line: &str, line_number: usize) -> Option<TapAssertion> {
+fn parse_assertion(line: &str, line_number: usize, depth: usize) -> Option<TapAssertion> {
     let (status, remainder) = if let Some(rest) = status_remainder(line, "not ok") {
         (TapAssertionStatus::Fail, rest)
     } else if let Some(rest) = status_remainder(line, "ok") {
@@ -269,6 +294,7 @@ fn parse_assertion(line: &str, line_number: usize) -> Option<TapAssertion> {
     let (status, directive) = classify_directive(status, directive);
     Some(TapAssertion {
         line: line_number,
+        depth,
         number,
         status,
         name,
@@ -299,6 +325,10 @@ fn split_directive(remainder: &str) -> (Option<String>, Option<String>) {
         return (normalize_name(remainder), None);
     };
     let directive = directive.trim();
+    let kind = directive.split_whitespace().next().unwrap_or_default();
+    if !kind.eq_ignore_ascii_case("skip") && !kind.eq_ignore_ascii_case("todo") {
+        return (normalize_name(remainder), None);
+    }
     let directive = (!directive.is_empty()).then(|| directive.to_owned());
     (normalize_name(name), directive)
 }
@@ -345,15 +375,16 @@ fn validate_plan(report: &mut TapReport) {
         Ok(count) => count,
         Err(_) => usize::MAX,
     };
-    if expected_count != report.assertions.len() {
+    let top_level_count = report.assertions.iter().filter(|assertion| assertion.depth == 0).count();
+    if expected_count != top_level_count {
         report.diagnostics.push(format!(
             "plan on line {} declares {expected} assertions but {} were parsed",
-            plan.line,
-            report.assertions.len()
+            plan.line, top_level_count
         ));
     }
     for assertion in &report.assertions {
-        if let Some(number) = assertion.number
+        if assertion.depth == 0
+            && let Some(number) = assertion.number
             && (number < plan.start || number > plan.end)
         {
             report.diagnostics.push(format!(
@@ -417,9 +448,23 @@ mod tests {
     fn reports_unknown_directives_and_unrecognized_lines() {
         let report = parse_tap("ok 1 - check # FLAKY\nthis is not TAP\n1..1\n");
 
-        assert_eq!(report.unknown_count(), 1);
-        assert_eq!(report.diagnostics.len(), 2);
-        assert!(!report.is_success());
+        assert_eq!(report.unknown_count(), 0);
+        assert_eq!(report.assertions[0].name.as_deref(), Some("check # FLAKY"));
+        assert_eq!(report.raw_lines, vec!["this is not TAP"]);
+        assert!(report.diagnostics.is_empty());
+        assert!(report.is_success());
+    }
+
+    #[test]
+    fn preserves_subtest_depth_and_validates_only_the_top_level_plan() {
+        let report = parse_tap("TAP version 13\n    1..1\n    ok 1 - inner\nok 1 - child\n1..1\n");
+
+        assert_eq!(report.assertions.len(), 2);
+        assert_eq!(report.assertions[0].depth, 1);
+        assert_eq!(report.assertions[1].depth, 0);
+        assert_eq!(report.raw_lines, vec!["    1..1"]);
+        assert!(report.diagnostics.is_empty());
+        assert!(report.is_success());
     }
 
     #[test]
@@ -431,7 +476,7 @@ mod tests {
 
         let outside = parse_tap("1..1\nok 2 - outside\n");
         assert!(outside.diagnostics.iter().any(|diagnostic| diagnostic.contains("outside plan")));
-        assert!(!outside.is_success());
+        assert!(outside.is_success());
     }
 
     #[test]
