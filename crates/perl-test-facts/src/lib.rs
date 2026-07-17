@@ -192,7 +192,6 @@ pub fn parse_tap(source: &str) -> TapReport {
 
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
-            last_assertion = None;
             continue;
         }
 
@@ -678,16 +677,14 @@ mod tests {
     }
 
     #[test]
-    fn does_not_attach_yaml_after_blank_or_comment_lines() {
+    fn attaches_yaml_after_blank_or_comment_lines() {
         let report = parse_tap("not ok 1 - broken\n\n# separated\n  ---\n  message: raw\n  ...\n");
 
-        assert_eq!(report.assertions[0].diagnostics, Vec::<String>::new());
-        assert!(
-            report
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.contains("no preceding assertion"))
+        assert_eq!(
+            report.assertions[0].diagnostics,
+            vec!["  ---".to_owned(), "  message: raw".to_owned(), "  ...".to_owned()]
         );
+        assert!(report.diagnostics.is_empty());
     }
 
     #[test]

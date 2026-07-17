@@ -173,17 +173,13 @@ fn seam_yaml_tap_looking_scalar_is_not_an_assertion() {
 
 // ── SEAM K: adjacency and bailout grammar are explicit ──────────────────────
 
-/// A separated YAML marker is not attached, and a non-delimited bailout
-/// prefix remains raw evidence rather than terminating the report.
+/// Blank/comment lines do not break YAML eligibility, and a non-delimited
+/// bailout prefix remains raw evidence rather than terminating the report.
 #[test]
-fn seam_yaml_adjacency_and_bailout_delimiter_are_checked() {
+fn seam_yaml_comment_gap_and_bailout_delimiter_are_checked() {
     let separated = parse_tap("not ok 1 - broken\n\n# separated\n  ---\n  message: raw\n  ...\n");
-    assert!(
-        separated
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.contains("no preceding assertion"))
-    );
+    assert_eq!(separated.diagnostics, Vec::<String>::new());
+    assert_eq!(separated.assertions[0].diagnostics[1], "  message: raw");
 
     let prefixed = parse_tap("Bail out!ish text\nok 1 - valid\n1..1\n");
     assert_eq!(prefixed.bail_out, None);
