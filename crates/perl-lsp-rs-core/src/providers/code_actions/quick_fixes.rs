@@ -393,6 +393,51 @@ mod tests {
     }
 
     #[test]
+    fn printf_metadata_matches_indirect_call_range() {
+        let string_node = |value: &str, start: usize, end: usize| {
+            Node::new(
+                NodeKind::String { value: value.to_string(), interpolated: false },
+                SourceLocation { start, end },
+            )
+        };
+        let variable_node = |start: usize, end: usize| {
+            Node::new(
+                NodeKind::Variable { sigil: "$".to_string(), name: "value".to_string() },
+                SourceLocation { start, end },
+            )
+        };
+        let indirect_call = Node::new(
+            NodeKind::IndirectCall {
+                method: "printf".to_string(),
+                object: Box::new(variable_node(0, 3)),
+                args: vec![string_node("\"%s %s %s\"", 4, 15), variable_node(17, 23)],
+            },
+            SourceLocation { start: 0, end: 23 },
+        );
+        let function_call = Node::new(
+            NodeKind::FunctionCall {
+                name: "printf".to_string(),
+                args: vec![string_node("\"%s %s\"", 24, 32), variable_node(34, 40)],
+            },
+            SourceLocation { start: 24, end: 40 },
+        );
+        let program = Node::new(
+            NodeKind::Program { statements: vec![indirect_call, function_call] },
+            SourceLocation { start: 0, end: 40 },
+        );
+
+        let metadata = printf_format_arity_metadata(&program, (24, 40));
+
+        assert_eq!(
+            metadata,
+            Some(QuickFixMetadata::PrintfFormatArity {
+                call_name: "printf".to_string(),
+                missing_arguments: 1,
+            })
+        );
+    }
+
+    #[test]
     fn fix_printf_format_arity_listop_range_includes_semicolon() {
         let source = r#"printf "%s %s", $name;"#;
         let diagnostic = printf_diagnostic_for((0, source.len()), "printf", 1);
@@ -2366,7 +2411,7 @@ pub(super) fn printf_format_arity_metadata(
     let NodeKind::String { value, .. } = &format_node.kind else {
         return None;
     };
-    let format = unquote_format_string(value);
+    let format = crate::providers::diagnostics::unquote_string(value);
     if format.contains('$') {
         return None;
     }
@@ -2395,16 +2440,6 @@ fn find_printf_call(node: &Node, range: (usize, usize)) -> Option<(&str, &[Node]
     }
 
     node.children().into_iter().find_map(|child| find_printf_call(child, range))
-}
-
-fn unquote_format_string(raw: &str) -> &str {
-    if raw.len() >= 2 {
-        let bytes = raw.as_bytes();
-        if matches!((bytes[0], bytes[raw.len() - 1]), (b'"', b'"') | (b'\'', b'\'')) {
-            return &raw[1..raw.len() - 1];
-        }
-    }
-    raw
 }
 
 fn printf_format_insert_position(

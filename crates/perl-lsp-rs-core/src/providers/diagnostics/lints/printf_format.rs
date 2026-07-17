@@ -193,7 +193,7 @@ pub(crate) fn count_format_specifiers(s: &str) -> usize {
 /// `NodeKind::String { value }` stores the raw lexer token including delimiters.
 /// Returns the content between the outermost quote pair, or the original string
 /// if no recognized quote pair is found.
-fn unquote_string(raw: &str) -> &str {
+pub(crate) fn unquote_string(raw: &str) -> &str {
     if raw.len() >= 2 {
         let bytes = raw.as_bytes();
         let first = bytes[0];
