@@ -9,6 +9,9 @@
 - **Details:** Cover unqualified and qualified literal calls, both quote styles,
   valid whitespace, comments, multiple calls per line, dynamic arguments,
   malformed/escaped literals, and existing import/POD/pragma behavior.
+- **Additional review cases:** Support `use_module(NAME, VERSION)`, digit-bearing
+  later module segments, multiline and spaced quote-like literals, sigil hash keys,
+  and all substitution payloads without weakening the static-code boundary.
 - **Verify:** `rtk cargo test -p perl-lsp-rs-core document_links`
 
 ### Step 2: Implement the provider-local matcher

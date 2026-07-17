@@ -7,6 +7,7 @@
 | `use_module('Foo::Bar')` | One deferred module link | Exact module metadata and literal-content range |
 | `require_module("Baz::Qux")` | One deferred module link | Double quotes supported |
 | Qualified `Module::Runtime::use_module` / `require_module` | One deferred module link | Qualified spelling supported |
+| Optional version argument and digit-bearing later segment | One deferred module link | `use_module(NAME, VERSION)` preserves the module range; later segments may contain digits |
 | Whitespace around call and argument | One link for `use_module ( 'Foo::Bar' )` and qualified equivalents | Range remains exact |
 | Two static calls on one line | Two links | No deduplication or truncation |
 | Full-line or trailing comment call | No link | Comment text is not code |
@@ -63,6 +64,8 @@ field, or ID range. The matcher is private to the existing provider module.
 | Quote-like source text | negative | `module_runtime_call_inside_string_is_ignored` | No scanner matches inside Perl quote-like literals |
 | Multiline quote-like source | negative | `multiline_quote_like_source_is_ignored_but_subroutine_body_is_code` | Literal masking carries across source lines |
 | `sub q{...}` body | positive | `multiline_quote_like_source_is_ignored_but_subroutine_body_is_code` | Declaration name is not a quote operator; executable body remains code |
+| Spaced quote-like delimiter | negative | `spaced_quote_like_source_is_ignored_and_sigil_hashes_remain_code` | Optional whitespace before the delimiter remains masked |
+| Sigil hash-key candidate | positive | `spaced_quote_like_source_is_ignored_and_sigil_hashes_remain_code` | `$q{...}` is code, not a quote-like operator |
 | Boundary names/methods | negative | `module_runtime_call_boundaries_are_exact` | No receiver, other namespace, or longer identifier |
 | Dynamic variable/concatenation | negative | `dynamic_module_runtime_calls_are_ignored` | No guessed resolution |
 | Unterminated/escaped literal | adversarial | `malformed_module_runtime_literals_fail_closed` | Delimiter safety |

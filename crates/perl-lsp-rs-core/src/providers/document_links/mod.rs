@@ -225,10 +225,20 @@ fn parse_module_runtime_argument(
                 return None;
             }
 
-            let close = skip_ascii_whitespace(line, offset + 1);
-            if line.as_bytes().get(close) != Some(&b')') {
-                return None;
-            }
+            let after_module = skip_ascii_whitespace(line, offset + 1);
+            let close = match line.as_bytes().get(after_module) {
+                Some(b')') => after_module,
+                Some(b',') => {
+                    let version_start = skip_ascii_whitespace(line, after_module + 1);
+                    let version_tail = line.get(version_start..)?;
+                    let version_end = version_tail.find(')')? + version_start;
+                    if line.get(version_start..version_end)?.trim().is_empty() {
+                        return None;
+                    }
+                    version_end
+                }
+                _ => return None,
+            };
 
             return Some((module, content_start, content_end, close + 1));
         }
@@ -276,12 +286,22 @@ fn code_mask(line: &str, state: &mut Option<QuoteLikeState>) -> Vec<bool> {
 
     while offset < bytes.len() {
         if let Some(current) = state.as_mut() {
-            code[offset] = false;
+            if let Some(slot) = code.get_mut(offset) {
+                *slot = false;
+            } else {
+                break;
+            }
             match current {
                 QuoteLikeState::NeedDelimiter { parts_remaining } => {
-                    let delimiter = bytes[offset];
-                    if delimiter.is_ascii_alphanumeric() || delimiter.is_ascii_whitespace() {
-                        code[offset..].fill(false);
+                    let Some(delimiter) = bytes.get(offset).copied() else {
+                        break;
+                    };
+                    if delimiter.is_ascii_whitespace() {
+                        offset += 1;
+                        continue;
+                    }
+                    if delimiter.is_ascii_alphanumeric() {
+                        mask_to_end(&mut code, offset);
                         *state = None;
                         break;
                     }
@@ -309,14 +329,17 @@ fn code_mask(line: &str, state: &mut Option<QuoteLikeState>) -> Vec<bool> {
                         offset += 1;
                         continue;
                     }
-                    if bytes[offset] == b'\\' {
+                    let Some(byte) = bytes.get(offset).copied() else {
+                        break;
+                    };
+                    if byte == b'\\' {
                         *escaped = true;
                         offset += 1;
                         continue;
                     }
-                    if *paired && bytes[offset] == *delimiter {
+                    if *paired && byte == *delimiter {
                         *depth += 1;
-                    } else if bytes[offset] == *close {
+                    } else if byte == *close {
                         if *depth > 1 {
                             *depth -= 1;
                         } else if *parts_remaining > 0 {
@@ -333,11 +356,12 @@ fn code_mask(line: &str, state: &mut Option<QuoteLikeState>) -> Vec<bool> {
             continue;
         }
 
-        if let Some((operator_len, parts_remaining)) = quote_like_operator(bytes, offset) {
-            let delimiter_offset = offset + operator_len;
-            let delimiter = bytes[delimiter_offset];
+        if let Some((delimiter_offset, parts_remaining)) = quote_like_operator(bytes, offset) {
+            let Some(delimiter) = bytes.get(delimiter_offset).copied() else {
+                break;
+            };
             let (close, paired) = quote_like_delimiters(delimiter);
-            code[offset..=delimiter_offset].fill(false);
+            mask_inclusive(&mut code, offset, delimiter_offset);
             *state = Some(QuoteLikeState::Delimited {
                 delimiter,
                 close,
@@ -350,34 +374,30 @@ fn code_mask(line: &str, state: &mut Option<QuoteLikeState>) -> Vec<bool> {
             continue;
         }
 
-        match bytes[offset] {
+        let Some(byte) = bytes.get(offset).copied() else {
+            break;
+        };
+        match byte {
             b'#' => {
-                code[offset..].fill(false);
+                mask_to_end(&mut code, offset);
                 break;
             }
             b'\'' | b'"' => {
-                let quote = bytes[offset];
-                code[offset] = false;
-                offset += 1;
-                let mut closed = false;
-                while offset < bytes.len() {
-                    code[offset] = false;
-                    if bytes[offset] == b'\\' {
-                        if let Some(next) = code.get_mut(offset + 1) {
-                            *next = false;
-                        }
-                        offset = offset.saturating_add(2);
-                    } else if bytes[offset] == quote {
-                        offset += 1;
-                        closed = true;
-                        break;
-                    } else {
-                        offset += 1;
-                    }
-                }
-                if !closed {
+                let Some(quote) = bytes.get(offset).copied() else {
                     break;
+                };
+                if let Some(slot) = code.get_mut(offset) {
+                    *slot = false;
                 }
+                *state = Some(QuoteLikeState::Delimited {
+                    delimiter: quote,
+                    close: quote,
+                    paired: false,
+                    depth: 1,
+                    escaped: false,
+                    parts_remaining: 0,
+                });
+                offset += 1;
             }
             _ => offset += 1,
         }
@@ -387,7 +407,11 @@ fn code_mask(line: &str, state: &mut Option<QuoteLikeState>) -> Vec<bool> {
 }
 
 fn quote_like_operator(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
-    if start > 0 && bytes.get(start - 1).copied().is_some_and(is_identifier_byte) {
+    if start > 0
+        && bytes.get(start - 1).copied().is_some_and(|byte| {
+            is_identifier_byte(byte) || matches!(byte, b'$' | b'@' | b'%' | b'&')
+        })
+    {
         return None;
     }
 
@@ -403,13 +427,28 @@ fn quote_like_operator(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
         return None;
     }
 
-    let delimiter_offset = start.checked_add(operator.len())?;
+    let mut delimiter_offset = start.checked_add(operator.len())?;
+    while bytes.get(delimiter_offset).is_some_and(u8::is_ascii_whitespace) {
+        delimiter_offset += 1;
+    }
     let delimiter = *bytes.get(delimiter_offset)?;
-    if delimiter.is_ascii_alphanumeric() || delimiter.is_ascii_whitespace() {
+    if delimiter.is_ascii_alphanumeric() {
         return None;
     }
 
-    Some((operator.len(), usize::from(matches!(*operator, "s" | "tr" | "y"))))
+    Some((delimiter_offset, usize::from(matches!(*operator, "s" | "tr" | "y"))))
+}
+
+fn mask_inclusive(code: &mut [bool], start: usize, end: usize) {
+    if let Some(range) = code.get_mut(start..=end) {
+        range.fill(false);
+    }
+}
+
+fn mask_to_end(code: &mut [bool], start: usize) {
+    if let Some(range) = code.get_mut(start..) {
+        range.fill(false);
+    }
 }
 
 fn preceded_by_subroutine_keyword(bytes: &[u8], start: usize) -> bool {
@@ -417,7 +456,7 @@ fn preceded_by_subroutine_keyword(bytes: &[u8], start: usize) -> bool {
     let end = prefix.iter().rposition(|byte| !byte.is_ascii_whitespace()).map_or(0, |i| i + 1);
     let start =
         prefix[..end].iter().rposition(|byte| !is_identifier_byte(*byte)).map_or(0, |i| i + 1);
-    &prefix[start..end] == b"sub"
+    prefix.get(start..end) == Some(b"sub")
 }
 
 fn quote_like_delimiters(delimiter: u8) -> (u8, bool) {
@@ -450,7 +489,12 @@ fn is_identifier_boundary(ch: char) -> bool {
 }
 
 fn is_perl_module_name(module: &str) -> bool {
-    !module.is_empty() && module.split("::").all(is_perl_module_segment)
+    let mut segments = module.split("::");
+    let Some(first) = segments.next() else {
+        return false;
+    };
+    is_perl_module_segment(first, true)
+        && segments.all(|segment| is_perl_module_segment(segment, false))
 }
 
 enum PodLinkTarget<'a> {
@@ -590,7 +634,7 @@ fn is_simple_pod_module_target(target: &str) -> bool {
 }
 
 fn is_simple_package_pod_target(target: &str) -> bool {
-    target.contains("::") && target.split("::").all(is_perl_module_segment)
+    target.contains("::") && is_perl_module_name(target)
 }
 
 fn is_supported_core_pragma_pod_target(target: &str) -> bool {
@@ -602,14 +646,17 @@ fn is_pod_section_target(section: &str) -> bool {
         && section.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ' '))
 }
 
-fn is_perl_module_segment(segment: &str) -> bool {
+fn is_perl_module_segment(segment: &str, require_alpha_start: bool) -> bool {
     let mut chars = segment.chars();
     let Some(first) = chars.next() else {
         return false;
     };
 
-    (first.is_ascii_alphabetic() || first == '_')
-        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    (if require_alpha_start {
+        first.is_ascii_alphabetic() || first == '_'
+    } else {
+        first.is_ascii_alphanumeric() || first == '_'
+    }) && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 fn current_package_name(text: &str) -> Option<String> {
@@ -638,7 +685,7 @@ fn current_package_name(text: &str) -> Option<String> {
             .chars()
             .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == ':')
             .collect();
-        if name.split("::").all(is_perl_module_segment) {
+        if is_perl_module_name(&name) {
             return Some(name);
         }
     }
@@ -872,6 +919,38 @@ mod tests {
         };
         if data_str(link, "/data/module") != Some("Foo::Bar") {
             return Err(format!("unexpected link from quoted source text: {link:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn spaced_quote_like_source_is_ignored_and_sigil_hashes_remain_code() -> Result<(), String> {
+        let quoted = "my $source = q {use_module('No::SpacedQuote')};\n";
+        if !compute_links(uri(), quoted, &[]).is_empty() {
+            return Err("spaced quote-like source produced a module link".to_owned());
+        }
+
+        let sigil = "$q{use_module('Foo::Bar')};\n";
+        let links = compute_links(uri(), sigil, &[]);
+        let [link] = links.as_slice() else {
+            return Err(format!("sigil hash key produced an unexpected result: {links:?}"));
+        };
+        if data_str(link, "/data/module") != Some("Foo::Bar") {
+            return Err(format!("unexpected sigil hash-key link: {link:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn module_runtime_supports_version_and_digit_segments() -> Result<(), String> {
+        let text = "use_module('Foo::Bar', 1.23);\nuse_module('foo::123::x_0');\n";
+        let links = compute_links(uri(), text, &[]);
+        let modules: Vec<_> =
+            links.iter().filter_map(|link| data_str(link, "/data/module")).collect();
+        if modules != ["Foo::Bar", "foo::123::x_0"] {
+            return Err(format!(
+                "version or digit-segment forms produced an unexpected result: {links:?}"
+            ));
         }
         Ok(())
     }
