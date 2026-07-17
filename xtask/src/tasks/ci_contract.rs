@@ -234,11 +234,12 @@ fn run_check(root: &Path, spec: &CheckSpec) -> ContractCheck {
     let command = format_command(spec.program, &spec.args);
     match execute_check(root, spec) {
         Ok(output) => {
-            let mut detail = command_output(&output.stdout, &output.stderr);
+            let raw_detail = command_output(&output.stdout, &output.stderr);
+            let mut detail = bounded_output(&raw_detail);
             if output.status.code().is_none() {
                 detail = format!("process terminated without an exit code; {detail}");
             }
-            let result = result_for_exit(output.status.code(), &detail);
+            let result = result_for_exit(output.status.code(), &raw_detail);
             ContractCheck {
                 id: spec.id.to_string(),
                 reason: spec.reason.clone(),
@@ -502,13 +503,16 @@ fn format_command(program: &str, args: &[String]) -> String {
 fn command_output(stdout: &[u8], stderr: &[u8]) -> String {
     let stdout = String::from_utf8_lossy(stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(stderr).trim().to_string();
-    let combined = match (stdout.is_empty(), stderr.is_empty()) {
+    match (stdout.is_empty(), stderr.is_empty()) {
         (true, true) => "no output".to_string(),
         (false, true) => stdout,
         (true, false) => stderr,
         (false, false) => format!("stdout: {stdout}; stderr: {stderr}"),
-    };
-    combined.chars().take(2000).collect()
+    }
+}
+
+fn bounded_output(detail: &str) -> String {
+    detail.chars().take(2000).collect()
 }
 
 #[cfg(test)]
@@ -689,7 +693,15 @@ mod tests {
     fn shell_output_is_bounded_and_preserves_streams() -> Result<()> {
         let detail = command_output(b"out", b"err");
         ensure!(detail == "stdout: out; stderr: err", "combined output was {detail:?}");
-        ensure!(command_output(&vec![b'x'; 3000], &[]).len() == 2000, "output was not bounded");
+        ensure!(
+            bounded_output(&command_output(&vec![b'x'; 3000], &[])).len() == 2000,
+            "output was not bounded"
+        );
+        let late_warning = format!("{}\nWARN late advisory", "x".repeat(2000));
+        ensure!(
+            result_for_exit(Some(0), &late_warning) == ContractResultClass::PolicyFinding,
+            "late advisory output must be classified before receipt truncation"
+        );
         Ok(())
     }
 
