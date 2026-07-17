@@ -35,6 +35,8 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
             continue;
         }
 
+        collect_module_runtime_links(uri, i as u32, line, &mut out);
+
         if let Some(import) = parse_module_import_head(line) {
             match import.kind {
                 ModuleImportKind::Use => {
@@ -104,6 +106,199 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
         }
     }
     out
+}
+
+fn collect_module_runtime_links(uri: &str, line_number: u32, line: &str, out: &mut Vec<Value>) {
+    let code = code_mask(line);
+    let mut offset = 0;
+
+    while offset < line.len() {
+        let Some(rest) = line.get(offset..) else {
+            break;
+        };
+
+        if code.get(offset).copied() != Some(true) {
+            offset +=
+                line.get(offset..).and_then(|rest| rest.chars().next()).map_or(1, char::len_utf8);
+            continue;
+        }
+
+        let Some(name_end) = match_module_runtime_call(line, offset, &code) else {
+            offset += rest.chars().next().map_or(1, char::len_utf8);
+            continue;
+        };
+
+        if let Some((module, content_start, content_end, next_offset)) =
+            parse_module_runtime_argument(line, name_end)
+        {
+            let start = byte_to_utf16_col(line, content_start);
+            let end = byte_to_utf16_col(line, content_end);
+            if let Some(link) = make_deferred_module_link(uri, line_number, &module, start, end) {
+                out.push(link);
+            }
+            offset = next_offset;
+        } else {
+            offset = name_end;
+        }
+    }
+}
+
+fn match_module_runtime_call(line: &str, start: usize, code: &[bool]) -> Option<usize> {
+    if start > 0
+        && line
+            .get(..start)
+            .and_then(|prefix| prefix.chars().next_back())
+            .is_some_and(is_identifier_boundary)
+    {
+        return None;
+    }
+    if start >= 2 && line.get(..start).is_some_and(|prefix| prefix.ends_with("->")) {
+        return None;
+    }
+
+    let mut pos = start;
+    if line.get(pos..)?.starts_with("Module") {
+        pos += "Module".len();
+        pos = skip_ascii_whitespace(line, pos);
+        if !line.get(pos..)?.starts_with("::") {
+            return None;
+        }
+        pos += 2;
+        pos = skip_ascii_whitespace(line, pos);
+        if !line.get(pos..)?.starts_with("Runtime") {
+            return None;
+        }
+        pos += "Runtime".len();
+        pos = skip_ascii_whitespace(line, pos);
+        if !line.get(pos..)?.starts_with("::") {
+            return None;
+        }
+        pos += 2;
+        pos = skip_ascii_whitespace(line, pos);
+    }
+
+    let name_start = pos;
+    if line.get(pos..)?.starts_with("use_module") {
+        pos += "use_module".len();
+    } else if line.get(pos..)?.starts_with("require_module") {
+        pos += "require_module".len();
+    } else {
+        return None;
+    };
+
+    if !is_code_range(code, start, pos)
+        || line.get(pos..).and_then(|tail| tail.chars().next()).is_some_and(is_identifier_boundary)
+        || (name_start > start
+            && start > 0
+            && line.get(..start).is_some_and(|prefix| prefix.ends_with(':')))
+    {
+        return None;
+    }
+
+    Some(pos)
+}
+
+fn parse_module_runtime_argument(
+    line: &str,
+    name_end: usize,
+) -> Option<(String, usize, usize, usize)> {
+    let open = skip_ascii_whitespace(line, name_end);
+    if line.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+
+    let quote_start = skip_ascii_whitespace(line, open + 1);
+    let quote = *line.as_bytes().get(quote_start)?;
+    if !matches!(quote, b'\'' | b'"') {
+        return None;
+    }
+
+    let content_start = quote_start + 1;
+    let mut offset = content_start;
+    while offset < line.len() {
+        let byte = *line.as_bytes().get(offset)?;
+        if byte == b'\\' {
+            return None;
+        }
+        if byte == quote {
+            let content_end = offset;
+            let module = line.get(content_start..content_end)?.to_owned();
+            if !is_perl_module_name(&module) {
+                return None;
+            }
+
+            let close = skip_ascii_whitespace(line, offset + 1);
+            if line.as_bytes().get(close) != Some(&b')') {
+                return None;
+            }
+
+            return Some((module, content_start, content_end, close + 1));
+        }
+        offset += 1;
+    }
+
+    None
+}
+
+fn code_mask(line: &str) -> Vec<bool> {
+    let mut code = vec![true; line.len()];
+    let bytes = line.as_bytes();
+    let mut offset = 0;
+
+    while offset < bytes.len() {
+        match bytes[offset] {
+            b'#' => {
+                code[offset..].fill(false);
+                break;
+            }
+            b'\'' | b'"' => {
+                let quote = bytes[offset];
+                code[offset] = false;
+                offset += 1;
+                let mut closed = false;
+                while offset < bytes.len() {
+                    code[offset] = false;
+                    if bytes[offset] == b'\\' {
+                        if let Some(next) = code.get_mut(offset + 1) {
+                            *next = false;
+                        }
+                        offset = offset.saturating_add(2);
+                    } else if bytes[offset] == quote {
+                        offset += 1;
+                        closed = true;
+                        break;
+                    } else {
+                        offset += 1;
+                    }
+                }
+                if !closed {
+                    break;
+                }
+            }
+            _ => offset += 1,
+        }
+    }
+
+    code
+}
+
+fn is_code_range(code: &[bool], start: usize, end: usize) -> bool {
+    code.get(start..end).is_some_and(|range| range.iter().all(|is_code| *is_code))
+}
+
+fn skip_ascii_whitespace(line: &str, mut offset: usize) -> usize {
+    while line.as_bytes().get(offset).is_some_and(u8::is_ascii_whitespace) {
+        offset += 1;
+    }
+    offset
+}
+
+fn is_identifier_boundary(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':')
+}
+
+fn is_perl_module_name(module: &str) -> bool {
+    !module.is_empty() && module.split("::").all(is_perl_module_segment)
 }
 
 enum PodLinkTarget<'a> {
@@ -406,6 +601,205 @@ mod tests {
 
     fn data_str<'a>(link: &'a Value, pointer: &str) -> Option<&'a str> {
         link.pointer(pointer).and_then(Value::as_str)
+    }
+
+    fn check_module_link(
+        link: &Value,
+        module: &str,
+        line: &str,
+        line_number: u64,
+    ) -> Result<(), String> {
+        if data_str(link, "/data/type") != Some("module")
+            || data_str(link, "/data/module") != Some(module)
+            || data_str(link, "/data/baseUri") != Some(uri())
+        {
+            return Err(format!("unexpected module link metadata: {link:?}"));
+        }
+
+        let start = line
+            .find(module)
+            .ok_or_else(|| format!("module {module:?} is absent from source line {line:?}"))?;
+        let end = start + module.len();
+        let actual_start_line = link.pointer("/range/start/line").and_then(Value::as_u64);
+        let actual_start = link.pointer("/range/start/character").and_then(Value::as_u64);
+        let actual_end_line = link.pointer("/range/end/line").and_then(Value::as_u64);
+        let actual_end = link.pointer("/range/end/character").and_then(Value::as_u64);
+        if actual_start_line != Some(line_number)
+            || actual_start != Some(start as u64)
+            || actual_end_line != Some(line_number)
+            || actual_end != Some(end as u64)
+        {
+            return Err(format!("unexpected module link range: {link:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn module_runtime_literal_calls_emit_module_links() -> Result<(), String> {
+        let text = "use_module('Foo::Bar');\nrequire_module(\"Baz::Qux\");\n";
+        let links = compute_links(uri(), text, &[]);
+
+        let [first, second] = links.as_slice() else {
+            return Err(format!("expected two links, got {links:?}"));
+        };
+        check_module_link(first, "Foo::Bar", "use_module('Foo::Bar');", 0)?;
+        check_module_link(second, "Baz::Qux", "require_module(\"Baz::Qux\");", 1)
+    }
+
+    #[test]
+    fn qualified_module_runtime_calls_emit_module_links() -> Result<(), String> {
+        let text = "Module::Runtime::use_module(\"Foo::Bar\");\n".to_owned()
+            + "Module::Runtime::require_module('Baz::Qux');\n";
+        let links = compute_links(uri(), &text, &[]);
+
+        let [first, second] = links.as_slice() else {
+            return Err(format!("expected two links, got {links:?}"));
+        };
+        check_module_link(first, "Foo::Bar", "Module::Runtime::use_module(\"Foo::Bar\");", 0)?;
+        check_module_link(second, "Baz::Qux", "Module::Runtime::require_module('Baz::Qux');", 1)
+    }
+
+    #[test]
+    fn module_runtime_calls_accept_valid_whitespace() -> Result<(), String> {
+        let line = "  Module::Runtime::require_module (  'Foo::Bar'  );";
+        let links = compute_links(uri(), line, &[]);
+
+        let [link] = links.as_slice() else {
+            return Err(format!("expected one link, got {links:?}"));
+        };
+        check_module_link(link, "Foo::Bar", line, 0)
+    }
+
+    #[test]
+    fn module_runtime_calls_on_one_line_are_not_dropped() -> Result<(), String> {
+        let line = "use_module('Foo::Bar'); require_module(\"Baz::Qux\");";
+        let links = compute_links(uri(), line, &[]);
+
+        let [first, second] = links.as_slice() else {
+            return Err(format!("expected two links, got {links:?}"));
+        };
+        check_module_link(first, "Foo::Bar", line, 0)?;
+        check_module_link(second, "Baz::Qux", line, 0)
+    }
+
+    #[test]
+    fn module_runtime_calls_in_comments_are_ignored() -> Result<(), String> {
+        let text = "# use_module('Ignored::FullLine');\n".to_owned()
+            + "my $value = 1; # require_module(\"Ignored::Trailing\");\n";
+
+        let links = compute_links(uri(), &text, &[]);
+
+        if !links.is_empty() {
+            return Err(format!("comments produced module links: {links:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_module_runtime_calls_are_ignored() -> Result<(), String> {
+        let text = "use_module($module);\n".to_owned()
+            + "require_module(\"Foo\" . \"::Bar\");\n"
+            + "Module::Runtime::use_module(\"${name}::Baz\");\n";
+
+        let links = compute_links(uri(), &text, &[]);
+
+        if !links.is_empty() {
+            return Err(format!("dynamic module names produced links: {links:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn module_runtime_call_inside_string_is_ignored() -> Result<(), String> {
+        let text = "my $source = \"use_module('No::Link')\"; use_module('Foo::Bar');";
+        let links = compute_links(uri(), text, &[]);
+
+        let [link] = links.as_slice() else {
+            return Err(format!("quoted source text produced an unexpected result: {links:?}"));
+        };
+        if data_str(link, "/data/module") != Some("Foo::Bar") {
+            return Err(format!("unexpected link from quoted source text: {link:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn module_runtime_call_boundaries_are_exact() -> Result<(), String> {
+        let text = "my $source = \"use_module('No::Link')\"; ".to_owned()
+            + "obj->use_module('No::Method'); "
+            + "Other::use_module('No::Other'); "
+            + "use_module_extra('No::Extra');";
+        let links = compute_links(uri(), &text, &[]);
+
+        if !links.is_empty() {
+            return Err(format!("unrelated call names produced links: {links:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn module_runtime_link_range_is_utf16_safe() -> Result<(), String> {
+        let line = "my \u{1f600} = 1; use_module('Foo::Bar');";
+        let links = compute_links(uri(), line, &[]);
+        let link = links.first().ok_or("expected a Module::Runtime link")?;
+        let byte_start = line.find("Foo::Bar").ok_or("test input must contain the module")?;
+        let expected_start = line
+            .get(..byte_start)
+            .ok_or("module start is not a UTF-8 boundary")?
+            .encode_utf16()
+            .count() as u64;
+        let expected_end = expected_start + "Foo::Bar".encode_utf16().count() as u64;
+        let actual_start = link.pointer("/range/start/character").and_then(Value::as_u64);
+        let actual_end = link.pointer("/range/end/character").and_then(Value::as_u64);
+        if actual_start != Some(expected_start) || actual_end != Some(expected_end) {
+            return Err(format!("unexpected UTF-16 range: {link:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_module_runtime_literals_fail_closed() -> Result<(), String> {
+        let cases = [
+            "use_module('Foo::Bar);",
+            "require_module(\"Baz::Qux);",
+            r#"use_module('Foo\'Bar');"#,
+            r#"require_module("Baz\"Qux");"#,
+        ];
+
+        for source in cases {
+            let links = compute_links(uri(), source, &[]);
+            if !links.is_empty() {
+                return Err(format!(
+                    "malformed or escaped literal produced links: {source:?}, {links:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn existing_document_link_forms_remain_unchanged() -> Result<(), String> {
+        let text = "use Existing::Module;\n".to_owned()
+            + "require \"Existing/Path.pm\";\n"
+            + "require \"helper.pl\";\n"
+            + "use strict;\n"
+            + "=pod\nSee L<Docs::Existing>.\n=cut\n";
+        let links = compute_links(uri(), &text, &[]);
+
+        let expected = [
+            ("/data/module", "Existing::Module"),
+            ("/data/module", "Existing::Path"),
+            ("/data/type", "file"),
+            ("/data/module", "Docs::Existing"),
+        ];
+        if links.len() != expected.len()
+            || expected.iter().any(|(pointer, value)| {
+                !links.iter().any(|link| data_str(link, pointer) == Some(*value))
+            })
+        {
+            return Err(format!("existing document links changed: {links:?}"));
+        }
+        Ok(())
     }
 
     // ── use statement ──────────────────────────────────────────
