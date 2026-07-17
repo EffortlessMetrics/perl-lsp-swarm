@@ -1130,10 +1130,21 @@ fn test_rename_respects_documentchanges_client_capability() -> TestResult {
         first.get("textDocument").is_some(),
         "each documentChange entry must include textDocument; got: {first:?}"
     );
+    assert_eq!(
+        first["textDocument"]["uri"], doc_uri,
+        "documentChange must preserve the changed document URI; got: {first:?}"
+    );
+    assert_eq!(
+        first["textDocument"]["version"], 1,
+        "documentChange must preserve the open document version; got: {first:?}"
+    );
     assert!(
         first.get("edits").and_then(|e| e.as_array()).is_some_and(|e| !e.is_empty()),
         "each documentChange entry must have a non-empty edits array; got: {first:?}"
     );
+    let first_edit = &first["edits"][0];
+    assert!(first_edit.get("range").is_some(), "each text edit must include a range");
+    assert!(first_edit.get("newText").is_some(), "each text edit must include newText");
 
     Ok(())
 }

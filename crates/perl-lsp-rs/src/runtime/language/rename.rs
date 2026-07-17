@@ -1097,20 +1097,27 @@ impl LspServer {
     /// advertise `workspace.workspaceEdit.documentChanges: true`.
     ///
     /// If the input does not have a `changes` key the value is returned as-is.
-    fn changes_to_document_changes(ws_edit: Value) -> Value {
+    fn changes_to_document_changes(&self, ws_edit: Value) -> Value {
         let Some(changes) = ws_edit.get("changes").and_then(Value::as_object) else {
             return ws_edit;
         };
+        let documents = self.documents_guard();
         let doc_changes: Vec<Value> = changes
             .iter()
             .map(|(uri, edits)| {
+                let version = self
+                    .get_document(&documents, uri)
+                    .map_or(Value::Null, |document| json!(document.version));
                 json!({
-                    "textDocument": { "uri": uri, "version": serde_json::Value::Null },
+                    "textDocument": { "uri": uri, "version": version },
                     "edits": edits
                 })
             })
             .collect();
-        json!({ "documentChanges": doc_changes })
+        let mut workspace_edit = ws_edit.as_object().cloned().unwrap_or_default();
+        workspace_edit.remove("changes");
+        workspace_edit.insert("documentChanges".to_string(), Value::Array(doc_changes));
+        Value::Object(workspace_edit)
     }
 
     /// Return the workspace edit in the format the client prefers.
@@ -1121,7 +1128,7 @@ impl LspServer {
     /// unchanged.
     fn to_workspace_edit_format(&self, ws_edit: Value) -> Value {
         if self.client_capabilities.lock().workspace_edit_document_changes_support {
-            Self::changes_to_document_changes(ws_edit)
+            self.changes_to_document_changes(ws_edit)
         } else {
             ws_edit
         }
@@ -1691,6 +1698,7 @@ impl LspServer {
                                 edit_count,
                                 "none",
                             );
+                            drop(documents);
                             return Ok(Some(self.to_workspace_edit_format(json!({
                                 "changes": { uri: edits }
                             }))));
@@ -1711,6 +1719,7 @@ impl LspServer {
                                 edit_count,
                                 "none",
                             );
+                            drop(documents);
                             return Ok(Some(self.to_workspace_edit_format(json!({
                                 "changes": { uri: edits }
                             }))));
@@ -1743,6 +1752,7 @@ impl LspServer {
                                         0,
                                         "no_edit",
                                     );
+                                    drop(documents);
                                     return Ok(Some(
                                         self.to_workspace_edit_format(json!({"changes": {}})),
                                     ));
@@ -1775,6 +1785,7 @@ impl LspServer {
                                     0,
                                     "no_edit",
                                 );
+                                drop(documents);
                                 return Ok(Some(
                                     self.to_workspace_edit_format(json!({"changes": {}})),
                                 ));
@@ -1788,6 +1799,7 @@ impl LspServer {
                                 edit_count,
                                 "none",
                             );
+                            drop(documents);
                             return Ok(Some(self.to_workspace_edit_format(json!({
                                 "changes": { uri: edits }
                             }))));
@@ -1879,6 +1891,47 @@ mod tests {
             "position": { "line": line, "character": character },
             "newName": new_name
         })
+    }
+
+    #[test]
+    fn document_changes_preserve_versions_and_workspace_edit_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let open_uri = "file:///workspace/lib/Open.pm";
+        let closed_uri = "file:///workspace/lib/Closed.pm";
+        server.test_apply_did_open(open_uri, "package Open;\n1;\n", 7)?;
+
+        let converted = server.changes_to_document_changes(serde_json::json!({
+            "changes": {
+                open_uri: [{ "range": {}, "newText": "renamed" }],
+                closed_uri: [{ "range": {}, "newText": "renamed" }]
+            },
+            "changeAnnotations": {
+                "rename": { "label": "Rename symbol" }
+            }
+        }));
+
+        assert!(converted.get("changes").is_none());
+        assert_eq!(converted["changeAnnotations"]["rename"]["label"], "Rename symbol");
+        let document_changes =
+            converted["documentChanges"].as_array().ok_or("missing documentChanges array")?;
+        assert_eq!(document_changes.len(), 2);
+        assert_eq!(
+            document_changes
+                .iter()
+                .find(|entry| entry["textDocument"]["uri"] == open_uri)
+                .ok_or("missing open document change")?["textDocument"]["version"],
+            7
+        );
+        assert_eq!(
+            document_changes
+                .iter()
+                .find(|entry| entry["textDocument"]["uri"] == closed_uri)
+                .ok_or("missing closed document change")?["textDocument"]["version"],
+            Value::Null
+        );
+
+        Ok(())
     }
 
     #[test]
