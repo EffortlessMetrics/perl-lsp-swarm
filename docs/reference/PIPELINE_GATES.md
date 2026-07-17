@@ -177,6 +177,14 @@ Gate 4 triangulates three axes. A PR that clears only one axis does not pass Gat
 
 **Exit condition**: Live CI (`statusCheckRollup`) is green on the current HEAD SHA for both required checks. The `ci-green` label records that green-ci confirmed this, but the live signal is authoritative, not the label — see [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md).
 
+The advisory M4b agent-capability gate is a front-door hygiene check, not one
+of the two required merge contexts. Its router keeps untrusted fork and bot
+pull requests on `ubuntu-24.04`, sends trusted work to the labeled
+`workflow-nano` self-hosted lane when capacity is observed, and records an
+explicit hosted fallback for missing token, API, or capacity. A failure from
+`cargo xtask check-agent-capabilities` remains a real check failure; only the
+runner-selection infrastructure may fall back.
+
 **Agents within Gate 5**:
 
 | Agent | Model | Role |

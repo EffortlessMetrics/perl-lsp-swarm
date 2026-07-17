@@ -27,6 +27,7 @@ and meant to stay in sync with it.
 | `windows_guardrails` | `ci.yml` | `windows-guardrails` | `windows-latest` | 20 (10m × 2.0) | yes |
 | `ripr_advisory` | `ripr.yml` | `ripr` | `ubuntu-24.04` | 4 | **no** |
 | `droid_auto_review` | `droid-review.yml` | `droid` | `self-hosted, linux, x64, em-ci, trusted-pr, review-nano, droid-review` | 4 | no |
+| `agent_capability_gate` | `agent-capability-gate.yml` | router + `agent-capability-gate-self-hosted` / `agent-capability-gate-hosted` | mixed (`workflow-nano` / `ubuntu-24.04` fallback) | 2 | no |
 
 **Default-PR LEM sum (Linux+Windows weighted):** ≈ 93 LEM today. After PR 17 with
 risk-pack routing, expected ordinary-PR LEM ≈ 30–40.
