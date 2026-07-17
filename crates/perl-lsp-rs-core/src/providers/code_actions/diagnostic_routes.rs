@@ -1,7 +1,7 @@
 //! Diagnostic-code routing for code-action quick fixes.
 
 use super::quick_fixes;
-use super::types::{CodeAction, QuickFixDiagnostic};
+use super::types::{CodeAction, QuickFixDiagnostic, QuickFixMetadata};
 use crate::providers::diagnostics::Diagnostic;
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::Node;
@@ -10,10 +10,13 @@ use perl_parser_core::Node;
 ///
 /// Copies byte-offset fields and, for supported diagnostic codes, derives
 /// structured `QuickFixMetadata` from the AST when available.
-fn to_quick_fix_diagnostic(diag: &Diagnostic, ast: Option<&Node>) -> QuickFixDiagnostic {
+fn to_quick_fix_diagnostic(
+    diag: &Diagnostic,
+    printf_metadata: Option<&QuickFixMetadata>,
+) -> QuickFixDiagnostic {
     let metadata = diag.code.as_deref().and_then(|code| {
         matches!(code, "PL405" | "native.common.printf_format_arity")
-            .then(|| ast.and_then(|ast| quick_fixes::printf_format_arity_metadata(ast, diag.range)))
+            .then(|| printf_metadata.cloned())
             .flatten()
     });
     QuickFixDiagnostic {
@@ -30,9 +33,10 @@ pub(super) fn quick_fixes_for_diagnostics(
     diagnostics: &[Diagnostic],
 ) -> Vec<CodeAction> {
     let mut actions = Vec::new();
+    let printf_metadata = ast.map(quick_fixes::printf_format_arity_metadata_by_range);
 
     for diagnostic in diagnostics {
-        actions.extend(quick_fixes_for_diagnostic(source, ast, diagnostic));
+        actions.extend(quick_fixes_for_diagnostic(source, printf_metadata.as_ref(), diagnostic));
     }
 
     actions
@@ -40,11 +44,14 @@ pub(super) fn quick_fixes_for_diagnostics(
 
 fn quick_fixes_for_diagnostic(
     source: &str,
-    ast: Option<&Node>,
+    printf_metadata: Option<&std::collections::HashMap<(usize, usize), QuickFixMetadata>>,
     diagnostic: &Diagnostic,
 ) -> Vec<CodeAction> {
     let mut actions = Vec::new();
-    let qf_diag = to_quick_fix_diagnostic(diagnostic, ast);
+    let qf_diag = to_quick_fix_diagnostic(
+        diagnostic,
+        printf_metadata.and_then(|metadata| metadata.get(&diagnostic.range)),
+    );
 
     let Some(code) = &diagnostic.code else {
         return actions;

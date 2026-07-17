@@ -2,6 +2,8 @@
 //!
 //! Provides automated fixes for common Perl issues driven by diagnostic codes.
 
+use std::collections::HashMap;
+
 use super::types::{
     CodeAction, CodeActionEdit, CodeActionKind, QuickFixDiagnostic, QuickFixMetadata,
 };
@@ -426,7 +428,7 @@ mod tests {
             SourceLocation { start: 0, end: 40 },
         );
 
-        let metadata = printf_format_arity_metadata(&program, (24, 40));
+        let metadata = printf_format_arity_metadata_by_range(&program).get(&(24, 40)).cloned();
 
         assert_eq!(
             metadata,
@@ -435,6 +437,24 @@ mod tests {
                 missing_arguments: 1,
             })
         );
+    }
+
+    #[test]
+    fn printf_metadata_rejects_interpolated_arrays() {
+        let format = Node::new(
+            NodeKind::String { value: "\"%s @items\"".to_string(), interpolated: true },
+            SourceLocation { start: 7, end: 19 },
+        );
+        let argument = Node::new(
+            NodeKind::Variable { sigil: "$".to_string(), name: "item".to_string() },
+            SourceLocation { start: 21, end: 26 },
+        );
+        let call = Node::new(
+            NodeKind::FunctionCall { name: "printf".to_string(), args: vec![format, argument] },
+            SourceLocation { start: 0, end: 26 },
+        );
+
+        assert_eq!(printf_format_arity_metadata_by_range(&call).get(&(0, 26)), None);
     }
 
     #[test]
@@ -2400,19 +2420,16 @@ pub fn fix_printf_format_arity(source: &str, diagnostic: &QuickFixDiagnostic) ->
     }]
 }
 
-/// Derive structured printf fix inputs from the parsed call rather than its
-/// human-readable diagnostic message.
-pub(super) fn printf_format_arity_metadata(
-    ast: &Node,
-    range: (usize, usize),
+fn printf_format_arity_metadata_for_call(
+    call_name: &str,
+    args: &[Node],
 ) -> Option<QuickFixMetadata> {
-    let (call_name, args) = find_printf_call(ast, range)?;
     let format_node = args.first()?;
     let NodeKind::String { value, .. } = &format_node.kind else {
         return None;
     };
     let format = crate::providers::diagnostics::unquote_string(value);
-    if format.contains('$') {
+    if format.contains('$') || format.contains('@') {
         return None;
     }
 
@@ -2425,21 +2442,38 @@ pub(super) fn printf_format_arity_metadata(
     })
 }
 
-fn find_printf_call(node: &Node, range: (usize, usize)) -> Option<(&str, &[Node])> {
-    let matches_range = (node.location.start, node.location.end) == range;
-    match &node.kind {
-        NodeKind::FunctionCall { name, args }
-            if matches_range && matches!(name.as_str(), "printf" | "sprintf") =>
-        {
-            return Some((name, args));
+/// Derive printf metadata for every statically analyzable call in one AST walk.
+pub(super) fn printf_format_arity_metadata_by_range(
+    ast: &Node,
+) -> HashMap<(usize, usize), QuickFixMetadata> {
+    let mut metadata = HashMap::new();
+    collect_printf_format_arity_metadata(ast, &mut metadata);
+    metadata
+}
+
+fn collect_printf_format_arity_metadata(
+    node: &Node,
+    metadata: &mut HashMap<(usize, usize), QuickFixMetadata>,
+) {
+    let call = match &node.kind {
+        NodeKind::FunctionCall { name, args } if matches!(name.as_str(), "printf" | "sprintf") => {
+            Some((name.as_str(), args))
         }
-        NodeKind::IndirectCall { method, args, .. } if matches_range && method == "printf" => {
-            return Some((method, args));
+        NodeKind::IndirectCall { method, args, .. } if method == "printf" => {
+            Some((method.as_str(), args))
         }
-        _ => {}
+        _ => None,
+    };
+
+    if let Some((call_name, args)) = call {
+        if let Some(value) = printf_format_arity_metadata_for_call(call_name, args) {
+            metadata.insert((node.location.start, node.location.end), value);
+        }
     }
 
-    node.children().into_iter().find_map(|child| find_printf_call(child, range))
+    for child in node.children() {
+        collect_printf_format_arity_metadata(child, metadata);
+    }
 }
 
 fn printf_format_insert_position(
