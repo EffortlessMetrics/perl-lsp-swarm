@@ -12,6 +12,7 @@ fn agent_capability_gate_preserves_trust_and_failure_boundaries() -> Result<()> 
     let router = mapping_value(jobs, "route-agent-capability-gate")?;
     let self_hosted = mapping_value(jobs, "agent-capability-gate-self-hosted")?;
     let hosted = mapping_value(jobs, "agent-capability-gate-hosted")?;
+    let router_script = route_script(router)?;
 
     ensure!(
         scalar_string(mapping_value(router, "runs-on")?)? == "ubuntu-24.04",
@@ -88,6 +89,7 @@ fn agent_capability_gate_preserves_trust_and_failure_boundaries() -> Result<()> 
         "runner_group_response_parse_failed",
         "runner_api_failed",
         "runner_response_parse_failed",
+        "tempfile_creation_failed",
         "no_idle_runner",
         "workflow_nano_idle",
         "runner-groups?per_page=100",
@@ -103,6 +105,23 @@ fn agent_capability_gate_preserves_trust_and_failure_boundaries() -> Result<()> 
         "uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88",
     ] {
         ensure!(content.contains(required), "workflow contract missing `{required}`");
+    }
+    for (guard, emit) in [
+        (
+            "if ! nano_group_id=",
+            "emit \"github\" \"runner_group_response_parse_failed\" \"true\" \"true\"",
+        ),
+        (
+            "if ! idle_runner_count_value=",
+            "emit \"github\" \"runner_response_parse_failed\" \"true\" \"true\"",
+        ),
+        ("if ! group_response=", "emit \"github\" \"tempfile_creation_failed\" \"true\" \"true\""),
+        ("if ! response=", "emit \"github\" \"tempfile_creation_failed\" \"true\" \"true\""),
+    ] {
+        ensure!(
+            route_branch_contains_emit(router_script, guard, emit),
+            "router guard `{guard}` must emit its hosted fallback before exiting"
+        );
     }
     ensure!(
         content.matches("cargo xtask check-agent-capabilities").count() == 2,
@@ -121,6 +140,29 @@ fn workflow() -> Result<(String, Value)> {
     let content = fs::read_to_string(path)?;
     let workflow = serde_yaml_ng::from_str(&content)?;
     Ok((content, workflow))
+}
+
+fn route_script<'a>(router: &'a Value) -> Result<&'a str> {
+    mapping_value(router, "steps")?
+        .as_sequence()
+        .ok_or_else(|| anyhow!("router steps must be a YAML sequence"))?
+        .iter()
+        .find(|step| {
+            mapping_value(step, "id").and_then(scalar_string).is_ok_and(|id| id == "route")
+        })
+        .ok_or_else(|| anyhow!("router route step is missing"))
+        .and_then(|step| scalar_string(mapping_value(step, "run")?))
+}
+
+fn route_branch_contains_emit(script: &str, guard: &str, emit: &str) -> bool {
+    let Some(start) = script.find(guard) else {
+        return false;
+    };
+    let branch = &script[start..];
+    let Some(exit) = branch.find("exit 0") else {
+        return false;
+    };
+    branch[..exit].contains(emit)
 }
 
 fn repo_root() -> Result<PathBuf> {

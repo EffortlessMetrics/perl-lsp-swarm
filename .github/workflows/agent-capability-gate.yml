@@ -100,7 +100,11 @@ jobs:
             exit 0
           fi
 
-          group_response="$(mktemp)"
+          if ! group_response="$(mktemp)"; then
+            echo "::warning::tempfile creation failed; falling back to GitHub-hosted"
+            emit "github" "tempfile_creation_failed" "true" "true"
+            exit 0
+          fi
           if ! GH_TOKEN="$GH_TOKEN" gh api --paginate --slurp \
             "/orgs/$ORG/actions/runner-groups?per_page=100" > "$group_response"; then
             echo "::warning::runner group API failed; falling back to GitHub-hosted"
@@ -121,7 +125,11 @@ jobs:
             exit 0
           fi
 
-          response="$(mktemp)"
+          if ! response="$(mktemp)"; then
+            echo "::warning::tempfile creation failed; falling back to GitHub-hosted"
+            emit "github" "tempfile_creation_failed" "true" "true"
+            exit 0
+          fi
           if ! GH_TOKEN="$GH_TOKEN" gh api --paginate --slurp \
             "/orgs/$ORG/actions/runners?per_page=100" > "$response"; then
             echo "::warning::runner API failed; falling back to GitHub-hosted"
