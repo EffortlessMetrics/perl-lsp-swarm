@@ -1068,6 +1068,10 @@ fn test_prepare_rename_sigiled_variable_always_returns_range_placeholder() -> Te
         response.get("placeholder").is_some(),
         "sigiled variable response must include placeholder; got: {response:?}"
     );
+    assert!(
+        response.get("defaultBehavior").is_none(),
+        "sigiled variable response must not include defaultBehavior; got: {response:?}"
+    );
     Ok(())
 }
 
