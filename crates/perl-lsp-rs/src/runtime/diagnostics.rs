@@ -2162,7 +2162,7 @@ mod tests {
     use serde_json::json;
     use std::io::Write;
     use std::sync::Arc as StdArc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// Shared-buffer writer for capturing outbound LSP notifications in tests.
     struct SharedVecWriter {
@@ -2199,9 +2199,24 @@ mod tests {
         (server, buf)
     }
 
+    fn capture_until(
+        buffer: &StdArc<parking_lot::Mutex<Vec<u8>>>,
+        predicate: impl Fn(&str) -> bool,
+    ) -> String {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
+            if predicate(&output) || Instant::now() >= deadline {
+                return output;
+            }
+            std::thread::yield_now();
+        }
+    }
+
     #[test]
     fn critic_range_mapping_rejects_malformed_positions() {
         assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 0, 0, 0, 2), Some((0, 2)));
+        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 0, 2, 0, 2), Some((2, 2)));
         assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 3, 0, 3, 1), None);
         assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 0, 4, 0, 2), None);
     }
@@ -2217,7 +2232,10 @@ mod tests {
 
         let runtime = StdArc::new(MockSubprocessRuntime::new());
         runtime.add_response(MockResponse::success(
-            b"test.pl:99:1:3:TestingAndDebugging::RequireUseStrict:bad range\n".to_vec(),
+            b"test.pl:1:1:3:TestingAndDebugging::RequireUseStrict:valid range\n\
+              test.pl:99:1:3:TestingAndDebugging::RequireUseStrict:bad line range\n\
+              test.pl:1:99:3:TestingAndDebugging::RequireUseStrict:bad column range\n"
+                .to_vec(),
         ));
         server.test_install_mock_critic_runtime(runtime);
         server.test_bypass_perlcritic_command_check();
@@ -2232,13 +2250,12 @@ mod tests {
                 }
             })))
             .expect("didOpen should succeed");
-        std::thread::sleep(Duration::from_millis(50));
+        let output = capture_until(&buffer, |output| output.contains("valid range"));
         drop(server);
 
-        let output = String::from_utf8(buffer.lock().clone()).expect("captured output is UTF-8");
         assert!(
-            !output.contains("bad range"),
-            "malformed external critic range must not publish a diagnostic: {output:?}"
+            !output.contains("bad line range") && !output.contains("bad column range"),
+            "malformed external critic ranges must not publish diagnostics: {output:?}"
         );
     }
 
