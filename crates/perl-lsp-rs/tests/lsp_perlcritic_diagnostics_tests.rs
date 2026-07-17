@@ -21,6 +21,7 @@
 #![allow(clippy::expect_used)]
 
 use perl_lsp::LspServer;
+use perl_lsp_rs_core::config::CriticEngine;
 use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
 use perl_tdd_support::must;
 use serde_json::json;
@@ -116,6 +117,45 @@ fn test_a1_severity_five_maps_to_error() {
         d["code"].as_str() == Some("InputOutput::RequireThreeArgOpen")
             && d["severity"].as_u64() == Some(1)
     }));
+}
+
+#[test]
+fn test_a_malformed_range_is_dropped_from_pull_diagnostics() {
+    let server = LspServer::new();
+    server.test_configure_perlcritic(true, 3, None);
+    server.test_configure_critic_engine(CriticEngine::Legacy);
+
+    let runtime = Arc::new(MockSubprocessRuntime::new());
+    let mock_response = MockResponse::success(
+        b"test.pl:1:1:3:TestingAndDebugging::RequireUseStrict:valid range\n\
+          test.pl:99:1:3:TestingAndDebugging::RequireUseStrict:bad line range\n\
+          test.pl:1:99:3:TestingAndDebugging::RequireUseStrict:bad column range\n"
+            .to_vec(),
+    );
+    // didOpen also runs the push path, so provide one response for each
+    // external perlcritic invocation exercised by this pull-path test.
+    runtime.add_response(mock_response.clone());
+    runtime.add_response(mock_response);
+    server.test_install_mock_critic_runtime(runtime);
+    server.test_bypass_perlcritic_command_check();
+
+    #[cfg(windows)]
+    let uri = "file:///C:/tmp/test_malformed_range.pl";
+    #[cfg(not(windows))]
+    let uri = "file:///tmp/test_malformed_range.pl";
+
+    let result = pull_diagnostics(&server, uri, "print 'hello';\n");
+    let diags = result["items"].as_array().cloned().unwrap_or_default();
+    assert!(
+        diags.iter().any(|diagnostic| diagnostic["message"].as_str() == Some("valid range")),
+        "valid external critic range must remain in pull diagnostics: {result}"
+    );
+    assert!(
+        !diags.iter().any(|diagnostic| {
+            matches!(diagnostic["message"].as_str(), Some("bad line range" | "bad column range"))
+        }),
+        "malformed external critic ranges must not appear in pull diagnostics: {result}"
+    );
 }
 
 #[test]

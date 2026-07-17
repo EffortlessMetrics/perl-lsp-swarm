@@ -63,6 +63,18 @@ fn find_workspace_perlcritic_profile(
     None
 }
 
+fn critic_range_to_byte_range(
+    content: &str,
+    start_line: u32,
+    start_column: u32,
+    end_line: u32,
+    end_column: u32,
+) -> Option<(usize, usize)> {
+    let start = crate::util::position_to_offset(content, start_line, start_column)?;
+    let end = crate::util::position_to_offset(content, end_line, end_column)?;
+    (start <= end).then_some((start, end))
+}
+
 /// Orchestrator for pull diagnostics operations.
 ///
 /// Coordinates between LspServer state and the pure-logic PullDiagnosticsProvider.
@@ -299,19 +311,24 @@ impl PullDiagnosticsOrchestrator {
                         }
                     };
 
-                    // Convert line/column to byte offset
-                    let start_byte = crate::util::position_to_offset(
+                    let Some((start_byte, end_byte)) = critic_range_to_byte_range(
                         doc_text,
                         v.range.start.line,
                         v.range.start.column,
-                    )
-                    .unwrap_or(0);
-                    let end_byte = crate::util::position_to_offset(
-                        doc_text,
                         v.range.end.line,
                         v.range.end.column,
-                    )
-                    .unwrap_or(start_byte.saturating_add(1));
+                    ) else {
+                        tracing::trace!(
+                            uri,
+                            policy = %v.policy,
+                            start_line = v.range.start.line,
+                            start_column = v.range.start.column,
+                            end_line = v.range.end.line,
+                            end_column = v.range.end.column,
+                            "dropping malformed perlcritic diagnostic range"
+                        );
+                        continue;
+                    };
 
                     diagnostics.push(InternalDiagnostic {
                         range: (start_byte, end_byte),
@@ -1967,13 +1984,24 @@ impl LspServer {
                         crate::perl_critic::Severity::Brutal => InternalDiagnosticSeverity::Hint,
                     };
 
-                    // Convert 0-indexed line/column from CriticAnalyzer to byte offsets.
-                    let line_0 = v.range.start.line;
-                    let col_0 = v.range.start.column;
-                    let start_byte = position_to_offset(doc_text, line_0, col_0).unwrap_or(0);
-                    let end_byte =
-                        position_to_offset(doc_text, v.range.end.line, v.range.end.column)
-                            .unwrap_or(start_byte.saturating_add(1));
+                    let Some((start_byte, end_byte)) = critic_range_to_byte_range(
+                        doc_text,
+                        v.range.start.line,
+                        v.range.start.column,
+                        v.range.end.line,
+                        v.range.end.column,
+                    ) else {
+                        tracing::trace!(
+                            uri,
+                            policy = %v.policy,
+                            start_line = v.range.start.line,
+                            start_column = v.range.start.column,
+                            end_line = v.range.end.line,
+                            end_column = v.range.end.column,
+                            "dropping malformed perlcritic diagnostic range"
+                        );
+                        continue;
+                    };
 
                     diagnostics.push(InternalDiagnostic {
                         range: (start_byte, end_byte),
@@ -2134,7 +2162,7 @@ mod tests {
     use serde_json::json;
     use std::io::Write;
     use std::sync::Arc as StdArc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// Shared-buffer writer for capturing outbound LSP notifications in tests.
     struct SharedVecWriter {
@@ -2169,6 +2197,84 @@ mod tests {
             runtime_tuning,
         );
         (server, buf)
+    }
+
+    fn capture_until(
+        buffer: &StdArc<parking_lot::Mutex<Vec<u8>>>,
+        predicate: impl Fn(&str) -> bool,
+    ) -> String {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
+            if predicate(&output) || Instant::now() >= deadline {
+                return output;
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn critic_range_mapping_rejects_malformed_positions() {
+        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 0, 0, 0, 2), Some((0, 2)));
+        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 0, 2, 0, 2), Some((2, 2)));
+        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 3, 0, 3, 1), None);
+        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 0, 4, 0, 2), None);
+    }
+
+    #[test]
+    fn push_perlcritic_drops_malformed_ranges() {
+        use perl_lsp_rs_core::config::CriticEngine;
+        use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
+
+        let (server, buffer) = make_server_with_capture_and_tuning(
+            perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults(),
+        );
+        let uri = if cfg!(windows) { "file:///C:/tmp/test.pl" } else { "file:///tmp/test.pl" };
+        server.test_configure_perlcritic(true, 3, None);
+        server.test_configure_critic_engine(CriticEngine::Legacy);
+
+        let runtime = StdArc::new(MockSubprocessRuntime::new());
+        let mock_response = MockResponse::success(
+            b"test.pl:1:1:3:TestingAndDebugging::RequireUseStrict:valid range\n\
+              test.pl:99:1:3:TestingAndDebugging::RequireUseStrict:bad line range\n\
+              test.pl:1:99:3:TestingAndDebugging::RequireUseStrict:bad column range\n"
+                .to_vec(),
+        );
+        runtime.add_response(mock_response);
+        let runtime_for_server: StdArc<dyn perl_subprocess_runtime::SubprocessRuntime> =
+            runtime.clone();
+        server.test_install_mock_critic_runtime(runtime_for_server);
+        server.test_bypass_perlcritic_command_check();
+
+        server
+            .test_handle_did_open(Some(json!({
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "perl",
+                        "version": 1,
+                        "text": "print 'hello';\n"
+                    }
+            })))
+            .expect("didOpen should succeed");
+        let _initial_output =
+            capture_until(&buffer, |output| output.contains("publishDiagnostics"));
+        server
+            .test_publish_parse_for_current_generation(uri)
+            .expect("test parse should publish the current snapshot");
+        buffer.lock().clear();
+        server.publish_diagnostics(uri);
+        capture_until(&buffer, |output| output.contains("valid range"));
+        drop(server);
+        let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
+
+        assert!(
+            output.contains("valid range"),
+            "valid external critic range must publish a diagnostic: {output:?}"
+        );
+        assert!(
+            !output.contains("bad line range") && !output.contains("bad column range"),
+            "malformed external critic ranges must not publish diagnostics: {output:?}"
+        );
     }
 
     /// Positive case: when no concurrent change arrives during diagnostic computation,
