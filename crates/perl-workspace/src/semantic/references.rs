@@ -73,10 +73,9 @@ impl ReferenceIndex {
 
             // Build the target_candidates list from edges, falling back to the
             // occurrence's own entity_id when no edge exists.
-            let target_candidates = match edge_targets.get(&occ.id.0) {
-                Some(targets) => targets.clone(),
-                None => occ.entity_id.into_iter().collect(),
-            };
+            let target_candidates = edge_targets
+                .remove(&occ.id.0)
+                .unwrap_or_else(|| occ.entity_id.into_iter().collect());
 
             // Derive the symbol_key from the entity canonical name when
             // available. For occurrences without a resolved entity we use the
@@ -97,9 +96,6 @@ impl ReferenceIndex {
                 occ.confidence,
             ));
 
-            // Insert into name index.
-            self.references_by_name.entry(symbol_key).or_default().push(Arc::clone(&ref_edge));
-
             // Insert into entity index — one Arc::clone per target candidate
             // instead of a full ReferenceEdge clone.
             for entity_id in &ref_edge.target_candidates {
@@ -108,6 +104,10 @@ impl ReferenceIndex {
                     .or_default()
                     .push(Arc::clone(&ref_edge));
             }
+
+            // Insert into name index after the entity index has borrowed the
+            // Arc, so this final insertion can move it without another clone.
+            self.references_by_name.entry(symbol_key).or_default().push(ref_edge);
         }
     }
 
