@@ -263,6 +263,10 @@ fn word_prefix(source: &str, position: usize) -> (String, usize) {
     (source[word_start..position].to_string(), word_start)
 }
 
+pub(super) fn is_completion_identifier_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
 impl CompletionProvider {
     /// Create a new completion provider from parsed AST for Perl script analysis
     ///
@@ -785,9 +789,7 @@ impl CompletionProvider {
             let typed_method = &source[arrow_start + 2..position];
             let receiver_start = method_receiver_start(source, arrow_start);
             let receiver = &source[receiver_start..arrow_start];
-            if !receiver.is_empty()
-                && typed_method.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-            {
+            if !receiver.is_empty() && typed_method.chars().all(is_completion_identifier_char) {
                 (source[receiver_start..position].to_string(), arrow_start + 2)
             } else {
                 word_prefix(source, position)

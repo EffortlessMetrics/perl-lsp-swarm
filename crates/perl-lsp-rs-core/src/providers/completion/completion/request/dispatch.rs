@@ -1,6 +1,7 @@
 use super::super::{
     CompletionContext, CompletionItem, CompletionProvider, builtins, file_path, functions,
-    keywords, methods, packages, snippets, test_more, variables, workspace, xs_api,
+    is_completion_identifier_char, keywords, methods, packages, snippets, test_more, variables,
+    workspace, xs_api,
 };
 use super::CompletionFlow;
 use perl_semantic_analyzer::symbol::SymbolKind;
@@ -141,7 +142,7 @@ fn is_method_arrow_context(context: &CompletionContext) -> bool {
         return context.prefix.ends_with("->") && arrow > 0;
     }
 
-    context.prefix[arrow + 2..].chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    context.prefix[arrow + 2..].chars().all(is_completion_identifier_char)
 }
 
 /// Statement-level keywords and I/O builtins that look like a bareword method
