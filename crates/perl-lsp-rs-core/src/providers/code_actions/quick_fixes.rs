@@ -2,13 +2,17 @@
 //!
 //! Provides automated fixes for common Perl issues driven by diagnostic codes.
 
-use super::types::{CodeAction, CodeActionEdit, CodeActionKind, QuickFixDiagnostic};
+use std::collections::HashMap;
+
+use super::types::{
+    CodeAction, CodeActionEdit, CodeActionKind, QuickFixDiagnostic, QuickFixMetadata,
+};
 use crate::providers::import_management::guess_module_for_function;
 use crate::providers::rename::TextEdit;
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_lexer::is_builtin;
 use perl_parser::ast_utils::{find_declaration_position, get_indent_at};
-use perl_parser_core::SourceLocation;
+use perl_parser_core::{Node, NodeKind, SourceLocation};
 
 /// Fix undefined variable by declaring it
 pub fn fix_undefined_variable(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
@@ -124,7 +128,23 @@ mod tests {
     use perl_tdd_support::must_some;
 
     fn diagnostic_for(range: (usize, usize), message: &str) -> QuickFixDiagnostic {
-        QuickFixDiagnostic { range, message: message.to_string(), code: None }
+        QuickFixDiagnostic { range, message: message.to_string(), code: None, metadata: None }
+    }
+
+    fn printf_diagnostic_for(
+        range: (usize, usize),
+        call_name: &str,
+        missing_arguments: usize,
+    ) -> QuickFixDiagnostic {
+        QuickFixDiagnostic {
+            range,
+            message: "message wording is intentionally irrelevant".to_string(),
+            code: Some("native.common.printf_format_arity".to_string()),
+            metadata: Some(QuickFixMetadata::PrintfFormatArity {
+                call_name: call_name.to_string(),
+                missing_arguments,
+            }),
+        }
     }
 
     #[test]
@@ -361,10 +381,7 @@ mod tests {
         let source = r#"printf "%s %s", $name;"#;
         // Call range covers "printf "%s %s", $name" (everything before ;)
         let call_end = source.len() - 1;
-        let diagnostic = diagnostic_for(
-            (0, call_end),
-            r#"`printf` format string has 2 specifiers but 1 argument supplied"#,
-        );
+        let diagnostic = printf_diagnostic_for((0, call_end), "printf", 1);
 
         let actions = fix_printf_format_arity(source, &diagnostic);
 
@@ -378,12 +395,93 @@ mod tests {
     }
 
     #[test]
+    fn printf_metadata_matches_indirect_call_range() {
+        let string_node = |value: &str, start: usize, end: usize| {
+            Node::new(
+                NodeKind::String { value: value.to_string(), interpolated: false },
+                SourceLocation { start, end },
+            )
+        };
+        let variable_node = |start: usize, end: usize| {
+            Node::new(
+                NodeKind::Variable { sigil: "$".to_string(), name: "value".to_string() },
+                SourceLocation { start, end },
+            )
+        };
+        let indirect_call = Node::new(
+            NodeKind::IndirectCall {
+                method: "printf".to_string(),
+                object: Box::new(variable_node(0, 3)),
+                args: vec![string_node("\"%s %s %s\"", 4, 15), variable_node(17, 23)],
+            },
+            SourceLocation { start: 0, end: 23 },
+        );
+        let function_call = Node::new(
+            NodeKind::FunctionCall {
+                name: "printf".to_string(),
+                args: vec![string_node("\"%s %s\"", 24, 32), variable_node(34, 40)],
+            },
+            SourceLocation { start: 24, end: 40 },
+        );
+        let program = Node::new(
+            NodeKind::Program { statements: vec![indirect_call, function_call] },
+            SourceLocation { start: 0, end: 40 },
+        );
+
+        let metadata = printf_format_arity_metadata_by_range(&program).get(&(24, 40)).cloned();
+
+        assert_eq!(
+            metadata,
+            Some(QuickFixMetadata::PrintfFormatArity {
+                call_name: "printf".to_string(),
+                missing_arguments: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn printf_metadata_rejects_interpolated_arrays() {
+        let format = Node::new(
+            NodeKind::String { value: "\"%s @items\"".to_string(), interpolated: true },
+            SourceLocation { start: 7, end: 19 },
+        );
+        let argument = Node::new(
+            NodeKind::Variable { sigil: "$".to_string(), name: "item".to_string() },
+            SourceLocation { start: 21, end: 26 },
+        );
+        let call = Node::new(
+            NodeKind::FunctionCall { name: "printf".to_string(), args: vec![format, argument] },
+            SourceLocation { start: 0, end: 26 },
+        );
+
+        assert_eq!(printf_format_arity_metadata_by_range(&call).get(&(0, 26)), None);
+    }
+
+    #[test]
+    fn printf_metadata_allows_literal_at_in_static_format() {
+        let format = Node::new(
+            NodeKind::String {
+                value: "'email@example.com %s %s'".to_string(),
+                interpolated: false,
+            },
+            SourceLocation { start: 7, end: 29 },
+        );
+        let argument = Node::new(
+            NodeKind::Variable { sigil: "$".to_string(), name: "item".to_string() },
+            SourceLocation { start: 31, end: 36 },
+        );
+        let call = Node::new(
+            NodeKind::FunctionCall { name: "printf".to_string(), args: vec![format, argument] },
+            SourceLocation { start: 0, end: 40 },
+        );
+
+        assert!(printf_format_arity_metadata_by_range(&call).get(&(0, 40)).is_some());
+    }
+
+    #[test]
     fn fix_printf_format_arity_listop_range_includes_semicolon() {
         let source = r#"printf "%s %s", $name;"#;
-        let diagnostic = diagnostic_for(
-            (0, source.len()),
-            r#"`printf` format string has 2 specifiers but 1 argument supplied"#,
-        );
+        let diagnostic = printf_diagnostic_for((0, source.len()), "printf", 1);
 
         let actions = fix_printf_format_arity(source, &diagnostic);
 
@@ -396,10 +494,7 @@ mod tests {
     fn fix_printf_format_arity_parens_one_missing() {
         // Parens form: insert before the closing ')'.
         let source = r#"printf("%s %s", $a)"#;
-        let diagnostic = diagnostic_for(
-            (0, source.len()),
-            r#"`printf` format string has 2 specifiers but 1 argument supplied"#,
-        );
+        let diagnostic = printf_diagnostic_for((0, source.len()), "printf", 1);
 
         let actions = fix_printf_format_arity(source, &diagnostic);
 
@@ -414,10 +509,7 @@ mod tests {
     #[test]
     fn fix_printf_format_arity_ignores_range_not_starting_at_call() {
         let source = r#"my $n = printf "%s %s", $name;"#;
-        let diagnostic = diagnostic_for(
-            (0, source.len()),
-            r#"`printf` format string has 2 specifiers but 1 argument supplied"#,
-        );
+        let diagnostic = printf_diagnostic_for((0, source.len()), "printf", 1);
 
         let actions = fix_printf_format_arity(source, &diagnostic);
 
@@ -427,10 +519,7 @@ mod tests {
     #[test]
     fn fix_printf_format_arity_two_missing_appends_two_undefs() {
         let source = r#"sprintf "%s %s %s", $a"#;
-        let diagnostic = diagnostic_for(
-            (0, source.len()),
-            r#"`sprintf` format string has 3 specifiers but 1 argument supplied"#,
-        );
+        let diagnostic = printf_diagnostic_for((0, source.len()), "sprintf", 2);
 
         let actions = fix_printf_format_arity(source, &diagnostic);
 
@@ -2319,26 +2408,27 @@ pub fn fix_security_signal_handler(
 /// (`printf("%s", $a)`), inserting before the closing `)`, statement semicolon,
 /// or range end as appropriate.
 pub fn fix_printf_format_arity(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
-    let Some((missing, call_name)) = parse_printf_format_mismatch(&diagnostic.message) else {
+    let Some(QuickFixMetadata::PrintfFormatArity { call_name, missing_arguments }) =
+        diagnostic.metadata.as_ref()
+    else {
         return Vec::new();
     };
-    if missing == 0 {
+    if *missing_arguments == 0 {
         return Vec::new();
     }
     let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
         return Vec::new();
     };
-    let Some(insert_pos) =
-        printf_format_insert_position(source, range_start, range_end, &call_name)
+    let Some(insert_pos) = printf_format_insert_position(source, range_start, range_end, call_name)
     else {
         return Vec::new();
     };
 
-    let undef_args = ", undef".repeat(missing);
-    let plural = if missing == 1 { "" } else { "s" };
+    let undef_args = ", undef".repeat(*missing_arguments);
+    let plural = if *missing_arguments == 1 { "" } else { "s" };
 
     vec![CodeAction {
-        title: format!("Add {missing} missing argument{plural} as undef"),
+        title: format!("Add {missing_arguments} missing argument{plural} as undef"),
         kind: CodeActionKind::QuickFix,
         diagnostics: vec![DiagnosticCode::PrintfFormatMismatch.as_str().to_string()],
         edit: CodeActionEdit {
@@ -2349,6 +2439,87 @@ pub fn fix_printf_format_arity(source: &str, diagnostic: &QuickFixDiagnostic) ->
         },
         is_preferred: true,
     }]
+}
+
+fn printf_format_arity_metadata_for_call(
+    call_name: &str,
+    args: &[Node],
+) -> Option<QuickFixMetadata> {
+    let format_node = args.first()?;
+    let NodeKind::String { value, interpolated } = &format_node.kind else {
+        return None;
+    };
+    let format = crate::providers::diagnostics::unquote_string(value);
+    if *interpolated && (format.contains('$') || format.contains('@')) {
+        return None;
+    }
+
+    let specifier_count = crate::providers::diagnostics::count_format_specifiers(format);
+    let supplied_arguments = args.len().saturating_sub(1);
+    let missing_arguments = specifier_count.checked_sub(supplied_arguments)?;
+    (missing_arguments > 0).then_some(QuickFixMetadata::PrintfFormatArity {
+        call_name: call_name.to_string(),
+        missing_arguments,
+    })
+}
+
+pub(super) struct PrintfFormatArityMetadata {
+    by_range: HashMap<(usize, usize), QuickFixMetadata>,
+}
+
+impl PrintfFormatArityMetadata {
+    pub(super) fn get(&self, range: &(usize, usize)) -> Option<&QuickFixMetadata> {
+        self.by_range.get(range)
+    }
+
+    pub(super) fn for_diagnostic(
+        &self,
+        source: &str,
+        diagnostic_range: (usize, usize),
+    ) -> Option<&QuickFixMetadata> {
+        if let Some(value) = self.get(&diagnostic_range) {
+            return Some(value);
+        }
+
+        let (diagnostic_start, diagnostic_end) = diagnostic_range;
+        let diagnostic_text = source.get(diagnostic_start..diagnostic_end)?.trim_end();
+        let before_semicolon = diagnostic_text.strip_suffix(';')?;
+        let semicolon_start = diagnostic_start + before_semicolon.len();
+        self.by_range.get(&(diagnostic_start, semicolon_start)).or_else(|| {
+            let call_end = diagnostic_start + before_semicolon.trim_end().len();
+            self.by_range.get(&(diagnostic_start, call_end))
+        })
+    }
+}
+
+/// Derive printf metadata for every statically analyzable call in one AST walk.
+pub(super) fn printf_format_arity_metadata_by_range(ast: &Node) -> PrintfFormatArityMetadata {
+    let mut metadata = PrintfFormatArityMetadata { by_range: HashMap::new() };
+    collect_printf_format_arity_metadata(ast, &mut metadata);
+    metadata
+}
+
+fn collect_printf_format_arity_metadata(node: &Node, metadata: &mut PrintfFormatArityMetadata) {
+    let call = match &node.kind {
+        NodeKind::FunctionCall { name, args } if matches!(name.as_str(), "printf" | "sprintf") => {
+            Some((name.as_str(), args))
+        }
+        NodeKind::IndirectCall { method, args, .. } if method == "printf" => {
+            Some((method.as_str(), args))
+        }
+        _ => None,
+    };
+
+    if let Some((call_name, args)) = call {
+        if let Some(value) = printf_format_arity_metadata_for_call(call_name, args) {
+            let range = (node.location.start, node.location.end);
+            metadata.by_range.insert(range, value);
+        }
+    }
+
+    for child in node.children() {
+        collect_printf_format_arity_metadata(child, metadata);
+    }
 }
 
 fn printf_format_insert_position(
@@ -2380,25 +2551,6 @@ fn printf_format_insert_position(
         // the diagnostic range, otherwise at the trimmed range end.
         bare_call_args_end(call_text).map(|end| range_start + end)
     }
-}
-
-/// Parse a `printf`/`sprintf` format-arity message and return `(missing_count, call_name)`.
-///
-/// Returns `None` when the message cannot be parsed or when args exceed specifiers
-/// (the caller decides not to offer a fix in the "too many args" case).
-fn parse_printf_format_mismatch(message: &str) -> Option<(usize, String)> {
-    // Message form: "`printf` format string has N specifier(s) but M argument(s) supplied"
-    let backtick_start = message.find('`')? + 1;
-    let backtick_end = backtick_start + message[backtick_start..].find('`')?;
-    let call_name = message[backtick_start..backtick_end].to_string();
-
-    let after_has = message.split("has ").nth(1)?;
-    let specifiers: usize = after_has.split_whitespace().next()?.parse().ok()?;
-
-    let after_but = message.split("but ").nth(1)?;
-    let supplied: usize = after_but.split_whitespace().next()?.parse().ok()?;
-
-    specifiers.checked_sub(supplied).filter(|&n| n > 0).map(|n| (n, call_name))
 }
 
 /// Remove an undefined label from a `next`, `last`, or `redo` statement (PL410).
