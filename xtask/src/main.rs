@@ -217,6 +217,13 @@ enum Commands {
         command: PrLedgerCommand,
     },
 
+    /// Check target-only development commits before a release sync.
+    #[command(name = "sync-divergence")]
+    SyncDivergence {
+        #[command(subcommand)]
+        command: SyncDivergenceCommand,
+    },
+
     /// Issue Research / Plan Review Desk tooling (report-only audit, etc.).
     #[command(name = "issue-plan")]
     IssuePlan {
@@ -3233,6 +3240,28 @@ enum PrLedgerCommand {
 }
 
 #[derive(Subcommand)]
+enum SyncDivergenceCommand {
+    /// Validate the target-only commit reconciliation ledger and write a receipt.
+    Check {
+        /// Common source/target base used for the git cherry comparison.
+        #[arg(long)]
+        base: String,
+        /// Active swarm source ref.
+        #[arg(long)]
+        source: String,
+        /// Release-repo target ref, normally the first parent of the sync merge.
+        #[arg(long)]
+        target: String,
+        /// Machine-readable reconciliation ledger.
+        #[arg(long)]
+        ledger: PathBuf,
+        /// Output source-sync receipt JSON.
+        #[arg(long)]
+        receipt: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum IssuePlanSubcommand {
     /// Report-only audit of issue-plan quality (builder-ready completeness,
     /// label drift, `#0000` placeholder references). Always exits 0.
@@ -3565,6 +3594,17 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::PrLedger { command } => match command {
             PrLedgerCommand::Generate { repos, out, fixture } => {
                 tasks::pr_ledger::generate(tasks::pr_ledger::GenerateConfig { repos, out, fixture })
+            }
+        },
+        Commands::SyncDivergence { command } => match command {
+            SyncDivergenceCommand::Check { base, source, target, ledger, receipt } => {
+                tasks::sync_divergence::check(tasks::sync_divergence::CheckConfig {
+                    base,
+                    source,
+                    target,
+                    ledger,
+                    receipt,
+                })
             }
         },
         Commands::Build { release, features, c_scanner, rust_scanner } => {

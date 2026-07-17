@@ -1,3 +1,4 @@
+use perl_module::collect_module_uri_candidates_with_effective_inc;
 use perl_module::path::module_name_to_path;
 use perl_module::resolution::uri::{ModuleUriResolution, resolve_module_uri};
 use proptest::prelude::*;
@@ -43,4 +44,57 @@ proptest! {
 
         prop_assert_eq!(result, ModuleUriResolution::Resolved(open_uri));
     }
+
+}
+
+#[test]
+fn candidate_report_deduplicates_repeated_open_documents_and_keeps_stable_order()
+-> Result<(), Box<dyn std::error::Error>> {
+    let generated_module_names = (1..=4)
+        .map(|depth| (0..depth).map(|_| "Segment").collect::<Vec<_>>().join("::"))
+        .collect::<Vec<_>>();
+    let module_names = generated_module_names
+        .iter()
+        .map(String::as_str)
+        .chain(["Acme::Widget", "Nested::Acme::Widget"]);
+
+    for module_name in module_names {
+        for duplicate_count in 1usize..=8 {
+            let relative_path = module_name_to_path(module_name).replace('\\', "/");
+            let open_uri = format!("file:///open/{relative_path}");
+            let open_documents = vec![open_uri.clone(); duplicate_count];
+
+            let report = collect_module_uri_candidates_with_effective_inc(
+                module_name,
+                &open_documents,
+                &[],
+                &[],
+                Duration::from_millis(20),
+            );
+            let repeated_report = collect_module_uri_candidates_with_effective_inc(
+                module_name,
+                &open_documents,
+                &[],
+                &[],
+                Duration::from_millis(20),
+            );
+
+            assert_eq!(&report, &repeated_report);
+            assert_eq!(report.candidates.len(), 1);
+            let candidate = report.candidates.first().ok_or("candidate report has no candidate")?;
+            assert_eq!(&candidate.uri, &open_uri);
+            assert_eq!(&candidate.source, "open-document");
+            assert_eq!(candidate.search_order, 0);
+            assert_eq!(
+                report
+                    .candidates
+                    .iter()
+                    .map(|candidate| candidate.search_order)
+                    .collect::<Vec<_>>(),
+                vec![0]
+            );
+        }
+    }
+
+    Ok(())
 }
