@@ -653,6 +653,10 @@ mod tests {
             validate_resolved_identity(Some("bad".to_string()), Some("a".repeat(40))).is_err(),
             "malformed base identity must fail closed"
         );
+        ensure!(
+            validate_resolved_identity(Some("a".repeat(40)), Some("bad".to_string())).is_err(),
+            "malformed head identity must fail closed"
+        );
         Ok(())
     }
 
