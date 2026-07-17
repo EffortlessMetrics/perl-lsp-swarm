@@ -2162,7 +2162,7 @@ mod tests {
     use serde_json::json;
     use std::io::Write;
     use std::sync::Arc as StdArc;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     /// Shared-buffer writer for capturing outbound LSP notifications in tests.
     struct SharedVecWriter {
@@ -2199,20 +2199,6 @@ mod tests {
         (server, buf)
     }
 
-    fn capture_until(
-        buffer: &StdArc<parking_lot::Mutex<Vec<u8>>>,
-        predicate: impl Fn(&str) -> bool,
-    ) -> String {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
-            if predicate(&output) || Instant::now() >= deadline {
-                return output;
-            }
-            std::thread::yield_now();
-        }
-    }
-
     #[test]
     fn critic_range_mapping_rejects_malformed_positions() {
         assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 0, 0, 0, 2), Some((0, 2)));
@@ -2222,7 +2208,7 @@ mod tests {
     }
 
     #[test]
-    fn push_perlcritic_drops_malformed_ranges() {
+    fn push_perlcritic_publishes_valid_range() {
         use perl_lsp_rs_core::config::CriticEngine;
         use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
 
@@ -2232,9 +2218,7 @@ mod tests {
 
         let runtime = StdArc::new(MockSubprocessRuntime::new());
         runtime.add_response(MockResponse::success(
-            b"test.pl:1:1:3:TestingAndDebugging::RequireUseStrict:valid range\n\
-              test.pl:99:1:3:TestingAndDebugging::RequireUseStrict:bad line range\n\
-              test.pl:1:99:3:TestingAndDebugging::RequireUseStrict:bad column range\n"
+            b"test.pl:1:1:3:TestingAndDebugging::RequireUseStrict:valid range\n"
                 .to_vec(),
         ));
         server.test_install_mock_critic_runtime(runtime);
@@ -2250,12 +2234,93 @@ mod tests {
                 }
             })))
             .expect("didOpen should succeed");
-        let output = capture_until(&buffer, |output| output.contains("valid range"));
-        drop(server);
 
+        // Drop server before inspecting buffer to ensure all async publications complete
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50)); // flush outbound writer
+
+        let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
         assert!(
-            !output.contains("bad line range") && !output.contains("bad column range"),
-            "malformed external critic ranges must not publish diagnostics: {output:?}"
+            output.contains("valid range"),
+            "valid external critic range must publish diagnostic: {output:?}"
+        );
+    }
+
+    #[test]
+    fn push_perlcritic_drops_line_out_of_bounds() {
+        use perl_lsp_rs_core::config::CriticEngine;
+        use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
+
+        let (server, buffer) = make_server_with_capture();
+        server.test_configure_perlcritic(true, 3, None);
+        server.test_configure_critic_engine(CriticEngine::Legacy);
+
+        let runtime = StdArc::new(MockSubprocessRuntime::new());
+        runtime.add_response(MockResponse::success(
+            b"test.pl:99:1:3:TestingAndDebugging::RequireUseStrict:bad line range\n"
+                .to_vec(),
+        ));
+        server.test_install_mock_critic_runtime(runtime);
+        server.test_bypass_perlcritic_command_check();
+
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": "file:///tmp/test.pl",
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "print 'hello';\n"
+                }
+            })))
+            .expect("didOpen should succeed");
+
+        // Drop server before inspecting buffer to ensure all async publications complete
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50)); // flush outbound writer
+
+        let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
+        assert!(
+            !output.contains("bad line range"),
+            "line-out-of-bounds external critic range must not publish diagnostic: {output:?}"
+        );
+    }
+
+    #[test]
+    fn push_perlcritic_drops_column_out_of_bounds() {
+        use perl_lsp_rs_core::config::CriticEngine;
+        use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
+
+        let (server, buffer) = make_server_with_capture();
+        server.test_configure_perlcritic(true, 3, None);
+        server.test_configure_critic_engine(CriticEngine::Legacy);
+
+        let runtime = StdArc::new(MockSubprocessRuntime::new());
+        runtime.add_response(MockResponse::success(
+            b"test.pl:1:99:3:TestingAndDebugging::RequireUseStrict:bad column range\n"
+                .to_vec(),
+        ));
+        server.test_install_mock_critic_runtime(runtime);
+        server.test_bypass_perlcritic_command_check();
+
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": "file:///tmp/test.pl",
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "print 'hello';\n"
+                }
+            })))
+            .expect("didOpen should succeed");
+
+        // Drop server before inspecting buffer to ensure all async publications complete
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50)); // flush outbound writer
+
+        let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
+        assert!(
+            !output.contains("bad column range"),
+            "column-out-of-bounds external critic range must not publish diagnostic: {output:?}"
         );
     }
 
