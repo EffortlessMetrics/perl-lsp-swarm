@@ -2254,6 +2254,10 @@ mod tests {
         drop(server);
 
         assert!(
+            output.contains("valid range"),
+            "valid external critic range must publish a diagnostic: {output:?}"
+        );
+        assert!(
             !output.contains("bad line range") && !output.contains("bad column range"),
             "malformed external critic ranges must not publish diagnostics: {output:?}"
         );
