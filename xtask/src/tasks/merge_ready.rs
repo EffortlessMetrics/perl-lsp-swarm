@@ -450,12 +450,15 @@ fn evaluate_protection(
                 }
                 Some(_) => {}
             }
-        } else if protection.evaluated_merge_group_sha.is_some() {
+        } else if let Some(actual_merge_group) = protection.evaluated_merge_group_sha.as_deref() {
             findings.push(MergeReadinessFinding {
                 source: "protection".to_string(),
                 class: EvidenceClass::Stale,
                 blocking: true,
-                detail: "protection evidence evaluated an unexpected merge group".to_string(),
+                detail: format!(
+                    "protection evidence evaluated unexpected merge group {} while snapshot has no merge group",
+                    actual_merge_group
+                ),
             });
         }
 
@@ -1264,7 +1267,7 @@ mod tests {
         color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
             finding.source == "protection"
                 && finding.class == EvidenceClass::Stale
-                && finding.detail.contains("unexpected merge group")
+                && finding.detail.contains(SHA_C)
         }));
         Ok(())
     }
