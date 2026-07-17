@@ -450,6 +450,13 @@ fn evaluate_protection(
                 }
                 Some(_) => {}
             }
+        } else if protection.evaluated_merge_group_sha.is_some() {
+            findings.push(MergeReadinessFinding {
+                source: "protection".to_string(),
+                class: EvidenceClass::Stale,
+                blocking: true,
+                detail: "protection evidence evaluated an unexpected merge group".to_string(),
+            });
         }
 
         if protection.result != EvidenceClass::Success {
@@ -1244,6 +1251,20 @@ mod tests {
         color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Stale);
         color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
             finding.source == "protection" && finding.class == EvidenceClass::Stale
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_unexpected_merge_group_evidence_is_stale() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.protection.evaluated_merge_group_sha = Some(SHA_C.to_string());
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Stale);
+        color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+            finding.source == "protection"
+                && finding.class == EvidenceClass::Stale
+                && finding.detail.contains("unexpected merge group")
         }));
         Ok(())
     }
