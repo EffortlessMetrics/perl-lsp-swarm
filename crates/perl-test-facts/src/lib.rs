@@ -190,7 +190,7 @@ impl TapReport {
 pub fn parse_tap(source: &str) -> TapReport {
     let mut report = TapReport::default();
     let mut yaml_block: Option<PendingYaml> = None;
-    let mut last_assertion: Option<(usize, usize)> = None;
+    let mut last_assertion: Option<(usize, usize, usize)> = None;
     let normalized_source = source.replace("\r\n", "\n").replace('\r', "\n");
 
     for (index, raw_line) in normalized_source.lines().enumerate() {
@@ -199,13 +199,13 @@ pub fn parse_tap(source: &str) -> TapReport {
 
         if let Some(mut block) = yaml_block.take() {
             let trimmed = line.trim();
-            let indentation = leading_indent_width(line);
+            let indentation = yaml_indentation_width(line);
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 block.lines.push(line.to_owned());
                 yaml_block = Some(block);
                 continue;
             }
-            if trimmed == "..." && indentation == block.indentation {
+            if trimmed == "..." && indentation == Some(block.indentation) {
                 block.lines.push(line.to_owned());
                 if let Some(assertion) = report.assertions.get_mut(block.assertion_index) {
                     assertion.diagnostics.append(&mut block.lines);
@@ -218,7 +218,9 @@ pub fn parse_tap(source: &str) -> TapReport {
                 continue;
             }
 
-            if indentation >= block.indentation {
+            if let Some(indentation) = indentation
+                && indentation >= block.indentation
+            {
                 block.lines.push(line.to_owned());
                 yaml_block = Some(block);
                 continue;
@@ -235,7 +237,8 @@ pub fn parse_tap(source: &str) -> TapReport {
             continue;
         }
         if trimmed.starts_with('#') {
-            if let Some((assertion_index, _)) = last_assertion
+            if let Some((assertion_index, assertion_depth, _)) = last_assertion
+                && indentation_depth(line) == Some(assertion_depth)
                 && let Some(assertion) = report.assertions.get_mut(assertion_index)
             {
                 apply_diagnostic(assertion, trimmed);
@@ -253,8 +256,15 @@ pub fn parse_tap(source: &str) -> TapReport {
         }
 
         if trimmed == "---" {
-            let indentation = leading_indent_width(line);
-            if let Some((assertion_index, expected_indentation)) = last_assertion {
+            let Some(indentation) = yaml_indentation_width(line) else {
+                report.raw_lines.push(line.to_owned());
+                report.diagnostics.push(format!(
+                    "line {line_number}: YAML diagnostics indentation must use spaces only"
+                ));
+                last_assertion = None;
+                continue;
+            };
+            if let Some((assertion_index, _, expected_indentation)) = last_assertion {
                 if assertion_index + 1 == report.assertions.len()
                     && indentation == expected_indentation
                 {
@@ -346,7 +356,8 @@ pub fn parse_tap(source: &str) -> TapReport {
 
         if let Some(assertion) = parse_assertion(trimmed, line_number, depth) {
             report.assertions.push(assertion);
-            last_assertion = Some((report.assertions.len() - 1, leading_indent_width(line) + 2));
+            last_assertion =
+                Some((report.assertions.len() - 1, depth, leading_indent_width(line) + 2));
             continue;
         }
 
@@ -380,6 +391,18 @@ fn leading_indent_width(line: &str) -> usize {
         .take_while(|character| matches!(character, ' ' | '\t'))
         .map(|character| if character == '\t' { 4 } else { 1 })
         .sum()
+}
+
+fn yaml_indentation_width(line: &str) -> Option<usize> {
+    let mut width = 0usize;
+    for character in line.chars() {
+        match character {
+            ' ' => width += 1,
+            '\t' => return None,
+            _ => break,
+        }
+    }
+    Some(width)
 }
 
 fn indentation_depth(line: &str) -> Option<usize> {
@@ -696,6 +719,31 @@ mod tests {
         assert_eq!(report.assertions[0].source_line, Some(12));
         assert_eq!(report.assertions[0].got.as_deref(), Some("2"));
         assert_eq!(report.assertions[0].expected.as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn does_not_attach_dedented_diagnostics_to_nested_assertions() {
+        let report = parse_tap(
+            "ok 1 - parent\n    not ok 1 - child\n    # got: child\n# expected: parent\n1..1\n",
+        );
+
+        assert_eq!(report.assertions.len(), 2);
+        assert_eq!(report.assertions[1].got.as_deref(), Some("child"));
+        assert_eq!(report.assertions[1].expected, None);
+    }
+
+    #[test]
+    fn rejects_tab_indentation_for_yaml_diagnostics() {
+        let report = parse_tap("not ok 1 - broken\n\t  ---\n    message: raw\n    ...\n");
+
+        assert_eq!(report.assertions[0].diagnostics, Vec::<String>::new());
+        assert!(report.raw_lines.iter().any(|line| line.contains("---")));
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("indentation must use spaces only"))
+        );
     }
 
     #[test]

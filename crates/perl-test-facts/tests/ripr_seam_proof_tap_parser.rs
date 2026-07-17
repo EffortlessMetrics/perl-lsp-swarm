@@ -207,7 +207,39 @@ fn seam_yaml_marker_rejection_clears_adjacency() {
     );
 }
 
-// ── SEAM M: diagnostic/source facts survive projection ───────────────────────
+// ── SEAM M: comment diagnostics respect assertion depth ─────────────────────
+
+/// A dedented parent-level diagnostic must not mutate the facts for a nested
+/// child assertion that preceded it.
+#[test]
+fn seam_dedented_comment_does_not_attach_to_nested_assertion() {
+    let report = parse_tap(
+        "ok 1 - parent\n    not ok 1 - child\n    # got: child\n# expected: parent\n1..1\n",
+    );
+
+    assert_eq!(report.assertions[1].got.as_deref(), Some("child"));
+    assert_eq!(report.assertions[1].expected, None);
+}
+
+// ── SEAM N: YAML indentation is space-only ──────────────────────────────────
+
+/// Tab-indented YAML markers remain raw evidence rather than being coerced
+/// into a valid diagnostic block.
+#[test]
+fn seam_tab_indented_yaml_is_rejected() {
+    let report = parse_tap("not ok 1 - broken\n\t  ---\n    message: raw\n    ...\n");
+
+    assert!(report.assertions[0].diagnostics.is_empty());
+    assert!(report.raw_lines.iter().any(|line| line.contains("---")));
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("indentation must use spaces only"))
+    );
+}
+
+// ── SEAM O: diagnostic/source facts survive projection ───────────────────────
 
 /// Non-YAML diagnostics remain available and `at FILE line N.` is separated
 /// from the TAP stream line number.
@@ -228,7 +260,7 @@ fn seam_source_location_diagnostic_is_retained() {
     assert_eq!(report.assertions[0].line, 1);
 }
 
-// ── SEAM N: duplicate plans retain last-plan-wins compatibility ──────────────
+// ── SEAM P: duplicate plans retain last-plan-wins compatibility ──────────────
 
 /// Duplicate plans remain diagnosable while the final plan replaces the
 /// stored plan, matching the existing editor-facing reader contract.
@@ -240,7 +272,7 @@ fn seam_duplicate_plan_keeps_the_final_plan() {
     assert!(report.diagnostics.iter().any(|diagnostic| diagnostic.contains("duplicate TAP plan")));
 }
 
-// ── SEAM O: directive classification does not erase raw outcome ──────────────
+// ── SEAM Q: directive classification does not erase raw outcome ──────────────
 
 /// Unnamed TODO directives are recognized, while `ok`/`not ok` remains
 /// independently observable for counts and downstream projections.
