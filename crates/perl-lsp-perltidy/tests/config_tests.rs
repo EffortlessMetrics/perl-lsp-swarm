@@ -359,6 +359,13 @@ fn builtin_formatter_matches_nested_mixed_delimiters() {
     assert_eq!(formatted, "foo({[\n            bar();\n]})\nprint 1;\n");
 }
 
+#[test]
+fn builtin_formatter_ignores_regex_character_class_delimiters() {
+    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
+    let formatted = formatter.format("if ($x =~ /[[]/) {\nprint 1;\n}\nprint 2;\n");
+    assert_eq!(formatted, "if ($x =~ /[[]/) {\n    print 1;\n}\nprint 2;\n");
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn with_os_runtime_clamps_zero_timeout() {

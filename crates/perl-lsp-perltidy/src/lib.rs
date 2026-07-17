@@ -450,7 +450,11 @@ fn significant_delimiters(line: &str) -> Vec<char> {
     let mut delimiters = Vec::new();
     let mut in_single = false;
     let mut in_double = false;
+    let mut in_regex = false;
+    let mut in_regex_char_class = false;
     let mut escaped = false;
+    let mut last_non_whitespace = None;
+    let mut second_last_non_whitespace = None;
 
     for ch in line.chars() {
         if escaped {
@@ -460,6 +464,17 @@ fn significant_delimiters(line: &str) -> Vec<char> {
 
         if ch == '\\' {
             escaped = true;
+            continue;
+        }
+
+        if in_regex {
+            if ch == '[' {
+                in_regex_char_class = true;
+            } else if ch == ']' && in_regex_char_class {
+                in_regex_char_class = false;
+            } else if ch == '/' && !in_regex_char_class {
+                in_regex = false;
+            }
             continue;
         }
 
@@ -474,6 +489,18 @@ fn significant_delimiters(line: &str) -> Vec<char> {
             if ch == '"' {
                 in_double = false;
             }
+            continue;
+        }
+
+        if ch == '/'
+            && last_non_whitespace == Some('~')
+            && matches!(second_last_non_whitespace, Some('=') | Some('!'))
+        {
+            // Ignore delimiters inside the common /pattern/ regex form. In
+            // particular, a character class such as /[[]/ is not Perl's
+            // array-ref delimiter syntax.
+            in_regex = true;
+            in_regex_char_class = false;
             continue;
         }
 
@@ -493,6 +520,11 @@ fn significant_delimiters(line: &str) -> Vec<char> {
 
         if matches!(ch, '{' | '(' | '[' | '}' | ')' | ']') {
             delimiters.push(ch);
+        }
+
+        if !ch.is_whitespace() {
+            second_last_non_whitespace = last_non_whitespace;
+            last_non_whitespace = Some(ch);
         }
     }
 
