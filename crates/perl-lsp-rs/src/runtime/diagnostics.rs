@@ -2263,8 +2263,11 @@ mod tests {
             .expect("test parse should publish the current snapshot");
         buffer.lock().clear();
         server.publish_diagnostics(uri);
-        let output = capture_until(&buffer, |output| output.contains("valid range"));
         drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let bytes = buffer.lock().clone();
+        let output = String::from_utf8(bytes).unwrap_or_default();
 
         assert!(
             output.contains("valid range"),
