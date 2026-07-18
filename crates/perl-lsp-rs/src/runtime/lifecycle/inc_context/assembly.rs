@@ -1,4 +1,4 @@
-use super::super::super::source_path_from_uri;
+use super::super::super::{LspServer, source_path_from_uri};
 use perl_module::resolution::use_lib::{
     no_lib_cancelled_paths_at_offset, resolve_use_lib_paths_from_source,
     resolve_use_lib_paths_from_source_at_offset,
@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub(super) fn lexical_paths(
+    server: &LspServer,
     doc_uri: Option<&str>,
     doc_text: Option<&str>,
     doc_offset: Option<usize>,
@@ -21,14 +22,35 @@ pub(super) fn lexical_paths(
         tracing::trace!("Effective @INC context failed to resolve doc_uri: {:?}", doc_uri);
     }
 
-    if let Some(offset) = doc_offset {
+    let source_paths = if let Some(offset) = doc_offset {
         resolve_use_lib_paths_from_source_at_offset(text, offset, root, file_dir.as_deref())
     } else {
         resolve_use_lib_paths_from_source(text, root, file_dir.as_deref())
+    };
+
+    let (hir_paths, hir_cancelled_paths) = server.cached_hir_use_lib_paths_and_cancelled(
+        doc_uri,
+        text,
+        root,
+        file_dir.as_deref(),
+        doc_offset,
+    );
+    let hir_cancelled_keys: HashSet<String> =
+        hir_cancelled_paths.iter().map(|path| include_path_key(path)).collect();
+    let mut paths = hir_paths;
+    for path in source_paths.into_iter().rev() {
+        if hir_cancelled_keys.contains(&include_path_key(&path)) {
+            continue;
+        }
+        paths.retain(|existing| existing != &path);
+        paths.insert(0, path);
     }
+
+    paths
 }
 
 pub(super) fn include_paths_with_cancellations(
+    server: &LspServer,
     doc_uri: Option<&str>,
     doc_text: Option<&str>,
     doc_offset: Option<usize>,
@@ -40,12 +62,23 @@ pub(super) fn include_paths_with_cancellations(
     };
 
     let file_dir = file_dir(doc_uri);
-    let cancelled = no_lib_cancelled_paths_at_offset(text, offset, root, file_dir.as_deref());
-    if cancelled.is_empty() {
+    let source_cancelled =
+        no_lib_cancelled_paths_at_offset(text, offset, root, file_dir.as_deref());
+    let (_, hir_cancelled) = server.cached_hir_use_lib_paths_and_cancelled(
+        doc_uri,
+        text,
+        root,
+        file_dir.as_deref(),
+        Some(offset),
+    );
+    if source_cancelled.is_empty() && hir_cancelled.is_empty() {
         raw_include_paths
     } else {
-        let cancelled_keys: HashSet<String> =
-            cancelled.iter().map(|path| include_path_key(path)).collect();
+        let cancelled_keys: HashSet<String> = source_cancelled
+            .iter()
+            .chain(hir_cancelled.iter())
+            .map(|path| include_path_key(path))
+            .collect();
         raw_include_paths
             .into_iter()
             .filter(|path| !cancelled_keys.contains(&include_path_key(path)))

@@ -14,24 +14,30 @@ pub struct Document {
     pub uri: String,
     /// LSP version number
     pub version: i32,
-    /// The full text content
-    pub text: String,
-    /// Line index for position calculations
+    /// Line index for position calculations. This also owns the full source
+    /// text, which is exposed via [`Document::text`]; the text is stored here
+    /// once rather than in a separate field to avoid a redundant per-document
+    /// copy.
     pub line_index: LineIndex,
 }
 
 impl Document {
     /// Create a new document
     pub fn new(uri: String, version: i32, text: String) -> Self {
-        let line_index = LineIndex::new(text.clone());
-        Self { uri, version, text, line_index }
+        let line_index = LineIndex::new(text);
+        Self { uri, version, line_index }
     }
 
     /// Update the document content
     pub fn update(&mut self, version: i32, text: String) {
         self.version = version;
-        self.text = text.clone();
         self.line_index = LineIndex::new(text);
+    }
+
+    /// The full source text of the document.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        self.line_index.text()
     }
 }
 
@@ -101,7 +107,7 @@ impl DocumentStore {
     pub fn get_text(&self, uri: &str) -> Option<String> {
         let key = Self::uri_key(uri);
         let docs = self.documents.read().ok()?;
-        docs.get(&key).map(|doc| doc.text.clone())
+        docs.get(&key).map(|doc| doc.text().to_string())
     }
 
     /// Get all open documents
@@ -139,7 +145,7 @@ impl DocumentStore {
         let Ok(docs) = self.documents.read() else {
             return 0;
         };
-        docs.values().map(|d| d.text.len()).sum()
+        docs.values().map(|d| d.text().len()).sum()
     }
 }
 
@@ -167,13 +173,13 @@ mod tests {
         // Get document
         let doc = must_some(store.get(&uri));
         assert_eq!(doc.version, 1);
-        assert_eq!(doc.text, "print 'hello';");
+        assert_eq!(doc.text(), "print 'hello';");
 
         // Update document
         assert!(store.update(&uri, 2, "print 'world';".to_string()));
         let doc = must_some(store.get(&uri));
         assert_eq!(doc.version, 2);
-        assert_eq!(doc.text, "print 'world';");
+        assert_eq!(doc.text(), "print 'world';");
 
         // Close document
         assert!(store.close(&uri));
@@ -228,7 +234,7 @@ mod tests {
         assert!(store.is_open(&uri));
 
         let doc = must_some(store.get(&uri));
-        assert_eq!(doc.text, "# test");
+        assert_eq!(doc.text(), "# test");
     }
 
     #[test]
@@ -241,7 +247,7 @@ mod tests {
 
         let doc = must_some(store.get(&uri));
         assert_eq!(doc.version, 3);
-        assert_eq!(doc.text, "current");
+        assert_eq!(doc.text(), "current");
     }
 
     #[test]
@@ -254,7 +260,7 @@ mod tests {
 
         let doc = must_some(store.get(&uri));
         assert_eq!(doc.version, 5);
-        assert_eq!(doc.text, "second");
+        assert_eq!(doc.text(), "second");
     }
 
     #[test]
@@ -268,7 +274,7 @@ mod tests {
         assert_eq!(store.count(), 1);
         let doc = must_some(store.get(&uri));
         assert_eq!(doc.version, 7);
-        assert_eq!(doc.text, "new");
+        assert_eq!(doc.text(), "new");
     }
 
     #[test]
@@ -287,5 +293,37 @@ mod tests {
 
         let doc = must_some(store.get(&uri));
         assert_eq!(doc.line_index.offset_to_position(12), (2, 0));
+    }
+
+    #[test]
+    fn test_text_is_single_source_of_truth() {
+        // Regression guard for #1660: the document text is stored once (inside
+        // `line_index`) and exposed via `text()`. `text()` must exactly reflect
+        // the source after open and after update, and must agree with the text
+        // owned by `line_index`.
+        let store = DocumentStore::new();
+        let uri = "file:///single-source.pl".to_string();
+
+        let opened = "use strict;\nmy $x = 1;";
+        store.open(uri.clone(), 1, opened.to_string());
+        let doc = must_some(store.get(&uri));
+        assert_eq!(doc.text(), opened);
+        assert_eq!(store.get_text(&uri).as_deref(), Some(opened));
+        // The index must have been built from the same bytes `text()` returns:
+        // the start of the second line maps to (line 1, col 0). This would fail
+        // if `text()` ever exposed a buffer that diverged from `line_index`.
+        let second_line = doc.text().find('\n').map(|nl| nl + 1).unwrap_or(0);
+        assert_eq!(doc.line_index.offset_to_position(second_line), (1, 0));
+
+        // Unicode content must round-trip byte-for-byte through the sole copy.
+        let updated = "my $s = \"café\";\nprint $s;\n";
+        assert!(store.update(&uri, 2, updated.to_string()));
+        let doc = must_some(store.get(&uri));
+        assert_eq!(doc.text(), updated);
+        assert_eq!(doc.text().len(), updated.len());
+        // After update the index tracks the new text: byte offset just past the
+        // multi-byte "café" line's newline is the start of line 1.
+        let updated_second_line = doc.text().find('\n').map(|nl| nl + 1).unwrap_or(0);
+        assert_eq!(doc.line_index.offset_to_position(updated_second_line), (1, 0));
     }
 }
