@@ -1132,6 +1132,41 @@ fn pir_a_foreach_iterable_does_not_force_iterator_binding() -> Result<(), Box<dy
     Ok(())
 }
 
+#[test]
+fn pir_a_postfix_loop_lowers_statement_before_condition() -> Result<(), Box<dyn std::error::Error>>
+{
+    let graph = parse_and_lower("my $conditional = 1 while $flag;");
+    let conditional = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalWrite { name } if name.name == "conditional"
+            )
+        })
+        .ok_or("postfix loop statement is missing")?;
+    let condition = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalRead { name } if name.name == "flag"
+            ) || matches!(
+                &node.operation,
+                PirOperation::StashRead { symbol } if symbol.name == "flag"
+            )
+        })
+        .ok_or("postfix loop condition is missing")?;
+
+    assert!(
+        conditional.id < condition.id,
+        "postfix while must lower its statement before its condition"
+    );
+    Ok(())
+}
+
 // ── 29. Cross-body no spurious fallthrough edges ─────────────────────────────
 // When a file has both a subroutine body and the program-root body, the last
 // PIR node of the sub body must NOT be connected by a Fallthrough edge to the

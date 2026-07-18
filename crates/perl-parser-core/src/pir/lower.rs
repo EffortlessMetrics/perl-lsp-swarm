@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use crate::hir::{
     AccessMode, AssignMode, BranchShell, CallForm, ControlTransferKind, DeclStorageClass,
     DerefExpr, DynamicBoundaryKind, HIR_BODY_MODEL_VERSION, HirBody, HirBodyId, HirExpr, HirExprId,
-    HirFile, HirItem, HirKind, HirScopeId, HirStmt, LiteralKind, LoopShell, Sigil, UnaryMode,
-    VariableKind,
+    HirFile, HirItem, HirKind, HirScopeId, HirStmt, LiteralKind, LoopShell, Sigil,
+    StatementModifierKind, UnaryMode, VariableKind,
 };
 
 use super::model::{
@@ -811,15 +811,29 @@ impl BodyLowerer {
                 // this body inherit a spurious fallthrough predecessor.
                 self.last_in_scope.remove(&None);
             }
-            HirStmt::PostfixCondition { statement, condition, .. } => {
+            HirStmt::PostfixCondition { statement, condition, verb } => {
                 *self.unsupported.entry("PostfixCondition").or_insert(0) += 1;
-                self.lower_expr(body, *condition, file);
-                // The wrapped statement runs only when the condition holds.
-                // Keep the condition in ordinary sequence order, but do not
-                // make the conditional statement a guaranteed fallthrough
-                // successor or predecessor of surrounding body nodes.
-                self.last_in_scope.remove(&None);
-                self.lower_stmt(body, *statement, file);
+                let loop_modifier = matches!(
+                    verb,
+                    StatementModifierKind::While
+                        | StatementModifierKind::Until
+                        | StatementModifierKind::Foreach
+                );
+                if loop_modifier {
+                    // Postfix loop modifiers execute the statement before
+                    // testing the condition (`STMT while COND`).
+                    self.lower_stmt(body, *statement, file);
+                    self.last_in_scope.remove(&None);
+                    self.lower_expr(body, *condition, file);
+                } else {
+                    // Postfix branch modifiers test before executing the
+                    // statement (`STMT if COND`).
+                    self.lower_expr(body, *condition, file);
+                    self.last_in_scope.remove(&None);
+                    self.lower_stmt(body, *statement, file);
+                }
+                // A postfix construct is conditional or looping, so it must
+                // not become an unconditional predecessor of later siblings.
                 self.last_in_scope.remove(&None);
             }
         }
