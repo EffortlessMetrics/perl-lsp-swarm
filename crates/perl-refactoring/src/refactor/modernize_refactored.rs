@@ -156,56 +156,56 @@ impl PerlModernizer {
     }
 
     fn check_two_arg_open(&self, code: &str) -> Option<ModernizationSuggestion> {
-        if code.contains("open(FH, 'file.txt')") {
-            Some(ModernizationSuggestion {
-                old_pattern: "open(FH, 'file.txt')".to_string(),
-                new_pattern: "open(my $fh, '<', 'file.txt')".to_string(),
-                description: "Use three-argument open for safety".to_string(),
-                manual_review_required: false,
-                start: 0,
-                end: 0,
-            })
-        } else {
-            None
-        }
+        let pattern = "open(FH, 'file.txt')";
+        code.find(pattern).map(|pos| ModernizationSuggestion {
+            old_pattern: pattern.to_string(),
+            new_pattern: "open(my $fh, '<', 'file.txt')".to_string(),
+            description: "Use three-argument open for safety".to_string(),
+            manual_review_required: false,
+            start: pos,
+            end: pos + pattern.len(),
+        })
     }
 
     fn check_deprecated_patterns(&self, code: &str) -> Vec<ModernizationSuggestion> {
         let mut suggestions = Vec::new();
 
-        if code.contains("defined @array") {
+        let defined_array = "defined @array";
+        if let Some(pos) = code.find(defined_array) {
             suggestions.push(ModernizationSuggestion {
-                old_pattern: "defined @array".to_string(),
+                old_pattern: defined_array.to_string(),
                 new_pattern: "@array".to_string(),
                 description: "defined(@array) is deprecated, use @array in boolean context"
                     .to_string(),
                 manual_review_required: false,
-                start: 0,
-                end: 0,
+                start: pos,
+                end: pos + defined_array.len(),
             });
         }
 
-        if code.contains("each @array") {
+        let each_array = "each @array";
+        if let Some(pos) = code.find(each_array) {
             suggestions.push(ModernizationSuggestion {
-                old_pattern: "each @array".to_string(),
+                old_pattern: each_array.to_string(),
                 new_pattern: "0..$#array".to_string(),
                 description: "each(@array) can cause unexpected behavior, use foreach with index"
                     .to_string(),
                 manual_review_required: false,
-                start: 0,
-                end: 0,
+                start: pos,
+                end: pos + each_array.len(),
             });
         }
 
-        if code.contains("print \"Hello\\n\"") {
+        let print_newline = "print \"Hello\\n\"";
+        if let Some(pos) = code.find(print_newline) {
             suggestions.push(ModernizationSuggestion {
-                old_pattern: "print \"Hello\\n\"".to_string(),
+                old_pattern: print_newline.to_string(),
                 new_pattern: "say \"Hello\"".to_string(),
                 description: "Use 'say' instead of print with \\n (requires use feature 'say')"
                     .to_string(),
                 manual_review_required: false,
-                start: 0,
-                end: 0,
+                start: pos,
+                end: pos + print_newline.len(),
             });
         }
 
@@ -237,14 +237,17 @@ impl PerlModernizer {
     fn check_risky_patterns(&self, code: &str) -> Vec<ModernizationSuggestion> {
         let mut suggestions = Vec::new();
 
-        if code.contains("eval \"") {
+        let string_eval = "eval \"";
+        if let Some(pos) = code.find(string_eval) {
             suggestions.push(ModernizationSuggestion {
                 old_pattern: "eval \"...\"".to_string(),
                 new_pattern: "eval { ... }".to_string(),
                 description: "String eval is risky, consider block eval or require".to_string(),
                 manual_review_required: true,
-                start: 0,
-                end: 0,
+                // Only the `eval "` opening is matched; anchor the code action on
+                // that span rather than 0..0.
+                start: pos,
+                end: pos + string_eval.len(),
             });
         }
 
