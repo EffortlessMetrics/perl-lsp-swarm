@@ -273,14 +273,19 @@ fn perl_not_found_install_message() -> &'static str {
 pub fn normalize_path(path: &std::path::Path) -> PathBuf {
     #[cfg(target_os = "linux")]
     {
+        // WSL drive mounts have the shape `/mnt/<letter>/...` with a single ASCII
+        // drive letter. Index the drive by char, never by byte, so a non-ASCII first
+        // segment (e.g. `/mnt/é/...`) is left untranslated instead of panicking on a
+        // mid-codepoint byte slice, and a non-letter segment is not treated as a drive
+        // (#3927).
         if let Some(path_str) = path.to_str()
-            && path_str.starts_with("/mnt/")
-            && path_str.len() > 6
+            && let Some(after_mnt) = path_str.strip_prefix("/mnt/")
+            && let Some(drive) = after_mnt.chars().next()
+            && drive.is_ascii_alphabetic()
         {
-            let drive_letter = &path_str[5..6];
-            let rest = &path_str[6..];
+            let rest = &after_mnt[drive.len_utf8()..];
             let windows_path =
-                format!("{}:{}", drive_letter.to_uppercase(), rest.replace('/', "\\"));
+                format!("{}:{}", drive.to_ascii_uppercase(), rest.replace('/', "\\"));
             return PathBuf::from(windows_path);
         }
     }
@@ -444,6 +449,29 @@ mod tests {
             "expected Windows-style path, got: {s}"
         );
         assert!(s.contains("Users"), "path content preserved: {s}");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn normalize_path_wsl_mnt_multibyte_drive_does_not_panic() {
+        // #3927: a non-ASCII first segment under /mnt/ must not be byte-sliced at a
+        // mid-codepoint boundary. `é` is two bytes (0xC3 0xA9), so `[5..6]` panicked.
+        let wsl_path = std::path::Path::new("/mnt/é/file.pl");
+        let normalized = normalize_path(wsl_path);
+        let s = normalized.to_string_lossy();
+        // A non-ASCII "drive" is not a valid WSL mount letter: leave it untranslated
+        // rather than producing a bogus Windows path.
+        assert!(s.contains('é'), "multi-byte segment preserved: {s}");
+        assert!(!s.contains(':'), "non-ASCII drive must not be translated: {s}");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn normalize_path_wsl_mnt_non_alpha_drive_not_translated() {
+        // A digit in the drive position is not a valid mount letter — leave as-is.
+        let normalized = normalize_path(std::path::Path::new("/mnt/1/file.pl"));
+        let s = normalized.to_string_lossy();
+        assert!(!s.contains('\\') && !s.contains(':'), "non-alpha drive not translated: {s}");
     }
 
     #[test]
