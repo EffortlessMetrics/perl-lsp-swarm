@@ -171,14 +171,43 @@ impl LspServer {
             return false;
         };
         let token_start = before_cursor
-            .rfind(|character: char| {
-                character.is_whitespace()
-                    || matches!(
-                        character,
-                        ';' | '=' | '+' | '(' | ')' | '{' | '}' | '[' | ']' | ','
-                    )
+            .char_indices()
+            .rev()
+            .find_map(|(position, character)| {
+                let previous = before_cursor[..position].chars().next_back();
+                let next = before_cursor[position + character.len_utf8()..].chars().next();
+                let is_member_arrow = (character == '-' && next == Some('>'))
+                    || (character == '>' && previous == Some('-'));
+                let is_boundary = !is_member_arrow
+                    && (character.is_whitespace()
+                        || matches!(
+                            character,
+                            ';' | '='
+                                | '+'
+                                | '-'
+                                | '*'
+                                | '/'
+                                | '%'
+                                | '.'
+                                | '!'
+                                | '<'
+                                | '>'
+                                | '&'
+                                | '|'
+                                | '^'
+                                | '~'
+                                | '?'
+                                | '('
+                                | ')'
+                                | '{'
+                                | '}'
+                                | '['
+                                | ']'
+                                | ','
+                        ));
+                is_boundary.then_some(position + character.len_utf8())
             })
-            .map_or(0, |position| position + 1);
+            .unwrap_or(0);
         let token = &before_cursor[token_start..];
         token.contains("->") || token.contains("::")
     }
@@ -2639,6 +2668,14 @@ mod tests {
         assert!(!LspServer::is_qualified_member_completion_context(
             "Foo::bar+$value",
             "Foo::bar+$value".len(),
+        ));
+        assert!(!LspServer::is_qualified_member_completion_context(
+            "Foo::bar-$value",
+            "Foo::bar-$value".len(),
+        ));
+        assert!(!LspServer::is_qualified_member_completion_context(
+            "Foo::bar.$value",
+            "Foo::bar.$value".len(),
         ));
         Ok(())
     }
