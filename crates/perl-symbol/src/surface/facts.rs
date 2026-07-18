@@ -353,8 +353,11 @@ mod tests {
         assert_eq!(span_byte_to_u32(u32::MAX as usize), u32::MAX);
         // Offsets past u32::MAX saturate to u32::MAX rather than wrapping.
         // A plain `as u32` cast would wrap these to 0, 4, and (usize::MAX as u32).
-        assert_eq!(span_byte_to_u32(u32::MAX as usize + 1), u32::MAX);
-        assert_eq!(span_byte_to_u32(u32::MAX as usize + 5), u32::MAX);
+        // `saturating_add` keeps the arithmetic portable: on 32-bit targets where
+        // `usize::MAX == u32::MAX` the base is already the max, so these degenerate
+        // to `usize::MAX` (which still saturates to `u32::MAX`) instead of overflowing.
+        assert_eq!(span_byte_to_u32((u32::MAX as usize).saturating_add(1)), u32::MAX);
+        assert_eq!(span_byte_to_u32((u32::MAX as usize).saturating_add(5)), u32::MAX);
         assert_eq!(span_byte_to_u32(usize::MAX), u32::MAX);
     }
 
@@ -363,13 +366,16 @@ mod tests {
     /// the start offset (`u32::MAX as usize + 5`) wrapped to `4`.
     #[test]
     fn decl_anchor_span_bytes_saturate_past_u32_max() {
+        // `saturating_add` keeps the offsets valid on 32-bit targets (where
+        // `u32::MAX as usize == usize::MAX`) instead of overflowing; there the
+        // scenario degenerates to `usize::MAX`, which still saturates to u32::MAX.
         let over = u32::MAX as usize; // last valid u32 offset
         let decls = vec![SymbolDecl {
             kind: SymbolKind::Subroutine,
             name: "big".to_string(),
             qualified_name: "Huge::big".to_string(),
-            full_span: (over + 1, over + 40),
-            anchor_span: Some((over + 5, over + 10)),
+            full_span: (over.saturating_add(1), over.saturating_add(40)),
+            anchor_span: Some((over.saturating_add(5), over.saturating_add(10))),
             container: None,
             declarator: None,
         }];
@@ -384,15 +390,15 @@ mod tests {
     /// projection path (`symbol_refs_to_semantic_facts`).
     #[test]
     fn ref_anchor_span_bytes_saturate_past_u32_max() {
-        let over = u32::MAX as usize;
+        let over = u32::MAX as usize; // saturating_add keeps this valid on 32-bit targets
         let refs = vec![SymbolRef {
             kind: SymbolRefKind::SubroutineCall,
             name: "big".to_string(),
             qualified_name: "big".to_string(),
             sigil: None,
             package_qualifier: None,
-            full_span: (over + 1, over + 40),
-            anchor_span: Some((over + 5, over + 10)),
+            full_span: (over.saturating_add(1), over.saturating_add(40)),
+            anchor_span: Some((over.saturating_add(5), over.saturating_add(10))),
         }];
 
         let facts = symbol_refs_to_semantic_facts(&refs, FileId(7), &BTreeMap::new());
