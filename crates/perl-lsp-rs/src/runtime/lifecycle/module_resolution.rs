@@ -105,6 +105,7 @@ impl LspServer {
     pub(crate) fn evict_use_lib_hir_cache(&self, uri: &str) {
         let uri_keys = self.uri_key_variants(uri);
         let mut cache = self.use_lib_hir_cache.lock();
+        cache.entries.remove(&Some(self.normalize_uri_key(uri)));
         for key in uri_keys {
             cache.entries.remove(&Some(key));
         }
@@ -198,6 +199,14 @@ fn hir_use_lib_path(path: String) -> Option<perl_module::resolution::use_lib::Us
 
     for prefix in FINDBIN_PREFIXES {
         if let Some(rest) = path.strip_prefix(prefix) {
+            if matches!(prefix, "$Bin" | "$RealBin")
+                && rest
+                    .chars()
+                    .next()
+                    .is_some_and(|character| character.is_alphanumeric() || character == '_')
+            {
+                continue;
+            }
             return Some(perl_module::resolution::use_lib::UseLibPath {
                 path: rest.strip_prefix('/').unwrap_or(rest).to_string(),
                 from_findbin: true,
@@ -914,6 +923,7 @@ mod tests {
             hir_use_lib_paths("use lib \"$FindBin::Bin/lib\";\n", &workspace, Some(&scripts));
 
         assert_eq!(paths, vec!["scripts/lib"]);
+        assert!(hir_use_lib_path("$BinDir/lib".to_string()).is_none());
         Ok(())
     }
 
@@ -926,6 +936,7 @@ mod tests {
         let doc_uri = url::Url::from_file_path(&document)
             .map_err(|_| "failed to create document URI")?
             .to_string();
+        let localhost_uri = doc_uri.replacen("file:///", "file://localhost/", 1);
         let server = LspServer::new();
         server
             .documents
@@ -948,7 +959,7 @@ mod tests {
         assert_eq!(second, vec!["./second"]);
         assert_eq!(server.use_lib_hir_cache.lock().entries.len(), 1);
 
-        server.evict_open_document_session_state(&doc_uri);
+        server.evict_open_document_session_state(&localhost_uri);
         assert_eq!(server.use_lib_hir_cache.lock().entries.len(), 0);
         Ok(())
     }
