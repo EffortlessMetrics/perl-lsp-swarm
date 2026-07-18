@@ -171,45 +171,36 @@ mod tests {
     #[test]
     fn peek_char_uses_character_offsets_for_ascii_and_utf8() -> Result<(), String> {
         let ascii = PerlLexer::new("abc");
-        let actual = ascii.peek_char(0);
-        if actual != Some('a') {
-            return Err(format!("ASCII offset 0 returned {actual:?}"));
+        if ascii.peek_char(0) != Some('a') {
+            return Err("ASCII offset 0 returned an unexpected character".to_string());
         }
-        let actual = ascii.peek_char(2);
-        if actual != Some('c') {
-            return Err(format!("ASCII offset 2 returned {actual:?}"));
+        if ascii.peek_char(2) != Some('c') {
+            return Err("ASCII offset 2 returned an unexpected character".to_string());
         }
-        let actual = ascii.peek_char(3);
-        if actual.is_some() {
-            return Err(format!("ASCII EOF returned {actual:?}"));
+        if ascii.peek_char(3).is_some() {
+            return Err("ASCII EOF returned a character".to_string());
         }
 
         let bmp = PerlLexer::new("éxy");
-        let actual = bmp.peek_char(0);
-        if actual != Some('é') {
-            return Err(format!("BMP offset 0 returned {actual:?}"));
+        if bmp.peek_char(0) != Some('é') {
+            return Err("BMP offset 0 returned an unexpected character".to_string());
         }
-        let actual = bmp.peek_char(1);
-        if actual != Some('x') {
-            return Err(format!("BMP offset 1 returned {actual:?}"));
+        if bmp.peek_char(1) != Some('x') {
+            return Err("BMP offset 1 returned an unexpected character".to_string());
         }
-        let actual = bmp.peek_char(2);
-        if actual != Some('y') {
-            return Err(format!("BMP offset 2 returned {actual:?}"));
+        if bmp.peek_char(2) != Some('y') {
+            return Err("BMP offset 2 returned an unexpected character".to_string());
         }
 
         let non_bmp = PerlLexer::new("😀xy");
-        let actual = non_bmp.peek_char(0);
-        if actual != Some('😀') {
-            return Err(format!("non-BMP offset 0 returned {actual:?}"));
+        if non_bmp.peek_char(0) != Some('😀') {
+            return Err("non-BMP offset 0 returned an unexpected character".to_string());
         }
-        let actual = non_bmp.peek_char(1);
-        if actual != Some('x') {
-            return Err(format!("non-BMP offset 1 returned {actual:?}"));
+        if non_bmp.peek_char(1) != Some('x') {
+            return Err("non-BMP offset 1 returned an unexpected character".to_string());
         }
-        let actual = non_bmp.peek_char(2);
-        if actual != Some('y') {
-            return Err(format!("non-BMP offset 2 returned {actual:?}"));
+        if non_bmp.peek_char(2) != Some('y') {
+            return Err("non-BMP offset 2 returned an unexpected character".to_string());
         }
 
         Ok(())
@@ -220,19 +211,16 @@ mod tests {
         let config = LexerConfig { max_lookahead: 1, ..LexerConfig::default() };
         let lexer = PerlLexer::with_config("éxy", config);
 
-        let actual = lexer.peek_char(1);
-        if actual != Some('x') {
-            return Err(format!("lookahead offset 1 returned {actual:?}"));
+        if lexer.peek_char(1) != Some('x') {
+            return Err("lookahead offset 1 returned an unexpected character".to_string());
         }
-        let actual = lexer.peek_char(2);
-        if actual.is_some() {
-            return Err(format!("bounded lookahead returned {actual:?}"));
+        if lexer.peek_char(2).is_some() {
+            return Err("bounded lookahead returned a character".to_string());
         }
 
         let eof = PerlLexer::new("éx");
-        let actual = eof.peek_char(2);
-        if actual.is_some() {
-            return Err(format!("EOF returned {actual:?}"));
+        if eof.peek_char(2).is_some() {
+            return Err("EOF returned a character".to_string());
         }
 
         Ok(())
@@ -242,16 +230,14 @@ mod tests {
     fn peek_char_handles_nonzero_positions_on_ascii_and_utf8_paths() -> Result<(), String> {
         let mut ascii = PerlLexer::new("zabc");
         ascii.position = 1;
-        let actual = ascii.peek_char(2);
-        if actual != Some('c') {
-            return Err(format!("nonzero ASCII offset 2 returned {actual:?}"));
+        if ascii.peek_char(2) != Some('c') {
+            return Err("nonzero ASCII offset 2 returned an unexpected character".to_string());
         }
 
         let mut utf8 = PerlLexer::new("zéxy");
         utf8.position = 1;
-        let actual = utf8.peek_char(2);
-        if actual != Some('y') {
-            return Err(format!("nonzero UTF-8 offset 2 returned {actual:?}"));
+        if utf8.peek_char(2) != Some('y') {
+            return Err("nonzero UTF-8 offset 2 returned an unexpected character".to_string());
         }
 
         Ok(())
