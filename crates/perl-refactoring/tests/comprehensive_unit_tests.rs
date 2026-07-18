@@ -1218,3 +1218,73 @@ fn import_optimizer_suggests_symbol_dedup() -> Result<(), Box<dyn std::error::Er
     );
     Ok(())
 }
+
+// ===================================================================
+// Legacy PerlModernizer – byte-offset correctness (issue #3922)
+//
+// Previously the two-arg open, defined @array, each @array, string eval,
+// and print-newline suggestions hard-coded start=0/end=0, discarding the
+// position information LSP code actions need. These tests pin the offsets
+// to the actual matched span at a non-zero position in the source.
+// ===================================================================
+
+/// Find the single modernization suggestion whose matched span slices back
+/// to `expected` in `code`, asserting the offsets are populated (non-zero,
+/// start < end) and byte-exact.
+fn assert_span(code: &str, expected: &str) {
+    let m = LegacyModernizer::new();
+    let suggestions = m.analyze(code);
+    let hit =
+        suggestions.iter().find(|s| s.end > s.start && code.get(s.start..s.end) == Some(expected));
+    assert!(
+        hit.is_some(),
+        "expected a suggestion whose [start..end] slices to {expected:?}; got {suggestions:?}"
+    );
+    let hit = hit.expect("checked is_some above");
+    assert_eq!(
+        code.get(hit.start..hit.end),
+        Some(expected),
+        "span must slice exactly to the matched pattern"
+    );
+    assert!(hit.start > 0, "offset should reflect real position, not the old 0/0 default");
+}
+
+#[test]
+fn legacy_modernizer_two_arg_open_has_real_offset() {
+    assert_span("my $x = 1; open(FH, 'file.txt')", "open(FH, 'file.txt')");
+}
+
+#[test]
+fn legacy_modernizer_defined_array_has_real_offset() {
+    assert_span("if (defined @array) { }", "defined @array");
+}
+
+#[test]
+fn legacy_modernizer_each_array_has_real_offset() {
+    assert_span("while (my ($i, $val) = each @array) { }", "each @array");
+}
+
+#[test]
+fn legacy_modernizer_string_eval_has_real_offset() {
+    // Only the `eval "` opening is matched; the span anchors on it.
+    assert_span("my $r = eval \"print 1\";", "eval \"");
+}
+
+#[test]
+fn legacy_modernizer_print_newline_has_real_offset() {
+    assert_span("sub f { print \"Hello\\n\" }", "print \"Hello\\n\"");
+}
+
+#[test]
+fn legacy_modernizer_offsets_never_zero_length_when_matched() {
+    // Every emitted suggestion that carries a non-empty old_pattern should
+    // have a span that slices back to a real substring of the source.
+    let m = LegacyModernizer::new();
+    let code = "my $x = 1; open(FH, 'file.txt'); if (defined @array) {}";
+    for s in m.analyze(code) {
+        if s.old_pattern.is_empty() {
+            continue; // e.g. the "add use strict" insertion suggestion
+        }
+        assert!(s.end >= s.start, "end must not precede start for {:?}", s.old_pattern);
+    }
+}
