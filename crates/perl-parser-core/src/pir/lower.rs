@@ -11,13 +11,14 @@ use std::collections::HashMap;
 use crate::hir::{
     AccessMode, AssignMode, BranchShell, CallForm, ControlTransferKind, DeclStorageClass,
     DerefExpr, DynamicBoundaryKind, HIR_BODY_MODEL_VERSION, HirBody, HirBodyId, HirExpr, HirExprId,
-    HirFile, HirItem, HirKind, HirScopeId, HirStmt, LoopShell, Sigil, UnaryMode, VariableKind,
+    HirFile, HirItem, HirKind, HirScopeId, HirStmt, LiteralKind, LoopShell, Sigil, UnaryMode,
+    VariableKind,
 };
 
 use super::model::{
     LexicalName, PIR_RECEIPT_VERSION, PirAnchorCoverage, PirCallee, PirContext,
-    PirDynamicBoundaryKind, PirEdge, PirEdgeKind, PirGraph, PirId, PirLoweringMode, PirMethod,
-    PirNode, PirOperation, PirReceipt, PirReceiver, PirSourceAnchor, SymbolName,
+    PirDynamicBoundaryKind, PirEdge, PirEdgeKind, PirGraph, PirId, PirLiteralKind, PirLoweringMode,
+    PirMethod, PirNode, PirOperation, PirReceipt, PirReceiver, PirSourceAnchor, SymbolName,
 };
 
 /// Lower a [`HirFile`] into a PIR v0 graph with no caller-supplied identity.
@@ -42,6 +43,8 @@ struct Lowerer {
     edges: Vec<PirEdge>,
     next_id: u32,
     last_in_scope: HashMap<Option<HirScopeId>, PirId>,
+    pending_initializer_parent: HashMap<Option<HirScopeId>, (PirId, crate::SourceLocation)>,
+    expression_parent_ids: HashMap<Option<HirScopeId>, Vec<PirId>>,
     /// Most recent dynamic-callee boundary HIR emitted, awaiting the coderef
     /// call it belongs to. HIR lowers a coderef invocation as a
     /// `DynamicBoundary(CoderefCall)` item immediately followed by the
@@ -62,6 +65,8 @@ impl Lowerer {
             edges: Vec::new(),
             next_id: 0,
             last_in_scope: HashMap::new(),
+            pending_initializer_parent: HashMap::new(),
+            expression_parent_ids: HashMap::new(),
             pending_dynamic_callee: None,
             pending_deref: None,
             unsupported: HashMap::new(),
@@ -88,6 +93,14 @@ impl Lowerer {
         if !preserves_pending_deref {
             self.pending_deref = None;
         }
+        let stale_initializer = matches!(&item.kind, HirKind::LiteralExpr(_))
+            && self
+                .pending_initializer_parent
+                .get(&item.scope_context)
+                .is_some_and(|(_, initializer_range)| initializer_range.end < item.range.start);
+        if !matches!(&item.kind, HirKind::LiteralExpr(_)) || stale_initializer {
+            self.pending_initializer_parent.remove(&item.scope_context);
+        }
 
         match &item.kind {
             HirKind::VariableDecl(decl) => self.lower_variable_decl(item, decl),
@@ -106,6 +119,7 @@ impl Lowerer {
                     boundary.reason.clone(),
                 );
             }
+            HirKind::LiteralExpr(literal) => self.lower_literal(item, literal.kind),
             HirKind::BranchShell(branch) => self.lower_branch(item, branch),
             HirKind::LoopShell(loop_shell) => self.lower_loop(item, loop_shell),
             // Only the `return` verb lowers to PirOperation::Return. The other
@@ -123,6 +137,19 @@ impl Lowerer {
             other => {
                 *self.unsupported.entry(hir_kind_name(other)).or_insert(0) += 1;
             }
+        }
+    }
+
+    fn lower_literal(&mut self, item: &HirItem, kind: LiteralKind) {
+        // HIR preserves the literal category but not the surrounding expression
+        // context on this item, so PIR keeps context Unknown rather than guessing
+        // scalar or list behavior.
+        let operation = PirOperation::Literal { kind: map_literal_kind(kind) };
+        let anchor = PirSourceAnchor::explicit(item.range, item.id);
+        if let Some(parent) = self.enclosing_expression_parent(item) {
+            self.push_operand_node(item, anchor, operation, parent);
+        } else {
+            self.push_node(item, anchor, operation, PirContext::Unknown, None);
         }
     }
 
@@ -153,7 +180,13 @@ impl Lowerer {
             // A declaration-with-initializer statement evaluates the assignment
             // in void context; the bound lvalues above carry the known context.
             let anchor = PirSourceAnchor::explicit(item.range, item.id);
-            self.push_node(item, anchor, PirOperation::Assign, PirContext::Void, None);
+            let id = self.push_node(item, anchor, PirOperation::Assign, PirContext::Void, None);
+            // The declaration HIR item's range covers the binding, not the RHS;
+            // the HIR initializer range keeps the fallback bounded to this
+            // declaration's expression.
+            if let Some(initializer_range) = decl.initializer_range {
+                self.pending_initializer_parent.insert(item.scope_context, (id, initializer_range));
+            }
         }
     }
 
@@ -338,6 +371,7 @@ impl Lowerer {
         }
         self.last_in_scope.insert(scope, id);
 
+        let is_parent = is_expression_parent(&operation);
         self.nodes.push(PirNode {
             id,
             source_anchor,
@@ -347,7 +381,90 @@ impl Lowerer {
             scope,
             package_context: item.package_context.clone(),
         });
+        if is_parent {
+            self.expression_parent_ids.entry(scope).or_default().push(id);
+        }
         id
+    }
+
+    /// Emit an expression operand before its already-lowered parent.
+    ///
+    /// The flat HIR stream is pre-order for calls, assignments, and aggregate
+    /// literals: the parent item is emitted before its child literal. A normal
+    /// `push_node` would therefore add `parent -> literal`, which reverses the
+    /// operand evaluation order. Keep the stable node/id order, but splice the
+    /// operand into the fallthrough chain immediately before the parent.
+    fn push_operand_node(
+        &mut self,
+        item: &HirItem,
+        source_anchor: PirSourceAnchor,
+        operation: PirOperation,
+        parent: PirId,
+    ) -> PirId {
+        let id = PirId::from_index(self.next_id);
+        self.next_id += 1;
+
+        // The parent may already have an incoming fallthrough edge from a
+        // preceding statement or from an earlier sibling operand. Redirect
+        // that edge to this operand, then continue into the parent.
+        for edge in &mut self.edges {
+            if edge.kind == PirEdgeKind::Fallthrough && edge.to == Some(parent) {
+                edge.to = Some(id);
+            }
+        }
+        self.edges.push(PirEdge { from: id, to: Some(parent), kind: PirEdgeKind::Fallthrough });
+
+        let is_parent = is_expression_parent(&operation);
+        self.nodes.push(PirNode {
+            id,
+            source_anchor,
+            operation,
+            context: PirContext::Unknown,
+            dynamic_boundary: None,
+            scope: item.scope_context,
+            package_context: item.package_context.clone(),
+        });
+        if is_parent {
+            self.expression_parent_ids.entry(item.scope_context).or_default().push(id);
+        }
+        id
+    }
+
+    fn enclosing_expression_parent(&self, item: &HirItem) -> Option<PirId> {
+        let ranged_parent = self
+            .expression_parent_ids
+            .get(&item.scope_context)
+            .into_iter()
+            .flatten()
+            .filter_map(|id| self.nodes.get(id.index() as usize))
+            .filter(|node| {
+                node.source_anchor.range.is_some_and(|range| {
+                    range.start <= item.range.start && range.end >= item.range.end
+                }) && node.source_anchor.range.is_some_and(|range| {
+                    range.start < item.range.start || range.end > item.range.end
+                })
+            })
+            .min_by_key(|node| {
+                // Node IDs follow flat-HIR emission order. Prefer the
+                // smallest containing span, then the latest same-span node
+                // because that is the innermost pre-order parent.
+                node.source_anchor.range.map(|range| {
+                    (range.end.saturating_sub(range.start), std::cmp::Reverse(node.id))
+                })
+            })
+            .map(|node| node.id);
+        // HIR emits a flat pre-order stream. When two parent operations share
+        // an anchor range, the later node is the innermost parent in that
+        // stream, so the reverse-ID tie-break is intentional.
+        ranged_parent.or_else(|| {
+            self.pending_initializer_parent
+                .get(&item.scope_context)
+                .filter(|(_, initializer_range)| {
+                    initializer_range.start <= item.range.start
+                        && initializer_range.end >= item.range.end
+                })
+                .map(|(parent, _)| *parent)
+        })
     }
 
     fn finish(self) -> PirGraph {
@@ -434,6 +551,27 @@ fn map_boundary_kind(kind: DynamicBoundaryKind) -> PirDynamicBoundaryKind {
         DynamicBoundaryKind::Autoload => PirDynamicBoundaryKind::Autoload,
         DynamicBoundaryKind::SymbolicReferenceDeref => PirDynamicBoundaryKind::SymbolicReference,
     }
+}
+
+fn map_literal_kind(kind: LiteralKind) -> PirLiteralKind {
+    match kind {
+        LiteralKind::Number => PirLiteralKind::Number,
+        LiteralKind::String => PirLiteralKind::String,
+        LiteralKind::Undef => PirLiteralKind::Undef,
+        LiteralKind::Array => PirLiteralKind::Array,
+        LiteralKind::Hash => PirLiteralKind::Hash,
+    }
+}
+
+fn is_expression_parent(operation: &PirOperation) -> bool {
+    matches!(
+        operation,
+        PirOperation::Assign
+            | PirOperation::Call { .. }
+            | PirOperation::MethodCall { .. }
+            | PirOperation::Deref { .. }
+            | PirOperation::Literal { .. }
+    )
 }
 
 fn hir_kind_name(kind: &HirKind) -> &'static str {
@@ -995,11 +1133,16 @@ mod tests {
     #[test]
     fn lexical_declaration_creates_write_and_assign() {
         let graph = lower("my $x = 1;");
-        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.nodes.len(), 3);
         assert_eq!(graph.nodes[0].operation.name(), "LexicalWrite");
         assert_eq!(graph.nodes[0].context, PirContext::Lvalue);
         assert_eq!(graph.nodes[1].operation.name(), "Assign");
         assert_eq!(graph.nodes[1].context, PirContext::Void);
+        assert!(matches!(
+            graph.nodes[2].operation,
+            PirOperation::Literal { kind: PirLiteralKind::Number }
+        ));
+        assert_eq!(graph.nodes[2].context, PirContext::Unknown);
     }
 
     #[test]
@@ -1214,6 +1357,32 @@ mod tests {
     fn typeglob_creates_dynamic_boundary() {
         let graph = lower("*alias = $thing;");
         assert_eq!(graph.receipt.dynamic_boundary_counts.get("RuntimeStashMutation"), Some(&1));
+    }
+
+    #[test]
+    fn literals_lower_to_typed_anchored_operations() {
+        let cases = [
+            ("42;", PirLiteralKind::Number),
+            ("'x';", PirLiteralKind::String),
+            ("local $temp = undef;", PirLiteralKind::Undef),
+            ("[1, 2];", PirLiteralKind::Array),
+            ("{foo => 1};", PirLiteralKind::Hash),
+        ];
+        for (source, expected_kind) in cases {
+            let graph = lower(source);
+            assert!(graph.nodes.iter().any(|node| {
+                matches!(node.operation, PirOperation::Literal { kind } if kind == expected_kind)
+            }));
+            assert_eq!(graph.receipt.unsupported_construct_counts.get("LiteralExpr"), None);
+            assert!(
+                graph
+                    .nodes
+                    .iter()
+                    .filter(|node| matches!(node.operation, PirOperation::Literal { .. }))
+                    .all(|node| node.source_anchor.is_anchored()
+                        && node.context == PirContext::Unknown)
+            );
+        }
     }
 
     #[test]

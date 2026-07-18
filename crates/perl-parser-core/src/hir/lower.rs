@@ -657,6 +657,9 @@ impl Lowerer {
                         variables: variables.clone(),
                         attribute_count: attributes.len(),
                         has_initializer: initializer.is_some() || has_embedded_initializer,
+                        initializer_range: initializer
+                            .as_deref()
+                            .map(|initializer| initializer.location),
                         is_list: false,
                     }),
                     self.package_context.clone(),
@@ -691,6 +694,9 @@ impl Lowerer {
                         variables: bindings.clone(),
                         attribute_count: attributes.len(),
                         has_initializer: initializer.is_some(),
+                        initializer_range: initializer
+                            .as_deref()
+                            .map(|initializer| initializer.location),
                         is_list: true,
                     }),
                     self.package_context.clone(),
