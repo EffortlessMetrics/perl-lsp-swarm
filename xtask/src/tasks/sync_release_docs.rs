@@ -330,10 +330,17 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
             lines.push(format!("- Workspace version line: `v{}`", surface.version));
             workspace_version_seen = true;
         } else if line.starts_with("- Current release train: `v") {
-            lines.push(format!(
-                "- Current release train: `v{}` shipped public beta; channel receipts remain independently verified",
-                surface.version
-            ));
+            lines.push(if surface.shipped_date.is_some() {
+                format!(
+                    "- Current release train: `v{}` shipped public beta; channel receipts remain independently verified",
+                    surface.version
+                )
+            } else {
+                format!(
+                    "- Current release train: `v{}` release preparation; shipped release receipt remains pending",
+                    surface.version
+                )
+            });
             current_release_seen = true;
         } else if line.starts_with("- Published crate surface target: ") {
             lines.push(format!(
@@ -349,6 +356,7 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
             publication_discipline_seen = true;
         } else if line.starts_with("## Active: Public-Alpha Release Prep (v")
             || line.starts_with("## Active: Public-Beta Release (v")
+            || line.starts_with("## Active: Public-Beta Release Preparation (v")
             || line.starts_with("## Active: Public-Alpha Channel Closeout (v")
         {
             lines.push(format!(
@@ -360,6 +368,7 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
         } else if line.starts_with("### Now (v")
             && (line.contains("public-alpha patch prep)")
                 || line.contains("shipped public beta)")
+                || line.contains("release preparation)")
                 || line.contains("public-alpha channel closeout)"))
         {
             lines.push(if surface.shipped_date.is_some() {
@@ -371,6 +380,7 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
         } else if line.starts_with("- `v")
             && (line.contains("is staged as the next public-alpha patch release; run the release-prep checks before dispatching the train")
                 || line.contains("is shipped public beta; keep each distribution channel pending until its receipt is verified")
+                || line.contains("is in release preparation; run the release-prep checks before dispatching the train")
                 || line.contains("is the current public-alpha release line; finish receipt closeout before treating the release as fully closed"))
         {
             lines.push(if surface.shipped_date.is_some() {
@@ -509,10 +519,12 @@ fn sync_status_index(content: &str, surface: &ReleaseSurface) -> Result<String> 
             ));
             release_posture_seen = true;
         } else if line.starts_with("**Now (active milestone: v") {
-            lines.push(format!(
-                "**Now (active milestone: v{} shipped public beta)**",
-                surface.version
-            ));
+            let milestone = if surface.shipped_date.is_some() {
+                "shipped public beta"
+            } else {
+                "release preparation"
+            };
+            lines.push(format!("**Now (active milestone: v{} {milestone})**", surface.version));
             now_section_seen = true;
         } else if line.starts_with("- Run the `v")
             && line.contains(" release-prep checks before dispatching release orchestration")
@@ -637,6 +649,17 @@ mod tests {
         }
     }
 
+    fn preparation_release_surface() -> ReleaseSurface {
+        ReleaseSurface {
+            version: "0.18.0".to_string(),
+            published_crate_count: 32,
+            shipped_date: None,
+            prior_version: Some("0.17.0".to_string()),
+            prior_shipped_date: Some("2026-06-28".to_string()),
+            next_version: "0.19.0".to_string(),
+        }
+    }
+
     #[test]
     fn sync_current_status_preserves_release_train_facts_on_first_and_second_write() -> Result<()> {
         let input = "| **Workspace version line** | `v0.16.0` | source |\n\
@@ -672,6 +695,26 @@ mod tests {
         assert_eq!(shipped_date, None);
         assert_eq!(prior_version.as_deref(), Some("0.17.0"));
         assert_eq!(prior_shipped_date.as_deref(), Some("2026-06-28"));
+        Ok(())
+    }
+
+    #[test]
+    fn sync_preparation_roadmap_is_idempotent() -> Result<()> {
+        let input = r#"- Workspace version line: `v0.18.0`
+- Current release train: `v0.18.0` release preparation
+- Published crate surface target: 32 crates
+Publication discipline: `v0.18.0` uses a normal SemVer package version for release channels while the human-facing product posture remains public beta.
+## Active: Public-Beta Release Preparation (v0.18.0)
+### Now (v0.18.0 release preparation)
+- `v0.18.0` is in release preparation; run the release-prep checks before dispatching the train
+### Next (post v0.18.0)
+"#;
+
+        let first = sync_roadmap(input, &preparation_release_surface())?;
+        assert!(first.contains("## Active: Public-Beta Release Preparation (v0.18.0)"));
+        assert!(first.contains("### Now (v0.18.0 release preparation)"));
+        assert!(first.contains("v0.18.0` is in release preparation"));
+        assert_eq!(sync_roadmap(&first, &preparation_release_surface())?, first);
         Ok(())
     }
 
@@ -736,6 +779,26 @@ channels remain independently versioned and must be verified before editor use.\
         if second != first {
             bail!("second status-index sync was not idempotent");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_status_index_preserves_preparation_milestone() -> Result<()> {
+        let input = "- **Release posture**: `v0.17.0` shipped public beta\n\
+**Now (active milestone: v0.17.0 shipped public beta)**\n\
+- Run the `v0.17.0` release-prep checks before dispatching release orchestration\n\
+- Keep the top-level README and status docs aligned with the 31-crate published surface\n\
+**Next (post v0.17.0 release preparation)**\n";
+
+        let first = sync_status_index(input, &preparation_release_surface())?;
+        assert!(
+            first.contains(
+                "`v0.18.0` is the current workspace version and release-preparation train"
+            )
+        );
+        assert!(first.contains("**Now (active milestone: v0.18.0 release preparation)**"));
+        assert!(!first.contains("v0.18.0 shipped public beta"));
+        assert_eq!(sync_status_index(&first, &preparation_release_surface())?, first);
         Ok(())
     }
 

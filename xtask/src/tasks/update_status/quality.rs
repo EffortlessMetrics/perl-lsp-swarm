@@ -32,6 +32,12 @@ static RUNNING_TEST_BINARY_RE: LazyLock<Regex> = LazyLock::new(|| {
 static TEST_LIST_LINE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r":\s*test\s*$").expect("test-list-line regex is valid"));
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PerCrateTestCounts {
+    by_crate: BTreeMap<String, usize>,
+    unattributed: usize,
+}
+
 // ---------------------------------------------------------------------------
 // Metric collectors
 // ---------------------------------------------------------------------------
@@ -62,7 +68,7 @@ pub(super) fn collect_per_crate_mutation(root: &Path) -> BTreeMap<String, usize>
 /// names to stdout.  `run_cmd_merged` (shell `2>&1`) ensures headers appear immediately
 /// before the test names they introduce, so the parser correctly associates each name with
 /// its crate.
-pub(super) fn collect_per_crate_test_counts(root: &Path) -> Result<BTreeMap<String, usize>> {
+fn collect_per_crate_test_counts(root: &Path) -> Result<PerCrateTestCounts> {
     let output = run_cmd_merged(
         root,
         &["cargo", "test", "--workspace", "--lib", "--exclude", "tree-sitter-perl", "--", "--list"],
@@ -74,16 +80,14 @@ pub(super) fn collect_per_crate_test_counts(root: &Path) -> Result<BTreeMap<Stri
     validate_per_crate_test_counts(parse_per_crate_test_counts(&output))
 }
 
-fn validate_per_crate_test_counts(
-    counts: BTreeMap<String, usize>,
-) -> Result<BTreeMap<String, usize>> {
-    if counts.values().sum::<usize>() == 0 {
+fn validate_per_crate_test_counts(counts: PerCrateTestCounts) -> Result<PerCrateTestCounts> {
+    if counts.by_crate.values().sum::<usize>() + counts.unattributed == 0 {
         bail!("quality test discovery returned zero tests; refusing to overwrite quality.md");
     }
     Ok(counts)
 }
 
-fn parse_per_crate_test_counts(output: &str) -> BTreeMap<String, usize> {
+fn parse_per_crate_test_counts(output: &str) -> PerCrateTestCounts {
     let mut by_crate: BTreeMap<String, usize> = BTreeMap::new();
     let mut current_crate: Option<String> = None;
     let mut discovered = 0usize;
@@ -101,10 +105,7 @@ fn parse_per_crate_test_counts(output: &str) -> BTreeMap<String, usize> {
             }
         }
     }
-    if discovered > attributed {
-        by_crate.insert("unattributed".to_string(), discovered - attributed);
-    }
-    by_crate
+    PerCrateTestCounts { by_crate, unattributed: discovered.saturating_sub(attributed) }
 }
 
 /// Read `docs/project/status/editor_ux.md` and return the diagnostics p50 latency in ms,
@@ -180,27 +181,26 @@ pub(super) fn format_quality_metrics_bullet(root: &Path) -> String {
 }
 
 /// Format a per-crate markdown table showing mutation count and test count.
-pub(super) fn format_crate_quality_table(
+fn format_crate_quality_table(
     mutation: &BTreeMap<String, usize>,
-    tests: &BTreeMap<String, usize>,
+    tests: &PerCrateTestCounts,
 ) -> String {
     let mut crates: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for k in mutation.keys() {
         crates.insert(k.as_str());
     }
-    for k in tests.keys() {
-        if k != "unattributed" {
-            crates.insert(k.as_str());
-        }
+    for k in tests.by_crate.keys() {
+        crates.insert(k.as_str());
     }
     if crates.is_empty() {
         let mut table = "| Crate | Mutants listed | Tests (lib) |\n\
                 |-------|---------------|-------------|\n\
                 | — | no data yet | no data yet |"
             .to_string();
-        if let Some(unattributed) = tests.get("unattributed") {
+        if tests.unattributed > 0 {
             table.push_str(&format!(
-                "\n\n> Note: {unattributed} discovered test(s) had no crate attribution and are excluded from the per-crate table."
+                "\n\n> Note: {} discovered test(s) had no crate attribution and are excluded from the per-crate table.",
+                tests.unattributed
             ));
         }
         return table;
@@ -211,13 +211,14 @@ pub(super) fn format_crate_quality_table(
     ];
     for c in crates {
         let m = mutation.get(c).map_or_else(|| "—".to_string(), |n| n.to_string());
-        let t = tests.get(c).map_or_else(|| "—".to_string(), |n| n.to_string());
+        let t = tests.by_crate.get(c).map_or_else(|| "—".to_string(), |n| n.to_string());
         lines.push(format!("| {c} | {m} | {t} |"));
     }
     let mut table = lines.join("\n");
-    if let Some(unattributed) = tests.get("unattributed") {
+    if tests.unattributed > 0 {
         table.push_str(&format!(
-            "\n\n> Note: {unattributed} discovered test(s) had no crate attribution and are excluded from the per-crate table."
+            "\n\n> Note: {} discovered test(s) had no crate attribution and are excluded from the per-crate table.",
+            tests.unattributed
         ));
     }
     table
