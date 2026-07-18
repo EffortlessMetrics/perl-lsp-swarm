@@ -78,8 +78,8 @@ pub fn symbol_refs_to_semantic_facts(
         anchors.push(AnchorFact {
             id: anchor_id,
             file_id,
-            span_start_byte: anchor_span.0 as u32,
-            span_end_byte: anchor_span.1 as u32,
+            span_start_byte: span_byte_to_u32(anchor_span.0),
+            span_end_byte: span_byte_to_u32(anchor_span.1),
             scope_id: None,
             provenance,
             confidence,
@@ -195,8 +195,8 @@ pub fn symbol_decls_to_semantic_facts(
         anchors.push(AnchorFact {
             id: anchor_id,
             file_id,
-            span_start_byte: anchor_span.0 as u32,
-            span_end_byte: anchor_span.1 as u32,
+            span_start_byte: span_byte_to_u32(anchor_span.0),
+            span_end_byte: span_byte_to_u32(anchor_span.1),
             scope_id: None,
             provenance: Provenance::ExactAst,
             confidence: Confidence::High,
@@ -325,11 +325,81 @@ fn stable_id(namespace: &str, name: &str, start: usize, end: usize, file_id: Fil
     hash
 }
 
+/// Saturating `usize` → `u32` conversion for source byte offsets.
+///
+/// Parser spans are `usize`, but [`AnchorFact`] byte offsets are `u32` (the
+/// width the LSP wire protocol uses). A plain `as u32` cast silently *wraps* on
+/// overflow, so an offset past `u32::MAX` (a file larger than ~4 GiB) would
+/// alias to a small, wrong offset and mis-place goto-definition / rename
+/// anchors. Saturating to `u32::MAX` keeps the value monotonic and outside the
+/// valid-offset range rather than aliasing into it. Mirrors the
+/// `usize_to_u32` / `to_u32_saturating` convention used elsewhere in the
+/// workspace (e.g. `perl-parser-core::hir::lower`).
+fn span_byte_to_u32(offset: usize) -> u32 {
+    offset.min(u32::MAX as usize) as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::VarKind;
     use perl_tdd_support::must_some;
+
+    #[test]
+    fn span_byte_to_u32_saturates_instead_of_wrapping() {
+        // Normal in-range offsets pass through unchanged.
+        assert_eq!(span_byte_to_u32(0), 0);
+        assert_eq!(span_byte_to_u32(42), 42);
+        assert_eq!(span_byte_to_u32(u32::MAX as usize), u32::MAX);
+        // Offsets past u32::MAX saturate to u32::MAX rather than wrapping.
+        // A plain `as u32` cast would wrap these to 0, 4, and (usize::MAX as u32).
+        assert_eq!(span_byte_to_u32(u32::MAX as usize + 1), u32::MAX);
+        assert_eq!(span_byte_to_u32(u32::MAX as usize + 5), u32::MAX);
+        assert_eq!(span_byte_to_u32(usize::MAX), u32::MAX);
+    }
+
+    /// Regression for #3923: byte offsets past `u32::MAX` must saturate, not
+    /// silently wrap, when projecting decl anchors. With the old `as u32` cast
+    /// the start offset (`u32::MAX as usize + 5`) wrapped to `4`.
+    #[test]
+    fn decl_anchor_span_bytes_saturate_past_u32_max() {
+        let over = u32::MAX as usize; // last valid u32 offset
+        let decls = vec![SymbolDecl {
+            kind: SymbolKind::Subroutine,
+            name: "big".to_string(),
+            qualified_name: "Huge::big".to_string(),
+            full_span: (over + 1, over + 40),
+            anchor_span: Some((over + 5, over + 10)),
+            container: None,
+            declarator: None,
+        }];
+
+        let facts = symbol_decls_to_semantic_facts(&decls, FileId(7));
+        let anchor = must_some(facts.anchors.first());
+        assert_eq!(anchor.span_start_byte, u32::MAX, "start must saturate, not wrap");
+        assert_eq!(anchor.span_end_byte, u32::MAX, "end must saturate, not wrap");
+    }
+
+    /// Regression for #3923: the same saturation must hold on the reference
+    /// projection path (`symbol_refs_to_semantic_facts`).
+    #[test]
+    fn ref_anchor_span_bytes_saturate_past_u32_max() {
+        let over = u32::MAX as usize;
+        let refs = vec![SymbolRef {
+            kind: SymbolRefKind::SubroutineCall,
+            name: "big".to_string(),
+            qualified_name: "big".to_string(),
+            sigil: None,
+            package_qualifier: None,
+            full_span: (over + 1, over + 40),
+            anchor_span: Some((over + 5, over + 10)),
+        }];
+
+        let facts = symbol_refs_to_semantic_facts(&refs, FileId(7), &BTreeMap::new());
+        let anchor = must_some(facts.anchors.first());
+        assert_eq!(anchor.span_start_byte, u32::MAX, "start must saturate, not wrap");
+        assert_eq!(anchor.span_end_byte, u32::MAX, "end must saturate, not wrap");
+    }
 
     #[test]
     fn adapter_is_deterministic_for_mixed_decls() {
