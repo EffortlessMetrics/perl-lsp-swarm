@@ -37,6 +37,20 @@ pub struct AncestorResult {
     pub cycle_detected: bool,
 }
 
+/// Result of a transitive role-composition traversal through the package graph.
+///
+/// Contains the ordered list of transitively composed role names (excluding
+/// the starting package) and a flag indicating whether a composition cycle was
+/// detected during traversal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleCompositionResult {
+    /// Composed role names in deterministic DFS pre-order (excludes the
+    /// starting package).
+    pub roles: Vec<String>,
+    /// `true` when a circular role-composition chain was detected.
+    pub cycle_detected: bool,
+}
+
 /// Cross-file package graph index.
 ///
 /// Populated from [`PackageEdge`] data extracted by the package graph
@@ -209,6 +223,79 @@ impl PackageGraphIndex {
             if *cycle_detected {
                 return;
             }
+        }
+    }
+
+    /// Traverse the role-composition chain (`ComposesRole` edges) starting from
+    /// `package_name` and return every transitively composed role.
+    ///
+    /// Mirrors [`ancestors`](Self::ancestors): depth-first traversal with an
+    /// on-path set for cycle detection. Roles are returned in deterministic
+    /// DFS pre-order and de-duplicated; the starting package is **not**
+    /// included. When a composition cycle is detected,
+    /// [`RoleCompositionResult::cycle_detected`] is set and only the cyclic
+    /// branch is abandoned — unrelated sibling roles are still collected, so
+    /// the result stays complete for every acyclic path.
+    pub fn transitive_composed_roles(&self, package_name: &str) -> RoleCompositionResult {
+        let mut on_stack = HashSet::new();
+        let mut collected = HashSet::new();
+        let mut roles = Vec::new();
+        let mut cycle_detected = false;
+
+        on_stack.insert(package_name.to_string());
+        self.collect_composed_roles(
+            package_name,
+            &mut on_stack,
+            &mut collected,
+            &mut roles,
+            &mut cycle_detected,
+        );
+
+        RoleCompositionResult { roles, cycle_detected }
+    }
+
+    /// Recursively collect composed roles via DFS, using `on_stack` to track
+    /// the current traversal path for cycle detection.
+    ///
+    /// Roles are added to `on_stack` before recursing and removed after, so
+    /// only back-edges (true composition cycles) trigger `cycle_detected`.
+    /// Convergence via multiple composition paths is handled by checking
+    /// `roles` to avoid duplicates without flagging a cycle.
+    ///
+    /// A detected cycle abandons **only** the offending branch (`continue`),
+    /// never the whole traversal: sibling roles reached through other,
+    /// acyclic edges are unrelated to the cycle and must still be collected.
+    /// Aborting the entire DFS on the first back-edge would silently drop
+    /// those siblings depending on edge-insertion order.
+    ///
+    /// `collected` mirrors `roles` as a set so convergent-composition
+    /// de-duplication is O(1) per edge rather than an O(n) scan of the ordered
+    /// output vector; `roles` remains the deterministic DFS pre-order list.
+    fn collect_composed_roles(
+        &self,
+        package_name: &str,
+        on_stack: &mut HashSet<String>,
+        collected: &mut HashSet<String>,
+        roles: &mut Vec<String>,
+        cycle_detected: &mut bool,
+    ) {
+        for role in self.composed_roles(package_name) {
+            if on_stack.contains(&role) {
+                // Back-edge to a role on the current DFS path — a true cycle.
+                // Skip this branch only; keep collecting siblings.
+                *cycle_detected = true;
+                continue;
+            }
+
+            // Skip already-collected roles (convergent composition).
+            if !collected.insert(role.clone()) {
+                continue;
+            }
+
+            roles.push(role.clone());
+            on_stack.insert(role.clone());
+            self.collect_composed_roles(&role, on_stack, collected, roles, cycle_detected);
+            on_stack.remove(&role);
         }
     }
 
@@ -565,6 +652,133 @@ mod tests {
 
         let roles = index.composed_roles("Plain");
         assert!(roles.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn transitive_composed_roles_follows_role_chain() -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        // MyClass composes RoleA; RoleA composes RoleB; RoleB composes RoleC.
+        index.add_edges(
+            "file:///lib/MyClass.pm",
+            FileId(1),
+            vec![composes_edge("MyClass", "RoleA")],
+        );
+        index.add_edges("file:///lib/RoleA.pm", FileId(2), vec![composes_edge("RoleA", "RoleB")]);
+        index.add_edges("file:///lib/RoleB.pm", FileId(3), vec![composes_edge("RoleB", "RoleC")]);
+
+        let result = index.transitive_composed_roles("MyClass");
+        assert!(!result.cycle_detected);
+        // Starting package excluded; transitive roles in DFS pre-order.
+        assert_eq!(result.roles, vec!["RoleA", "RoleB", "RoleC"]);
+        Ok(())
+    }
+
+    #[test]
+    fn transitive_composed_roles_excludes_start_and_empty_for_leaf()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        index.add_edges("file:///lib/Plain.pm", FileId(1), vec![inherits_edge("Plain", "Base")]);
+
+        let result = index.transitive_composed_roles("Plain");
+        assert!(!result.cycle_detected);
+        assert!(result.roles.is_empty(), "a package composing no roles yields no transitive roles");
+        Ok(())
+    }
+
+    #[test]
+    fn transitive_composed_roles_detects_cycle() -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        // RoleA composes RoleB; RoleB composes RoleA (composition cycle).
+        index.add_edges("file:///lib/RoleA.pm", FileId(1), vec![composes_edge("RoleA", "RoleB")]);
+        index.add_edges("file:///lib/RoleB.pm", FileId(2), vec![composes_edge("RoleB", "RoleA")]);
+
+        let result = index.transitive_composed_roles("RoleA");
+        assert!(result.cycle_detected, "role-composition cycle must be detected");
+        // Traversal still terminates and collects the reachable role before the
+        // back-edge is found.
+        assert!(result.roles.contains(&"RoleB".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn transitive_composed_roles_convergent_paths_no_cycle()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        // Diamond over ComposesRole: Top -> L, Top -> R, L -> Shared, R -> Shared.
+        index.add_edges(
+            "file:///lib/Top.pm",
+            FileId(1),
+            vec![composes_edge("Top", "L"), composes_edge("Top", "R")],
+        );
+        index.add_edges("file:///lib/L.pm", FileId(2), vec![composes_edge("L", "Shared")]);
+        index.add_edges("file:///lib/R.pm", FileId(3), vec![composes_edge("R", "Shared")]);
+
+        let result = index.transitive_composed_roles("Top");
+        assert!(!result.cycle_detected, "convergent composition paths are not a cycle");
+        assert!(result.roles.contains(&"L".to_string()));
+        assert!(result.roles.contains(&"R".to_string()));
+        assert!(result.roles.contains(&"Shared".to_string()));
+        // "Shared" is collected exactly once despite two paths reaching it.
+        assert_eq!(result.roles.iter().filter(|r| *r == "Shared").count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn transitive_composed_roles_cycle_preserves_unrelated_siblings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        // Top composes RoleCyclic (first edge) and RoleClean (second edge).
+        // RoleCyclic composes back to Top (a genuine cycle); RoleClean is an
+        // unrelated acyclic sibling. The cycle must not drop RoleClean, even
+        // though RoleCyclic is visited first.
+        index.add_edges(
+            "file:///lib/Top.pm",
+            FileId(1),
+            vec![composes_edge("Top", "RoleCyclic"), composes_edge("Top", "RoleClean")],
+        );
+        index.add_edges(
+            "file:///lib/RoleCyclic.pm",
+            FileId(2),
+            vec![composes_edge("RoleCyclic", "Top")],
+        );
+
+        let result = index.transitive_composed_roles("Top");
+        assert!(result.cycle_detected, "the RoleCyclic -> Top back-edge is a cycle");
+        assert!(
+            result.roles.contains(&"RoleCyclic".to_string()),
+            "the cyclic role itself is still reached before the back-edge"
+        );
+        assert!(
+            result.roles.contains(&"RoleClean".to_string()),
+            "an unrelated sibling must survive a cycle in another branch: {:?}",
+            result.roles
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn transitive_composed_roles_reflects_stale_index_removal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        index.add_edges(
+            "file:///lib/MyClass.pm",
+            FileId(1),
+            vec![composes_edge("MyClass", "RoleA")],
+        );
+        index.add_edges("file:///lib/RoleA.pm", FileId(2), vec![composes_edge("RoleA", "RoleB")]);
+
+        assert_eq!(index.transitive_composed_roles("MyClass").roles, vec!["RoleA", "RoleB"]);
+
+        // Re-index RoleA.pm with the RoleB composition removed (incremental update).
+        index.remove_edges_for_file("file:///lib/RoleA.pm");
+
+        let result = index.transitive_composed_roles("MyClass");
+        assert_eq!(
+            result.roles,
+            vec!["RoleA"],
+            "stale transitive role must disappear after re-index"
+        );
         Ok(())
     }
 

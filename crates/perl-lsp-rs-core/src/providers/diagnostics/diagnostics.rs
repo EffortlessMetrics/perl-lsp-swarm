@@ -359,8 +359,15 @@ impl DiagnosticsProvider {
         check_duplicate_package(ast, &mut diagnostics);
         check_duplicate_subroutine(ast, &mut diagnostics);
 
-        // Moo/Moose role conflict diagnostics (same-file only)
-        check_role_conflicts(ast, &symbol_table, &mut diagnostics);
+        // Moo/Moose role conflict diagnostics. Cross-file and transitive roles
+        // resolve through the workspace semantic index; under NullSemanticQueries
+        // the resolver returns empty and the lint degrades to same-file analysis.
+        check_role_conflicts(
+            ast,
+            &symbol_table,
+            &|role| semantic_queries.transitive_role_methods(role),
+            &mut diagnostics,
+        );
         check_goto_labels(ast, &symbol_table, &mut diagnostics);
         check_loop_control_labels(ast, &symbol_table, &mut diagnostics);
 
