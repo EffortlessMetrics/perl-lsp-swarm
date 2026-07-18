@@ -553,7 +553,12 @@ fn test_e2e_evaluate_expression_in_stopped_frame() -> TestResult {
     let mut session = DapWorkflowSession::new(timeout)?;
 
     session.launch(&script_str)?;
-    session.set_breakpoints(&script_str, &[BP_LINE_2])?;
+    // set_breakpoints_checked asserts verified=true and returns adapter-resolved lines,
+    // so the stopped-frame line can be checked against the resolved line rather than the
+    // permissive `> 0` guard (which would pass even on a line-mapping regression).
+    let resolved = session.set_breakpoints_checked(&script_str, &[BP_LINE_2])?;
+    let resolved_line =
+        resolved.first().copied().ok_or("set_breakpoints_checked returned empty resolved lines")?;
     session.configuration_done()?;
 
     let stopped = session.wait_stopped()?;
@@ -565,7 +570,13 @@ fn test_e2e_evaluate_expression_in_stopped_frame() -> TestResult {
 
     let (frame_id, source_path, frame_line) = session.stack_trace(stopped.thread_id)?;
     assert_eq!(source_path, script_str, "evaluate should run while stopped in the launched script");
-    assert!(frame_line > 0, "stopped frame should report a source line");
+    // LINE CONTRACT: the stopped-frame line must equal the adapter-resolved breakpoint line.
+    // Asserting equality (not just `> 0`) surfaces line-number mapping regressions.
+    assert_eq!(
+        frame_line, resolved_line,
+        "stopped-frame line must equal the adapter-resolved breakpoint line \
+         (resolved={resolved_line}, BP_LINE_2={BP_LINE_2}), got {frame_line}"
+    );
 
     let (arithmetic_result, arithmetic_type) = session.evaluate_expression("10+5", frame_id)?;
     assert!(
