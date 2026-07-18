@@ -171,6 +171,68 @@ impl LspServer {
             .collect()
     }
 
+    fn is_member_subscript_completion_context(before_cursor: &str, token_start: usize) -> bool {
+        let mut nested_brackets = 0usize;
+        let mut saw_open_subscript = false;
+
+        for (position, character) in before_cursor[..token_start].char_indices().rev() {
+            let previous = before_cursor[..position].chars().next_back();
+            let next = before_cursor[position + character.len_utf8()..].chars().next();
+            let is_member_arrow = (character == '-' && next == Some('>'))
+                || (character == '>' && previous == Some('-'));
+
+            if matches!(character, ']' | '}') {
+                nested_brackets += 1;
+                continue;
+            }
+            if matches!(character, '[' | '{') {
+                if nested_brackets > 0 {
+                    nested_brackets -= 1;
+                    continue;
+                }
+                if before_cursor[..position].trim_end().ends_with("->") {
+                    return true;
+                }
+                saw_open_subscript = true;
+                continue;
+            }
+            if saw_open_subscript && is_member_arrow {
+                return true;
+            }
+
+            let is_boundary = character.is_whitespace()
+                || matches!(
+                    character,
+                    ';' | '='
+                        | '+'
+                        | '-'
+                        | '*'
+                        | '/'
+                        | '%'
+                        | '.'
+                        | '!'
+                        | '<'
+                        | '>'
+                        | '&'
+                        | '|'
+                        | '^'
+                        | '~'
+                        | '?'
+                        | ':'
+                        | '('
+                        | ')'
+                        | ','
+                );
+            let is_token_start_boundary = position + character.len_utf8() == token_start;
+            if saw_open_subscript && nested_brackets == 0 && is_boundary && !is_token_start_boundary
+            {
+                return false;
+            }
+        }
+
+        false
+    }
+
     fn is_qualified_member_completion_context(doc_text: &str, offset: usize) -> bool {
         let Some(before_cursor) = doc_text.get(..offset.min(doc_text.len())) else {
             return false;
@@ -218,11 +280,8 @@ impl LspServer {
             })
             .unwrap_or(0);
         let token = &before_cursor[token_start..];
-        let member_subscript = before_cursor[..token_start]
-            .char_indices()
-            .next_back()
-            .filter(|(_, character)| matches!(character, '{' | '['))
-            .is_some_and(|(position, _)| before_cursor[..position].trim_end().ends_with("->"));
+        let member_subscript =
+            Self::is_member_subscript_completion_context(before_cursor, token_start);
         let preceded_by_member_arrow = before_cursor[..token_start].trim_end().ends_with("->");
         member_subscript || preceded_by_member_arrow || token.contains("->") || token.contains("::")
     }
@@ -2762,6 +2821,18 @@ mod tests {
         assert!(LspServer::is_qualified_member_completion_context(
             "$object->[idx",
             "$object->[idx".len(),
+        ));
+        assert!(LspServer::is_qualified_member_completion_context(
+            "$object->{$array[0",
+            "$object->{$array[0".len(),
+        ));
+        assert!(LspServer::is_qualified_member_completion_context(
+            "$object->method[0",
+            "$object->method[0".len(),
+        ));
+        assert!(!LspServer::is_qualified_member_completion_context(
+            "$value + $object[0",
+            "$value + $object[0".len(),
         ));
         assert!(LspServer::is_qualified_member_completion_context(
             "$object -> method",
