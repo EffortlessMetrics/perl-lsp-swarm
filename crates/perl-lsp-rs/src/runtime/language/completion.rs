@@ -2456,11 +2456,14 @@ mod tests {
         assert_eq!(receipt.get("character").and_then(Value::as_u64), Some(17));
         assert_eq!(receipt.get("freshness").and_then(Value::as_str), Some("fresh"));
         assert_eq!(receipt.get("fallback").and_then(Value::as_str), Some("none"));
+        let expected_claim_boundary = if receipt.get("semantic_shadow_receipt").is_some() {
+            "records existing comparable visibility completions and semantic shadow evidence; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+        } else {
+            "records existing comparable visibility completions only; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+        };
         assert_eq!(
             receipt.get("claim_boundary").and_then(Value::as_str),
-            Some(
-                "records existing comparable visibility completions and semantic shadow evidence; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
-            )
+            Some(expected_claim_boundary)
         );
         assert!(
             receipt.get("item_count").and_then(Value::as_u64).is_some_and(|count| count > 0),

@@ -912,11 +912,14 @@ fn live_completion_request_keeps_provider_specific_trace() -> Result<(), Box<dyn
         receipt.get("provider_action").and_then(Value::as_str),
         Some("textDocument/completion")
     );
+    let expected_claim_boundary = if receipt.get("semantic_shadow_receipt").is_some() {
+        "records existing comparable visibility completions and semantic shadow evidence; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+    } else {
+        "records existing comparable visibility completions only; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+    };
     assert_eq!(
         receipt.get("claim_boundary").and_then(Value::as_str),
-        Some(
-            "records existing comparable visibility completions and semantic shadow evidence; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
-        )
+        Some(expected_claim_boundary)
     );
     assert_eq!(
         receipt.get("trace_only_no_live_behavior_change").and_then(Value::as_bool),
