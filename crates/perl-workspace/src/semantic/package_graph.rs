@@ -335,7 +335,10 @@ impl PackageGraphIndex {
                         if file_id < *existing_file_id {
                             *anchor_id = edge.anchor_id;
                             *existing_file_id = file_id;
-                        } else if anchor_id.is_none() {
+                        } else if file_id == *existing_file_id && anchor_id.is_none() {
+                            // An anchor from the same file can improve an
+                            // earlier anchor-less edge; never borrow an anchor
+                            // from a different file while retaining its owner.
                             *anchor_id = edge.anchor_id;
                         }
                     })
@@ -679,6 +682,22 @@ mod tests {
         assert_eq!(index.get_node("Child").and_then(|node| node.file_id), Some(FileId(1)));
         index.remove_edges_for_file("file:///lib/Child-one.pm");
         assert_eq!(index.get_node("Child").and_then(|node| node.file_id), Some(FileId(2)));
+        Ok(())
+    }
+
+    #[test]
+    fn rebuild_node_metadata_keeps_anchor_and_file_owner_paired()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        let mut anchorless = inherits_edge("Child", "Base");
+        anchorless.anchor_id = None;
+        let anchored = inherits_edge("Child", "Base");
+        index.add_edges("file:///lib/Child-one.pm", FileId(1), vec![anchorless]);
+        index.add_edges("file:///lib/Child-two.pm", FileId(2), vec![anchored]);
+
+        let child = index.get_node("Child").ok_or("expected Child node")?;
+        assert_eq!(child.file_id, Some(FileId(1)));
+        assert_eq!(child.anchor_id, None);
         Ok(())
     }
 
