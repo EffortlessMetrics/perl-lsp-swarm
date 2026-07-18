@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -38,16 +39,16 @@ class ReleaseScopeValidationTests(unittest.TestCase):
 
     def test_rejects_count_or_query_headroom_drift(self) -> None:
         receipt = copy.deepcopy(self.receipt)
-        receipt["queue_snapshot"]["query_limit"] = receipt["queue_snapshot"]["observed_open_count"] - 1
-        self.assert_invalid(receipt, "query_limit")
+        receipt["queue_snapshot"]["observed_open_count"] = 100
+        self.assert_invalid(receipt, "headroom")
 
         receipt["queue_snapshot"]["query_limit"] = 101
-        self.assert_invalid(receipt, "pinned --limit 100")
+        self.assert_invalid(receipt, "expected const 100")
 
     def test_rejects_non_utc_observation(self) -> None:
         receipt = copy.deepcopy(self.receipt)
         receipt["observed_at_utc"] = receipt["observed_at_utc"].replace("Z", "+00:00")
-        self.assert_invalid(receipt, "end in Z")
+        self.assert_invalid(receipt, "does not match pattern")
 
     def test_rejects_post_release_item_without_follow_up(self) -> None:
         receipt = copy.deepcopy(self.receipt)
@@ -59,10 +60,43 @@ class ReleaseScopeValidationTests(unittest.TestCase):
         receipt["items"][0]["follow_up_issue"] = ["https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1"]
         self.assert_invalid(receipt, "follow_up_issue")
 
+    def test_rejects_missing_schema_required_field(self) -> None:
+        receipt = copy.deepcopy(self.receipt)
+        receipt.pop("proof_refs")
+        self.assert_invalid(receipt, "missing required property 'proof_refs'")
+
+        with tempfile.TemporaryDirectory() as directory:
+            directory_path = Path(directory)
+            schema_path = directory_path / "schema.json"
+            receipt_path = directory_path / "receipt.json"
+            schema_path.write_text(json.dumps(self.schema), encoding="utf-8")
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            self.assertEqual(MODULE.main(["--schema", str(schema_path), "--receipt", str(receipt_path)]), 1)
+
     def test_candidate_requires_release_complete_evidence(self) -> None:
         receipt = copy.deepcopy(self.receipt)
-        receipt["items"][0]["disposition"] = "0.18-candidate"
-        self.assert_invalid(receipt, "0.18-candidate requires owner")
+        candidate = receipt["items"][0]
+        candidate["disposition"] = "0.18-candidate"
+        candidate["owner"] = "@steven"
+        candidate["acceptance"] = ["candidate acceptance"]
+        candidate["proof"] = ["candidate proof"]
+        candidate["unresolved_threads"] = 0
+        candidate["checks"]["failed"] = 0
+        candidate["checks"]["pending"] = 0
+        MODULE.validate_scope(self.schema, receipt)
+
+        for field, value, message in (
+            ("unresolved_threads", 1, "expected const 0"),
+            ("checks.failed", 1, "expected const 0"),
+            ("checks.pending", 1, "expected const 0"),
+        ):
+            invalid = copy.deepcopy(receipt)
+            if "." in field:
+                object_name, nested_field = field.split(".")
+                invalid["items"][0][object_name][nested_field] = value
+            else:
+                invalid["items"][0][field] = value
+            self.assert_invalid(invalid, message)
 
 
 if __name__ == "__main__":

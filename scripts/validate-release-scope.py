@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Validate the cross-field invariants of a release admission receipt.
+"""Validate a release admission receipt against its schema and cross-field rules.
 
-JSON Schema validates each field independently.  This checker owns the
-relational rules that Draft 2020-12 cannot express for this receipt, while
-keeping final-freeze and live GitHub queries out of the admission validator.
+The standard-library schema subset catches structural drift, and this checker
+owns the relational rules that Draft 2020-12 cannot express for this receipt.
+Final-freeze and live GitHub queries remain outside the admission validator.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import argparse
 import json
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,7 @@ ISSUE_PATTERN = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swa
 OBSERVATION_QUERY = (
     "gh pr list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 100 --json number"
 )
+QUERY_LIMIT_PATTERN = re.compile(r"(?:^|\s)--limit\s+(\d+)(?:\s|$)")
 
 
 def _require(condition: bool, message: str) -> None:
@@ -53,12 +54,113 @@ def _utc_timestamp(value: Any, name: str) -> datetime:
         raise ValueError(f"{name} must be an ISO-8601 UTC timestamp") from error
 
 
+def _schema_ref(root: dict[str, Any], reference: str) -> dict[str, Any]:
+    _require(reference.startswith("#/$defs/"), f"unsupported schema reference: {reference}")
+    name = reference.removeprefix("#/$defs/")
+    definition = root.get("$defs", {}).get(name)
+    _require(isinstance(definition, dict), f"schema reference is missing: {reference}")
+    return definition
+
+
+def _schema_type_matches(value: Any, expected: str) -> bool:
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "null":
+        return value is None
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return False
+
+
+def _schema_errors(node: Any, value: Any, path: str, root: dict[str, Any]) -> list[str]:
+    """Validate the Draft 2020-12 subset used by the release-scope schema."""
+
+    if not isinstance(node, dict):
+        return [f"{path}: schema node must be an object"]
+    if "$ref" in node:
+        return _schema_errors(_schema_ref(root, node["$ref"]), value, path, root)
+
+    errors: list[str] = []
+    if "const" in node and value != node["const"]:
+        errors.append(f"{path}: expected const {node['const']!r}")
+    if "enum" in node and value not in node["enum"]:
+        errors.append(f"{path}: expected one of {node['enum']!r}")
+
+    expected_type = node.get("type")
+    if expected_type is not None:
+        types = expected_type if isinstance(expected_type, list) else [expected_type]
+        if not any(_schema_type_matches(value, candidate) for candidate in types):
+            return errors + [f"{path}: expected type {expected_type!r}"]
+
+    if isinstance(value, str):
+        if "minLength" in node and len(value) < node["minLength"]:
+            errors.append(f"{path}: string is shorter than minLength")
+        if "pattern" in node and re.search(node["pattern"], value) is None:
+            errors.append(f"{path}: string does not match pattern")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if "minimum" in node and value < node["minimum"]:
+            errors.append(f"{path}: number is below minimum")
+    if isinstance(value, list):
+        if "minItems" in node and len(value) < node["minItems"]:
+            errors.append(f"{path}: array is shorter than minItems")
+        if "maxItems" in node and len(value) > node["maxItems"]:
+            errors.append(f"{path}: array is longer than maxItems")
+        if node.get("uniqueItems"):
+            encoded = [json.dumps(item, sort_keys=True, separators=(",", ":")) for item in value]
+            if len(encoded) != len(set(encoded)):
+                errors.append(f"{path}: array items must be unique")
+        if "items" in node:
+            for index, item in enumerate(value):
+                errors.extend(_schema_errors(node["items"], item, f"{path}[{index}]", root))
+        if "contains" in node and not any(not _schema_errors(node["contains"], item, path, root) for item in value):
+            errors.append(f"{path}: array does not contain a matching item")
+    if isinstance(value, dict):
+        properties = node.get("properties", {})
+        for required in node.get("required", []):
+            if required not in value:
+                errors.append(f"{path}: missing required property {required!r}")
+        if node.get("additionalProperties") is False:
+            for key in value:
+                if key not in properties:
+                    errors.append(f"{path}: unexpected property {key!r}")
+        for key, child in properties.items():
+            if key in value:
+                errors.extend(_schema_errors(child, value[key], f"{path}.{key}", root))
+
+    if "oneOf" in node:
+        matches = sum(not _schema_errors(option, value, path, root) for option in node["oneOf"])
+        if matches != 1:
+            errors.append(f"{path}: expected exactly one matching oneOf branch")
+    if "allOf" in node:
+        for child in node["allOf"]:
+            errors.extend(_schema_errors(child, value, path, root))
+    if "if" in node and not _schema_errors(node["if"], value, path, root) and "then" in node:
+        errors.extend(_schema_errors(node["then"], value, path, root))
+    return errors
+
+
+def _validate_against_schema(schema: Any, receipt: Any) -> None:
+    schema_object = _object(schema, "schema")
+    errors = _schema_errors(schema_object, receipt, "$", schema_object)
+    if errors:
+        raise ValueError(f"receipt does not satisfy schema: {errors[0]}")
+
+
 def validate_scope(schema: Any, receipt: Any) -> None:
     """Raise ``ValueError`` unless schema metadata and receipt invariants hold."""
 
     schema_object = _object(schema, "schema")
     _require(schema_object.get("$schema") == "https://json-schema.org/draft/2020-12/schema", "schema must declare Draft 2020-12")
     data = _object(receipt, "receipt")
+    _validate_against_schema(schema_object, data)
     _require(data.get("schema") == 1, "receipt.schema must be 1")
     _require(data.get("release") == "0.18.0", "receipt.release must be 0.18.0")
     _require(data.get("track") == "public-beta", "receipt.track must be public-beta")
@@ -81,8 +183,8 @@ def validate_scope(schema: Any, receipt: Any) -> None:
 
     classification_method = _object(data.get("classification_method"), "classification_method")
     _require(
-        "NOT_PROVEN" in _string(classification_method.get("base_and_ancestry"), "classification_method.base_and_ancestry"),
-        "classification_method must not claim unproven head ancestry",
+        classification_method.get("ancestry_status") == "not-proven",
+        "classification_method.ancestry_status must be not-proven",
     )
 
     snapshot = _object(data.get("queue_snapshot"), "queue_snapshot")
@@ -91,13 +193,16 @@ def validate_scope(schema: Any, receipt: Any) -> None:
     observed_count = snapshot.get("observed_open_count")
     receipt_count = snapshot.get("receipt_count")
     numbers = snapshot.get("observed_numbers")
-    _require(query_limit == 100, "query_limit must match the pinned --limit 100 observation query")
+    query_match = QUERY_LIMIT_PATTERN.search(OBSERVATION_QUERY)
+    _require(query_match is not None, "OBSERVATION_QUERY must declare a numeric --limit")
+    expected_query_limit = int(query_match.group(1))
+    _require(query_limit == expected_query_limit, "query_limit must match the pinned observation query")
     _require(isinstance(observed_count, int) and observed_count >= 0, "observed_open_count must be a non-negative integer")
     _require(isinstance(receipt_count, int) and receipt_count >= 0, "receipt_count must be a non-negative integer")
     _require(isinstance(numbers, list) and numbers, "observed_numbers must be a non-empty list")
     _require(numbers == sorted(numbers), "observed_numbers must be sorted")
     _require(len(numbers) == len(set(numbers)), "observed_numbers must be unique")
-    _require(query_limit >= observed_count, "query_limit must cover observed_open_count")
+    _require(query_limit > observed_count, "query_limit must leave headroom above observed_open_count")
     _require(snapshot.get("set_equality") is True, "queue_snapshot.set_equality must be true")
 
     items = data.get("items")
@@ -138,7 +243,7 @@ def validate_scope(schema: Any, receipt: Any) -> None:
 
     _require(len(item_numbers) == len(set(item_numbers)), "items.number must be unique")
     _require(sorted(item_numbers) == numbers, "items.number must exactly match queue_snapshot.observed_numbers as a set")
-    _require(observed_at.tzinfo is not None, "observed_at_utc must include a timezone")
+    _require(observed_at.utcoffset() == timedelta(0), "observed_at_utc must use UTC")
 
 
 def main(argv: list[str] | None = None) -> int:

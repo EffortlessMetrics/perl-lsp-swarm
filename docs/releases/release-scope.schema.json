@@ -95,9 +95,10 @@
     "classificationMethod": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["base_and_ancestry", "work_id", "user_outcome", "current_main", "proof_strength", "missing_controls", "release_value", "regression_risk", "proof_cost", "rollback"],
+      "required": ["base_and_ancestry", "ancestry_status", "work_id", "user_outcome", "current_main", "proof_strength", "missing_controls", "release_value", "regression_risk", "proof_cost", "rollback"],
       "properties": {
         "base_and_ancestry": { "type": "string", "minLength": 1 },
+        "ancestry_status": { "const": "not-proven" },
         "work_id": { "type": "string", "minLength": 1 },
         "user_outcome": { "type": "string", "minLength": 1 },
         "current_main": { "type": "string", "minLength": 1 },

@@ -21,7 +21,8 @@
     {"name":"installed-acceptance","issue":"https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4346","owner":"@steven","status":"queued","acceptance":["Install packaged perllsp, perl-dap, and VSIX into isolated prefix and VS Code profile roots.","Fail if any workspace binary executes; bind exact SHA and artifact hashes.","Exercise version, doctor, health, initialization, readiness, diagnostics, completion, hover, definition, references, symbols, edit/requery, rename or safe refusal, formatting, stale-index eviction, DAP smoke, and shutdown.","Require false exact, stale exact, unsafe edits, unexplained empty, wrong artifact, unbounded fallback, and protocol crash counts all equal zero."],"proof":["Durable receipt binds exact SHA, artifact hashes, resolved executable paths, journey results, and invariant counts.","Receipt is regenerated after the last product mutation and consumed by the no-publish candidate rehearsal."]}
   ],
   "classification_method": {
-    "base_and_ancestry": "Each row records the live head and base ref. Head-to-observation ancestry is NOT_PROVEN unless a row proof says otherwise; excluded work is not promoted on inferred freshness.",
+    "base_and_ancestry": "Each row records the live head and base ref. Head-to-observation ancestry is not proven unless a row proof says otherwise; excluded work is not promoted on inferred freshness.",
+    "ancestry_status": "not-proven",
     "work_id": "The controlling_issue is the Work-ID when present. Null is explicit and requires a builder-ready follow-up before revival.",
     "user_outcome": "Paths, relationship, and rationale state the user-facing or control-plane outcome used for disposition.",
     "current_main": "Only the completed correctness band was re-proved on current main. Other product changes are not reproduced and remain excluded unless packaged acceptance exposes a blocker.",
