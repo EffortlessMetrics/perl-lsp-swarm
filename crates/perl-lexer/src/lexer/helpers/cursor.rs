@@ -162,3 +162,7 @@ impl PerlLexer<'_> {
         }
     }
 }
+#[cfg(test)]
+mod tests {
+    include!("../../../tests/fixtures/ripr_seam_proof_peek_char_unit.inc");
+}
