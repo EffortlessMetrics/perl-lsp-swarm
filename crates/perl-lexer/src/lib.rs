@@ -3155,6 +3155,188 @@ impl<'a> PerlLexer<'a> {
         (body, false)
     }
 
+    fn read_qw_body(&mut self, delim: char) -> (String, bool) {
+        let paired = quote_handler::paired_close(delim);
+        let close = paired.unwrap_or(delim);
+        let mut body = String::new();
+        let mut depth = i32::from(paired.is_some());
+        let recover_at_statement = !self.qw_has_closing_delimiter(delim);
+
+        while let Some(ch) = self.current_char() {
+            if recover_at_statement && self.qw_statement_boundary_at(self.position) {
+                return (body, false);
+            }
+            if ch == '\\' {
+                body.push(ch);
+                self.advance();
+                if let Some(next) = self.current_char() {
+                    body.push(next);
+                    self.advance();
+                }
+                continue;
+            }
+            if paired.is_some() && ch == delim {
+                body.push(ch);
+                self.advance();
+                depth += 1;
+                continue;
+            }
+            if ch == close {
+                if paired.is_some() {
+                    depth -= 1;
+                    if depth == 0 {
+                        self.advance();
+                        return (body, true);
+                    }
+                    body.push(ch);
+                    self.advance();
+                } else {
+                    self.advance();
+                    return (body, true);
+                }
+                continue;
+            }
+            body.push(ch);
+            self.advance();
+        }
+        (body, false)
+    }
+
+    fn qw_has_closing_delimiter(&self, delim: char) -> bool {
+        let paired = quote_handler::paired_close(delim);
+        let close = paired.unwrap_or(delim);
+        let mut depth = i32::from(paired.is_some());
+        let mut escaped = false;
+        let mut at_line_prefix = false;
+
+        for (offset, ch) in self.input[self.position..].char_indices() {
+            let position = self.position.saturating_add(offset);
+            if at_line_prefix && !ch.is_whitespace() && self.qw_statement_boundary_at(position) {
+                return self.qw_has_top_level_closer_after(position, close);
+            }
+            if ch == '\n' {
+                at_line_prefix = true;
+            } else if at_line_prefix && !ch.is_whitespace() {
+                at_line_prefix = false;
+            }
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if paired.is_some() && ch == delim {
+                depth += 1;
+            } else if ch == close {
+                if paired.is_none() {
+                    return true;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn qw_has_top_level_closer_after(&self, position: usize, close: char) -> bool {
+        if close != ')' {
+            return false;
+        }
+        let mut lexer = Self::without_qw_recovery(&self.input[position..], self.config.clone());
+        let mut depth = 0usize;
+        while let Some(token) = lexer.next_token() {
+            match token.token_type {
+                TokenType::LeftParen => depth = depth.saturating_add(1),
+                TokenType::RightParen if depth == 0 => return true,
+                TokenType::RightParen => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn qw_statement_boundary_at(&self, position: usize) -> bool {
+        let consumed = &self.input[..position];
+        let line_start = consumed.rfind('\n').map_or(0, |index| index + 1);
+        if !consumed[line_start..].chars().all(char::is_whitespace) {
+            return false;
+        }
+
+        let remaining = &self.input[position..];
+        for keyword in ["my", "our", "state", "local"] {
+            if let Some(after) = remaining.strip_prefix(keyword)
+                && ((after.starts_with(char::is_whitespace)
+                    && after.trim_start().starts_with(['$', '@', '%', '(']))
+                    || after.starts_with(['$', '@', '%']))
+                && self.qw_statement_terminates(position)
+            {
+                return true;
+            }
+        }
+        remaining.strip_prefix("print").is_some_and(|after| {
+            after.starts_with(char::is_whitespace) && self.qw_statement_terminates(position)
+        })
+    }
+
+    /// A candidate line-start statement inside an unclosed `qw(` is a real recovery
+    /// boundary only when it forms a complete statement: either a top-level semicolon
+    /// terminates it, or it runs cleanly to end-of-file with balanced delimiters. The
+    /// EOF case recovers a semicolonless trailing declaration/print statement (#4494)
+    /// without splitting on keyword-like words that continue into further source.
+    fn qw_statement_terminates(&self, position: usize) -> bool {
+        let source = &self.input[position..];
+        let mut lexer = Self::without_qw_recovery(source, self.config.clone());
+        let mut first = true;
+        let mut delimiter_depth = 0usize;
+        let mut saw_incomplete = false;
+        let mut last_end = 0usize;
+        while let Some(token) = lexer.next_token() {
+            if token.token_type == TokenType::Semicolon && delimiter_depth == 0 {
+                return true;
+            }
+            if matches!(token.token_type, TokenType::Error(_) | TokenType::UnknownRest) {
+                // A trailing statement carrying its own unclosed quote-like operator or a
+                // degraded construct reaches EOF at balanced delimiter depth but is not a
+                // clean statement; do not let it masquerade as one (this preserves the
+                // nested-qw suffix behavior, where the inner qw emits an Error token).
+                saw_incomplete = true;
+            }
+            if !first && delimiter_depth == 0 {
+                let prefix = &source[..token.start];
+                let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
+                if prefix[line_start..].chars().all(char::is_whitespace)
+                    && matches!(token.text.as_ref(), "my" | "our" | "state" | "local" | "print")
+                {
+                    return false;
+                }
+            }
+            match token.token_type {
+                TokenType::LeftParen | TokenType::LeftBrace | TokenType::LeftBracket => {
+                    delimiter_depth = delimiter_depth.saturating_add(1);
+                }
+                TokenType::RightParen | TokenType::RightBrace | TokenType::RightBracket => {
+                    delimiter_depth = delimiter_depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+            last_end = token.end;
+            first = false;
+        }
+        // No terminating semicolon before EOF: recover only when the candidate ran to
+        // end-of-file cleanly — balanced delimiters, no degraded/unclosed token, and every
+        // trailing byte turned into a real token. The final check rejects constructs that
+        // silently consume to EOF without emitting a token (an unterminated bare `/regex/`
+        // or heredoc body leaves its text after the last token), which would otherwise be
+        // misclassified as a complete statement and split the qw list incorrectly (#4494).
+        delimiter_depth == 0
+            && !saw_incomplete
+            && source[last_end..].chars().all(char::is_whitespace)
+    }
+
     /// Parse a quote operator after we've seen the delimiter
     fn parse_quote_operator(&mut self, delimiter: char) -> Option<Token> {
         let info = self.current_quote_op.as_ref()?;
@@ -3184,8 +3366,12 @@ impl<'a> PerlLexer<'a> {
                 self.parse_regex_modifiers(&quote_handler::M_SPEC);
                 body_closed
             }
+            "qw" if delimiter == '(' && self.qw_recovery_enabled => {
+                let (_body, body_closed) = self.read_qw_body(delimiter);
+                body_closed
+            }
             _ => {
-                // q, qq, qw, qx - no modifiers
+                // q, qq, qx - no modifiers
                 let (_body, body_closed) = self.read_delimited_body(delimiter);
                 body_closed
             }

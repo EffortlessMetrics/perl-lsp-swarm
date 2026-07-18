@@ -24,7 +24,7 @@ This document defines the 7 gates, the agents within each, when to skip, how age
 
 ## Learning is continuous; consolidation is dedicated
 
-**Every agent in every gate captures learning artifacts** when something novel is encountered. This is existing doctrine (CLAUDE.md: "Learning is continuous — every agent-wrapup captures what was learned.").
+**Every agent in every gate captures learning artifacts** when something novel is encountered. This is existing doctrine: CLAUDE.md names **Learn** as the final lifecycle moment, and every agent's `agent-wrapup` captures what was learned (see [docs/learnings/](../learnings/README.md)).
 
 Agents produce learning artifacts as they work:
 - Memory candidate notes ("this pattern recurred — worth saving")
@@ -176,6 +176,14 @@ Gate 4 triangulates three axes. A PR that clears only one axis does not pass Gat
 **Purpose**: Verify live CI is actually green on the current HEAD SHA. Not a label from an earlier push — the real thing.
 
 **Exit condition**: Live CI (`statusCheckRollup`) is green on the current HEAD SHA for both required checks. The `ci-green` label records that green-ci confirmed this, but the live signal is authoritative, not the label — see [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md).
+
+The advisory M4b agent-capability gate is a front-door hygiene check, not one
+of the two required merge contexts. Its router keeps untrusted fork and bot
+pull requests on `ubuntu-24.04`, sends trusted work to the labeled
+`workflow-nano` self-hosted lane when capacity is observed, and records an
+explicit hosted fallback for missing token, API, or capacity. A failure from
+`cargo xtask check-agent-capabilities` remains a real check failure; only the
+runner-selection infrastructure may fall back.
 
 **Agents within Gate 5**:
 

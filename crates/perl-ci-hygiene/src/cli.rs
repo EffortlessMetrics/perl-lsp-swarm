@@ -88,6 +88,8 @@ pub(crate) enum CliCommand {
     InstallGithooks,
     /// Check docs for machine-specific paths.
     CheckDocPaths { docs_dir: Option<String> },
+    /// Check active status docs agree with the canonical workspace version and published-crate count.
+    CheckDocDrift,
     /// Enforce linked-only task-marker policy.
     CheckTodos {
         #[arg(long)]

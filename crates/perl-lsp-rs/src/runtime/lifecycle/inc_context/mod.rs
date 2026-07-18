@@ -137,13 +137,15 @@ impl LspServer {
             .map(|value| perl_lsp_rs_core::config::WorkspaceConfig::parse_perl5lib(&value))
             .unwrap_or_default();
         let raw_include_paths = config.effective_include_paths(&perl5lib_paths);
-        let lexical_paths = assembly::lexical_paths(doc_uri, doc_text, doc_offset, root.as_path());
+        let lexical_paths =
+            assembly::lexical_paths(self, doc_uri, doc_text, doc_offset, root.as_path());
 
         // When a position offset is provided, also compute the set of paths that
         // `no lib` has explicitly cancelled at that position. These cancellations
         // apply to configured include paths too — `no lib 'lib'` removes `lib` from
         // `@INC` regardless of whether it arrived via `use lib` or workspace config.
         let include_paths = assembly::include_paths_with_cancellations(
+            self,
             doc_uri,
             doc_text,
             doc_offset,
@@ -246,6 +248,126 @@ mod tests {
     }
 
     #[test]
+    fn effective_inc_context_falls_back_to_hir_roots_for_recovery_forms() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let module_path = workspace.join("local").join("Recovered.pm");
+        let script_path = workspace.join("script.pl");
+        std::fs::create_dir_all(module_path.parent().ok_or("missing module parent")?)?;
+        std::fs::write(&module_path, "package Recovered;\n1;\n")?;
+
+        let workspace_uri = file_uri(&workspace)?;
+        let script_uri = file_uri(&script_path)?;
+        let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+        config.use_system_inc = false;
+        config.use_perl5lib = false;
+
+        let server = LspServer::new();
+        *server.workspace_folders.lock() = vec![
+            WorkspaceFolderState::new(workspace_uri)
+                .with_path(workspace.clone())
+                .with_effective_workspace_config(config),
+        ];
+        *server.root_path.lock() = Some(workspace);
+
+        let source = "BEGIN { use lib 'local'; }\nuse Recovered;\n";
+        let offset = source.rfind("use Recovered").ok_or("offset not found")?;
+        let context = server
+            .effective_inc_context_for_doc(Some(&script_uri), Some(source), Some(offset))
+            .ok_or("expected effective @INC context")?;
+
+        assert!(context.effective_roots.iter().any(|root| {
+            root.kind == IncRootKind::FileLocalLexical && root.path.ends_with("local")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn effective_inc_context_merges_hir_roots_with_source_roots() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let script_path = workspace.join("script.pl");
+        std::fs::create_dir_all(&workspace)?;
+
+        let workspace_uri = file_uri(&workspace)?;
+        let script_uri = file_uri(&script_path)?;
+        let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+        config.use_system_inc = false;
+        config.use_perl5lib = false;
+
+        let server = LspServer::new();
+        *server.workspace_folders.lock() = vec![
+            WorkspaceFolderState::new(workspace_uri)
+                .with_path(workspace.clone())
+                .with_effective_workspace_config(config),
+        ];
+        *server.root_path.lock() = Some(workspace);
+
+        let source = "BEGIN { use lib 'hir-only'; }\nuse lib 'source';\nuse Recovered;\n";
+        let offset = source.rfind("use Recovered").ok_or("offset not found")?;
+        let context = server
+            .effective_inc_context_for_doc(Some(&script_uri), Some(source), Some(offset))
+            .ok_or("expected effective @INC context")?;
+        let lexical_paths = context
+            .effective_roots
+            .iter()
+            .filter(|root| root.kind == IncRootKind::FileLocalLexical)
+            .map(|root| root.path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(lexical_paths, vec!["source", "hir-only"]);
+        Ok(())
+    }
+
+    #[test]
+    fn lexical_paths_call_presence_observer() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let script_path = workspace.join("script.pl");
+        std::fs::create_dir_all(&workspace)?;
+        let script_uri = file_uri(&script_path)?;
+        let server = LspServer::new();
+        let source = "use lib 'local';\nuse Observed;\n";
+        let offset = source.rfind("use Observed").ok_or("offset not found")?;
+
+        let paths = assembly::lexical_paths(
+            &server,
+            Some(&script_uri),
+            Some(source),
+            Some(offset),
+            &workspace,
+        );
+
+        assert_eq!(paths, vec!["local"]);
+        Ok(())
+    }
+
+    #[test]
+    fn include_paths_with_cancellations_call_presence_observer() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let script_path = workspace.join("script.pl");
+        std::fs::create_dir_all(&workspace)?;
+        let script_uri = file_uri(&script_path)?;
+        let server = LspServer::new();
+        let source = "use lib 'lib';\nno lib 'lib';\nuse Observed;\n";
+        let offset = source.rfind("use Observed").ok_or("offset not found")?;
+        let configured_lib = "lib".to_string();
+
+        let paths = assembly::include_paths_with_cancellations(
+            &server,
+            Some(&script_uri),
+            Some(source),
+            Some(offset),
+            &workspace,
+            vec![configured_lib],
+        );
+
+        assert_eq!(paths, Vec::<String>::new());
+        Ok(())
+    }
+
+    #[test]
     fn effective_inc_context_returns_none_without_root() {
         let server = LspServer::new();
         assert!(server.effective_inc_context_for_doc(None, None, None).is_none());
@@ -330,6 +452,44 @@ mod tests {
              roots={:?} symbol={:?}",
             context.effective_roots,
             module_uri
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn symbol_uri_reachable_returns_false_after_nested_hir_no_lib_cancellation() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let lib_dir = workspace.join("lib");
+        std::fs::create_dir_all(&lib_dir)?;
+
+        let module_path = lib_dir.join("GoneModule.pm");
+        std::fs::write(&module_path, "package GoneModule;\n1;\n")?;
+        let module_uri = file_uri(&module_path)?;
+
+        let workspace_uri = file_uri(&workspace)?;
+        let script_path = workspace.join("script.pl");
+        let script_uri = file_uri(&script_path)?;
+        let config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+
+        let server = LspServer::new();
+        *server.workspace_folders.lock() = vec![
+            WorkspaceFolderState::new(workspace_uri.clone())
+                .with_path(workspace.clone())
+                .with_effective_workspace_config(config),
+        ];
+        *server.root_path.lock() = Some(workspace);
+
+        let source = "use lib 'lib';\nBEGIN { no lib 'lib'; }\nuse GoneModule;\n";
+        let use_gone_offset = source.rfind("use GoneModule").ok_or("offset not found")?;
+        let context = server
+            .effective_inc_context_for_doc(Some(&script_uri), Some(source), Some(use_gone_offset))
+            .ok_or("expected effective @INC context")?;
+
+        assert!(
+            !context.symbol_uri_reachable(&module_uri),
+            "a nested HIR no-lib cancellation must not be re-added by source merging; roots={:?}",
+            context.effective_roots
         );
         Ok(())
     }

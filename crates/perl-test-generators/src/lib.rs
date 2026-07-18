@@ -1,6 +1,6 @@
 //! Property-based test generators for Perl domain objects.
 //!
-//! This crate provides reusable [`proptest::Strategy`] implementations for
+//! This crate provides reusable [`proptest::strategy::Strategy`] implementations for
 //! generating Perl variables, module paths, code snippets, and Unicode
 //! strings suitable for fuzzing parsers and LSP components.
 

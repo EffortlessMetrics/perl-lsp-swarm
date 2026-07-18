@@ -194,6 +194,15 @@ impl LineIndex {
         Self { line_starts, text }
     }
 
+    /// Borrow the source text this index owns.
+    ///
+    /// The index keeps a copy of the text so callers that already hold a
+    /// `LineIndex` do not need to store the source a second time.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
     /// Convert byte offset to position (0-based line and UTF-16 column)
     pub fn offset_to_position(&self, offset: usize) -> (u32, u32) {
         let offset = self.normalize_offset(offset);

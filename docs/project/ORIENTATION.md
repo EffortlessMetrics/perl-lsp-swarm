@@ -8,7 +8,7 @@ Welcome to the perl-lsp project! This guide will get you up to speed quickly.
 
 ## 📍 You Are Here
 
-**Project Status**: v0.10.0 close-out receipts captured; v0.9.x hardening underway
+**Project Status**: public-alpha; current shipped train is `v0.17.0` (2026-06-28). For the live version, crate surface, and metrics, `docs/project/CURRENT_STATUS.md` is canonical — this line is a snapshot only.
 **Open Issues**: See GitHub milestones/issues for live counts
 
 ## 🎯 5-Minute Orientation
@@ -23,21 +23,18 @@ perl-lsp is a comprehensive Perl parsing + LSP/DAP ecosystem:
 
 ### Current Focus
 
-**Now (post v0.10.0 close-out)**
-- Keep close-out receipts green (`just ci-gate`, targeted state-machine tests, benchmark checks)
-- Publish benchmark outputs under `benchmarks/results/`
+The current milestone, its "Now / Next / Later" breakdown, and exit criteria
+are tracked in canonical sources rather than duplicated here (this page drifts
+between releases). See:
 
-**Next (v0.10.0)**
-- Stability statement + packaging stance
-- Benchmark publication with receipts
-- Upgrade notes from v0.8.x → v0.9.x
+- [ROADMAP.md](ROADMAP.md) — milestones and exit criteria
+- [CURRENT_STATUS.md](CURRENT_STATUS.md) — live version, crate surface, and metrics
+- [status/index.md](status/index.md) — the current "What's Next" narrative
+- [status/release.md](status/release.md) — release readiness and active blockers
 
-**Later (post v0.9.x)**
-- DAP preview hardening (runtime variable/evaluate depth + packaging)
-- Full LSP 3.18 compliance
-- Package manager distribution
-
-See [ROADMAP.md](ROADMAP.md) for milestones and exit criteria.
+Recurring, release-independent themes: keeping the merge gate green
+(`just ci-gate`), parser corpus lanes current, DAP preview hardening, LSP 3.18
+compliance, and broader distribution packaging.
 
 ## 📚 Essential Documents (Read These First)
 
@@ -56,18 +53,13 @@ See [ROADMAP.md](ROADMAP.md) for milestones and exit criteria.
 
 ## 🚨 What Needs Attention RIGHT NOW
 
-### Now (as of 2026-02-16)
-1. 🟡 **Benchmark publication** - commit canonical benchmark outputs under `benchmarks/results/`
-2. 🟡 **v0.9.x packaging stance** - finalize supported platforms and shipping model
-3. 🟡 **Upgrade notes polish** - ensure v0.8.x → v0.9.x path is explicit
-4. 📌 **Expanded backlog** - see `docs/TODO.md` + `docs/reference/LSP_MISSING_FEATURES_REPORT.md`
+This section is intentionally not a live task list — it drifts between releases.
+For what actually needs attention right now:
 
-### Next
-1. **v0.9.x readiness** - stability statement, packaging stance, benchmark receipts, upgrade notes
-2. **Merge gates** - #210 after CI pipeline cleanup (#211)
-
-### Critical Blockers / Constraints
-- **Issue #211**: CI Pipeline cleanup blocks merge gates (#210)
+1. 📌 **Active milestone & priorities** — [ROADMAP.md](ROADMAP.md) and GitHub milestones/issues
+2. 📌 **Release readiness & blockers** — [status/release.md](status/release.md)
+3. 📌 **Backlog** — `docs/TODO.md` + `docs/reference/LSP_MISSING_FEATURES_REPORT.md`
+4. 📌 **Live status & metrics** — [CURRENT_STATUS.md](CURRENT_STATUS.md)
 
 ## 🏗️ Project Structure
 
@@ -118,8 +110,7 @@ RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs  # With adaptive threading
 ## 💡 Where to Start Contributing
 
 - Check the active milestone and the `good first issue` / `help wanted` labels
-- Near-term work: benchmark publication + v0.9.x packaging/readiness (see ROADMAP)
-- Larger efforts: v0.9.x milestone and `phase:*` labels
+- Near-term and larger efforts: see the current milestone in [ROADMAP.md](ROADMAP.md) and the `phase:*` labels
 - See [CONTRIBUTING.md](../../CONTRIBUTING.md) for workflow details
 
 ## 📊 Quality Metrics
@@ -195,6 +186,6 @@ The perl-lsp project has clear paths forward. Your contributions will help make 
 
 ---
 
-*This guide is kept up-to-date as the project evolves. Last updated: 2026-02-17*
+*This guide is kept up-to-date as the project evolves. Last updated: 2026-07-17*
 
 *For detailed status, see: [CURRENT_STATUS.md](CURRENT_STATUS.md)*

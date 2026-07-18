@@ -168,7 +168,14 @@ pub fn byte_to_utf16_col(line_text: &str, byte_pos: usize) -> usize {
     units
 }
 
-/// Convert byte offset to line and column
+/// Convert a byte offset to a zero-based `(line, column)` LSP position.
+///
+/// The column is counted in **UTF-16 code units**, matching the LSP default
+/// position encoding (and the sibling helpers [`byte_to_utf16_col`] and
+/// [`offset_to_position`]). Non-BMP characters (emoji, supplementary-plane
+/// glyphs) therefore advance the column by 2, not 1. Counting Unicode scalar
+/// values instead would misreport columns to the editor for any line
+/// containing a multi-byte character.
 pub fn byte_to_line_col(source: &str, offset: usize) -> (u32, u32) {
     let mut line = 0;
     let mut col = 0;
@@ -181,7 +188,7 @@ pub fn byte_to_line_col(source: &str, offset: usize) -> (u32, u32) {
             line += 1;
             col = 0;
         } else {
-            col += 1;
+            col += ch.len_utf16() as u32;
         }
     }
 
@@ -602,8 +609,8 @@ pub fn offset_to_position(content: &str, offset: usize) -> Position {
 #[cfg(test)]
 mod tests {
     use super::{
-        arg_starts_in_call_body, arg_starts_top_level, byte_to_utf16_col, decode_text_bytes,
-        escape_markdown_text, extract_module_reference, find_matching_paren,
+        arg_starts_in_call_body, arg_starts_top_level, byte_to_line_col, byte_to_utf16_col,
+        decode_text_bytes, escape_markdown_text, extract_module_reference, find_matching_paren,
         get_text_around_offset, get_text_window_around_offset, offset_to_position,
         position_to_offset, slice_in_range, slice_until_stmt_end, smart_arg_anchor,
     };
@@ -665,6 +672,40 @@ mod tests {
         let offset = position_to_offset(content, pos_after_emoji.line, pos_after_emoji.character);
         assert_eq!(offset, Some(7));
         assert_eq!(offset_to_position(content, 7), pos_after_emoji);
+    }
+
+    #[test]
+    fn byte_to_line_col_counts_non_bmp_as_two_utf16_units() {
+        // 😀 (U+1F600) is 4 UTF-8 bytes and 2 UTF-16 code units. A caret after
+        // it must report column 3 (1 for `a` + 2 for the emoji), not 2.
+        // Counting Unicode scalar values (the pre-fix `col += 1`) would
+        // misreport 2 and shift every subsequent column left by one, corrupting
+        // the workspace-symbol and goto-definition ranges sent to the editor.
+        let source = "a😀z";
+        assert_eq!(byte_to_line_col(source, 0), (0, 0));
+        assert_eq!(byte_to_line_col(source, 1), (0, 1)); // after `a`
+        assert_eq!(byte_to_line_col(source, 5), (0, 3)); // after `a😀`
+        assert_eq!(byte_to_line_col(source, 6), (0, 4)); // after `a😀z`
+    }
+
+    #[test]
+    fn byte_to_line_col_counts_bmp_multibyte_as_one_utf16_unit() {
+        // BMP characters that are multi-byte in UTF-8 (accented Latin, CJK) are
+        // a single UTF-16 code unit, so the column advances by exactly one.
+        let source = "é中x"; // é: 2 UTF-8 bytes, 中: 3 UTF-8 bytes; both 1 UTF-16 unit
+        assert_eq!(byte_to_line_col(source, 0), (0, 0));
+        assert_eq!(byte_to_line_col(source, 2), (0, 1)); // after `é`
+        assert_eq!(byte_to_line_col(source, 5), (0, 2)); // after `é中`
+        assert_eq!(byte_to_line_col(source, 6), (0, 3)); // after `é中x`
+    }
+
+    #[test]
+    fn byte_to_line_col_resets_column_after_newline_past_non_bmp() {
+        // The line counter must still advance and the column reset to zero after
+        // a newline, even when a non-BMP character precedes it on the prior line.
+        let source = "😀\nfoo"; // 😀: 4 bytes, \n: 1 byte
+        assert_eq!(byte_to_line_col(source, 5), (1, 0)); // start of `foo`
+        assert_eq!(byte_to_line_col(source, 6), (1, 1)); // after `f`
     }
 
     #[test]

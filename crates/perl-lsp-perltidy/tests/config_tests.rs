@@ -345,6 +345,64 @@ fn builtin_formatter_multi_closer_line_does_not_over_decrement() {
     assert_eq!(lines[6], "print 3;"); // at level 0, not negative
 }
 
+#[test]
+fn builtin_formatter_ignores_unmatched_leading_closers_for_indentation() {
+    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
+    let formatted = formatter.format("if ($ok) {\n)\nprint 1;\n}\n");
+    assert_eq!(formatted, "if ($ok) {\n    )\n    print 1;\n}\n");
+}
+
+#[test]
+fn builtin_formatter_matches_nested_mixed_delimiters() {
+    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
+    let formatted = formatter.format("foo({[\nbar();\n]})\nprint 1;\n");
+    assert_eq!(formatted, "foo({[\n            bar();\n]})\nprint 1;\n");
+}
+
+#[test]
+fn builtin_formatter_ignores_regex_character_class_delimiters() {
+    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
+    let formatted = formatter.format("if ($x =~ /[[]/) {\nprint 1;\n}\nprint 2;\n");
+    assert_eq!(formatted, "if ($x =~ /[[]/) {\n    print 1;\n}\nprint 2;\n");
+}
+
+#[test]
+fn builtin_formatter_ignores_bare_and_quote_like_regex_delimiters() {
+    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
+    let formatted =
+        formatter.format("if (/[()]/) {\nprint 1;\n}\nif (m{[()]}) {\nprint 2;\n}\nif (qr/[{]/) {\nprint 3;\n}\nprint 4;\n");
+    assert_eq!(
+        formatted,
+        "if (/[()]/) {\n    print 1;\n}\nif (m{[()]}) {\n    print 2;\n}\nif (qr/[{]/) {\n    print 3;\n}\nprint 4;\n"
+    );
+}
+
+#[test]
+fn builtin_formatter_ignores_extended_quote_like_and_replacement_delimiters() {
+    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
+    let formatted = formatter.format(
+        "if (qq{[()]}) {\nprint 1;\n}\nif (qw{[()]}) {\nprint 2;\n}\nif (qx{[()]}) {\nprint 3;\n}\nif ($x =~ s/a/{/) {\nprint 4;\n}\nif ($x =~ tr/a/{/) {\nprint 5;\n}\nprint 6;\n",
+    );
+    assert_eq!(
+        formatted,
+        "if (qq{[()]}) {\n    print 1;\n}\nif (qw{[()]}) {\n    print 2;\n}\nif (qx{[()]}) {\n    print 3;\n}\nif ($x =~ s/a/{/) {\n    print 4;\n}\nif ($x =~ tr/a/{/) {\n    print 5;\n}\nprint 6;\n"
+    );
+}
+
+#[test]
+fn builtin_formatter_ignores_mixed_substitution_delimiters() {
+    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
+    let formatted = formatter.format("if ($x =~ s{foo}/bar/) {\nprint 1;\n}\nprint 2;\n");
+    assert_eq!(formatted, "if ($x =~ s{foo}/bar/) {\n    print 1;\n}\nprint 2;\n");
+}
+
+#[test]
+fn builtin_formatter_carries_multiline_regex_state() {
+    let formatter = BuiltInFormatter::new(PerlTidyConfig::default());
+    let formatted = formatter.format("if (/[\n()]/) {\nprint 1;\n}\nprint 2;\n");
+    assert_eq!(formatted, "if (/[\n    ()]/) {\n    print 1;\n}\nprint 2;\n");
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn with_os_runtime_clamps_zero_timeout() {

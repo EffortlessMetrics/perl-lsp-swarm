@@ -1,6 +1,17 @@
-use crate::PerlLexer;
+use crate::{PerlLexer, limits::MAX_DELIM_NEST};
 
 impl PerlLexer<'_> {
+    #[inline]
+    fn consume_nested_opener(&mut self, depth: &mut usize) -> bool {
+        if *depth >= MAX_DELIM_NEST {
+            return false;
+        }
+
+        *depth += 1;
+        self.advance();
+        true
+    }
+
     /// General-purpose balanced-segment consumer (no quote-boundary recovery).
     ///
     /// For use inside double-quoted string interpolation where the outer `"` must
@@ -23,8 +34,9 @@ impl PerlLexer<'_> {
                     }
                 }
                 c if c == open => {
-                    depth += 1;
-                    self.advance();
+                    if !self.consume_nested_opener(&mut depth) {
+                        return None;
+                    }
                 }
                 c if c == close => {
                     self.advance();
@@ -68,8 +80,9 @@ impl PerlLexer<'_> {
                     return None;
                 }
                 c if c == open => {
-                    depth += 1;
-                    self.advance();
+                    if !self.consume_nested_opener(&mut depth) {
+                        return None;
+                    }
                 }
                 c if c == close => {
                     self.advance();
@@ -89,6 +102,12 @@ impl PerlLexer<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type TestResult = std::result::Result<(), String>;
+
+    fn balanced_input(open: char, close: char, depth: usize) -> String {
+        format!("{}{}", open.to_string().repeat(depth), close.to_string().repeat(depth))
+    }
 
     #[test]
     fn consume_balanced_segment_handles_nested_segments_and_escapes() {
@@ -117,6 +136,90 @@ mod tests {
 
         assert_eq!(end, None);
         assert_eq!(lexer.current_char(), Some('"'));
+    }
+
+    #[test]
+    fn balanced_helpers_accept_exact_depth_limit() -> TestResult {
+        let input = balanced_input('(', ')', MAX_DELIM_NEST);
+        let mut general = PerlLexer::new(&input);
+        let general_end = general.consume_balanced_segment('(', ')');
+        if general_end != Some(input.len()) {
+            return Err(format!("general helper rejected exact depth limit: {general_end:?}"));
+        }
+
+        let string_input = format!("{input}\"");
+        let mut in_string = PerlLexer::new(&string_input);
+        let string_end = in_string.consume_balanced_segment_in_string('(', ')', '"');
+        if string_end != Some(input.len()) {
+            return Err(format!("string helper rejected exact depth limit: {string_end:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn balanced_helpers_reject_one_over_limit_before_advancing() -> TestResult {
+        let input = balanced_input('(', ')', MAX_DELIM_NEST + 1);
+        let mut general = PerlLexer::new(&input);
+        if general.consume_balanced_segment('(', ')').is_some()
+            || general.position != MAX_DELIM_NEST
+        {
+            return Err(format!(
+                "general helper should stop on opener {}, got position {}",
+                MAX_DELIM_NEST + 1,
+                general.position
+            ));
+        }
+
+        let string_input = format!("{input}\"");
+        let mut in_string = PerlLexer::new(&string_input);
+        if in_string.consume_balanced_segment_in_string('(', ')', '"').is_some()
+            || in_string.position != MAX_DELIM_NEST
+        {
+            return Err(format!(
+                "string helper should stop on opener {}, got position {}",
+                MAX_DELIM_NEST + 1,
+                in_string.position
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn escaped_openers_do_not_consume_depth_budget() -> TestResult {
+        let escaped = "\\(".repeat(MAX_DELIM_NEST + 1);
+        let input = format!("({escaped})");
+        let mut lexer = PerlLexer::new(&input);
+        let end = lexer.consume_balanced_segment('(', ')');
+        if end != Some(input.len()) {
+            return Err(format!("escaped openers consumed nesting budget: {end:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn string_terminator_wins_before_depth_limit() -> TestResult {
+        let input = format!("{}\"tail", "(".repeat(MAX_DELIM_NEST));
+        let mut lexer = PerlLexer::new(&input);
+        let end = lexer.consume_balanced_segment_in_string('(', ')', '"');
+        if end.is_some() || lexer.current_char() != Some('"') {
+            return Err(format!(
+                "string helper should preserve terminator recovery boundary, got {end:?} at {}",
+                lexer.position
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn double_quoted_string_recovers_after_depth_rejection() -> TestResult {
+        let source = format!("my $x = \"${}tail\";", "{".repeat(MAX_DELIM_NEST + 1));
+        let mut lexer = PerlLexer::new(&source);
+        let tokens = lexer.collect_tokens();
+        let last = tokens.last().ok_or_else(|| "lexer returned no tokens".to_string())?;
+        if last.token_type != crate::TokenType::EOF {
+            return Err(format!("depth rejection did not recover to EOF: {:?}", last.token_type));
+        }
+        Ok(())
     }
 }
 
