@@ -521,9 +521,10 @@ fn find_identifier_boundary(haystack: &str, needle: &str) -> Option<usize> {
         if before_ok && after_ok {
             return Some(pos);
         }
-        // `needle` starts with an identifier char (ASCII), so `pos + 1` is a
-        // valid UTF-8 boundary; keep scanning for a boundary-aligned match.
-        start = pos + 1;
+        // Advance past this (embedded) match and keep scanning. `after` is a
+        // valid UTF-8 boundary; any overlapping match would also be embedded
+        // (its preceding char is an identifier char), so none is skipped.
+        start = after;
     }
     None
 }
