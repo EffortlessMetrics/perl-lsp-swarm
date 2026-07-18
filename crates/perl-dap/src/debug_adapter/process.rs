@@ -127,7 +127,7 @@ impl DebugAdapter {
         }
 
         if let Some(args) = arguments {
-            self.terminated_emitted.store(false, Ordering::Release);
+            self.begin_session_generation();
             // Store launch arguments for restart support
             *lock_or_recover(&self.last_launch_args, "debug_adapter.last_launch_args") =
                 Some(args.clone());
@@ -560,7 +560,8 @@ impl DebugAdapter {
         let last_exception_message = self.last_exception_message.clone();
         let tcp_session = self.tcp_session.clone();
         let attached_pid = self.attached_pid.clone();
-        let terminated_emitted = self.terminated_emitted.clone();
+        let termination_state = self.termination_state.clone();
+        let session_generation = self.current_session_generation();
 
         thread::spawn(move || {
             // Perl's debugger prompt and evaluation output are emitted on stderr.
@@ -591,7 +592,8 @@ impl DebugAdapter {
                     emit_terminated_event(
                         sender,
                         &seq,
-                        &terminated_emitted,
+                        &termination_state,
+                        Some(session_generation),
                         Some(json!({"reason": "no_debugger_stream"})),
                     );
                 }
@@ -620,7 +622,8 @@ impl DebugAdapter {
                             emit_terminated_event(
                                 sender,
                                 &seq,
-                                &terminated_emitted,
+                                &termination_state,
+                                Some(session_generation),
                                 Some(json!({"reason": "debugger_eof"})),
                             );
                         }
@@ -1030,7 +1033,7 @@ impl DebugAdapter {
     ) -> DapMessage {
         // Parse attach arguments
         if let Some(args) = arguments {
-            self.terminated_emitted.store(false, Ordering::Release);
+            self.begin_session_generation();
             let process_id =
                 args.get("processId").and_then(|p| p.as_u64()).map(Self::u64_to_u32_saturating);
 
@@ -1232,6 +1235,8 @@ impl DebugAdapter {
                         // Start event handler thread for TCP events
                         let seq_counter = self.seq.clone();
                         let event_sender = self.event_sender.clone();
+                        let termination_state = self.termination_state.clone();
+                        let session_generation = self.current_session_generation();
                         thread::spawn(move || {
                             while let Ok(event) = rx.recv() {
                                 match event {
@@ -1286,17 +1291,13 @@ impl DebugAdapter {
                                     }
                                     DapEvent::Terminated { reason } => {
                                         if let Some(ref sender) = event_sender {
-                                            let mut seq_lock = seq_counter
-                                                .lock()
-                                                .unwrap_or_else(|e| e.into_inner());
-                                            *seq_lock += 1;
-                                            let _ = sender.send(DapMessage::Event {
-                                                seq: *seq_lock,
-                                                event: "terminated".to_string(),
-                                                body: Some(json!({
-                                                    "reason": reason
-                                                })),
-                                            });
+                                            emit_terminated_event(
+                                                sender,
+                                                &seq_counter,
+                                                &termination_state,
+                                                Some(session_generation),
+                                                Some(json!({"reason": reason})),
+                                            );
                                         }
                                     }
                                     DapEvent::Error { message } => {
@@ -1470,7 +1471,7 @@ impl DebugAdapter {
             arguments.and_then(|v| serde_json::from_value(v).ok());
 
         if let Some(ref sender) = self.event_sender {
-            emit_terminated_event(sender, &self.seq, &self.terminated_emitted, None);
+            emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
         }
         self.clear_active_session_state();
 
@@ -1498,7 +1499,13 @@ impl DebugAdapter {
 
         let terminated_body = restart.map(|restart| json!({ "restart": restart }));
         if let Some(ref sender) = self.event_sender {
-            emit_terminated_event(sender, &self.seq, &self.terminated_emitted, terminated_body);
+            emit_terminated_event(
+                sender,
+                &self.seq,
+                &self.termination_state,
+                None,
+                terminated_body,
+            );
         }
         self.clear_active_session_state();
 
@@ -1808,12 +1815,17 @@ impl DebugAdapter {
 fn emit_terminated_event(
     sender: &Sender<DapMessage>,
     seq: &Mutex<i64>,
-    terminated_emitted: &AtomicBool,
+    termination_state: &Mutex<TerminationState>,
+    expected_generation: Option<u64>,
     body: Option<Value>,
 ) -> bool {
-    if terminated_emitted.swap(true, Ordering::AcqRel) {
+    let mut state = lock_or_recover(termination_state, "debug_adapter.termination_state");
+    if expected_generation.is_some_and(|generation| generation != state.generation) || state.emitted
+    {
         return false;
     }
+    state.emitted = true;
+    drop(state);
     emit_event_safe(sender, seq, "terminated", body)
 }
 
@@ -1823,7 +1835,6 @@ mod tests {
         DebugAdapter, detect_perl_info, emit_terminated_event, format_perl_spawn_error,
         is_valid_perl_interpreter,
     };
-    use std::sync::atomic::AtomicBool;
     use std::sync::mpsc::{TryRecvError, channel};
     use std::sync::{Arc, Mutex};
 
@@ -1831,19 +1842,21 @@ mod tests {
     fn competing_termination_sources_emit_one_structured_event() -> Result<(), String> {
         let (sender, receiver) = channel();
         let seq = Arc::new(Mutex::new(0));
-        let terminated_emitted = Arc::new(AtomicBool::new(false));
+        let termination_state =
+            Arc::new(Mutex::new(super::TerminationState { generation: 1, emitted: false }));
         let first_sender = sender.clone();
         let first_seq = seq.clone();
-        let first_guard = terminated_emitted.clone();
+        let first_guard = termination_state.clone();
         let first = std::thread::spawn(move || {
             emit_terminated_event(
                 &first_sender,
                 &first_seq,
                 &first_guard,
+                Some(1),
                 Some(serde_json::json!({"reason": "debugger_eof"})),
             )
         });
-        let second = emit_terminated_event(&sender, &seq, &terminated_emitted, None);
+        let second = emit_terminated_event(&sender, &seq, &termination_state, None, None);
         let first = first.join().map_err(|_| "termination worker panicked".to_string())?;
         if first == second {
             return Err(format!(
@@ -1870,6 +1883,38 @@ mod tests {
             Err(error) => Err(format!("termination channel error: {error}")),
             Ok(other) => Err(format!("duplicate termination event: {other:?}")),
         }
+    }
+
+    #[test]
+    fn stale_session_generation_cannot_emit_termination() -> Result<(), String> {
+        let (sender, receiver) = channel();
+        let seq = Arc::new(Mutex::new(0));
+        let termination_state =
+            Mutex::new(super::TerminationState { generation: 2, emitted: false });
+
+        if emit_terminated_event(
+            &sender,
+            &seq,
+            &termination_state,
+            Some(1),
+            Some(serde_json::json!({"reason": "stale_reader"})),
+        ) {
+            return Err("stale reader unexpectedly emitted termination".to_string());
+        }
+        if receiver.try_recv().is_ok() {
+            return Err("stale reader sent a termination event".to_string());
+        }
+
+        if !emit_terminated_event(
+            &sender,
+            &seq,
+            &termination_state,
+            Some(2),
+            Some(serde_json::json!({"reason": "current_session"})),
+        ) {
+            return Err("current session failed to emit termination".to_string());
+        }
+        Ok(())
     }
 
     /// An explicit, non-empty interpreter is honored verbatim — from the

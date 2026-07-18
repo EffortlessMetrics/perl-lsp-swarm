@@ -75,6 +75,12 @@ use patterns::*;
 use safe_eval::validate_safe_expression;
 use sync_utils::{emit_event_safe, lock_or_recover};
 
+#[derive(Debug, Default)]
+struct TerminationState {
+    generation: u64,
+    emitted: bool,
+}
+
 /// Check if the match is an escape sequence (preceded by backslash)
 fn is_escape_sequence(s: &str, match_start: usize) -> bool {
     if match_start == 0 {
@@ -99,8 +105,8 @@ pub struct DebugAdapter {
     thread_counter: Arc<Mutex<i32>>,
     /// Output channel for sending events to client
     event_sender: Option<Sender<DapMessage>>,
-    /// Ensures competing session shutdown paths emit one terminal event.
-    terminated_emitted: Arc<AtomicBool>,
+    /// Ensures competing session shutdown paths emit one terminal event per session.
+    termination_state: Arc<Mutex<TerminationState>>,
     /// Bounded history of debugger output for stack/variable/evaluate parsing
     recent_output: Arc<Mutex<RecentOutputBuffer>>,
     /// Function breakpoints (`setFunctionBreakpoints`) stored with REPLACE semantics
@@ -202,7 +208,7 @@ impl DebugAdapter {
             breakpoints: BreakpointStore::new(),
             thread_counter: Arc::new(Mutex::new(0)),
             event_sender: None,
-            terminated_emitted: Arc::new(AtomicBool::new(false)),
+            termination_state: Arc::new(Mutex::new(TerminationState::default())),
             recent_output: Arc::new(Mutex::new(RecentOutputBuffer::new())),
             function_breakpoints: Arc::new(Mutex::new(Vec::new())),
             next_function_breakpoint_id: Arc::new(Mutex::new(1)),
@@ -224,6 +230,19 @@ impl DebugAdapter {
     /// Set the event sender (primarily for testing)
     pub fn set_event_sender(&mut self, sender: Sender<DapMessage>) {
         self.event_sender = Some(sender);
+    }
+
+    /// Start a new session generation and reset its terminal-event gate.
+    pub(super) fn begin_session_generation(&self) -> u64 {
+        let mut state = lock_or_recover(&self.termination_state, "debug_adapter.termination_state");
+        state.generation = state.generation.saturating_add(1);
+        state.emitted = false;
+        state.generation
+    }
+
+    /// Return the current session generation for event-handler threads.
+    pub(super) fn current_session_generation(&self) -> u64 {
+        lock_or_recover(&self.termination_state, "debug_adapter.termination_state").generation
     }
 
     /// Validate a client-provided source path against the workspace root.

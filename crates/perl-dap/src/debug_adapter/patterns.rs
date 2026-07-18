@@ -41,7 +41,7 @@ pub(super) fn context_re() -> Option<&'static Regex> {
             // The path-capturing groups allow a `:` only when it is immediately followed
             // by a non-digit, non-space character — matching `C:\path` but not the `:42`
             // line-number separator.
-            Regex::new(r"^(?:(?P<func>[A-Za-z_][\w:]*+?)(?:::)?(?:\((?P<file>[^:)\s]+(?::[^:)\d\s][^:)\s]*)*):(?P<line>\d+)\):?|__ANON__)|main::(?:\()?(?P<file2>[^:)\s]+(?::[^:)\d\s][^:)\s]*)*)(?:\))?:(?P<line2>\d+):?)")
+            Regex::new(r"^(?:(?P<func>[A-Za-z_][\w:]*?)(?:::)?(?:\((?P<file>[^:)\s]+(?::[^:)\d\s][^:)\s]*)*):(?P<line>\d+)\):?|__ANON__)|main::(?:\()?(?P<file2>[^:)\s]+(?::[^:)\d\s][^:)\s]*)*)(?:\))?:(?P<line2>\d+):?)")
         })
         .as_ref()
         .ok()
@@ -54,7 +54,7 @@ pub(super) fn prompt_re() -> Option<&'static Regex> {
 pub(super) fn stack_frame_re() -> Option<&'static Regex> {
     STACK_FRAME_RE
         .get_or_init(|| {
-            Regex::new(r"^\s*#?\s*(?P<frame>\d+)?\s+(?P<func>[A-Za-z_][\w:]*+?)(?:\s+called)?\s+at\s+(?P<file>.+?)\s+line\s+(?P<line>\d+)")
+            Regex::new(r"^\s*#?\s*(?P<frame>\d+)?\s+(?P<func>[A-Za-z_][\w:]*?)(?:\s+called)?\s+at\s+(?P<file>.+?)\s+line\s+(?P<line>\d+)")
         })
         .as_ref()
         .ok()

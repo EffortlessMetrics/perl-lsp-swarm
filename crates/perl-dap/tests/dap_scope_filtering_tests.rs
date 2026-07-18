@@ -644,11 +644,14 @@ fn test_e2e_named_sub_breakpoint_excludes_outer_and_global_vars() -> TestResult 
         );
     }
 
-    // Scope-type integrity: the outer `my $outer_var` and `our $pkg_counter` may or may
-    // not appear depending on whether the live debugger surfaces outer-scope vars. We verify
-    // the no-`::` invariant above, which covers package contamination.
-    // The dedicated outer-lexical-leak test below (test_e2e_outer_lexical_does_not_leak_into_inner_sub_locals)
-    // makes the outer-var assertion when the debugger returns real variable names.
+    assert!(
+        !local_names.contains("$outer_var"),
+        "outer-scope lexical '$outer_var' must NOT appear in named-sub Locals: {local_names:?}"
+    );
+    assert!(
+        !local_names.contains("$pkg_counter"),
+        "package variable '$pkg_counter' must NOT appear in named-sub Locals: {local_names:?}"
+    );
 
     session.disconnect()?;
     Ok(())
