@@ -16,6 +16,10 @@ use toml::Value;
 struct ReleaseSurface {
     version: String,
     published_crate_count: usize,
+    shipped_date: String,
+    prior_version: String,
+    prior_shipped_date: String,
+    next_version: String,
 }
 
 /// Synchronize active release docs from workspace-derived values.
@@ -116,7 +120,57 @@ fn collect_release_surface(root: &Path) -> Result<ReleaseSurface> {
         bail!("publish allowlist is empty");
     }
 
-    Ok(ReleaseSurface { version, published_crate_count })
+    let (shipped_date, prior_version, prior_shipped_date) = collect_release_dates(root, &version)?;
+    let next_version = next_minor_version(&version)?;
+
+    Ok(ReleaseSurface {
+        version,
+        published_crate_count,
+        shipped_date,
+        prior_version,
+        prior_shipped_date,
+        next_version,
+    })
+}
+
+fn collect_release_dates(root: &Path, version: &str) -> Result<(String, String, String)> {
+    let changelog_path = root.join("CHANGELOG.md");
+    let changelog = fs::read_to_string(&changelog_path)
+        .with_context(|| format!("reading {}", changelog_path.display()))?;
+    let mut releases = changelog.lines().filter_map(parse_changelog_release);
+    let Some((current_version, shipped_date)) =
+        releases.find(|(candidate, _)| *candidate == version)
+    else {
+        bail!("CHANGELOG.md: release heading for v{version} not found");
+    };
+    let Some((prior_version, prior_shipped_date)) = releases.next() else {
+        bail!("CHANGELOG.md: prior release heading after v{current_version} not found");
+    };
+    Ok((shipped_date.to_string(), prior_version.to_string(), prior_shipped_date.to_string()))
+}
+
+fn parse_changelog_release(line: &str) -> Option<(&str, &str)> {
+    let release = line.strip_prefix("## [")?;
+    release.split_once("] - ")
+}
+
+fn next_minor_version(version: &str) -> Result<String> {
+    let mut parts = version.split('.');
+    let major = parts.next().ok_or_else(|| color_eyre::eyre::eyre!("invalid version {version}"))?;
+    let minor = parts
+        .next()
+        .ok_or_else(|| color_eyre::eyre::eyre!("invalid version {version}"))?
+        .parse::<u64>()
+        .with_context(|| format!("invalid minor version in {version}"))?;
+    let _patch =
+        parts.next().ok_or_else(|| color_eyre::eyre::eyre!("invalid version {version}"))?;
+    if parts.next().is_some() {
+        bail!("invalid version {version}");
+    }
+    let next_minor = minor
+        .checked_add(1)
+        .ok_or_else(|| color_eyre::eyre::eyre!("minor version overflow in {version}"))?;
+    Ok(format!("{major}.{next_minor}.0"))
 }
 
 fn sync_readme(content: &str, surface: &ReleaseSurface) -> Result<String> {
@@ -164,8 +218,11 @@ fn sync_current_status(content: &str, surface: &ReleaseSurface) -> Result<String
             version_seen = true;
         } else if line.starts_with("| **Current release train** | ") {
             lines.push(format!(
-                "| **Current release train** | `v{}` latest public beta | [docs/releases/v{}.md](../releases/v{}.md) |",
-                surface.version, surface.version, surface.version
+                "| **Current release train** | `v{}` latest public beta ({}); prior `v{}` ({}) | [CHANGELOG.md](../../CHANGELOG.md) |",
+                surface.version,
+                surface.shipped_date,
+                surface.prior_version,
+                surface.prior_shipped_date
             ));
             train_seen = true;
         } else if line.starts_with("| **Published crate surface** | ") {
@@ -176,8 +233,8 @@ fn sync_current_status(content: &str, surface: &ReleaseSurface) -> Result<String
             count_seen = true;
         } else if line.starts_with("| **Active milestone** | `") {
             lines.push(format!(
-                "| **Active milestone** | `v{}` shipped public beta | [status/index.md](status/index.md) |",
-                surface.version
+                "| **Active milestone** | `v{}` shipped public beta; `v{}` next public-beta train | [status/index.md](status/index.md) |",
+                surface.version, surface.next_version
             ));
             milestone_seen = true;
         } else {
@@ -364,8 +421,8 @@ fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String>
     for line in content.lines() {
         if line.starts_with("**Current release train**: `v") {
             lines.push(format!(
-                "**Current release train**: `v{}` — shipped public beta",
-                surface.version
+                "**Current release train**: `v{}` — shipped {} as public beta",
+                surface.version, surface.shipped_date
             ));
             train_seen = true;
         } else if line.starts_with("**Workspace version line**: `v") {
@@ -411,4 +468,64 @@ fn restore_trailing_newline(original: &str, lines: &[String]) -> String {
         updated.push('\n');
     }
     updated
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn release_surface() -> ReleaseSurface {
+        ReleaseSurface {
+            version: "0.17.0".to_string(),
+            published_crate_count: 32,
+            shipped_date: "2026-06-28".to_string(),
+            prior_version: "0.16.0".to_string(),
+            prior_shipped_date: "2026-06-06".to_string(),
+            next_version: "0.18.0".to_string(),
+        }
+    }
+
+    #[test]
+    fn sync_current_status_preserves_release_train_facts_on_first_and_second_write() -> Result<()> {
+        let input = "| **Workspace version line** | `v0.16.0` | source |\n\
+| **Current release train** | legacy | source |\n\
+| **Published crate surface** | 31 crates | source |\n\
+| **Active milestone** | `v0.17.0` preparation | source |\n";
+        let expected = "| **Workspace version line** | `v0.17.0` | [`Cargo.toml`](../../Cargo.toml) |\n\
+| **Current release train** | `v0.17.0` latest public beta (2026-06-28); prior `v0.16.0` (2026-06-06) | [CHANGELOG.md](../../CHANGELOG.md) |\n\
+| **Published crate surface** | 32 crates | [`[workspace.metadata.publish.allow]`](../../Cargo.toml) |\n\
+| **Active milestone** | `v0.17.0` shipped public beta; `v0.18.0` next public-beta train | [status/index.md](status/index.md) |\n";
+
+        let first = sync_current_status(input, &release_surface())?;
+        if first != expected {
+            bail!("first current-status sync did not retain exact release train facts");
+        }
+        let second = sync_current_status(&first, &release_surface())?;
+        if second != first {
+            bail!("second current-status sync was not idempotent");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_release_notes_preserves_shipped_date_on_first_and_second_write() -> Result<()> {
+        let input = "**Current release train**: `v0.16.0` — release preparation\n\
+**Workspace version line**: `v0.16.0`\n\
+**Published crate surface**: 31 crates\n\
+- Remaining work is operational: finish `v0.16.0` prep verification, then publish and record final channel receipts\n";
+        let expected = "**Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta\n\
+**Workspace version line**: `v0.17.0`\n\
+**Published crate surface**: 32 crates\n\
+- Remaining work is operational: finish `v0.17.0` prep verification, then publish and record final channel receipts\n";
+
+        let first = sync_release_notes(input, &release_surface())?;
+        if first != expected {
+            bail!("first release-notes sync did not retain the exact shipped date");
+        }
+        let second = sync_release_notes(&first, &release_surface())?;
+        if second != first {
+            bail!("second release-notes sync was not idempotent");
+        }
+        Ok(())
+    }
 }
