@@ -40,7 +40,7 @@ perl-lsp is a Language Server Protocol (LSP) implementation for Perl 5, offering
 
 **Latest Release**: v0.17.0
 **API Stability**: See [Stability Statement](./reference/stability.md)
-**Current Milestone**: v0.17.0 (Public Alpha)
+**Current Milestone**: v0.17.0 (Public Beta)
 
 The project is actively developed with a focus on correctness, comprehensive testing, and thorough quality assurance. A formal Stability Contract is targeted for v0.15.0.
 

@@ -69,7 +69,7 @@ The README is a front door, not the metric source of truth. Current release post
 - Install: [docs/how-to/INSTALLATION.md](docs/how-to/INSTALLATION.md)
 - Editor setup: [docs/how-to/EDITOR_SETUP.md](docs/how-to/EDITOR_SETUP.md)
 
-Current public install artifacts are public alpha. Verify the binary before
+Current public install artifacts are public beta. Verify the binary before
 wiring it into shared editor or CI configuration.
 
 The VS Code extension downloads the matching `perllsp` binary automatically. Other editors use the `perllsp --stdio` server command after installing a release binary.
