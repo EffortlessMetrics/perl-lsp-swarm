@@ -167,6 +167,8 @@ pub mod printf_format;
 /// Same-file Moo/Moose role conflict detection (PL303)
 pub mod role_conflicts;
 pub mod security;
+/// Source-filter module warning (PL702)
+pub mod source_filter;
 pub mod strict_warnings;
 /// Unreachable code detection (PL406)
 pub mod unreachable_code;
