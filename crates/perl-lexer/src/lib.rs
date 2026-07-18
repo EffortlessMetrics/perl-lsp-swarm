@@ -3267,19 +3267,43 @@ impl<'a> PerlLexer<'a> {
         }
 
         let remaining = &self.input[position..];
-        let line = remaining.split_once('\n').map_or(remaining, |(line, _)| line);
         for keyword in ["my", "our", "state", "local"] {
             if let Some(after) = remaining.strip_prefix(keyword)
                 && after.starts_with(char::is_whitespace)
                 && after.trim_start().starts_with(['$', '@', '%', '('])
-                && line.contains(';')
+                && self.qw_statement_has_semicolon(position)
             {
                 return true;
             }
         }
         remaining
             .strip_prefix("print")
-            .is_some_and(|after| after.starts_with(char::is_whitespace) && line.contains(';'))
+            .is_some_and(|after| {
+                after.starts_with(char::is_whitespace)
+                    && self.qw_statement_has_semicolon(position)
+            })
+    }
+
+    fn qw_statement_has_semicolon(&self, position: usize) -> bool {
+        let source = &self.input[position..];
+        let mut lexer = Self::without_qw_recovery(source);
+        let mut first = true;
+        while let Some(token) = lexer.next_token() {
+            if token.token_type == TokenType::Semicolon {
+                return true;
+            }
+            if !first {
+                let prefix = &source[..token.start];
+                let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
+                if prefix[line_start..].chars().all(char::is_whitespace)
+                    && matches!(token.text.as_ref(), "my" | "our" | "state" | "local" | "print")
+                {
+                    return false;
+                }
+            }
+            first = false;
+        }
+        false
     }
 
     /// Parse a quote operator after we've seen the delimiter

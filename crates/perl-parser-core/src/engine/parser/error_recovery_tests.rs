@@ -563,6 +563,20 @@ fn test_unclosed_qw_ignores_close_in_following_string() -> Result<(), String> {
 }
 
 #[test]
+fn test_unclosed_qw_recovers_before_declaration_with_multiline_string() -> Result<(), String> {
+    let code = "my @items = qw(word1 word2\nmy $x = \"multi\nline\";\nprint $x;";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("parser did not recover: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    if statements.len() != 3 || parser.errors().is_empty() {
+        return Err(format!("multiline string disabled qw recovery: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
 fn test_unclosed_qw_ignores_close_in_following_comment() -> Result<(), String> {
     let code = "my @items = qw(word1 word2\nmy $x = 1; # not a qw close )\nprint $x;";
     let mut parser = Parser::new(code);
