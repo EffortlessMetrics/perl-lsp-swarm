@@ -3211,7 +3211,15 @@ impl<'a> PerlLexer<'a> {
         for (offset, ch) in self.input[self.position..].char_indices() {
             let position = self.position.saturating_add(offset);
             if self.qw_statement_boundary_at(position) {
-                return false;
+                let line = self.input[position..]
+                    .split_once('\n')
+                    .map_or(&self.input[position..], |(line, _)| line);
+                let closer_before_terminator = line.find(close).is_some_and(|closer| {
+                    line.find(';').is_some_and(|terminator| closer < terminator)
+                });
+                if !line.starts_with("print") || !closer_before_terminator {
+                    return false;
+                }
             }
             if escaped {
                 escaped = false;
@@ -3244,6 +3252,10 @@ impl<'a> PerlLexer<'a> {
         }
 
         let remaining = &self.input[position..];
+        let line = remaining.split_once('\n').map_or(remaining, |(line, _)| line);
+        if !line.contains(';') {
+            return false;
+        }
         for keyword in ["my", "our", "state", "local"] {
             if let Some(after) = remaining.strip_prefix(keyword)
                 && after.starts_with(char::is_whitespace)
@@ -3252,9 +3264,16 @@ impl<'a> PerlLexer<'a> {
                 return true;
             }
         }
+        for keyword in ["sub", "package", "use", "require", "BEGIN", "END"] {
+            if remaining.strip_prefix(keyword).is_some_and(|after| {
+                after.chars().next().is_some_and(char::is_whitespace) || after.starts_with('{')
+            }) {
+                return true;
+            }
+        }
         remaining.strip_prefix("print").is_some_and(|after| {
             after.starts_with(char::is_whitespace)
-                && !after.split_once('\n').map_or(after, |(line, _)| line).trim().is_empty()
+                && !line.strip_prefix("print").unwrap_or_default().trim().is_empty()
         })
     }
 

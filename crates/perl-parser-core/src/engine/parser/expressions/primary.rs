@@ -281,12 +281,15 @@ impl<'a> Parser<'a> {
                                 Some('<') => TokenKind::Greater,
                                 _ => TokenKind::RightParen,
                             };
-                            let followed_by_print_statement = token.text.ends_with('\n')
+                            let followed_by_identifier_statement = token.text.ends_with('\n')
                                 && self.tokens.peek().is_ok_and(|next| {
                                     next.kind == TokenKind::Identifier
-                                        && next.text.as_ref() == "print"
+                                        && matches!(
+                                            next.text.as_ref(),
+                                            "print" | "require" | "BEGIN" | "END"
+                                        )
                                 });
-                            if followed_by_print_statement {
+                            if followed_by_identifier_statement {
                                 self.record_inserted_closer(close_kind);
                             } else {
                                 self.expect_closing_delimiter(close_kind)?;
