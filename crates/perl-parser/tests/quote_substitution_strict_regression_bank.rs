@@ -40,6 +40,12 @@ fn substitution_regression_bank_strict_errors() {
         // is an invalid delimiter, not merely a missing replacement (mirrors
         // `tr{abc}xyz` -> InvalidDelimiter('x')).
         ("s{foo}bar", SubstitutionError::InvalidDelimiter('b')),
+        // Unicode-alphanumeric delimiters are rejected too: the predicate uses full
+        // `is_alphanumeric()` to match the lexer's own delimiter gate (which never
+        // tokenizes `sα...`/`s{..}α..` as a substitution), keeping the strict parser's
+        // notion of a valid delimiter aligned with the lexer.
+        ("sαaαbα", SubstitutionError::InvalidDelimiter('α')),
+        ("s{foo}αbarα", SubstitutionError::InvalidDelimiter('α')),
         ("s/foo/bar", SubstitutionError::MissingClosingDelimiter),
         ("s{foo}{bar", SubstitutionError::MissingClosingDelimiter),
         ("s", SubstitutionError::MissingDelimiter),
