@@ -242,11 +242,10 @@ fn hir_use_lib_path(path: String) -> Option<UseLibPath> {
 
     for prefix in FINDBIN_PREFIXES {
         if let Some(rest) = path.strip_prefix(prefix) {
-            if !prefix.ends_with('}')
-                && rest
-                    .chars()
-                    .next()
-                    .is_some_and(|character| character.is_alphanumeric() || character == '_')
+            if rest
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_alphanumeric() || character == '_')
             {
                 continue;
             }
@@ -270,7 +269,7 @@ fn decode_hir_quote_like_path(path: &str) -> Option<String> {
     };
 
     let delimiter = rest.chars().next()?;
-    if !matches!(delimiter, '(' | '[' | '{' | '<' | '/' | '!' | ':' | ';' | '|') {
+    if delimiter.is_alphanumeric() || delimiter.is_whitespace() {
         return Some(path.to_string());
     }
     let closing = match delimiter {
@@ -281,7 +280,34 @@ fn decode_hir_quote_like_path(path: &str) -> Option<String> {
         delimiter => delimiter,
     };
     let body = &rest[delimiter.len_utf8()..];
-    let end = body.find(closing)?;
+    let paired = delimiter != closing;
+    let mut depth = usize::from(paired);
+    let mut escaped = false;
+    let mut end = None;
+    for (index, character) in body.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' {
+            escaped = true;
+            continue;
+        }
+        if paired && character == delimiter {
+            depth += 1;
+        } else if character == closing {
+            if !paired {
+                end = Some(index);
+                break;
+            }
+            depth -= 1;
+            if depth == 0 {
+                end = Some(index);
+                break;
+            }
+        }
+    }
+    let end = end?;
     let suffix = &body[end + closing.len_utf8()..];
     if !suffix.is_empty() {
         return None;
@@ -992,7 +1018,13 @@ mod tests {
 
         assert_eq!(paths, vec!["scripts/lib"]);
         assert_eq!(hir_use_lib_paths("use lib q{local};\n", &workspace, None), vec!["local"]);
+        assert_eq!(
+            hir_use_lib_paths("use lib q{local{nested}/lib};\n", &workspace, None),
+            vec!["local{nested}/lib"]
+        );
         assert!(hir_use_lib_path("$BinDir/lib".to_string()).is_none());
+        assert!(hir_use_lib_path("$FindBin::BinDir/lib".to_string()).is_none());
+        assert!(hir_use_lib_path("${Bin}Dir/lib".to_string()).is_none());
         assert!(hir_use_lib_path("@dirs".to_string()).is_none());
         Ok(())
     }

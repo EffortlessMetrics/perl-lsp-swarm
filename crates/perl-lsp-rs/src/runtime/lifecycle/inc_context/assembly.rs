@@ -22,15 +22,18 @@ pub(super) fn lexical_paths(
         tracing::trace!("Effective @INC context failed to resolve doc_uri: {:?}", doc_uri);
     }
 
-    let mut paths = if let Some(offset) = doc_offset {
+    let source_paths = if let Some(offset) = doc_offset {
         resolve_use_lib_paths_from_source_at_offset(text, offset, root, file_dir.as_deref())
     } else {
         resolve_use_lib_paths_from_source(text, root, file_dir.as_deref())
     };
 
-    if paths.is_empty() {
-        paths =
-            server.cached_hir_use_lib_paths(doc_uri, text, root, file_dir.as_deref(), doc_offset);
+    let hir_paths =
+        server.cached_hir_use_lib_paths(doc_uri, text, root, file_dir.as_deref(), doc_offset);
+    let mut paths = hir_paths;
+    for path in source_paths.into_iter().rev() {
+        paths.retain(|existing| existing != &path);
+        paths.insert(0, path);
     }
 
     paths

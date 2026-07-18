@@ -282,6 +282,43 @@ mod tests {
     }
 
     #[test]
+    fn effective_inc_context_merges_hir_roots_with_source_roots() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let script_path = workspace.join("script.pl");
+        std::fs::create_dir_all(&workspace)?;
+
+        let workspace_uri = file_uri(&workspace)?;
+        let script_uri = file_uri(&script_path)?;
+        let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+        config.use_system_inc = false;
+        config.use_perl5lib = false;
+
+        let server = LspServer::new();
+        *server.workspace_folders.lock() = vec![
+            WorkspaceFolderState::new(workspace_uri)
+                .with_path(workspace.clone())
+                .with_effective_workspace_config(config),
+        ];
+        *server.root_path.lock() = Some(workspace);
+
+        let source = "BEGIN { use lib 'hir-only'; }\nuse lib 'source';\nuse Recovered;\n";
+        let offset = source.rfind("use Recovered").ok_or("offset not found")?;
+        let context = server
+            .effective_inc_context_for_doc(Some(&script_uri), Some(source), Some(offset))
+            .ok_or("expected effective @INC context")?;
+        let lexical_paths = context
+            .effective_roots
+            .iter()
+            .filter(|root| root.kind == IncRootKind::FileLocalLexical)
+            .map(|root| root.path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(lexical_paths, vec!["source", "hir-only"]);
+        Ok(())
+    }
+
+    #[test]
     fn effective_inc_context_returns_none_without_root() {
         let server = LspServer::new();
         assert!(server.effective_inc_context_for_doc(None, None, None).is_none());
