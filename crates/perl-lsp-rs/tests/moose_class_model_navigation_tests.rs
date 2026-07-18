@@ -515,9 +515,7 @@ mod moose_class_model_navigation_tests {
         for (needle, target_line) in [("save", 8), ("save", 13), ("save", 18)] {
             let resp = hover_at(code, uri, needle, target_line)?;
             let content = semantic::hover_content(&resp).ok_or_else(|| {
-                format!(
-                    "Expected hover content for modifier declaration on line {target_line}"
-                )
+                format!("Expected hover content for modifier declaration on line {target_line}")
             })?;
             assert!(
                 !content.contains("**Subroutine**"),
