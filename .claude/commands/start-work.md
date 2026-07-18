@@ -391,7 +391,7 @@ still runs" below), but not a dedicated disk-capacity check; that gap is
 acceptable for mechanical work's narrow scope and is not addressed by this
 PR.
 
-## Step 6c: Resolve to RESUME / REUSE / STOP / BLOCKED / ADMIT (#3957 W2)
+## Step 6c: Resolve to RESUME / REUSE / STOP / BLOCKED / ADMIT / NOT_PROVEN (#3957 W2)
 
 Skipped under `--mechanical`, alongside Step 6b (see "What still runs" in
 the Mechanical fast path section below) — there is no `impl/<issue#>-<slug>`
@@ -669,8 +669,9 @@ On success, print the settled packet — for the full path: issue #, plan
 revision, BUILD verdict comment link, collision check result, base SHA, the
 Step 6b writer-admission verdict (with any advisory-class `BLOCK`/
 `NOT_PROVEN` reasons noted — STOP-class `BLOCK`s already halted the run
-above), and Step 6c's resolution (`RESUME`/`REUSE`/`ADMIT`, naming the
-resumed SHA or reused path when applicable); for the mechanical path: the
+above), and Step 6c's resolution (`RESUME`/`REUSE`/`ADMIT`/`NOT_PROVEN`, naming
+the resumed SHA or reused path when applicable, or the remote-branch-lookup
+error text for `NOT_PROVEN`); for the mechanical path: the
 five recorded fields, collision check result, base SHA, and issue # if one
 was given — and the branch/worktree handed off to (the mechanical path never
 reaches Step 6c, so it has no RESUME/REUSE/ADMIT outcome to report — see
