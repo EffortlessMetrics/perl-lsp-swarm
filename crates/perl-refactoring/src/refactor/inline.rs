@@ -593,10 +593,39 @@ fn body_calls_self(body: &str, sub_name: &str) -> bool {
 // Argument extraction
 // ---------------------------------------------------------------------------
 
+/// Find `needle` in `haystack` at an identifier word boundary — i.e. not as a
+/// substring of a larger identifier. Returns the byte offset of the first such
+/// occurrence, or `None` if `needle` only appears embedded in another word
+/// (e.g. `add` inside `add_count`). Prevents a call to `add_count` from being
+/// misread as a call to `add`.
+fn find_identifier_boundary(haystack: &str, needle: &str) -> Option<usize> {
+    let mut start = 0;
+    while let Some(rel) = haystack[start..].find(needle) {
+        let pos = start + rel;
+        let before_ok =
+            haystack[..pos].chars().next_back().is_none_or(|c| !c.is_alphanumeric() && c != '_');
+        let after = pos + needle.len();
+        let after_ok =
+            haystack[after..].chars().next().is_none_or(|c| !c.is_alphanumeric() && c != '_');
+        if before_ok && after_ok {
+            return Some(pos);
+        }
+        // `needle` starts with an identifier char (ASCII), so `pos + 1` is a
+        // valid UTF-8 boundary; keep scanning for a boundary-aligned match.
+        start = pos + 1;
+    }
+    None
+}
+
 /// Extract the argument list from a call expression like `foo(1, 2, "bar")`.
 fn extract_call_args(call_expr: &str, sub_name: &str) -> Result<Vec<String>, InlineError> {
-    let sub_pos = call_expr.find(sub_name).ok_or_else(|| InlineError::CallSiteParseFailed {
-        message: format!("call expression does not contain sub name '{}'", sub_name),
+    // Match the sub name only at an identifier boundary: `add` must not match
+    // the `add` inside `add_count` (#3914), which previously caused a silent
+    // empty-argument extraction and a wrong inlining.
+    let sub_pos = find_identifier_boundary(call_expr, sub_name).ok_or_else(|| {
+        InlineError::CallSiteParseFailed {
+            message: format!("call expression does not contain a call to sub name '{}'", sub_name),
+        }
     })?;
 
     let after_name_pos = sub_pos + sub_name.len();
@@ -795,6 +824,23 @@ mod tests {
         assert!(
             !result.contains("$$bar"),
             "replacement must not produce unbraced $$bar dereference; got: {result}"
+        );
+    }
+
+    #[test]
+    fn extract_call_args_rejects_substring_name_collision() {
+        use super::{InlineError, extract_call_args};
+        // #3914: `add` embedded in `add_count` must not be treated as a call to
+        // `add` — before the word-boundary fix this silently returned an empty
+        // argument list instead of erroring.
+        assert!(matches!(
+            extract_call_args("add_count(1, 2)", "add"),
+            Err(InlineError::CallSiteParseFailed { .. })
+        ));
+        // A boundary-aligned call still extracts its arguments.
+        assert_eq!(
+            extract_call_args("add(1, 2)", "add").ok(),
+            Some(vec!["1".to_string(), "2".to_string()])
         );
     }
 }
