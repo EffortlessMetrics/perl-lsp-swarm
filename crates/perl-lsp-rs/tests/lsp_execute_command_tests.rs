@@ -72,6 +72,21 @@ fn workspace_trust_report_schema() -> Result<Value, Box<dyn std::error::Error>> 
     Ok(serde_json::from_str(&schema_text)?)
 }
 
+fn agent_context_schema() -> Result<Value, Box<dyn std::error::Error>> {
+    let schema_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("schemas")
+        .join("agent_context.v1.schema.json");
+    let schema_text = std::fs::read_to_string(&schema_path).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("failed to read {}: {error}", schema_path.display()),
+        )
+    })?;
+    Ok(serde_json::from_str(&schema_text)?)
+}
+
 fn schema_required_fields(
     schema: &Value,
     pointer: &str,
@@ -308,11 +323,69 @@ fn test_execute_command_capabilities() -> Result<(), Box<dyn std::error::Error>>
     assert!(command_strs.contains(&"perl.runCritic"));
     assert!(command_strs.contains(&"perl.explainProviderDecision"));
     assert!(command_strs.contains(&"perl.workspaceTrustReport"));
+    assert!(command_strs.contains(&"perl.agentContext"));
     assert!(command_strs.contains(&"perl.previewSafeDelete"));
     assert!(command_strs.contains(&"perl.safeDeleteSymbol"));
     assert!(command_strs.contains(&"perl.previewPackageRename"));
     assert!(command_strs.contains(&"perl.explainMissingModuleLookup"));
 
+    Ok(())
+}
+
+#[test]
+fn test_execute_command_agent_context_is_read_only_and_actionable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let root_path = temp_dir.path().to_string_lossy().to_string();
+    let server = setup_server(Some(root_path));
+
+    let execute_request = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "workspace/executeCommand".to_string(),
+        params: Some(json!({
+            "command": "perl.agentContext",
+            "arguments": [{
+                "client_runtime_state": {
+                    "source": "agent-test",
+                    "raw_secret": "must-not-copy"
+                }
+            }]
+        })),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(3_i64)),
+    };
+
+    let response =
+        server.handle_request(execute_request).ok_or("No response from agent-context command")?;
+    let result = response.result.ok_or("No result in agent-context response")?;
+    let schema = agent_context_schema()?;
+    assert_schema_required_fields_present(&result, &schema, "/required", "agent context response")?;
+
+    assert_eq!(result.get("schema_version").and_then(Value::as_str), Some("agent_context.v1"));
+    assert_eq!(result.get("command").and_then(Value::as_str), Some("perl.agentContext"));
+    assert_eq!(
+        result.pointer("/request/method").and_then(Value::as_str),
+        Some("workspace/executeCommand")
+    );
+    assert_eq!(
+        result.pointer("/workspace_trust_report/schema_version").and_then(Value::as_str),
+        Some("workspace_trust_report.v1")
+    );
+    assert!(result.get("advertised_feature_ids").and_then(Value::as_array).is_some_and(
+        |features| { features.iter().any(|feature| feature.as_str() == Some("lsp.completion")) }
+    ));
+    assert!(result.get("execute_commands").and_then(Value::as_array).is_some_and(|commands| {
+        commands.iter().any(|command| command.as_str() == Some("perl.agentContext"))
+    }));
+    assert_eq!(
+        result.pointer("/next_actions/0/source").and_then(Value::as_str),
+        Some("workspace_trust_report.setup_hints.hints")
+    );
+    assert!(result.get("claim_boundary").and_then(Value::as_str).is_some_and(|claim| {
+        claim.contains("does not scan files") && claim.contains("apply edits")
+    }));
+
+    let rendered = serde_json::to_string(&result)?;
+    assert!(!rendered.contains("must-not-copy"));
     Ok(())
 }
 

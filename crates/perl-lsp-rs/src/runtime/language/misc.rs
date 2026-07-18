@@ -1584,6 +1584,9 @@ impl LspServer {
                 "perl.workspaceTrustReport" => {
                     return self.workspace_trust_report(arguments.first());
                 }
+                "perl.agentContext" => {
+                    return self.agent_context(arguments.first());
+                }
                 "perl.previewSafeDelete" => {
                     let request = arguments
                         .first()

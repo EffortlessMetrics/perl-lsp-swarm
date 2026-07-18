@@ -152,6 +152,26 @@ lib/My/Module.pm line 42 column 7 to build_workspace_index. Show me the edits
 before applying them.
 ```
 
+## Agent orientation
+
+When the bridge exposes the standard LSP `workspace/executeCommand` request,
+start a new agent session with the read-only `perl.agentContext` command:
+
+```json
+{
+  "command": "perl.agentContext",
+  "arguments": []
+}
+```
+
+The response combines the existing `perl.workspaceTrustReport` with the
+advertised custom command IDs and next-action pointers. Review the returned
+`workspace_trust_report.setup_hints.hints` actions before applying any
+configuration change. The orientation command never scans the workspace,
+probes Perl, runs perldoc, launches DAP, applies edits, or executes a follow-up
+command. If the bridge does not expose custom execute commands, use the regular
+LSP tools and the direct `perl.workspaceTrustReport` documentation instead.
+
 For diagnostics without MCP, you can always run:
 
 ```bash

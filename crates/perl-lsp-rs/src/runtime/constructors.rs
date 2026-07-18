@@ -39,6 +39,7 @@ impl LspServer {
         let index_coordinator = Some(Arc::new(IndexCoordinator::new()));
 
         let default_features = feature_profile.advertised_features();
+        let default_feature_ids = feature_profile.build_flags().to_feature_ids();
         let (outbound, outbound_writer_handle) = outbound::spawn_writer(Box::new(io::stdout()));
 
         Self {
@@ -61,6 +62,7 @@ impl LspServer {
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
+            advertised_feature_ids: Mutex::new(default_feature_ids),
             client_supports_pull_diags: Arc::new(AtomicBool::new(false)),
             workspace_config: Arc::new(Mutex::new(WorkspaceConfig::default())),
             next_request_id: Arc::new(AtomicI32::new(1)),
