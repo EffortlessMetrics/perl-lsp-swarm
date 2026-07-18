@@ -1039,6 +1039,148 @@ fn test_unclosed_qw_semicolonless_recovers_regex_match_statement() -> Result<(),
     Ok(())
 }
 
+// ---- #4491: block-form statement starters at an unclosed qw( boundary ----
+
+/// Assert an unclosed `qw(` followed by `trailing` recovers into two statements,
+/// preserves the qw words, contains `marker`, and records an InsertedCloser diagnostic.
+fn assert_qw_block_recovers(trailing: &str, marker: &str) -> Result<(), String> {
+    let code = format!("my @items = qw(word1 word2\n{trailing}");
+    let mut parser = Parser::new(&code);
+    let ast = parser.parse().map_err(|error| format!("`{trailing}` recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    let errors = format!("{:?}", parser.errors());
+    if statements.len() != 2 {
+        return Err(format!("`{trailing}` did not split into two statements: {sexp}"));
+    }
+    if !sexp.contains("\"word1\"") || !sexp.contains("\"word2\"") {
+        return Err(format!("`{trailing}` recovery lost qw words: {sexp}"));
+    }
+    if !sexp.contains(marker) {
+        return Err(format!("`{trailing}` recovery lost trailing statement `{marker}`: {sexp}"));
+    }
+    if !errors.contains("InsertedCloser") {
+        return Err(format!("`{trailing}` recovery did not record InsertedCloser: {errors}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_recovers_block_sub() -> Result<(), String> {
+    assert_qw_block_recovers("sub run { print 1; }", "sub run")
+}
+
+#[test]
+fn test_unclosed_qw_recovers_block_class() -> Result<(), String> {
+    assert_qw_block_recovers("class Foo { }", "class Foo")
+}
+
+#[test]
+fn test_unclosed_qw_recovers_block_package() -> Result<(), String> {
+    assert_qw_block_recovers("package Foo { }", "package Foo")
+}
+
+#[test]
+fn test_unclosed_qw_recovers_block_begin() -> Result<(), String> {
+    assert_qw_block_recovers("BEGIN { print 1; }", "BEGIN")
+}
+
+#[test]
+fn test_unclosed_qw_recovers_block_end() -> Result<(), String> {
+    assert_qw_block_recovers("END { print 1; }", "END")
+}
+
+#[test]
+fn test_unclosed_qw_recovers_parenthesized_print() -> Result<(), String> {
+    assert_qw_block_recovers("print(\"hi\");", "print")
+}
+
+#[test]
+fn test_closed_qw_keeps_block_starter_words() -> Result<(), String> {
+    // #4491 negative control: a closed qw whose content contains bareword block-starter
+    // keywords (no real block) must stay a single statement with all words preserved.
+    let code = "my @items = qw(word1\nsub package class\nBEGIN word2);";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("closed block-word qw failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 1
+        || !parser.errors().is_empty()
+        || !sexp.contains("\"sub\"")
+        || !sexp.contains("\"class\"")
+        || !sexp.contains("\"BEGIN\"")
+        || !sexp.contains("\"word2\"")
+    {
+        return Err(format!("closed block-word qw changed behavior: {sexp}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_keeps_incomplete_block_as_content() -> Result<(), String> {
+    // #4491 negative control: a trailing block starter whose block never closes at EOF is
+    // not a complete statement and must stay swallowed rather than split the qw list.
+    let code = "my @items = qw(word1\nsub run { print 1;";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("incomplete block recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    if statements.len() != 1 || parser.errors().is_empty() {
+        return Err(format!("incomplete trailing block was falsely split: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_ignores_block_keyword_prefixes() -> Result<(), String> {
+    // #4491 negative control: identifiers that merely start with a block keyword
+    // (`substr`, `classify`, `packaged`, `printf(`, `BEGINNER`) are not block starters and
+    // must not split the qw list into a recovered block statement.
+    for trailing in
+        ["substr($x, 0, 1)", "classify { }", "packaged Foo { }", "printf(\"x\")", "BEGINNER { }"]
+    {
+        let code = format!("my @items = qw(word1 word2\n{trailing}");
+        let mut parser = Parser::new(&code);
+        let ast =
+            parser.parse().map_err(|error| format!("`{trailing}` prefix parse failed: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("expected program root, got {}", ast.to_sexp()));
+        };
+        if statements.len() != 1 {
+            return Err(format!("`{trailing}` prefix falsely split the qw: {}", ast.to_sexp()));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_recovers_block_after_multibyte_content() -> Result<(), String> {
+    // #4491: multibyte qw content before the boundary must not break byte-offset handling
+    // when a trailing block statement recovers.
+    let code = "my @items = qw(café 😀 word2\nsub run { print 1; }";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("multibyte block recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 2
+        || !matches!(statements.get(1).map(|node| &node.kind), Some(NodeKind::Subroutine { .. }))
+        || !sexp.contains("sub run")
+        || parser.errors().is_empty()
+    {
+        return Err(format!("multibyte block recovery lost the sub: {sexp}"));
+    }
+    Ok(())
+}
+
 #[test]
 fn test_recovery_unclosed_q_brace() {
     let code = "my $str = q{ hello world print 1;";
