@@ -1232,7 +1232,7 @@ pub struct ParseWorkerMetricsSnapshot {
 mod tests {
     use super::LspServer;
     use crate::runtime::readiness::{IndexReadinessOutcome, IndexReadinessPolicy};
-    use anyhow::{Result, anyhow};
+    use anyhow::Result;
     use serde_json::{Value, json};
     use std::time::Duration;
 
