@@ -310,7 +310,7 @@ impl SymbolTable {
     ///
     /// Invariant: when two or more scopes share the same `location.start`,
     /// the tie is broken by `id`. Scope IDs are assigned in monotonically
-    /// increasing, strictly nested push order (see [`Self::push_scope`]), so
+    /// increasing, strictly nested push order (see the private `push_scope`), so
     /// a child scope always has a greater `id` than its parent. Ranking by
     /// `(location.start, id)` therefore always selects the innermost scope
     /// among same-start candidates, never an outer sibling or ancestor.
