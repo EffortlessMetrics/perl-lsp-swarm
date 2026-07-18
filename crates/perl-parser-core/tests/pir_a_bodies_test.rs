@@ -767,6 +767,22 @@ fn pir_a_c_style_for_preserves_comma_initializer_operations() {
     }));
 }
 
+#[test]
+fn pir_a_nested_c_style_for_header_uses_initializer_lexical_scope() {
+    let graph = parse_and_lower("sub run { for (my $i = 0; $i < 2; $i++) { $seen = $i; } }");
+    let stash_reads = graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::StashRead { symbol } if symbol.name == "i"
+            )
+        })
+        .count();
+    assert_eq!(stash_reads, 0, "loop-local $i must not resolve as a package read");
+}
+
 // ── 23. Opaque function call counted in unsupported receipt ───────────────────
 // `foo($x)` in a body arena lowers to `HirExpr::Opaque { ast_kind: "FunctionCall" }`,
 // which hits `ast_kind_to_static("FunctionCall") → "OpaqueCall"`. The receipt must

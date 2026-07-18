@@ -3061,8 +3061,11 @@ impl<'a> BodyBuilder2<'a> {
     /// keeping that wrapper as one opaque statement would lose declaration and
     /// assignment facts from every element after the first.
     fn lower_for_init_block(&mut self, node: &Node) -> HirBlockId {
+        let previous_scope = self.start_scope;
+        self.start_scope = find_body_scope(self.scope_graph, node.location);
         let mut block = HirBlock::default();
         self.append_for_init_statements(node, &mut block);
+        self.start_scope = previous_scope;
         self.alloc_block(block, node.location)
     }
 
