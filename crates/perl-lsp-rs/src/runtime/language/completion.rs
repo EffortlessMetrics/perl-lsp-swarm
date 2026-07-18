@@ -209,7 +209,12 @@ impl LspServer {
             })
             .unwrap_or(0);
         let token = &before_cursor[token_start..];
-        token.contains("->") || token.contains("::")
+        let member_subscript = before_cursor[..token_start]
+            .char_indices()
+            .next_back()
+            .filter(|(_, character)| matches!(character, '{' | '['))
+            .is_some_and(|(position, _)| before_cursor[..position].trim_end().ends_with("->"));
+        member_subscript || token.contains("->") || token.contains("::")
     }
 
     fn record_completion_provider_decision_trace(
@@ -2676,6 +2681,14 @@ mod tests {
         assert!(!LspServer::is_qualified_member_completion_context(
             "Foo::bar.$value",
             "Foo::bar.$value".len(),
+        ));
+        assert!(LspServer::is_qualified_member_completion_context(
+            "$object->{key",
+            "$object->{key".len(),
+        ));
+        assert!(LspServer::is_qualified_member_completion_context(
+            "$object->[idx",
+            "$object->[idx".len(),
         ));
         Ok(())
     }
