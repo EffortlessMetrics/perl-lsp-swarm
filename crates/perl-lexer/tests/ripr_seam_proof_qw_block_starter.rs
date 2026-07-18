@@ -59,3 +59,20 @@ fn shapeless_block_word_is_not_a_boundary() -> Result<(), String> {
     }
     Ok(())
 }
+
+#[test]
+fn keyword_word_does_not_borrow_a_later_lines_delimiter() -> Result<(), String> {
+    // A starter-shaped word must not borrow the `{`/`;` of an unrelated statement
+    // on a *later* line: the header-on-one-line guard keeps the whole tail inside
+    // the qw span rather than synchronizing on the bare keyword word.
+    for (label, input) in [
+        ("sub then return", "my @a = qw(word\nsub\nreturn { a => 1 };"),
+        ("package then return", "my @a = qw(word\npackage\nreturn 5;"),
+    ] {
+        let span = qw_recovery_span(input)?;
+        if span == "qw(word\n" {
+            return Err(format!("[{label}] keyword word borrowed a later delimiter: {span:?}"));
+        }
+    }
+    Ok(())
+}
