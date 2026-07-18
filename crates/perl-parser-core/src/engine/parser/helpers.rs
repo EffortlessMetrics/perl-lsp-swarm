@@ -1000,6 +1000,9 @@ impl<'a> Parser<'a> {
             | Some(TokenKind::State)
             | Some(TokenKind::Sub)
             | Some(TokenKind::Package)
+            | Some(TokenKind::Class)
+            | Some(TokenKind::Begin)
+            | Some(TokenKind::End)
             | Some(TokenKind::Use)
             | Some(TokenKind::If)
             | Some(TokenKind::Unless)
@@ -1023,6 +1026,7 @@ impl<'a> Parser<'a> {
             | Some(TokenKind::Local)
             | Some(TokenKind::State) => true,
             Some(TokenKind::Sub) | Some(TokenKind::Package) | Some(TokenKind::Use) => true,
+            Some(TokenKind::Class) | Some(TokenKind::Begin) | Some(TokenKind::End) => true,
             Some(TokenKind::If) | Some(TokenKind::Unless) => true,
             Some(TokenKind::Elsif) | Some(TokenKind::Else) => true,
             Some(TokenKind::While) | Some(TokenKind::Until) => true,

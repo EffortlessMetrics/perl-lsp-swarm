@@ -3277,9 +3277,82 @@ impl<'a> PerlLexer<'a> {
                 return true;
             }
         }
-        remaining.strip_prefix("print").is_some_and(|after| {
-            after.starts_with(char::is_whitespace) && self.qw_statement_terminates(position)
-        })
+        // A `print` statement — whitespace form (`print ...`) or parenthesized form
+        // (`print(...)`) — terminated by a semicolon or clean EOF (#4494, #4491).
+        if let Some(after) = remaining.strip_prefix("print")
+            && (after.starts_with(char::is_whitespace) || after.starts_with('('))
+            && self.qw_statement_terminates(position)
+        {
+            return true;
+        }
+        self.qw_block_starter_boundary_at(position, remaining)
+    }
+
+    /// Detect a block-form statement starter — `sub NAME { … }`, `class NAME { … }`,
+    /// `package NAME { … }`, or a `BEGIN`/`END { … }` phaser — at a line-start inside an
+    /// unclosed `qw(` (#4491). Each shape is confirmed by [`Self::qw_block_statement_terminates`],
+    /// which requires a completed top-level brace block, so bareword occurrences of these
+    /// keywords inside qw content (which have no block) are not misclassified.
+    fn qw_block_starter_boundary_at(&self, position: usize, remaining: &str) -> bool {
+        // Named block declarations require the keyword, whitespace, then an identifier name.
+        for keyword in ["sub", "class", "package"] {
+            if let Some(after) = remaining.strip_prefix(keyword)
+                && after.starts_with(char::is_whitespace)
+                && after.trim_start().starts_with(|c: char| c.is_alphabetic() || c == '_')
+                && self.qw_block_statement_terminates(position)
+            {
+                return true;
+            }
+        }
+        // Phaser blocks are name-less: the keyword is followed directly by the block `{`.
+        for keyword in ["BEGIN", "END"] {
+            if let Some(after) = remaining.strip_prefix(keyword)
+                && (after.starts_with(char::is_whitespace) || after.starts_with('{'))
+                && self.qw_block_statement_terminates(position)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// A block-form candidate terminates only when a top-level `{ … }` block opens and
+    /// closes back to depth zero with no degraded/unclosed token in between. This is the
+    /// block analogue of [`Self::qw_statement_terminates`]'s semicolon/EOF signal: it keeps
+    /// recovery scoped to complete block statements and rejects a starter keyword whose
+    /// block never closes (an in-progress edit) so it stays qw content instead (#4491).
+    fn qw_block_statement_terminates(&self, position: usize) -> bool {
+        let source = &self.input[position..];
+        let mut lexer = Self::without_qw_recovery(source, self.config.clone());
+        let mut depth = 0usize;
+        let mut opened_top_block = false;
+        while let Some(token) = lexer.next_token() {
+            if matches!(token.token_type, TokenType::Error(_) | TokenType::UnknownRest) {
+                return false;
+            }
+            match token.token_type {
+                TokenType::LeftBrace => {
+                    if depth == 0 {
+                        opened_top_block = true;
+                    }
+                    depth = depth.saturating_add(1);
+                }
+                TokenType::LeftParen | TokenType::LeftBracket => {
+                    depth = depth.saturating_add(1);
+                }
+                TokenType::RightBrace => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 && opened_top_block {
+                        return true;
+                    }
+                }
+                TokenType::RightParen | TokenType::RightBracket => {
+                    depth = depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     /// A candidate line-start statement inside an unclosed `qw(` is a real recovery
