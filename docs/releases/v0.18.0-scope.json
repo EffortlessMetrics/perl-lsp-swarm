@@ -7,7 +7,7 @@
   "observed_at_utc": "2026-07-18T10:47:45Z",
   "frozen_swarm_sha": null,
   "queue_snapshot": {
-    "query": "gh pr list --state open --limit 100 --json number",
+    "query": "gh pr list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 100 --json number",
     "query_limit": 100,
     "observed_open_count": 42,
     "receipt_count": 42,

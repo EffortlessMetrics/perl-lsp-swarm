@@ -27,7 +27,11 @@
     "track": { "const": "public-beta" },
     "phase": { "const": "admission-frozen" },
     "observation_sha": { "$ref": "#/$defs/sha" },
-    "observed_at_utc": { "type": "string", "format": "date-time" },
+    "observed_at_utc": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
     "frozen_swarm_sha": { "type": "null" },
     "queue_snapshot": { "$ref": "#/$defs/queueSnapshot" },
     "release_lanes": {
@@ -60,11 +64,18 @@
       "additionalProperties": false,
       "required": ["query", "query_limit", "observed_open_count", "receipt_count", "observed_numbers", "set_equality"],
       "properties": {
-        "query": { "type": "string", "minLength": 1 },
+        "query": {
+          "const": "gh pr list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 100 --json number"
+        },
         "query_limit": { "type": "integer", "minimum": 1 },
         "observed_open_count": { "type": "integer", "minimum": 0 },
         "receipt_count": { "type": "integer", "minimum": 0 },
-        "observed_numbers": { "type": "array", "uniqueItems": true, "items": { "type": "integer", "minimum": 1 } },
+        "observed_numbers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1 }
+        },
         "set_equality": { "const": true }
       }
     },
@@ -140,7 +151,12 @@
         "owner": { "type": ["string", "null"] },
         "acceptance": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "proof": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-        "follow_up_issue": { "type": ["string", "null"] },
+        "follow_up_issue": {
+          "oneOf": [
+            { "type": "string", "pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[0-9]+$" },
+            { "type": "null" }
+          ]
+        },
         "close_ready": { "type": "boolean" }
       },
       "allOf": [
