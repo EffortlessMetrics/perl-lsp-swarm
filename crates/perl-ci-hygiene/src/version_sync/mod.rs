@@ -1338,32 +1338,31 @@ perl-token = { path = "../perl-token", version = "0.42.0" }
     }
 
     #[test]
-    fn iso_date_from_unix_days_covers_january_year_rollover_boundary() -> Result<()> {
-        let date = iso_date_from_unix_days(0);
-        if date != "1970-01-01" {
-            bail!("unix epoch should map to 1970-01-01, got {date}");
+    fn iso_date_from_unix_days_boundary_discriminator() -> Result<()> {
+        let january = iso_date_from_unix_days(0);
+        if january != "1970-01-01" {
+            bail!("unix epoch should map to 1970-01-01, got {january}");
+        }
+        let march = iso_date_from_unix_days(59);
+        if march != "1970-03-01" {
+            bail!("day 59 after the unix epoch should map to 1970-03-01, got {march}");
         }
         Ok(())
     }
 
     #[test]
-    fn iso_date_from_unix_days_covers_march_month_mapping_boundary() -> Result<()> {
-        let date = iso_date_from_unix_days(59);
-        if date != "1970-03-01" {
-            bail!("day 59 after the unix epoch should map to 1970-03-01, got {date}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn read_workspace_version_reads_workspace_package_version() -> Result<()> {
-        let repo_root = unique_temp_repo_dir("read-workspace-version")?;
+    fn collect_sites_call_presence_observer() -> Result<()> {
+        let repo_root = unique_temp_repo_dir("collect-sites")?;
         fs::write(repo_root.join("Cargo.toml"), "[workspace.package]\nversion = \"0.42.0\"\n")
             .map_err(|e| eyre!("writing workspace Cargo.toml: {e}"))?;
 
-        let version = read_workspace_version(&repo_root)?;
-        if version != "0.42.0" {
-            bail!("expected workspace version 0.42.0, got {version}");
+        let sites = collect_sites(&repo_root)?;
+        if sites.len() != 1 {
+            bail!("expected one workspace version site, got {}", sites.len());
+        }
+        let site = sites.first().ok_or_else(|| eyre!("workspace version site not collected"))?;
+        if site.found != "0.42.0" {
+            bail!("expected collected workspace version 0.42.0, got {}", site.found);
         }
 
         fs::remove_dir_all(&repo_root)
