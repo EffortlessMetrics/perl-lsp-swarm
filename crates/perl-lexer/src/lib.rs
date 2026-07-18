@@ -3292,16 +3292,18 @@ impl<'a> PerlLexer<'a> {
         let mut lexer = Self::without_qw_recovery(source, self.config.clone());
         let mut first = true;
         let mut delimiter_depth = 0usize;
-        let mut saw_unclosed = false;
+        let mut saw_incomplete = false;
+        let mut last_end = 0usize;
         while let Some(token) = lexer.next_token() {
             if token.token_type == TokenType::Semicolon && delimiter_depth == 0 {
                 return true;
             }
-            if matches!(token.token_type, TokenType::Error(_)) {
-                // A trailing statement carrying its own unclosed quote-like operator
-                // reaches EOF at balanced delimiter depth but is not a clean statement;
-                // do not let it masquerade as one (preserves nested-qw suffix behavior).
-                saw_unclosed = true;
+            if matches!(token.token_type, TokenType::Error(_) | TokenType::UnknownRest) {
+                // A trailing statement carrying its own unclosed quote-like operator or a
+                // degraded construct reaches EOF at balanced delimiter depth but is not a
+                // clean statement; do not let it masquerade as one (this preserves the
+                // nested-qw suffix behavior, where the inner qw emits an Error token).
+                saw_incomplete = true;
             }
             if !first && delimiter_depth == 0 {
                 let prefix = &source[..token.start];
@@ -3321,12 +3323,18 @@ impl<'a> PerlLexer<'a> {
                 }
                 _ => {}
             }
+            last_end = token.end;
             first = false;
         }
         // No terminating semicolon before EOF: recover only when the candidate ran to
-        // end-of-file with balanced delimiters and no unclosed operator, i.e. it is a
-        // complete trailing statement rather than a fragment we would misclassify.
-        delimiter_depth == 0 && !saw_unclosed
+        // end-of-file cleanly — balanced delimiters, no degraded/unclosed token, and every
+        // trailing byte turned into a real token. The final check rejects constructs that
+        // silently consume to EOF without emitting a token (an unterminated bare `/regex/`
+        // or heredoc body leaves its text after the last token), which would otherwise be
+        // misclassified as a complete statement and split the qw list incorrectly (#4494).
+        delimiter_depth == 0
+            && !saw_incomplete
+            && source[last_end..].chars().all(char::is_whitespace)
     }
 
     /// Parse a quote operator after we've seen the delimiter

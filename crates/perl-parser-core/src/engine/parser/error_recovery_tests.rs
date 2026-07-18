@@ -981,6 +981,65 @@ fn test_closed_qw_semicolonless_keeps_keyword_words_at_eof() -> Result<(), Strin
 }
 
 #[test]
+fn test_unclosed_qw_semicolonless_keeps_unterminated_regex_as_content() -> Result<(), String> {
+    // #4494 negative control: a trailing statement whose own bare `/regex/` is unterminated
+    // consumes to EOF without emitting a token. It must not be misclassified as a clean
+    // trailing statement (which would split the qw and silently drop the regex text).
+    let code = "my @items = qw(word1 word2\nprint $y =~ /unterminated";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("unterminated regex recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    if statements.len() != 1 || parser.errors().is_empty() {
+        return Err(format!("unterminated trailing regex was falsely split: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_semicolonless_keeps_unterminated_heredoc_as_content() -> Result<(), String> {
+    // #4494 negative control: a trailing declaration opening a heredoc with no closing
+    // terminator is not a complete statement and must stay swallowed, not split the qw.
+    let code = "my @items = qw(word1 word2\nmy $x = <<EOF\nbody line with no terminator";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("unterminated heredoc recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    if statements.len() != 1 || parser.errors().is_empty() {
+        return Err(format!("unterminated trailing heredoc was falsely split: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_semicolonless_recovers_regex_match_statement() -> Result<(), String> {
+    // #4494: a trailing statement containing a *closed* bind/match still recovers at EOF —
+    // the unterminated-construct guard must not over-reject well-formed trailing statements.
+    let code = "my @items = qw(word1 word2\nprint $y =~ /done/";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("closed regex recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 2
+        || !matches!(
+            statements.get(1).map(|node| &node.kind),
+            Some(NodeKind::ExpressionStatement { .. })
+        )
+        || !sexp.contains("\"word1\"")
+        || parser.errors().is_empty()
+    {
+        return Err(format!("closed trailing match failed to recover: {sexp}"));
+    }
+    Ok(())
+}
+
+#[test]
 fn test_recovery_unclosed_q_brace() {
     let code = "my $str = q{ hello world print 1;";
     let mut parser = Parser::new(code);
