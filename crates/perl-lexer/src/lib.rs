@@ -3155,6 +3155,109 @@ impl<'a> PerlLexer<'a> {
         (body, false)
     }
 
+    fn read_qw_body(&mut self, delim: char) -> (String, bool) {
+        let paired = quote_handler::paired_close(delim);
+        let close = paired.unwrap_or(delim);
+        let mut body = String::new();
+        let mut depth = i32::from(paired.is_some());
+        let recover_at_statement = !self.qw_has_closing_delimiter(delim);
+
+        while let Some(ch) = self.current_char() {
+            if recover_at_statement && self.qw_statement_boundary_at(self.position) {
+                return (body, false);
+            }
+            if ch == '\\' {
+                body.push(ch);
+                self.advance();
+                if let Some(next) = self.current_char() {
+                    body.push(next);
+                    self.advance();
+                }
+                continue;
+            }
+            if paired.is_some() && ch == delim {
+                body.push(ch);
+                self.advance();
+                depth += 1;
+                continue;
+            }
+            if ch == close {
+                if paired.is_some() {
+                    depth -= 1;
+                    if depth == 0 {
+                        self.advance();
+                        return (body, true);
+                    }
+                    body.push(ch);
+                    self.advance();
+                } else {
+                    self.advance();
+                    return (body, true);
+                }
+                continue;
+            }
+            body.push(ch);
+            self.advance();
+        }
+        (body, false)
+    }
+
+    fn qw_has_closing_delimiter(&self, delim: char) -> bool {
+        let paired = quote_handler::paired_close(delim);
+        let close = paired.unwrap_or(delim);
+        let mut depth = i32::from(paired.is_some());
+        let mut escaped = false;
+
+        for (offset, ch) in self.input[self.position..].char_indices() {
+            let position = self.position.saturating_add(offset);
+            if self.qw_statement_boundary_at(position) {
+                return false;
+            }
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if paired.is_some() && ch == delim {
+                depth += 1;
+            } else if ch == close {
+                if paired.is_none() {
+                    return true;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn qw_statement_boundary_at(&self, position: usize) -> bool {
+        let consumed = &self.input[..position];
+        let line_start = consumed.rfind('\n').map_or(0, |index| index + 1);
+        if !consumed[line_start..].chars().all(char::is_whitespace) {
+            return false;
+        }
+
+        let remaining = &self.input[position..];
+        for keyword in ["my", "our", "state", "local"] {
+            if let Some(after) = remaining.strip_prefix(keyword)
+                && after.starts_with(char::is_whitespace)
+                && after.trim_start().starts_with(['$', '@', '%'])
+            {
+                return true;
+            }
+        }
+        remaining.strip_prefix("print").is_some_and(|after| {
+            after.starts_with(char::is_whitespace)
+                && !after.split_once('\n').map_or(after, |(line, _)| line).trim().is_empty()
+        })
+    }
+
     /// Parse a quote operator after we've seen the delimiter
     fn parse_quote_operator(&mut self, delimiter: char) -> Option<Token> {
         let info = self.current_quote_op.as_ref()?;
@@ -3184,8 +3287,12 @@ impl<'a> PerlLexer<'a> {
                 self.parse_regex_modifiers(&quote_handler::M_SPEC);
                 body_closed
             }
+            "qw" => {
+                let (_body, body_closed) = self.read_qw_body(delimiter);
+                body_closed
+            }
             _ => {
-                // q, qq, qw, qx - no modifiers
+                // q, qq, qx - no modifiers
                 let (_body, body_closed) = self.read_delimited_body(delimiter);
                 body_closed
             }

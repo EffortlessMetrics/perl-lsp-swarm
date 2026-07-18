@@ -290,20 +290,6 @@ impl<'a> TokenStream<'a> {
         self.peeked_third = None;
     }
 
-    /// Reset the live lexer to a byte position and resume in term mode.
-    ///
-    /// Error recovery uses this when a malformed quote-like token consumed
-    /// source that begins a later statement. Buffered token streams cannot be
-    /// rewound because their token boundaries are already fixed.
-    pub fn reset_at(&mut self, position: usize) {
-        if let TokenStreamInner::Lexer(ref mut lexer) = self.inner {
-            use perl_lexer::Checkpointable;
-            let checkpoint = perl_lexer::LexerCheckpoint::at_position(position);
-            lexer.restore(&checkpoint);
-        }
-        self.invalidate_peek();
-    }
-
     /// Pure peek cache invalidation - no mode changes
     pub fn invalidate_peek(&mut self) {
         self.peeked = None;

@@ -662,6 +662,37 @@ fn test_closed_multiline_qw_keeps_statement_keywords_as_words() -> Result<(), St
 }
 
 #[test]
+fn test_closed_multiline_qw_keeps_line_start_keywords_as_words() -> Result<(), String> {
+    let code = "my @items = qw(\nword1\nmy\nprint\nword2\n);";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("closed multiline qw failed: {error}"))?;
+    let sexp = ast.to_sexp();
+    if !parser.errors().is_empty()
+        || !sexp.contains("\"word1\"")
+        || !sexp.contains("\"my\"")
+        || !sexp.contains("\"print\"")
+        || !sexp.contains("\"word2\"")
+    {
+        return Err(format!("closed multiline qw changed behavior: {sexp}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_spaced_qw_recovers_following_declaration() -> Result<(), String> {
+    let code = "my @items = qw (word1 word2\nmy $x = 42;\nprint $x;";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("spaced qw did not recover: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    if statements.len() != 3 || parser.errors().is_empty() {
+        return Err(format!("spaced qw recovery lost following statements: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
 fn test_recovery_unclosed_q_brace() {
     let code = "my $str = q{ hello world print 1;";
     let mut parser = Parser::new(code);

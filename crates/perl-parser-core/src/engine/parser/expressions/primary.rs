@@ -268,44 +268,48 @@ impl<'a> Parser<'a> {
                 let text = &token.text;
 
                 // Parse qw(...) to extract words
-                if text.strip_prefix("qw").is_some() {
-                    let boundary = text
-                        .strip_prefix("qw")
-                        .and_then(|body| find_qw_statement_boundary(body, start.saturating_add(2)));
-                    let parsed_content = quote_parser::parse_quote_operator_content(text, "qw");
-                    let needs_recovery = match (parsed_content.is_some(), boundary) {
-                        (false, _) => true,
-                        (true, Some(boundary)) => {
-                            !qw_has_closer_after_boundary(text, start, boundary)
-                        }
-                        (true, None) => false,
-                    };
-                    let (content_str, end) = match (parsed_content, needs_recovery) {
-                        (Some(content_str), false) => (content_str.to_string(), token.end),
-                        _ => recover_unclosed_qw(text, start, boundary),
-                    };
-                    if needs_recovery {
-                        self.tokens.reset_at(end);
-                        if let Err(error) = self.expect_closing_delimiter(qw_close_kind(text)) {
-                            self.record_error(error);
-                        }
-                    }
+                if let Some(content) = text.strip_prefix("qw") {
+                    let content_str =
+                        if let Some(content_str) = quote_parser::parse_quote_operator_content(
+                            text, "qw",
+                        ) {
+                            content_str
+                        } else {
+                            let close_kind = match content.chars().next() {
+                                Some('[') => TokenKind::RightBracket,
+                                Some('{') => TokenKind::RightBrace,
+                                Some('<') => TokenKind::Greater,
+                                _ => TokenKind::RightParen,
+                            };
+                            let followed_by_print_statement = token.text.ends_with('\n')
+                                && self.tokens.peek().is_ok_and(|next| {
+                                    next.kind == TokenKind::Identifier
+                                        && next.text.as_ref() == "print"
+                                });
+                            if followed_by_print_statement {
+                                self.record_inserted_closer(close_kind);
+                            } else {
+                                self.expect_closing_delimiter(close_kind)?;
+                            }
+                            let opening_len = content.chars().next().map_or(0, char::len_utf8);
+                            content.get(opening_len..).unwrap_or(content)
+                        };
 
                     // Split into words, stripping # line comments first (perlop).
-                    let cleaned = strip_qw_comments(&content_str);
+                    let cleaned = strip_qw_comments(content_str);
                     let words: Vec<Node> = cleaned
                         .split_whitespace()
                         .map(|word| {
                             Node::new(
                                 NodeKind::String { value: word.to_string(), interpolated: false },
-                                SourceLocation { start, end },
+                                SourceLocation { start, end: token.end },
                             )
                         })
                         .collect();
 
                     Ok(Node::new(
                         NodeKind::ArrayLiteral { elements: words },
-                        SourceLocation { start, end },
+                        SourceLocation { start, end: token.end },
                     ))
                 } else {
                     // Fallback - shouldn't happen with proper lexer
@@ -1348,147 +1352,6 @@ fn is_simple_scalar_variable(pattern: &str) -> bool {
 //   - Verdict: AGREE on all inputs in the shared matrix. Safe to centralize
 //     once a follow-up refactor PR is scoped.
 // ============================================================================
-
-fn recover_unclosed_qw(text: &str, start: usize, boundary: Option<usize>) -> (String, usize) {
-    let Some(after_operator) = text.strip_prefix("qw") else {
-        return (text.to_string(), start.saturating_add(text.len()));
-    };
-    let Some(open_delim) = after_operator.chars().next() else {
-        return (String::new(), start.saturating_add(text.len()));
-    };
-    let content_start = 2usize.saturating_add(open_delim.len_utf8());
-    let content_end = boundary
-        .map(|position| position.saturating_sub(start))
-        .unwrap_or(text.len())
-        .min(text.len());
-    let content = text
-        .get(content_start..content_end)
-        .map_or_else(String::new, ToString::to_string);
-    let end = boundary.unwrap_or_else(|| start.saturating_add(text.len()));
-    (content, end)
-}
-
-fn find_qw_statement_boundary(body: &str, body_start: usize) -> Option<usize> {
-    let mut line_offset = 0usize;
-    for line in body.split_inclusive('\n') {
-        let without_newline = line.strip_suffix('\n').unwrap_or(line);
-        let trimmed = without_newline.trim_start_matches([' ', '\t']);
-        let indent = without_newline.len().saturating_sub(trimmed.len());
-        if starts_qw_declaration(trimmed) || starts_qw_print(trimmed) {
-            return Some(body_start.saturating_add(line_offset).saturating_add(indent));
-        }
-        line_offset = line_offset.saturating_add(line.len());
-    }
-    None
-}
-
-fn starts_qw_declaration(line: &str) -> bool {
-    ["my", "our", "state", "local"].iter().any(|keyword| {
-        line.strip_prefix(keyword)
-            .and_then(|rest| rest.chars().next())
-            .is_some_and(|separator| separator.is_ascii_whitespace())
-            && line
-                .strip_prefix(keyword)
-                .map(str::trim_start)
-                .and_then(|rest| rest.chars().next())
-                .is_some_and(|sigil| matches!(sigil, '$' | '@' | '%'))
-    }) || ["sub", "package", "use", "require", "class", "BEGIN", "END"]
-        .iter()
-        .any(|keyword| starts_qw_keyword(line, keyword))
-}
-
-fn starts_qw_keyword(line: &str, keyword: &str) -> bool {
-    line.strip_prefix(keyword)
-        .and_then(|rest| rest.chars().next())
-        .is_some_and(|separator| separator.is_ascii_whitespace() || separator == '{')
-}
-
-fn starts_qw_print(line: &str) -> bool {
-    line.strip_prefix("print")
-        .and_then(|rest| rest.chars().next())
-        .is_some_and(|separator| separator.is_ascii_whitespace())
-}
-
-fn qw_close_kind(text: &str) -> TokenKind {
-    match text.strip_prefix("qw").and_then(|body| body.chars().next()) {
-        Some('[') => TokenKind::RightBracket,
-        Some('{') => TokenKind::RightBrace,
-        Some('<') => TokenKind::Greater,
-        _ => TokenKind::RightParen,
-    }
-}
-
-fn qw_has_closer_after_boundary(text: &str, start: usize, boundary: usize) -> bool {
-    let expected_close = match qw_close_kind(text) {
-        TokenKind::RightBracket => b']',
-        TokenKind::RightBrace => b'}',
-        TokenKind::Greater => b'>',
-        _ => b')',
-    };
-    let bytes = text.as_bytes();
-    let mut index = boundary.saturating_sub(start).min(bytes.len());
-    while index < bytes.len() {
-        match bytes[index] {
-            b'#' => {
-                index = bytes[index..]
-                    .iter()
-                    .position(|byte| *byte == b'\n')
-                    .map_or(bytes.len(), |offset| index.saturating_add(offset + 1));
-            }
-            b'\'' | b'"' => {
-                index = skip_qw_quoted(bytes, index, bytes[index]);
-            }
-            b'(' => {
-                index = skip_qw_balanced(bytes, index, b'(', b')');
-            }
-            b'[' => {
-                index = skip_qw_balanced(bytes, index, b'[', b']');
-            }
-            b'{' => {
-                index = skip_qw_balanced(bytes, index, b'{', b'}');
-            }
-            byte if byte == expected_close => return true,
-            _ => index = index.saturating_add(1),
-        }
-    }
-    false
-}
-
-fn skip_qw_quoted(bytes: &[u8], mut index: usize, quote: u8) -> usize {
-    index = index.saturating_add(1);
-    while index < bytes.len() {
-        match bytes[index] {
-            b'\\' => index = index.saturating_add(2),
-            byte if byte == quote => return index.saturating_add(1),
-            _ => index = index.saturating_add(1),
-        }
-    }
-    bytes.len()
-}
-
-fn skip_qw_balanced(bytes: &[u8], mut index: usize, open: u8, close: u8) -> usize {
-    let mut depth = 0usize;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'\'' | b'"' => {
-                index = skip_qw_quoted(bytes, index, bytes[index]);
-            }
-            byte if byte == open => {
-                depth = depth.saturating_add(1);
-                index = index.saturating_add(1);
-            }
-            byte if byte == close => {
-                depth = depth.saturating_sub(1);
-                index = index.saturating_add(1);
-                if depth == 0 {
-                    return index;
-                }
-            }
-            _ => index = index.saturating_add(1),
-        }
-    }
-    bytes.len()
-}
 
 #[cfg(test)]
 mod balanced_segment_conformance {
