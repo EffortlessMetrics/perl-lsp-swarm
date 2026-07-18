@@ -175,7 +175,7 @@ fn next_minor_version(version: &str) -> Result<String> {
 
 fn sync_readme(content: &str, surface: &ReleaseSurface) -> Result<String> {
     let mut release_track_seen = false;
-    let mut published_surface_seen = false;
+    let mut verified_install_seen = false;
 
     let mut lines: Vec<String> = Vec::new();
     for line in content.lines() {
@@ -187,17 +187,19 @@ fn sync_readme(content: &str, surface: &ReleaseSurface) -> Result<String> {
                 "| Published crate surface | {} crates in `[workspace.metadata.publish.allow]` |",
                 surface.published_crate_count
             ));
-            published_surface_seen = true;
+        } else if line.starts_with("The verified GitHub `v") {
+            lines.push(format!(
+                "The verified GitHub `v{}` release assets are public beta. Other distribution",
+                surface.version
+            ));
+            verified_install_seen = true;
         } else {
             lines.push(line.to_string());
         }
     }
 
-    if !release_track_seen {
-        bail!("README.md: release track line not found");
-    }
-    if !published_surface_seen {
-        bail!("README.md: published crate surface line not found");
+    if !release_track_seen && !verified_install_seen {
+        bail!("README.md: release posture line not found");
     }
     Ok(restore_trailing_newline(content, &lines))
 }
@@ -292,6 +294,7 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
             publication_discipline_seen = true;
         } else if line.starts_with("## Active: Public-Alpha Release Prep (v")
             || line.starts_with("## Active: Public-Beta Release (v")
+            || line.starts_with("## Active: Public-Alpha Channel Closeout (v")
         {
             lines.push(format!(
                 "## Active: Public-Beta Release (v{})",
@@ -300,13 +303,15 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
             active_section_seen = true;
         } else if line.starts_with("### Now (v")
             && (line.contains("public-alpha patch prep)")
-                || line.contains("shipped public beta)"))
+                || line.contains("shipped public beta)")
+                || line.contains("public-alpha channel closeout)"))
         {
             lines.push(format!("### Now (v{} shipped public beta)", surface.version));
             now_section_seen = true;
         } else if line.starts_with("- `v")
             && (line.contains("is staged as the next public-alpha patch release; run the release-prep checks before dispatching the train")
-                || line.contains("is shipped public beta; keep each distribution channel pending until its receipt is verified"))
+                || line.contains("is shipped public beta; keep each distribution channel pending until its receipt is verified")
+                || line.contains("is the current public-alpha release line; finish receipt closeout before treating the release as fully closed"))
         {
             lines.push(format!(
                 "- `v{}` is shipped public beta; keep each distribution channel pending until its receipt is verified",
@@ -388,8 +393,8 @@ fn sync_status_index(content: &str, surface: &ReleaseSurface) -> Result<String> 
                 surface.published_crate_count
             ));
             published_surface_bullet_seen = true;
-        } else if line.starts_with("**Next (post v") {
-            lines.push(format!("**Next (post v{} public beta)**", surface.version));
+        } else if line.starts_with("**Next (post v") || line.starts_with("**Next (v") {
+            lines.push(format!("**Next (v{} public-beta train)**", surface.next_version));
             next_section_seen = true;
         } else {
             lines.push(line.to_string());
@@ -511,6 +516,24 @@ mod tests {
     }
 
     #[test]
+    fn sync_readme_preserves_verified_install_posture_on_first_and_second_write() -> Result<()> {
+        let input = "The verified GitHub `v0.16.0` release assets are public alpha. Other distribution\n\
+channels remain independently versioned and must be verified before editor use.\n";
+        let expected = "The verified GitHub `v0.17.0` release assets are public beta. Other distribution\n\
+channels remain independently versioned and must be verified before editor use.\n";
+
+        let first = sync_readme(input, &release_surface())?;
+        if first != expected {
+            bail!("first README sync did not retain verified install posture");
+        }
+        let second = sync_readme(&first, &release_surface())?;
+        if second != first {
+            bail!("second README sync was not idempotent");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn sync_release_notes_preserves_shipped_date_on_first_and_second_write() -> Result<()> {
         let input = "**Current release train**: `v0.16.0` — release preparation\n\
 **Workspace version line**: `v0.16.0`\n\
@@ -543,7 +566,7 @@ mod tests {
 **Now (active milestone: v0.17.0 shipped public beta)**\n\
 - Run the `v0.17.0` release-prep checks before dispatching release orchestration\n\
 - Keep the top-level README, status docs, and release runbooks aligned with the actual `perllsp` asset line, the `perl-lsp-rs` extension package, and the 32-crate published surface\n\
-**Next (post v0.17.0 public beta)**\n";
+**Next (v0.18.0 public-beta train)**\n";
 
         let first = sync_status_index(input, &release_surface())?;
         if first != expected {
@@ -552,6 +575,36 @@ mod tests {
         let second = sync_status_index(&first, &release_surface())?;
         if second != first {
             bail!("second status-index sync was not idempotent");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_roadmap_preserves_release_posture_on_first_and_second_write() -> Result<()> {
+        let input = "- Workspace version line: `v0.14.0`\n\
+- Current release train: `v0.14.0` public-alpha closeout\n\
+- Published crate surface target: 31 crates\n\
+Publication discipline: `v0.14.0` uses a normal SemVer package version for release channels while the human-facing product posture remains public alpha.\n\
+## Active: Public-Alpha Channel Closeout (v0.14.0)\n\
+### Now (v0.14.0 public-alpha channel closeout)\n\
+- `v0.14.0` is the current public-alpha release line; finish receipt closeout before treating the release as fully closed\n\
+### Next (post v0.14.0 closeout)\n";
+        let expected = "- Workspace version line: `v0.17.0`\n\
+- Current release train: `v0.17.0` shipped public beta; channel receipts remain independently verified\n\
+- Published crate surface target: 32 crates from `[workspace.metadata.publish.allow]`\n\
+Publication discipline: `v0.17.0` uses a normal SemVer package version while the human-facing product posture remains public beta, not stable/GA. See [RELEASE_HISTORY.md](../../RELEASE_HISTORY.md) for independently verified channel receipts.\n\
+## Active: Public-Beta Release (v0.17.0)\n\
+### Now (v0.17.0 shipped public beta)\n\
+- `v0.17.0` is shipped public beta; keep each distribution channel pending until its receipt is verified\n\
+### Next (post v0.17.0)\n";
+
+        let first = sync_roadmap(input, &release_surface())?;
+        if first != expected {
+            bail!("first roadmap sync did not retain release posture");
+        }
+        let second = sync_roadmap(&first, &release_surface())?;
+        if second != first {
+            bail!("second roadmap sync was not idempotent");
         }
         Ok(())
     }

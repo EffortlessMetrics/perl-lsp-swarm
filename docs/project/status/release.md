@@ -7,7 +7,7 @@
 
 **Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta
 **Release track**: Public beta; this is not a stable/GA claim
-**Workspace version line**: `v0.17.0` (Cargo.toml workspace.package.version)
+**Workspace version line**: `v0.17.0`
 **Published crate surface**: 32 crates
 **Release target**: `v0.18.0` is the next public-beta train; no version bump or candidate is staged here
 **Authority**: development `perl-lsp-swarm/main`; release lineage and publication `perl-lsp/master`
@@ -16,6 +16,7 @@
 ## Active Blockers
 
 - crates.io, VS Code Marketplace, Open VSX, Docker, and Homebrew receipts remain pending or not proven in this repository ledger.
+- Remaining work is operational: finish `v0.17.0` prep verification, then publish and record final channel receipts
 
 ## 0.15.2 Hotfix Receipts (2026-05-26)
 

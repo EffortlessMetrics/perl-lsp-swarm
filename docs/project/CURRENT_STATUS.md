@@ -26,7 +26,7 @@
 | Metric | Value | Source |
 | --- | --- | --- |
 | **Workspace version line** | `v0.17.0` | [`Cargo.toml`](../../Cargo.toml) |
-| **Current release train** | `v0.17.0` latest public beta (2026-06-28); prior `v0.16.0` (2026-06-06) | [CHANGELOG.md](../../CHANGELOG.md) |
+| **Current release train** | `v0.17.0` latest public beta (2026-06-28); prior `v0.16.0` (Unreleased) | [CHANGELOG.md](../../CHANGELOG.md) |
 | **Published crate surface** | 32 crates | [`[workspace.metadata.publish.allow]`](../../Cargo.toml) |
 | **Release history** | [RELEASE_HISTORY.md](../../RELEASE_HISTORY.md) | Canonical cross-channel ledger |
 | **Active milestone** | `v0.17.0` shipped public beta; `v0.18.0` next public-beta train | [status/index.md](status/index.md) |

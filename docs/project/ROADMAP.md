@@ -42,6 +42,13 @@ See [docs/reference/PROVIDER_READINESS_CONTRACT.md](../reference/PROVIDER_READIN
 for the reliability doctrine and [docs/reference/CI_GATE_PLAYBOOK.md](../reference/CI_GATE_PLAYBOOK.md)
 for the contributor gate playbook.
 
+## Release Surface
+
+- Workspace version line: `v0.17.0`
+- Current release train: `v0.17.0` shipped public beta; channel receipts remain independently verified
+- Published crate surface target: 32 crates from `[workspace.metadata.publish.allow]`
+Publication discipline: `v0.17.0` uses a normal SemVer package version while the human-facing product posture remains public beta, not stable/GA. See [RELEASE_HISTORY.md](../../RELEASE_HISTORY.md) for independently verified channel receipts.
+
 
 ## Active Cleanup: Native Stack Product Surface
 
@@ -226,7 +233,7 @@ Released 2026-03-30. Cleanup completed 2026-04-02.
 - End-to-end LSP feature development guide (#3027, PR #3115)
 - GIF recording guide and asset structure (#2336, PR #3130)
 
-## Active: Public-Alpha Channel Closeout (v0.14.0)
+## Active: Public-Beta Release (v0.17.0)
 
 - GitHub Release and crates.io surfaces show `v0.14.0` live; Docker, VS Code Marketplace, Open VSX, and Homebrew tap receipts are still tracked separately until verified
 - The owned Homebrew path is `brew install effortlessmetrics/tap/perllsp`
@@ -471,7 +478,7 @@ dedicated release-lineage plan.
 
 ## Now / Next / Later
 
-### Now (v0.14.0 public-alpha channel closeout)
+### Now (v0.17.0 shipped public beta)
 
 - Reconcile the live `v0.14.0` GitHub Release and crates.io surfaces with release notes, release history, generated status, and remaining channel receipts.
 - CI/control-plane Wave 2 substrate already landed and should not be re-implemented in parallel follow-up PRs:
@@ -489,7 +496,7 @@ dedicated release-lineage plan.
   6. Merge-train planner/receipt protocol with stop conditions
   7. Tokmd advisory stabilization (explicitly non-required while calibrating signal)
 - Wave guardrails: no bulk stale-closure automation, no full merge bot scope, no global pre-push hooks, no broad CI architecture rewrite in this pass.
-- `v0.14.0` is the current public-alpha release line; finish receipt closeout before treating the release as fully closed
+- `v0.17.0` is shipped public beta; keep each distribution channel pending until its receipt is verified
 - Pre-announcement license badge fix (PR #3193): canonical SPDX text in all 126 LICENSE files
 - Pre-announcement Docker arm64 timeout fix (#3188 → PR #3191, merged)
 - Per-release dependency triage: 7 dependabot PRs merged 2026-04-07 (#3178–#3184)
@@ -503,7 +510,7 @@ dedicated release-lineage plan.
 - Receiver expression facts are planned in [PLSP-SPEC-0005](../specs/PLSP-SPEC-0005-receiver-expression-facts.md) and sequenced in [RECEIVER_FACTS_IMPLEMENTATION_PLAN.md](RECEIVER_FACTS_IMPLEMENTATION_PLAN.md); the lane must land semantic facts and receipts before provider-visible receiver completion claims.
 - CI/control-plane next-wave execution sequencing is tracked in [CI_WAVE_EXECUTION_PLAN.md](CI_WAVE_EXECUTION_PLAN.md), with #7404 (`update-status --write` streaming) as the top urgency lane.
 
-### Next (post v0.14.0 closeout)
+### Next (post v0.17.0)
 
 - The 0.13.x line has built confidence across parser, diagnostics, refactoring, and distribution
 - Resume parser, corpus, semantic, and DAP hardening after the release-channel receipts close
