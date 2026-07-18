@@ -192,8 +192,10 @@ impl PackageGraphIndex {
     /// Mirrors [`ancestors`](Self::ancestors): depth-first traversal with an
     /// on-path set for cycle detection. Roles are returned in deterministic
     /// DFS pre-order and de-duplicated; the starting package is **not**
-    /// included. When a composition cycle is detected the traversal terminates
-    /// immediately and [`RoleCompositionResult::cycle_detected`] is set.
+    /// included. When a composition cycle is detected,
+    /// [`RoleCompositionResult::cycle_detected`] is set and only the cyclic
+    /// branch is abandoned — unrelated sibling roles are still collected, so
+    /// the result stays complete for every acyclic path.
     pub fn transitive_composed_roles(&self, package_name: &str) -> RoleCompositionResult {
         let mut on_stack = HashSet::new();
         let mut roles = Vec::new();
@@ -212,6 +214,12 @@ impl PackageGraphIndex {
     /// only back-edges (true composition cycles) trigger `cycle_detected`.
     /// Convergence via multiple composition paths is handled by checking
     /// `roles` to avoid duplicates without flagging a cycle.
+    ///
+    /// A detected cycle abandons **only** the offending branch (`continue`),
+    /// never the whole traversal: sibling roles reached through other,
+    /// acyclic edges are unrelated to the cycle and must still be collected.
+    /// Aborting the entire DFS on the first back-edge would silently drop
+    /// those siblings depending on edge-insertion order.
     fn collect_composed_roles(
         &self,
         package_name: &str,
@@ -219,15 +227,12 @@ impl PackageGraphIndex {
         roles: &mut Vec<String>,
         cycle_detected: &mut bool,
     ) {
-        if *cycle_detected {
-            return;
-        }
-
         for role in self.composed_roles(package_name) {
             if on_stack.contains(&role) {
-                // Back-edge to a role on the current DFS path — true cycle.
+                // Back-edge to a role on the current DFS path — a true cycle.
+                // Skip this branch only; keep collecting siblings.
                 *cycle_detected = true;
-                return;
+                continue;
             }
 
             // Skip already-collected roles (convergent composition).
@@ -239,10 +244,6 @@ impl PackageGraphIndex {
             on_stack.insert(role.clone());
             self.collect_composed_roles(&role, on_stack, roles, cycle_detected);
             on_stack.remove(&role);
-
-            if *cycle_detected {
-                return;
-            }
         }
     }
 
@@ -619,6 +620,39 @@ mod tests {
         assert!(result.roles.contains(&"Shared".to_string()));
         // "Shared" is collected exactly once despite two paths reaching it.
         assert_eq!(result.roles.iter().filter(|r| *r == "Shared").count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn transitive_composed_roles_cycle_preserves_unrelated_siblings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        // Top composes RoleCyclic (first edge) and RoleClean (second edge).
+        // RoleCyclic composes back to Top (a genuine cycle); RoleClean is an
+        // unrelated acyclic sibling. The cycle must not drop RoleClean, even
+        // though RoleCyclic is visited first.
+        index.add_edges(
+            "file:///lib/Top.pm",
+            FileId(1),
+            vec![composes_edge("Top", "RoleCyclic"), composes_edge("Top", "RoleClean")],
+        );
+        index.add_edges(
+            "file:///lib/RoleCyclic.pm",
+            FileId(2),
+            vec![composes_edge("RoleCyclic", "Top")],
+        );
+
+        let result = index.transitive_composed_roles("Top");
+        assert!(result.cycle_detected, "the RoleCyclic -> Top back-edge is a cycle");
+        assert!(
+            result.roles.contains(&"RoleCyclic".to_string()),
+            "the cyclic role itself is still reached before the back-edge"
+        );
+        assert!(
+            result.roles.contains(&"RoleClean".to_string()),
+            "an unrelated sibling must survive a cycle in another branch: {:?}",
+            result.roles
+        );
         Ok(())
     }
 

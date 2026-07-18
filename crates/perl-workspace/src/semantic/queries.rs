@@ -156,19 +156,30 @@ pub trait SemanticQueries {
         method_name: &str,
     ) -> Vec<DefinitionCandidate>;
 
-    /// Return the names of all methods provided by `role_package`, including
-    /// methods contributed by roles it transitively composes.
+    /// Return `(method_name, origin_role)` pairs for every method provided by
+    /// `role_package`, including methods contributed by roles it transitively
+    /// composes.
+    ///
+    /// The `origin_role` is the package that actually *defines* the method.
+    /// Callers use it to distinguish a genuine conflict (two roles each
+    /// defining their own method of the same name — different origins) from a
+    /// diamond composition (two roles that both pull the same method in from a
+    /// shared ancestor role — one origin, and therefore **not** a conflict).
+    /// A method defined directly on `role_package` takes precedence over one
+    /// reached through composition (matching Perl's "the role's own method
+    /// shadows a composed one" rule).
     ///
     /// Traversal follows `ComposesRole` edges cycle-safely; the result is
-    /// de-duplicated and sorted for determinism. Returns an empty vec when no
-    /// workspace data is available or the role is unresolved/external.
+    /// de-duplicated (one origin per method) and sorted by method name for
+    /// determinism. Returns an empty vec when no workspace data is available or
+    /// the role is unresolved/external.
     ///
     /// Callers must treat an empty result as *"unknown"*, never as *"provides
     /// no methods"* — this keeps role-conflict detection conservative for roles
     /// that cannot be resolved (e.g. defined outside the indexed workspace or
     /// composed dynamically). Defaults to empty so no-op implementations such
     /// as the null query degrade gracefully.
-    fn transitive_role_methods(&self, _role_package: &str) -> Vec<String> {
+    fn transitive_role_methods(&self, _role_package: &str) -> Vec<(String, String)> {
         Vec::new()
     }
 
@@ -650,25 +661,31 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
         candidates
     }
 
-    fn transitive_role_methods(&self, role_package: &str) -> Vec<String> {
+    fn transitive_role_methods(&self, role_package: &str) -> Vec<(String, String)> {
         let graph = match self.package_graph {
             Some(g) => g,
             None => return Vec::new(),
         };
 
-        // The role itself, plus every role it transitively composes (cycle-safe).
+        // The role itself first, then every role it transitively composes
+        // (cycle-safe, DFS pre-order). Visiting the role before its composed
+        // roles means a method defined directly on the role wins over one
+        // pulled in through composition — Perl's "own method shadows a
+        // composed one" rule — because we keep the first origin seen.
         let mut packages = vec![role_package.to_string()];
         packages.extend(graph.transitive_composed_roles(role_package).roles);
 
-        let mut methods = std::collections::HashSet::new();
+        // Map each method to the origin package that defines it (first wins).
+        // BTreeMap gives deterministic, method-name-sorted output.
+        let mut origins: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
         for pkg in &packages {
-            methods.extend(self.enumerate_package_methods(pkg));
+            for method in self.enumerate_package_methods(pkg) {
+                origins.entry(method).or_insert_with(|| pkg.clone());
+            }
         }
 
-        // Deterministic, de-duplicated output.
-        let mut methods: Vec<String> = methods.into_iter().collect();
-        methods.sort();
-        methods
+        origins.into_iter().collect()
     }
 
     fn rename_plan(&self, entity_id: EntityId, new_name: &str) -> RenamePlan {
@@ -2471,8 +2488,72 @@ mod tests {
             &ref_index, &ie_index, &shards, &pkg_graph,
         );
 
-        // Sorted, de-duplicated, direct + transitively-composed; decoys excluded.
-        assert_eq!(queries.transitive_role_methods("RoleA"), vec!["alpha", "beta", "shared"]);
+        // Sorted by method, de-duplicated, direct + transitively-composed;
+        // decoys excluded. Each method is attributed to its defining origin:
+        // `alpha`/`shared` come from RoleA, `beta` from the composed RoleB.
+        assert_eq!(
+            queries.transitive_role_methods("RoleA"),
+            vec![
+                ("alpha".to_string(), "RoleA".to_string()),
+                ("beta".to_string(), "RoleB".to_string()),
+                ("shared".to_string(), "RoleA".to_string()),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn transitive_role_methods_own_definition_wins_over_composed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // RoleA defines `run` directly AND composes RoleB which also defines
+        // `run`. Perl's rule: the role's own method shadows the composed one,
+        // so `run`'s origin must be RoleA, not RoleB.
+        let shard_a = make_shard(
+            "file:///lib/RoleA.pm",
+            FileId(1),
+            vec![],
+            vec![role_method_entity(100, "RoleA::run", EntityKind::Subroutine)],
+            vec![],
+            vec![],
+        );
+        let shard_b = make_shard(
+            "file:///lib/RoleB.pm",
+            FileId(2),
+            vec![],
+            vec![role_method_entity(200, "RoleB::run", EntityKind::Subroutine)],
+            vec![],
+            vec![],
+        );
+
+        let mut shards = HashMap::new();
+        shards.insert(shard_a.source_uri.clone(), shard_a);
+        shards.insert(shard_b.source_uri.clone(), shard_b);
+
+        let mut pkg_graph = PackageGraphIndex::new();
+        pkg_graph.add_edges(
+            "file:///lib/RoleA.pm",
+            FileId(1),
+            vec![PackageEdge::new(
+                "RoleA".to_string(),
+                "RoleB".to_string(),
+                PackageEdgeKind::ComposesRole,
+                Some(AnchorId(1)),
+                Provenance::ExactAst,
+                Confidence::High,
+            )],
+        );
+
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = WorkspaceSemanticQueries::with_package_graph(
+            &ref_index, &ie_index, &shards, &pkg_graph,
+        );
+
+        assert_eq!(
+            queries.transitive_role_methods("RoleA"),
+            vec![("run".to_string(), "RoleA".to_string())],
+            "a role's own method must shadow the same-named composed method"
+        );
         Ok(())
     }
 

@@ -23,16 +23,23 @@ use perl_semantic_analyzer::{
 
 /// Check for Moo/Moose/Role::Tiny role method conflicts.
 ///
-/// `resolve_role_methods` maps a role package name to the method names it
-/// provides transitively (including through composed roles). In production it
-/// is backed by `SemanticQueries::transitive_role_methods`; it returns an empty
-/// vec for roles that cannot be resolved, which keeps detection conservative.
-/// Pass a closure returning `Vec::new()` to restrict the lint to same-file
-/// analysis (e.g. when no workspace index is available).
+/// `resolve_role_methods` maps a role package name to the `(method_name,
+/// origin_role)` pairs it provides transitively (including through composed
+/// roles), where `origin_role` is the package that actually *defines* the
+/// method. In production it is backed by
+/// `SemanticQueries::transitive_role_methods`; it returns an empty vec for
+/// roles that cannot be resolved, which keeps detection conservative. Pass a
+/// closure returning `Vec::new()` to restrict the lint to same-file analysis
+/// (e.g. when no workspace index is available).
+///
+/// A method only conflicts when two or more consumed roles provide it from
+/// **different** origins. Two roles that both pull the same method in from a
+/// shared ancestor role (diamond composition) resolve it to a single origin —
+/// that is the *same* method, and Perl does not treat it as a conflict.
 pub fn check_role_conflicts(
     node: &Node,
     symbol_table: &SymbolTable,
-    resolve_role_methods: &dyn Fn(&str) -> Vec<String>,
+    resolve_role_methods: &dyn Fn(&str) -> Vec<(String, String)>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let mut role_models: HashMap<String, ClassModel> = HashMap::new();
@@ -56,7 +63,11 @@ pub fn check_role_conflicts(
         }
 
         let class_methods = provided_method_names(&class_model);
-        let mut method_providers: HashMap<String, Vec<String>> = HashMap::new();
+        // Per method name: the distinct consuming roles that provide it (in
+        // `with`-clause order, for a stable message/anchor) and the set of
+        // distinct origin packages those providers resolve it to.
+        let mut method_consumers: HashMap<String, Vec<String>> = HashMap::new();
+        let mut method_origins: HashMap<String, HashSet<String>> = HashMap::new();
         let mut seen_roles = HashSet::new();
 
         for role_name in &class_model.roles {
@@ -64,21 +75,41 @@ pub fn check_role_conflicts(
                 continue;
             }
 
-            // Same-file roles resolve from the local ClassModel (works with no
-            // workspace index). Cross-file and transitively-composed roles
-            // resolve via the workspace-backed callback. Union both sources; an
-            // unresolved role simply contributes no methods.
-            let mut method_names: HashSet<String> =
-                role_models.get(role_name).map(provided_method_names).unwrap_or_default();
-            method_names.extend(resolve_role_methods(role_name));
+            // Resolve this role's methods to their defining origin. Same-file
+            // roles are their own origin (their ClassModel lists only directly
+            // defined subs); cross-file / transitively-composed roles come from
+            // the workspace resolver, which already applies own-definition-wins.
+            // A same-file definition takes precedence over a resolver origin.
+            let mut role_method_origins: HashMap<String, String> = HashMap::new();
+            if let Some(model) = role_models.get(role_name) {
+                for method in provided_method_names(model) {
+                    role_method_origins.insert(method, role_name.clone());
+                }
+            }
+            for (method, origin) in resolve_role_methods(role_name) {
+                role_method_origins.entry(method).or_insert(origin);
+            }
 
-            for method_name in method_names {
-                method_providers.entry(method_name).or_default().push(role_name.clone());
+            for (method, origin) in role_method_origins {
+                let consumers = method_consumers.entry(method.clone()).or_default();
+                if !consumers.contains(role_name) {
+                    consumers.push(role_name.clone());
+                }
+                method_origins.entry(method).or_default().insert(origin);
             }
         }
 
-        for (method_name, providers) in method_providers {
+        for (method_name, providers) in method_consumers {
+            // Need at least two distinct consuming roles, and the class must
+            // not resolve the method itself.
             if providers.len() < 2 || class_methods.contains(&method_name) {
+                continue;
+            }
+
+            // ...and those providers must resolve the method to at least two
+            // distinct origins. A single shared origin (diamond composition)
+            // is the same method, not a conflict.
+            if method_origins.get(&method_name).map(|origins| origins.len()).unwrap_or(0) < 2 {
                 continue;
             }
 
@@ -163,10 +194,11 @@ mod tests {
 
     /// Analysis with a caller-supplied role→methods resolver, simulating the
     /// workspace-backed `SemanticQueries::transitive_role_methods` for roles
-    /// that live outside `source`.
+    /// that live outside `source`. The resolver yields `(method, origin_role)`
+    /// pairs.
     fn role_conflict_diags_with_resolver(
         source: &str,
-        resolve_role_methods: &dyn Fn(&str) -> Vec<String>,
+        resolve_role_methods: &dyn Fn(&str) -> Vec<(String, String)>,
     ) -> Vec<Diagnostic> {
         let ast = must(Parser::new(source).parse());
         let symbol_table = SymbolExtractor::new_with_source(source).extract(&ast);
@@ -379,13 +411,19 @@ with 'MyRole::A', 'MyRole::B';
 
     // ── Cross-file / transitive resolution (workspace-backed resolver) ──
 
-    /// Build a resolver from a fixed role→methods map, mimicking the workspace
-    /// index returning transitive method sets for roles defined elsewhere.
-    fn map_resolver(entries: &[(&str, &[&str])]) -> impl Fn(&str) -> Vec<String> {
-        let map: HashMap<String, Vec<String>> = entries
+    /// Build a resolver from a fixed role→`(method, origin)` map, mimicking the
+    /// workspace index returning transitive `(method_name, origin_role)` sets
+    /// for roles defined elsewhere. The `origin` identifies the package that
+    /// actually defines the method, which is how the lint tells a real conflict
+    /// (different origins) from a diamond composition (one shared origin).
+    fn map_resolver(entries: &[(&str, &[(&str, &str)])]) -> impl Fn(&str) -> Vec<(String, String)> {
+        let map: HashMap<String, Vec<(String, String)>> = entries
             .iter()
             .map(|(role, methods)| {
-                (role.to_string(), methods.iter().map(|m| m.to_string()).collect())
+                (
+                    role.to_string(),
+                    methods.iter().map(|(m, o)| (m.to_string(), o.to_string())).collect(),
+                )
             })
             .collect();
         move |role: &str| map.get(role).cloned().unwrap_or_default()
@@ -400,12 +438,15 @@ package MyClass;
 use Moo;
 with 'RemoteRole::Greet', 'RemoteRole::Welcome';
 "#;
-        let resolver =
-            map_resolver(&[("RemoteRole::Greet", &["greet"]), ("RemoteRole::Welcome", &["greet"])]);
+        // Each role defines its own `greet` (distinct origins) → real conflict.
+        let resolver = map_resolver(&[
+            ("RemoteRole::Greet", &[("greet", "RemoteRole::Greet")]),
+            ("RemoteRole::Welcome", &[("greet", "RemoteRole::Welcome")]),
+        ]);
         let diags = role_conflict_diags_with_resolver(source, &resolver);
         assert!(
             has_code(&diags, "PL303"),
-            "cross-file roles both providing `greet` should fire PL303: {diags:?}"
+            "cross-file roles both defining their own `greet` should fire PL303: {diags:?}"
         );
     }
 
@@ -417,8 +458,8 @@ use Moo;
 with 'RemoteRole::Greet', 'RemoteRole::Farewell';
 "#;
         let resolver = map_resolver(&[
-            ("RemoteRole::Greet", &["greet"]),
-            ("RemoteRole::Farewell", &["farewell"]),
+            ("RemoteRole::Greet", &[("greet", "RemoteRole::Greet")]),
+            ("RemoteRole::Farewell", &[("farewell", "RemoteRole::Farewell")]),
         ]);
         let diags = role_conflict_diags_with_resolver(source, &resolver);
         assert!(
@@ -435,8 +476,10 @@ use Moo;
 with 'RemoteRole::Greet', 'RemoteRole::Welcome';
 sub greet { "mine" }
 "#;
-        let resolver =
-            map_resolver(&[("RemoteRole::Greet", &["greet"]), ("RemoteRole::Welcome", &["greet"])]);
+        let resolver = map_resolver(&[
+            ("RemoteRole::Greet", &[("greet", "RemoteRole::Greet")]),
+            ("RemoteRole::Welcome", &[("greet", "RemoteRole::Welcome")]),
+        ]);
         let diags = role_conflict_diags_with_resolver(source, &resolver);
         assert!(
             !has_code(&diags, "PL303"),
@@ -457,7 +500,9 @@ package MyClass;
 use Moo;
 with 'MyRole::Local', 'RemoteRole::Greet';
 "#;
-        let resolver = map_resolver(&[("RemoteRole::Greet", &["greet"])]);
+        // Local role's `greet` origin is itself; the remote role defines its
+        // own `greet` — distinct origins, so a real conflict.
+        let resolver = map_resolver(&[("RemoteRole::Greet", &[("greet", "RemoteRole::Greet")])]);
         let diags = role_conflict_diags_with_resolver(source, &resolver);
         assert!(
             has_code(&diags, "PL303"),
@@ -469,21 +514,23 @@ with 'MyRole::Local', 'RemoteRole::Greet';
     fn transitive_role_methods_participate_in_conflict() {
         // The resolver already returns the *transitive* method set for each
         // role (that traversal happens in the workspace layer). RemoteRole::A
-        // transitively provides `run` via a composed role; RemoteRole::B
-        // provides `run` directly.
+        // transitively provides `run` via a composed role (origin
+        // RemoteRole::A::Base); RemoteRole::B defines `run` itself. The origins
+        // differ, so it is a genuine conflict.
         let source = r#"
 package MyClass;
 use Moo;
 with 'RemoteRole::A', 'RemoteRole::B';
 "#;
         let resolver = map_resolver(&[
-            ("RemoteRole::A", &["run"]), // contributed through transitive composition
-            ("RemoteRole::B", &["run"]),
+            // `run` contributed through transitive composition (distinct origin).
+            ("RemoteRole::A", &[("run", "RemoteRole::A::Base")]),
+            ("RemoteRole::B", &[("run", "RemoteRole::B")]),
         ]);
         let diags = role_conflict_diags_with_resolver(source, &resolver);
         assert!(
             has_code(&diags, "PL303"),
-            "transitively-provided overlapping method should fire PL303: {diags:?}"
+            "transitively-provided overlapping method with distinct origins should fire PL303: {diags:?}"
         );
     }
 
@@ -511,11 +558,36 @@ package MyClass;
 use Moo;
 with 'RemoteRole::A', 'RemoteRole::B';
 "#;
-        let resolver = map_resolver(&[("RemoteRole::A", &["run"])]);
+        let resolver = map_resolver(&[("RemoteRole::A", &[("run", "RemoteRole::A")])]);
         let diags = role_conflict_diags_with_resolver(source, &resolver);
         assert!(
             !has_code(&diags, "PL303"),
             "a method provided by only one role is not a conflict: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn diamond_shared_origin_method_is_not_a_conflict() {
+        // Both consumed roles pull `run` in from the SAME shared ancestor role
+        // (RemoteRole::Shared) — a diamond composition. Perl composes this
+        // without error because it is the same method reached two ways. The
+        // resolver reports the same origin for both, so PL303 must NOT fire.
+        //
+        // This is the regression guard for the false positive that a bare
+        // method-name union (no provenance) would produce.
+        let source = r#"
+package MyClass;
+use Moo;
+with 'RemoteRole::A', 'RemoteRole::B';
+"#;
+        let resolver = map_resolver(&[
+            ("RemoteRole::A", &[("run", "RemoteRole::Shared")]),
+            ("RemoteRole::B", &[("run", "RemoteRole::Shared")]),
+        ]);
+        let diags = role_conflict_diags_with_resolver(source, &resolver);
+        assert!(
+            !has_code(&diags, "PL303"),
+            "a method both roles inherit from one shared ancestor role is not a conflict: {diags:?}"
         );
     }
 }
