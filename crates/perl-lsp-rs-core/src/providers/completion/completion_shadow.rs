@@ -102,7 +102,13 @@ pub fn completion_visibility_shadow<Q: SemanticQueries>(
     let old_summary = legacy_symbols_to_summary(&legacy_symbols);
 
     // ── New compiler-fact path ──
-    let new_visible = semantic_queries.visible_symbols_at(file_id, byte_offset, scope_id);
+    let mut new_visible = semantic_queries.visible_symbols_at(file_id, byte_offset, scope_id);
+    if scope_id.is_none() {
+        // A missing scope cannot prove lexical visibility. Exclude lexical
+        // facts from this shadow comparison rather than recording candidates
+        // that may belong to an unrelated local scope.
+        new_visible.retain(|symbol| !matches!(symbol.source, VisibleSymbolSource::LocalLexical));
+    }
     let new_summary = semantic_visible_to_summary(&new_visible);
     let notes = completion_shadow_notes(&legacy_symbols, &new_visible);
     let fact_source_traces =
@@ -966,6 +972,36 @@ mod tests {
         assert!(result.receipt.new_result.available);
         assert_eq!(result.receipt.new_result.match_count, 1);
         assert_eq!(result.receipt.verdict, ShadowCompareVerdict::Improved);
+        Ok(())
+    }
+
+    #[test]
+    fn shadow_without_scope_excludes_unproven_local_lexicals()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let queries = StubSemanticQueries {
+            visible_result: vec![
+                make_visible("local", VisibleSymbolSource::LocalLexical, Confidence::High),
+                make_visible("imported", VisibleSymbolSource::ExplicitImport, Confidence::High),
+            ],
+        };
+
+        let without_scope =
+            completion_visibility_shadow(Vec::new(), &queries, FileId(1), 10, None, "completion");
+        assert_eq!(without_scope.receipt.new_result.match_count, 1);
+        assert_eq!(
+            without_scope.receipt.new_result.identities,
+            vec!["imported:ExplicitImport".to_string()]
+        );
+
+        let with_scope = completion_visibility_shadow(
+            Vec::new(),
+            &queries,
+            FileId(1),
+            10,
+            Some(ScopeId(7)),
+            "completion",
+        );
+        assert_eq!(with_scope.receipt.new_result.match_count, 2);
         Ok(())
     }
 

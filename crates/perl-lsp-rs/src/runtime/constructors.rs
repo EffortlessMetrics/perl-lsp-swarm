@@ -94,6 +94,7 @@ impl LspServer {
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
@@ -105,6 +106,8 @@ impl LspServer {
             critic_runtime_override: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
+            #[cfg(not(target_arch = "wasm32"))]
+            force_perlcritic_command_unavailable: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
@@ -260,6 +263,7 @@ impl LspServer {
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
@@ -271,6 +275,8 @@ impl LspServer {
             critic_runtime_override: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
+            #[cfg(not(target_arch = "wasm32"))]
+            force_perlcritic_command_unavailable: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
@@ -367,6 +373,7 @@ impl LspServer {
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
@@ -378,6 +385,8 @@ impl LspServer {
             critic_runtime_override: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
+            #[cfg(not(target_arch = "wasm32"))]
+            force_perlcritic_command_unavailable: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]

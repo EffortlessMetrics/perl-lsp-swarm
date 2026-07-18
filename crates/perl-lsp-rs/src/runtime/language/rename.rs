@@ -261,9 +261,9 @@ impl LspServer {
             let location = workspace_index
                 .semantic_anchor_wire_location_for_file(edit.file_id, edit.anchor_id)?;
             let doc = workspace_index.document_store().get(&location.uri)?;
-            let start = location.range.start.to_byte_offset(&doc.text);
-            let end = location.range.end.to_byte_offset(&doc.text);
-            if start >= end || doc.text.get(start..end)? != edit.old_text {
+            let start = location.range.start.to_byte_offset(doc.text());
+            let end = location.range.end.to_byte_offset(doc.text());
+            if start >= end || doc.text().get(start..end)? != edit.old_text {
                 return None;
             }
 
@@ -372,7 +372,7 @@ impl LspServer {
                     &mut grouped,
                     &mut seen,
                     &edit_uri,
-                    &doc.text,
+                    doc.text(),
                     &qualified_name,
                     package_len,
                     symbol_len,
@@ -1459,7 +1459,7 @@ impl LspServer {
                                 self.get_document(&documents, uri).is_none_or(|doc| {
                                     idx.document_store()
                                         .get(uri)
-                                        .is_some_and(|indexed| indexed.text == doc.text)
+                                        .is_some_and(|indexed| indexed.text() == doc.text)
                                 })
                             };
                             if package_local_live_pilot_enabled {

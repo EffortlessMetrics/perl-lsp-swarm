@@ -9,7 +9,7 @@ use perl_lsp_rs_core::tooling::native_compat::{
     PerlcriticCompatItem, PerlcriticCompatReport, PerlcriticNativeConfigSuggestion,
     classify_perlcritic_profile, render_perlcritic_compat_markdown,
 };
-use perl_lsp_rs_core::tooling::perl_critic::NativeCriticRegistry;
+use perl_lsp_rs_core::tooling::perl_critic::{NativeCriticProfile, NativeCriticRegistry};
 use perl_lsp_rs_core::tooling::perltidy::FormatConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -607,7 +607,7 @@ fn build_readiness_receipt(
             critic.rules_surfaced_in_workspace_diagnostics,
             critic.rules_with_violation_bridge
         ),
-        "route every recommended rule through pull, push, workspace diagnostics, and violation bridge",
+        "route every strict rule through pull, push, workspace diagnostics, and violation bridge",
     ));
     criteria.push(readiness_criterion(
         "critic",
@@ -675,7 +675,7 @@ fn build_readiness_receipt(
             "rules={} suppression={} fixes={}",
             critic.native_rule_count, critic.rules_with_suppression, critic.rules_with_fixes
         ),
-        "add suppression/config/fix tests for new rules before enabling them in recommended profile",
+        "add suppression/config/fix tests for new rules before enabling them in strict profile",
     ));
     criteria.push(readiness_criterion(
         "critic",
@@ -985,7 +985,7 @@ fn critic_status(
     critic_check_receipt: &Path,
     critic_false_positive_receipt: &Path,
 ) -> Result<CriticStatus> {
-    let registry = NativeCriticRegistry::recommended();
+    let registry = NativeCriticRegistry::for_profile(NativeCriticProfile::Strict);
     let native_rules = registry.rule_ids().into_iter().map(ToOwned::to_owned).collect::<Vec<_>>();
     let fixable = fixable_rule_ids();
     let missing_fix_rules = fixable
@@ -1634,7 +1634,7 @@ mod tests {
             format!(
                 r#"{{
   "commit": "{commit}",
-  "profile": "recommended",
+  "profile": "strict",
   "files_checked": 3,
   "files_with_parse_errors": 0,
   "rules_run": 28,
@@ -1722,9 +1722,9 @@ mod tests {
         assert_eq!(value["formatter"]["format_else_placement"], "separate-line");
         assert_eq!(value["formatter"]["format_keyword_spacing"], "compact");
         assert_eq!(value["formatter"]["format_trailing_comma"], "add-when-wrapped");
-        assert!(value["critic"]["native_rule_count"].as_u64().unwrap_or_default() > 0);
+        assert_eq!(value["critic"]["native_rule_count"], 28);
         assert_eq!(value["critic"]["critic_check_receipt_present"], true);
-        assert_eq!(value["critic"]["critic_check_profile"], "recommended");
+        assert_eq!(value["critic"]["critic_check_profile"], "strict");
         assert_eq!(value["critic"]["critic_check_files_checked"], 3);
         assert_eq!(value["critic"]["critic_check_files_with_parse_errors"], 0);
         assert_eq!(value["critic"]["critic_check_rules_run"], 28);
@@ -1752,6 +1752,11 @@ mod tests {
             native_rules
                 .iter()
                 .any(|rule| { rule.as_str() == Some("native.io.unchecked_open_close") })
+        );
+        assert!(
+            native_rules
+                .iter()
+                .any(|rule| { rule.as_str() == Some("native.documentation.require_pod_sections") })
         );
 
         let markdown = fs::read_to_string(markdown)?;
@@ -1788,7 +1793,7 @@ mod tests {
         assert!(markdown.contains("| Config else placement | separate-line |"));
         assert!(markdown.contains("| Config keyword spacing | compact |"));
         assert!(markdown.contains("| Config trailing comma | add-when-wrapped |"));
-        assert!(markdown.contains("| Native critic check profile | recommended |"));
+        assert!(markdown.contains("| Native critic check profile | strict |"));
         assert!(markdown.contains("| Native critic check files | 3 |"));
         assert!(markdown.contains("| Native critic check parse errors | 0 |"));
         assert!(markdown.contains("| Native critic check rules run | 28 |"));
@@ -1878,7 +1883,7 @@ color = 1
         assert_eq!(receipt["items"][11]["name"], "color");
         assert_eq!(receipt["items"][11]["classification"], "unsupported_safe");
         assert_eq!(receipt["suggested_config"]["engine"], "native");
-        assert_eq!(receipt["suggested_config"]["profile"], "recommended");
+        assert_eq!(receipt["suggested_config"]["profile"], "strict");
         assert_eq!(receipt["suggested_config"]["perlcritic_severity"], 3);
         assert_eq!(receipt["suggested_config"]["include"][0], "native.testing.require_use_strict");
         assert_eq!(
@@ -1982,7 +1987,7 @@ color = 1
                 rules_with_violation_bridge: 2,
                 critic_check_receipt: "native-critic-check.json".to_string(),
                 critic_check_receipt_present: true,
-                critic_check_profile: Some("recommended".to_string()),
+                critic_check_profile: Some("strict".to_string()),
                 critic_check_files_checked: Some(3),
                 critic_check_files_with_parse_errors: Some(0),
                 critic_check_rules_run: Some(2),

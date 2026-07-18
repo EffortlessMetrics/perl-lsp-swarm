@@ -2408,7 +2408,7 @@ impl LspServer {
         // that were open and then closed within the session).
         if let Some(coordinator) = self.coordinator() {
             if let Some(doc) = coordinator.index().document_store().get(uri) {
-                return Some(doc.text.clone());
+                return Some(doc.text().to_string());
             }
         }
 

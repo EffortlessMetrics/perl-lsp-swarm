@@ -1,33 +1,57 @@
 //! Diagnostic-code routing for code-action quick fixes.
 
 use super::quick_fixes;
-use super::types::{CodeAction, QuickFixDiagnostic};
+use super::types::{CodeAction, QuickFixDiagnostic, QuickFixMetadata};
 use crate::providers::diagnostics::Diagnostic;
 use perl_diagnostics::codes::DiagnosticCode;
+use perl_parser_core::Node;
 
 /// Convert Diagnostic to QuickFixDiagnostic.
 ///
-/// Since Diagnostic already uses byte offsets, this is a simple copy.
-fn to_quick_fix_diagnostic(diag: &Diagnostic) -> QuickFixDiagnostic {
-    QuickFixDiagnostic { range: diag.range, message: diag.message.clone(), code: diag.code.clone() }
+/// Copies byte-offset fields and, for supported diagnostic codes, derives
+/// structured `QuickFixMetadata` from the AST when available.
+fn to_quick_fix_diagnostic(
+    diag: &Diagnostic,
+    printf_metadata: Option<&QuickFixMetadata>,
+) -> QuickFixDiagnostic {
+    let metadata = diag.code.as_deref().and_then(|code| {
+        matches!(code, "PL405" | "native.common.printf_format_arity")
+            .then(|| printf_metadata.cloned())
+            .flatten()
+    });
+    QuickFixDiagnostic {
+        range: diag.range,
+        message: diag.message.clone(),
+        code: diag.code.clone(),
+        metadata,
+    }
 }
 
 pub(super) fn quick_fixes_for_diagnostics(
     source: &str,
+    ast: Option<&Node>,
     diagnostics: &[Diagnostic],
 ) -> Vec<CodeAction> {
     let mut actions = Vec::new();
+    let printf_metadata = ast.map(quick_fixes::printf_format_arity_metadata_by_range);
 
     for diagnostic in diagnostics {
-        actions.extend(quick_fixes_for_diagnostic(source, diagnostic));
+        actions.extend(quick_fixes_for_diagnostic(source, printf_metadata.as_ref(), diagnostic));
     }
 
     actions
 }
 
-fn quick_fixes_for_diagnostic(source: &str, diagnostic: &Diagnostic) -> Vec<CodeAction> {
+fn quick_fixes_for_diagnostic(
+    source: &str,
+    printf_metadata: Option<&quick_fixes::PrintfFormatArityMetadata>,
+    diagnostic: &Diagnostic,
+) -> Vec<CodeAction> {
     let mut actions = Vec::new();
-    let qf_diag = to_quick_fix_diagnostic(diagnostic);
+    let qf_diag = to_quick_fix_diagnostic(
+        diagnostic,
+        printf_metadata.and_then(|metadata| metadata.for_diagnostic(source, diagnostic.range)),
+    );
 
     let Some(code) = &diagnostic.code else {
         return actions;
@@ -244,7 +268,7 @@ mod tests {
             "`next MISSING` references a label that is not defined in this file",
         );
 
-        let actions = quick_fixes_for_diagnostics(source, &[diagnostic]);
+        let actions = quick_fixes_for_diagnostics(source, None, &[diagnostic]);
 
         let action =
             must_some(actions.iter().find(|action| action.title == "Remove undefined label"));
@@ -265,7 +289,7 @@ mod tests {
             "`next MISSING` references a label that is not defined in this file",
         );
 
-        let actions = quick_fixes_for_diagnostics(source, &[diagnostic]);
+        let actions = quick_fixes_for_diagnostics(source, None, &[diagnostic]);
 
         assert!(actions.is_empty());
     }
@@ -280,7 +304,7 @@ mod tests {
             "`next MISSING` references a label that is not defined in this file",
         );
 
-        let actions = quick_fixes_for_diagnostic(source, &diagnostic);
+        let actions = quick_fixes_for_diagnostic(source, None, &diagnostic);
 
         assert_eq!(actions.len(), 0);
     }

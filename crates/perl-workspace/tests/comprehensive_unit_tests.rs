@@ -435,7 +435,7 @@ fn test_document_store_open_get_close() {
     assert_eq!(store.count(), 1);
 
     let doc = must_some(store.get("file:///doc.pl"));
-    assert_eq!(doc.text, "content");
+    assert_eq!(doc.text(), "content");
 
     assert!(store.close("file:///doc.pl"));
     assert!(!store.is_open("file:///doc.pl"));
@@ -450,7 +450,7 @@ fn test_document_store_update() {
 
     let doc = must_some(store.get("file:///upd.pl"));
     assert_eq!(doc.version, 2);
-    assert_eq!(doc.text, "v2");
+    assert_eq!(doc.text(), "v2");
 }
 
 #[test]
@@ -467,7 +467,7 @@ fn test_document_store_rejects_stale_update_version() {
 
     let doc = must_some(store.get("file:///stale.pl"));
     assert_eq!(doc.version, 10);
-    assert_eq!(doc.text, "latest");
+    assert_eq!(doc.text(), "latest");
 }
 
 #[test]

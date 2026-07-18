@@ -66,13 +66,21 @@ export class Range {
   public end: { line: number; character: number };
 
   constructor(
-    public startLine: number,
-    public startCharacter: number,
-    public endLine: number,
-    public endCharacter: number,
+    startOrLine: { line: number; character: number } | number,
+    endOrStartChar: { line: number; character: number } | number,
+    endLine?: number,
+    endChar?: number,
   ) {
-    this.start = { line: startLine, character: startCharacter };
-    this.end = { line: endLine, character: endCharacter };
+    if (typeof startOrLine === 'number') {
+      this.start = { line: startOrLine, character: endOrStartChar as number };
+      this.end = { line: endLine ?? 0, character: endChar ?? 0 };
+    } else {
+      this.start = { line: startOrLine.line, character: startOrLine.character };
+      this.end = {
+        line: (endOrStartChar as { line: number; character: number }).line,
+        character: (endOrStartChar as { line: number; character: number }).character,
+      };
+    }
   }
 }
 
@@ -111,7 +119,10 @@ export class TestMessage {
 
 export class CancellationTokenSource {
   token = { isCancellationRequested: false };
-  dispose() {}
+  cancel(): void {
+    this.token.isCancellationRequested = true;
+  }
+  dispose(): void {}
 }
 
 export class ProcessExecution {

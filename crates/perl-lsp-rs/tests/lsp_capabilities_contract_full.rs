@@ -10,7 +10,7 @@ fn full_capabilities_match_contract() -> Result<(), Box<dyn std::error::Error>> 
     let srv = LspServer::new();
     let init = JsonRpcRequest {
         _jsonrpc: "2.0".into(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer((1) as i64)),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1)),
         method: "initialize".into(),
         params: Some(json!({"capabilities":{}})),
     };
@@ -48,7 +48,17 @@ fn full_capabilities_match_contract() -> Result<(), Box<dyn std::error::Error>> 
 
     let st = &caps["semanticTokensProvider"];
     assert!(st.is_object());
-    assert_eq!(st["full"], json!(true));
+    // Per LSP 3.17, `SemanticTokensOptions.full` is `boolean | { delta?: boolean }`.
+    // The server advertises the object form `{ delta: true }` because it implements
+    // `textDocument/semanticTokens/full/delta` (see runtime/language/semantic_tokens.rs).
+    // Accept the bare `true` or an object whose `delta` is `true` — mirroring the
+    // `renameProvider` / `codeActionProvider` assertions above — without weakening to a
+    // bare `is_object()` check that would pass on a delta-less or malformed object.
+    assert!(
+        st["full"] == json!(true) || st["full"]["delta"] == json!(true),
+        "semanticTokensProvider.full should be true or {{ delta: true }}, got {}",
+        st["full"]
+    );
 
     let ih = &caps["inlayHintProvider"];
     assert!(ih.is_object());
