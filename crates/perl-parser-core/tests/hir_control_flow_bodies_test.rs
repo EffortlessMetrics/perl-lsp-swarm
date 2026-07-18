@@ -129,9 +129,41 @@ fn c_style_for_links_initializer_and_update() -> Result<(), Box<dyn Error>> {
         return Err("expected structured C-style loop".into());
     };
     assert!(matches!(kind, LoopKind::CStyleFor));
-    assert!(matches!(init.and_then(|id| body.stmt(id)), Some(HirStmt::Let { .. })));
+    let init_block = init
+        .and_then(|id| body.block(id))
+        .ok_or_else(|| "C-style loop initializer block is missing".to_string())?;
+    assert!(matches!(
+        init_block.stmts.first().and_then(|id| body.stmt(*id)),
+        Some(HirStmt::Let { .. })
+    ));
     assert!(condition.is_some(), "C-style loop condition must be linked");
     assert!(matches!(update.and_then(|id| body.expr(id)), Some(HirExpr::Unary { .. })));
+    Ok(())
+}
+
+#[test]
+fn c_style_for_preserves_comma_separated_initializers() -> Result<(), Box<dyn Error>> {
+    let file = parse("for (my $i = 0, $j = 0; $i < 2; $i++) { $seen = $j; }");
+    let body = file.root_body().ok_or_else(|| "root body is missing".to_string())?;
+    let HirExpr::Loop { init, .. } = first_expr(body)? else {
+        return Err("expected structured C-style loop".into());
+    };
+    let init_block = init
+        .and_then(|id| body.block(id))
+        .ok_or_else(|| "C-style loop initializer block is missing".to_string())?;
+    assert_eq!(init_block.stmts.len(), 2);
+    assert!(matches!(
+        init_block.stmts.first().and_then(|id| body.stmt(*id)),
+        Some(HirStmt::Let { name, .. }) if name == "i"
+    ));
+    let second =
+        init_block.stmts.get(1).ok_or_else(|| "second initializer is missing".to_string())?;
+    let HirStmt::Expr(second_expr) =
+        body.stmt(*second).ok_or_else(|| "second initializer statement is missing".to_string())?
+    else {
+        return Err("expected second initializer assignment expression".into());
+    };
+    assert!(matches!(body.expr(*second_expr), Some(HirExpr::Assign { .. })));
     Ok(())
 }
 

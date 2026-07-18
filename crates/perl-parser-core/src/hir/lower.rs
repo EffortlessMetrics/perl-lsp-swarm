@@ -2963,7 +2963,8 @@ impl<'a> BodyBuilder2<'a> {
             }
 
             NodeKind::For { init, condition, update, body, continue_block } => {
-                let init_id = init.as_deref().map(|statement| self.lower_statement(statement));
+                let init_id =
+                    init.as_deref().map(|initializer| self.lower_for_init_block(initializer));
                 let condition_id = condition.as_deref().map(|expr| self.lower_expr(expr));
                 let body_id = self.lower_nested_block(body);
                 let continue_id =
@@ -3060,6 +3061,31 @@ impl<'a> BodyBuilder2<'a> {
         }
         self.start_scope = previous_scope;
         self.alloc_block(block, node.location)
+    }
+
+    /// Lower all statements in a C-style `for` initializer into one block.
+    ///
+    /// The parser represents comma-separated initializers as an array literal;
+    /// keeping that wrapper as one opaque statement would lose declaration and
+    /// assignment facts from every element after the first.
+    fn lower_for_init_block(&mut self, node: &Node) -> HirBlockId {
+        let mut block = HirBlock::default();
+        self.append_for_init_statements(node, &mut block);
+        self.alloc_block(block, node.location)
+    }
+
+    fn append_for_init_statements(&mut self, node: &Node, block: &mut HirBlock) {
+        match &node.kind {
+            NodeKind::ArrayLiteral { elements } => {
+                for element in elements {
+                    self.append_for_init_statements(element, block);
+                }
+            }
+            NodeKind::ExpressionStatement { expression } => {
+                self.append_for_init_statements(expression, block);
+            }
+            _ => block.stmts.push(self.lower_statement(node)),
+        }
     }
 
     /// Lower a foreach iterator as a write-place expression.

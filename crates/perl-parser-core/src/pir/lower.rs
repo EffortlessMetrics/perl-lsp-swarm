@@ -928,7 +928,7 @@ impl BodyLowerer {
             } => {
                 *self.unsupported.entry("Loop").or_insert(0) += 1;
                 if let Some(init) = init {
-                    self.lower_stmt(body, *init, file);
+                    self.lower_block(body, *init, file);
                 }
                 if let Some(condition) = condition {
                     self.lower_expr(body, *condition, file);

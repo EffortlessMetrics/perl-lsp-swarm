@@ -756,6 +756,17 @@ fn pir_a_c_style_for_preserves_initializer_and_update_operations() {
     );
 }
 
+#[test]
+fn pir_a_c_style_for_preserves_comma_initializer_operations() {
+    let graph = parse_and_lower("for (my $i = 0, $j = 0; $i < 2; $i++) { $seen = $j; }");
+    assert!(graph.nodes.iter().any(|node| {
+        matches!(&node.operation, PirOperation::LexicalWrite { name } if name.name == "i")
+    }));
+    assert!(graph.nodes.iter().any(|node| {
+        matches!(&node.operation, PirOperation::StashWrite { symbol } if symbol.name == "j")
+    }));
+}
+
 // ── 23. Opaque function call counted in unsupported receipt ───────────────────
 // `foo($x)` in a body arena lowers to `HirExpr::Opaque { ast_kind: "FunctionCall" }`,
 // which hits `ast_kind_to_static("FunctionCall") → "OpaqueCall"`. The receipt must

@@ -352,8 +352,11 @@ pub enum HirExpr {
     Loop {
         /// Loop family.
         kind: LoopKind,
-        /// Optional C-style loop initializer statement.
-        init: Option<HirStmtId>,
+        /// Optional C-style loop initializer block.
+        ///
+        /// The block preserves every initializer statement, including
+        /// comma-separated declarations in the C-style header.
+        init: Option<HirBlockId>,
         /// Loop condition or iterable expression, when present.
         condition: Option<HirExprId>,
         /// Optional C-style loop update expression.
