@@ -1007,6 +1007,29 @@ fn test_unclosed_qw_nested_unclosed_candidate_does_not_synchronize() -> Result<(
 }
 
 #[test]
+fn test_unclosed_qw_nested_guard_recognizes_carriage_return_indent() -> Result<(), String> {
+    // #4494 guard: the hidden-statement scan of a swallowed error span must use the
+    // same whitespace predicate as the visible line-start check, so a nested
+    // starter indented with `\r` (or other non-space/tab whitespace) is still seen
+    // and defers synchronization rather than swallowing the real `print`.
+    let code = "my @items = qw(word\nmy @nested = qw(inner\n\rprint 1;";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("carriage-return nested qw failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 2 || !sexp.contains("@nested") || !sexp.contains("print") {
+        return Err(format!("carriage-return indent changed nested synchronization: {sexp}"));
+    }
+    if parser.errors().is_empty() {
+        return Err("carriage-return nested unclosed qw recorded no error".to_string());
+    }
+    Ok(())
+}
+
+#[test]
 fn test_unclosed_qw_recovers_trailing_declaration_with_malformed_numeric_rhs() -> Result<(), String>
 {
     // #4494 regression guard: a semicolon-terminated trailing declaration whose

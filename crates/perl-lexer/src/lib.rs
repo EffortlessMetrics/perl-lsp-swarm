@@ -3333,7 +3333,7 @@ impl<'a> PerlLexer<'a> {
             // mid-stream error token (input continues past it, e.g. a malformed
             // numeric literal) hides nothing: fall through so the real terminating
             // semicolon or the next statement starter still drives the decision.
-            if matches!(token.token_type, TokenType::Error(_)) && token.end >= source.len() {
+            if matches!(token.token_type, TokenType::Error(_)) && token.end == source.len() {
                 return if Self::qw_probe_span_hides_statement(&source[token.start..]) {
                     QwStatementProbe::Interrupted
                 } else {
@@ -3369,12 +3369,16 @@ impl<'a> PerlLexer<'a> {
     /// to it rather than swallow it. Recognition mirrors the visible statement
     /// starter check in `qw_statement_probe`: a bare `my`/`our`/`state`/`local`/
     /// `print` keyword at a line prefix (after a newline), delimited by a
-    /// non-identifier character so `myfunc`/`printer` do not match.
+    /// non-identifier character so `myfunc`/`printer` do not match. The
+    /// line-prefix whitespace predicate matches the visible statement-starter
+    /// check in `qw_statement_probe` (`char::is_whitespace`, minus the newline
+    /// this loop uses as the line delimiter) so the two paths cannot diverge on
+    /// `\r`/vertical-tab/form-feed indentation.
     fn qw_probe_span_hides_statement(span: &str) -> bool {
         let mut rest = span;
         while let Some(newline) = rest.find('\n') {
             rest = &rest[newline + 1..];
-            let after = rest.trim_start_matches([' ', '\t']);
+            let after = rest.trim_start_matches(|ch: char| ch.is_whitespace() && ch != '\n');
             for keyword in ["my", "our", "state", "local", "print"] {
                 if let Some(tail) = after.strip_prefix(keyword)
                     && !tail.starts_with(is_perl_identifier_continue)
