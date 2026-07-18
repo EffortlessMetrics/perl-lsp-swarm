@@ -39,7 +39,7 @@ mod heredoc_antipatterns;
 /// Internal diagnostic types (Diagnostic, RelatedInformation) for this crate's linting machinery.
 mod internal_types;
 /// Lint checks (common mistakes, deprecations, strict warnings, security)
-mod lints;
+pub(crate) mod lints;
 /// Parse error to diagnostic conversion
 mod parse_errors;
 /// Scope analysis integration

@@ -44,6 +44,101 @@ struct PhaseScopedPragmaUse {
     phase_range: (usize, usize),
 }
 
+/// OO / pragma-bundle modules whose file-scope `use` implicitly enables
+/// `strict` + `warnings` in the importing package.
+///
+/// This is the **single source of truth** shared by the PL100/PL101 diagnostic
+/// ([`check_strict_warnings`]) and the "add use strict/warnings" code action
+/// (`providers::code_actions::modernize`), so the two surfaces can never
+/// disagree about the same file.
+///
+/// `Catalyst` and bare `Mojolicious` are intentionally absent (2026-07, issue
+/// #3644 item 3): neither implicitly enables strict/warnings in the *importing*
+/// package.
+/// - `Catalyst::import()` only performs Moose meta-class/superclass setup; it
+///   never calls `strict->import`/`warnings->import` for the caller, so Catalyst
+///   app files must (and always do, per Catalyst::Devel's App.pm.tt skeleton)
+///   declare `use strict; use warnings;` explicitly.
+/// - `Mojolicious.pm` defines no `import()` of its own -- it inherits
+///   `Mojo::Base::import()`, whose first line is `return unless my @flags = @_;`.
+///   A bare `use Mojolicious;` (no `-base`/flag) passes zero arguments, so the
+///   import returns immediately without touching strict/warnings. The flagged
+///   form (`use Mojolicious -base;`) DOES forward a non-empty flag list into
+///   `Mojo::Base::import()` and so DOES enable strict/warnings -- handled by
+///   [`implies_strict`] via the `args` the parser captures.
+///
+/// `Mojolicious::Lite`'s `import()` ends with
+/// `unshift @_, 'Mojo::Base', '-strict'; goto &Mojo::Base::import;`, always
+/// passing `-strict` into `Mojo::Base::import()` and so unconditionally enabling
+/// strict/warnings.
+///
+/// `Mouse` behaves like the other unconditional entries: `use Mouse;` imports
+/// full `strict`+`warnings` into the caller exactly as `Moose` does (Mouse is a
+/// drop-in Moose replacement), so it is strict-implying regardless of args.
+///
+/// `common::sense` is intentionally **absent**: it is *not* a `use strict;
+/// use warnings;` equivalent. It enables only `strict 'subs'`/`'vars'`
+/// (deliberately excluding `strict 'refs'`) plus a curated set of *fatal*
+/// warnings, so a file that only has `use common::sense;` genuinely lacks the
+/// full strict+warnings posture -- treating it as strict-implying would hide a
+/// real gap (no `strict refs`).
+///
+/// KNOWN LIMITATION (pre-existing): the parser does not distinguish `use Foo;`
+/// from `use Foo ();` (explicit empty import list, which skips `import()`) --
+/// both produce empty `args`, so `use Mojolicious::Lite ();` is still treated as
+/// strict-implying. Fixing this needs an AST-level `explicit_empty_import` flag.
+pub(crate) const IMPLICIT_STRICT_MODULES: &[&str] = &[
+    "Moo",
+    "Moose",
+    "Mouse",
+    "MooseX::StrictConstructor",
+    "Modern::Perl",
+    "Dancer2",
+    "Mojolicious::Lite",
+    "Mojo::Base",
+];
+
+/// Whether a file-scope `use $module $args;` implies strict+warnings for the
+/// importing package.
+///
+/// `Mojolicious` is special-cased: unlike the other list entries, whether it
+/// enables strict/warnings depends on the import *arguments* (`-base`), not just
+/// the module name -- see the [`IMPLICIT_STRICT_MODULES`] comment.
+///
+/// The parser folds a `use Module VERSION;` version literal into the `module`
+/// string (e.g. `"Mojolicious 9.0"`), so the bare module name is taken from the
+/// first whitespace-delimited token. An empty `qw//` list (any delimiter) is
+/// treated as passing no flags, since `Mojo::Base::import`'s
+/// `return unless @flags` guard short-circuits on it.
+pub(crate) fn implies_strict(module: &str, args: &[String]) -> bool {
+    let bare = module.split_whitespace().next().unwrap_or(module);
+    if bare == "Mojolicious" {
+        // Only a real *flag* forwards into `Mojo::Base::import` and enables
+        // strict. A leading version literal (numeric `9.0` — folded into the
+        // module string — or a v-string `v9.0` captured as an arg) is consumed
+        // by `use` before `import` runs, and an empty `qw//` list passes
+        // nothing; neither counts as a flag.
+        return args.iter().any(|a| !is_empty_qw_list(a) && !is_version_literal(a));
+    }
+    IMPLICIT_STRICT_MODULES.contains(&bare)
+}
+
+/// Whether `arg` is an empty `qw` list in any delimiter (`qw()`, `qw[]`,
+/// `qw{}`, `qw<>`, `qw//`) — i.e. `qw` followed by an opening and closing
+/// delimiter with nothing between.
+fn is_empty_qw_list(arg: &str) -> bool {
+    let compact: String = arg.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.strip_prefix("qw").is_some_and(|body| body.chars().count() == 2)
+}
+
+/// Whether `arg` is a numeric (`9.0`) or v-string (`v9.0`) version literal,
+/// which `use Module VERSION LIST;` consumes before calling `import`.
+fn is_version_literal(arg: &str) -> bool {
+    let a = arg.trim();
+    a.starts_with(|c: char| c.is_ascii_digit())
+        || (a.starts_with('v') && a[1..].starts_with(|c: char| c.is_ascii_digit()))
+}
+
 /// Check for common strict/warnings issues
 ///
 /// This function checks if 'use strict' and 'use warnings' pragmas are present
@@ -68,63 +163,6 @@ pub fn check_strict_warnings(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
         || top_level_state.strict_refs
         || top_level_state.signatures_strict;
     let mut has_warnings = top_level_state.warnings;
-
-    // OO frameworks that implicitly provide strict+warnings.
-    //
-    // `Catalyst` and bare `Mojolicious` were removed (2026-07, issue #3644 item 3):
-    // neither implicitly enables strict/warnings in the *importing* package.
-    // - `Catalyst::import()` only performs Moose meta-class/superclass setup;
-    //   it never calls `strict->import`/`warnings->import` for the caller, so
-    //   Catalyst app files must (and always do, per Catalyst::Devel's App.pm.tt
-    //   skeleton) declare `use strict; use warnings;` explicitly.
-    // - `Mojolicious.pm` defines no `import()` of its own -- it inherits
-    //   `Mojo::Base::import()`, whose very first line is
-    //   `return unless my @flags = @_;`. A bare `use Mojolicious;` (no `-base`
-    //   or other flag) passes zero arguments, so the import returns
-    //   immediately without touching strict/warnings at all. The flagged form
-    //   (`use Mojolicious -base;`) DOES forward a non-empty flag list into
-    //   `Mojo::Base::import()` and so DOES enable strict/warnings -- handled
-    //   by `implies_strict` below via the `args` the parser already captures.
-    // `Mojolicious::Lite` was added: its `import()` ends with
-    // `unshift @_, 'Mojo::Base', '-strict'; goto &Mojo::Base::import;`, which
-    // always passes the non-empty `-strict` flag into `Mojo::Base::import()`,
-    // unconditionally enabling `strict`/`warnings`/`utf8`/`feature` in the
-    // caller's package -- so a single-file `use Mojolicious::Lite;` app gets
-    // strict+warnings for free.
-    //
-    // KNOWN LIMITATION (pre-existing, not introduced here -- see #3644 item 3
-    // follow-up): the parser does not distinguish `use Foo;` (no parens, calls
-    // the module's default import) from `use Foo ();` (explicit empty import
-    // list, which skips import() entirely) -- both produce an empty `args`
-    // list on the `Use` AST node. So `use Mojolicious::Lite ();`, which in
-    // real Perl would NOT enable strict/warnings (import() never runs), is
-    // still (incorrectly) treated as strict-implying here, same as every
-    // other unconditional entry in this list (`Moo ()`, `Moose ()`, etc. have
-    // the identical gap). Fixing this needs an AST-level `explicit_empty_import`
-    // (or similar) flag threaded through `perl-ast`/`perl-parser-core`, which
-    // is out of scope for this list-correction fix.
-    const IMPLICIT_STRICT_MODULES: &[&str] = &[
-        "Moo",
-        "Moose",
-        "MooseX::StrictConstructor",
-        "Modern::Perl",
-        "Dancer2",
-        "Mojolicious::Lite",
-        "Mojo::Base",
-    ];
-
-    /// Whether a file-scope `use $module $args;` implies strict+warnings for
-    /// the importing package.
-    ///
-    /// `Mojolicious` is special-cased: unlike the other list entries, whether
-    /// it enables strict/warnings depends on the import *arguments*, not just
-    /// the module name -- see the `IMPLICIT_STRICT_MODULES` comment above.
-    fn implies_strict(module: &str, args: &[String]) -> bool {
-        if module == "Mojolicious" {
-            return !args.is_empty();
-        }
-        IMPLICIT_STRICT_MODULES.contains(&module)
-    }
 
     for (module, args) in collect_file_scope_use_modules(node) {
         if implies_strict(&module, &args) {
@@ -299,7 +337,10 @@ fn phase_scoped_pragma_diagnostic(
     }
 }
 
-fn collect_file_scope_use_modules(node: &Node) -> Vec<(String, Vec<String>)> {
+/// Collect `(module, args)` for every **file-scope** (top-level) `use`
+/// statement. Shared with the modernize code action so both derive
+/// implicit-strict modules from the same file-scope walk.
+pub(crate) fn collect_file_scope_use_modules(node: &Node) -> Vec<(String, Vec<String>)> {
     let mut modules = Vec::new();
     if let NodeKind::Program { statements } = &node.kind {
         for statement in statements {
