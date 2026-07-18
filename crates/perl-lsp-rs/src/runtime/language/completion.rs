@@ -119,6 +119,11 @@ struct CompletionDecisionContext<'a> {
     is_incomplete: bool,
 }
 
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+struct CompletionShadowBudget<'a> {
+    should_continue: &'a dyn Fn() -> bool,
+}
+
 fn get_snippet_placeholder_regex() -> Option<&'static Regex> {
     SNIPPET_PLACEHOLDER_RE.get_or_init(|| Regex::new(r"\$\{(\d+):([^}]+)\}")).as_ref().ok()
 }
@@ -178,7 +183,10 @@ impl LspServer {
                 let next = before_cursor[position + character.len_utf8()..].chars().next();
                 let is_member_arrow = (character == '-' && next == Some('>'))
                     || (character == '>' && previous == Some('-'));
+                let is_package_separator =
+                    character == ':' && (previous == Some(':') || next == Some(':'));
                 let is_boundary = !is_member_arrow
+                    && !is_package_separator
                     && (character.is_whitespace()
                         || matches!(
                             character,
@@ -197,6 +205,7 @@ impl LspServer {
                                 | '^'
                                 | '~'
                                 | '?'
+                                | ':'
                                 | '('
                                 | ')'
                                 | '{'
@@ -294,10 +303,10 @@ impl LspServer {
         uri: &str,
         doc_text: &str,
         byte_offset: usize,
-        line: u32,
-        character: u32,
+        position: (u32, u32),
         completions: &[crate::completion::CompletionItem],
         workspace_mode: &IndexAccessMode<'_>,
+        budget: CompletionShadowBudget<'_>,
     ) -> Option<Value> {
         let IndexAccessMode::Full(coordinator) = workspace_mode else {
             return None;
@@ -308,23 +317,35 @@ impl LspServer {
             return None;
         }
         let byte_offset = u32::try_from(byte_offset).ok()?;
+        let (line, character) = position;
         let input_label = format!("{uri}:{line}:{character}");
         let legacy_symbols = Self::completion_visibility_shadow_labels(completions);
         if legacy_symbols.is_empty() {
             return None;
         }
+        if !(budget.should_continue)() {
+            return None;
+        }
         let index = coordinator.index();
         let receipt = index.with_semantic_queries_for_uri(uri, |file_id, queries| {
-            completion_visibility_shadow(
-                legacy_symbols,
-                &queries,
-                file_id,
-                byte_offset,
-                None,
-                &input_label,
+            if !(budget.should_continue)() {
+                return None;
+            }
+            Some(
+                completion_visibility_shadow(
+                    legacy_symbols,
+                    &queries,
+                    file_id,
+                    byte_offset,
+                    None,
+                    &input_label,
+                )
+                .receipt,
             )
-            .receipt
-        })?;
+        })??;
+        if !(budget.should_continue)() {
+            return None;
+        }
         serde_json::to_value(receipt).ok()
     }
 
@@ -1255,10 +1276,10 @@ impl LspServer {
                     uri,
                     &doc.text,
                     offset,
-                    line,
-                    character,
+                    (line, character),
                     &completions,
                     &workspace_mode,
+                    CompletionShadowBudget { should_continue: &|| start.elapsed() < deadline },
                 );
                 #[cfg(any(not(feature = "workspace"), target_arch = "wasm32"))]
                 let semantic_shadow_receipt: Option<Value> = None;
@@ -1331,6 +1352,9 @@ impl LspServer {
         params: Option<Value>,
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+        let request_start = Instant::now();
+
         // Convert raw Value ID to typed ID at the boundary.
         let typed_id = request_id.and_then(JsonRpcId::try_from_value);
         // RAII guard ensures cleanup on all exit paths (early returns, errors, panics)
@@ -1540,10 +1564,15 @@ impl LspServer {
                     uri,
                     &doc.text,
                     offset,
-                    line,
-                    character,
+                    (line, character),
                     &completions,
                     &workspace_mode,
+                    CompletionShadowBudget {
+                        should_continue: &|| {
+                            request_start.elapsed() < completion_deadline()
+                                && !token.is_cancelled_relaxed()
+                        },
+                    },
                 );
                 #[cfg(any(not(feature = "workspace"), target_arch = "wasm32"))]
                 let semantic_shadow_receipt: Option<Value> = None;
@@ -2707,6 +2736,7 @@ mod tests {
             vec!["$value".to_string(), "user_sub".to_string(), "CONST".to_string()]
         );
         assert!(LspServer::is_qualified_member_completion_context("Foo::", 5));
+        assert!(LspServer::is_qualified_member_completion_context("Foo::bar", "Foo::bar".len(),));
         assert!(LspServer::is_qualified_member_completion_context("$object->", 9));
         assert!(!LspServer::is_qualified_member_completion_context("$value", 6));
         assert!(!LspServer::is_qualified_member_completion_context(
@@ -2720,6 +2750,10 @@ mod tests {
         assert!(!LspServer::is_qualified_member_completion_context(
             "Foo::bar.$value",
             "Foo::bar.$value".len(),
+        ));
+        assert!(!LspServer::is_qualified_member_completion_context(
+            "condition ? Foo::bar:$value",
+            "condition ? Foo::bar:$value".len(),
         ));
         assert!(LspServer::is_qualified_member_completion_context(
             "$object->{key",
