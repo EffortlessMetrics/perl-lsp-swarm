@@ -808,6 +808,83 @@ fn legacy_modernizer_detects_print_newline() -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+// Regression tests for #3922: every suggestion must carry accurate byte
+// offsets (not start:0,end:0) so LSP code-action handlers can apply edits at
+// the correct location. Each assertion slices the source with the reported
+// range and checks it recovers the exact matched token.
+fn legacy_range<'a>(
+    code: &'a str,
+    s: &perl_refactoring::modernize::ModernizationSuggestion,
+) -> &'a str {
+    &code[s.start..s.end]
+}
+
+#[test]
+fn legacy_modernizer_two_arg_open_has_offsets() -> Result<(), Box<dyn std::error::Error>> {
+    let m = LegacyModernizer::new();
+    let code = "my $x = 1;\nopen(FH, 'file.txt');\n";
+    let suggestions = m.analyze(code);
+    let s = suggestions
+        .iter()
+        .find(|s| s.old_pattern == "open(FH, 'file.txt')")
+        .ok_or("two-arg open suggestion missing")?;
+    assert!(s.start > 0 || s.end > 0, "offsets should not both be zero");
+    assert_eq!(legacy_range(code, s), "open(FH, 'file.txt')");
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_defined_array_has_offsets() -> Result<(), Box<dyn std::error::Error>> {
+    let m = LegacyModernizer::new();
+    let code = "if (defined @array) { }";
+    let suggestions = m.analyze(code);
+    let s = suggestions
+        .iter()
+        .find(|s| s.old_pattern == "defined @array")
+        .ok_or("defined @array suggestion missing")?;
+    assert_eq!(legacy_range(code, s), "defined @array");
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_each_array_has_offsets() -> Result<(), Box<dyn std::error::Error>> {
+    let m = LegacyModernizer::new();
+    let code = "while (my ($i, $v) = each @array) { }";
+    let suggestions = m.analyze(code);
+    let s = suggestions
+        .iter()
+        .find(|s| s.old_pattern == "each @array")
+        .ok_or("each @array suggestion missing")?;
+    assert_eq!(legacy_range(code, s), "each @array");
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_string_eval_has_offsets() -> Result<(), Box<dyn std::error::Error>> {
+    let m = LegacyModernizer::new();
+    let code = "my $r = eval \"1 + 1\";";
+    let suggestions = m.analyze(code);
+    let s = suggestions
+        .iter()
+        .find(|s| s.manual_review_required)
+        .ok_or("string eval suggestion missing")?;
+    assert_eq!(legacy_range(code, s), "eval \"");
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_print_newline_has_offsets() -> Result<(), Box<dyn std::error::Error>> {
+    let m = LegacyModernizer::new();
+    let code = "print \"Hello\\n\";";
+    let suggestions = m.analyze(code);
+    let s = suggestions
+        .iter()
+        .find(|s| s.new_pattern.contains("say"))
+        .ok_or("print-newline suggestion missing")?;
+    assert_eq!(legacy_range(code, s), "print \"Hello\\n\"");
+    Ok(())
+}
+
 #[test]
 fn legacy_modernizer_apply_bareword() -> Result<(), Box<dyn std::error::Error>> {
     let m = LegacyModernizer::new();
