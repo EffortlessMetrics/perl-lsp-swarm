@@ -359,8 +359,8 @@ impl DiagnosticsProvider {
         check_duplicate_package(ast, &mut diagnostics);
         check_duplicate_subroutine(ast, &mut diagnostics);
 
-        // Moo/Moose role conflict diagnostics (same-file only)
-        check_role_conflicts(ast, &symbol_table, &mut diagnostics);
+        // Moo/Moose role conflict diagnostics (cross-file and transitive via semantic_queries)
+        check_role_conflicts(ast, &symbol_table, &mut diagnostics, semantic_queries);
         check_goto_labels(ast, &symbol_table, &mut diagnostics);
         check_loop_control_labels(ast, &symbol_table, &mut diagnostics);
 

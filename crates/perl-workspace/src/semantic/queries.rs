@@ -282,6 +282,44 @@ pub trait SemanticQueries {
         byte_offset: u32,
         symbol: &str,
     ) -> Option<DynamicCallableEvidence>;
+
+    /// Return the bare method names provided directly by a named role, resolved
+    /// across all workspace fact shards.
+    ///
+    /// Searches every [`FileFactShard`] for [`EntityFact`] entries whose
+    /// [`EntityKind`] is `Method` or `Subroutine`, whose `canonical_name`
+    /// starts with `<role_name>::`, and whose confidence is at least `Medium`.
+    /// The returned names are the bare (unqualified) method names only, without
+    /// the package prefix.
+    ///
+    /// Returns an empty [`Vec`] when:
+    /// - the role is unknown or has no indexed entities,
+    /// - no workspace semantic data is available (default fallback), or
+    /// - the role definition is external/dynamic (conservative: fail closed).
+    ///
+    /// Callers must treat an empty result as "unresolved" and refrain from
+    /// emitting a conflict diagnostic, rather than treating it as "no methods".
+    fn role_provided_methods(&self, _role_name: &str) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Return the transitive set of role names composed by `package_name`,
+    /// traversed with cycle protection via BFS through `ComposesRole` edges.
+    ///
+    /// Traverses the package graph starting from the direct roles of
+    /// `package_name` and follows `ComposesRole` edges into nested roles,
+    /// collecting all reachable role names. The traversal terminates when the
+    /// queue is empty or a previously-visited role would be re-enqueued.
+    ///
+    /// Returns an empty [`Vec`] when:
+    /// - the package has no composed roles,
+    /// - no package-graph data is available (default fallback), or
+    /// - the traversal finds only already-visited nodes.
+    ///
+    /// The result order is deterministic (BFS order, direct roles first).
+    fn transitive_composed_roles(&self, _package_name: &str) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 // ── WorkspaceSemanticQueries ──
@@ -1161,6 +1199,59 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
         }
 
         None
+    }
+
+    fn role_provided_methods(&self, role_name: &str) -> Vec<String> {
+        let prefix = format!("{}::", role_name);
+        let mut methods = Vec::new();
+        for shard in self.fact_shards.values() {
+            for entity in &shard.entities {
+                if !matches!(entity.kind, EntityKind::Method | EntityKind::Subroutine) {
+                    continue;
+                }
+                if !matches!(entity.confidence, Confidence::High | Confidence::Medium) {
+                    continue;
+                }
+                if !entity.canonical_name.starts_with(&prefix) {
+                    continue;
+                }
+                let bare = &entity.canonical_name[prefix.len()..];
+                if !bare.is_empty() && !bare.contains("::") {
+                    methods.push(bare.to_string());
+                }
+            }
+        }
+        methods.sort();
+        methods.dedup();
+        methods
+    }
+
+    fn transitive_composed_roles(&self, package_name: &str) -> Vec<String> {
+        let Some(graph) = self.package_graph else {
+            return Vec::new();
+        };
+
+        let mut result = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+
+        for role in graph.composed_roles(package_name) {
+            if visited.insert(role.clone()) {
+                queue.push_back(role.clone());
+                result.push(role);
+            }
+        }
+
+        while let Some(current) = queue.pop_front() {
+            for nested in graph.composed_roles(&current) {
+                if visited.insert(nested.clone()) {
+                    queue.push_back(nested.clone());
+                    result.push(nested);
+                }
+            }
+        }
+
+        result
     }
 }
 
