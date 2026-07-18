@@ -26,7 +26,7 @@ first when tool parity changes.
 | list review threads | `mcp__github__pull_request_read(method:"get_review_comments", pullNumber:n)` | Returns threads with `isResolved`/`isOutdated` flags, the `PRRT_…` thread node ID, and inline comments (each with its `#discussion_r…` numeric ID) |
 | reply to a review comment | `mcp__github__add_reply_to_pull_request_comment(pullNumber:n, commentId, body)` | `commentId` is the **numeric** ID from the `#discussion_r…` anchor, **not** the `PRRT_…` thread node ID |
 | resolve / unresolve a review thread | `mcp__github__resolve_review_thread(threadId)` / `mcp__github__unresolve_review_thread(threadId)` | `threadId` = `PRRT_…` node ID from `get_review_comments`. **Merge gate**: `main` requires 0 unresolved threads — resolve each with a disposition reply first (see review-convergence doctrine) |
-| `gh pr review <n> --approve` / `--request-changes` | `mcp__github__pull_request_review_write(method:"create", event:"APPROVE"` / `"REQUEST_CHANGES"` / `"COMMENT"`, pullNumber:n, body)` | Omit `event` to open a pending review, then `add_comment_to_pending_review` + `submit_pending` |
+| `gh pr review <n> --approve` / `--request-changes` | `mcp__github__pull_request_review_write(method:"create", event:"APPROVE", pullNumber:n, body)` | Use `event:"REQUEST_CHANGES"` or `event:"COMMENT"` for other review types; omit `event` to open a pending review, then `add_comment_to_pending_review` + `submit_pending` |
 | `gh pr ready <n>` | `mcp__github__update_pull_request(pullNumber:n, draft:false)` | Full parity |
 | `gh pr update-branch <n>` | `mcp__github__update_pull_request_branch(pullNumber:n)` | Full parity |
 | `gh pr create --draft` | `mcp__github__create_pull_request(head, base:"main", title, body, draft:true)` | Full parity |
