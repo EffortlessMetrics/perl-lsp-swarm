@@ -7,7 +7,10 @@ impl Checkpointable for PerlLexer<'_> {
         // Determine the checkpoint context based on current state
         let context = if matches!(self.mode, LexerMode::InFormatBody) {
             CheckpointContext::Format {
-                start_position: self.position.saturating_sub(100), // Approximate
+                // Format bodies are consumed atomically by `next_token`, so a
+                // checkpoint can observe this mode only at the exact position
+                // where format-body parsing will begin.
+                start_position: self.position,
             }
         } else if !self.delimiter_stack.is_empty() {
             // We're in some kind of quote-like construct
@@ -64,5 +67,81 @@ impl Checkpointable for PerlLexer<'_> {
     fn can_restore(&self, checkpoint: &LexerCheckpoint) -> bool {
         // Can restore if the position is valid for our input
         checkpoint.position <= self.input.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::checkpoint::CheckpointContext;
+
+    type TestResult = std::result::Result<(), String>;
+
+    fn format_start(checkpoint: &LexerCheckpoint) -> std::result::Result<usize, String> {
+        match &checkpoint.context {
+            CheckpointContext::Format { start_position } => Ok(*start_position),
+            context => Err(format!("expected format checkpoint context, got {context:?}")),
+        }
+    }
+
+    #[test]
+    fn format_checkpoint_records_exact_short_prefix_start() -> TestResult {
+        let prefix = "name: ";
+        let mut lexer = PerlLexer::new("name: body\n.\n");
+        lexer.position = prefix.len();
+        lexer.enter_format_mode();
+
+        let checkpoint = lexer.checkpoint();
+        let actual = format_start(&checkpoint)?;
+        if actual != prefix.len() {
+            return Err(format!(
+                "format start {actual} did not match prefix length {}",
+                prefix.len()
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn format_checkpoint_records_exact_start_after_long_prefix() -> TestResult {
+        let prefix = "x".repeat(160);
+        let input = format!("{prefix}body\n.\n");
+        let mut lexer = PerlLexer::new(&input);
+        lexer.position = prefix.len();
+        lexer.enter_format_mode();
+
+        let checkpoint = lexer.checkpoint();
+        let actual = format_start(&checkpoint)?;
+        if actual != prefix.len() {
+            return Err(format!(
+                "format start {actual} did not match prefix length {}",
+                prefix.len()
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn restore_preserves_format_start_and_non_format_context() -> TestResult {
+        let prefix = "before format\n";
+        let mut lexer = PerlLexer::new("before format\nbody\n.\n");
+        lexer.position = prefix.len();
+        lexer.enter_format_mode();
+        let format_checkpoint = lexer.checkpoint();
+
+        lexer.set_mode(LexerMode::ExpectTerm);
+        lexer.position = 0;
+        lexer.restore(&format_checkpoint);
+        let restored = lexer.checkpoint();
+        let actual = format_start(&restored)?;
+        if actual != prefix.len() {
+            return Err(format!("restored format start {actual} did not match {}", prefix.len()));
+        }
+
+        lexer.set_mode(LexerMode::ExpectTerm);
+        if !matches!(lexer.checkpoint().context, CheckpointContext::Normal) {
+            return Err("non-format mode retained format checkpoint context".to_string());
+        }
+        Ok(())
     }
 }
