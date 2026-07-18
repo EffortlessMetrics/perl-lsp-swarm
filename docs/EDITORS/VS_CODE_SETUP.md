@@ -122,9 +122,10 @@ If you prefer using a generic LSP client extension:
 
 ## Configuration
 
-The extension exposes settings in the `perl-lsp.*` namespace. Current public
-install artifacts are public beta; keep pinned deployments explicit when you
-need reproducible editor setup.
+The extension exposes settings in the `perl-lsp.*` namespace. The verified
+GitHub `v0.17.0` assets are public beta; Marketplace and package-manager
+channels remain independently versioned. Pin deployments when reproducibility
+matters.
 
 ### Basic Configuration
 

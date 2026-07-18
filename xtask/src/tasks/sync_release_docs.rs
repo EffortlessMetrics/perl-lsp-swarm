@@ -241,10 +241,16 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
                 surface.version
             ));
             active_section_seen = true;
-        } else if line.starts_with("### Now (v") && line.contains("public-alpha patch prep)") {
+        } else if line.starts_with("### Now (v")
+            && (line.contains("public-alpha patch prep)")
+                || line.contains("shipped public beta)"))
+        {
             lines.push(format!("### Now (v{} shipped public beta)", surface.version));
             now_section_seen = true;
-        } else if line.starts_with("- `v") && line.contains("is staged as the next public-alpha patch release; run the release-prep checks before dispatching the train") {
+        } else if line.starts_with("- `v")
+            && (line.contains("is staged as the next public-alpha patch release; run the release-prep checks before dispatching the train")
+                || line.contains("is shipped public beta; keep each distribution channel pending until its receipt is verified"))
+        {
             lines.push(format!(
                 "- `v{}` is shipped public beta; keep each distribution channel pending until its receipt is verified",
                 surface.version
@@ -271,7 +277,7 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
         bail!("ROADMAP.md: publication discipline line not found");
     }
     if !active_section_seen {
-        bail!("ROADMAP.md: Active: Public-Alpha Release Prep heading not found");
+        bail!("ROADMAP.md: active release heading not found");
     }
     if !now_section_seen {
         bail!("ROADMAP.md: current-release Now section not found");

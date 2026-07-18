@@ -15,7 +15,7 @@ The live release truth is:
 
 | Situation | Read this | What to do |
 | --- | --- | --- |
-| You installed the binary with Cargo | [Installation Guide](INSTALLATION.md) | Reinstall the current public-beta release with `cargo install --locked perllsp` |
+| You installed the binary with Cargo | [Installation Guide](INSTALLATION.md) | Reinstall from the independently versioned registry with `cargo install --locked perllsp`, or pin `--version 0.17.0` only after verifying that registry receipt |
 | You launch through an editor | [Editor Setup](EDITOR_SETUP.md) | Update the server path, then restart the editor |
 | You use a project config file | [Configuration Reference](../reference/CONFIG.md) | Reopen the workspace so new settings are picked up |
 | You build against the crates | [Changelog](../../CHANGELOG.md) | Bump related crate versions together and rerun tests |

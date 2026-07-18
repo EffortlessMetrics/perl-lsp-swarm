@@ -30,9 +30,9 @@
 | perl-diagnostics | — | 12 |
 | perl-incremental-parsing | — | 13 |
 | perl-kwalitee | — | 72 |
-| perl-lexer | — | 190 |
+| perl-lexer | — | 195 |
 | perl-line-index | — | 33 |
-| perl-lsp | — | 1274 |
+| perl-lsp | — | 1277 |
 | perl-lsp-perltidy | — | 27 |
 | perl-lsp-rs-core | — | 2652 |
 | perl-lsp-ux-tests | — | 77 |

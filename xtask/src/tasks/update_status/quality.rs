@@ -77,16 +77,23 @@ pub(super) fn collect_per_crate_test_counts(root: &Path) -> BTreeMap<String, usi
 fn parse_per_crate_test_counts(output: &str) -> BTreeMap<String, usize> {
     let mut by_crate: BTreeMap<String, usize> = BTreeMap::new();
     let mut current_crate: Option<String> = None;
+    let mut discovered = 0usize;
+    let mut attributed = 0usize;
     for line in output.lines() {
         if let Some(caps) = RUNNING_TEST_BINARY_RE.captures(line) {
             current_crate = Some(caps[1].replace('_', "-"));
             continue;
         }
-        if TEST_LIST_LINE_RE.is_match(line)
-            && let Some(ref krate) = current_crate
-        {
-            *by_crate.entry(krate.clone()).or_default() += 1;
+        if TEST_LIST_LINE_RE.is_match(line) {
+            discovered += 1;
+            if let Some(ref krate) = current_crate {
+                *by_crate.entry(krate.clone()).or_default() += 1;
+                attributed += 1;
+            }
         }
+    }
+    if discovered > attributed {
+        by_crate.insert("unattributed".to_string(), discovered - attributed);
     }
     by_crate
 }
