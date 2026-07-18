@@ -156,6 +156,22 @@ pub trait SemanticQueries {
         method_name: &str,
     ) -> Vec<DefinitionCandidate>;
 
+    /// Return the names of all methods provided by `role_package`, including
+    /// methods contributed by roles it transitively composes.
+    ///
+    /// Traversal follows `ComposesRole` edges cycle-safely; the result is
+    /// de-duplicated and sorted for determinism. Returns an empty vec when no
+    /// workspace data is available or the role is unresolved/external.
+    ///
+    /// Callers must treat an empty result as *"unknown"*, never as *"provides
+    /// no methods"* — this keeps role-conflict detection conservative for roles
+    /// that cannot be resolved (e.g. defined outside the indexed workspace or
+    /// composed dynamically). Defaults to empty so no-op implementations such
+    /// as the null query degrade gracefully.
+    fn transitive_role_methods(&self, _role_package: &str) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Return a conservative rename plan.
     ///
     /// Returns a [`RenamePlan`] with affected occurrences classified by
@@ -632,6 +648,27 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
 
         self.sort_candidates(&mut candidates);
         candidates
+    }
+
+    fn transitive_role_methods(&self, role_package: &str) -> Vec<String> {
+        let graph = match self.package_graph {
+            Some(g) => g,
+            None => return Vec::new(),
+        };
+
+        // The role itself, plus every role it transitively composes (cycle-safe).
+        let mut packages = vec![role_package.to_string()];
+        packages.extend(graph.transitive_composed_roles(role_package).roles);
+
+        let mut methods = std::collections::HashSet::new();
+        for pkg in &packages {
+            methods.extend(self.enumerate_package_methods(pkg));
+        }
+
+        // Deterministic, de-duplicated output.
+        let mut methods: Vec<String> = methods.into_iter().collect();
+        methods.sort();
+        methods
     }
 
     fn rename_plan(&self, entity_id: EntityId, new_name: &str) -> RenamePlan {
@@ -1240,6 +1277,44 @@ impl<'a> WorkspaceSemanticQueries<'a> {
     /// Searches all fact shards for entities whose canonical name is
     /// `package::method_name` and whose kind is Method, Subroutine, or
     /// GeneratedMember.
+    /// Enumerate the bare names of all method-like entities directly defined in
+    /// `package`, across every fact shard.
+    ///
+    /// Matches entities whose canonical name is `"{package}::{name}"` (direct
+    /// members only — deeper-qualified names like `"Pkg::Inner::m"` are skipped)
+    /// and whose kind is method-like (`Method`, `Subroutine`, `GeneratedMember`,
+    /// the same set used by [`find_method_entities`](Self::find_method_entities)).
+    /// Does not follow inheritance or role composition — callers compose that
+    /// traversal separately.
+    fn enumerate_package_methods(&self, package: &str) -> Vec<String> {
+        let prefix = format!("{package}::");
+        let mut names = Vec::new();
+
+        for shard in self.fact_shards.values() {
+            for entity in &shard.entities {
+                if !matches!(
+                    entity.kind,
+                    EntityKind::Method | EntityKind::Subroutine | EntityKind::GeneratedMember
+                ) {
+                    continue;
+                }
+
+                let Some(bare) = entity.canonical_name.strip_prefix(&prefix) else {
+                    continue;
+                };
+
+                // Direct members only — skip names qualified into a deeper package.
+                if bare.contains("::") {
+                    continue;
+                }
+
+                names.push(bare.to_string());
+            }
+        }
+
+        names
+    }
+
     fn find_method_entities(&self, package: &str, method_name: &str) -> Vec<DefinitionCandidate> {
         let qualified = format!("{package}::{method_name}");
         let mut candidates = Vec::new();
@@ -2328,6 +2403,95 @@ mod tests {
         let candidates = queries.method_candidates("Child", "greet");
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].canonical_name, "Parent::greet");
+        Ok(())
+    }
+
+    fn role_method_entity(id: u64, canonical: &str, kind: EntityKind) -> EntityFact {
+        EntityFact {
+            id: EntityId(id),
+            kind,
+            canonical_name: canonical.to_string(),
+            anchor_id: Some(AnchorId(id)),
+            scope_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        }
+    }
+
+    #[test]
+    fn transitive_role_methods_unions_direct_and_composed() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // RoleA provides `alpha` + `shared`; RoleA composes RoleB which provides
+        // `beta`. Decoys with a shared name prefix must NOT match RoleA::.
+        let shard_a = make_shard(
+            "file:///lib/RoleA.pm",
+            FileId(1),
+            vec![],
+            vec![
+                role_method_entity(100, "RoleA::alpha", EntityKind::Subroutine),
+                role_method_entity(101, "RoleA::shared", EntityKind::Method),
+                // Deeper-qualified name — a nested package, not a direct member.
+                role_method_entity(102, "RoleA::Inner::deep", EntityKind::Subroutine),
+                // Prefix look-alike package — must not be captured by "RoleA::".
+                role_method_entity(103, "RoleAlpha::gamma", EntityKind::Subroutine),
+            ],
+            vec![],
+            vec![],
+        );
+        let shard_b = make_shard(
+            "file:///lib/RoleB.pm",
+            FileId(2),
+            vec![],
+            vec![role_method_entity(200, "RoleB::beta", EntityKind::Subroutine)],
+            vec![],
+            vec![],
+        );
+
+        let mut shards = HashMap::new();
+        shards.insert(shard_a.source_uri.clone(), shard_a);
+        shards.insert(shard_b.source_uri.clone(), shard_b);
+
+        let mut pkg_graph = PackageGraphIndex::new();
+        pkg_graph.add_edges(
+            "file:///lib/RoleA.pm",
+            FileId(1),
+            vec![PackageEdge::new(
+                "RoleA".to_string(),
+                "RoleB".to_string(),
+                PackageEdgeKind::ComposesRole,
+                Some(AnchorId(1)),
+                Provenance::ExactAst,
+                Confidence::High,
+            )],
+        );
+
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = WorkspaceSemanticQueries::with_package_graph(
+            &ref_index, &ie_index, &shards, &pkg_graph,
+        );
+
+        // Sorted, de-duplicated, direct + transitively-composed; decoys excluded.
+        assert_eq!(queries.transitive_role_methods("RoleA"), vec!["alpha", "beta", "shared"]);
+        Ok(())
+    }
+
+    #[test]
+    fn transitive_role_methods_empty_for_unknown_role() -> Result<(), Box<dyn std::error::Error>> {
+        let (_file_id, shard) = simple_shard();
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+        let pkg_graph = PackageGraphIndex::new();
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = WorkspaceSemanticQueries::with_package_graph(
+            &ref_index, &ie_index, &shards, &pkg_graph,
+        );
+
+        assert!(
+            queries.transitive_role_methods("Nonexistent::Role").is_empty(),
+            "an unknown role must resolve to no methods (conservative)"
+        );
         Ok(())
     }
 
