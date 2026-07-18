@@ -107,7 +107,7 @@ We will implement comprehensive API documentation infrastructure through systema
 └── src/                                 # Target modules for documentation
 /docs/
 ├── API_DOCUMENTATION_STANDARDS.md      # Enterprise-grade documentation standards
-├── DOCUMENTATION_IMPLEMENTATION_STRATEGY.md  # 4-phase systematic resolution
+├── reference/MISSING_DOCUMENTATION_GUIDE.md  # 4-phase systematic resolution
 └── ADR_002_API_DOCUMENTATION_INFRASTRUCTURE.md  # This architectural decision
 ```
 
@@ -232,7 +232,7 @@ The test suite at `/crates/perl-parser/tests/missing_docs_ac_tests.rs` provides:
 
 ## Related Documents
 - [API_DOCUMENTATION_STANDARDS.md](../reference/API_DOCUMENTATION_STANDARDS.md) - Enterprise-grade documentation requirements
-- [DOCUMENTATION_IMPLEMENTATION_STRATEGY.md](DOCUMENTATION_IMPLEMENTATION_STRATEGY.md) - 4-phase systematic resolution strategy
+- [MISSING_DOCUMENTATION_GUIDE.md](../reference/MISSING_DOCUMENTATION_GUIDE.md) - 4-phase systematic resolution strategy
 - [CLAUDE.md](../CLAUDE.md) - Project overview with documentation command integration
 - [LSP_IMPLEMENTATION_GUIDE.md](../reference/LSP_IMPLEMENTATION_GUIDE.md) - LSP feature documentation context
 - [CRATE_ARCHITECTURE_GUIDE.md](../reference/CRATE_ARCHITECTURE_GUIDE.md) - System design documentation integration
