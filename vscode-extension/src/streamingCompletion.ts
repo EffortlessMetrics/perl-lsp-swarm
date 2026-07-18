@@ -6,10 +6,12 @@ import { ProgressType } from 'vscode-jsonrpc';
 interface StreamCandidateItem {
   insertText: string;
   filterText?: string;
-  range?: {
-    start: { line: number; character: number };
-    end: { line: number; character: number };
-  };
+  range?: StreamReplacementRange;
+}
+
+interface StreamReplacementRange {
+  start: { line: number; character: number };
+  end: { line: number; character: number };
 }
 
 /** Payload sent by the server via $/progress for streaming inline completions. */
@@ -52,10 +54,7 @@ interface CachedCandidate {
   sessionId: string;
   sequence: number;
   isFinal: boolean;
-  serverRange?: {
-    start: { line: number; character: number };
-    end: { line: number; character: number };
-  };
+  serverRange?: StreamReplacementRange;
 }
 
 /**
@@ -136,6 +135,26 @@ export class StreamingCompletionController implements vscode.Disposable {
     );
   }
 
+  private isStreamReplacementRange(value: unknown): value is StreamReplacementRange {
+    if (typeof value !== 'object' || value === null) {
+      return false;
+    }
+    const range = value as Record<string, unknown>;
+    const start = range.start;
+    const end = range.end;
+    if (typeof start !== 'object' || start === null || typeof end !== 'object' || end === null) {
+      return false;
+    }
+    const startPosition = start as Record<string, unknown>;
+    const endPosition = end as Record<string, unknown>;
+    return (
+      typeof startPosition.line === 'number' &&
+      typeof startPosition.character === 'number' &&
+      typeof endPosition.line === 'number' &&
+      typeof endPosition.character === 'number'
+    );
+  }
+
   /**
    * Process a progress notification for an active stream.
    *
@@ -147,6 +166,8 @@ export class StreamingCompletionController implements vscode.Disposable {
    */
   private handleProgress(value: unknown, capturedIdentity: RequestIdentity): void {
     // Ignore progress from a cancelled or superseded stream
+    // Reference identity is intentional: two requests with equal URI/version/
+    // cursor values still represent different stream generations.
     if (capturedIdentity !== this.activeRequestIdentity) {
       return;
     }
@@ -186,7 +207,7 @@ export class StreamingCompletionController implements vscode.Disposable {
       sequence: value.sequence,
       isFinal: value.isFinal,
     };
-    if (item.range !== undefined) {
+    if (this.isStreamReplacementRange(item.range)) {
       candidate.serverRange = item.range;
     }
     this.cachedCandidate = candidate;

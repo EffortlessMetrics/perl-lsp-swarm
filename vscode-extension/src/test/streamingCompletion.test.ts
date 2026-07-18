@@ -163,8 +163,8 @@ describe('StreamingCompletionController — request identity and cache correctne
       token: vscode.CancellationToken,
     ) => vscode.InlineCompletionItem[] | undefined;
   } {
-    const registerCall = (vscode.languages.registerInlineCompletionItemProvider as jest.Mock).mock
-      .calls[0];
+    const calls = (vscode.languages.registerInlineCompletionItemProvider as jest.Mock).mock.calls;
+    const registerCall = calls[calls.length - 1];
     return registerCall[1] as ReturnType<typeof getRegisteredProvider>;
   }
 
@@ -195,10 +195,7 @@ describe('StreamingCompletionController — request identity and cache correctne
     text: string,
     options: {
       isFinal?: boolean;
-      range?: {
-        start: { line: number; character: number };
-        end: { line: number; character: number };
-      };
+      range?: unknown;
     } = {},
   ): unknown {
     return {
@@ -328,6 +325,29 @@ describe('StreamingCompletionController — request identity and cache correctne
     const items = provider.provideInlineCompletionItems(
       docV2,
       pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(items).toBeUndefined();
+  });
+
+  test('same URI and version at a different cursor does not return cached ghost text', () => {
+    const provider = getRegisteredProvider();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const cachedPos = makeMockPos(5, 10);
+    const differentPos = makeMockPos(5, 11);
+
+    provider.provideInlineCompletionItems(
+      doc,
+      cachedPos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    getLastProgressHandler()(makeProgress('sess-1', 1, 'ghost for position 10'));
+
+    const items = provider.provideInlineCompletionItems(
+      doc,
+      differentPos,
       {} as vscode.InlineCompletionContext,
       {} as vscode.CancellationToken,
     );
@@ -514,6 +534,37 @@ describe('StreamingCompletionController — request identity and cache correctne
     expect(range.end.character).toBe(10);
   });
 
+  test('uses a zero-length range when the server replacement range is malformed', () => {
+    const provider = getRegisteredProvider();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    getLastProgressHandler()(
+      makeProgress('sess-1', 1, 'insert text', {
+        range: { start: { line: 5, character: 0 } },
+      }),
+    );
+
+    const items = provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(items).toBeDefined();
+    const range = (items![0] as { range: { start: vscode.Position; end: vscode.Position } }).range;
+    expect(range.start.line).toBe(5);
+    expect(range.start.character).toBe(10);
+    expect(range.end.line).toBe(5);
+    expect(range.end.character).toBe(10);
+  });
+
   test('cancelActiveStream clears both cached candidate and request identity', () => {
     const provider = getRegisteredProvider();
     const doc = makeMockDoc('file:///a.pl', 1);
@@ -555,21 +606,19 @@ describe('StreamingCompletionController — request identity and cache correctne
     );
     getLastProgressHandler()(makeProgress('sess-1', 1, 'ghost'));
 
+    const staleHandler = getLastProgressHandler();
     controller.dispose();
 
-    // Build a fresh provider reference to avoid calling the disposed controller's
-    // internal method — instead verify through the cached state being cleared.
-    // (dispose() calls cancelActiveStream() which nulls the cache)
-    // We verify indirectly: a new progress callback after dispose must not restore the cache.
-    // The stale handler captured before dispose has its capturedIdentity cleared.
-    // Confirming via a new controller is not needed — the post-dispose state is verified
-    // by checking the handler from before dispose cannot repopulate the cache.
-    const staleHandler = getLastProgressHandler();
+    // dispose() nulls activeRequestIdentity; the closure still holds its old
+    // identity, so its late progress must be rejected by the reference guard.
     staleHandler(makeProgress('sess-1', 2, 'post-dispose ghost'));
-
-    // Re-calling provide on the disposed controller is not safe, so just confirm
-    // that the progress callback from the disposed stream was silently rejected.
-    // The real test is that no exception is thrown and the cache remains cleared.
+    const items = provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(items).toBeUndefined();
   });
 
   test('returns undefined when aiCompletion is disabled', () => {
