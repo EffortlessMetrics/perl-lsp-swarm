@@ -2,7 +2,7 @@
 
 **Issue:** [#914](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/914) ·
 **Design companion:** [#911](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/911)
-**Verified against:** `main` @ `a297593e7267dca834861fb3eff7d8acbf352030` (2026-07-18)
+**Verified against:** `main` @ `55f8e8bcb16def0f1ba77088adc322be27649682` (2026-07-18)
 
 ## Purpose
 
@@ -15,7 +15,8 @@ does **not** migrate any consumer; it records, with verified `file:line` anchors
 the concrete divergences a shared classification must subsume.
 
 The `file:line` references in #914's body were written in May 2026 and have since
-drifted; every anchor below was re-derived from current `main`.
+drifted; every anchor below was re-derived from and rechecked against the `main`
+SHA above.
 
 > **Durability note.** The line numbers here are a snapshot at the SHA above and
 > **will drift** as code moves. The **named symbols** — functions, `NodeKind`

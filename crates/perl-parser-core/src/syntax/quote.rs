@@ -43,6 +43,8 @@ fn strip_match_prefix(text: &str) -> Option<&str> {
 pub enum SubstitutionError {
     /// Invalid modifier character found
     InvalidModifier(char),
+    /// Invalid delimiter after `s` (alphanumeric or whitespace)
+    InvalidDelimiter(char),
     /// Missing delimiter after 's'
     MissingDelimiter,
     /// Pattern is missing or empty (just `s/`)
@@ -84,6 +86,10 @@ pub enum TransliterationError {
 ///
 /// Returns `Err(SubstitutionError::InvalidModifier(c))` if an invalid modifier character is found.
 /// Valid modifiers are: g, i, m, s, x, o, e, r
+///
+/// Returns `Err(SubstitutionError::InvalidDelimiter(c))` if the delimiter after `s`
+/// (or the paired replacement delimiter) is alphanumeric or whitespace, mirroring the
+/// delimiter validation in `extract_transliteration_parts_strict`.
 pub fn extract_substitution_parts_strict(
     text: &str,
 ) -> Result<(String, String, String), SubstitutionError> {
@@ -98,6 +104,14 @@ pub fn extract_substitution_parts_strict(
         Some(d) => d,
         None => return Err(SubstitutionError::MissingDelimiter),
     };
+    // Reject alphanumeric/whitespace delimiters as a distinct error rather than
+    // misreporting a missing closing delimiter. The predicate mirrors the lexer's own
+    // delimiter gate (`!is_alphanumeric() && !is_whitespace()` in perl-lexer's
+    // `is_quote_delim`), so the strict parser's notion of a valid delimiter matches what
+    // the lexer will actually tokenize; it also mirrors `extract_transliteration_parts_strict`.
+    if delimiter.is_alphanumeric() || delimiter.is_whitespace() {
+        return Err(SubstitutionError::InvalidDelimiter(delimiter));
+    }
     let closing = get_closing_delimiter(delimiter);
     let is_paired = delimiter != closing;
 
@@ -133,6 +147,13 @@ pub fn extract_substitution_parts_strict(
         // for the replacement side (e.g. s{foo}/bar/ and s[foo]{bar}).
         let trimmed = skip_paired_replacement_gap(rest1);
         if let Some(rd) = trimmed.chars().next() {
+            // After a paired pattern delimiter (e.g. `{...}`), the replacement must also
+            // start with a valid non-alphanumeric, non-whitespace delimiter. An
+            // alphanumeric character here (e.g. `s{foo}bar`) is an invalid delimiter,
+            // not merely a missing replacement (mirrors the transliteration path).
+            if rd.is_alphanumeric() || rd.is_whitespace() {
+                return Err(SubstitutionError::InvalidDelimiter(rd));
+            }
             let repl_closing = get_closing_delimiter(rd);
             extract_delimited_content_strict(trimmed, rd, repl_closing)
         } else {
@@ -265,7 +286,7 @@ pub fn extract_substitution_parts(text: &str) -> (String, String, String) {
         Some(d) => d,
         None => return (String::new(), String::new(), String::new()),
     };
-    if delimiter.is_ascii_alphanumeric() || delimiter.is_whitespace() {
+    if delimiter.is_alphanumeric() || delimiter.is_whitespace() {
         if let Some((pattern, replacement, modifiers_str)) = split_on_last_paired_delimiter(content)
         {
             let modifiers = extract_substitution_modifiers(&modifiers_str);
@@ -304,7 +325,7 @@ pub fn extract_substitution_parts(text: &str) -> (String, String, String) {
     } else if is_paired {
         let trimmed = skip_paired_replacement_gap(rest1);
         if let Some(rd) = trimmed.chars().next() {
-            if rd.is_ascii_alphanumeric() || rd.is_whitespace() {
+            if rd.is_alphanumeric() || rd.is_whitespace() {
                 (String::new(), Cow::Borrowed(trimmed))
             } else {
                 let repl_closing = get_closing_delimiter(rd);
@@ -341,7 +362,7 @@ pub fn extract_transliteration_parts(text: &str) -> (String, String, String) {
         Some(d) => d,
         None => return (String::new(), String::new(), String::new()),
     };
-    if delimiter.is_ascii_alphanumeric() || delimiter.is_whitespace() {
+    if delimiter.is_alphanumeric() || delimiter.is_whitespace() {
         return (String::new(), String::new(), String::new());
     }
     let closing = get_closing_delimiter(delimiter);
@@ -394,7 +415,7 @@ pub fn extract_transliteration_parts(text: &str) -> (String, String, String) {
             let repl_closing = get_closing_delimiter(repl_delimiter);
             extract_delimited_content(rest2, repl_delimiter, repl_closing)
         } else if let Some(repl_delimiter) = rest2.chars().next() {
-            if repl_delimiter.is_ascii_alphanumeric() || repl_delimiter.is_whitespace() {
+            if repl_delimiter.is_alphanumeric() || repl_delimiter.is_whitespace() {
                 (String::new(), rest2)
             } else {
                 extract_delimited_content(rest2, repl_delimiter, repl_delimiter)
@@ -444,7 +465,7 @@ pub fn extract_transliteration_parts_strict(
         Some(d) => d,
         None => return Err(TransliterationError::MissingDelimiter),
     };
-    if delimiter.is_ascii_alphanumeric() || delimiter.is_whitespace() {
+    if delimiter.is_alphanumeric() || delimiter.is_whitespace() {
         return Err(TransliterationError::InvalidDelimiter(delimiter));
     }
     let closing = get_closing_delimiter(delimiter);
@@ -471,7 +492,7 @@ pub fn extract_transliteration_parts_strict(
             // also start with a valid non-alphanumeric, non-whitespace delimiter.
             // An alphanumeric character here (e.g. `tr{abc}xyz`) is an invalid
             // delimiter, not merely a missing replacement section.
-            if repl_delimiter.is_ascii_alphanumeric() || repl_delimiter.is_whitespace() {
+            if repl_delimiter.is_alphanumeric() || repl_delimiter.is_whitespace() {
                 return Err(TransliterationError::InvalidDelimiter(repl_delimiter));
             }
             let repl_closing = get_closing_delimiter(repl_delimiter);
