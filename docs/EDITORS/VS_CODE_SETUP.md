@@ -204,7 +204,7 @@ settings.
 | `perl-lsp.autoUpdate` | boolean | `false` | Automatically download and install a new `perllsp` binary when available. |
 | `perl-lsp.updateCheckInterval` | number | `24` | Hours between automatic update checks. |
 | `perl-lsp.trace.server` | string | `"off"` | LSP traffic logging: `off`, `messages`, `verbose`. |
-| `perl-lsp.channel` | string | `"latest"` | Release channel. Use `latest` for the current public-beta line or `tag` for a pinned public-beta release. |
+| `perl-lsp.channel` | string | `"latest"` | Use `latest` for the newest release, `stable` for the newest non-prerelease, or `tag` for an arbitrary pinned release tag. |
 | `perl-lsp.versionTag` | string | `""` | Specific release tag when channel is `tag`. |
 | `perl-lsp.downloadBaseUrl` | string | `""` | Internal base URL for hosting `perllsp` archives and SHA256SUMS. |
 
@@ -565,12 +565,12 @@ Pin to a specific release or use a different download channel:
 ```json
 {
   "perl-lsp.channel": "tag",
-  "perl-lsp.versionTag": "v0.12.0"
+  "perl-lsp.versionTag": "v0.17.0"
 }
 ```
 
-Use `latest` for the current public-beta line or `tag` when you need a pinned
-public-beta release.
+Use `latest` for the newest release, `stable` for the newest non-prerelease, or
+`tag` when you need an arbitrary pinned release tag.
 
 ### Internal Deployment
 

@@ -7,8 +7,9 @@ automatically. For generic LSP clients, install `perllsp` first and make sure
 it is visible on your `PATH`. If you still need the binary, start with
 [INSTALLATION.md](INSTALLATION.md).
 
-Current public install artifacts are public beta. Verify `perllsp --version`
-and `perllsp --health` before changing editor settings.
+The verified GitHub `v0.17.0` assets are public beta. Marketplace and package-
+manager versions are independent; verify `perllsp --version` and
+`perllsp --health` before changing editor settings.
 
 If the server starts but the editor does not behave correctly, see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md).

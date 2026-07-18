@@ -124,7 +124,8 @@ media assets and recording notes live in:
 
 Install from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs) or [Open VSX Registry](https://open-vsx.org/extension/EffortlessMetrics/perl-lsp-rs).
 
-Current extension and managed-binary artifacts are public beta.
+The extension can manage verified public-beta GitHub release binaries; registry
+publication is independent, so check the displayed extension version.
 
 ```bash
 # VS Code
@@ -184,7 +185,7 @@ All settings are under the `perl-lsp.*` namespace. Open settings with `Ctrl+,` a
 | -------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `perl-lsp.autoDownload`          | `true`                       | Automatically download `perllsp` if not found locally                                                                                       |
 | `perl-lsp.serverPath`            | `""`                         | Absolute path to a `perllsp` binary (overrides auto-download)                                                                               |
-| `perl-lsp.channel`               | `"latest"`                   | Release channel. Use `latest` for the current public-beta line or `tag` for a pinned public-beta release                                    |
+| `perl-lsp.channel`               | `"latest"`                   | Use `latest` for the newest release, `stable` for the newest non-prerelease, or `tag` for an arbitrary pinned release tag                  |
 | `perl-lsp.versionTag`            | `""`                         | Specific release tag (e.g. `v0.12.1`) when channel is `tag`                                                                                 |
 | `perl-lsp.linuxLibc`             | `"auto"`                     | Linux libc release asset selection: `auto`, `gnu`, `glibc`, or `musl`                                                                       |
 | `perl-lsp.enableSemanticTokens`  | `true`                       | Enable semantic syntax highlighting (requires server restart to apply)                                                                      |

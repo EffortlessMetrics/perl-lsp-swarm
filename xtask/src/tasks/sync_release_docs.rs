@@ -164,7 +164,7 @@ fn sync_current_status(content: &str, surface: &ReleaseSurface) -> Result<String
             version_seen = true;
         } else if line.starts_with("| **Current release train** | ") {
             lines.push(format!(
-                "| **Current release train** | `v{}` public-alpha patch prep | [docs/releases/v{}.md](../releases/v{}.md) |",
+                "| **Current release train** | `v{}` latest public beta | [docs/releases/v{}.md](../releases/v{}.md) |",
                 surface.version, surface.version, surface.version
             ));
             train_seen = true;
@@ -176,7 +176,7 @@ fn sync_current_status(content: &str, surface: &ReleaseSurface) -> Result<String
             count_seen = true;
         } else if line.starts_with("| **Active milestone** | `") {
             lines.push(format!(
-                "| **Active milestone** | `v{}` release proof and channel prep | [status/index.md](status/index.md) |",
+                "| **Active milestone** | `v{}` shipped public beta | [status/index.md](status/index.md) |",
                 surface.version
             ));
             milestone_seen = true;
@@ -356,7 +356,7 @@ fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String>
     for line in content.lines() {
         if line.starts_with("**Current release train**: `v") {
             lines.push(format!(
-                "**Current release train**: `v{}` public-alpha patch prep",
+                "**Current release train**: `v{}` — shipped public beta",
                 surface.version
             ));
             train_seen = true;
