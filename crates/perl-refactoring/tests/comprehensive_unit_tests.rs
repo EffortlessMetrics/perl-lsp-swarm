@@ -843,6 +843,86 @@ fn legacy_modernizer_no_suggestions_for_clean_code() -> Result<(), Box<dyn std::
     Ok(())
 }
 
+// -------------------------------------------------------------------
+// Regression (#3922): every suggestion must carry accurate byte offsets
+// spanning the detected pattern, not the placeholder `start: 0, end: 0`.
+// The pattern is placed at a non-zero offset so a zeroed offset is caught.
+// -------------------------------------------------------------------
+
+/// Helper: assert exactly one suggestion matches `pred` and its [start, end)
+/// slice of `code` equals `needle`.
+fn assert_offset_spans(
+    code: &str,
+    pred: impl Fn(&str) -> bool,
+    needle: &str,
+    label: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let m = LegacyModernizer::new();
+    let suggestions = m.analyze(code);
+    let s = suggestions
+        .iter()
+        .find(|s| pred(&s.old_pattern))
+        .ok_or_else(|| format!("{label}: expected a matching suggestion"))?;
+    assert_eq!(&code[s.start..s.end], needle, "{label}: offsets must span the pattern");
+    assert!(s.start > 0, "{label}: start should reflect the real (non-zero) position");
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_two_arg_open_has_offsets() -> Result<(), Box<dyn std::error::Error>> {
+    assert_offset_spans(
+        "my $x = 1;\nopen(FH, 'file.txt')",
+        |p| p == "open(FH, 'file.txt')",
+        "open(FH, 'file.txt')",
+        "two-arg open",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_defined_array_has_offsets() -> Result<(), Box<dyn std::error::Error>> {
+    assert_offset_spans(
+        "if (defined @array) { }",
+        |p| p.contains("defined @array"),
+        "defined @array",
+        "defined @array",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_each_array_has_offsets() -> Result<(), Box<dyn std::error::Error>> {
+    assert_offset_spans(
+        "while (my ($i, $val) = each @array) { }",
+        |p| p.contains("each @array"),
+        "each @array",
+        "each @array",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_string_eval_has_offsets() -> Result<(), Box<dyn std::error::Error>> {
+    assert_offset_spans(
+        "my $r = eval \"print 1\";",
+        |p| p == "eval \"...\"",
+        "eval \"",
+        "string eval",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_print_newline_has_offsets() -> Result<(), Box<dyn std::error::Error>> {
+    assert_offset_spans(
+        "my $x = 1; print \"Hello\\n\"",
+        |p| p == "print \"Hello\\n\"",
+        "print \"Hello\\n\"",
+        "print newline",
+    )?;
+    Ok(())
+}
+
 // ===================================================================
 // Refactored PerlModernizer (modernize_refactored.rs)
 // ===================================================================
