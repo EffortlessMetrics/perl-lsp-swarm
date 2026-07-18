@@ -405,7 +405,7 @@ impl DebugAdapter {
             Ok(child) => {
                 // Only advance the session generation once spawning has succeeded. A rejected
                 // launch must leave the currently active reader valid for its existing session.
-                self.begin_session_generation();
+                self.prepare_replacement_session();
                 let thread_id = {
                     if let Ok(mut counter) = self.thread_counter.lock() {
                         *counter += 1;
@@ -1234,7 +1234,7 @@ impl DebugAdapter {
                         // The TCP session is fully connected and has a reader before it becomes
                         // the active session, so a failed attach does not invalidate an existing
                         // session's generation.
-                        self.begin_session_generation();
+                        self.prepare_replacement_session();
                         // Store session
                         if let Ok(mut guard) = self.tcp_session.lock() {
                             *guard = Some(session);
@@ -1386,6 +1386,16 @@ impl DebugAdapter {
             &self.tcp_session,
             &self.attached_pid,
         );
+    }
+
+    /// Advance the session generation and tear down the prior active session.
+    ///
+    /// Callers invoke this only after a replacement launch or attach has
+    /// successfully completed its external setup, so rejected replacements
+    /// leave the existing session untouched.
+    fn prepare_replacement_session(&self) {
+        self.begin_session_generation();
+        self.clear_active_session_state();
     }
 
     pub(super) fn clear_active_session_state_with_state(
@@ -1981,6 +1991,29 @@ mod tests {
             ));
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn replacement_session_cleanup_clears_previous_attached_pid() -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        if let Ok(mut guard) = adapter.attached_pid.lock() {
+            *guard = Some(4242);
+        } else {
+            return Err("attached PID lock was poisoned before replacement cleanup".to_string());
+        }
+
+        adapter.prepare_replacement_session();
+
+        let pid_after_cleanup =
+            adapter.attached_pid.lock().map(|guard| *guard).map_err(|_| {
+                "attached PID lock was poisoned after replacement cleanup".to_string()
+            })?;
+        if pid_after_cleanup.is_some() {
+            return Err(format!(
+                "replacement cleanup left the previous attached PID in place: {pid_after_cleanup:?}"
+            ));
+        }
         Ok(())
     }
 
