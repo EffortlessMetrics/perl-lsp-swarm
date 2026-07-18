@@ -31,7 +31,15 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      - name: Checkout protected dependency policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .dependency-review-base
+          sparse-checkout: .github/dependency-review-config.yml
+          sparse-checkout-cone-mode: false
+
       - name: Review introduced dependencies
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
-          config-file: 'EffortlessMetrics/perl-lsp-swarm/.github/dependency-review-config.yml@${{ github.event.pull_request.base.sha }}'
+          config-file: './.dependency-review-base/.github/dependency-review-config.yml'

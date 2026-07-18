@@ -26,8 +26,8 @@ never converted into a clean result by a fallback scanner or `continue-on-error`
   Cargo manifests/lockfiles, the VS Code extension manifest/lockfile, or this
   workflow/configuration.
 - Check out the event's exact pull-request head SHA so dependency graph inputs
-  are from the evaluated head; fetch the policy file from the protected base
-  commit so the evaluated head cannot weaken the gate.
+  are from the evaluated head; separately sparse-check out the policy file from
+  the protected base commit so the evaluated head cannot weaken the gate.
 - Run `actions/dependency-review-action` v5 at an immutable commit with
   `contents: read` only and no PR-comment write permission.
 - Block newly introduced high or critical vulnerabilities in runtime,

@@ -16,9 +16,10 @@ The workflow runs only when a pull request changes:
 
 The job is read-only and does not post or update pull-request comments. Findings remain in the check summary and logs.
 
-The policy file is fetched from the pull request base commit, so the evaluated
-head cannot weaken the rule that evaluates it. The checked-out head is still
-used as the dependency-review action's comparison input.
+The policy file is sparse-checked out from the pull request base commit into a
+separate workspace path, so the evaluated head cannot weaken the rule that
+evaluates it. The checked-out head is still used as the dependency-review
+action's comparison input.
 
 ## Policy
 
