@@ -989,10 +989,11 @@ impl DebugAdapter {
                         tracing::error!(error = %e, "Error reading from debugger");
                         // Send termination event before exiting
                         if let Some(ref sender) = sender {
-                            emit_event_safe(
+                            emit_terminated_event(
                                 sender,
                                 &seq,
-                                "terminated",
+                                &termination_state,
+                                Some(session_generation),
                                 Some(json!({"reason": "read_error", "error": e.to_string()})),
                             );
                         }
