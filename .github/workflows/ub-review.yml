@@ -17,15 +17,16 @@
 # See policy/ci-lane-whitelist.toml entry `ub_review_advisory` and
 # docs/ci/review-gates.md.
 #
-# Install note: EffortlessMetrics/ub-review has no public release asset yet.
-# install-mode=auto in the action falls back to a source build. The Cargo cache
-# can be warmed by Swatinem/rust-cache if needed (PR 2 scope).
+# Install note: EffortlessMetrics/ub-review has no public release asset yet;
+# release installation remains pending #716/#4015. install-mode=auto falls back
+# to a source build. The Cargo cache can be warmed by Swatinem/rust-cache if
+# needed (PR 2 scope).
 #
 # Action pin:
-#   EffortlessMetrics/ub-review@2939f3565adbabb2c58a03767f879a2eff217978
-#   README-documented known-good SHA; verified by EffortlessSteven/bun#49
-#   (successful evidence packet, terminal state `sufficient`, verifier pass).
-#   Update only after ub-review's own verifier passes on a downstream consumer.
+#   EffortlessMetrics/ub-review@2939f3565adbabb2c58a03767f879a2eff217978 # signed upstream-main snapshot (unreleased)
+#   Immutable current-main snapshot; action inputs are checked against its
+#   unchanged action.yml. Keep source fallback until an exact-head downstream
+#   packet and verifier receipt prove the consumer path.
 
 name: UB Review
 
@@ -265,7 +266,7 @@ jobs:
           fi
       - name: Build UB review packet
         id: ub-review
-        uses: EffortlessMetrics/ub-review@2939f3565adbabb2c58a03767f879a2eff217978
+        uses: EffortlessMetrics/ub-review@2939f3565adbabb2c58a03767f879a2eff217978 # signed upstream-main snapshot (unreleased)
         with:
           config: policy/ub-review.toml
           profile: gh-runner
@@ -367,7 +368,7 @@ jobs:
           fi
       - name: Build UB review packet
         id: ub-review
-        uses: EffortlessMetrics/ub-review@2939f3565adbabb2c58a03767f879a2eff217978
+        uses: EffortlessMetrics/ub-review@2939f3565adbabb2c58a03767f879a2eff217978 # signed upstream-main snapshot (unreleased)
         with:
           config: policy/ub-review.toml
           profile: gh-runner
@@ -454,7 +455,7 @@ jobs:
           fi
       - name: Build UB review packet
         id: ub-review
-        uses: EffortlessMetrics/ub-review@2939f3565adbabb2c58a03767f879a2eff217978
+        uses: EffortlessMetrics/ub-review@2939f3565adbabb2c58a03767f879a2eff217978 # signed upstream-main snapshot (unreleased)
         with:
           config: policy/ub-review.toml
           profile: gh-runner
