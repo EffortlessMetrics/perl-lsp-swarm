@@ -2869,6 +2869,8 @@ pub struct VariableDecl {
     pub attribute_count: usize,
     /// Whether the declaration has an initializer expression.
     pub has_initializer: bool,
+    /// Source range of the initializer expression, when one was parsed.
+    pub initializer_range: Option<SourceLocation>,
     /// Whether this came from a list declaration.
     pub is_list: bool,
 }

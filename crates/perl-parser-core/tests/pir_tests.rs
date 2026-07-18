@@ -115,6 +115,88 @@ fn literal_operands_precede_enclosing_pir_parents() {
 }
 
 #[test]
+fn multi_operand_initializer_literals_all_precede_assignment() {
+    let graph = lower("my $x = 1 + 2;");
+    let assignment_id = must_some(
+        graph
+            .nodes
+            .iter()
+            .find(|node| matches!(node.operation, PirOperation::Assign))
+            .map(|node| node.id),
+    );
+    let literal_ids: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|node| matches!(node.operation, PirOperation::Literal { .. }))
+        .map(|node| node.id)
+        .collect();
+    assert_eq!(literal_ids.len(), 2);
+    assert!(graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == literal_ids[0]
+            && edge.to == Some(literal_ids[1])
+    }));
+    assert!(graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == literal_ids[1]
+            && edge.to == Some(assignment_id)
+    }));
+    assert!(!graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == assignment_id
+            && literal_ids.iter().any(|literal_id| edge.to == Some(*literal_id))
+    }));
+}
+
+#[test]
+fn bare_literal_after_initializer_is_not_attached_to_previous_assignment() {
+    let graph = lower("my $x = 1; 42;");
+    let assignment_id = must_some(
+        graph
+            .nodes
+            .iter()
+            .find(|node| matches!(node.operation, PirOperation::Assign))
+            .map(|node| node.id),
+    );
+    let literal_ids: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|node| matches!(node.operation, PirOperation::Literal { .. }))
+        .map(|node| node.id)
+        .collect();
+    assert_eq!(literal_ids.len(), 2);
+    assert!(graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == assignment_id
+            && edge.to == Some(literal_ids[1])
+    }));
+    assert!(!graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == literal_ids[1]
+            && edge.to == Some(assignment_id)
+    }));
+}
+
+#[test]
+fn deferred_control_flow_nodes_are_not_literal_parents() {
+    let graph = lower("if (1) { 2 }");
+    let branch_id = must_some(
+        graph
+            .nodes
+            .iter()
+            .find(|node| matches!(node.operation, PirOperation::Branch { .. }))
+            .map(|node| node.id),
+    );
+    assert!(!graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.to == Some(branch_id)
+            && graph
+                .node(edge.from)
+                .is_some_and(|node| matches!(node.operation, PirOperation::Literal { .. }))
+    }));
+}
+
+#[test]
 fn our_declaration_is_a_stash_write_with_package() {
     let graph = lower("package Acme; our @items = (1, 2);");
     let symbol = first_op(&graph, |op| match op {
