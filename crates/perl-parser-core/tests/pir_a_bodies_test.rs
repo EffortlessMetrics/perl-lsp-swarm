@@ -1017,6 +1017,43 @@ fn pir_a_loop_control_breaks_intra_body_fallthrough() -> Result<(), Box<dyn std:
     Ok(())
 }
 
+#[test]
+fn pir_a_return_breaks_intra_body_fallthrough() -> Result<(), Box<dyn std::error::Error>> {
+    use perl_parser_core::pir::PirEdgeKind;
+
+    let graph = parse_and_lower("sub foo { my $before = 0; return $value; my $after = 2; }");
+    let returned_value = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalRead { name } if name.name == "value"
+            ) || matches!(
+                &node.operation,
+                PirOperation::StashRead { symbol } if symbol.name == "value"
+            )
+        })
+        .ok_or("returned value read is missing")?;
+    let after = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalWrite { name } if name.name == "after"
+            )
+        })
+        .ok_or("statement after return is missing")?;
+
+    assert!(!graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == returned_value.id
+            && edge.to == Some(after.id)
+    }));
+    Ok(())
+}
+
 // ── 29. Cross-body no spurious fallthrough edges ─────────────────────────────
 // When a file has both a subroutine body and the program-root body, the last
 // PIR node of the sub body must NOT be connected by a Fallthrough edge to the

@@ -969,6 +969,11 @@ impl BodyLowerer {
                 if let Some(value) = value {
                     self.lower_expr(body, *value, file);
                 }
+                // Return transfers control out of the enclosing body. The
+                // returned expression may have emitted the latest node, but
+                // statements after the return are unreachable and must not
+                // inherit it as an unconditional fallthrough predecessor.
+                self.last_in_scope.remove(&None);
             }
 
             HirExpr::Opaque { ast_kind } => {
