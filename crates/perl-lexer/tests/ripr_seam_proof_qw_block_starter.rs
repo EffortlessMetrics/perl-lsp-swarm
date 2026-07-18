@@ -27,7 +27,9 @@ fn block_form_starters_end_the_qw_token() -> Result<(), String> {
     // qw token stops at it rather than swallowing it as quote-word text.
     for (label, input, starter) in [
         ("sub block", "my @a = qw(word\nsub run { print 1; }", "sub"),
+        ("sub multiline block", "my @a = qw(word\nsub run\n{ print 1; }", "sub"),
         ("package block", "my @a = qw(word\npackage Foo { 1; }", "package"),
+        ("package multiline block", "my @a = qw(word\npackage Foo\n{ 1; }", "package"),
         ("package semi", "my @a = qw(word\npackage Foo;", "package"),
         ("class block", "my @a = qw(word\nclass Foo { 1; }", "class"),
         ("BEGIN block", "my @a = qw(word\nBEGIN { 1; }", "BEGIN"),

@@ -3336,18 +3336,18 @@ impl<'a> PerlLexer<'a> {
         };
         match (is_phaser, &second.token_type) {
             (true, TokenType::LeftBrace) => {
-                return Self::header_stays_on_one_line(source, second.start);
+                return Self::header_ends_at_own_terminator(source, second.start);
             }
             (true, _) => return false,
             (false, TokenType::Identifier(_)) => {}
             (false, _) => return false,
         }
 
-        // A real `sub NAME {` / `package NAME;` header never spans a newline. Bounding
-        // the scan to the keyword's physical line is the false-positive guard: without
-        // it a bare quote-word keyword followed on a *later* line by an unrelated
-        // statement (`qw(word\nsub\nreturn { … };`) would borrow that statement's
-        // `{`/`;` and silently swallow real code as a bogus declaration (#4491 review).
+        // A real `sub NAME {` / `package NAME;` header may put its terminator on the
+        // next line, but the terminator must be the first non-whitespace token there.
+        // Without that boundary, a bare quote-word keyword followed on a later line
+        // by an unrelated statement could borrow that statement's `{`/`;` and silently
+        // swallow real code as a bogus declaration (#4491 review).
         //
         // The block `{` (or the `package` `;` semicolon form) that closes the header on one line
         // is itself the boundary proof — unlike the whitespace `print`/`my` forms, a
@@ -3358,11 +3358,11 @@ impl<'a> PerlLexer<'a> {
         while let Some(token) = lexer.next_token() {
             match token.token_type {
                 TokenType::LeftBrace if depth == 0 => {
-                    return Self::header_stays_on_one_line(source, token.start);
+                    return Self::header_ends_at_own_terminator(source, token.start);
                 }
                 TokenType::Semicolon if depth == 0 => {
                     return allows_semicolon_form
-                        && Self::header_stays_on_one_line(source, token.start);
+                        && Self::header_ends_at_own_terminator(source, token.start);
                 }
                 TokenType::LeftParen | TokenType::LeftBracket | TokenType::LeftBrace => {
                     depth = depth.saturating_add(1);
@@ -3378,10 +3378,14 @@ impl<'a> PerlLexer<'a> {
 
     /// The candidate statement header — from the starter keyword at the front of
     /// `source` up to (but excluding) the terminator token at `terminator_start` —
-    /// must not contain a newline, so a starter-shaped quote-word cannot borrow a
-    /// `{`/`;` that belongs to an unrelated statement on a later line (#4491).
-    fn header_stays_on_one_line(source: &str, terminator_start: usize) -> bool {
-        !source[..terminator_start].contains('\n')
+    /// may contain a newline only when the terminator is the first non-whitespace
+    /// token on that line. This accepts valid multiline headers while preventing a
+    /// starter-shaped quote-word from borrowing a later statement's `{`/`;`.
+    fn header_ends_at_own_terminator(source: &str, terminator_start: usize) -> bool {
+        let header = &source[..terminator_start];
+        header
+            .rsplit_once('\n')
+            .is_none_or(|(_, line_prefix)| line_prefix.chars().all(char::is_whitespace))
     }
 
     /// A candidate line-start statement inside an unclosed `qw(` is a real recovery

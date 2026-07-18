@@ -1050,7 +1050,14 @@ fn test_unclosed_qw_recovers_block_form_starters() -> Result<(), String> {
     // the statement count rose (a fallback Error node would also lift the count).
     for (label, code, swallowed_marker, recovered_head) in [
         ("sub block", "my @a = qw(word\nsub run { print 1; }", "\"sub\"", "(sub run"),
+        ("sub multiline block", "my @a = qw(word\nsub run\n{ print 1; }", "\"sub\"", "(sub run"),
         ("package block", "my @a = qw(word\npackage Foo { 1; }", "\"package\"", "(package Foo"),
+        (
+            "package multiline block",
+            "my @a = qw(word\npackage Foo\n{ 1; }",
+            "\"package\"",
+            "(package Foo",
+        ),
         ("package semi", "my @a = qw(word\npackage Foo;", "\"package\"", "(package Foo"),
         ("class block", "my @a = qw(word\nclass Foo { 1; }", "\"class\"", "(class Foo"),
         ("BEGIN block", "my @a = qw(word\nBEGIN { 1; }", "\"BEGIN\"", "(BEGIN"),
