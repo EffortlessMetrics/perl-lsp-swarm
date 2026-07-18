@@ -91,7 +91,7 @@ def validate_scope(schema: Any, receipt: Any) -> None:
     observed_count = snapshot.get("observed_open_count")
     receipt_count = snapshot.get("receipt_count")
     numbers = snapshot.get("observed_numbers")
-    _require(isinstance(query_limit, int) and query_limit > 0, "query_limit must be a positive integer")
+    _require(query_limit == 100, "query_limit must match the pinned --limit 100 observation query")
     _require(isinstance(observed_count, int) and observed_count >= 0, "observed_open_count must be a non-negative integer")
     _require(isinstance(receipt_count, int) and receipt_count >= 0, "receipt_count must be a non-negative integer")
     _require(isinstance(numbers, list) and numbers, "observed_numbers must be a non-empty list")
@@ -113,7 +113,10 @@ def validate_scope(schema: Any, receipt: Any) -> None:
         match = PULL_PATTERN.fullmatch(_string(item.get("url"), f"items[{index}].url"))
         _require(match is not None and int(match.group(1)) == number, f"items[{index}].url must match its PR number")
         follow_up = item.get("follow_up_issue")
-        _require(follow_up is None or ISSUE_PATTERN.fullmatch(follow_up) is not None, f"items[{index}].follow_up_issue must be a repository issue URL or null")
+        _require(
+            follow_up is None or (isinstance(follow_up, str) and ISSUE_PATTERN.fullmatch(follow_up) is not None),
+            f"items[{index}].follow_up_issue must be a repository issue URL or null",
+        )
         disposition = item.get("disposition")
         _require(disposition in {"0.18-blocker", "0.18-candidate", "post-0.18", "superseded"}, f"items[{index}].disposition is invalid")
         if disposition == "post-0.18":
@@ -122,6 +125,14 @@ def validate_scope(schema: Any, receipt: Any) -> None:
             _require(isinstance(item.get("owner"), str) and item["owner"], f"items[{index}].0.18-blocker requires owner")
             _require(isinstance(item.get("acceptance"), list) and item["acceptance"], f"items[{index}].0.18-blocker requires acceptance")
             _require(isinstance(item.get("proof"), list) and item["proof"], f"items[{index}].0.18-blocker requires proof")
+        if disposition == "0.18-candidate":
+            _require(isinstance(item.get("owner"), str) and item["owner"], f"items[{index}].0.18-candidate requires owner")
+            _require(isinstance(item.get("acceptance"), list) and item["acceptance"], f"items[{index}].0.18-candidate requires acceptance")
+            _require(isinstance(item.get("proof"), list) and item["proof"], f"items[{index}].0.18-candidate requires proof")
+            _require(item.get("unresolved_threads") == 0, f"items[{index}].0.18-candidate requires unresolved_threads == 0")
+            checks = item.get("checks") if isinstance(item.get("checks"), dict) else {}
+            _require(checks.get("failed") == 0, f"items[{index}].0.18-candidate requires checks.failed == 0")
+            _require(checks.get("pending") == 0, f"items[{index}].0.18-candidate requires checks.pending == 0")
         if disposition == "superseded":
             _require(isinstance(item.get("close_ready"), bool), f"items[{index}].superseded requires boolean close_ready")
 

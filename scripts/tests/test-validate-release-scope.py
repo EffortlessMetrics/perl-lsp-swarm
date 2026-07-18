@@ -41,6 +41,9 @@ class ReleaseScopeValidationTests(unittest.TestCase):
         receipt["queue_snapshot"]["query_limit"] = receipt["queue_snapshot"]["observed_open_count"] - 1
         self.assert_invalid(receipt, "query_limit")
 
+        receipt["queue_snapshot"]["query_limit"] = 101
+        self.assert_invalid(receipt, "pinned --limit 100")
+
     def test_rejects_non_utc_observation(self) -> None:
         receipt = copy.deepcopy(self.receipt)
         receipt["observed_at_utc"] = receipt["observed_at_utc"].replace("Z", "+00:00")
@@ -50,6 +53,16 @@ class ReleaseScopeValidationTests(unittest.TestCase):
         receipt = copy.deepcopy(self.receipt)
         receipt["items"][0]["follow_up_issue"] = None
         self.assert_invalid(receipt, "follow_up_issue")
+
+    def test_rejects_malformed_follow_up_without_traceback(self) -> None:
+        receipt = copy.deepcopy(self.receipt)
+        receipt["items"][0]["follow_up_issue"] = ["https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1"]
+        self.assert_invalid(receipt, "follow_up_issue")
+
+    def test_candidate_requires_release_complete_evidence(self) -> None:
+        receipt = copy.deepcopy(self.receipt)
+        receipt["items"][0]["disposition"] = "0.18-candidate"
+        self.assert_invalid(receipt, "0.18-candidate requires owner")
 
 
 if __name__ == "__main__":

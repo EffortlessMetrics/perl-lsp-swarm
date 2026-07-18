@@ -67,7 +67,7 @@
         "query": {
           "const": "gh pr list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 100 --json number"
         },
-        "query_limit": { "type": "integer", "minimum": 1 },
+        "query_limit": { "const": 100 },
         "observed_open_count": { "type": "integer", "minimum": 0 },
         "receipt_count": { "type": "integer", "minimum": 0 },
         "observed_numbers": {
