@@ -1,4 +1,4 @@
-use super::super::super::source_path_from_uri;
+use super::super::super::{LspServer, source_path_from_uri};
 use perl_module::resolution::use_lib::{
     no_lib_cancelled_paths_at_offset, resolve_use_lib_paths_from_source,
     resolve_use_lib_paths_from_source_at_offset,
@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub(super) fn lexical_paths(
+    server: &LspServer,
     doc_uri: Option<&str>,
     doc_text: Option<&str>,
     doc_offset: Option<usize>,
@@ -21,11 +22,18 @@ pub(super) fn lexical_paths(
         tracing::trace!("Effective @INC context failed to resolve doc_uri: {:?}", doc_uri);
     }
 
-    if let Some(offset) = doc_offset {
+    let mut paths = if let Some(offset) = doc_offset {
         resolve_use_lib_paths_from_source_at_offset(text, offset, root, file_dir.as_deref())
     } else {
         resolve_use_lib_paths_from_source(text, root, file_dir.as_deref())
+    };
+
+    if paths.is_empty() {
+        paths =
+            server.cached_hir_use_lib_paths(doc_uri, text, root, file_dir.as_deref(), doc_offset);
     }
+
+    paths
 }
 
 pub(super) fn include_paths_with_cancellations(

@@ -137,7 +137,8 @@ impl LspServer {
             .map(|value| perl_lsp_rs_core::config::WorkspaceConfig::parse_perl5lib(&value))
             .unwrap_or_default();
         let raw_include_paths = config.effective_include_paths(&perl5lib_paths);
-        let lexical_paths = assembly::lexical_paths(doc_uri, doc_text, doc_offset, root.as_path());
+        let lexical_paths =
+            assembly::lexical_paths(self, doc_uri, doc_text, doc_offset, root.as_path());
 
         // When a position offset is provided, also compute the set of paths that
         // `no lib` has explicitly cancelled at that position. These cancellations
@@ -242,6 +243,41 @@ mod tests {
         let search_display_paths = context.search_display_paths();
         assert_eq!(search_display_paths[0].source, "use lib");
         assert_eq!(search_display_paths[1].source, "workspace includePaths");
+        Ok(())
+    }
+
+    #[test]
+    fn effective_inc_context_falls_back_to_hir_roots_for_recovery_forms() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let module_path = workspace.join("local").join("Recovered.pm");
+        let script_path = workspace.join("script.pl");
+        std::fs::create_dir_all(module_path.parent().ok_or("missing module parent")?)?;
+        std::fs::write(&module_path, "package Recovered;\n1;\n")?;
+
+        let workspace_uri = file_uri(&workspace)?;
+        let script_uri = file_uri(&script_path)?;
+        let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+        config.use_system_inc = false;
+        config.use_perl5lib = false;
+
+        let server = LspServer::new();
+        *server.workspace_folders.lock() = vec![
+            WorkspaceFolderState::new(workspace_uri)
+                .with_path(workspace.clone())
+                .with_effective_workspace_config(config),
+        ];
+        *server.root_path.lock() = Some(workspace);
+
+        let source = "BEGIN { use lib 'local'; }\nuse Recovered;\n";
+        let offset = source.rfind("use Recovered").ok_or("offset not found")?;
+        let context = server
+            .effective_inc_context_for_doc(Some(&script_uri), Some(source), Some(offset))
+            .ok_or("expected effective @INC context")?;
+
+        assert!(context.effective_roots.iter().any(|root| {
+            root.kind == IncRootKind::FileLocalLexical && root.path.ends_with("local")
+        }));
         Ok(())
     }
 

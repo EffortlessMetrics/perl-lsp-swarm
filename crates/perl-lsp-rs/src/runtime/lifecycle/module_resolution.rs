@@ -3,7 +3,7 @@
 //! Handles resolution of Perl module names to file paths.
 
 use super::super::*;
-use perl_module::resolution::use_lib::resolve_use_lib_paths_from_source;
+use perl_module::resolution::use_lib::{UseLibPath, resolve_use_lib_paths_from_source};
 use perl_module::resolution::{
     ModuleUriResolution, build_effective_inc_roots,
     resolve_module_path as resolve_workspace_module_path, resolve_module_uri_with_effective_inc,
@@ -35,7 +35,14 @@ struct UseLibHirCacheFingerprint {
 
 struct UseLibHirCacheEntry {
     fingerprint: UseLibHirCacheFingerprint,
-    paths: Vec<String>,
+    facts: Vec<UseLibHirFact>,
+}
+
+#[derive(Clone)]
+struct UseLibHirFact {
+    path: UseLibPath,
+    action: IncRootAction,
+    offset: usize,
 }
 
 /// A single resolution scope representing a workspace folder's search context.
@@ -83,7 +90,8 @@ fn prepend_use_lib_paths(
     // that the source scanner could not recover; this keeps the legacy resolver
     // cheap while retaining compiler-backed roots where they add information.
     if dynamic.is_empty() {
-        dynamic = server.cached_hir_use_lib_paths(doc_uri, doc_text, workspace_root, file_dir);
+        dynamic =
+            server.cached_hir_use_lib_paths(doc_uri, doc_text, workspace_root, file_dir, None);
     }
 
     // Keep the resolver's precedence and deduplication policy in one place.
@@ -111,12 +119,13 @@ impl LspServer {
         }
     }
 
-    fn cached_hir_use_lib_paths(
+    pub(crate) fn cached_hir_use_lib_paths(
         &self,
         doc_uri: Option<&str>,
         doc_text: &str,
         workspace_root: &Path,
         file_dir: Option<&Path>,
+        doc_offset: Option<usize>,
     ) -> Vec<String> {
         let scope = doc_uri.map(|uri| self.normalize_uri_key(uri));
         let fingerprint = UseLibHirCacheFingerprint {
@@ -131,26 +140,37 @@ impl LspServer {
             if let Some(entry) = cache.entries.get(&scope)
                 && entry.fingerprint == fingerprint
             {
-                return entry.paths.clone();
+                return resolve_hir_use_lib_paths(
+                    &entry.facts,
+                    workspace_root,
+                    file_dir,
+                    doc_offset,
+                );
             }
         }
 
-        let paths = hir_use_lib_paths(doc_text, workspace_root, file_dir);
+        let facts = hir_use_lib_facts(doc_text);
         let mut cache = self.use_lib_hir_cache.lock();
-        cache.entries.insert(scope, UseLibHirCacheEntry { fingerprint, paths: paths.clone() });
-        paths
+        cache.entries.insert(scope, UseLibHirCacheEntry { fingerprint, facts: facts.clone() });
+        resolve_hir_use_lib_paths(&facts, workspace_root, file_dir, doc_offset)
     }
 }
 
+#[cfg(test)]
 fn hir_use_lib_paths(
     doc_text: &str,
     workspace_root: &std::path::Path,
     file_dir: Option<&std::path::Path>,
 ) -> Vec<String> {
+    let facts = hir_use_lib_facts(doc_text);
+    resolve_hir_use_lib_paths(&facts, workspace_root, file_dir, None)
+}
+
+fn hir_use_lib_facts(doc_text: &str) -> Vec<UseLibHirFact> {
     let mut parser = perl_parser_core::Parser::new(doc_text);
     let output = parser.parse_with_recovery();
     let hir = lower_ast(&output.ast);
-    let mut paths = Vec::new();
+    let mut facts = Vec::new();
 
     for fact in hir.compile_environment.inc_roots {
         if fact.kind != perl_parser_core::hir::IncRootKind::UseLib {
@@ -159,9 +179,31 @@ fn hir_use_lib_paths(
         let Some(use_lib_path) = hir_use_lib_path(fact.path) else {
             continue;
         };
+        facts.push(UseLibHirFact {
+            path: use_lib_path,
+            action: fact.action,
+            offset: fact.range.start,
+        });
+    }
+
+    facts
+}
+
+fn resolve_hir_use_lib_paths(
+    facts: &[UseLibHirFact],
+    workspace_root: &Path,
+    file_dir: Option<&Path>,
+    doc_offset: Option<usize>,
+) -> Vec<String> {
+    let mut paths = Vec::new();
+
+    for fact in facts {
+        if doc_offset.is_some_and(|offset| fact.offset > offset) {
+            continue;
+        }
 
         let resolved = perl_module::resolution::use_lib::resolve_use_lib_paths(
-            &[use_lib_path],
+            std::slice::from_ref(&fact.path),
             workspace_root,
             file_dir,
         );
@@ -185,7 +227,8 @@ fn hir_use_lib_paths(
     paths
 }
 
-fn hir_use_lib_path(path: String) -> Option<perl_module::resolution::use_lib::UseLibPath> {
+fn hir_use_lib_path(path: String) -> Option<UseLibPath> {
+    let path = decode_hir_quote_like_path(&path)?;
     const FINDBIN_PREFIXES: [&str; 8] = [
         "$FindBin::Bin",
         "$FindBin::RealBin",
@@ -199,7 +242,7 @@ fn hir_use_lib_path(path: String) -> Option<perl_module::resolution::use_lib::Us
 
     for prefix in FINDBIN_PREFIXES {
         if let Some(rest) = path.strip_prefix(prefix) {
-            if matches!(prefix, "$Bin" | "$RealBin")
+            if !prefix.ends_with('}')
                 && rest
                     .chars()
                     .next()
@@ -207,18 +250,43 @@ fn hir_use_lib_path(path: String) -> Option<perl_module::resolution::use_lib::Us
             {
                 continue;
             }
-            return Some(perl_module::resolution::use_lib::UseLibPath {
+            return Some(UseLibPath {
                 path: rest.strip_prefix('/').unwrap_or(rest).to_string(),
                 from_findbin: true,
             });
         }
     }
 
-    if path.contains('$') {
+    if path.is_empty() || path.chars().any(|character| matches!(character, '$' | '@' | '%')) {
         return None;
     }
 
-    Some(perl_module::resolution::use_lib::UseLibPath { path, from_findbin: false })
+    Some(UseLibPath { path, from_findbin: false })
+}
+
+fn decode_hir_quote_like_path(path: &str) -> Option<String> {
+    let Some(rest) = path.strip_prefix("qq").or_else(|| path.strip_prefix('q')) else {
+        return Some(path.to_string());
+    };
+
+    let delimiter = rest.chars().next()?;
+    if !matches!(delimiter, '(' | '[' | '{' | '<' | '/' | '!' | ':' | ';' | '|') {
+        return Some(path.to_string());
+    }
+    let closing = match delimiter {
+        '(' => ')',
+        '[' => ']',
+        '{' => '}',
+        '<' => '>',
+        delimiter => delimiter,
+    };
+    let body = &rest[delimiter.len_utf8()..];
+    let end = body.find(closing)?;
+    let suffix = &body[end + closing.len_utf8()..];
+    if !suffix.is_empty() {
+        return None;
+    }
+    Some(body[..end].to_string())
 }
 
 fn workspace_root_for_doc(workspace_folders: &[String], doc_uri: Option<&str>) -> Option<PathBuf> {
@@ -923,7 +991,9 @@ mod tests {
             hir_use_lib_paths("use lib \"$FindBin::Bin/lib\";\n", &workspace, Some(&scripts));
 
         assert_eq!(paths, vec!["scripts/lib"]);
+        assert_eq!(hir_use_lib_paths("use lib q{local};\n", &workspace, None), vec!["local"]);
         assert!(hir_use_lib_path("$BinDir/lib".to_string()).is_none());
+        assert!(hir_use_lib_path("@dirs".to_string()).is_none());
         Ok(())
     }
 
@@ -948,12 +1018,14 @@ mod tests {
             "use lib './first';\n",
             &workspace,
             None,
+            None,
         );
         assert_eq!(first, vec!["./first"]);
         let second = server.cached_hir_use_lib_paths(
             Some(&doc_uri),
             "use lib './second';\n",
             &workspace,
+            None,
             None,
         );
         assert_eq!(second, vec!["./second"]);
