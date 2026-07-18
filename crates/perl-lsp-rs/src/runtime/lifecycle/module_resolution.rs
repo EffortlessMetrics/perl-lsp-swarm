@@ -123,6 +123,24 @@ impl LspServer {
         file_dir: Option<&Path>,
         doc_offset: Option<usize>,
     ) -> Vec<String> {
+        self.cached_hir_use_lib_paths_and_cancelled(
+            doc_uri,
+            doc_text,
+            workspace_root,
+            file_dir,
+            doc_offset,
+        )
+        .0
+    }
+
+    pub(crate) fn cached_hir_use_lib_paths_and_cancelled(
+        &self,
+        doc_uri: Option<&str>,
+        doc_text: &str,
+        workspace_root: &Path,
+        file_dir: Option<&Path>,
+        doc_offset: Option<usize>,
+    ) -> (Vec<String>, HashSet<String>) {
         let scope = doc_uri.map(|uri| self.normalize_uri_key(uri));
         let fingerprint = UseLibHirCacheFingerprint {
             generation: doc_uri.and_then(|uri| self.document_generation(uri)),
@@ -136,7 +154,7 @@ impl LspServer {
             if let Some(entry) = cache.entries.get(&scope)
                 && entry.fingerprint == fingerprint
             {
-                return resolve_hir_use_lib_paths(
+                return resolve_hir_use_lib_paths_and_cancelled(
                     &entry.facts,
                     workspace_root,
                     file_dir,
@@ -148,7 +166,7 @@ impl LspServer {
         let facts = hir_use_lib_facts(doc_text);
         let mut cache = self.use_lib_hir_cache.lock();
         cache.entries.insert(scope, UseLibHirCacheEntry { fingerprint, facts: facts.clone() });
-        resolve_hir_use_lib_paths(&facts, workspace_root, file_dir, doc_offset)
+        resolve_hir_use_lib_paths_and_cancelled(&facts, workspace_root, file_dir, doc_offset)
     }
 }
 
@@ -159,7 +177,7 @@ fn hir_use_lib_paths(
     file_dir: Option<&std::path::Path>,
 ) -> Vec<String> {
     let facts = hir_use_lib_facts(doc_text);
-    resolve_hir_use_lib_paths(&facts, workspace_root, file_dir, None)
+    resolve_hir_use_lib_paths_and_cancelled(&facts, workspace_root, file_dir, None).0
 }
 
 fn hir_use_lib_facts(doc_text: &str) -> Vec<UseLibHirFact> {
@@ -185,13 +203,14 @@ fn hir_use_lib_facts(doc_text: &str) -> Vec<UseLibHirFact> {
     facts
 }
 
-fn resolve_hir_use_lib_paths(
+fn resolve_hir_use_lib_paths_and_cancelled(
     facts: &[UseLibHirFact],
     workspace_root: &Path,
     file_dir: Option<&Path>,
     doc_offset: Option<usize>,
-) -> Vec<String> {
+) -> (Vec<String>, HashSet<String>) {
     let mut paths = Vec::new();
+    let mut cancelled_paths = HashSet::new();
 
     for fact in facts {
         if doc_offset.is_some_and(|offset| fact.offset > offset) {
@@ -203,6 +222,11 @@ fn resolve_hir_use_lib_paths(
             workspace_root,
             file_dir,
         );
+        if fact.action == IncRootAction::Remove
+            && doc_offset.is_none_or(|offset| fact.offset < offset)
+        {
+            cancelled_paths.extend(resolved.iter().cloned());
+        }
 
         match fact.action {
             IncRootAction::Add => {
@@ -220,7 +244,7 @@ fn resolve_hir_use_lib_paths(
         }
     }
 
-    paths
+    (paths, cancelled_paths)
 }
 
 fn hir_use_lib_path(path: String) -> Option<UseLibPath> {
@@ -308,7 +332,29 @@ fn decode_hir_quote_like_path(path: &str) -> Option<String> {
     if !suffix.is_empty() {
         return None;
     }
-    Some(body[..end].to_string())
+    Some(unescape_hir_quote_like_body(&body[..end], delimiter, closing))
+}
+
+fn unescape_hir_quote_like_body(body: &str, delimiter: char, closing: char) -> String {
+    let mut decoded = String::with_capacity(body.len());
+    let mut escaped = false;
+    for character in body.chars() {
+        if escaped {
+            if character != '\\' && character != delimiter && character != closing {
+                decoded.push('\\');
+            }
+            decoded.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else {
+            decoded.push(character);
+        }
+    }
+    if escaped {
+        decoded.push('\\');
+    }
+    decoded
 }
 
 fn workspace_root_for_doc(workspace_folders: &[String], doc_uri: Option<&str>) -> Option<PathBuf> {
@@ -1017,6 +1063,10 @@ mod tests {
         assert_eq!(
             hir_use_lib_paths("use lib q{local{nested}/lib};\n", &workspace, None),
             vec!["local{nested}/lib"]
+        );
+        assert_eq!(
+            hir_use_lib_paths(r#"use lib q{local\}/lib};\n"#, &workspace, None),
+            vec!["local}/lib"]
         );
         assert!(hir_use_lib_path("$BinDir/lib".to_string()).is_none());
         assert!(hir_use_lib_path("$FindBin::BinDir/lib".to_string()).is_none());

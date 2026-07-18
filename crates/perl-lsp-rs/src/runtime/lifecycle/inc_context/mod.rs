@@ -145,6 +145,7 @@ impl LspServer {
         // apply to configured include paths too — `no lib 'lib'` removes `lib` from
         // `@INC` regardless of whether it arrived via `use lib` or workspace config.
         let include_paths = assembly::include_paths_with_cancellations(
+            self,
             doc_uri,
             doc_text,
             doc_offset,
@@ -403,6 +404,44 @@ mod tests {
              roots={:?} symbol={:?}",
             context.effective_roots,
             module_uri
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn symbol_uri_reachable_returns_false_after_nested_hir_no_lib_cancellation() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let lib_dir = workspace.join("lib");
+        std::fs::create_dir_all(&lib_dir)?;
+
+        let module_path = lib_dir.join("GoneModule.pm");
+        std::fs::write(&module_path, "package GoneModule;\n1;\n")?;
+        let module_uri = file_uri(&module_path)?;
+
+        let workspace_uri = file_uri(&workspace)?;
+        let script_path = workspace.join("script.pl");
+        let script_uri = file_uri(&script_path)?;
+        let config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+
+        let server = LspServer::new();
+        *server.workspace_folders.lock() = vec![
+            WorkspaceFolderState::new(workspace_uri.clone())
+                .with_path(workspace.clone())
+                .with_effective_workspace_config(config),
+        ];
+        *server.root_path.lock() = Some(workspace);
+
+        let source = "use lib 'lib';\nBEGIN { no lib 'lib'; }\nuse GoneModule;\n";
+        let use_gone_offset = source.rfind("use GoneModule").ok_or("offset not found")?;
+        let context = server
+            .effective_inc_context_for_doc(Some(&script_uri), Some(source), Some(use_gone_offset))
+            .ok_or("expected effective @INC context")?;
+
+        assert!(
+            !context.symbol_uri_reachable(&module_uri),
+            "a nested HIR no-lib cancellation must not be re-added by source merging; roots={:?}",
+            context.effective_roots
         );
         Ok(())
     }
