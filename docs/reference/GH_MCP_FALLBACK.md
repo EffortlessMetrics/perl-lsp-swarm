@@ -71,5 +71,6 @@ first when tool parity changes.
   the index. When adding a new `gh` call to a control-plane file, add the inline note and,
   if the mapping is new, a row here.
 - Never classify GitHub state as UNKNOWN in an MCP session without first checking this
-  map — the 2026-07 correction above exists because two "unavailable" claims caused
-  agents to skip master-green verification that was in fact fully supported.
+  map — the 2026-07 corrections above exist because three "unavailable" claims (`gh run
+  list`, `gh run view --log-failed`, and `gh run rerun`) caused agents to skip
+  master-green verification and re-runs that were in fact fully supported.
