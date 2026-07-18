@@ -965,6 +965,50 @@ fn test_unclosed_qw_semicolonless_keeps_keyword_word_without_sigil() -> Result<(
 }
 
 #[test]
+fn test_unclosed_qw_semicolonless_keeps_print_word_without_value_shape() -> Result<(), String> {
+    // #4494 false-positive guard: `print` is the weakest candidate keyword — it
+    // has no sigil requirement, so at true EOF *any* following bareword used to
+    // satisfy qw_statement_runs_to_eof (e.g. a truncated `qw(push pop print
+    // printf` list of builtin names). Require the first non-whitespace
+    // character after `print` to look like the start of a value expression
+    // (sigil/quote/paren/digit); a bare identifier keeps `print` as qw content.
+    let code = "my @builtins = qw(push pop\nprint\nprintf";
+    let mut parser = Parser::new(code);
+    let ast = parser
+        .parse()
+        .map_err(|error| format!("print-word qw content failed to parse: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 1 || !sexp.contains("\"print\"") || !sexp.contains("\"printf\"") {
+        return Err(format!("print word without value shape was misrecovered: {sexp}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_recovers_semicolonless_trailing_print_variants() -> Result<(), String> {
+    // Companion to the guard above: real value-shaped `print` arguments
+    // (sigil, digit, opening paren) at EOF still recover as a trailing
+    // statement — the guard only rejects bare-identifier arguments.
+    for (arg, needle) in [("$x", "$ x"), ("42", "42"), ("(1, 2)", "number 1")] {
+        let code = format!("my @items = qw(word1 word2\nprint {arg}");
+        let mut parser = Parser::new(&code);
+        let ast =
+            parser.parse().map_err(|error| format!("`print {arg}` did not parse: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        if statements.len() != 2 || !sexp.contains(needle) {
+            return Err(format!("`print {arg}` trailing recovery regressed: {sexp}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn test_closed_qw_semicolonless_trailing_keyword_stays_word() -> Result<(), String> {
     // #4494 regression guard: relaxing the EOF terminator must not split a CLOSED
     // qw whose final content line looks like a print statement.

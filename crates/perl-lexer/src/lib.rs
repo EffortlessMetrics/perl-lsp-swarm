@@ -3278,7 +3278,27 @@ impl<'a> PerlLexer<'a> {
             }
         }
         remaining.strip_prefix("print").is_some_and(|after| {
-            after.starts_with(char::is_whitespace) && self.qw_statement_terminates(position)
+            after.starts_with(char::is_whitespace)
+                && Self::print_argument_starts_plausible(after)
+                && self.qw_statement_terminates(position)
+        })
+    }
+
+    /// Guards the `print` boundary candidate the same way the sigil check
+    /// guards `my`/`our`/`state`/`local`: require the first non-whitespace
+    /// character after `print` to look like the start of a value expression
+    /// (sigil, quote, opening paren, or digit) rather than a bare identifier.
+    ///
+    /// Without this guard, `qw_statement_terminates`'s EOF branch (#4494)
+    /// would accept ANY `print <word>` line as a truncated statement boundary
+    /// — including a `print` that is itself just a data word inside a
+    /// genuinely unclosed qw list (e.g. `qw(push pop print printf`, a
+    /// truncated list of builtin names). Requiring an expression-shaped first
+    /// token keeps that content intact while still recovering real truncated
+    /// `print "..."` / `print $x` / `print(...)` statements at EOF.
+    fn print_argument_starts_plausible(after: &str) -> bool {
+        after.trim_start().starts_with(|ch: char| {
+            matches!(ch, '$' | '@' | '%' | '"' | '\'' | '`' | '(') || ch.is_ascii_digit()
         })
     }
 
