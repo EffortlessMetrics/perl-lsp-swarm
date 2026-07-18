@@ -442,8 +442,12 @@ fn find_topmost_ledger_version(content: &str) -> Option<String> {
 fn today_iso_date() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    iso_date_from_unix_days(now.div_euclid(86_400))
+}
+
+fn iso_date_from_unix_days(days_since_epoch: i64) -> String {
     // Ymd from unix epoch: standard civil-from-days conversion (Howard Hinnant).
-    let z = now.div_euclid(86_400) + 719_468;
+    let z = days_since_epoch + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;
     let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
@@ -1331,6 +1335,40 @@ perl-token = { path = "../perl-token", version = "0.42.0" }
         assert!((2025..=2100).contains(&year), "year {year} out of expected range");
         assert!((1..=12).contains(&month), "month {month} invalid");
         assert!((1..=31).contains(&day), "day {day} invalid");
+    }
+
+    #[test]
+    fn iso_date_from_unix_days_covers_january_year_rollover_boundary() -> Result<()> {
+        let date = iso_date_from_unix_days(0);
+        if date != "1970-01-01" {
+            bail!("unix epoch should map to 1970-01-01, got {date}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn iso_date_from_unix_days_covers_march_month_mapping_boundary() -> Result<()> {
+        let date = iso_date_from_unix_days(59);
+        if date != "1970-03-01" {
+            bail!("day 59 after the unix epoch should map to 1970-03-01, got {date}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn read_workspace_version_reads_workspace_package_version() -> Result<()> {
+        let repo_root = unique_temp_repo_dir("read-workspace-version")?;
+        fs::write(repo_root.join("Cargo.toml"), "[workspace.package]\nversion = \"0.42.0\"\n")
+            .map_err(|e| eyre!("writing workspace Cargo.toml: {e}"))?;
+
+        let version = read_workspace_version(&repo_root)?;
+        if version != "0.42.0" {
+            bail!("expected workspace version 0.42.0, got {version}");
+        }
+
+        fs::remove_dir_all(&repo_root)
+            .map_err(|e| eyre!("cleanup {}: {e}", repo_root.display()))?;
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
