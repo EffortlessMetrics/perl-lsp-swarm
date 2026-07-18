@@ -457,7 +457,7 @@ pub enum HirStmt {
     /// Loop-control transfer (`next`, `last`, or `redo`).
     LoopControl {
         /// Transfer verb.
-        verb: ControlTransferKind,
+        verb: LoopControlVerb,
         /// Optional target loop label.
         target_label: Option<String>,
     },
