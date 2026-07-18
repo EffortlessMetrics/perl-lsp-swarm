@@ -18,6 +18,7 @@
 //! - Dynamic subs (`eval "sub foo { }"`, `AUTOLOAD`) are not tracked.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 /// File-local subroutine symbol table built from a pre-pass scan.
 ///
@@ -34,7 +35,7 @@ use std::collections::HashSet;
 /// will be parsed as a function call with a regex argument.
 #[derive(Debug, Clone, Default)]
 pub struct LocalSymbolTable {
-    known_subs: HashSet<Box<str>>,
+    known_subs: Arc<HashSet<Box<str>>>,
 }
 
 impl LocalSymbolTable {
@@ -125,7 +126,7 @@ impl LocalSymbolTable {
             }
         }
 
-        Self { known_subs }
+        Self { known_subs: Arc::new(known_subs) }
     }
 
     /// Return `true` if `name` was declared as a subroutine in this file.
