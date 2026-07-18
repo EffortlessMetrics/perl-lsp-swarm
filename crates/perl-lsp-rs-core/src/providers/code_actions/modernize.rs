@@ -197,28 +197,62 @@ fn find_legacy_require_version(source: &str) -> Vec<CodeAction> {
     actions
 }
 
-/// Whether `source` contains a `use Mojolicious <flags>;` statement with a
-/// non-empty flag list (e.g. `use Mojolicious -base;`), which forwards into
-/// `Mojo::Base::import` and enables strict/warnings for the caller.
+/// Whether `source` contains a `use Mojolicious <flags>;` statement whose
+/// import list is non-empty (e.g. `use Mojolicious -base;`), which forwards
+/// into `Mojo::Base::import` and enables strict/warnings for the caller.
 ///
-/// Bare `use Mojolicious;` (no flags -> no strict) and `use Mojolicious::Lite`
-/// (matched unconditionally by the module list) are deliberately excluded, as
-/// is any longer identifier that merely starts with `Mojolicious`.
+/// Deliberately returns `false` for the forms that do NOT enable strict:
+/// - bare `use Mojolicious;` (calls `import` with no args -> short-circuits);
+/// - `use Mojolicious ();` (explicit empty import list -> `import` is skipped),
+///   matching how the diagnostic source of truth treats the empty-arg case;
+/// - `use Mojolicious::Lite` and any other `Mojolicious::…` sub-package (the
+///   list handles `::Lite` directly);
+/// - a longer bareword that merely starts with `Mojolicious` (e.g. a
+///   hypothetical `MojoliciousFoo`).
+///
+/// The scan runs over the whole source rather than per line so it tolerates
+/// irregular inter-token whitespace (`use  Mojolicious -base;`), inline
+/// statements (`…; use Mojolicious -base;`), and `use` statements whose flags
+/// wrap onto a continuation line.
 fn has_flagged_mojolicious_use(source: &str) -> bool {
-    source.lines().any(|line| {
-        let Some(after) = line.trim_start().strip_prefix("use Mojolicious") else {
-            return false;
-        };
-        // The character immediately after `Mojolicious` must be a statement
-        // boundary (whitespace before the flags). `;` is bare, `:` is a
-        // sub-package (`::Lite`), and any other char is a longer module name.
-        match after.chars().next() {
-            Some(c) if c.is_whitespace() => {
-                !after.split(';').next().unwrap_or_default().trim().is_empty()
-            }
-            _ => false,
+    const MODULE: &str = "Mojolicious";
+    let mut from = 0;
+    while let Some(rel) = source[from..].find(MODULE) {
+        let name_start = from + rel;
+        let name_end = name_start + MODULE.len();
+        from = name_end;
+
+        // The token must be the target of a `use` keyword, allowing arbitrary
+        // whitespace between `use` and the module name, and rejecting words
+        // that merely end in `use` (`abuse Mojolicious`).
+        let before = source[..name_start].trim_end();
+        let has_use_keyword = before.ends_with("use")
+            && before[..before.len() - "use".len()]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric() && c != '_');
+        if !has_use_keyword {
+            continue;
         }
-    })
+
+        // Reject `Mojolicious::…` sub-packages (handled by the module list) and
+        // longer identifiers such as `MojoliciousFoo`.
+        match source[name_end..].chars().next() {
+            Some(':') => continue,
+            Some(c) if c.is_alphanumeric() || c == '_' => continue,
+            _ => {}
+        }
+
+        // Import arguments = text up to the terminating `;`. Whitespace-insensitive,
+        // so a wrapped continuation line is captured. `()` is the explicit
+        // empty-import list, which skips `import` entirely -> no strict.
+        let args = source[name_end..].split(';').next().unwrap_or_default();
+        let compact: String = args.chars().filter(|c| !c.is_whitespace()).collect();
+        if !compact.is_empty() && compact != "()" {
+            return true;
+        }
+    }
+    false
 }
 
 /// Detect missing `use strict` / `use warnings` and suggest adding both.
@@ -753,6 +787,46 @@ mod tests {
         let source = "use Mojolicious -base;\nprint 'hello';";
         let actions = find_missing_strict_warnings(source);
         assert!(actions.is_empty(), "flagged `use Mojolicious -base;` must suppress the action");
+    }
+
+    #[test]
+    fn empty_import_mojolicious_does_not_suppress() {
+        // `use Mojolicious ();` is the explicit empty-import list -- it skips
+        // import() entirely, so it enables nothing. Must still offer the action
+        // (matches how strict_warnings.rs treats the empty-arg case).
+        let source = "use Mojolicious ();\nprint 'hello';";
+        let actions = find_missing_strict_warnings(source);
+        assert!(
+            actions.iter().any(|a| a.title.contains("use strict")),
+            "`use Mojolicious ();` must not suppress the action"
+        );
+    }
+
+    #[test]
+    fn flagged_mojolicious_suppresses_regardless_of_whitespace_or_layout() {
+        // The flagged form enables strict/warnings irrespective of irregular
+        // whitespace, inline placement, or a wrapped continuation line.
+        for source in [
+            "use  Mojolicious -base;\nprint 'hi';",     // doubled space
+            "use\tMojolicious -base;\nprint 'hi';",     // tab
+            "package App; use Mojolicious -base;\n1;",  // inline statement
+            "use Mojolicious\n    -base;\nprint 'hi';", // wrapped flags
+        ] {
+            let actions = find_missing_strict_warnings(source);
+            assert!(actions.is_empty(), "flagged Mojolicious must suppress for: {source:?}");
+        }
+    }
+
+    #[test]
+    fn longer_bareword_starting_with_mojolicious_is_not_flagged() {
+        // A different module that merely starts with `Mojolicious` must not be
+        // treated as a flagged `use Mojolicious`.
+        let source = "use MojoliciousFoo -base;\nprint 'hi';";
+        let actions = find_missing_strict_warnings(source);
+        assert!(
+            actions.iter().any(|a| a.title.contains("use strict")),
+            "`use MojoliciousFoo` must not be treated as flagged Mojolicious"
+        );
     }
 
     #[test]
