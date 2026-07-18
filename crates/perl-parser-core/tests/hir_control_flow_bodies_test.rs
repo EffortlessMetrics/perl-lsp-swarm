@@ -54,6 +54,30 @@ fn branch_links_elsif_condition_and_block() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn branch_block_uses_its_nested_lexical_scope() -> Result<(), Box<dyn Error>> {
+    let file = parse("if ($condition) { my $branch_value = 1; $branch_value; }");
+    let body = file.root_body().ok_or_else(|| "root body is missing".to_string())?;
+    let HirExpr::Branch { then_block, .. } = first_expr(body)? else {
+        return Err("expected structured branch".into());
+    };
+    let branch = body.block(*then_block).ok_or_else(|| "then block is missing".to_string())?;
+    let read_stmt = *branch.stmts.get(1).ok_or_else(|| "branch read is missing".to_string())?;
+    let HirStmt::Expr(read_expr) =
+        body.stmt(read_stmt).ok_or_else(|| "branch statement is missing".to_string())?
+    else {
+        return Err("expected branch read expression".into());
+    };
+    let HirExpr::Variable(variable) =
+        body.expr(*read_expr).ok_or_else(|| "branch variable is missing".to_string())?
+    else {
+        return Err("expected branch variable expression".into());
+    };
+    assert_eq!(variable.name, "branch_value");
+    assert_eq!(variable.kind, VariableKind::Lexical);
+    Ok(())
+}
+
+#[test]
 fn ternary_links_all_three_expressions() -> Result<(), Box<dyn Error>> {
     let file = parse("$flag ? $left : $right;");
     let body = file.root_body().ok_or_else(|| "root body is missing".to_string())?;
