@@ -20,8 +20,12 @@ fn qw_suffix_scan_preserves_known_sub_regex_classification() -> TestResult {
         saw_regex |= matches!(token.token_type, TokenType::RegexMatch);
     }
     let text = recovered_qw.ok_or("expected recovered quote-words error token")?;
-    assert_eq!(text.as_ref(), "qw(word\n");
-    assert!(saw_regex, "known sub call must preserve regex classification");
+    if text.as_ref() != "qw(word\n" {
+        return Err(format!("recovered qw token consumed its follower: {text}").into());
+    }
+    if !saw_regex {
+        return Err("known sub call did not preserve regex classification".into());
+    }
     Ok(())
 }
 
