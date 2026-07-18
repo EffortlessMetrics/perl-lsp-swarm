@@ -3,22 +3,10 @@
 //! Provides lightweight pattern checks for modernizing Perl code while keeping
 //! refactorings safe and fast in LSP workflows.
 
-/// A suggestion for modernizing legacy Perl code patterns.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ModernizationSuggestion {
-    /// The deprecated or outdated code pattern to be replaced.
-    pub old_pattern: String,
-    /// The modern replacement pattern.
-    pub new_pattern: String,
-    /// Human-readable explanation of why this change is recommended.
-    pub description: String,
-    /// Whether this suggestion requires human review before applying.
-    pub manual_review_required: bool,
-    /// Byte offset where the pattern starts in the source code.
-    pub start: usize,
-    /// Byte offset where the pattern ends in the source code.
-    pub end: usize,
-}
+// `ModernizationSuggestion` is defined once in `modernization_suggestion` and
+// re-exported here so existing `modernize::ModernizationSuggestion` paths keep
+// resolving while the definition stays shared with `modernize_refactored` (#3924).
+pub use super::modernization_suggestion::ModernizationSuggestion;
 
 /// Analyzes and modernizes legacy Perl code patterns.
 ///

@@ -41,6 +41,6 @@ pub use lower::{
 };
 pub use model::{
     LexicalName, PIR_RECEIPT_VERSION, PirAnchorCoverage, PirAnchorKind, PirCallee, PirContext,
-    PirDynamicBoundaryKind, PirEdge, PirEdgeKind, PirGraph, PirId, PirLoweringMode, PirMethod,
-    PirNode, PirOperation, PirReceipt, PirReceiver, PirSourceAnchor, SymbolName,
+    PirDynamicBoundaryKind, PirEdge, PirEdgeKind, PirGraph, PirId, PirLiteralKind, PirLoweringMode,
+    PirMethod, PirNode, PirOperation, PirReceipt, PirReceiver, PirSourceAnchor, SymbolName,
 };
