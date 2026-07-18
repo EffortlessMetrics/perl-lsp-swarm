@@ -234,10 +234,11 @@ def validate_scope(schema: Any, receipt: Any) -> None:
             _require(isinstance(item.get("owner"), str) and item["owner"], f"items[{index}].0.18-candidate requires owner")
             _require(isinstance(item.get("acceptance"), list) and item["acceptance"], f"items[{index}].0.18-candidate requires acceptance")
             _require(isinstance(item.get("proof"), list) and item["proof"], f"items[{index}].0.18-candidate requires proof")
-            _require(item.get("unresolved_threads") == 0, f"items[{index}].0.18-candidate requires unresolved_threads == 0")
+            unresolved_threads = item.get("unresolved_threads")
             checks = item.get("checks") if isinstance(item.get("checks"), dict) else {}
-            _require(checks.get("failed") == 0, f"items[{index}].0.18-candidate requires checks.failed == 0")
-            _require(checks.get("pending") == 0, f"items[{index}].0.18-candidate requires checks.pending == 0")
+            _require(type(unresolved_threads) is int and unresolved_threads == 0, f"items[{index}].0.18-candidate requires unresolved_threads == 0")
+            _require(type(checks.get("failed")) is int and checks["failed"] == 0, f"items[{index}].0.18-candidate requires checks.failed == 0")
+            _require(type(checks.get("pending")) is int and checks["pending"] == 0, f"items[{index}].0.18-candidate requires checks.pending == 0")
         if disposition == "superseded":
             _require(isinstance(item.get("close_ready"), bool), f"items[{index}].superseded requires boolean close_ready")
 
