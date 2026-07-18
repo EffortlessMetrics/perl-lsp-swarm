@@ -1054,6 +1054,46 @@ fn pir_a_return_breaks_intra_body_fallthrough() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+#[test]
+fn pir_a_elsif_condition_does_not_create_unconditional_fallthrough()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_parser_core::pir::PirEdgeKind;
+
+    let graph = parse_and_lower(
+        "if ($first) { my $left = 1; } elsif ($second) { my $middle = 2; } else { my $right = 3; }",
+    );
+    let condition = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalRead { name } if name.name == "second"
+            ) || matches!(
+                &node.operation,
+                PirOperation::StashRead { symbol } if symbol.name == "second"
+            )
+        })
+        .ok_or("elsif condition read is missing")?;
+    let middle = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalWrite { name } if name.name == "middle"
+            )
+        })
+        .ok_or("elsif arm write is missing")?;
+
+    assert!(!graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == condition.id
+            && edge.to == Some(middle.id)
+    }));
+    Ok(())
+}
+
 // ── 29. Cross-body no spurious fallthrough edges ─────────────────────────────
 // When a file has both a subroutine body and the program-root body, the last
 // PIR node of the sub body must NOT be connected by a Fallthrough edge to the

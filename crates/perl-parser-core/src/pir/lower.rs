@@ -908,6 +908,9 @@ impl BodyLowerer {
                 for (condition, block) in elsif_arms {
                     self.last_in_scope.remove(&None);
                     self.lower_expr(body, *condition, file);
+                    // An elsif condition only selects its arm; it is not an
+                    // unconditional predecessor of the arm body.
+                    self.last_in_scope.remove(&None);
                     self.lower_block(body, *block, file);
                 }
                 if let Some(block) = else_block {
