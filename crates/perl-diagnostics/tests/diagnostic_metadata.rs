@@ -54,6 +54,7 @@ const DIAGNOSTIC_CODES: &[DiagnosticCode] = &[
     DiagnosticCode::SecurityReadpipe,
     DiagnosticCode::UnusedImport,
     DiagnosticCode::ModuleNotFound,
+    DiagnosticCode::SourceFilterModule,
     DiagnosticCode::HeredocInFormat,
     DiagnosticCode::HeredocInBegin,
     DiagnosticCode::HeredocDynamicDelimiter,

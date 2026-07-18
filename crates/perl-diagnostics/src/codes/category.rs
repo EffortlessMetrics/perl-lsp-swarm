@@ -102,7 +102,9 @@ impl DiagnosticCode {
             | Self::SecurityPipeOpen
             | Self::SecurityReadpipe => DiagnosticCategory::Security,
 
-            Self::UnusedImport | Self::ModuleNotFound => DiagnosticCategory::Import,
+            Self::UnusedImport | Self::ModuleNotFound | Self::SourceFilterModule => {
+                DiagnosticCategory::Import
+            }
 
             Self::HeredocInFormat
             | Self::HeredocInBegin
