@@ -88,10 +88,11 @@ pub(super) fn run_cmd(root: &Path, args: &[&str], timeout: Duration) -> String {
     if let Some(handle) = err_handle {
         combined.push_str(&handle.join().unwrap_or_default());
     }
-    if let Some(status) = status
-        && !status.success()
-    {
-        eprintln!("[update-status] command exited with {status}: {}", args.join(" "));
+    if status.is_none_or(|status| !status.success()) {
+        if let Some(status) = status {
+            eprintln!("[update-status] command exited with {status}: {}", args.join(" "));
+        }
+        return String::new();
     }
     combined
 }
@@ -123,6 +124,25 @@ pub(super) fn run_cmd_merged(root: &Path, args: &[&str], timeout: Duration) -> S
     #[cfg(not(unix))]
     let merged = ["cmd", "/C", &shell_cmd];
     run_cmd(root, &merged, timeout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_cmd_merged_discards_failed_command_output() -> color_eyre::eyre::Result<()> {
+        let output = run_cmd_merged(
+            Path::new("."),
+            &["rustc", "--definitely-invalid-update-status-option"],
+            Duration::from_secs(10),
+        );
+        color_eyre::eyre::ensure!(
+            output.is_empty(),
+            "failed merged command output must not be treated as valid discovery data"
+        );
+        Ok(())
+    }
 }
 
 pub(super) fn run_subsystem<T>(

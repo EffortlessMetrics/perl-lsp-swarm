@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, bail};
 use regex::Regex;
 
 use super::editor_ux::count_ux_scenarios;
@@ -62,16 +62,25 @@ pub(super) fn collect_per_crate_mutation(root: &Path) -> BTreeMap<String, usize>
 /// names to stdout.  `run_cmd_merged` (shell `2>&1`) ensures headers appear immediately
 /// before the test names they introduce, so the parser correctly associates each name with
 /// its crate.
-pub(super) fn collect_per_crate_test_counts(root: &Path) -> BTreeMap<String, usize> {
+pub(super) fn collect_per_crate_test_counts(root: &Path) -> Result<BTreeMap<String, usize>> {
     let output = run_cmd_merged(
         root,
         &["cargo", "test", "--workspace", "--lib", "--exclude", "tree-sitter-perl", "--", "--list"],
         Duration::from_mins(3),
     );
     if output.is_empty() {
-        return BTreeMap::new();
+        bail!("quality test discovery failed or returned no output");
     }
-    parse_per_crate_test_counts(&output)
+    validate_per_crate_test_counts(parse_per_crate_test_counts(&output))
+}
+
+fn validate_per_crate_test_counts(
+    counts: BTreeMap<String, usize>,
+) -> Result<BTreeMap<String, usize>> {
+    if counts.values().sum::<usize>() == 0 {
+        bail!("quality test discovery returned zero tests; refusing to overwrite quality.md");
+    }
+    Ok(counts)
 }
 
 fn parse_per_crate_test_counts(output: &str) -> BTreeMap<String, usize> {
@@ -206,7 +215,7 @@ pub(super) fn format_crate_quality_table(
 
 pub(super) fn generate_quality_status(root: &Path, original: &str) -> Result<String> {
     let mutation_by_crate = collect_per_crate_mutation(root);
-    let tests_by_crate = collect_per_crate_test_counts(root);
+    let tests_by_crate = collect_per_crate_test_counts(root)?;
     let ux_scenarios = count_ux_scenarios(root);
     let flaky = collect_flaky_test_summary(root);
 

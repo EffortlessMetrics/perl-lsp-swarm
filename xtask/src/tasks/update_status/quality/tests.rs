@@ -125,6 +125,15 @@ fn test_parse_per_crate_test_counts_preserves_tests_without_active_crate() {
     assert_eq!(counts.values().sum::<usize>(), 4);
 }
 
+#[test]
+fn test_validate_per_crate_test_counts_rejects_zero_discovery() -> Result<()> {
+    let mut counts = BTreeMap::new();
+    counts.insert("perl-parser".to_string(), 0);
+    let result = validate_per_crate_test_counts(counts);
+    color_eyre::eyre::ensure!(result.is_err(), "zero discovery must fail closed");
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Receipt-reading tests
 // ---------------------------------------------------------------------------
