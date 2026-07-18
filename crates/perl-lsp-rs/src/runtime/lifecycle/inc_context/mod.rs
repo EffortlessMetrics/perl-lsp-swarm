@@ -320,6 +320,29 @@ mod tests {
     }
 
     #[test]
+    fn lexical_paths_call_presence_observer() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let script_path = workspace.join("script.pl");
+        std::fs::create_dir_all(&workspace)?;
+        let script_uri = file_uri(&script_path)?;
+        let server = LspServer::new();
+        let source = "use lib 'local';\nuse Observed;\n";
+        let offset = source.rfind("use Observed").ok_or("offset not found")?;
+
+        let paths = assembly::lexical_paths(
+            &server,
+            Some(&script_uri),
+            Some(source),
+            Some(offset),
+            &workspace,
+        );
+
+        assert_eq!(paths, vec!["local"]);
+        Ok(())
+    }
+
+    #[test]
     fn effective_inc_context_returns_none_without_root() {
         let server = LspServer::new();
         assert!(server.effective_inc_context_for_doc(None, None, None).is_none());
