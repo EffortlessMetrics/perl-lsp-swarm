@@ -3246,7 +3246,7 @@ impl<'a> PerlLexer<'a> {
         if close != ')' {
             return false;
         }
-        let mut lexer = Self::without_qw_recovery(&self.input[position..]);
+        let mut lexer = Self::without_qw_recovery(&self.input[position..], self.config.clone());
         let mut depth = 0usize;
         while let Some(token) = lexer.next_token() {
             match token.token_type {
@@ -3269,8 +3269,9 @@ impl<'a> PerlLexer<'a> {
         let remaining = &self.input[position..];
         for keyword in ["my", "our", "state", "local"] {
             if let Some(after) = remaining.strip_prefix(keyword)
-                && after.starts_with(char::is_whitespace)
-                && after.trim_start().starts_with(['$', '@', '%', '('])
+                && ((after.starts_with(char::is_whitespace)
+                    && after.trim_start().starts_with(['$', '@', '%', '(']))
+                    || after.starts_with(['$', '@', '%']))
                 && self.qw_statement_has_semicolon(position)
             {
                 return true;
@@ -3283,13 +3284,14 @@ impl<'a> PerlLexer<'a> {
 
     fn qw_statement_has_semicolon(&self, position: usize) -> bool {
         let source = &self.input[position..];
-        let mut lexer = Self::without_qw_recovery(source);
+        let mut lexer = Self::without_qw_recovery(source, self.config.clone());
         let mut first = true;
+        let mut delimiter_depth = 0usize;
         while let Some(token) = lexer.next_token() {
-            if token.token_type == TokenType::Semicolon {
+            if token.token_type == TokenType::Semicolon && delimiter_depth == 0 {
                 return true;
             }
-            if !first {
+            if !first && delimiter_depth == 0 {
                 let prefix = &source[..token.start];
                 let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
                 if prefix[line_start..].chars().all(char::is_whitespace)
@@ -3297,6 +3299,15 @@ impl<'a> PerlLexer<'a> {
                 {
                     return false;
                 }
+            }
+            match token.token_type {
+                TokenType::LeftParen | TokenType::LeftBrace | TokenType::LeftBracket => {
+                    delimiter_depth = delimiter_depth.saturating_add(1);
+                }
+                TokenType::RightParen | TokenType::RightBrace | TokenType::RightBracket => {
+                    delimiter_depth = delimiter_depth.saturating_sub(1);
+                }
+                _ => {}
             }
             first = false;
         }

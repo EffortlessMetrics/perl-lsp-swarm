@@ -773,6 +773,37 @@ fn test_unclosed_qw_recovers_parenthesized_lexical_declaration() -> Result<(), S
 }
 
 #[test]
+fn test_unclosed_qw_recovers_compact_lexical_declarations() -> Result<(), String> {
+    for declaration in ["my$x = 1;", "our@x = ();", "state%x = ();", "local$x = 1;"] {
+        let code = format!("my @items = qw(word\n{declaration}\nprint 1;");
+        let mut parser = Parser::new(&code);
+        let ast = parser.parse().map_err(|error| format!("compact recovery failed: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("expected program root, got {}", ast.to_sexp()));
+        };
+        if statements.len() != 3 || parser.errors().is_empty() {
+            return Err(format!("compact declaration was swallowed: {}", ast.to_sexp()));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_semicolon_probe_ignores_nested_declaration() -> Result<(), String> {
+    let code = "my @items = qw(word\nmy $x = do {\nmy $inner = 1;\n$inner;\n};\nprint $x;";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("nested declaration recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    if statements.len() != 3 || parser.errors().is_empty() {
+        return Err(format!("nested declaration interrupted semicolon probe: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
 fn test_unclosed_qw_long_single_line_stays_linear_candidate_scan() -> Result<(), String> {
     let words = "word ".repeat(8_192);
     let code = format!("my @items = qw({words}");

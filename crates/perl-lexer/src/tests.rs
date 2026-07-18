@@ -3,6 +3,29 @@ use super::*;
 type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
 
 #[test]
+fn qw_suffix_scan_preserves_known_sub_regex_classification() -> TestResult {
+    let source = "qw(word\nmy $x = known /inside)/;\nsub known {}";
+    let config = LexerConfig {
+        symbol_table: Some(LocalSymbolTable::scan_subs(source)),
+        ..Default::default()
+    };
+    let mut lexer = PerlLexer::with_config(source, config);
+    let mut recovered_qw = None;
+    let mut saw_regex = false;
+    while let Some(token) = lexer.next_token() {
+        if matches!(&token.token_type, TokenType::Error(message) if message.contains("unclosed qw"))
+        {
+            recovered_qw = Some(token.text.clone());
+        }
+        saw_regex |= matches!(token.token_type, TokenType::RegexMatch);
+    }
+    let text = recovered_qw.ok_or("expected recovered quote-words error token")?;
+    assert_eq!(text.as_ref(), "qw(word\n");
+    assert!(saw_regex, "known sub call must preserve regex classification");
+    Ok(())
+}
+
+#[test]
 fn test_basic_tokens() -> TestResult {
     let mut lexer = PerlLexer::new("my $x = 42;");
 

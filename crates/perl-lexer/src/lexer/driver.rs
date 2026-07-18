@@ -34,8 +34,8 @@ impl<'a> PerlLexer<'a> {
         }
     }
 
-    pub(crate) fn without_qw_recovery(input: &'a str) -> Self {
-        let mut lexer = Self::new(input);
+    pub(crate) fn without_qw_recovery(input: &'a str, config: LexerConfig) -> Self {
+        let mut lexer = Self::with_config(input, config);
         lexer.qw_recovery_enabled = false;
         lexer
     }
