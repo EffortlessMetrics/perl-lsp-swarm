@@ -137,8 +137,8 @@ mod tests {
             &["rustc", "--definitely-invalid-update-status-option"],
             Duration::from_secs(10),
         );
-        color_eyre::eyre::ensure!(
-            output.is_empty(),
+        assert_eq!(
+            output, "",
             "failed merged command output must not be treated as valid discovery data"
         );
         Ok(())
