@@ -177,6 +177,22 @@ use crate::limits::{
     HEREDOC_TIMEOUT_MS, MAX_DELIM_NEST, MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES,
 };
 
+/// Outcome of scanning forward from a candidate unclosed-`qw` recovery boundary
+/// to classify whether the syntax-shaped candidate is a statement worth
+/// synchronizing on.
+enum QwStatementProbe {
+    /// A top-level semicolon terminates the candidate — a fully-formed statement.
+    Terminated,
+    /// The candidate is not a clean standalone statement: either another
+    /// statement starter appears before any terminator, or the candidate itself
+    /// contains an unclosed construct (an error token that runs to end of input
+    /// and hides the real following structure). Do not synchronize here.
+    Interrupted,
+    /// Input ends before a terminator or an interruption — a trailing
+    /// semicolonless statement at EOF that is still recoverable (#4494).
+    Eof,
+}
+
 impl<'a> PerlLexer<'a> {
     /// Create a new lexer that emits `HeredocBody` tokens (for LSP folding)
     pub fn with_body_tokens(input: &'a str) -> Self {
@@ -3272,24 +3288,45 @@ impl<'a> PerlLexer<'a> {
                 && ((after.starts_with(char::is_whitespace)
                     && after.trim_start().starts_with(['$', '@', '%', '(']))
                     || after.starts_with(['$', '@', '%']))
-                && self.qw_statement_has_semicolon(position)
+                && self.qw_statement_recovers(position)
             {
                 return true;
             }
         }
         remaining.strip_prefix("print").is_some_and(|after| {
-            after.starts_with(char::is_whitespace) && self.qw_statement_has_semicolon(position)
+            after.starts_with(char::is_whitespace) && self.qw_statement_recovers(position)
         })
     }
 
-    fn qw_statement_has_semicolon(&self, position: usize) -> bool {
+    /// Decide whether a syntax-shaped candidate at `position` is a recoverable
+    /// statement boundary. A candidate recovers when it is terminated by a
+    /// top-level semicolon (a fully-formed statement) or when it runs to end of
+    /// input without another statement starter intervening (a trailing
+    /// semicolonless statement at EOF, #4494). A candidate immediately followed
+    /// by another statement starter is not itself a statement, so it does not
+    /// synchronize here.
+    fn qw_statement_recovers(&self, position: usize) -> bool {
+        matches!(
+            self.qw_statement_probe(position),
+            QwStatementProbe::Terminated | QwStatementProbe::Eof
+        )
+    }
+
+    fn qw_statement_probe(&self, position: usize) -> QwStatementProbe {
         let source = &self.input[position..];
         let mut lexer = Self::without_qw_recovery(source, self.config.clone());
         let mut first = true;
         let mut delimiter_depth = 0usize;
         while let Some(token) = lexer.next_token() {
             if token.token_type == TokenType::Semicolon && delimiter_depth == 0 {
-                return true;
+                return QwStatementProbe::Terminated;
+            }
+            // An error token is an unclosed construct that runs to end of input.
+            // Its presence means the candidate is not a clean trailing statement:
+            // the recovery-disabled probe cannot see the real structure it hides,
+            // so a following statement would be swallowed if we synchronized here.
+            if matches!(token.token_type, TokenType::Error(_)) {
+                return QwStatementProbe::Interrupted;
             }
             if !first && delimiter_depth == 0 {
                 let prefix = &source[..token.start];
@@ -3297,7 +3334,7 @@ impl<'a> PerlLexer<'a> {
                 if prefix[line_start..].chars().all(char::is_whitespace)
                     && matches!(token.text.as_ref(), "my" | "our" | "state" | "local" | "print")
                 {
-                    return false;
+                    return QwStatementProbe::Interrupted;
                 }
             }
             match token.token_type {
@@ -3311,7 +3348,7 @@ impl<'a> PerlLexer<'a> {
             }
             first = false;
         }
-        false
+        QwStatementProbe::Eof
     }
 
     /// Parse a quote operator after we've seen the delimiter
