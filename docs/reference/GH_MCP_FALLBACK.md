@@ -23,6 +23,10 @@ first when tool parity changes.
 | `gh pr checks <n>` | `mcp__github__pull_request_read(method:"get_check_runs", pullNumber:n)` | Filter check runs by `head_sha` == PR head SHA to avoid stale green |
 | `gh pr diff <n>` / `--name-only` | `mcp__github__pull_request_read(method:"get_diff"` / `"get_files", pullNumber:n)` | Full parity |
 | `gh pr merge <n> --squash` | `mcp__github__merge_pull_request(pullNumber:n, merge_method:"squash", commit_title, commit_message)` | Full parity |
+| list review threads | `mcp__github__pull_request_read(method:"get_review_comments", pullNumber:n)` | Returns threads with `isResolved`/`isOutdated` flags, the `PRRT_…` thread node ID, and inline comments (each with its `#discussion_r…` numeric ID) |
+| reply to a review comment | `mcp__github__add_reply_to_pull_request_comment(pullNumber:n, commentId, body)` | `commentId` is the **numeric** ID from the `#discussion_r…` anchor, **not** the `PRRT_…` thread node ID |
+| resolve / unresolve a review thread | `mcp__github__resolve_review_thread(threadId)` / `mcp__github__unresolve_review_thread(threadId)` | `threadId` = `PRRT_…` node ID from `get_review_comments`. **Merge gate**: `main` requires 0 unresolved threads — resolve each with a disposition reply first (see review-convergence doctrine) |
+| `gh pr review <n> --approve` / `--request-changes` | `mcp__github__pull_request_review_write(method:"create", event:"APPROVE"` / `"REQUEST_CHANGES"` / `"COMMENT"`, pullNumber:n, body)` | Omit `event` to open a pending review, then `add_comment_to_pending_review` + `submit_pending` |
 | `gh pr ready <n>` | `mcp__github__update_pull_request(pullNumber:n, draft:false)` | Full parity |
 | `gh pr update-branch <n>` | `mcp__github__update_pull_request_branch(pullNumber:n)` | Full parity |
 | `gh pr create --draft` | `mcp__github__create_pull_request(head, base:"main", title, body, draft:true)` | Full parity |
@@ -31,7 +35,7 @@ first when tool parity changes.
 | `gh run list --workflow=<wf>` | `mcp__github__actions_list(method:"list_workflow_runs", resource_id:"<wf file name>")` | Pass workflow file name (e.g. `ci.yml`) as `resource_id` |
 | `gh run view <id>` | `mcp__github__actions_get(method:"get_workflow_run", resource_id:"<id>")` | Full parity |
 | `gh run view <id> --log-failed` | `mcp__github__get_job_logs(run_id:id, failed_only:true, return_content:true, tail_lines:500)` | Full parity; returns log tails inline. **Previously mis-documented as unavailable** — corrected 2026-07 |
-| `gh run rerun` | `mcp__github__actions_run_trigger` (workflow_dispatch only) | Partial: re-running an existing failed run is not exposed; push an empty-diff commit or use `update_pull_request_branch` to retrigger |
+| `gh run rerun <id>` | `mcp__github__actions_run_trigger(method:"rerun_workflow_run", run_id:id)` | Full parity. `method:"rerun_failed_jobs"` re-runs only failed jobs; `"cancel_workflow_run"` cancels; `"run_workflow"` fires a `workflow_dispatch`. **Previously mis-documented as "not exposed (workflow_dispatch only)"** — corrected 2026-07 after verifying the `actions_run_trigger` method enum |
 
 ## Issue / triage operations
 
@@ -48,11 +52,17 @@ first when tool parity changes.
 
 ## Known gaps (true no-equivalents)
 
-- **Re-running a specific failed workflow run** (`gh run rerun <id>`): not exposed;
-  `actions_run_trigger` only fires `workflow_dispatch`-enabled workflows. Workaround:
-  `update_pull_request_branch` (if base moved) or push a rebase/empty commit.
 - **`gh api` free-form calls**: no generic REST escape hatch; if an operation has no
   mapped tool above, report the limitation rather than improvising.
+- **Creating a new label** (`gh label create`): the upstream github-mcp-server has a
+  `label_write(method:"create")` tool, but it is **not exposed in this deployment's
+  tool surface** — only `get_label` (read) and applying existing labels via
+  `issue_write(labels:[...])` are available here. Verify with
+  `ToolSearch("select:mcp__github__label_write")`; if it returns nothing (as of
+  2026-07 it does), a brand-new label must be created out-of-band (e.g.
+  `docs/handoff/swarm-pack/setup.sh`, which guards on `command -v gh`).
+- **Local git operations** (`gh pr checkout`, etc.): MCP is remote-only; use `git`
+  directly (the harness allows `git`).
 
 ## Doctrine
 
