@@ -106,8 +106,8 @@ We will implement comprehensive API documentation infrastructure through systema
 ├── tests/missing_docs_ac_tests.rs       # Comprehensive validation test suite
 └── src/                                 # Target modules for documentation
 /docs/
-├── API_DOCUMENTATION_STANDARDS.md      # Enterprise-grade documentation standards
 ├── reference/
+│   ├── API_DOCUMENTATION_STANDARDS.md  # Enterprise-grade documentation standards
 │   └── MISSING_DOCUMENTATION_GUIDE.md  # 4-phase systematic resolution
 └── ADR_002_API_DOCUMENTATION_INFRASTRUCTURE.md  # This architectural decision
 ```
