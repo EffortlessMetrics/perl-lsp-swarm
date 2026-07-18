@@ -1,8 +1,34 @@
 mod cpan_test_helpers;
 use cpan_test_helpers::*;
 
+use perl_ast::ast::{Node, NodeKind};
 use perl_parser_core::Parser;
 use perl_tdd_support::must;
+
+fn find_unary_operand<'a>(node: &'a Node, operator: &str) -> Option<&'a Node> {
+    if let NodeKind::Unary { op, operand } = &node.kind {
+        if op == operator {
+            return Some(operand);
+        }
+    }
+
+    node.children().into_iter().find_map(|child| find_unary_operand(child, operator))
+}
+
+fn find_assignment<'a>(node: &'a Node) -> Option<&'a Node> {
+    if matches!(node.kind, NodeKind::Assignment { .. }) {
+        return Some(node);
+    }
+
+    node.children().into_iter().find_map(find_assignment)
+}
+
+fn statement_expression(node: &Node) -> &Node {
+    match &node.kind {
+        NodeKind::ExpressionStatement { expression } => expression,
+        _ => node,
+    }
+}
 
 #[test]
 fn braced_glob_deref_forms_parse_cleanly() {
@@ -12,37 +38,69 @@ fn braced_glob_deref_forms_parse_cleanly() {
 }
 
 #[test]
-fn braced_glob_deref_uses_last_expression_as_operand() {
+fn braced_glob_deref_uses_last_expression_as_operand() -> Result<(), Box<dyn std::error::Error>> {
     let source = "*{$tmp; 'STDOUT'};";
     let mut parser = Parser::new(source);
     let ast = must(parser.parse());
-    let sexp = ast.to_sexp();
-    assert!(sexp.contains("unary_*{}"), "expected braced glob dereference: {sexp}");
-    assert!(
-        sexp.contains("(variable $ tmp)"),
-        "expected preceding expression to be preserved: {sexp}"
-    );
-    assert!(sexp.contains("STDOUT"), "expected final expression operand: {sexp}");
+    let operand = find_unary_operand(&ast, "*{}").ok_or("expected braced glob dereference")?;
+    let NodeKind::Block { statements } = &operand.kind else {
+        return Err(format!("expected the braced glob body to remain a block: {operand:?}").into());
+    };
+    if statements.len() != 2 {
+        return Err("expected both inline expressions to remain".into());
+    }
+    if !matches!(
+        statement_expression(&statements[0]).kind,
+        NodeKind::Variable { ref sigil, ref name } if sigil == "$" && name == "tmp"
+    ) {
+        return Err("expected the first inline expression to be $tmp".into());
+    }
+    if !matches!(
+        statement_expression(&statements[1]).kind,
+        NodeKind::String { ref value, .. } if value == "'STDOUT'"
+    ) {
+        return Err("expected the final inline expression to be 'STDOUT'".into());
+    }
+    Ok(())
 }
 
 #[test]
-fn split_token_glob_body_preserves_multiple_expressions() {
+fn split_token_glob_body_preserves_multiple_expressions() -> Result<(), Box<dyn std::error::Error>>
+{
     let source = "* { $tmp; 'STDOUT' };";
     let mut parser = Parser::new(source);
     let ast = must(parser.parse());
-    let sexp = ast.to_sexp();
-    assert!(sexp.contains("unary_*{}"), "expected split-token glob dereference: {sexp}");
-    assert!(sexp.contains("(variable $ tmp)"), "expected split-token prefix expression: {sexp}");
-    assert!(sexp.contains("STDOUT"), "expected split-token final expression: {sexp}");
+    let operand = find_unary_operand(&ast, "*{}").ok_or("expected split-token glob dereference")?;
+    let NodeKind::Block { statements } = &operand.kind else {
+        return Err(
+            format!("expected the split-token glob body to remain a block: {operand:?}").into()
+        );
+    };
+    if statements.len() != 2 {
+        return Err("expected both split-token expressions to remain".into());
+    }
+    if !matches!(
+        statement_expression(&statements[1]).kind,
+        NodeKind::String { ref value, .. } if value == "'STDOUT'"
+    ) {
+        return Err("expected the final split-token expression to be 'STDOUT'".into());
+    }
+    Ok(())
 }
 
 #[test]
-fn split_token_glob_assignment_preserves_typeglob_lhs() {
+fn split_token_glob_assignment_preserves_typeglob_lhs() -> Result<(), Box<dyn std::error::Error>> {
     let source = "* { $name } = \\&target;";
     let mut parser = Parser::new(source);
     let ast = must(parser.parse());
-    let sexp = ast.to_sexp();
-    assert!(sexp.contains("typeglob"), "expected Typeglob assignment lhs: {sexp}");
+    let assignment = find_assignment(&ast).ok_or("expected dynamic typeglob assignment")?;
+    let NodeKind::Assignment { lhs, .. } = &assignment.kind else {
+        return Err("find_assignment returned a non-assignment node".into());
+    };
+    if !matches!(lhs.kind, NodeKind::Typeglob { .. }) {
+        return Err("expected Typeglob on the dynamic assignment LHS".into());
+    }
+    Ok(())
 }
 
 #[test]

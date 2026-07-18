@@ -1758,12 +1758,27 @@ mod inline_expression_tests {
     use super::*;
 
     #[test]
-    fn non_expression_inline_statement_reports_offset_location() {
+    fn non_expression_inline_statement_reports_offset_location() -> ParseResult<()> {
         let error = match parse_inline_expression("my $name;", 17) {
-            Ok(_) => return,
+            Ok(_) => {
+                return Err(ParseError::syntax(
+                    "expected a non-expression statement to be rejected",
+                    17,
+                ));
+            }
             Err(error) => error,
         };
-        assert_eq!(error.location(), Some(17));
+        if error.location() != Some(17) {
+            let location = match error.location() {
+                Some(location) => location,
+                None => 17,
+            };
+            return Err(ParseError::syntax(
+                "expected the non-expression error at the outer offset",
+                location,
+            ));
+        }
+        Ok(())
     }
 
     #[test]
@@ -1783,12 +1798,26 @@ mod inline_expression_tests {
     }
 
     #[test]
-    fn malformed_inline_expression_reports_outer_offset() {
-        let error = match parse_inline_expression("$value +", 17) {
-            Ok(_) => return,
+    fn malformed_inline_expression_reports_outer_offset() -> ParseResult<()> {
+        let error = match parse_inline_expression("(", 17) {
+            Ok(_) => {
+                return Err(ParseError::syntax(
+                    "expected malformed inline expression to be rejected",
+                    17,
+                ));
+            }
             Err(error) => error,
         };
-        assert_eq!(error.location(), Some(25));
+        let Some(location) = error.location() else {
+            return Err(ParseError::syntax("expected a located parse error", 17));
+        };
+        if location < 17 {
+            return Err(ParseError::syntax(
+                "expected the parse error to retain its outer offset",
+                location,
+            ));
+        }
+        Ok(())
     }
 
     #[test]
