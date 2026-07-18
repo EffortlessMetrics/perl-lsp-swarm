@@ -3272,24 +3272,36 @@ impl<'a> PerlLexer<'a> {
                 && ((after.starts_with(char::is_whitespace)
                     && after.trim_start().starts_with(['$', '@', '%', '(']))
                     || after.starts_with(['$', '@', '%']))
-                && self.qw_statement_has_semicolon(position)
+                && self.qw_statement_terminates(position)
             {
                 return true;
             }
         }
         remaining.strip_prefix("print").is_some_and(|after| {
-            after.starts_with(char::is_whitespace) && self.qw_statement_has_semicolon(position)
+            after.starts_with(char::is_whitespace) && self.qw_statement_terminates(position)
         })
     }
 
-    fn qw_statement_has_semicolon(&self, position: usize) -> bool {
+    /// A candidate line-start statement inside an unclosed `qw(` is a real recovery
+    /// boundary only when it forms a complete statement: either a top-level semicolon
+    /// terminates it, or it runs cleanly to end-of-file with balanced delimiters. The
+    /// EOF case recovers a semicolonless trailing declaration/print statement (#4494)
+    /// without splitting on keyword-like words that continue into further source.
+    fn qw_statement_terminates(&self, position: usize) -> bool {
         let source = &self.input[position..];
         let mut lexer = Self::without_qw_recovery(source, self.config.clone());
         let mut first = true;
         let mut delimiter_depth = 0usize;
+        let mut saw_unclosed = false;
         while let Some(token) = lexer.next_token() {
             if token.token_type == TokenType::Semicolon && delimiter_depth == 0 {
                 return true;
+            }
+            if matches!(token.token_type, TokenType::Error(_)) {
+                // A trailing statement carrying its own unclosed quote-like operator
+                // reaches EOF at balanced delimiter depth but is not a clean statement;
+                // do not let it masquerade as one (preserves nested-qw suffix behavior).
+                saw_unclosed = true;
             }
             if !first && delimiter_depth == 0 {
                 let prefix = &source[..token.start];
@@ -3311,7 +3323,10 @@ impl<'a> PerlLexer<'a> {
             }
             first = false;
         }
-        false
+        // No terminating semicolon before EOF: recover only when the candidate ran to
+        // end-of-file with balanced delimiters and no unclosed operator, i.e. it is a
+        // complete trailing statement rather than a fragment we would misclassify.
+        delimiter_depth == 0 && !saw_unclosed
     }
 
     /// Parse a quote operator after we've seen the delimiter
