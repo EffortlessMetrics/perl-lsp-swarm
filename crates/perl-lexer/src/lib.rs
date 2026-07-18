@@ -3272,14 +3272,79 @@ impl<'a> PerlLexer<'a> {
                 && ((after.starts_with(char::is_whitespace)
                     && after.trim_start().starts_with(['$', '@', '%', '(']))
                     || after.starts_with(['$', '@', '%']))
-                && self.qw_statement_has_semicolon(position)
+                && self.qw_statement_terminates(position)
             {
                 return true;
             }
         }
         remaining.strip_prefix("print").is_some_and(|after| {
-            after.starts_with(char::is_whitespace) && self.qw_statement_has_semicolon(position)
+            after.starts_with(char::is_whitespace) && self.qw_statement_terminates(position)
         })
+    }
+
+    /// A declaration/print candidate is a real statement boundary when its span
+    /// either ends in a top-level semicolon or runs cleanly to end of file.
+    ///
+    /// PR #4483 required the semicolon so keyword-shaped words inside valid qw
+    /// content are not misread as statements. #4494 adds the truncated-trailing
+    /// case: a `my`/`our`/`state`/`local`/`print` statement at EOF with no
+    /// semicolon (the source simply ends) is still recovered.
+    fn qw_statement_terminates(&self, position: usize) -> bool {
+        self.qw_statement_has_semicolon(position) || self.qw_statement_runs_to_eof(position)
+    }
+
+    /// Returns true when the text from `position` lexes as a single top-level
+    /// statement that reaches end of file without a terminating semicolon.
+    ///
+    /// Kept deliberately conservative so keyword-like words inside an unclosed qw
+    /// are not misclassified: the span must have at least one token after the
+    /// keyword, no top-level semicolon, balanced bracket delimiters, no second
+    /// line-start declaration/print keyword (which would indicate the tokens are
+    /// quote-word content rather than one truncated statement), and no error
+    /// token. An error token means the candidate opens its own unclosed quote or
+    /// qw that swallows the rest of the file — that is a nested recovery case,
+    /// not a clean truncated statement, and must defer to the later real
+    /// synchronization point (e.g. a following semicolon-terminated statement).
+    fn qw_statement_runs_to_eof(&self, position: usize) -> bool {
+        let source = &self.input[position..];
+        let mut lexer = Self::without_qw_recovery(source, self.config.clone());
+        let mut first = true;
+        let mut saw_token_after_keyword = false;
+        let mut delimiter_depth = 0usize;
+        while let Some(token) = lexer.next_token() {
+            if matches!(token.token_type, TokenType::Error(_)) {
+                return false;
+            }
+            if token.token_type == TokenType::Semicolon && delimiter_depth == 0 {
+                // A terminated statement is already handled by the semicolon probe.
+                return false;
+            }
+            if !first {
+                if delimiter_depth == 0 {
+                    let prefix = &source[..token.start];
+                    let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
+                    if prefix[line_start..].chars().all(char::is_whitespace)
+                        && matches!(token.text.as_ref(), "my" | "our" | "state" | "local" | "print")
+                    {
+                        // A second line-start keyword => quote-word content, not
+                        // one trailing statement.
+                        return false;
+                    }
+                }
+                saw_token_after_keyword = true;
+            }
+            match token.token_type {
+                TokenType::LeftParen | TokenType::LeftBrace | TokenType::LeftBracket => {
+                    delimiter_depth = delimiter_depth.saturating_add(1);
+                }
+                TokenType::RightParen | TokenType::RightBrace | TokenType::RightBracket => {
+                    delimiter_depth = delimiter_depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+            first = false;
+        }
+        saw_token_after_keyword && delimiter_depth == 0
     }
 
     fn qw_statement_has_semicolon(&self, position: usize) -> bool {
