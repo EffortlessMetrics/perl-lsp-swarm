@@ -1,4 +1,40 @@
 impl<'a> Parser<'a> {
+    /// Parse a `my`/`our`/`local`/`state` declaration used as a parenthesized
+    /// condition (`if (my $x = ...)`, `while (our $y)`, `elsif (...)`, etc.),
+    /// then absorb any trailing unparenthesized comma-list and word-operator
+    /// terms.
+    ///
+    /// `my`/`our`/`state` declare only the FIRST variable in an
+    /// unparenthesized list (perlsub: "If more than one value is listed,
+    /// the list must be placed in parentheses"), so `if (my $a, $b)` parses
+    /// as `if ((my $a), $b)` — the comma starts an ordinary comma expression,
+    /// not a second declared binding. This mirrors the statement-level fix
+    /// in the `My | Our | State` arm of `parse_statement_inner`.
+    /// `collect_comma_fat_arrow_continuation` stops at the closing
+    /// delimiter (`)`, `;`, ...), so it composes safely with each caller's
+    /// own terminator check.
+    ///
+    /// `and`/`or`/`xor` are lower precedence than `,` in Perl (perlop), so
+    /// after the comma continuation this also applies `parse_word_or_expr`
+    /// with the whole declaration (including any comma-collected terms) as
+    /// the left operand. Ground truth (perl 5.42.2):
+    ///
+    ///   $ perl -MO=Deparse,-p -e 'if (my $x = foo() or die) {}'
+    ///   if (((my $x = foo()) or die)) { ... }
+    ///
+    /// `or`/`and` bind the WHOLE `my $x = foo()` assignment, not just its
+    /// initializer RHS — `#3748`'s fix already made `parse_variable_declaration`
+    /// stop the initializer at assignment precedence (correctly excluding
+    /// `or`/`and`, which are even lower precedence than `,`), so without this
+    /// continuation the trailing `or`/`and` was left dangling and the
+    /// `)` expectation failed with a parse error (#3908 regression).
+    fn parse_condition_declaration(&mut self) -> ParseResult<Node> {
+        let decl = self.parse_variable_declaration()?;
+        let condition = self.parse_below_assignment_with(decl)?;
+        let condition = self.collect_comma_fat_arrow_continuation(condition)?;
+        self.parse_word_or_expr(condition)
+    }
+
     /// Parse if statement
     fn parse_if_statement(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
@@ -16,8 +52,7 @@ impl<'a> Parser<'a> {
                 | Some(TokenKind::Local)
                 | Some(TokenKind::State)
         ) {
-            let decl = self.parse_variable_declaration()?;
-            self.parse_below_assignment_with(decl)?
+            self.parse_condition_declaration()?
         } else {
             self.mark_not_stmt_start();
             self.parse_expression()?
@@ -44,8 +79,7 @@ impl<'a> Parser<'a> {
                     | Some(TokenKind::Local)
                     | Some(TokenKind::State)
             ) {
-                let decl = self.parse_variable_declaration()?;
-                self.parse_below_assignment_with(decl)?
+                self.parse_condition_declaration()?
             } else {
                 self.mark_not_stmt_start();
                 self.parse_expression()?
@@ -111,8 +145,7 @@ impl<'a> Parser<'a> {
                     | Some(TokenKind::Local)
                     | Some(TokenKind::State)
             ) {
-                let decl = self.parse_variable_declaration()?;
-                self.parse_below_assignment_with(decl)?
+                self.parse_condition_declaration()?
             } else {
                 self.mark_not_stmt_start();
                 self.parse_expression()?
@@ -165,8 +198,7 @@ impl<'a> Parser<'a> {
                 | Some(TokenKind::Local)
                 | Some(TokenKind::State)
         ) {
-            let decl = self.parse_variable_declaration()?;
-            self.parse_below_assignment_with(decl)?
+            self.parse_condition_declaration()?
         } else {
             self.mark_not_stmt_start();
             self.parse_expression()?
@@ -277,6 +309,21 @@ impl<'a> Parser<'a> {
             self.in_for_loop_init = true;
             let decl = self.parse_variable_declaration()?;
             self.in_for_loop_init = false;
+            // `my` declares only the FIRST variable in an unparenthesized
+            // list (perlsub), so `for (my $i, $j; ...)` parses as
+            // `for ((my $i), $j; ...)` — absorb the trailing comma term(s)
+            // the same way the statement- and condition-level declaration
+            // sites do. `collect_comma_fat_arrow_continuation` stops at the
+            // `;` that terminates the init clause.
+            let decl = self.collect_comma_fat_arrow_continuation(decl)?;
+            // `and`/`or`/`xor` are lower precedence than `,` in Perl
+            // (perlop), so mirror parse_condition_declaration's word-operator
+            // continuation here too: `for (my $i = 0 or die; ...)` deparses
+            // as `for (((my $i = 0) or die); ...)` — `or` binds the WHOLE
+            // init declaration (including any comma-collected terms), not
+            // just its initializer RHS (#3908 follow-up: this was the one
+            // remaining unpaired collect_comma_fat_arrow_continuation site).
+            let decl = self.parse_word_or_expr(decl)?;
             // Variable declarations in for loops don't have trailing semicolons
             Some(Box::new(decl))
         } else {
@@ -922,8 +969,7 @@ impl<'a> Parser<'a> {
                 | Some(TokenKind::Local)
                 | Some(TokenKind::State)
         ) {
-            let decl = self.parse_variable_declaration()?;
-            self.parse_below_assignment_with(decl)?
+            self.parse_condition_declaration()?
         } else {
             self.mark_not_stmt_start();
             self.parse_expression()?
@@ -947,8 +993,7 @@ impl<'a> Parser<'a> {
                     | Some(TokenKind::Local)
                     | Some(TokenKind::State)
             ) {
-                let decl = self.parse_variable_declaration()?;
-                self.parse_below_assignment_with(decl)?
+                self.parse_condition_declaration()?
             } else {
                 self.mark_not_stmt_start();
                 self.parse_expression()?

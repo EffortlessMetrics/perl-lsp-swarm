@@ -5,6 +5,11 @@
 //! 2) request deferred links
 //! 3) resolve a chosen link
 
+// Integration tests print diagnostic output for CI troubleshooting; this is
+// not the LSP server's stdio transport, so print_stdout/print_stderr don't
+// apply the way they do to production code.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 mod support;
 
 use serde_json::{Value, json};
@@ -67,6 +72,37 @@ my @modules = qw(Data::Dumper Getopt::Long);
     for link in links {
         assert!(link.get("target").is_none(), "resolved links should omit target (deferred)");
         assert!(link.pointer("/data/type").is_some(), "expected data.type field for deferred link");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn text_document_document_link_returns_module_runtime_link() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_untitled("Module::Runtime::use_module('Foo::Bar');\n")?;
+
+    let result = harness.request(
+        "textDocument/documentLink",
+        json!({
+            "textDocument": {"uri": harness.doc_uri()},
+        }),
+    )?;
+    let links = result.as_array().ok_or("expected DocumentLink[]")?;
+    let link = links
+        .iter()
+        .find(|link| link.pointer("/data/module").and_then(Value::as_str) == Some("Foo::Bar"))
+        .ok_or("expected Module::Runtime document link")?;
+
+    if link.pointer("/data/type").and_then(Value::as_str) != Some("module") {
+        return Err("Module::Runtime link must use module deferred metadata".into());
+    }
+    if link.pointer("/range/start/character").and_then(Value::as_u64) != Some(29) {
+        return Err("Module::Runtime link start must cover the literal content".into());
+    }
+    if link.pointer("/range/end/character").and_then(Value::as_u64) != Some(37) {
+        return Err("Module::Runtime link end must cover the literal content".into());
     }
 
     Ok(())

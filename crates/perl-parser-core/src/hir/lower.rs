@@ -15,11 +15,12 @@ use super::model::{
     BlockShell, BranchKeyword, BranchShell, CallExpr, CallForm, CompileConfidence,
     CompileDirective, CompileDirectiveAction, CompileDirectiveKind, CompileEnvironment,
     CompileEnvironmentBoundary, CompileEnvironmentBoundaryKind, CompilePhase, CompilePhaseBlock,
-    CompileProvenance, ControlTransfer, ControlTransferKind, DynamicBoundary, DynamicBoundaryKind,
-    ExportDeclaration, ExportDeclarationKind, GlobSlot, GlobSlotKind, GlobSlotSource,
-    HIR_BODY_MODEL_VERSION, HirBindingId, HirFile, HirId, HirItem, HirKind, HirScopeId,
-    IncRootAction, IncRootFact, IncRootKind, IndirectCallExpr, InheritanceSource, LiteralExpr,
-    LiteralKind, LoopKind, LoopShell, MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind,
+    CompileProvenance, ControlTransfer, ControlTransferKind, DerefAggregateKind, DerefExpr,
+    DerefOperandKind, DynamicBoundary, DynamicBoundaryKind, ExportDeclaration,
+    ExportDeclarationKind, GlobSlot, GlobSlotKind, GlobSlotSource, HIR_BODY_MODEL_VERSION,
+    HirBindingId, HirFile, HirId, HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact,
+    IncRootKind, IndirectCallExpr, InheritanceSource, LiteralExpr, LiteralKind, LoopKind,
+    LoopShell, MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind,
     ModuleResolutionStatus, PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind,
     PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable, RecoveryConfidence, RequireDecl,
     ScopeFrame, ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary,
@@ -576,27 +577,38 @@ impl Lowerer {
                 self.visit_children(node, confidence);
             }
             NodeKind::Unary { op, operand } => {
-                if is_symbolic_reference_deref_op(op)
-                    && !self.strict_refs_enabled_at(node.location.start)
-                {
-                    let reason = "symbolic reference dereference is not statically known";
-                    let item_id = self.push_item(
+                if let Some(aggregate_kind) = deref_aggregate_kind(op) {
+                    let operand_kind = deref_operand_kind(operand);
+                    self.push_item(
                         node,
                         None,
                         confidence,
-                        HirKind::DynamicBoundary(DynamicBoundary {
-                            kind: DynamicBoundaryKind::SymbolicReferenceDeref,
-                            reason: reason.to_string(),
-                        }),
+                        HirKind::DerefExpr(DerefExpr { aggregate_kind, operand_kind }),
                         self.package_context.clone(),
                         Some(self.current_scope()),
                     );
-                    self.record_compile_environment_boundary(
-                        CompileEnvironmentBoundaryKind::SymbolicReferenceDeref,
-                        node.location,
-                        Some(item_id),
-                        reason,
-                    );
+                    if !self.strict_refs_enabled_at(node.location.start)
+                        && is_proven_symbolic_name(operand)
+                    {
+                        let reason = "symbolic reference dereference is deferred to runtime";
+                        let item_id = self.push_item(
+                            node,
+                            None,
+                            confidence,
+                            HirKind::DynamicBoundary(DynamicBoundary {
+                                kind: DynamicBoundaryKind::SymbolicReferenceDeref,
+                                reason: reason.to_string(),
+                            }),
+                            self.package_context.clone(),
+                            Some(self.current_scope()),
+                        );
+                        self.record_compile_environment_boundary(
+                            CompileEnvironmentBoundaryKind::SymbolicReferenceDeref,
+                            node.location,
+                            Some(item_id),
+                            reason,
+                        );
+                    }
                 }
                 self.visit(operand, confidence);
             }
@@ -645,6 +657,9 @@ impl Lowerer {
                         variables: variables.clone(),
                         attribute_count: attributes.len(),
                         has_initializer: initializer.is_some() || has_embedded_initializer,
+                        initializer_range: initializer
+                            .as_deref()
+                            .map(|initializer| initializer.location),
                         is_list: false,
                     }),
                     self.package_context.clone(),
@@ -679,6 +694,9 @@ impl Lowerer {
                         variables: bindings.clone(),
                         attribute_count: attributes.len(),
                         has_initializer: initializer.is_some(),
+                        initializer_range: initializer
+                            .as_deref()
+                            .map(|initializer| initializer.location),
                         is_list: true,
                     }),
                     self.package_context.clone(),
@@ -701,6 +719,7 @@ impl Lowerer {
                 );
                 self.record_phase_block(phase, node.location);
                 self.visit(block, confidence);
+                self.record_phase_execution_boundary(phase, block, node.location);
                 self.exit_scope();
             }
             NodeKind::Format { name, .. } => {
@@ -1522,14 +1541,41 @@ impl Lowerer {
     }
 
     fn record_phase_block(&mut self, phase: &str, range: SourceLocation) {
+        let phase = compile_phase(phase);
         self.compile_environment.phase_blocks.push(CompilePhaseBlock {
-            phase: compile_phase(phase),
+            phase,
             range,
             scope_id: Some(self.current_scope()),
             package_context: self.package_context.clone(),
             provenance: CompileProvenance::ExactAst,
             confidence: CompileConfidence::High,
         });
+    }
+
+    fn record_phase_execution_boundary(
+        &mut self,
+        phase: &str,
+        block: &Node,
+        range: SourceLocation,
+    ) {
+        let phase = compile_phase(phase);
+        // Only BEGIN executes immediately, at parse time. Per perlmod
+        // (https://perldoc.perl.org/perlmod), the compile/run phase order is
+        // BEGIN -> UNITCHECK -> CHECK -> INIT -> END: UNITCHECK, CHECK, INIT,
+        // and END bodies are all compiled with the surrounding program but
+        // execute later in Perl's lifecycle (UNITCHECK right after their
+        // compilation unit finishes compiling, CHECK at the end of
+        // compilation, INIT just before the main runtime, END at the end).
+        // Preserve their phase facts without treating ordinary compile
+        // analysis as an attempt to execute those bodies.
+        if matches!(
+            phase,
+            CompilePhase::UnitCheck | CompilePhase::Check | CompilePhase::Init | CompilePhase::End
+        ) || !phase_block_requires_compile_execution(block)
+        {
+            return;
+        }
+
         self.record_compile_environment_boundary(
             CompileEnvironmentBoundaryKind::PhaseBlockExecution,
             range,
@@ -1620,12 +1666,12 @@ impl Lowerer {
         match &lhs.kind {
             NodeKind::Typeglob { name } => {
                 let (package, symbol) = package_and_symbol(name, self.package_context.as_deref());
-                if let Some(alias_target) = static_code_alias_target(rhs) {
+                if let Some((slot_kind, alias_target)) = static_glob_alias_target(rhs) {
                     self.record_slot(
                         package,
                         stash_slot(
                             symbol,
-                            GlobSlotKind::Code,
+                            slot_kind,
                             lhs.location,
                             None,
                             GlobSlotSource::TypeglobAlias,
@@ -2003,14 +2049,19 @@ fn has_empty_prototype(node: Option<&Node>) -> bool {
     matches!(node.map(|node| &node.kind), Some(NodeKind::Prototype { content }) if content.trim().is_empty())
 }
 
-fn static_code_alias_target(node: &Node) -> Option<String> {
+fn static_glob_alias_target(node: &Node) -> Option<(GlobSlotKind, String)> {
     match &node.kind {
         NodeKind::Unary { op, operand } if op == "\\" => match &operand.kind {
-            NodeKind::FunctionCall { name, args } if args.is_empty() => Some(name.clone()),
-            NodeKind::Typeglob { name } => Some(name.clone()),
+            NodeKind::FunctionCall { name, args } if args.is_empty() => {
+                Some((GlobSlotKind::Code, name.clone()))
+            }
+            NodeKind::Typeglob { name } => Some((GlobSlotKind::Code, name.clone())),
+            NodeKind::Variable { sigil, name } => {
+                slot_kind_for_sigil(sigil).map(|slot_kind| (slot_kind, name.clone()))
+            }
             _ => None,
         },
-        NodeKind::Typeglob { name } => Some(name.clone()),
+        NodeKind::Typeglob { name } => Some((GlobSlotKind::Code, name.clone())),
         _ => None,
     }
 }
@@ -2125,8 +2176,37 @@ fn contains_interpolation_marker(value: &str) -> bool {
     value.contains('$') || value.contains('@') || value.contains('%')
 }
 
-fn is_symbolic_reference_deref_op(op: &str) -> bool {
-    matches!(op, "${}" | "@{}" | "%{}" | "&{}" | "*{}")
+/// Map a Perl block/sigil dereference operator to its selected runtime slot.
+fn deref_aggregate_kind(op: &str) -> Option<DerefAggregateKind> {
+    match op {
+        "${}" => Some(DerefAggregateKind::Scalar),
+        "@{}" => Some(DerefAggregateKind::Array),
+        "%{}" => Some(DerefAggregateKind::Hash),
+        "&{}" => Some(DerefAggregateKind::Code),
+        "*{}" => Some(DerefAggregateKind::Glob),
+        _ => None,
+    }
+}
+
+/// Whether this syntax guarantees that `no strict 'refs'` can use a symbol
+/// name at runtime. Variables remain ordinary runtime dereferences because
+/// their values may be hard references; string literals (including interpolated
+/// strings) and concatenations are explicitly string-valued and therefore retain
+/// a deferred symbolic fact.
+fn is_proven_symbolic_name(operand: &Node) -> bool {
+    match &operand.kind {
+        NodeKind::String { .. } => true,
+        NodeKind::Binary { op, .. } => op == ".",
+        _ => false,
+    }
+}
+
+fn deref_operand_kind(operand: &Node) -> DerefOperandKind {
+    match operand.kind {
+        NodeKind::Variable { .. } => DerefOperandKind::Variable,
+        NodeKind::String { .. } => DerefOperandKind::StringLiteral,
+        _ => DerefOperandKind::Expression,
+    }
 }
 
 fn pragma_state_fact(
@@ -2261,6 +2341,46 @@ fn compile_phase(phase: &str) -> CompilePhase {
         "INIT" => CompilePhase::Init,
         "END" => CompilePhase::End,
         _ => CompilePhase::Unknown,
+    }
+}
+
+/// Whether a phase block may alter the compilation environment without a
+/// statically modeled effect. Pure data-only phase bodies still compile and
+/// retain their phase fact, but do not require compile-time evaluation.
+fn phase_block_requires_compile_execution(block: &Node) -> bool {
+    match &block.kind {
+        NodeKind::FunctionCall { .. }
+        | NodeKind::MethodCall { .. }
+        | NodeKind::IndirectCall { .. }
+        | NodeKind::Eval { .. }
+        | NodeKind::Do { .. }
+        | NodeKind::Use { .. }
+        | NodeKind::No { .. }
+        | NodeKind::PhaseBlock { .. } => true,
+        NodeKind::Assignment { lhs, .. } if is_compile_environment_target(lhs) => true,
+        NodeKind::VariableDeclaration { declarator, variable, .. }
+            if matches!(declarator.as_str(), "local" | "our")
+                && is_compile_environment_target(variable) =>
+        {
+            true
+        }
+        _ => block.children().into_iter().any(phase_block_requires_compile_execution),
+    }
+}
+
+fn is_compile_environment_target(node: &Node) -> bool {
+    match &node.kind {
+        NodeKind::Variable { sigil, name } => matches!(
+            (sigil.as_str(), name.as_str()),
+            ("$", "INC") | ("@", "INC") | ("%", "INC") | ("$", "^H") | ("%", "^H") | ("$", "^OPEN")
+        ),
+        NodeKind::VariableWithAttributes { variable, .. } => {
+            is_compile_environment_target(variable)
+        }
+        NodeKind::Binary { op, left, .. } if op == "{}" || op == "[]" => {
+            is_compile_environment_target(left)
+        }
+        _ => false,
     }
 }
 

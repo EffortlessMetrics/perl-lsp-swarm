@@ -375,6 +375,64 @@ fn test_checkpoint_apply_edit_resets_position_tracking_on_shift_and_invalidate()
     assert_eq!(invalidated.context, CheckpointContext::Normal);
 }
 
+#[test]
+fn format_checkpoint_apply_edit_shifts_exact_start_with_cursor()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut checkpoint = LexerCheckpoint::at_position(12);
+    checkpoint.mode = LexerMode::InFormatBody;
+    checkpoint.context = CheckpointContext::Format { start_position: 12 };
+
+    checkpoint.apply_edit(3, 0, 5);
+
+    if checkpoint.position != 17 {
+        return Err(
+            format!("checkpoint cursor should shift to 17, got {}", checkpoint.position).into()
+        );
+    }
+    if checkpoint.context != (CheckpointContext::Format { start_position: 17 }) {
+        return Err(
+            format!("format start should shift with cursor, got {:?}", checkpoint.context).into()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn format_checkpoint_apply_edit_shifts_across_removal_and_invalidates_overlap()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut removed_before = LexerCheckpoint::at_position(12);
+    removed_before.mode = LexerMode::InFormatBody;
+    removed_before.context = CheckpointContext::Format { start_position: 12 };
+
+    removed_before.apply_edit(3, 4, 0);
+    if removed_before.position != 8
+        || removed_before.context != (CheckpointContext::Format { start_position: 8 })
+    {
+        return Err(format!(
+            "removal before format start should shift both offsets to 8, got position {} and {:?}",
+            removed_before.position, removed_before.context
+        )
+        .into());
+    }
+
+    let mut overlapped = LexerCheckpoint::at_position(12);
+    overlapped.mode = LexerMode::InFormatBody;
+    overlapped.context = CheckpointContext::Format { start_position: 12 };
+
+    overlapped.apply_edit(10, 4, 0);
+    if overlapped.position != 10
+        || overlapped.mode != LexerMode::ExpectTerm
+        || overlapped.context != CheckpointContext::Normal
+    {
+        return Err(format!(
+            "overlap should invalidate format checkpoint at 10, got position {}, mode {:?}, context {:?}",
+            overlapped.position, overlapped.mode, overlapped.context
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// Regression test: a Normal checkpoint shifted to position 0 by a leading deletion
 /// must be preserved in the cache (prior bug: retain dropped it, breaking
 /// `find_before(0)` after start-of-file edits).

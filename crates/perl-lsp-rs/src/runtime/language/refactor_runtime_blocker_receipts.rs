@@ -937,7 +937,8 @@ impl LspServer {
             let documents = self.documents_guard();
             self.get_document(&documents, uri)
                 .and_then(|doc| {
-                    let ast = doc.ast.as_ref()?;
+                    let parsed = doc.current_parsed();
+                    let ast = parsed.as_ref().and_then(|p| p.ast())?;
                     let offset = self.pos16_to_offset(doc, line, character);
                     let current_package = crate::declaration::current_package_at(ast, offset);
                     crate::declaration::symbol_at_cursor_with_source(
@@ -1043,9 +1044,9 @@ impl LspServer {
                     let Some(doc) = index.document_store().get(&location.uri) else {
                         continue;
                     };
-                    let start = location.range.start.to_byte_offset(&doc.text);
-                    let end = location.range.end.to_byte_offset(&doc.text);
-                    if doc.text.get(start..end).is_some_and(|anchor_text| {
+                    let start = location.range.start.to_byte_offset(doc.text());
+                    let end = location.range.end.to_byte_offset(doc.text());
+                    if doc.text().get(start..end).is_some_and(|anchor_text| {
                         anchor_text == symbol
                             || anchor_text.starts_with("sub ") && anchor_text.contains(symbol)
                     }) {
@@ -1084,7 +1085,8 @@ impl LspServer {
             let documents = self.documents_guard();
             self.get_document(&documents, uri)
                 .and_then(|doc| {
-                    let ast = doc.ast.as_ref()?;
+                    let parsed = doc.current_parsed();
+                    let ast = parsed.as_ref().and_then(|p| p.ast())?;
                     let offset = self.pos16_to_offset(doc, line, character);
                     let current_package = crate::declaration::current_package_at(ast, offset);
                     crate::declaration::symbol_at_cursor_with_source(

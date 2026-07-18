@@ -1,5 +1,8 @@
 // Test infrastructure — allow test-friendly patterns used throughout this module.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// print_stderr: this scenario is receipt-first by design (see module docs) —
+// soft tests emit an `eprintln!` status receipt alongside their hard-assert
+// twins, matching sibling scenario files in this crate (e.g. scenario_65).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::print_stderr)]
 
 //! Scenario 20 — Real-workspace provider expectations (completion / goto-definition /
 //! hover / diagnostics).
@@ -166,31 +169,12 @@ fn entry_uri(entry: &serde_json::Value) -> Option<&str> {
 //  COMPLETION RECEIPTS
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// works — completion in App.pm (line 11, after `bless`) produces items that
-/// include the `$class` variable from the same sub. Validates that in-package
-/// completion does not error.
-#[test]
-fn scenario_20_completion_in_app_pm_does_not_error() -> anyhow::Result<()> {
-    if !binary_available() {
-        eprintln!("SKIP scenario_20: perl-lsp binary not found");
-        return Ok(());
-    }
-
-    let harness = create_harness()?;
-    harness.open_file("lib/RealBaseline/App.pm", APP_PM)?;
-
-    // Cursor at line 12 (0-indexed), inside the `run` sub body — after `helper($`.
-    // This exercises in-package completion without requiring a specific label.
-    let items = harness
-        .completion("lib/RealBaseline/App.pm", 12, 5)
-        .map_err(|e| anyhow::anyhow!("completion returned JSON-RPC error: {e}"))?;
-
-    // works: the server MUST NOT return an error — even empty is acceptable.
-    // The receipt here is "no error". An error would be a regression.
-    eprintln!("status: completion/App.pm-line12: {} items returned", items.len());
-    harness.assert_no_crash();
-    Ok(())
-}
+// Removed (#3603): `scenario_20_completion_in_app_pm_does_not_error` was a
+// dead receipt — its only check was `assert_no_crash()` at cursor (12, 5),
+// which lands mid-keyword inside `    my ($self) = @_;` (not the position its
+// own comments described), so there was no meaningful completion to assert.
+// App.pm in-package completion crash-safety is already covered by the
+// call-site completion tests below (line 13, col 7). No unique coverage lost.
 
 /// works — completion for prefix `RealBaseline::` in the script should surface
 /// `RealBaseline::App` (since App.pm is in the workspace).
@@ -221,8 +205,14 @@ fn scenario_20_completion_module_prefix_surfaces_real_baseline_app() -> anyhow::
     Ok(())
 }
 
-/// works — completion inside Base.pm at sub declaration site does not crash and
-/// returns items that have valid label/insertText shape when non-empty.
+/// Crash-safety + shape guard (#3603): this is the ONLY completion request
+/// against Base.pm — the import-free inheritance-target file, structurally
+/// distinct from the App.pm/script consumers every other completion test uses.
+/// A sub-declaration-name cursor has no well-defined expected completion set,
+/// so this cannot be given an answer-asserting hard twin; it is intentionally
+/// kept (not deleted) because `harness.completion(...)?` is the only guard that
+/// a completion request against a no-imports leaf file does not error, and the
+/// shape loop catches malformed items when the provider does return some.
 #[test]
 fn scenario_20_completion_items_valid_shape_in_base_pm() -> anyhow::Result<()> {
     if !binary_available() {
@@ -564,6 +554,15 @@ fn scenario_20_goto_definition_static_method_call_new_resolves_to_app_pm() -> an
 /// dynamic boundary — goto-definition on `alias` (typeglob alias) in Util.pm.
 /// `*alias = \&helper;` creates a typeglob reference; the definition target is
 /// ambiguous at the static analysis level.
+///
+/// Crash-safety guard (#3603): this is the ONLY goto-definition request at a
+/// typeglob-assignment position in the crate. Typeglob resolution is an
+/// inherent static-analysis boundary (any non-crashing result, including empty,
+/// is correct), so it cannot be given an answer-asserting hard twin — but it is
+/// intentionally kept (not deleted) because the `definition_with_retry(...)?`
+/// call plus `assert_no_crash()` are the only guard that the definition
+/// provider does not panic or hang on a typeglob-created symbol, and the shape
+/// loop rejects a malformed Location/LocationLink if one is returned.
 #[test]
 fn scenario_20_goto_definition_typeglob_alias_dynamic_boundary() -> anyhow::Result<()> {
     if !binary_available() {
@@ -1458,13 +1457,14 @@ fn scenario_20_diagnostics_missing_module_fires_pl701_hard_assert() -> anyhow::R
     Ok(())
 }
 
-/// Known gap — server fires a PL304 diagnostic mentioning 'alias' for the typeglob
-/// `*alias = \&helper`, which is a false positive for this dynamic symbol.
+/// Regression lock — the server must not fire a PL304 diagnostic mentioning
+/// 'alias' for the typeglob `*alias = \&helper`, which would be a false
+/// positive for this dynamic symbol.
 ///
-/// Observed FAIL on current main: PL304 fires for 'alias' because it appears in
-/// `@EXPORT_OK` but the server does not recognize typeglob-created subs as documented.
-/// Hard assertion written; test is ignored until the gap is fixed.
-/// Tracking: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3071
+/// Was a known gap (PL304 fired for 'alias' because it appears in
+/// `@EXPORT_OK`, while the server did not recognize typeglob-created subs as
+/// documented); fixed and now passes on current main.
+/// Tracking: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3071 (closed)
 #[test]
 fn scenario_20_diagnostics_typeglob_alias_no_false_positive_hard_assert() -> anyhow::Result<()> {
     if !binary_available() {

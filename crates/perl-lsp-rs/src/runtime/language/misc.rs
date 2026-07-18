@@ -416,7 +416,8 @@ impl LspServer {
                 message: format!("Document not open: {}", uri),
                 data: None,
             })?;
-            if let Some(ref ast) = doc.ast {
+            let parsed = doc.current_parsed();
+            if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                 let mut hints = Vec::new();
                 if param_hints {
                     // Build a workspace method resolver that is called for every
@@ -611,7 +612,8 @@ impl LspServer {
 
         let documents = self.documents_guard();
         let doc = self.get_document(&documents, uri)?;
-        let ast = doc.ast.as_ref()?;
+        let parsed = doc.current_parsed();
+        let ast = parsed.as_ref().and_then(|p| p.ast())?;
 
         let sub_node = Self::find_subroutine_node(ast, function_name).or_else(|| {
             (short_name != function_name)
@@ -709,7 +711,8 @@ impl LspServer {
             if let Some(doc) = doc_snapshot {
                 let start = Instant::now();
                 let deadline = code_lens_resolve_deadline();
-                if let Some(ref ast) = doc.ast {
+                let parsed = doc.current_parsed();
+                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let provider = CodeLensProvider::with_source(doc.text.clone())
                         .with_file_path(uri.to_string());
                     let mut lenses = provider.extract(ast);
@@ -1387,7 +1390,8 @@ impl LspServer {
 
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
-                if let Some(ref ast) = doc.ast {
+                let parsed = doc.current_parsed();
+                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let runner = TestRunner::new(doc.text.clone(), uri.to_string());
                     let tests = runner.discover_tests(ast);
 
@@ -1870,6 +1874,10 @@ fn lexical_path_key(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    // Tests are permitted to use `.expect()` on Result/Option per the repo's
+    // coding standards (unlike production code, where it is banned).
+    #![allow(clippy::expect_used)]
+
     use super::{filter_workspace_root_from_inline_module_scan_roots, lexical_path_key};
     use crate::LspServer;
     use crate::state::ClientCapabilities;
@@ -2258,10 +2266,7 @@ mod tests {
     {
         let resolved = std::path::PathBuf::from("script.pl");
         let err = super::debug_command_from_oracle(None, &resolved).err().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "expected missing Perl oracle to reject debug launch",
-            )
+            std::io::Error::other("expected missing Perl oracle to reject debug launch")
         })?;
 
         assert_eq!(err.code, -32603);

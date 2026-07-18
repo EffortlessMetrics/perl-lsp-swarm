@@ -23,6 +23,8 @@ use crate::{
     state::{completion_cap, completion_deadline},
 };
 use perl_lexer::LSP_RUNTIME_COMPLETION_KEYWORDS;
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+use perl_lsp_rs_core::providers::completion::completion_shadow::completion_visibility_shadow;
 use perl_module::resolution::{IncRoot, IncRootKind};
 use regex::Regex;
 use serde_json::{Value, json};
@@ -41,6 +43,58 @@ use super::super::LspServer;
 /// global cancellation registry — it exists only as a local handle that the
 /// provider's cancel-check closure can read.
 const UNCANCELLABLE_LOCAL_TOKEN_ID: JsonRpcId = JsonRpcId::Integer(-1);
+
+/// Test-only observer, notified exactly once the next time
+/// `handle_completion_cancellable` enters its analysis phase (the
+/// `if let Some(doc)` arm, before any provider work begins) *for the URI it
+/// was armed with*. Lets a regression test cancel a request deterministically
+/// *after* analysis has genuinely started, instead of guessing the timing
+/// with a fixed sleep. Mirrors `set_index_ready_wait_entered_observer` in
+/// `readiness.rs`, but keyed by URI: unlike readiness (a rare, mostly-
+/// synthetic wait path), every completion test that resolves an open
+/// document passes through this call site, so an unkeyed global slot could
+/// be consumed by an unrelated concurrent test's request and wake the
+/// canceller before the armed test's own analysis started (cubic
+/// review-run fbb70c75, discussion_r3560238397).
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+static COMPLETION_ANALYSIS_STARTED_OBSERVER: std::sync::Mutex<
+    Option<(String, std::sync::mpsc::Sender<()>)>,
+> = std::sync::Mutex::new(None);
+
+// Narrower than the surrounding `expose_lsp_test_api`-eligible items: every
+// current caller is itself `cfg(test)`-gated (it arms
+// `COMPLETION_ANALYSIS_STARTED_OBSERVER`, which only `pub(crate)` in-crate test
+// code can reach), so under a plain `expose_lsp_test_api`-only build (no
+// `cfg(test)`) this would otherwise be genuinely unused (clippy::dead_code).
+#[cfg(test)]
+pub(crate) fn set_completion_analysis_started_observer(
+    uri: &str,
+    sender: std::sync::mpsc::Sender<()>,
+) {
+    if let Ok(mut observer) = COMPLETION_ANALYSIS_STARTED_OBSERVER.lock() {
+        *observer = Some((uri.to_string(), sender));
+    }
+}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+fn notify_completion_analysis_started(uri: &str) {
+    let sender = COMPLETION_ANALYSIS_STARTED_OBSERVER.lock().ok().and_then(|mut observer| {
+        // Only consume the slot for the URI it was armed with -- an
+        // unrelated concurrent test's request must not wake this one's
+        // canceller (leaves the slot untouched for its rightful owner).
+        if observer.as_ref().is_some_and(|(armed_uri, _)| armed_uri == uri) {
+            observer.take().map(|(_, tx)| tx)
+        } else {
+            None
+        }
+    });
+    if let Some(sender) = sender {
+        let _ = sender.send(());
+    }
+}
+
+#[cfg(not(any(test, feature = "expose_lsp_test_api")))]
+fn notify_completion_analysis_started(_uri: &str) {}
 
 static SNIPPET_PLACEHOLDER_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 static SNIPPET_SIMPLE_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
@@ -63,6 +117,11 @@ struct CompletionDecisionContext<'a> {
     workspace_index_state: &'static str,
     workspace_index_reason: Option<&'static str>,
     is_incomplete: bool,
+}
+
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+struct CompletionShadowBudget<'a> {
+    should_continue: &'a dyn Fn() -> bool,
 }
 
 fn get_snippet_placeholder_regex() -> Option<&'static Regex> {
@@ -91,10 +150,147 @@ fn commit_chars_for_kind(kind: CompletionItemKind) -> Option<&'static [&'static 
 }
 
 impl LspServer {
+    fn completion_visibility_shadow_labels(
+        completions: &[crate::completion::CompletionItem],
+    ) -> Vec<String> {
+        completions
+            .iter()
+            .filter(|completion| {
+                matches!(
+                    completion.kind,
+                    CompletionItemKind::Variable
+                        | CompletionItemKind::Function
+                        | CompletionItemKind::Constant
+                ) && !(completion.kind == CompletionItemKind::Function
+                    && completion
+                        .sort_text
+                        .as_deref()
+                        .is_some_and(|sort_text| sort_text.starts_with("3_")))
+            })
+            .map(|completion| completion.label.clone())
+            .collect()
+    }
+
+    fn is_member_subscript_completion_context(before_cursor: &str, token_start: usize) -> bool {
+        let mut nested_brackets = 0usize;
+        let mut saw_open_subscript = false;
+
+        for (position, character) in before_cursor[..token_start].char_indices().rev() {
+            let previous = before_cursor[..position].chars().next_back();
+            let next = before_cursor[position + character.len_utf8()..].chars().next();
+            let is_member_arrow = (character == '-' && next == Some('>'))
+                || (character == '>' && previous == Some('-'));
+
+            if matches!(character, ']' | '}') {
+                nested_brackets += 1;
+                continue;
+            }
+            if matches!(character, '[' | '{') {
+                if nested_brackets > 0 {
+                    nested_brackets -= 1;
+                    continue;
+                }
+                if before_cursor[..position].trim_end().ends_with("->") {
+                    return true;
+                }
+                saw_open_subscript = true;
+                continue;
+            }
+            if saw_open_subscript && is_member_arrow {
+                return true;
+            }
+
+            let is_boundary = character.is_whitespace()
+                || matches!(
+                    character,
+                    ';' | '='
+                        | '+'
+                        | '-'
+                        | '*'
+                        | '/'
+                        | '%'
+                        | '.'
+                        | '!'
+                        | '<'
+                        | '>'
+                        | '&'
+                        | '|'
+                        | '^'
+                        | '~'
+                        | '?'
+                        | ':'
+                        | '('
+                        | ')'
+                        | ','
+                );
+            let is_token_start_boundary = position + character.len_utf8() == token_start;
+            if saw_open_subscript && nested_brackets == 0 && is_boundary && !is_token_start_boundary
+            {
+                return false;
+            }
+        }
+
+        false
+    }
+
+    fn is_qualified_member_completion_context(doc_text: &str, offset: usize) -> bool {
+        let Some(before_cursor) = doc_text.get(..offset.min(doc_text.len())) else {
+            return false;
+        };
+        let token_start = before_cursor
+            .char_indices()
+            .rev()
+            .find_map(|(position, character)| {
+                let previous = before_cursor[..position].chars().next_back();
+                let next = before_cursor[position + character.len_utf8()..].chars().next();
+                let is_member_arrow = (character == '-' && next == Some('>'))
+                    || (character == '>' && previous == Some('-'));
+                let is_package_separator =
+                    character == ':' && (previous == Some(':') || next == Some(':'));
+                let is_boundary = !is_member_arrow
+                    && !is_package_separator
+                    && (character.is_whitespace()
+                        || matches!(
+                            character,
+                            ';' | '='
+                                | '+'
+                                | '-'
+                                | '*'
+                                | '/'
+                                | '%'
+                                | '.'
+                                | '!'
+                                | '<'
+                                | '>'
+                                | '&'
+                                | '|'
+                                | '^'
+                                | '~'
+                                | '?'
+                                | ':'
+                                | '('
+                                | ')'
+                                | '{'
+                                | '}'
+                                | '['
+                                | ']'
+                                | ','
+                        ));
+                is_boundary.then_some(position + character.len_utf8())
+            })
+            .unwrap_or(0);
+        let token = &before_cursor[token_start..];
+        let member_subscript =
+            Self::is_member_subscript_completion_context(before_cursor, token_start);
+        let preceded_by_member_arrow = before_cursor[..token_start].trim_end().ends_with("->");
+        member_subscript || preceded_by_member_arrow || token.contains("->") || token.contains("::")
+    }
+
     fn record_completion_provider_decision_trace(
         &self,
         context: &CompletionDecisionContext<'_>,
         completions: &[crate::completion::CompletionItem],
+        semantic_shadow_receipt: Option<Value>,
     ) {
         let summary = Self::completion_decision_summary(completions);
         let item_count = completions.len();
@@ -124,33 +320,92 @@ impl LspServer {
             "fallback_policy"
         };
 
-        self.record_provider_decision_trace(
-            "completion",
-            &json!({
-                "provider": "completion",
-                "provider_action": "textDocument/completion",
-                "decision": if item_count > 0 { "acted" } else { "fallback" },
-                "reason": reason,
-                "uri": context.uri,
-                "line": context.line,
-                "character": context.character,
-                "item_count": item_count,
-                "is_incomplete": context.is_incomplete,
-                "ast_available": context.ast_available,
-                "fact_source": fact_source,
-                "confidence": if item_count > 0 { "high" } else { "low" },
-                "freshness": "fresh",
-                "fallback_state": fallback_state,
-                "workspace_index_state": context.workspace_index_state,
-                "workspace_index_reason": context.workspace_index_reason,
-                "compiler_fact_item_count": summary.compiler_fact_items,
-                "generated_item_count": summary.generated_items,
-                "dynamic_boundary_item_count": summary.dynamic_boundary_items,
-                "fallback_candidate_count": summary.fallback_items,
-                "sample_labels": summary.sample_labels,
-                "claim_boundary": "records existing completion response only; no new completion candidates or ranking changes"
-            }),
-        );
+        let mut receipt = json!({
+            "provider": "completion",
+            "provider_action": "textDocument/completion",
+            "decision": if item_count > 0 { "acted" } else { "fallback" },
+            "reason": reason,
+            "uri": context.uri,
+            "line": context.line,
+            "character": context.character,
+            "item_count": item_count,
+            "is_incomplete": context.is_incomplete,
+            "ast_available": context.ast_available,
+            "fact_source": fact_source,
+            "confidence": if item_count > 0 { "high" } else { "low" },
+            "freshness": "fresh",
+            "fallback_state": fallback_state,
+            "workspace_index_state": context.workspace_index_state,
+            "workspace_index_reason": context.workspace_index_reason,
+            "compiler_fact_item_count": summary.compiler_fact_items,
+            "generated_item_count": summary.generated_items,
+            "dynamic_boundary_item_count": summary.dynamic_boundary_items,
+            "fallback_candidate_count": summary.fallback_items,
+            "sample_labels": summary.sample_labels,
+            "claim_boundary": if semantic_shadow_receipt.is_some() {
+                "records existing comparable visibility completions and semantic shadow evidence; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+            } else {
+                "records existing comparable visibility completions only; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+            }
+        });
+        if let Some(shadow_receipt) = semantic_shadow_receipt {
+            if let Some(object) = receipt.as_object_mut() {
+                object.insert("semantic_shadow_receipt".to_string(), shadow_receipt);
+            }
+        }
+        self.record_provider_decision_trace("completion", &receipt);
+    }
+
+    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+    fn completion_semantic_shadow_receipt(
+        &self,
+        uri: &str,
+        doc_text: &str,
+        byte_offset: usize,
+        position: (u32, u32),
+        completions: &[crate::completion::CompletionItem],
+        workspace_mode: &IndexAccessMode<'_>,
+        budget: CompletionShadowBudget<'_>,
+    ) -> Option<Value> {
+        let IndexAccessMode::Full(coordinator) = workspace_mode else {
+            return None;
+        };
+        if Self::is_module_import_completion_context(doc_text, byte_offset)
+            || Self::is_qualified_member_completion_context(doc_text, byte_offset)
+        {
+            return None;
+        }
+        let byte_offset = u32::try_from(byte_offset).ok()?;
+        let (line, character) = position;
+        let input_label = format!("{uri}:{line}:{character}");
+        let legacy_symbols = Self::completion_visibility_shadow_labels(completions);
+        if legacy_symbols.is_empty() {
+            return None;
+        }
+        if !(budget.should_continue)() {
+            return None;
+        }
+        let index = coordinator.index();
+        let receipt = index.with_semantic_queries_for_uri(uri, |file_id, queries| {
+            if !(budget.should_continue)() {
+                return None;
+            }
+            Some(
+                completion_visibility_shadow(
+                    legacy_symbols,
+                    &queries,
+                    file_id,
+                    byte_offset,
+                    None,
+                    &input_label,
+                )
+                .receipt,
+            )
+        })??;
+        if !(budget.should_continue)() {
+            return None;
+        }
+        serde_json::to_value(receipt).ok()
     }
 
     #[cfg(feature = "workspace")]
@@ -919,14 +1174,43 @@ impl LspServer {
                 workspace_mode = IndexAccessMode::None;
             }
 
-            let documents = self.documents_guard();
-            if let Some(doc) = self.get_document(&documents, uri) {
+            // Phase 1: grab an owned `DocumentState` clone under a brief
+            // documents-map lock, then drop the guard before doing any analysis
+            // (#3396 off-lock provider consumption). `DocumentState` derives
+            // `Clone`: `rope` (structural sharing) and `generation`/`parsed`
+            // (`Arc` bumps, incl. the owned `Arc<ParsedSnapshot>` from #3579)
+            // clone cheaply, but `text` (`String`) and `line_starts`
+            // (`Vec<usize>`) are real O(document-size) copies -- both are
+            // needed by the analysis below (offset/position mapping, symbol
+            // text extraction), so this isn't wasted work, but it is a
+            // genuine per-request cost, not a free clone. It is bounded and
+            // single-threaded (a memcpy), unlike the alternative of holding
+            // the documents-map mutex -- shared by every open document, not
+            // just this one -- for the full analysis duration below.
+            let timing_on = crate::runtime::timing::is_enabled();
+            let t_lock_start = std::time::Instant::now();
+            let doc_owned = {
+                let documents = self.documents_guard();
+                self.get_document(&documents, uri).cloned()
+            };
+            // documents guard dropped here
+            if timing_on {
+                crate::runtime::timing::emit(crate::runtime::timing::TimingSpan::labeled(
+                    "provider.completion.lock_hold",
+                    crate::runtime::timing::elapsed_ms(t_lock_start),
+                    crate::runtime::timing::uri_tail(uri),
+                ));
+            }
+
+            let t_analyze_start = std::time::Instant::now();
+            let response = if let Some(doc) = doc_owned.as_ref() {
                 let offset = self.pos16_to_offset(doc, line, character);
-                let ast_available = doc.ast.is_some();
+                let ast_available = doc.current_parsed().is_some_and(|p| p.ast().is_some());
 
                 // Get completions, with fallback for missing AST
+                let parsed = doc.current_parsed();
                 #[cfg_attr(not(feature = "workspace"), allow(unused_mut))]
-                let mut completions = if let Some(ast) = &doc.ast {
+                let mut completions = if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let (include_paths, system_inc_paths, include_system_inc) =
                         self.module_completion_roots_for_doc(uri, &doc.text, offset);
                     // Only provide workspace index when Full access is available
@@ -962,8 +1246,19 @@ impl LspServer {
                     let mut base_completions =
                         provider.get_completions_with_path(&doc.text, offset, Some(uri));
 
-                    // Enhance completions with cached type information.
-                    let type_engine = self.get_or_build_type_engine(uri, &doc.text, ast);
+                    // Enhance completions with generation-owned type information
+                    // (#3760): the type environment is materialized once per
+                    // ParsedSnapshot generation and derived from the exact source
+                    // this snapshot was parsed from, so a completion request under
+                    // rapid edits always reads type facts for the current
+                    // generation — no cross-generation bleed. `type_environment()`
+                    // only returns `None` for an AST-less snapshot, which cannot
+                    // happen on this path (this branch is already gated on
+                    // `parsed.ast()` being `Some`, the same snapshot); the
+                    // `.and_then` is defensive plumbing against a future change to
+                    // that guard, not a reachable `None` today. The sigil-based
+                    // fallback below still runs regardless.
+                    let type_engine = parsed.as_ref().and_then(|p| p.type_environment());
 
                     // Add type information to completion items where possible
                     for completion in &mut base_completions {
@@ -972,7 +1267,9 @@ impl LspServer {
                             // Try to get the actual inferred type for the variable
                             let var_name =
                                 completion.label.trim_start_matches(['$', '@', '%', '&']);
-                            if let Some(perl_type) = type_engine.get_type_at(var_name) {
+                            if let Some(perl_type) =
+                                type_engine.as_ref().and_then(|engine| engine.get_type_at(var_name))
+                            {
                                 completion.detail = Some(Self::format_type_for_detail(&perl_type));
                             } else {
                                 // Fallback to sigil-based type hint
@@ -1033,9 +1330,22 @@ impl LspServer {
                     workspace_index_reason,
                     is_incomplete,
                 };
+                #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+                let semantic_shadow_receipt = self.completion_semantic_shadow_receipt(
+                    uri,
+                    &doc.text,
+                    offset,
+                    (line, character),
+                    &completions,
+                    &workspace_mode,
+                    CompletionShadowBudget { should_continue: &|| start.elapsed() < deadline },
+                );
+                #[cfg(any(not(feature = "workspace"), target_arch = "wasm32"))]
+                let semantic_shadow_receipt: Option<Value> = None;
                 self.record_completion_provider_decision_trace(
                     &completion_decision_context,
                     &completions,
+                    semantic_shadow_receipt,
                 );
 
                 // Snapshot capability flags once before the loop to avoid
@@ -1071,12 +1381,24 @@ impl LspServer {
                 } else {
                     tracing::debug!(count = items.len(), "Returning completions");
                 }
-                return Ok(Some(Self::completion_list_response(
+                Some(Self::completion_list_response(
                     is_incomplete,
                     items,
                     item_defaults_data_support,
                     apply_kind_support,
-                )));
+                ))
+            } else {
+                None
+            };
+            if timing_on {
+                crate::runtime::timing::emit(crate::runtime::timing::TimingSpan::labeled(
+                    "provider.completion.analyze",
+                    crate::runtime::timing::elapsed_ms(t_analyze_start),
+                    crate::runtime::timing::uri_tail(uri),
+                ));
+            }
+            if let Some(response) = response {
+                return Ok(Some(response));
             }
         }
 
@@ -1089,6 +1411,9 @@ impl LspServer {
         params: Option<Value>,
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+        let request_start = Instant::now();
+
         // Convert raw Value ID to typed ID at the boundary.
         let typed_id = request_id.and_then(JsonRpcId::try_from_value);
         // RAII guard ensures cleanup on all exit paths (early returns, errors, panics)
@@ -1148,10 +1473,53 @@ impl LspServer {
                 workspace_mode = IndexAccessMode::None;
             }
 
-            let documents = self.documents_guard();
-            if let Some(doc) = self.get_document(&documents, uri) {
+            // Phase 1: grab an owned `DocumentState` clone under a brief
+            // documents-map lock, then drop the guard before doing any analysis
+            // (#3396 off-lock provider consumption). `DocumentState` derives
+            // `Clone`: `rope` (structural sharing) and `generation`/`parsed`
+            // (`Arc` bumps, incl. the owned `Arc<ParsedSnapshot>` from #3579)
+            // clone cheaply, but `text` (`String`) and `line_starts`
+            // (`Vec<usize>`) are real O(document-size) copies -- both are
+            // needed by the analysis below, so this isn't wasted work, but it
+            // is a genuine per-request cost, not a free clone. It is bounded
+            // and single-threaded (a memcpy), unlike the alternative of
+            // holding the documents-map mutex -- shared by every open
+            // document, not just this one -- for the full analysis duration
+            // below.
+            let timing_on = crate::runtime::timing::is_enabled();
+            let t_lock_start = std::time::Instant::now();
+            let doc_owned = {
+                let documents = self.documents_guard();
+                self.get_document(&documents, uri).cloned()
+            };
+            // documents guard dropped here
+            if timing_on {
+                crate::runtime::timing::emit(crate::runtime::timing::TimingSpan::labeled(
+                    "provider.completion.lock_hold",
+                    crate::runtime::timing::elapsed_ms(t_lock_start),
+                    crate::runtime::timing::uri_tail(uri),
+                ));
+            }
+
+            // RAII span: covers the whole analysis attempt via `Drop`, so it
+            // emits `provider.completion.analyze` on every exit path --
+            // including the cancellation early `return Err` below -- not
+            // just the normal fall-through. A manual Instant+emit pair
+            // placed after this `if`/`else` (the prior shape) is skipped
+            // by any early `return` inside the `if` arm; see
+            // `provider.references.analyze` in references.rs for the same
+            // pattern (#3619). Started outside the `if let Some(doc)` arm so
+            // the `lock_hold`/`analyze` pair is preserved on the
+            // doc-no-longer-in-map path too, matching the prior manual-
+            // Instant behavior, which emitted unconditionally regardless of
+            // whether `doc_owned` resolved.
+            let _analyze_span =
+                crate::runtime::timing::ScopedSpan::start("provider.completion.analyze", uri);
+            let response = if let Some(doc) = doc_owned.as_ref() {
+                notify_completion_analysis_started(uri);
+
                 let offset = self.pos16_to_offset(doc, line, character);
-                let ast_available = doc.ast.is_some();
+                let ast_available = doc.current_parsed().is_some_and(|p| p.ast().is_some());
 
                 // Create optimized cancellation callback with reduced frequency
                 // Performance optimization: reduced overhead from 16.66% to <10%
@@ -1168,7 +1536,8 @@ impl LspServer {
                 };
 
                 // Get completions with optimized cancellation support
-                let mut completions = if let Some(ast) = &doc.ast {
+                let parsed = doc.current_parsed();
+                let mut completions = if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let (include_paths, system_inc_paths, include_system_inc) =
                         self.module_completion_roots_for_doc(uri, &doc.text, offset);
                     // Only provide workspace index when Full access is available
@@ -1249,9 +1618,27 @@ impl LspServer {
                     workspace_index_reason,
                     is_incomplete: false,
                 };
+                #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+                let semantic_shadow_receipt = self.completion_semantic_shadow_receipt(
+                    uri,
+                    &doc.text,
+                    offset,
+                    (line, character),
+                    &completions,
+                    &workspace_mode,
+                    CompletionShadowBudget {
+                        should_continue: &|| {
+                            request_start.elapsed() < completion_deadline()
+                                && !token.is_cancelled_relaxed()
+                        },
+                    },
+                );
+                #[cfg(any(not(feature = "workspace"), target_arch = "wasm32"))]
+                let semantic_shadow_receipt: Option<Value> = None;
                 self.record_completion_provider_decision_trace(
                     &completion_decision_context,
                     &completions,
+                    semantic_shadow_receipt,
                 );
 
                 // Convert to JSON format with highly optimized cancellation checks
@@ -1282,12 +1669,17 @@ impl LspServer {
                     })
                     .collect();
 
-                return Ok(Some(Self::completion_list_response(
+                Some(Self::completion_list_response(
                     false,
                     items,
                     item_defaults_data_support,
                     apply_kind_support,
-                )));
+                ))
+            } else {
+                None
+            };
+            if let Some(response) = response {
+                return Ok(Some(response));
             }
 
             Ok(Some(json!({"isIncomplete": false, "items": []})))
@@ -1626,6 +2018,10 @@ impl LspServer {
 
 #[cfg(test)]
 mod tests {
+    // Tests are permitted to use `.expect()` on Result/Option per the repo's
+    // coding standards (unlike production code, where it is banned).
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     fn explain_provider_decision(
@@ -1657,6 +2053,201 @@ mod tests {
         assert!(
             server.workspace_index_stale_for_document(uri),
             "test setup must leave the open document newer than the workspace index"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn completion_off_lock_analysis_emits_lock_hold_and_analyze_timing_spans()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #3396 Phase 4: `handle_completion` grabs an owned `DocumentState`
+        // clone under a brief documents-map lock, then drops the guard before
+        // analysis. Proves this measurably: the `lock_hold` span (the brief
+        // guarded scope) must be recorded before the `analyze` span (the
+        // off-lock work), for the same request.
+        let server = LspServer::default();
+        let uri = "file:///workspace/timing_completion.pl";
+        server.test_apply_did_open(uri, "my $var = 42;\n$va", 1)?;
+
+        let _lock = crate::runtime::timing::capture::test_lock();
+        crate::runtime::timing::capture::start();
+        let _ = server.handle_completion(Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 1, "character": 3 }
+        })))?;
+        let spans = crate::runtime::timing::capture::drain();
+
+        let lock_hold_idx = spans.iter().position(|s| s.span == "provider.completion.lock_hold");
+        let analyze_idx = spans.iter().position(|s| s.span == "provider.completion.analyze");
+        assert!(
+            lock_hold_idx.is_some(),
+            "expected a provider.completion.lock_hold span, got: {spans:?}"
+        );
+        assert!(
+            analyze_idx.is_some(),
+            "expected a provider.completion.analyze span, got: {spans:?}"
+        );
+        assert!(
+            lock_hold_idx < analyze_idx,
+            "lock_hold span must be emitted before the analyze span (proves the documents-map \
+             guard is dropped before analysis runs): {spans:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cancellable_completion_emits_analyze_span_on_normal_completion()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Baseline: the cancellable path must emit `provider.completion.analyze`
+        // on the ordinary, non-cancelled fall-through -- the same contract
+        // `handle_completion` already proves above, checked here for the
+        // `_cancellable` entry point specifically.
+        let server = LspServer::default();
+        let uri = "file:///workspace/timing_completion_cancellable.pl";
+        server.test_apply_did_open(uri, "my $var = 42;\n$va", 1)?;
+
+        let _lock = crate::runtime::timing::capture::test_lock();
+        crate::runtime::timing::capture::start();
+        let id = json!(1);
+        let _ = server.handle_completion_cancellable(
+            Some(json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 1, "character": 3 }
+            })),
+            Some(&id),
+        )?;
+        let spans = crate::runtime::timing::capture::drain();
+
+        assert!(
+            spans.iter().any(|s| s.span == "provider.completion.analyze"),
+            "expected a provider.completion.analyze span, got: {spans:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cancellable_completion_emits_analyze_span_when_cancelled_mid_flight()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #3619 regression test. `handle_completion_cancellable` checks
+        // `token.is_cancelled_relaxed()` twice: once before analysis starts,
+        // and once again right after the provider call returns (to reject a
+        // request that was cancelled while completions were being
+        // generated). The old code placed its manual Instant+emit pair for
+        // `provider.completion.analyze` *after* that second check, so a
+        // cancellation landing between the two checks caused the early
+        // `return Err(..)` to skip the emit entirely -- the analyze span was
+        // silently dropped for every request cancelled mid-analysis. The fix
+        // wraps the analysis block in a `ScopedSpan` (RAII), which emits on
+        // `Drop` regardless of which `return` fires.
+        //
+        // This test uses a genuinely concurrent cancellation (a background
+        // thread calling `token.cancel()`) against a fixture with
+        // `sub_count` candidate subs, so the off-lock analysis phase
+        // (owned-document clone + completion generation over thousands of
+        // `func_`-prefixed candidates) has a wide window to observe the
+        // cancellation before it returns -- reproducing the exact
+        // interleaving the bug depended on, not just the general RAII
+        // contract already covered by `timing.rs`'s
+        // `scoped_span_emits_on_early_return_from_enclosing_fn`.
+        //
+        // Timing is controlled deterministically, not with a fixed sleep: a
+        // `notify_completion_analysis_started` hook (module-level, mirrors
+        // `set_index_ready_wait_entered_observer` in `readiness.rs`) fires
+        // the instant the handler enters its analysis phase. The canceller
+        // thread blocks on that signal before calling `token.cancel()`, so
+        // the cancellation is guaranteed to land no earlier than the start
+        // of analysis -- a fixed sleep can only guess at that boundary and
+        // is either too short (fires before analysis begins, proving
+        // nothing) or too long (analysis already finished) under CI load.
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // Each sub is called once below so the dead-code lint stays quiet --
+        // keeps this test's diagnostics payload small while still giving the
+        // completion provider thousands of `func_`-prefixed candidates to
+        // filter, which is what actually slows the analysis phase down.
+        let sub_count = 1_500;
+        let mut source = String::with_capacity(100_000);
+        for i in 0..sub_count {
+            source.push_str(&format!("sub func_{i} {{ my $x = {i}; return $x; }}\n"));
+        }
+        source.push_str("func_0(); ");
+        for i in 1..sub_count {
+            source.push_str(&format!("func_{i}(); "));
+        }
+        source.push('\n');
+        source.push_str("func_");
+        let uri = "file:///workspace/timing_completion_cancel_mid_flight.pl";
+
+        let server = LspServer::default();
+        server.test_apply_did_open(uri, &source, 1)?;
+
+        let request_id = JsonRpcId::Integer(918_273_645);
+        let token = PerlLspCancellationToken::new(
+            request_id.clone(),
+            "textDocument/completion".to_string(),
+        );
+        GLOBAL_CANCELLATION_REGISTRY
+            .register_token(token.clone())
+            .map_err(|e| format!("failed to register cancellation token: {e:?}"))?;
+
+        let _lock = crate::runtime::timing::capture::test_lock();
+        crate::runtime::timing::capture::start();
+
+        let (analysis_started_tx, analysis_started_rx) = std::sync::mpsc::channel();
+        set_completion_analysis_started_observer(uri, analysis_started_tx);
+
+        let landed = Arc::new(AtomicBool::new(false));
+        let canceller = {
+            let token = token.clone();
+            let landed = Arc::clone(&landed);
+            std::thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                // Bounded wait: fail loudly instead of hanging forever if the
+                // analysis phase is never entered (e.g. a future refactor
+                // moves or removes the notify call).
+                analysis_started_rx.recv_timeout(std::time::Duration::from_secs(5)).map_err(
+                    |_| "timed out waiting for completion analysis to start".to_string(),
+                )?;
+                token.cancel();
+                landed.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        };
+
+        let last_line = source.lines().count() as u32 - 1;
+        let last_char = source.lines().next_back().map(str::len).unwrap_or(0) as u32;
+        let request_id_value = json!(918_273_645_i64);
+        let result = server.handle_completion_cancellable(
+            Some(json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": last_line, "character": last_char }
+            })),
+            Some(&request_id_value),
+        );
+
+        canceller
+            .join()
+            .map_err(|_| "canceller thread panicked")?
+            .map_err(|e| format!("canceller thread failed: {e}"))?;
+        assert!(landed.load(Ordering::SeqCst), "canceller thread must have run");
+
+        let spans = crate::runtime::timing::capture::drain();
+
+        // The race must actually land mid-analysis for this test to prove
+        // anything about the fix; fail loudly (rather than silently pass on
+        // an unrelated code path) if it did not.
+        assert!(
+            matches!(result, Err(ref e) if e.code == REQUEST_CANCELLED),
+            "test setup must trigger cancellation mid-analysis for this regression test to be \
+             meaningful; got: {result:?} (grow the fixture document if this flakes in CI)"
+        );
+
+        assert!(
+            spans.iter().any(|s| s.span == "provider.completion.analyze"),
+            "provider.completion.analyze span must be emitted even when the request is \
+             cancelled mid-analysis (#3619 regression), got spans: {spans:?}"
         );
 
         Ok(())
@@ -1953,11 +2544,14 @@ mod tests {
         assert_eq!(receipt.get("character").and_then(Value::as_u64), Some(17));
         assert_eq!(receipt.get("freshness").and_then(Value::as_str), Some("fresh"));
         assert_eq!(receipt.get("fallback").and_then(Value::as_str), Some("none"));
+        let expected_claim_boundary = if receipt.get("semantic_shadow_receipt").is_some() {
+            "records existing comparable visibility completions and semantic shadow evidence; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+        } else {
+            "records existing comparable visibility completions only; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+        };
         assert_eq!(
             receipt.get("claim_boundary").and_then(Value::as_str),
-            Some(
-                "records existing completion response only; no new completion candidates or ranking changes"
-            )
+            Some(expected_claim_boundary)
         );
         assert!(
             receipt.get("item_count").and_then(Value::as_u64).is_some_and(|count| count > 0),
@@ -2093,6 +2687,157 @@ mod tests {
             "stale current-document index must downgrade cancellable completion index access"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn completion_provider_decision_claim_boundary_requires_shadow_receipt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let context = CompletionDecisionContext {
+            uri: "file:///workspace/completion-no-shadow-receipt.pl",
+            line: 0,
+            character: 0,
+            ast_available: false,
+            workspace_index_state: "none",
+            workspace_index_reason: None,
+            is_incomplete: false,
+        };
+
+        server.record_completion_provider_decision_trace(&context, &[], None);
+
+        let explanation = explain_provider_decision(&server, "completion")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing persisted completion request receipt")?;
+        assert!(receipt.get("semantic_shadow_receipt").is_none());
+        assert_eq!(
+            receipt.get("claim_boundary").and_then(Value::as_str),
+            Some(
+                "records existing comparable visibility completions only; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_provider_decision_embeds_semantic_shadow_receipt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let context = CompletionDecisionContext {
+            uri: "file:///workspace/completion-shadow-receipt.pl",
+            line: 0,
+            character: 2,
+            ast_available: true,
+            workspace_index_state: "full",
+            workspace_index_reason: None,
+            is_incomplete: false,
+        };
+        let shadow_receipt = json!({
+            "schema_version": 2,
+            "query": "completion_visibility",
+            "verdict": "same"
+        });
+
+        server.record_completion_provider_decision_trace(
+            &context,
+            &[],
+            Some(shadow_receipt.clone()),
+        );
+
+        let explanation = explain_provider_decision(&server, "completion")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing persisted completion request receipt")?;
+        assert_eq!(receipt.get("semantic_shadow_receipt"), Some(&shadow_receipt));
+        assert_eq!(
+            receipt.get("claim_boundary").and_then(Value::as_str),
+            Some(
+                "records existing comparable visibility completions and semantic shadow evidence; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_visibility_shadow_filters_non_visibility_items()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let item = |label: &str, kind: CompletionItemKind, sort_text: Option<&str>| {
+            crate::completion::CompletionItem {
+                label: label.to_string(),
+                kind,
+                detail: None,
+                documentation: None,
+                insert_text: None,
+                sort_text: sort_text.map(str::to_string),
+                filter_text: None,
+                additional_edits: Vec::new(),
+                text_edit_range: None,
+                commit_characters: None,
+                label_details: None,
+            }
+        };
+        let completions = vec![
+            item("$value", CompletionItemKind::Variable, None),
+            item("user_sub", CompletionItemKind::Function, Some("2_user_sub")),
+            item("open", CompletionItemKind::Function, Some("3_open")),
+            item("if", CompletionItemKind::Keyword, Some("5_if")),
+            item("Foo", CompletionItemKind::Module, Some("4_Foo")),
+            item("file.pl", CompletionItemKind::File, None),
+            item("CONST", CompletionItemKind::Constant, Some("3_CONST")),
+            item("key", CompletionItemKind::Property, None),
+        ];
+
+        assert_eq!(
+            LspServer::completion_visibility_shadow_labels(&completions),
+            vec!["$value".to_string(), "user_sub".to_string(), "CONST".to_string()]
+        );
+        assert!(LspServer::is_qualified_member_completion_context("Foo::", 5));
+        assert!(LspServer::is_qualified_member_completion_context("Foo::bar", "Foo::bar".len(),));
+        assert!(LspServer::is_qualified_member_completion_context("$object->", 9));
+        assert!(!LspServer::is_qualified_member_completion_context("$value", 6));
+        assert!(!LspServer::is_qualified_member_completion_context(
+            "Foo::bar+$value",
+            "Foo::bar+$value".len(),
+        ));
+        assert!(!LspServer::is_qualified_member_completion_context(
+            "Foo::bar-$value",
+            "Foo::bar-$value".len(),
+        ));
+        assert!(!LspServer::is_qualified_member_completion_context(
+            "Foo::bar.$value",
+            "Foo::bar.$value".len(),
+        ));
+        assert!(!LspServer::is_qualified_member_completion_context(
+            "condition ? Foo::bar:$value",
+            "condition ? Foo::bar:$value".len(),
+        ));
+        assert!(LspServer::is_qualified_member_completion_context(
+            "$object->{key",
+            "$object->{key".len(),
+        ));
+        assert!(LspServer::is_qualified_member_completion_context(
+            "$object->[idx",
+            "$object->[idx".len(),
+        ));
+        assert!(LspServer::is_qualified_member_completion_context(
+            "$object->{$array[0",
+            "$object->{$array[0".len(),
+        ));
+        assert!(LspServer::is_qualified_member_completion_context(
+            "$object->method[0",
+            "$object->method[0".len(),
+        ));
+        assert!(!LspServer::is_qualified_member_completion_context(
+            "$value + $object[0",
+            "$value + $object[0".len(),
+        ));
+        assert!(LspServer::is_qualified_member_completion_context(
+            "$object -> method",
+            "$object -> method".len(),
+        ));
         Ok(())
     }
 

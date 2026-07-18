@@ -298,6 +298,7 @@ impl DiagnosticsProvider {
                     (*location, msg)
                 }
                 ParseError::SyntaxError { location, message } => (*location, message.clone()),
+                ParseError::Advisory { location, message } => (*location, message.clone()),
                 ParseError::UnexpectedEof => (source.len(), "Unexpected end of input".to_string()),
                 ParseError::LexerError { message } => (0, message.clone()),
                 _ => (0, error.to_string()),
@@ -358,8 +359,15 @@ impl DiagnosticsProvider {
         check_duplicate_package(ast, &mut diagnostics);
         check_duplicate_subroutine(ast, &mut diagnostics);
 
-        // Moo/Moose role conflict diagnostics (same-file only)
-        check_role_conflicts(ast, &symbol_table, &mut diagnostics);
+        // Moo/Moose role conflict diagnostics. Cross-file and transitive roles
+        // resolve through the workspace semantic index; under NullSemanticQueries
+        // the resolver returns empty and the lint degrades to same-file analysis.
+        check_role_conflicts(
+            ast,
+            &symbol_table,
+            &|role| semantic_queries.transitive_role_methods(role),
+            &mut diagnostics,
+        );
         check_goto_labels(ast, &symbol_table, &mut diagnostics);
         check_loop_control_labels(ast, &symbol_table, &mut diagnostics);
 
@@ -551,7 +559,7 @@ pub fn build_parse_error_hint(error: &ParseError, base_message: &str) -> Option<
         ParseError::UnclosedDelimiter { delimiter } => {
             Some(format!("Add a matching closing '{delimiter}'"))
         }
-        ParseError::SyntaxError { message, .. } => {
+        ParseError::SyntaxError { message, .. } | ParseError::Advisory { message, .. } => {
             // Provide targeted suggestions for known syntax error patterns.
             // Check both the stored message and the pre-formatted base_message.
             let msg_lower = message.to_lowercase();

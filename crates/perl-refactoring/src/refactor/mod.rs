@@ -2,6 +2,7 @@
 
 pub mod import_optimizer;
 pub mod inline;
+pub mod modernization_suggestion;
 pub mod modernize;
 pub mod modernize_refactored;
 pub mod module_move_imports;

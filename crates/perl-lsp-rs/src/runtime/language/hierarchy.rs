@@ -231,7 +231,8 @@ impl LspServer {
                 let offset = self.pos16_to_offset(doc, line, character);
 
                 // Try AST-based approach first
-                if let Some(ref ast) = doc.ast {
+                let parsed = doc.current_parsed();
+                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     // Create type hierarchy provider
                     let provider = TypeHierarchyProvider::new();
 
@@ -366,7 +367,8 @@ impl LspServer {
 
                 let documents = self.documents_guard();
                 if let Some(doc) = documents.get(uri) {
-                    if let Some(ref ast) = doc.ast {
+                    let parsed = doc.current_parsed();
+                    if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                         // Create type hierarchy provider
                         let provider = TypeHierarchyProvider::new();
 
@@ -465,7 +467,8 @@ impl LspServer {
 
                 let documents = self.documents_guard();
                 if let Some(doc) = documents.get(uri) {
-                    if let Some(ref ast) = doc.ast {
+                    let parsed = doc.current_parsed();
+                    if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                         // Create type hierarchy provider
                         let provider = TypeHierarchyProvider::new();
 
@@ -570,7 +573,8 @@ impl LspServer {
 
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
-                if let Some(ref ast) = doc.ast {
+                let parsed = doc.current_parsed();
+                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let provider = CallHierarchyProvider::new(doc.text.clone(), uri.to_string());
                     if let Some(items) = provider.prepare(ast, line, character) {
                         // Wait for the workspace index to finish building before enriching items.
@@ -665,7 +669,9 @@ impl LspServer {
                 documents
                     .iter()
                     .filter_map(|(doc_uri, doc)| {
-                        doc.ast.as_ref().map(|ast| (doc_uri.clone(), doc.text.clone(), ast.clone()))
+                        doc.current_parsed()
+                            .and_then(|p| p.ast().cloned())
+                            .map(|ast| (doc_uri.clone(), doc.text.clone(), ast))
                     })
                     .collect();
             drop(documents);
@@ -712,13 +718,16 @@ impl LspServer {
                 documents
                     .iter()
                     .filter_map(|(doc_uri, doc)| {
-                        doc.ast.as_ref().map(|ast| (doc_uri.clone(), doc.text.clone(), ast.clone()))
+                        doc.current_parsed()
+                            .and_then(|p| p.ast().cloned())
+                            .map(|ast| (doc_uri.clone(), doc.text.clone(), ast))
                     })
                     .collect();
 
             // Find outgoing calls within the target function's file.
             let mut calls = if let Some(doc) = self.get_document(&documents, uri) {
-                if let Some(ref ast) = doc.ast {
+                let parsed = doc.current_parsed();
+                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let provider = CallHierarchyProvider::new(doc.text.clone(), uri.to_string());
                     provider.outgoing_calls(ast, &ch_item)
                 } else {
@@ -851,6 +860,10 @@ impl LspServer {
 
 #[cfg(test)]
 mod tests {
+    // Tests are permitted to use `.expect()` on Result/Option per the repo's
+    // coding standards (unlike production code, where it is banned).
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     fn open_doc(server: &LspServer, uri: &str, text: &str) {
@@ -977,7 +990,7 @@ mod tests {
         // path must synthesize a file-level caller with kind=1 (SymbolKind.File).
         let file_caller = calls
             .iter()
-            .find(|c| c["from"]["uri"].as_str().map_or(false, |u| u.contains("script.pl")));
+            .find(|c| c["from"]["uri"].as_str().is_some_and(|u| u.contains("script.pl")));
         assert!(file_caller.is_some(), "expected file-level caller from script.pl, got: {calls:?}");
         let from = &file_caller.expect("already checked")["from"];
         assert_eq!(
@@ -1025,7 +1038,7 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("incomingCalls must return an array"))?;
 
         let script_caller = calls.iter().any(|call| {
-            call["from"]["uri"].as_str().map_or(false, |uri| uri.ends_with("real-baseline.pl"))
+            call["from"]["uri"].as_str().is_some_and(|uri| uri.ends_with("real-baseline.pl"))
         });
         assert!(
             script_caller,

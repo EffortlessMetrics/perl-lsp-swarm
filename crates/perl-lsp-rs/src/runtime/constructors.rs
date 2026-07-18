@@ -69,6 +69,7 @@ impl LspServer {
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
             diagnostic_debouncer: Mutex::new(None),
+            parse_worker_handle: Mutex::new(None),
             file_watcher_debouncer: Mutex::new(None),
             notebook_store: notebook::NotebookStore::new(),
             trace_level: Arc::new(Mutex::new("off".to_string())),
@@ -76,16 +77,24 @@ impl LspServer {
             feature_profile,
             runtime_tuning,
             workspace_indexing_invocation_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            readiness_receipt_observer_id: AtomicU64::new(0),
+            #[cfg(feature = "workspace")]
+            workspace_readiness_receipt: Arc::new(Mutex::new(
+                crate::runtime::readiness::WorkspaceReadinessReceipt::default(),
+            )),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            workspace_indexing_start_gate: Arc::new(std::sync::Mutex::new(None)),
             pod_cache: Arc::new(Mutex::new(HashMap::new())),
             pending_index_task_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             pull_diagnostics_orchestrator: super::diagnostics::PullDiagnosticsOrchestrator::new(),
-            semantic_analyzer_cache: Arc::new(Mutex::new(HashMap::new())),
-            type_inference_engine_cache: Arc::new(Mutex::new(HashMap::new())),
             provider_decision_traces: Arc::new(Mutex::new(HashMap::new())),
+            semantic_tokens_cache: Arc::new(Mutex::new(HashMap::new())),
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
@@ -98,11 +107,30 @@ impl LspServer {
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
+            force_perlcritic_command_unavailable: AtomicBool::new(false),
+            #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
+            #[cfg(feature = "incremental")]
+            incremental_eager: AtomicBool::new(false),
         }
+    }
+
+    /// Opt into eagerly maintaining the per-document incremental parsing state
+    /// (`incremental_doc` / `incremental_state`) inside the `didChange` mutation
+    /// critical section.
+    ///
+    /// Off by default. The committed AST that providers read always comes from
+    /// the full parse; the incremental fields feed nothing on the read path, so
+    /// maintaining them on every keystroke is pure overhead unless the dormant
+    /// incremental fast-path is itself being exercised. Enabling it changes
+    /// neither the committed AST, parse errors, parent map, nor the stale-read
+    /// generation semantics — only whether those two fields are kept populated.
+    #[cfg(feature = "incremental")]
+    pub fn set_incremental_eager(&self, enabled: bool) {
+        self.incremental_eager.store(enabled, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Create a new LSP server with custom I/O (for testing)
@@ -210,6 +238,7 @@ impl LspServer {
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
             diagnostic_debouncer: Mutex::new(None),
+            parse_worker_handle: Mutex::new(None),
             file_watcher_debouncer: Mutex::new(None),
             notebook_store: notebook::NotebookStore::new(),
             trace_level: Arc::new(Mutex::new("off".to_string())),
@@ -217,16 +246,24 @@ impl LspServer {
             feature_profile,
             runtime_tuning,
             workspace_indexing_invocation_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            readiness_receipt_observer_id: AtomicU64::new(0),
+            #[cfg(feature = "workspace")]
+            workspace_readiness_receipt: Arc::new(Mutex::new(
+                crate::runtime::readiness::WorkspaceReadinessReceipt::default(),
+            )),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            workspace_indexing_start_gate: Arc::new(std::sync::Mutex::new(None)),
             pod_cache: Arc::new(Mutex::new(HashMap::new())),
             pending_index_task_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             pull_diagnostics_orchestrator: super::diagnostics::PullDiagnosticsOrchestrator::new(),
-            semantic_analyzer_cache: Arc::new(Mutex::new(HashMap::new())),
-            type_inference_engine_cache: Arc::new(Mutex::new(HashMap::new())),
             provider_decision_traces: Arc::new(Mutex::new(HashMap::new())),
+            semantic_tokens_cache: Arc::new(Mutex::new(HashMap::new())),
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
@@ -239,10 +276,14 @@ impl LspServer {
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
+            force_perlcritic_command_unavailable: AtomicBool::new(false),
+            #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
+            #[cfg(feature = "incremental")]
+            incremental_eager: AtomicBool::new(false),
         }
     }
 
@@ -307,6 +348,7 @@ impl LspServer {
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
             diagnostic_debouncer: Mutex::new(None),
+            parse_worker_handle: Mutex::new(None),
             file_watcher_debouncer: Mutex::new(None),
             notebook_store: notebook::NotebookStore::new(),
             trace_level: Arc::new(Mutex::new("off".to_string())),
@@ -314,16 +356,24 @@ impl LspServer {
             feature_profile,
             runtime_tuning,
             workspace_indexing_invocation_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            readiness_receipt_observer_id: AtomicU64::new(0),
+            #[cfg(feature = "workspace")]
+            workspace_readiness_receipt: Arc::new(Mutex::new(
+                crate::runtime::readiness::WorkspaceReadinessReceipt::default(),
+            )),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            workspace_indexing_start_gate: Arc::new(std::sync::Mutex::new(None)),
             pod_cache: Arc::new(Mutex::new(HashMap::new())),
             pending_index_task_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             pull_diagnostics_orchestrator: super::diagnostics::PullDiagnosticsOrchestrator::new(),
-            semantic_analyzer_cache: Arc::new(Mutex::new(HashMap::new())),
-            type_inference_engine_cache: Arc::new(Mutex::new(HashMap::new())),
             provider_decision_traces: Arc::new(Mutex::new(HashMap::new())),
+            semantic_tokens_cache: Arc::new(Mutex::new(HashMap::new())),
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
@@ -336,10 +386,14 @@ impl LspServer {
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
+            force_perlcritic_command_unavailable: AtomicBool::new(false),
+            #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
+            #[cfg(feature = "incremental")]
+            incremental_eager: AtomicBool::new(false),
         }
     }
 }

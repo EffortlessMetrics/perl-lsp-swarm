@@ -135,6 +135,9 @@ pub use syntax::text_line;
 /// Recursive-descent parser -- the main entry point for parsing Perl source.
 pub use engine::parser::Parser;
 
+/// Lower-tier checkpointed token replay for incremental parser clients.
+pub mod incremental;
+
 /// Error classification and recovery strategies for parse failures.
 pub use error::classifier as error_classifier;
 /// Error recovery helpers and strategies.
@@ -156,8 +159,8 @@ pub use ast::{GotoTargetForm, Node, NodeKind, SourceLocation};
 pub use error::classifier::{RecoverySalvageMetrics, classify_recovery_salvage};
 /// Parse error, budget, and output types.
 pub use error::{
-    BudgetTracker, ParseBudget, ParseError, ParseOutput, ParseResult, RecoverySalvageClass,
-    RecoverySalvageProfile,
+    BudgetTracker, ParseBudget, ParseDiagnosticSeverity, ParseError, ParseOutput, ParseResult,
+    RecoverySalvageClass, RecoverySalvageProfile,
 };
 
 /// Builtin function signature lookup tables.

@@ -148,7 +148,7 @@ pub struct Scope {
     pub symbols: HashSet<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// Classification of lexical scope types in Perl for Parse/Analyze workflows.
 ///
 /// Defines different scope boundaries with specific symbol visibility
@@ -296,6 +296,37 @@ impl SymbolTable {
         self.references.entry(name).or_default().push(reference);
     }
 
+    /// Find the innermost lexical scope whose source range contains `offset`.
+    ///
+    /// Scopes are pushed with the [`SourceLocation`] of the AST node that
+    /// opens them (subroutine, block, package, etc.), so a scope's range
+    /// always fully covers the ranges of any scopes nested inside it. The
+    /// scope with the greatest `location.start` that still contains
+    /// `offset` is therefore the most specific (innermost) enclosing scope.
+    ///
+    /// The start boundary is inclusive (`offset == location.start` matches)
+    /// and the end boundary is exclusive (`offset == location.end` does
+    /// not), so a scope covers `[start, end)`.
+    ///
+    /// Invariant: when two or more scopes share the same `location.start`,
+    /// the tie is broken by `id`. Scope IDs are assigned in monotonically
+    /// increasing, strictly nested push order (see the private `push_scope`), so
+    /// a child scope always has a greater `id` than its parent. Ranking by
+    /// `(location.start, id)` therefore always selects the innermost scope
+    /// among same-start candidates, never an outer sibling or ancestor.
+    ///
+    /// Falls back to the global scope (`0`) when no scope's range contains
+    /// `offset` -- e.g. top-level, package-scope code before any block or
+    /// subroutine opens.
+    pub fn scope_at_offset(&self, offset: usize) -> ScopeId {
+        self.scopes
+            .values()
+            .filter(|scope| scope.location.start <= offset && offset < scope.location.end)
+            .max_by_key(|scope| (scope.location.start, scope.id))
+            .map(|scope| scope.id)
+            .unwrap_or(0)
+    }
+
     /// Find symbol definitions visible from a given scope for Navigate/Analyze workflows.
     pub fn find_symbol(&self, name: &str, from_scope: ScopeId, kind: SymbolKind) -> Vec<&Symbol> {
         let mut results = Vec::new();
@@ -376,7 +407,7 @@ pub enum WebFrameworkKind {
     PlackBuilder,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// Async framework variant detected via `use` statements during Parse/Analyze workflows.
 pub enum AsyncFrameworkKind {
     /// `use AnyEvent;`
@@ -399,6 +430,8 @@ pub enum AsyncFrameworkKind {
     MojoRedis,
     /// `use Mojo::Pg;`
     MojoPg,
+    /// `use Mojo::mysql;`
+    MojoMysql,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -414,6 +447,9 @@ pub struct FrameworkFlags {
     pub web_framework: Option<WebFrameworkKind>,
     /// Async framework variant, if any (IO::Async).
     pub async_framework: Option<AsyncFrameworkKind>,
+    /// All async frameworks imported by the package, preserving multiple
+    /// adapters such as `Mojo::Pg` and `Mojo::mysql`.
+    pub async_frameworks: HashSet<AsyncFrameworkKind>,
     /// Catalyst controller/package marker used for action synthesis.
     pub catalyst_controller: bool,
 }
@@ -2093,28 +2129,47 @@ impl SymbolExtractor {
 
     /// Synthesize class symbols for async framework namespaces used in method-call form.
     fn synthesize_async_framework_class_symbol(&mut self, object: &Node) -> bool {
-        let Some(flags) = self.framework_flags.get(&self.table.current_package) else {
-            return false;
-        };
+        let mut framework_kinds = self
+            .framework_flags
+            .get(&self.table.current_package)
+            .map(|flags| flags.async_frameworks.clone())
+            .unwrap_or_default();
+        if let Some(kind) = self
+            .framework_flags
+            .get(&self.table.current_package)
+            .and_then(|flags| flags.async_framework)
+        {
+            framework_kinds.insert(kind);
+        }
 
-        let (module_name, framework_name, exact_match) = match flags.async_framework {
-            Some(AsyncFrameworkKind::AnyEvent) => ("AnyEvent", "AnyEvent", false),
-            Some(AsyncFrameworkKind::EV) => ("EV", "EV", true),
-            Some(AsyncFrameworkKind::Future) => ("Future", "Future", true),
-            Some(AsyncFrameworkKind::FutureXS) => ("Future::XS", "Future::XS", true),
-            Some(AsyncFrameworkKind::Promise) => ("Promise", "Promise", true),
-            Some(AsyncFrameworkKind::PromiseXS) => ("Promise::XS", "Promise::XS", true),
-            Some(AsyncFrameworkKind::POE) => ("POE", "POE", false),
-            Some(AsyncFrameworkKind::IOAsync) => ("IO::Async", "IO::Async", false),
-            Some(AsyncFrameworkKind::MojoRedis) => ("Mojo::Redis", "Mojo::Redis", true),
-            Some(AsyncFrameworkKind::MojoPg) => ("Mojo::Pg", "Mojo::Pg", true),
-            None => return false,
+        framework_kinds
+            .into_iter()
+            .any(|kind| self.synthesize_async_framework_class_symbol_for_kind(object, kind))
+    }
+
+    fn synthesize_async_framework_class_symbol_for_kind(
+        &mut self,
+        object: &Node,
+        async_framework: AsyncFrameworkKind,
+    ) -> bool {
+        let (module_name, framework_name, exact_match) = match async_framework {
+            AsyncFrameworkKind::AnyEvent => ("AnyEvent", "AnyEvent", false),
+            AsyncFrameworkKind::EV => ("EV", "EV", true),
+            AsyncFrameworkKind::Future => ("Future", "Future", true),
+            AsyncFrameworkKind::FutureXS => ("Future::XS", "Future::XS", true),
+            AsyncFrameworkKind::Promise => ("Promise", "Promise", true),
+            AsyncFrameworkKind::PromiseXS => ("Promise::XS", "Promise::XS", true),
+            AsyncFrameworkKind::POE => ("POE", "POE", false),
+            AsyncFrameworkKind::IOAsync => ("IO::Async", "IO::Async", false),
+            AsyncFrameworkKind::MojoRedis => ("Mojo::Redis", "Mojo::Redis", true),
+            AsyncFrameworkKind::MojoPg => ("Mojo::Pg", "Mojo::Pg", true),
+            AsyncFrameworkKind::MojoMysql => ("Mojo::mysql", "Mojo::mysql", true),
         };
 
         let Some(name) = Self::single_symbol_name(object) else {
             return false;
         };
-        if flags.async_framework == Some(AsyncFrameworkKind::AnyEvent) {
+        if async_framework == AsyncFrameworkKind::AnyEvent {
             if !matches!(
                 name.as_str(),
                 "AnyEvent" | "AnyEvent::CondVar" | "AnyEvent::Timer" | "AnyEvent::IO"
@@ -2153,6 +2208,12 @@ impl SymbolExtractor {
         });
 
         true
+    }
+
+    fn mark_async_framework(&mut self, package: &str, kind: AsyncFrameworkKind) {
+        let flags = self.framework_flags.entry(package.to_string()).or_default();
+        flags.async_framework = Some(kind);
+        flags.async_frameworks.insert(kind);
     }
 
     /// Synthesize the `EV` namespace symbol when the framework is imported.
@@ -2356,62 +2417,57 @@ impl SymbolExtractor {
         }
 
         if module == "IO::Async" || module.starts_with("IO::Async::") {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::IOAsync);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::IOAsync);
             return;
         }
 
         if module == "AnyEvent" {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::AnyEvent);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::AnyEvent);
             return;
         }
 
         if module == "EV" {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::EV);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::EV);
             return;
         }
 
         if module == "Future" {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::Future);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::Future);
             return;
         }
 
         if module == "Future::XS" {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::FutureXS);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::FutureXS);
             return;
         }
 
         if module == "Promise" {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::Promise);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::Promise);
             return;
         }
 
         if module == "Promise::XS" {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::PromiseXS);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::PromiseXS);
             return;
         }
 
         if module == "POE" || module.starts_with("POE::") {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::POE);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::POE);
             return;
         }
 
         if module == "Mojo::Redis" {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::MojoRedis);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::MojoRedis);
             return;
         }
 
         if module == "Mojo::Pg" {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::MojoPg);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::MojoPg);
+            return;
+        }
+
+        if module == "Mojo::mysql" {
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::MojoMysql);
             return;
         }
 
@@ -3639,6 +3695,169 @@ mod tests {
         assert!(
             our_from_block.iter().any(|s| s.name == "g"),
             "input that hits the boundary: scope.kind != ScopeKind::Package"
+        );
+    }
+
+    /// Direct contract tests for `SymbolTable::scope_at_offset` (issue
+    /// #3695): out-of-scope fallback, nested/sibling selection, inclusive
+    /// start / exclusive end boundaries, and the `(start, id)` tie-breaker
+    /// that makes same-start selection deterministic. Hand-built (not
+    /// extracted) so each boundary is exercised in isolation, matching the
+    /// style of `find_symbol_boundary_discriminator` above.
+    #[test]
+    fn scope_at_offset_out_of_all_scopes_falls_back_to_global() {
+        let mut table = SymbolTable::new(); // global scope 0, location {0,0}
+        table.scopes.insert(
+            1,
+            Scope {
+                id: 1,
+                parent: Some(0),
+                kind: ScopeKind::Subroutine,
+                location: SourceLocation { start: 10, end: 20 },
+                symbols: HashSet::new(),
+            },
+        );
+
+        // Before and after the only non-global scope: no scope's range
+        // contains the offset, so the fallback (`unwrap_or(0)`) applies.
+        assert_eq!(table.scope_at_offset(5), 0, "offset before all scopes falls back to scope 0");
+        assert_eq!(table.scope_at_offset(25), 0, "offset after all scopes falls back to scope 0");
+    }
+
+    #[test]
+    fn scope_at_offset_selects_innermost_nested_scope() {
+        let mut table = SymbolTable::new();
+        table.scopes.insert(
+            1,
+            Scope {
+                id: 1,
+                parent: Some(0),
+                kind: ScopeKind::Subroutine,
+                location: SourceLocation { start: 0, end: 100 },
+                symbols: HashSet::new(),
+            },
+        );
+        table.scopes.insert(
+            2,
+            Scope {
+                id: 2,
+                parent: Some(1),
+                kind: ScopeKind::Block,
+                location: SourceLocation { start: 10, end: 90 },
+                symbols: HashSet::new(),
+            },
+        );
+
+        assert_eq!(
+            table.scope_at_offset(50),
+            2,
+            "offset inside both the sub and its nested block picks the innermost (block) scope"
+        );
+    }
+
+    #[test]
+    fn scope_at_offset_selects_correct_sibling() {
+        let mut table = SymbolTable::new();
+        table.scopes.insert(
+            1,
+            Scope {
+                id: 1,
+                parent: Some(0),
+                kind: ScopeKind::Block,
+                location: SourceLocation { start: 10, end: 40 },
+                symbols: HashSet::new(),
+            },
+        );
+        table.scopes.insert(
+            2,
+            Scope {
+                id: 2,
+                parent: Some(0),
+                kind: ScopeKind::Block,
+                location: SourceLocation { start: 50, end: 90 },
+                symbols: HashSet::new(),
+            },
+        );
+
+        assert_eq!(table.scope_at_offset(20), 1, "offset inside the first sibling only");
+        assert_eq!(table.scope_at_offset(70), 2, "offset inside the second sibling only");
+    }
+
+    #[test]
+    fn scope_at_offset_start_boundary_is_inclusive() {
+        let mut table = SymbolTable::new();
+        table.scopes.insert(
+            1,
+            Scope {
+                id: 1,
+                parent: Some(0),
+                kind: ScopeKind::Block,
+                location: SourceLocation { start: 10, end: 20 },
+                symbols: HashSet::new(),
+            },
+        );
+
+        assert_eq!(
+            table.scope_at_offset(10),
+            1,
+            "offset == location.start is inside the scope (inclusive lower bound)"
+        );
+    }
+
+    #[test]
+    fn scope_at_offset_end_boundary_is_exclusive() {
+        let mut table = SymbolTable::new();
+        table.scopes.insert(
+            1,
+            Scope {
+                id: 1,
+                parent: Some(0),
+                kind: ScopeKind::Block,
+                location: SourceLocation { start: 10, end: 20 },
+                symbols: HashSet::new(),
+            },
+        );
+
+        assert_eq!(
+            table.scope_at_offset(20),
+            0,
+            "offset == location.end is outside the scope (exclusive upper bound); falls back to global"
+        );
+    }
+
+    /// Reproduction for #3695: without the `(location.start, id)` compound
+    /// key, `scope_at_offset` compares only `location.start`, so equal-start
+    /// scopes tie and `max_by_key` resolves the tie via `HashMap` iteration
+    /// order -- not scope nesting. With the fix, ranking by `(start, id)`
+    /// deterministically picks the highest-id (innermost) scope every time,
+    /// since scope IDs are assigned in strictly increasing, nested push
+    /// order (see `push_scope`). Reverting the key back to a bare
+    /// `scope.location.start` makes this test flaky-to-failing, since the
+    /// tie is then broken by unspecified `HashMap` iteration order instead
+    /// of nesting depth.
+    #[test]
+    fn scope_at_offset_ties_on_equal_start_pick_highest_id() {
+        let mut table = SymbolTable::new();
+        // Four scopes all opening at the same offset (e.g. a `sub` and a
+        // block whose opening brace coincides), inserted out of id order so
+        // "insertion order happens to match" can't explain a passing result.
+        for (id, end) in [(4, 40), (2, 80), (5, 20), (3, 60)] {
+            table.scopes.insert(
+                id,
+                Scope {
+                    id,
+                    parent: Some(0),
+                    kind: ScopeKind::Block,
+                    location: SourceLocation { start: 10, end },
+                    symbols: HashSet::new(),
+                },
+            );
+        }
+
+        assert_eq!(
+            table.scope_at_offset(15),
+            5,
+            "equal-start scopes must tie-break on the highest id (innermost), not iteration order"
         );
     }
 

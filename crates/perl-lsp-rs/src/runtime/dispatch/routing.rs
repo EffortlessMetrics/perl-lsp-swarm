@@ -66,8 +66,8 @@ impl LspServer {
             }
             "textDocument/declaration" => self.handle_declaration_dispatch(request.params),
             "textDocument/references" => {
-                return self.route_cancellable(id, method, should_respond, |_| {
-                    self.handle_references_dispatch(request.params)
+                return self.route_cancellable(id, method, should_respond, |request_id| {
+                    self.handle_references_cancellable_dispatch(request.params, request_id)
                 });
             }
             "textDocument/documentHighlight" => {
@@ -137,6 +137,9 @@ impl LspServer {
             }
             "textDocument/semanticTokens/range" => {
                 self.handle_semantic_tokens_range_dispatch(request.params)
+            }
+            "textDocument/semanticTokens/full/delta" => {
+                self.handle_semantic_tokens_delta_dispatch(request.params)
             }
             "workspace/executeCommand" => self.handle_execute_command_dispatch(request.params),
             "textDocument/typeDefinition" => self.handle_type_definition_dispatch(request.params),

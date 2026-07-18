@@ -261,9 +261,9 @@ impl LspServer {
             let location = workspace_index
                 .semantic_anchor_wire_location_for_file(edit.file_id, edit.anchor_id)?;
             let doc = workspace_index.document_store().get(&location.uri)?;
-            let start = location.range.start.to_byte_offset(&doc.text);
-            let end = location.range.end.to_byte_offset(&doc.text);
-            if start >= end || doc.text.get(start..end)? != edit.old_text {
+            let start = location.range.start.to_byte_offset(doc.text());
+            let end = location.range.end.to_byte_offset(doc.text());
+            if start >= end || doc.text().get(start..end)? != edit.old_text {
                 return None;
             }
 
@@ -301,7 +301,8 @@ impl LspServer {
         let symbol_len = key.name.as_ref().len();
         let documents = self.documents_guard();
         let request_doc = self.get_document(&documents, request_uri)?;
-        let request_ast = request_doc.ast.as_ref()?;
+        let request_parsed = request_doc.current_parsed();
+        let request_ast = request_parsed.as_ref().and_then(|p| p.ast())?;
         let request_edit_uri = workspace_edit_uri_key(request_uri);
         let mut live_document_keys = BTreeSet::new();
         let mut indexed_document_keys = BTreeSet::new();
@@ -371,7 +372,7 @@ impl LspServer {
                     &mut grouped,
                     &mut seen,
                     &edit_uri,
-                    &doc.text,
+                    doc.text(),
                     &qualified_name,
                     package_len,
                     symbol_len,
@@ -1009,7 +1010,7 @@ impl LspServer {
 
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
-                if let Some(_ast) = &doc.ast {
+                if doc.current_parsed().is_some_and(|p| p.ast().is_some()) {
                     let offset = self.pos16_to_offset(doc, line, character);
                     if Self::rename_blocked_at(doc, offset) {
                         return Ok(Some(json!(null)));
@@ -1023,6 +1024,22 @@ impl LspServer {
                             || token.starts_with('%')
                             || token.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_'))
                     {
+                        // When client declares PrepareSupportDefaultBehavior::Identifier (1),
+                        // delegate word-selection to the client for plain identifiers.
+                        // Sigiled tokens ($foo, @bar, %baz) always use {range, placeholder}
+                        // so the client highlights the full sigil-inclusive token.
+                        let is_sigiled = token.starts_with('$')
+                            || token.starts_with('@')
+                            || token.starts_with('%');
+                        if !is_sigiled && is_rename_keyword(&token) {
+                            return Ok(Some(json!(null)));
+                        }
+                        let prefers_default_behavior =
+                            self.client_capabilities.lock().prepare_support_default_behavior == 1;
+                        if prefers_default_behavior && !is_sigiled {
+                            return Ok(Some(json!({ "defaultBehavior": true })));
+                        }
+
                         // Find the token bounds
                         let (start_offset, end_offset) = self.get_token_bounds(&doc.text, offset);
                         let (start_line, start_char) = self.offset_to_pos16(doc, start_offset);
@@ -1076,6 +1093,48 @@ impl LspServer {
             .and_then(Value::as_object)
             .map(|changes| changes.values().filter_map(Value::as_array).map(Vec::len).sum())
             .unwrap_or(0)
+    }
+
+    /// Convert a `{ "changes": { uri: [edits] } }` WorkspaceEdit to the
+    /// `{ "documentChanges": [...] }` format required by LSP clients that
+    /// advertise `workspace.workspaceEdit.documentChanges: true`.
+    ///
+    /// If the input does not have a `changes` key the value is returned as-is.
+    fn changes_to_document_changes(&self, ws_edit: Value) -> Value {
+        let Some(changes) = ws_edit.get("changes").and_then(Value::as_object) else {
+            return ws_edit;
+        };
+        let documents = self.documents_guard();
+        let doc_changes: Vec<Value> = changes
+            .iter()
+            .map(|(uri, edits)| {
+                let version = self
+                    .get_document(&documents, uri)
+                    .map_or(Value::Null, |document| json!(document.version));
+                json!({
+                    "textDocument": { "uri": uri, "version": version },
+                    "edits": edits
+                })
+            })
+            .collect();
+        let mut workspace_edit = ws_edit.as_object().cloned().unwrap_or_default();
+        workspace_edit.remove("changes");
+        workspace_edit.insert("documentChanges".to_string(), Value::Array(doc_changes));
+        Value::Object(workspace_edit)
+    }
+
+    /// Return the workspace edit in the format the client prefers.
+    ///
+    /// When the client advertised `workspace.workspaceEdit.documentChanges: true`
+    /// during initialize, converts the internal `{ "changes" }` representation to
+    /// the `{ "documentChanges" }` array format.  Otherwise returns the value
+    /// unchanged.
+    fn to_workspace_edit_format(&self, ws_edit: Value) -> Value {
+        if self.client_capabilities.lock().workspace_edit_document_changes_support {
+            self.changes_to_document_changes(ws_edit)
+        } else {
+            ws_edit
+        }
     }
 
     #[cfg(feature = "workspace")]
@@ -1229,7 +1288,7 @@ impl LspServer {
                         0,
                         "no_edit",
                     );
-                    return Ok(Some(json!({"changes": {}})));
+                    return Ok(Some(self.to_workspace_edit_format(json!({"changes": {}}))));
                 }
 
                 // Check index access mode using routing helper
@@ -1244,7 +1303,8 @@ impl LspServer {
                     ) = {
                         let documents = self.documents_guard();
                         self.get_document(&documents, uri).and_then(|doc| {
-                            doc.ast.as_ref().and_then(|ast| {
+                            let parsed = doc.current_parsed();
+                            parsed.as_ref().and_then(|p| p.ast()).and_then(|ast| {
                                 let offset = self.pos16_to_offset(doc, line as u32, ch as u32);
                                 let current_pkg =
                                     crate::declaration::current_package_at(ast, offset);
@@ -1351,7 +1411,7 @@ impl LspServer {
                                     open_doc_edit_count,
                                     open_doc_fallback_state,
                                 );
-                                return Ok(Some(open_doc_ws_edit));
+                                return Ok(Some(self.to_workspace_edit_format(open_doc_ws_edit)));
                             }
                             self.record_rename_provider_decision_trace(
                                 Some(uri),
@@ -1388,7 +1448,7 @@ impl LspServer {
                                     open_doc_edit_count,
                                     open_doc_fallback_state,
                                 );
-                                return Ok(Some(open_doc_ws_edit));
+                                return Ok(Some(self.to_workspace_edit_format(open_doc_ws_edit)));
                             }
                             // Fall through to same-file rename
                         }
@@ -1399,7 +1459,7 @@ impl LspServer {
                                 self.get_document(&documents, uri).is_none_or(|doc| {
                                     idx.document_store()
                                         .get(uri)
-                                        .is_some_and(|indexed| indexed.text == doc.text)
+                                        .is_some_and(|indexed| indexed.text() == doc.text)
                                 })
                             };
                             if package_local_live_pilot_enabled {
@@ -1425,7 +1485,7 @@ impl LspServer {
                                                     0,
                                                     "no_edit",
                                                 );
-                                                return Ok(Some(json!({"changes": {}})));
+                                                return Ok(Some(self.to_workspace_edit_format(json!({"changes": {}}))));
                                             };
 
                                             let guard_edits =
@@ -1477,7 +1537,7 @@ impl LspServer {
                                                         open_doc_edit_count,
                                                         open_doc_fallback_state,
                                                     );
-                                                    return Ok(Some(open_doc_ws_edit));
+                                                    return Ok(Some(self.to_workspace_edit_format(open_doc_ws_edit)));
                                                 }
 
                                                 if Self::package_rename_guard_accepts_workspace_edit(
@@ -1492,7 +1552,7 @@ impl LspServer {
                                                         semantic_edit_count,
                                                         "none",
                                                     );
-                                                    return Ok(Some(semantic_ws_edit));
+                                                    return Ok(Some(self.to_workspace_edit_format(semantic_ws_edit)));
                                                 }
 
                                                 let guard_edit_count =
@@ -1506,7 +1566,7 @@ impl LspServer {
                                                     guard_edit_count,
                                                     "workspace_index",
                                                 );
-                                                return Ok(Some(guard_ws_edit));
+                                                return Ok(Some(self.to_workspace_edit_format(guard_ws_edit)));
                                             }
 
                                             self.record_rename_provider_decision_trace(
@@ -1516,7 +1576,7 @@ impl LspServer {
                                                 0,
                                                 "no_edit",
                                             );
-                                            return Ok(Some(json!({"changes": {}})));
+                                            return Ok(Some(self.to_workspace_edit_format(json!({"changes": {}}))));
                                         }
                                         Some(Err(
                                             RenamePackagePilotIneligibleReason::UnsupportedEditCategory,
@@ -1537,7 +1597,7 @@ impl LspServer {
                                                 0,
                                                 "no_edit",
                                             );
-                                            return Ok(Some(json!({"changes": {}})));
+                                            return Ok(Some(self.to_workspace_edit_format(json!({"changes": {}}))));
                                         }
                                         None => {}
                                     }
@@ -1600,7 +1660,9 @@ impl LspServer {
                                                 open_doc_edit_count,
                                                 open_doc_fallback_state,
                                             );
-                                            return Ok(Some(open_doc_ws_edit));
+                                            return Ok(Some(
+                                                self.to_workspace_edit_format(open_doc_ws_edit),
+                                            ));
                                         }
                                         self.record_rename_provider_decision_trace(
                                             Some(uri),
@@ -1609,7 +1671,7 @@ impl LspServer {
                                             edit_count,
                                             "workspace_index",
                                         );
-                                        return Ok(Some(ws_edit));
+                                        return Ok(Some(self.to_workspace_edit_format(ws_edit)));
                                     }
                                 }
                             }
@@ -1620,7 +1682,8 @@ impl LspServer {
                 // Same-file fallback for degraded/partial modes
                 let documents = self.documents_guard();
                 if let Some(doc) = self.get_document(&documents, uri) {
-                    if let Some(ref ast) = doc.ast {
+                    let parsed = doc.current_parsed();
+                    if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                         let offset = self.pos16_to_offset(doc, line as u32, ch as u32);
                         let current_symbol = self.get_token_at_position(&doc.text, offset);
                         let normalized_name =
@@ -1638,11 +1701,10 @@ impl LspServer {
                                 edit_count,
                                 "none",
                             );
-                            return Ok(Some(json!({
-                                "changes": {
-                                    uri: edits
-                                }
-                            })));
+                            drop(documents);
+                            return Ok(Some(self.to_workspace_edit_format(json!({
+                                "changes": { uri: edits }
+                            }))));
                         }
 
                         if let Some(edits) = self.scoped_main_sub_rename_edits(
@@ -1660,11 +1722,10 @@ impl LspServer {
                                 edit_count,
                                 "none",
                             );
-                            return Ok(Some(json!({
-                                "changes": {
-                                    uri: edits
-                                }
-                            })));
+                            drop(documents);
+                            return Ok(Some(self.to_workspace_edit_format(json!({
+                                "changes": { uri: edits }
+                            }))));
                         }
 
                         // Create semantic analyzer for same-file rename
@@ -1694,7 +1755,10 @@ impl LspServer {
                                         0,
                                         "no_edit",
                                     );
-                                    return Ok(Some(json!({"changes": {}})));
+                                    drop(documents);
+                                    return Ok(Some(
+                                        self.to_workspace_edit_format(json!({"changes": {}})),
+                                    ));
                                 };
                                 if current_symbol_bare == current_symbol
                                     && sub_declaration_keyword_before(&doc.text, edit_start)
@@ -1724,7 +1788,10 @@ impl LspServer {
                                     0,
                                     "no_edit",
                                 );
-                                return Ok(Some(json!({"changes": {}})));
+                                drop(documents);
+                                return Ok(Some(
+                                    self.to_workspace_edit_format(json!({"changes": {}})),
+                                ));
                             }
 
                             // Return WorkspaceEdit with same-file changes only
@@ -1735,11 +1802,10 @@ impl LspServer {
                                 edit_count,
                                 "none",
                             );
-                            return Ok(Some(json!({
-                                "changes": {
-                                    uri: edits
-                                }
-                            })));
+                            drop(documents);
+                            return Ok(Some(self.to_workspace_edit_format(json!({
+                                "changes": { uri: edits }
+                            }))));
                         }
                     }
                 }
@@ -1803,6 +1869,10 @@ impl LspServer {
 
 #[cfg(test)]
 mod tests {
+    // Tests are permitted to use `.expect()` on Result/Option per the repo's
+    // coding standards (unlike production code, where it is banned).
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     fn position_of(text: &str, needle: &str) -> Result<(u32, u32), Box<dyn std::error::Error>> {
@@ -1824,6 +1894,47 @@ mod tests {
             "position": { "line": line, "character": character },
             "newName": new_name
         })
+    }
+
+    #[test]
+    fn document_changes_preserve_versions_and_workspace_edit_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let open_uri = "file:///workspace/lib/Open.pm";
+        let closed_uri = "file:///workspace/lib/Closed.pm";
+        server.test_apply_did_open(open_uri, "package Open;\n1;\n", 7)?;
+
+        let converted = server.changes_to_document_changes(serde_json::json!({
+            "changes": {
+                open_uri: [{ "range": {}, "newText": "renamed" }],
+                closed_uri: [{ "range": {}, "newText": "renamed" }]
+            },
+            "changeAnnotations": {
+                "rename": { "label": "Rename symbol" }
+            }
+        }));
+
+        assert!(converted.get("changes").is_none());
+        assert_eq!(converted["changeAnnotations"]["rename"]["label"], "Rename symbol");
+        let document_changes =
+            converted["documentChanges"].as_array().ok_or("missing documentChanges array")?;
+        assert_eq!(document_changes.len(), 2);
+        assert_eq!(
+            document_changes
+                .iter()
+                .find(|entry| entry["textDocument"]["uri"] == open_uri)
+                .ok_or("missing open document change")?["textDocument"]["version"],
+            7
+        );
+        assert_eq!(
+            document_changes
+                .iter()
+                .find(|entry| entry["textDocument"]["uri"] == closed_uri)
+                .ok_or("missing closed document change")?["textDocument"]["version"],
+            Value::Null
+        );
+
+        Ok(())
     }
 
     #[test]
@@ -1858,15 +1969,14 @@ mod tests {
 
     #[test]
     fn perl_word_split_boundary_discriminator_c_eq_underscore() {
-        assert_eq!(perl_word_split_boundary('_'), false, "input that hits the boundary: c == '_'");
+        assert!(!perl_word_split_boundary('_'), "input that hits the boundary: c == '_'");
     }
 
     #[test]
     fn perl_word_split_boundary_discriminator_c_ne_underscore() {
-        assert_eq!(perl_word_split_boundary(' '), true, "input that hits the boundary: c != '_'");
-        assert_eq!(
-            perl_word_split_boundary('a'),
-            false,
+        assert!(perl_word_split_boundary(' '), "input that hits the boundary: c != '_'");
+        assert!(
+            !perl_word_split_boundary('a'),
             "input that hits the boundary: c.is_alphanumeric()"
         );
     }
@@ -1875,16 +1985,14 @@ mod tests {
     fn sub_declaration_keyword_before_boundary_discriminator_symbol_start_zero()
     -> Result<(), Box<dyn std::error::Error>> {
         let boundary_source = "target();\nsub target { 1 }\n";
-        assert_eq!(
-            sub_declaration_keyword_before(boundary_source, 0),
-            false,
+        assert!(
+            !sub_declaration_keyword_before(boundary_source, 0),
             "symbol_start == 0 must not slice before the document start"
         );
 
         let sub_name_offset = boundary_source.find("target {").ok_or("missing sub target")?;
-        assert_eq!(
+        assert!(
             sub_declaration_keyword_before(boundary_source, sub_name_offset),
-            true,
             "normal sub declaration names should still detect the preceding sub keyword"
         );
 
@@ -1898,14 +2006,12 @@ mod tests {
         let invalid_offset = source.find("target { 1 }").ok_or("missing invalid sub target")?;
         let valid_offset = source.find("target { 2 }").ok_or("missing valid sub target")?;
 
-        assert_eq!(
-            sub_declaration_keyword_before(source, invalid_offset),
-            false,
+        assert!(
+            !sub_declaration_keyword_before(source, invalid_offset),
             "input that hits the boundary: c != '_'"
         );
-        assert_eq!(
+        assert!(
             sub_declaration_keyword_before(source, valid_offset),
-            true,
             "plain sub declarations should still detect the sub keyword"
         );
 
@@ -1919,14 +2025,12 @@ mod tests {
         let tab_offset = source.find("target { 1 }").ok_or("missing tab-separated sub target")?;
         let method_offset = source.find("target { 2 }").ok_or("missing method target")?;
 
-        assert_eq!(
+        assert!(
             sub_declaration_keyword_before(source, tab_offset),
-            true,
             "input that hits the boundary: !c.is_alphanumeric() && c != '_'"
         );
-        assert_eq!(
-            sub_declaration_keyword_before(source, method_offset),
-            false,
+        assert!(
+            !sub_declaration_keyword_before(source, method_offset),
             "other declaration-like keywords must not be treated as sub declarations"
         );
 

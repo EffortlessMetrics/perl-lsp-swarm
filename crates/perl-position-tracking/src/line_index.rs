@@ -146,7 +146,11 @@ impl LineStartsCache {
         let mut uc = 0;
         let mut bo = 0;
         for ch in sl.chars() {
-            if uc >= character as usize {
+            // Test before consuming so a column that lands inside a surrogate
+            // pair clamps to the start of that codepoint rather than skipping
+            // past it. `uc >= character` alone over-advances for mid-surrogate
+            // requests (e.g. column 2 over "x😀y" must map to the emoji start).
+            if uc + ch.len_utf16() > character as usize {
                 break;
             }
             uc += ch.len_utf16();
@@ -188,6 +192,15 @@ impl LineIndex {
         }
 
         Self { line_starts, text }
+    }
+
+    /// Borrow the source text this index owns.
+    ///
+    /// The index keeps a copy of the text so callers that already hold a
+    /// `LineIndex` do not need to store the source a second time.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
     }
 
     /// Convert byte offset to position (0-based line and UTF-16 column)

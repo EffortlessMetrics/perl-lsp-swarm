@@ -158,7 +158,7 @@ pub fn build_rename_edit(
                         doc.line_index.position_to_offset(start_line, start_char),
                         doc.line_index.position_to_offset(end_line, end_char),
                     ) {
-                        if let Some(original) = doc.text.get(start_off..end_off) {
+                        if let Some(original) = doc.text().get(start_off..end_off) {
                             if let Some((qual, _)) = original.rsplit_once("::") {
                                 replacement = format!("{}::{}", qual, new_name_bare);
                             }
@@ -211,7 +211,7 @@ fn is_ambiguous_sub_reference(
     let Some(end_off) = doc.line_index.position_to_offset(end_line, end_char) else {
         return false;
     };
-    let Some(original) = doc.text.get(start_off..end_off) else {
+    let Some(original) = doc.text().get(start_off..end_off) else {
         return false;
     };
 
@@ -222,7 +222,7 @@ fn is_ambiguous_sub_reference(
         return false;
     }
 
-    let package_at_line = package_name_for_line(&doc.text, start_line);
+    let package_at_line = package_name_for_line(doc.text(), start_line);
 
     // Arrow method calls (`$self->name`, `$obj->name`) are not bare function calls,
     // but they are only safe for workspace rename when the caller package is the
@@ -230,7 +230,7 @@ fn is_ambiguous_sub_reference(
     // as `$self->app->dispatcher->method` must fail closed.
     if original.contains("->") {
         return package_at_line != key.pkg.as_ref()
-            && !package_explicitly_inherits(&doc.text, package_at_line, key.pkg.as_ref());
+            && !package_explicitly_inherits(doc.text(), package_at_line, key.pkg.as_ref());
     }
 
     package_at_line != key.pkg.as_ref()
@@ -356,7 +356,7 @@ fn sub_name_range_in_source_span(
     let doc = idx.document_store().get(uri)?;
     let start_off = doc.line_index.position_to_offset(start_line, start_char)?;
     let end_off = doc.line_index.position_to_offset(end_line, end_char)?;
-    let original = doc.text.get(start_off..end_off)?;
+    let original = doc.text().get(start_off..end_off)?;
     let (name_start, name_end) = find_sub_name_in_text(original, name)?;
 
     Some((
@@ -419,7 +419,7 @@ fn is_non_target_package_declaration(
         doc.line_index.position_to_offset(start_line, start_char).and_then(|start_off| {
             doc.line_index
                 .position_to_offset(end_line, end_char)
-                .and_then(|end_off| doc.text.get(start_off..end_off))
+                .and_then(|end_off| doc.text().get(start_off..end_off))
         });
 
     if let Some(original) = maybe_original {
@@ -429,12 +429,12 @@ fn is_non_target_package_declaration(
         // Unqualified bare name — rely on package context below.
     }
 
-    let package_at_line = package_name_for_line(&doc.text, start_line);
+    let package_at_line = package_name_for_line(doc.text(), start_line);
     if package_at_line == key.pkg.as_ref() {
         return false;
     }
 
-    let line_text = doc.text.lines().nth(start_line as usize).unwrap_or_default();
+    let line_text = doc.text().lines().nth(start_line as usize).unwrap_or_default();
     is_sub_declaration_line(line_text, key.name.as_ref())
 }
 
@@ -492,6 +492,10 @@ pub fn validate_rename(_key: &SymbolKey, new_name: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    // Tests are permitted to use `.expect()` on Result/Option per the repo's
+    // coding standards (unlike production code, where it is banned).
+    #![allow(clippy::expect_used)]
+
     use super::*;
     use std::sync::Arc;
     use url::Url;
@@ -548,7 +552,7 @@ $var;
                 Some((start, end, e.new_text.as_str()))
             })
             .collect();
-        replacements.sort_by(|a, b| b.0.cmp(&a.0));
+        replacements.sort_by_key(|r| std::cmp::Reverse(r.0));
         let mut new_text = text.to_string();
         for (start, end, rep) in replacements {
             new_text.replace_range(start..end, rep);

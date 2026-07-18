@@ -1,4 +1,5 @@
 use crate::PerlLexer;
+use crate::unicode::is_perl_identifier_continue;
 
 impl PerlLexer<'_> {
     #[allow(clippy::inline_always)] // Performance critical in lexer hot path
@@ -51,19 +52,15 @@ impl PerlLexer<'_> {
             return None;
         }
 
-        let pos = self.position.checked_add(offset)?;
-        if pos < self.input_bytes.len() {
-            // For ASCII, direct access is safe
-            let byte = Self::byte_at(self.input_bytes, pos);
-            if byte < 128 {
-                Some(byte as char)
-            } else {
-                // For non-ASCII, use chars iterator
-                self.input.get(self.position..).and_then(|s| s.chars().nth(offset))
-            }
-        } else {
-            None
+        let rest = self.input.get(self.position..)?;
+        let prefix_len = offset.checked_add(1)?;
+        if let Some(prefix) = rest.as_bytes().get(..prefix_len)
+            && prefix.is_ascii()
+        {
+            return rest.as_bytes().get(offset).map(|&byte| byte as char);
         }
+
+        rest.chars().nth(offset)
     }
 
     #[allow(clippy::inline_always)] // Performance critical in lexer hot path
@@ -117,4 +114,55 @@ impl PerlLexer<'_> {
             false
         }
     }
+
+    /// Read-only lookahead for the braced-variable scan (issue #3939): does
+    /// the `::`-delimited chain starting AT the current position (which must
+    /// be the first `:` of a `::`) consist of one or more
+    /// `::identifier`-segments immediately followed by `}`, with nothing
+    /// else in between?
+    ///
+    /// Used to decide whether a package-qualified name inside `${...}` is
+    /// the ENTIRE braced content (e.g. `${Foo::bar}`, `${Foo::Bar::baz}` —
+    /// fold the whole `::`-chain into one token) versus the base of a
+    /// postfix/partial-deref chain (e.g. `${Foo::bar->{baz}}`,
+    /// `${Foo::bar[0]}` — must NOT fold `::` here, so the qualified name
+    /// stays visible to the parser's separate multi-token reconstruction
+    /// path instead of being swallowed into an opaque merged Identifier).
+    ///
+    /// Purely a lookahead over a fresh `chars()` iterator sliced from the
+    /// current byte position — never mutates `self.position`, so it is safe
+    /// to call speculatively and discard the result. Unbounded (unlike
+    /// `peek_char`'s `max_lookahead`-limited character lookahead), which is
+    /// correct here: a real Perl package-qualified name is not pathologically
+    /// long, and the loop always terminates on end-of-input, a `}`, or the
+    /// first character that isn't part of a valid `::segment`.
+    pub(crate) fn qualified_name_closes_brace_from_here(&self) -> bool {
+        let Some(rest) = self.input.get(self.position..) else {
+            return false;
+        };
+        let mut chars = rest.chars().peekable();
+        loop {
+            if chars.next() != Some(':') || chars.next() != Some(':') {
+                return false;
+            }
+            let mut consumed_any = false;
+            while chars.peek().is_some_and(|&c| is_perl_identifier_continue(c)) {
+                chars.next();
+                consumed_any = true;
+            }
+            if !consumed_any {
+                return false;
+            }
+            // Another `::segment`, or are we at the end of the qualified name?
+            let mut lookahead = chars.clone();
+            if lookahead.next() == Some(':') && lookahead.next() == Some(':') {
+                continue;
+            }
+            return chars.next() == Some('}');
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    include!("../../../tests/fixtures/ripr_seam_proof_peek_char_unit.inc");
 }

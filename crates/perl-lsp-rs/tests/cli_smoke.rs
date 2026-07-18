@@ -113,7 +113,7 @@ fn doctor_reports_workspace_setup() -> Result<(), Box<dyn std::error::Error>> {
             "  Read-only CLI report. It does not start the LSP, mutate config, scan the workspace, or apply editor-specific settings."
         )
     );
-    assert_eq!(stdout.ends_with('\n'), true);
+    assert!(stdout.ends_with('\n'));
     assert_eq!(
         stdout
             .matches(&format!(
@@ -372,12 +372,21 @@ fn ripr_facts_emits_schema_valid_deterministic_packet() -> Result<(), Box<dyn st
 
     assert_eq!(packet["schema_version"], "ripr-perl-facts-v1");
 
-    // The fingerprint is a non-null `fnv64:` content hash, not the old `null` placeholder.
+    // The fingerprint is a non-null SHA-256 digest, not the old `null` placeholder.
     let fingerprint =
         packet["packet_fingerprint"].as_str().ok_or("packet_fingerprint is not a string")?;
     assert!(
-        fingerprint.starts_with("fnv64:"),
-        "packet_fingerprint should be an fnv64 digest, got `{fingerprint}`"
+        fingerprint.starts_with("sha256:"),
+        "packet_fingerprint should be a sha256 digest, got `{fingerprint}`"
+    );
+    assert_eq!(
+        fingerprint.len(),
+        "sha256:".len() + 64,
+        "packet_fingerprint should contain a full SHA-256 hex digest"
+    );
+    assert!(
+        fingerprint["sha256:".len()..].bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "packet_fingerprint should contain only hexadecimal characters"
     );
 
     // The `.pm` and `.t` files were discovered as facts.

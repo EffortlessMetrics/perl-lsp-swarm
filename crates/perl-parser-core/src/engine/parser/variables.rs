@@ -88,14 +88,45 @@ impl<'a> Parser<'a> {
                 // parsing continues at the declared variable.
                 self.consume_legacy_decl_type_constraint()?;
 
-                // For my/our/state, parse a simple variable
+                // For my/our/state, parse a variable declaration target.
+                //
+                // Real Perl accepts an ARROW-postfix chain after the declared
+                // variable (`my $cache->{key} = ...`, `my $cache->[0] = ...`,
+                // `my $obj->method()`) — that's an autovivifying dereference
+                // on the freshly-declared lexical scalar, not a declaration
+                // of an array/hash *element*. Ground truth (perl 5.42.2):
+                //
+                //   $ perl -c -e 'my $cache->{key} = [1,2,3];'
+                //   -e syntax OK
+                //
+                // A DIRECT subscript with no arrow (`my $cache[0]`, `my
+                // $cache{key}`, `my @cache[0,1]`) is a syntax error in real
+                // Perl — `my`/`our`/`state` cannot declare an array or hash
+                // *element*, only whole variables:
+                //
+                //   $ perl -c -e 'my $cache[0] = 5;'
+                //   syntax error at -e line 1, near "$cache["
+                //   $ perl -c -e 'my $cache{key} = 5;'
+                //   syntax error at -e line 1, near "$cache{key"
+                //
+                // So only continue into the postfix chain when the next
+                // token is `->`. A direct `[`/`{` immediately after the bare
+                // declared variable is rejected outright here, matching real
+                // Perl's rejection, instead of silently parsing it as two
+                // unrelated statements or (the #3627 regression) folding the
+                // subscript into the declaration target itself.
                 let var = self.parse_variable()?;
-                // If -> follows the declared variable, treat it as an lvalue subscript chain
-                // e.g. my $cache->{key} = expr  or  my $foo->method()
-                if self.peek_kind() == Some(TokenKind::Arrow) {
-                    self.parse_postfix_chain(var)?
-                } else {
-                    var
+                match self.peek_kind() {
+                    Some(TokenKind::Arrow) => self.parse_postfix_chain(var)?,
+                    Some(kind @ (TokenKind::LeftBracket | TokenKind::LeftBrace)) => {
+                        let element_kind =
+                            if kind == TokenKind::LeftBracket { "array" } else { "hash" };
+                        return Err(ParseError::syntax(
+                            format!("Can't declare {element_kind} element in \"{declarator}\""),
+                            self.current_position(),
+                        ));
+                    }
+                    _ => var,
                 }
             };
 
@@ -106,15 +137,40 @@ impl<'a> Parser<'a> {
                 Vec::new()
             };
 
+            // Perl's `my`/`our`/`state`/`local` declare ONLY the first variable
+            // when the declaration list is not parenthesized:
+            //
+            //   `perl -MO=Deparse,-p -e 'my $a, $b, $c = 1;'`
+            //   => `(my($a), $b, ($c = 1));`
+            //
+            // (perlsub: "If more than one value is listed, the list must be
+            // placed in parentheses.") So a comma immediately following the
+            // declared variable is NOT part of this declaration — it belongs
+            // to the surrounding comma-expression, which the callers of
+            // `parse_variable_declaration` (statement- and expression-level)
+            // pick up via their own comma continuation handling. Parenthesized
+            // lists (`my ($a, $b)`) are handled entirely by the branch above
+            // and are unaffected by this.
+
             // Accept both simple `=` and compound operators (`||=`, `//=`, `.=`, etc.)
             // Perl allows `our $x ||= 0;` and `my $y .= "suffix";`
+            //
+            // The RHS is parsed at ASSIGNMENT precedence, not comma
+            // (`parse_expression`) precedence. Per perlop, `=` binds tighter
+            // than `,`, so `my $a = 1, $b;` deparses as
+            // `((my($a) = 1), $b);` — the initializer of `$a` is just `1`,
+            // and `$b` is a separate trailing comma term picked up by the
+            // statement-level comma continuation (see the comment below).
+            // A parenthesized RHS (`my $a = (1, $b);`) is unaffected: the
+            // parens are parsed as a single primary term by `parse_ternary`
+            // regardless of the outer precedence level.
             let assign_op = self.peek_compound_assign_op();
             let initializer = if let Some(op) = assign_op {
                 let op_token = self.tokens.next()?;
                 let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
                     missing
                 } else {
-                    self.parse_expression()?
+                    self.parse_assignment()?
                 };
                 if op == "=" {
                     Some(Box::new(rhs))
@@ -300,6 +356,24 @@ impl<'a> Parser<'a> {
         // We need to split the sigil from the name
         let text = &token.text;
 
+        if let Some(name) = Self::simple_braced_scalar_token_name(text) {
+            return Ok(Node::new(
+                NodeKind::Variable { sigil: String::from("$"), name: name.to_string() },
+                SourceLocation { start: token.start, end: token.end },
+            ));
+        }
+
+        // `${Foo::bar}` (no internal whitespace): the lexer's braced-variable
+        // scan consumes `::`-delimited segments to the matching `}` as one
+        // token (issue #3593). Fold to the scalar `$Foo::bar`, matching
+        // perlref's "Not-so-symbolic references" rule.
+        if let Some(name) = Self::qualified_braced_scalar_token_name(text) {
+            return Ok(Node::new(
+                NodeKind::Variable { sigil: String::from("$"), name: name.to_string() },
+                SourceLocation { start: token.start, end: token.end },
+            ));
+        }
+
         // Special handling for @{, %{, and ${ (array/hash/scalar dereference)
         // e.g. @{$ref}, %{$hash}, ${"${pkg}::$sym"}
         if &**text == "@{" || &**text == "%{" || &**text == "${" {
@@ -313,15 +387,25 @@ impl<'a> Parser<'a> {
             let start = token.start;
 
             // Parse the expression inside the braces
-            let expr = if sigil == "$" {
+            let (expr, folded) = if sigil == "$" {
                 self.parse_braced_scalar_body()?
             } else {
-                self.parse_expression()?
+                (self.parse_expression()?, false)
             };
 
             self.consume_deref_body_terminators()?;
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
+
+            if folded {
+                // `${ name }` == `$name` (perlref): already folded to a
+                // scalar variable node; do not re-wrap in Unary{"${}"}.
+                // Widen the span to cover the whole `${ ... }`, matching the
+                // no-whitespace single-token fast path above.
+                let mut folded_node = expr;
+                folded_node.location = SourceLocation { start, end };
+                return Ok(folded_node);
+            }
 
             let op = format!("{}{{}}", sigil);
             return Ok(Node::new(
@@ -359,15 +443,23 @@ impl<'a> Parser<'a> {
         {
             self.tokens.next()?; // consume {
 
-            let expr = if sigil == "$" {
+            let (expr, folded) = if sigil == "$" {
                 self.parse_braced_scalar_body()?
             } else {
-                self.parse_expression()?
+                (self.parse_expression()?, false)
             };
 
             self.consume_deref_body_terminators()?;
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
+
+            if folded {
+                // `${ name }` == `$name` (perlref): already folded to a
+                // scalar variable node; do not re-wrap in Unary{"${}"}.
+                let mut folded_node = expr;
+                folded_node.location = SourceLocation { start: token.start, end };
+                return Ok(folded_node);
+            }
 
             let op = format!("{}{{}}", sigil);
             return Ok(Node::new(
@@ -385,6 +477,25 @@ impl<'a> Parser<'a> {
             let inner_name = &name[1..]; // strip leading {
             let inner_start = token.start + sigil.len() + 1; // after sigil and {
             let inner_end = token.end;
+
+            // `${sep }` (trailing whitespace before `}`, none after `${`):
+            // the lexer greedily captures `${sep` as one token because
+            // there's no space right after `${`. When the captured name is
+            // a plain bareword immediately followed by `}` — no postfix, no
+            // `::` — this is `${name}` == `$name` folding (perlref), not a
+            // dereference; mirror `try_parse_simple_braced_scalar`'s fast
+            // path instead of wrapping in Unary{"${}"}.
+            if sigil == "$"
+                && is_simple_scalar_name(inner_name)
+                && self.peek_kind() == Some(TokenKind::RightBrace)
+            {
+                self.expect(TokenKind::RightBrace)?;
+                let end = self.previous_position();
+                return Ok(Node::new(
+                    NodeKind::Variable { sigil: "$".to_string(), name: inner_name.to_string() },
+                    SourceLocation { start: token.start, end },
+                ));
+            }
 
             let mut inner = if sigil == "$" && self.peek_kind() == Some(TokenKind::DoubleColon) {
                 self.parse_qualified_scalar_tail(inner_name.to_string(), inner_start, inner_end)?
@@ -526,28 +637,118 @@ impl<'a> Parser<'a> {
         chars.next().is_some_and(|c| c.is_alphanumeric() || c == '_')
     }
 
+    /// Parse `${Foo::bar}` when the tokens inside the braces are a
+    /// package-qualified scalar name, in either token shape the lexer can
+    /// produce for it:
+    ///
+    /// - Multi-token: `Identifier("Foo")` `DoubleColon` `Identifier("bar")`
+    ///   `...` — walked segment-by-segment by [`Self::parse_qualified_scalar_tail`].
+    /// - Single merged token: `Identifier("Foo::bar")` immediately followed
+    ///   by `RightBrace` — produced when the general bareword scanner (not
+    ///   the sigil's braced-variable scan) already folded the `::`-segments
+    ///   into one token, e.g. inside `${ Foo::bar }` where the leading
+    ///   whitespace routes tokenization through the general word scanner.
+    ///
+    /// Returns `None` (not a package-qualified name) so callers can fall
+    /// back to general expression parsing for real dereferences like
+    /// `${$ref}` (issue #3593).
     fn try_parse_braced_qualified_scalar(&mut self) -> ParseResult<Option<Node>> {
         if self.peek_kind() != Some(TokenKind::Identifier) {
             return Ok(None);
         }
 
-        if self.tokens.peek_second()?.kind != TokenKind::DoubleColon {
-            return Ok(None);
+        if self.tokens.peek_second()?.kind == TokenKind::DoubleColon {
+            let first = self.tokens.next()?;
+            return self
+                .parse_qualified_scalar_tail(first.text.to_string(), first.start, first.end)
+                .map(Some);
         }
 
-        let first = self.tokens.next()?;
-        self.parse_qualified_scalar_tail(first.text.to_string(), first.start, first.end)
-            .map(Some)
+        if is_package_qualified_scalar_name(&self.tokens.peek()?.text)
+            && self.tokens.peek_second()?.kind == TokenKind::RightBrace
+        {
+            let name_token = self.tokens.next()?;
+            return Ok(Some(Node::new(
+                NodeKind::Variable { sigil: "$".to_string(), name: name_token.text.to_string() },
+                SourceLocation { start: name_token.start, end: name_token.end },
+            )));
+        }
+
+        Ok(None)
     }
 
-    fn parse_braced_scalar_body(&mut self) -> ParseResult<Node> {
+    /// Parse the body of a `${...}` and report whether it was already
+    /// folded to a bare scalar variable by the `${name}` == `$name` rule
+    /// (perlref), via `try_parse_simple_braced_scalar` or
+    /// `try_parse_braced_qualified_scalar`.
+    ///
+    /// When the returned flag is `true`, the caller MUST NOT wrap the node
+    /// in `Unary{"${}"}` — it is already the correct scalar variable node.
+    /// All other cases (caret-special variables and real scalar-ref
+    /// dereferences such as `${$ref}`) return `false` and must still be
+    /// wrapped — even though `${$ref}` produces a structurally identical
+    /// `Variable` node once parsed, so the flag (not the node shape) is
+    /// what distinguishes folding from dereferencing.
+    fn parse_braced_scalar_body(&mut self) -> ParseResult<(Node, bool)> {
         if let Some(expr) = self.try_parse_braced_caret_special_scalar()? {
-            return Ok(expr);
+            return Ok((expr, false));
+        }
+
+        if let Some(expr) = self.try_parse_simple_braced_scalar()? {
+            return Ok((expr, true));
         }
 
         match self.try_parse_braced_qualified_scalar()? {
-            Some(expr) => Ok(expr),
-            None => self.parse_expression(),
+            Some(expr) => Ok((expr, true)),
+            None => Ok((self.parse_expression()?, false)),
+        }
+    }
+
+    fn try_parse_simple_braced_scalar(&mut self) -> ParseResult<Option<Node>> {
+        if self.peek_kind() != Some(TokenKind::Identifier) {
+            return Ok(None);
+        }
+
+        // The peeked identifier must be a plain bareword (e.g. `sep`), not a
+        // sigil-prefixed variable reference (e.g. `$ref` inside `${$ref}`,
+        // which is a nested dereference, not `${name}` == `$name` folding).
+        if !is_simple_scalar_name(&self.tokens.peek()?.text) {
+            return Ok(None);
+        }
+
+        if self.tokens.peek_second()?.kind != TokenKind::RightBrace {
+            return Ok(None);
+        }
+
+        let name_token = self.tokens.next()?;
+        Ok(Some(Node::new(
+            NodeKind::Variable { sigil: String::from("$"), name: name_token.text.to_string() },
+            SourceLocation { start: name_token.start, end: name_token.end },
+        )))
+    }
+
+    fn simple_braced_scalar_token_name(text: &str) -> Option<&str> {
+        let inner = text.strip_prefix("${")?.strip_suffix('}')?;
+        if is_simple_scalar_name(inner) {
+            Some(inner)
+        } else {
+            None
+        }
+    }
+
+    /// Extract the package-qualified name from a token whose full text is a
+    /// closed braced scalar with a `::`-delimited name, e.g.
+    /// `"${Foo::bar}"` -> `"Foo::bar"`. Produced by the lexer's
+    /// braced-variable scan when it consumes `::` segments to a matching
+    /// `}` with no internal whitespace (see `perl-lexer`'s braced-variable
+    /// scan). Mirrors `simple_braced_scalar_token_name` for the qualified
+    /// case (issue #3593).
+    fn qualified_braced_scalar_token_name(text: &str) -> Option<&str> {
+        let inner = text.strip_prefix("${")?.strip_suffix('}')?;
+        if is_package_qualified_scalar_name(inner) {
+            Some(inner)
+        } else {
+            None
         }
     }
 
@@ -828,15 +1029,23 @@ impl<'a> Parser<'a> {
             self.tokens.next()?; // consume {
 
             // Parse the expression inside the braces
-            let expr = if sigil == "$" {
+            let (expr, folded) = if sigil == "$" {
                 self.parse_braced_scalar_body()?
             } else {
-                self.parse_expression()?
+                (self.parse_expression()?, false)
             };
 
             self.consume_deref_body_terminators()?;
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
+
+            if folded {
+                // `${ name }` == `$name` (perlref): already folded to a
+                // scalar variable node; do not re-wrap in Unary{"${}"}.
+                let mut folded_node = expr;
+                folded_node.location = SourceLocation { start, end };
+                return Ok(folded_node);
+            }
 
             let op = format!("{}{{}}", sigil);
             return Ok(Node::new(
@@ -1340,7 +1549,7 @@ impl<'a> Parser<'a> {
         }
 
         // Validate every character in the collected prototype string.
-        // Perl only allows: $ @ % & * \ ; + _ and ASCII space.
+        // Perl allows: $ @ % & * \ ; + _ bracketed ref groups, and ASCII space.
         // Anything else triggers Perl's "Illegal character in prototype" warning.
         // We emit a SyntaxError diagnostic (collected as a warning by the LSP layer
         // via DiagnosticCode::InvalidPrototype / PL302) but do NOT abort parsing —
@@ -1374,9 +1583,57 @@ impl<'a> Parser<'a> {
 /// Return `true` if `c` is a character that Perl permits in old-style prototypes.
 ///
 /// Valid characters (from perlsub):
-/// `$` `@` `%` `&` `*` `\` `;` `+` `_` and ASCII space.
+/// `$` `@` `%` `&` `*` `\` `;` `+` `_`, bracketed ref groups, and ASCII space.
 fn is_valid_prototype_char(c: char) -> bool {
-    matches!(c, '$' | '@' | '%' | '&' | '*' | '\\' | ';' | '+' | '_' | ' ')
+    matches!(c, '$' | '@' | '%' | '&' | '*' | '\\' | ';' | '+' | '_' | '[' | ']' | ' ')
+}
+
+/// Return `true` if `name` is a simple bareword identifier suitable for the
+/// `${name}` == `$name` folding described in perlref: `${foo}` is exactly
+/// `$foo` when `foo` is a plain identifier, not an arbitrary dereference
+/// expression.
+///
+/// Valid: first character alphabetic or underscore, remaining characters
+/// alphanumeric or underscore. Matches the identifier text the lexer already
+/// produces for the `${identifier}` single-token form (see
+/// `perl-lexer`'s braced-variable scan), so no `::` package-separator
+/// handling is needed here.
+fn is_simple_scalar_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// `true` when `name` is a package-qualified scalar name made of two or
+/// more `::`-delimited identifier segments, e.g. `"Foo::bar"` or
+/// `"Foo::Bar::baz"`. Each segment must independently satisfy
+/// [`is_simple_scalar_name`]; a single segment (no `::`) is rejected so
+/// callers don't overlap with the plain-name fold path.
+///
+/// Used to fold `${Foo::bar}` to the scalar `$Foo::bar` (perlref
+/// "Not-so-symbolic references"): `${NAME}` === `$NAME` for any bareword
+/// `NAME`, including package-qualified ones.
+fn is_package_qualified_scalar_name(name: &str) -> bool {
+    let mut segments = name.split("::");
+    let Some(first) = segments.next() else {
+        return false;
+    };
+    if !is_simple_scalar_name(first) {
+        return false;
+    }
+    let mut has_more_segments = false;
+    for segment in segments {
+        has_more_segments = true;
+        if !is_simple_scalar_name(segment) {
+            return false;
+        }
+    }
+    has_more_segments
 }
 
 #[cfg(test)]

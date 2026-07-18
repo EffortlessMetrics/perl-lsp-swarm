@@ -213,6 +213,42 @@ These are cross-cutting rules encoded in individual agent defs. Listed here for 
 - **Two required checks:** `Perl LSP Rust Small Result`, `ripr+ New Gap Gate` (authoritative: `.ci/policies/required-checks.toml` `required = true` entries). `Codecov / Patch 95` is advisory (`required = false`). "Skipping" = satisfied. Advisory checks failing alone never block merge.
 - **PR body must match the diff.** See `docs/agents/SPEC_UPDATE_CHECKLIST.md` — every product PR answers it before publishing.
 
+## Capability Isolation — review/audit agents are mechanically read-only (M4b, #3763)
+
+Workflow subagents run in `acceptEdits` and inherit the parent's tools, so a
+prompt-level "REVIEW ONLY" instruction is **not** a control. The tool allowlist
+is. Every review/audit agent carries an explicit fail-closed `tools:` allowlist
+(`Read, Grep, Glob, Bash, WebSearch, WebFetch, TodoWrite`) that **excludes**
+`Edit`, `Write`, `NotebookEdit`, `MultiEdit`, and `Agent` (sub-agent spawn would
+proxy a write). This mirrors the built-in `Explore` agent's read-only shape.
+
+Capability split:
+- **reviewer / auditor** (reviewer, reviewer-deep, diff-auditor, maintainer-pr,
+  maintainer-issue, architecture-reviewer, advocatus-diaboli, accuracy-scout,
+  research-verifier, oppositional-planner, plan-reviewer, spec-test-code-match,
+  scout-find-*): read-only. Return findings; do not edit source or spawn writers.
+- **writer** (builder, pr-responder, green-*, red-tdd, ops, lead-*, spec-planner):
+  scoped write. Not in the cohort.
+- **publisher / ops**: post findings or dispositions; no product-source edit.
+
+One mechanical layer enforces this:
+1. **Tool allowlist** (config): parsed and enforced by
+   `cargo xtask check-agent-capabilities` — fails if any review/audit agent
+   grants a write/mutating tool or lacks an explicit allowlist. Runs in the
+   `Agent Capability Gate` workflow and as a `#[test]` under `cargo test`
+   (`xtask::tasks::agent_capability_policy`). The cohort list lives in that
+   module — **add a new review/audit agent's name there** when you add one.
+
+(A second layer — a PreToolUse hook shell gated on an env flag no agent
+spawn ever set — was removed in #4005 as dormant dead code. Independence is
+enforced relationally — current-head review (#3693) plus this tool
+allowlist — not by a persona handcuff.)
+
+Negative-capability proof (reviewer cannot write, can still read):
+- `Edit`/`Write`/`NotebookEdit`/`Agent` are absent from the allowlist → the tool
+  call is rejected as not-in-allowlist (verify: `cargo xtask check-agent-capabilities`).
+- `Read` / `Grep` / `Glob` / `git diff` / `gh pr view` / `cargo check` still work.
+
 ## Design Principles
 
 1. **Two interfaces, two agent types.** Workers via Agent() (worktree-isolated, one task, exit). Pipeline leads via TeamCreate (long-running, manage workers).

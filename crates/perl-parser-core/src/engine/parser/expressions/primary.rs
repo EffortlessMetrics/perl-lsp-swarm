@@ -268,18 +268,42 @@ impl<'a> Parser<'a> {
                 let text = &token.text;
 
                 // Parse qw(...) to extract words
-                if let Some(content) = text.strip_prefix("qw") {
+                if text.strip_prefix("qw").is_some() {
                     let content_str =
                         if let Some(content_str) = quote_parser::parse_quote_operator_content(
-                            text,
-                            "qw",
+                            text, "qw",
                         ) {
                             content_str
                         } else {
-                        self.record_error(ParseError::syntax(
-                            "Unclosed qw() delimiter: missing closing delimiter before end of file",
-                            start,
-                        ));
+                            let (open, content) = quote_parser::quote_operator_open_and_content(
+                                text, "qw",
+                            )
+                            .ok_or_else(|| {
+                                ParseError::syntax(
+                                    "Invalid qw delimiter while recovering an unclosed list",
+                                    start,
+                                )
+                            })?;
+                            if open != '(' {
+                                self.record_error(ParseError::syntax(
+                                    "Unclosed qw() delimiter: missing closing delimiter before end of file",
+                                    start,
+                                ));
+                            } else {
+                                let followed_by_identifier_statement = token
+                                    .text
+                                    .trim_end_matches([' ', '\t', '\r'])
+                                    .ends_with('\n')
+                                    && self.tokens.peek().is_ok_and(|next| {
+                                        next.kind == TokenKind::Identifier
+                                            && next.text.as_ref() == "print"
+                                    });
+                                if followed_by_identifier_statement {
+                                    self.record_inserted_closer(TokenKind::RightParen);
+                                } else {
+                                    self.expect_closing_delimiter(TokenKind::RightParen)?;
+                                }
+                            }
                             content
                         };
 
@@ -327,6 +351,12 @@ impl<'a> Parser<'a> {
                                 quote_parser::SubstitutionError::InvalidModifier(c) => {
                                     format!(
                                         "Invalid substitution modifier '{}'. Valid modifiers are: g, i, m, s, x, o, e, r",
+                                        c
+                                    )
+                                }
+                                quote_parser::SubstitutionError::InvalidDelimiter(c) => {
+                                    format!(
+                                        "Invalid substitution delimiter '{}'. Delimiter must be a non-alphanumeric, non-whitespace character",
                                         c
                                     )
                                 }
@@ -495,10 +525,16 @@ impl<'a> Parser<'a> {
             TokenKind::Try => {
                 // Check for autoquoting (`try => value`) and old-style
                 // bareword argument uses (`open(try, ...)`).
-                let next_is_arg_boundary = self.tokens.peek_second().ok().is_some_and(|t| {
+                let second_token = self.tokens.peek_second().ok();
+                let next_is_arg_boundary = second_token.as_ref().is_some_and(|t| {
                     matches!(t.kind, TokenKind::Comma | TokenKind::RightParen)
                 });
-                if self.is_keyword_hash_key_boundary() || next_is_arg_boundary {
+                let next_is_parenthesized_call =
+                    second_token.as_ref().is_some_and(|t| t.kind == TokenKind::LeftParen);
+                if self.is_keyword_hash_key_boundary()
+                    || next_is_arg_boundary
+                    || next_is_parenthesized_call
+                {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
@@ -870,22 +906,14 @@ impl<'a> Parser<'a> {
                             // Could be an operator like 'or', 'and', etc.
                             // Also detect no-paren function calls inside parens:
                             //   (func KEY => VALUE or ...)
-                            // When the first element is a bare identifier and the
-                            // next tokens are IDENT => , the identifier is a
-                            // function being called with fat-comma arguments.
-                            let is_no_paren_call =
-                                matches!(&expr.kind, NodeKind::Identifier { .. })
-                                    && self.peek_kind() == Some(TokenKind::Identifier)
-                                    && self.tokens
-                                        .peek_second()
-                                        .ok()
-                                        .map(|t| t.kind)
-                                        == Some(TokenKind::FatArrow);
-                            if is_no_paren_call {
-                                let NodeKind::Identifier { name } = &expr.kind else {
-                                    return self.parse_word_or_expr(expr);
-                                };
-                                let name = name.clone();
+                            //   (func 0 || 5)
+                            let bare_call_name = match &expr.kind {
+                                NodeKind::Identifier { name } if self.looks_like_bare_call(name) => {
+                                    Some(name.clone())
+                                }
+                                _ => None,
+                            };
+                            if let Some(name) = bare_call_name {
                                 let call_start = expr.location.start;
                                 let first_arg = self.parse_assignment_or_declaration()?;
                                 let args_node =
@@ -1342,6 +1370,7 @@ fn is_simple_scalar_variable(pattern: &str) -> bool {
 //   - Verdict: AGREE on all inputs in the shared matrix. Safe to centralize
 //     once a follow-up refactor PR is scoped.
 // ============================================================================
+
 #[cfg(test)]
 mod balanced_segment_conformance {
     use super::Parser;

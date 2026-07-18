@@ -23,21 +23,57 @@ import {
   explainDiagnosticCommand,
   explainMissingModuleLookupCommand,
   explainProviderDecisionCommand,
-  openDemoProjectCommand,
   previewPackageRenameCommand,
   previewSafeDeleteCommand,
   showWorkspaceTrustReportCommand,
-  suggestAiCompletionIfSupported,
-  suggestDiscoveredIncludePaths,
-  validateIncludePaths,
   runPerlCriticOnActiveFile,
   setPerlCriticSeverity,
   syncPerlCriticConfiguration,
-  warnAboutPerlExtensionConflicts,
   workspaceTrustClientRuntimeState,
 } from '../extension';
+import {
+  openDemoProjectCommand,
+  suggestAiCompletionIfSupported,
+  suggestDiscoveredIncludePaths,
+  validateIncludePaths,
+  warnAboutPerlExtensionConflicts,
+} from '../extensionWorkspaceGuidance';
 
-function makeContext(version = '0.12.3'): any {
+interface MockMemento {
+  get: jest.Mock;
+  update: jest.Mock;
+  store?: Map<string, unknown>;
+}
+
+interface MockContext {
+  extension: {
+    packageJSON: {
+      publisher: string;
+      name: string;
+      version: string;
+    };
+  };
+  extensionPath?: string;
+  globalState: MockMemento;
+  workspaceState: MockMemento;
+}
+
+interface MockChannel {
+  appendLine: jest.Mock;
+  show?: jest.Mock;
+}
+
+type NotificationClient = NonNullable<Parameters<typeof syncPerlCriticConfiguration>[0]>;
+type CriticClient = NonNullable<Parameters<typeof runPerlCriticOnActiveFile>[0]>;
+type SeverityClient = NonNullable<Parameters<typeof setPerlCriticSeverity>[0]>;
+type RequestClient = NonNullable<Parameters<typeof explainProviderDecisionCommand>[0]>;
+type CapabilityClient = NonNullable<Parameters<typeof suggestAiCompletionIfSupported>[1]>;
+
+function asExtensionContext(context: MockContext): vscode.ExtensionContext {
+  return context as unknown as vscode.ExtensionContext;
+}
+
+function makeContext(version = '0.12.3'): MockContext {
   return {
     extension: {
       packageJSON: {
@@ -50,17 +86,25 @@ function makeContext(version = '0.12.3'): any {
       get: jest.fn(() => undefined),
       update: jest.fn(async () => undefined),
     },
+    workspaceState: {
+      get: jest.fn(() => undefined),
+      update: jest.fn(async () => undefined),
+    },
   };
 }
 
 describe('diagnoseConfiguredServerPath (perl-lsp.serverPath validation)', () => {
-  function makeChannel(): any {
+  function makeChannel(): MockChannel {
     return { appendLine: jest.fn() };
   }
 
   test('flags a configured serverPath that does not exist and logs a diagnostic', () => {
     const channel = makeChannel();
-    const result = diagnoseConfiguredServerPath('/nonexistent/perllsp', false, channel);
+    const result = diagnoseConfiguredServerPath(
+      '/nonexistent/perllsp',
+      false,
+      channel as unknown as vscode.OutputChannel,
+    );
     expect(result).toBe('/nonexistent/perllsp');
     expect(channel.appendLine).toHaveBeenCalledTimes(1);
     expect(channel.appendLine.mock.calls[0][0]).toContain('/nonexistent/perllsp');
@@ -69,15 +113,23 @@ describe('diagnoseConfiguredServerPath (perl-lsp.serverPath validation)', () => 
 
   test('returns null and stays silent when the configured serverPath exists', () => {
     const channel = makeChannel();
-    const result = diagnoseConfiguredServerPath('/usr/local/bin/perllsp', true, channel);
+    const result = diagnoseConfiguredServerPath(
+      '/usr/local/bin/perllsp',
+      true,
+      channel as unknown as vscode.OutputChannel,
+    );
     expect(result).toBeNull();
     expect(channel.appendLine).not.toHaveBeenCalled();
   });
 
   test('returns null and stays silent when no serverPath is configured', () => {
     const channel = makeChannel();
-    expect(diagnoseConfiguredServerPath(undefined, false, channel)).toBeNull();
-    expect(diagnoseConfiguredServerPath('', false, channel)).toBeNull();
+    expect(
+      diagnoseConfiguredServerPath(undefined, false, channel as unknown as vscode.OutputChannel),
+    ).toBeNull();
+    expect(
+      diagnoseConfiguredServerPath('', false, channel as unknown as vscode.OutputChannel),
+    ).toBeNull();
     expect(channel.appendLine).not.toHaveBeenCalled();
   });
 });
@@ -85,17 +137,15 @@ describe('diagnoseConfiguredServerPath (perl-lsp.serverPath validation)', () => 
 describe('extension UX warnings', () => {
   afterEach(() => {
     jest.clearAllMocks();
-    (vscode.window as any).activeTextEditor = undefined;
-    (vscode.workspace as any).workspaceFolders = undefined;
-    (vscode.extensions as any).all = [];
-    (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(
-      (section?: string) => ({
-        get: jest.fn((key: string, defaultValue?: any) => defaultValue),
-        has: jest.fn(() => false),
-        inspect: jest.fn(),
-        update: jest.fn(),
-      })
-    );
+    (vscode.window as unknown as { activeTextEditor: unknown }).activeTextEditor = undefined;
+    (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = undefined;
+    (vscode.extensions as unknown as { all: unknown[] }).all = [];
+    (vscode.workspace.getConfiguration as jest.Mock).mockImplementation((_section?: string) => ({
+      get: jest.fn((key: string, defaultValue?: unknown) => defaultValue),
+      has: jest.fn(() => false),
+      inspect: jest.fn(),
+      update: jest.fn(),
+    }));
     (vscode.window.showWarningMessage as jest.Mock).mockImplementation(async () => undefined);
   });
 
@@ -122,7 +172,7 @@ describe('extension UX warnings', () => {
       get: jest.fn(() => includePaths),
     }));
 
-    (vscode.workspace as any).workspaceFolders = [
+    (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = [
       {
         name: 'workspace',
         uri: {
@@ -132,28 +182,28 @@ describe('extension UX warnings', () => {
       },
     ];
 
-    await validateIncludePaths(context);
+    await validateIncludePaths(asExtensionContext(context));
 
     expect(showWarningMessage).toHaveBeenCalledWith(
       expect.stringContaining('src/libx'),
       'Open Settings',
-      'Create Missing Directories'
+      'Create Missing Directories',
     );
     expect(globalState.update).toHaveBeenCalledWith(
       expect.stringContaining('perl-lsp.includePathsWarning.'),
-      'src/libx'
+      'src/libx',
     );
 
     showWarningMessage.mockClear();
-    await validateIncludePaths(context);
+    await validateIncludePaths(asExtensionContext(context));
     expect(showWarningMessage).not.toHaveBeenCalled();
 
     includePaths = ['lib', 'vendorx'];
-    await validateIncludePaths(context);
+    await validateIncludePaths(asExtensionContext(context));
     expect(showWarningMessage).toHaveBeenCalledWith(
       expect.stringContaining('vendorx'),
       'Open Settings',
-      'Create Missing Directories'
+      'Create Missing Directories',
     );
   });
 
@@ -171,7 +221,7 @@ describe('extension UX warnings', () => {
       get: jest.fn(() => ['t/lib', 'vendor/perl']),
     }));
 
-    (vscode.workspace as any).workspaceFolders = [
+    (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = [
       {
         name: 'workspace',
         uri: {
@@ -184,12 +234,12 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue('Create Missing Directories');
 
-    await validateIncludePaths(context);
+    await validateIncludePaths(asExtensionContext(context));
 
     expect(fs.existsSync(path.join(workspaceDir, 't/lib'))).toBe(true);
     expect(fs.existsSync(path.join(workspaceDir, 'vendor/perl'))).toBe(true);
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-      expect.stringContaining('Created 2 include directories')
+      expect.stringContaining('Created 2 include directories'),
     );
   });
 
@@ -214,7 +264,7 @@ describe('extension UX warnings', () => {
       get: jest.fn(() => ['linked/created-from-warning']),
     }));
 
-    (vscode.workspace as any).workspaceFolders = [
+    (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = [
       {
         name: 'workspace',
         uri: {
@@ -227,17 +277,17 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue(undefined);
 
-    await validateIncludePaths(context);
+    await validateIncludePaths(asExtensionContext(context));
 
     // The symlinked path must be excluded from creatablePaths so only 'Open Settings' is offered.
     expect(showWarningMessage).toHaveBeenCalledWith(
       expect.stringContaining('linked/created-from-warning'),
-      'Open Settings'
+      'Open Settings',
     );
     expect(showWarningMessage).not.toHaveBeenCalledWith(
       expect.any(String),
       'Open Settings',
-      'Create Missing Directories'
+      'Create Missing Directories',
     );
     // Belt-and-suspenders: even if the user somehow triggered creation, nothing should land outside.
     expect(fs.existsSync(path.join(outsideDir, 'created-from-warning'))).toBe(false);
@@ -272,7 +322,7 @@ describe('extension UX warnings', () => {
       get: jest.fn(() => ['safe-lib', 'linked2/escape']),
     }));
 
-    (vscode.workspace as any).workspaceFolders = [
+    (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = [
       {
         name: 'workspace',
         uri: {
@@ -286,7 +336,7 @@ describe('extension UX warnings', () => {
     // The user clicks 'Create Missing Directories'.
     showWarningMessage.mockResolvedValue('Create Missing Directories');
 
-    await validateIncludePaths(context);
+    await validateIncludePaths(asExtensionContext(context));
 
     // 'safe-lib' is safe: it should be created inside the workspace.
     expect(fs.existsSync(path.join(workspaceDir, 'safe-lib'))).toBe(true);
@@ -307,7 +357,7 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue(undefined);
 
-    (vscode.extensions as any).all = [
+    (vscode.extensions as unknown as { all: unknown[] }).all = [
       {
         id: 'EffortlessMetrics.perl-lsp-rs',
         packageJSON: {
@@ -328,14 +378,14 @@ describe('extension UX warnings', () => {
       },
     ];
 
-    await warnAboutPerlExtensionConflicts(context);
+    await warnAboutPerlExtensionConflicts(asExtensionContext(context));
     expect(showWarningMessage).toHaveBeenCalledWith(
       expect.stringContaining('Perl Navigator'),
-      'Open Coexistence Guide'
+      'Open Coexistence Guide',
     );
 
     showWarningMessage.mockClear();
-    await warnAboutPerlExtensionConflicts(context);
+    await warnAboutPerlExtensionConflicts(asExtensionContext(context));
     expect(showWarningMessage).not.toHaveBeenCalled();
   });
 
@@ -352,7 +402,7 @@ describe('extension UX warnings', () => {
       get: jest.fn(() => [absoluteMissing]),
     }));
 
-    (vscode.workspace as any).workspaceFolders = [
+    (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = [
       {
         name: 'workspace',
         uri: {
@@ -365,11 +415,11 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue(undefined);
 
-    await validateIncludePaths(context);
+    await validateIncludePaths(asExtensionContext(context));
 
     expect(showWarningMessage).toHaveBeenCalledWith(
       expect.stringContaining('absolute path'),
-      'Open Settings'
+      'Open Settings',
     );
     expect(showWarningMessage.mock.calls[0]).toHaveLength(2);
   });
@@ -386,7 +436,7 @@ describe('extension UX warnings', () => {
       get: jest.fn(() => ['../outside-lib']),
     }));
 
-    (vscode.workspace as any).workspaceFolders = [
+    (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = [
       {
         name: 'workspace',
         uri: {
@@ -399,11 +449,11 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue('Create Missing Directories');
 
-    await validateIncludePaths(context);
+    await validateIncludePaths(asExtensionContext(context));
 
     expect(showWarningMessage).toHaveBeenCalledWith(
       expect.stringContaining('../outside-lib'),
-      'Open Settings'
+      'Open Settings',
     );
     expect(showWarningMessage.mock.calls[0]).toHaveLength(2);
     expect(fs.existsSync(path.resolve(workspaceDir, '../outside-lib'))).toBe(false);
@@ -429,7 +479,7 @@ describe('extension UX warnings', () => {
   }
 
   function setSingleWorkspace(workspaceDir: string): void {
-    (vscode.workspace as any).workspaceFolders = [
+    (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = [
       {
         name: 'workspace',
         uri: {
@@ -449,7 +499,7 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue(undefined);
 
-    await validateIncludePaths(context);
+    await validateIncludePaths(asExtensionContext(context));
 
     expect(showWarningMessage).not.toHaveBeenCalled();
   });
@@ -463,7 +513,7 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue(undefined);
 
-    await validateIncludePaths(context);
+    await validateIncludePaths(asExtensionContext(context));
 
     expect(showWarningMessage).not.toHaveBeenCalled();
   });
@@ -477,12 +527,12 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue(undefined);
 
-    await validateIncludePaths(context);
+    await validateIncludePaths(asExtensionContext(context));
 
     expect(showWarningMessage).toHaveBeenCalledWith(
       expect.stringContaining('vendor/lib'),
       'Open Settings',
-      'Create Missing Directories'
+      'Create Missing Directories',
     );
   });
 
@@ -496,7 +546,7 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue(undefined);
 
-    await validateIncludePaths(context);
+    await validateIncludePaths(asExtensionContext(context));
 
     expect(showWarningMessage).toHaveBeenCalledTimes(1);
     const [message] = showWarningMessage.mock.calls[0];
@@ -515,18 +565,18 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue('Create Missing Directories');
 
-    await validateIncludePaths(context);
+    await validateIncludePaths(asExtensionContext(context));
 
     expect(showWarningMessage).toHaveBeenCalledWith(
       expect.stringContaining('vendor/lib'),
       'Open Settings',
-      'Create Missing Directories'
+      'Create Missing Directories',
     );
     expect(fs.existsSync(path.join(workspaceDir, 'vendor/lib'))).toBe(true);
     expect(fs.existsSync(path.join(workspaceDir, 'lib'))).toBe(false);
     expect(fs.existsSync(path.join(workspaceDir, 'local/lib/perl5'))).toBe(false);
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-      expect.stringContaining('Created 1 include directory: vendor/lib.')
+      expect.stringContaining('Created 1 include directory: vendor/lib.'),
     );
   });
 
@@ -540,7 +590,7 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue(undefined);
 
-    await validateIncludePaths(context);
+    await validateIncludePaths(asExtensionContext(context));
 
     // Present default path: no warning, and the directory is left untouched
     // so the server keeps resolving modules through it.
@@ -552,7 +602,7 @@ describe('extension UX warnings', () => {
     const sendNotification = jest.fn();
     const getConfiguration = vscode.workspace.getConfiguration as jest.Mock;
     getConfiguration.mockImplementation(() => ({
-      get: jest.fn((key: string, defaultValue?: any) => {
+      get: jest.fn((key: string, defaultValue?: unknown) => {
         switch (key) {
           case 'perlcritic.enabled':
             return true;
@@ -584,7 +634,10 @@ describe('extension UX warnings', () => {
       update: jest.fn(),
     }));
 
-    await syncPerlCriticConfiguration({ sendNotification } as any, vscode.Uri.file('/tmp/example.pl'));
+    await syncPerlCriticConfiguration(
+      { sendNotification } as unknown as NotificationClient,
+      vscode.Uri.file('/tmp/example.pl'),
+    );
 
     expect(sendNotification).toHaveBeenCalledWith(
       'workspace/didChangeConfiguration',
@@ -599,20 +652,23 @@ describe('extension UX warnings', () => {
             }),
           }),
         }),
-      })
+      }),
     );
   });
 
   test('does not sync perlcritic defaults when nothing is explicitly configured', async () => {
     const sendNotification = jest.fn();
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
-      get: jest.fn((key: string, defaultValue?: any) => defaultValue),
+      get: jest.fn((key: string, defaultValue?: unknown) => defaultValue),
       has: jest.fn(() => false),
       inspect: jest.fn(() => undefined),
       update: jest.fn(),
     }));
 
-    await syncPerlCriticConfiguration({ sendNotification } as any, vscode.Uri.file('/tmp/example.pl'));
+    await syncPerlCriticConfiguration(
+      { sendNotification } as unknown as NotificationClient,
+      vscode.Uri.file('/tmp/example.pl'),
+    );
     expect(sendNotification).not.toHaveBeenCalled();
   });
 
@@ -631,20 +687,23 @@ describe('extension UX warnings', () => {
         save: jest.fn(async () => undefined),
       },
     };
-    (vscode.window as any).activeTextEditor = activeTextEditor;
+    (vscode.window as unknown as { activeTextEditor: unknown }).activeTextEditor = activeTextEditor;
 
-    await runPerlCriticOnActiveFile({ sendRequest, sendNotification: jest.fn() } as any);
+    await runPerlCriticOnActiveFile({
+      sendRequest,
+      sendNotification: jest.fn(),
+    } as unknown as CriticClient);
 
     expect(sendRequest).toHaveBeenCalledWith(
       'workspace/executeCommand',
       expect.objectContaining({
         command: 'perl.runCritic',
         arguments: ['file:///workspace/lib/Foo.pm'],
-      })
+      }),
     );
     expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
       expect.stringContaining('Critic found 2 issues in Foo.pm.'),
-      'Show Output'
+      'Show Output',
     );
   });
 
@@ -656,13 +715,13 @@ describe('extension UX warnings', () => {
 
     const update = jest.fn(async () => undefined);
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
-      get: jest.fn((key: string, defaultValue?: any) => defaultValue),
+      get: jest.fn((key: string, defaultValue?: unknown) => defaultValue),
       has: jest.fn(() => false),
       inspect: jest.fn(),
       update,
     }));
 
-    await setPerlCriticSeverity({ sendNotification, sendRequest } as any);
+    await setPerlCriticSeverity({ sendNotification, sendRequest } as unknown as SeverityClient);
 
     expect(update).toHaveBeenCalledWith('critic.severity', 4, vscode.ConfigurationTarget.Global);
     expect(sendNotification).toHaveBeenCalledWith(
@@ -675,7 +734,7 @@ describe('extension UX warnings', () => {
             }),
           }),
         }),
-      })
+      }),
     );
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith('Critic severity set to 4.');
   });
@@ -691,17 +750,17 @@ describe('extension UX warnings', () => {
       'perlcritic.severity': 2,
     };
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
-      get: jest.fn((key: string, defaultValue?: any) =>
-        key in explicit ? explicit[key] : defaultValue
+      get: jest.fn((key: string, defaultValue?: unknown) =>
+        key in explicit ? explicit[key] : defaultValue,
       ),
       has: jest.fn(() => false),
       inspect: jest.fn((key: string) =>
-        key in explicit ? { globalValue: explicit[key] } : undefined
+        key in explicit ? { globalValue: explicit[key] } : undefined,
       ),
       update: jest.fn(async () => undefined),
     }));
 
-    await syncPerlCriticConfiguration({ sendNotification } as any);
+    await syncPerlCriticConfiguration({ sendNotification } as unknown as NotificationClient);
 
     expect(sendNotification).toHaveBeenCalledWith(
       'workspace/didChangeConfiguration',
@@ -712,7 +771,7 @@ describe('extension UX warnings', () => {
             perlcritic: expect.objectContaining({ severity: 2 }),
           }),
         }),
-      })
+      }),
     );
   });
 
@@ -726,23 +785,23 @@ describe('extension UX warnings', () => {
       'critic.severity': 5,
     };
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
-      get: jest.fn((key: string, defaultValue?: any) =>
-        key in languageScoped ? languageScoped[key] : defaultValue
+      get: jest.fn((key: string, defaultValue?: unknown) =>
+        key in languageScoped ? languageScoped[key] : defaultValue,
       ),
       has: jest.fn(() => false),
       inspect: jest.fn((key: string) =>
-        key in languageScoped ? { globalLanguageValue: languageScoped[key] } : undefined
+        key in languageScoped ? { globalLanguageValue: languageScoped[key] } : undefined,
       ),
       update: jest.fn(async () => undefined),
     }));
 
-    await syncPerlCriticConfiguration({ sendNotification } as any);
+    await syncPerlCriticConfiguration({ sendNotification } as unknown as NotificationClient);
 
     // The config must be requested with a language scope, otherwise VS Code
     // never populates the *LanguageValue fields the [perl] block lives in.
     expect(vscode.workspace.getConfiguration).toHaveBeenCalledWith(
       'perl-lsp',
-      expect.objectContaining({ languageId: 'perl' })
+      expect.objectContaining({ languageId: 'perl' }),
     );
 
     expect(sendNotification).toHaveBeenCalledWith(
@@ -753,7 +812,7 @@ describe('extension UX warnings', () => {
             critic: expect.objectContaining({ severity: 5 }),
           }),
         }),
-      })
+      }),
     );
   });
 
@@ -763,7 +822,7 @@ describe('extension UX warnings', () => {
       decision: 'fallback',
       user_message: 'Goto definition used fallback.',
     }));
-    (vscode.window as any).activeTextEditor = {
+    (vscode.window as unknown as { activeTextEditor: unknown }).activeTextEditor = {
       document: {
         languageId: 'perl',
         uri: vscode.Uri.file('/workspace/lib/Foo.pm'),
@@ -773,27 +832,27 @@ describe('extension UX warnings', () => {
       },
     };
 
-    await explainProviderDecisionCommand({ sendRequest } as any, 'goto_definition');
-
-    expect(sendRequest).toHaveBeenCalledWith(
-      'workspace/executeCommand',
-      {
-        command: 'perl.explainProviderDecision',
-        arguments: [
-          {
-            provider: 'goto_definition',
-            request_position: {
-              uri_scheme: 'file',
-              line: 12,
-              character: 4,
-            },
-          },
-        ],
-      }
+    await explainProviderDecisionCommand(
+      { sendRequest } as unknown as RequestClient,
+      'goto_definition',
     );
+
+    expect(sendRequest).toHaveBeenCalledWith('workspace/executeCommand', {
+      command: 'perl.explainProviderDecision',
+      arguments: [
+        {
+          provider: 'goto_definition',
+          request_position: {
+            uri_scheme: 'file',
+            line: 12,
+            character: 4,
+          },
+        },
+      ],
+    });
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
       'Goto definition used fallback.',
-      'Show Output'
+      'Show Output',
     );
   });
 
@@ -817,29 +876,23 @@ describe('extension UX warnings', () => {
       user_message: 'Diagnostic explanation is available.',
     }));
 
-    await explainDiagnosticCommand(
-      { sendRequest } as any,
-      {
-        provider: 'diagnostics',
-        request_receipt: requestReceipt,
-      }
-    );
+    await explainDiagnosticCommand({ sendRequest } as unknown as RequestClient, {
+      provider: 'diagnostics',
+      request_receipt: requestReceipt,
+    });
 
-    expect(sendRequest).toHaveBeenCalledWith(
-      'workspace/executeCommand',
-      {
-        command: 'perl.explainProviderDecision',
-        arguments: [
-          {
-            provider: 'diagnostics',
-            request_receipt: requestReceipt,
-          },
-        ],
-      }
-    );
+    expect(sendRequest).toHaveBeenCalledWith('workspace/executeCommand', {
+      command: 'perl.explainProviderDecision',
+      arguments: [
+        {
+          provider: 'diagnostics',
+          request_receipt: requestReceipt,
+        },
+      ],
+    });
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
       'Diagnostic explanation is available.',
-      'Show Output'
+      'Show Output',
     );
   });
 
@@ -849,7 +902,7 @@ describe('extension UX warnings', () => {
       decision: 'blocked',
       user_message: 'Safe delete refused. No edits were applied.',
     }));
-    (vscode.window as any).activeTextEditor = {
+    (vscode.window as unknown as { activeTextEditor: unknown }).activeTextEditor = {
       document: {
         languageId: 'perl',
         uri: vscode.Uri.file('/workspace/lib/Foo.pm'),
@@ -859,23 +912,20 @@ describe('extension UX warnings', () => {
       },
     };
 
-    await previewSafeDeleteCommand({ sendRequest } as any);
+    await previewSafeDeleteCommand({ sendRequest } as unknown as RequestClient);
 
-    expect(sendRequest).toHaveBeenCalledWith(
-      'workspace/executeCommand',
-      {
-        command: 'perl.previewSafeDelete',
-        arguments: [
-          {
-            textDocument: { uri: 'file:///workspace/lib/Foo.pm' },
-            position: { line: 8, character: 2 },
-          },
-        ],
-      }
-    );
+    expect(sendRequest).toHaveBeenCalledWith('workspace/executeCommand', {
+      command: 'perl.previewSafeDelete',
+      arguments: [
+        {
+          textDocument: { uri: 'file:///workspace/lib/Foo.pm' },
+          position: { line: 8, character: 2 },
+        },
+      ],
+    });
     expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
       'Safe delete refused. No edits were applied.',
-      'Show Output'
+      'Show Output',
     );
   });
 
@@ -886,12 +936,15 @@ describe('extension UX warnings', () => {
       user_message: 'Package rename preview is available. No edits were applied.',
     }));
     (vscode.window.showInputBox as jest.Mock).mockResolvedValue('renamed_shared');
-    (vscode.window as any).activeTextEditor = {
+    (vscode.window as unknown as { activeTextEditor: unknown }).activeTextEditor = {
       document: {
         languageId: 'perl',
         uri: vscode.Uri.file('/workspace/lib/Foo.pm'),
         getText: jest.fn(() => 'shared'),
-        getWordRangeAtPosition: jest.fn(() => ({ start: { line: 12, character: 4 }, end: { line: 12, character: 10 } })),
+        getWordRangeAtPosition: jest.fn(() => ({
+          start: { line: 12, character: 4 },
+          end: { line: 12, character: 10 },
+        })),
       },
       selection: {
         active: { line: 12, character: 4 },
@@ -899,30 +952,27 @@ describe('extension UX warnings', () => {
       },
     };
 
-    await previewPackageRenameCommand({ sendRequest } as any);
+    await previewPackageRenameCommand({ sendRequest } as unknown as RequestClient);
 
     expect(vscode.window.showInputBox).toHaveBeenCalledWith(
       expect.objectContaining({
         value: 'shared',
         placeHolder: 'renamed_symbol',
-      })
+      }),
     );
-    expect(sendRequest).toHaveBeenCalledWith(
-      'workspace/executeCommand',
-      {
-        command: 'perl.previewPackageRename',
-        arguments: [
-          {
-            textDocument: { uri: 'file:///workspace/lib/Foo.pm' },
-            position: { line: 12, character: 4 },
-            newName: 'renamed_shared',
-          },
-        ],
-      }
-    );
+    expect(sendRequest).toHaveBeenCalledWith('workspace/executeCommand', {
+      command: 'perl.previewPackageRename',
+      arguments: [
+        {
+          textDocument: { uri: 'file:///workspace/lib/Foo.pm' },
+          position: { line: 12, character: 4 },
+          newName: 'renamed_shared',
+        },
+      ],
+    });
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
       'Package rename preview is available. No edits were applied.',
-      'Show Output'
+      'Show Output',
     );
   });
 
@@ -937,7 +987,10 @@ describe('extension UX warnings', () => {
       },
     }));
 
-    await copyProviderDecisionReceiptCommand({ sendRequest } as any, 'safe_delete');
+    await copyProviderDecisionReceiptCommand(
+      { sendRequest } as unknown as RequestClient,
+      'safe_delete',
+    );
 
     expect(sendRequest).toHaveBeenCalledWith(
       'workspace/executeCommand',
@@ -948,7 +1001,7 @@ describe('extension UX warnings', () => {
             provider: 'safe_delete',
           }),
         ],
-      })
+      }),
     );
     const clipboardText = (vscode.env.clipboard.writeText as jest.Mock).mock.calls[0][0] as string;
     expect(JSON.parse(clipboardText)).toEqual({
@@ -957,7 +1010,7 @@ describe('extension UX warnings', () => {
       decision: 'blocked',
     });
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-      'Provider decision receipt copied.'
+      'Provider decision receipt copied.',
     );
   });
 
@@ -966,7 +1019,7 @@ describe('extension UX warnings', () => {
     fs.mkdirSync(path.join(workspaceDir, '.vscode'), { recursive: true });
     fs.writeFileSync(path.join(workspaceDir, '.vscode', 'launch.json'), '{}');
 
-    (vscode.workspace as any).workspaceFolders = [
+    (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = [
       {
         name: 'workspace',
         uri: vscode.Uri.file(workspaceDir),
@@ -1015,9 +1068,18 @@ describe('extension UX warnings', () => {
     });
 
     const state = workspaceTrustClientRuntimeState();
+    expect(state.topology).toMatchObject({
+      schema_version: 'workspace_topology.v1',
+      mode: 'single-root',
+      host_kind: 'local',
+      folder_count: 1,
+    });
     const dap = state.dap as Record<string, unknown>;
     const launchConfiguration = dap.launch_configuration as Record<string, unknown>;
-    const includePathCounts = launchConfiguration.include_path_kind_counts as Record<string, number>;
+    const includePathCounts = launchConfiguration.include_path_kind_counts as Record<
+      string,
+      number
+    >;
 
     expect(dap.launch_json_workspace_count).toBe(1);
     expect(launchConfiguration.status).toBe('client_launch_config_reported');
@@ -1120,7 +1182,7 @@ describe('extension UX warnings', () => {
       claim_boundary: 'Aggregates current runtime state only.',
     }));
 
-    await showWorkspaceTrustReportCommand({ sendRequest } as any, () => ({
+    await showWorkspaceTrustReportCommand({ sendRequest } as unknown as RequestClient, () => ({
       schema_version: 'workspace_trust_client_runtime.v1',
       source: 'vscode-extension',
       perldoc: {
@@ -1143,11 +1205,10 @@ describe('extension UX warnings', () => {
       },
     }));
 
-    expect(sendRequest).toHaveBeenCalledWith(
-      'workspace/executeCommand',
-      {
-        command: 'perl.workspaceTrustReport',
-        arguments: [{
+    expect(sendRequest).toHaveBeenCalledWith('workspace/executeCommand', {
+      command: 'perl.workspaceTrustReport',
+      arguments: [
+        {
           client_runtime_state: {
             schema_version: 'workspace_trust_client_runtime.v1',
             source: 'vscode-extension',
@@ -1170,9 +1231,9 @@ describe('extension UX warnings', () => {
               },
             },
           },
-        }],
-      }
-    );
+        },
+      ],
+    });
     const rendered = outputChannel.appendLine.mock.calls
       .map((call: unknown[]) => call[0])
       .join('\n');
@@ -1188,7 +1249,9 @@ describe('extension UX warnings', () => {
     expect(rendered).toContain('DAP launch configs: 2');
     expect(rendered).toContain('DAP Perl configs: 1');
     expect(rendered).toContain('DAP includePaths entries: 2');
-    expect(rendered).toContain('launch config boundary: Launch configuration state reports counts and path classes only.');
+    expect(rendered).toContain(
+      'launch config boundary: Launch configuration state reports counts and path classes only.',
+    );
     expect(rendered).toContain('PERL5LIB is not inherited by workspace module resolution.');
     expect(rendered).toContain('Setup hints are derived from current configuration only.');
     expect(rendered).toContain('completion: partial-live-with-fallback');
@@ -1231,7 +1294,7 @@ describe('extension UX warnings', () => {
       user_message: 'Module Missing::Payload was not found in the current effective @INC state.',
       claim_boundary: 'explains one missing-module lookup only',
     }));
-    (vscode.window as any).activeTextEditor = {
+    (vscode.window as unknown as { activeTextEditor: unknown }).activeTextEditor = {
       document: {
         languageId: 'perl',
         uri: vscode.Uri.file('/workspace/script.pl'),
@@ -1243,24 +1306,21 @@ describe('extension UX warnings', () => {
       },
     };
 
-    await explainMissingModuleLookupCommand({ sendRequest } as any);
+    await explainMissingModuleLookupCommand({ sendRequest } as unknown as RequestClient);
 
-    expect(sendRequest).toHaveBeenCalledWith(
-      'workspace/executeCommand',
-      {
-        command: 'perl.explainMissingModuleLookup',
-        arguments: [
-          {
-            module: 'Missing::Payload',
-            textDocument: { uri: 'file:///workspace/script.pl' },
-            position: { line: 0, character: 8 },
-          },
-        ],
-      }
-    );
+    expect(sendRequest).toHaveBeenCalledWith('workspace/executeCommand', {
+      command: 'perl.explainMissingModuleLookup',
+      arguments: [
+        {
+          module: 'Missing::Payload',
+          textDocument: { uri: 'file:///workspace/script.pl' },
+          position: { line: 0, character: 8 },
+        },
+      ],
+    });
     expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
       'Module Missing::Payload was not found in the current effective @INC state.',
-      'Show Output'
+      'Show Output',
     );
     const rendered = outputChannel.appendLine.mock.calls
       .map((call: unknown[]) => String(call[0]))
@@ -1277,11 +1337,13 @@ describe('extension UX warnings', () => {
 // ---------------------------------------------------------------------------
 describe('suggestDiscoveredIncludePaths (#1633)', () => {
   function makeGlobalState() {
-    const store = new Map<string, any>();
+    const store = new Map<string, unknown>();
     return {
       store,
-      get: jest.fn((key: string, defaultValue?: any) => (store.has(key) ? store.get(key) : defaultValue)),
-      update: jest.fn(async (key: string, value: any) => {
+      get: jest.fn((key: string, defaultValue?: unknown) =>
+        store.has(key) ? store.get(key) : defaultValue,
+      ),
+      update: jest.fn(async (key: string, value: unknown) => {
         if (value === undefined) {
           store.delete(key);
         } else {
@@ -1294,12 +1356,12 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
   function mountWorkspace(dir: string, includePaths: string[]) {
     const update = jest.fn(async () => undefined);
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
-      get: jest.fn((key: string, defaultValue?: any) =>
-        key === 'includePaths' ? includePaths : defaultValue
+      get: jest.fn((key: string, defaultValue?: unknown) =>
+        key === 'includePaths' ? includePaths : defaultValue,
       ),
       update,
     }));
-    (vscode.workspace as any).workspaceFolders = [
+    (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = [
       {
         name: 'workspace',
         uri: { fsPath: dir, toString: () => `file://${dir}` },
@@ -1310,9 +1372,9 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
 
   afterEach(() => {
     jest.clearAllMocks();
-    (vscode.workspace as any).workspaceFolders = undefined;
+    (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = undefined;
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
-      get: jest.fn((_key: string, defaultValue?: any) => defaultValue),
+      get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
       has: jest.fn(() => false),
       inspect: jest.fn(),
       update: jest.fn(),
@@ -1325,21 +1387,22 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
     fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'src', 'MyLib.pm'), 'package MyLib; 1;\n');
 
-    const context: any = { globalState: makeGlobalState() };
+    const context = makeContext();
+    context.globalState = makeGlobalState();
     mountWorkspace(dir, ['lib', 'local/lib/perl5']);
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Dismiss');
 
-    await suggestDiscoveredIncludePaths(context);
+    await suggestDiscoveredIncludePaths(asExtensionContext(context));
 
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
       expect.stringContaining('"src"'),
       'Add to Include Paths',
       'Open Settings',
-      'Dismiss'
+      'Dismiss',
     );
     expect(context.globalState.update).toHaveBeenCalledWith(
       expect.stringContaining('perl-lsp.includePathsSuggestion.'),
-      expect.any(String)
+      expect.any(String),
     );
   });
 
@@ -1348,13 +1411,14 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
     fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'src', 'MyLib.pm'), 'package MyLib; 1;\n');
 
-    const context: any = { globalState: makeGlobalState() };
+    const context = makeContext();
+    context.globalState = makeGlobalState();
     mountWorkspace(dir, ['lib', 'local/lib/perl5']);
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Dismiss');
 
-    await suggestDiscoveredIncludePaths(context);
+    await suggestDiscoveredIncludePaths(asExtensionContext(context));
     (vscode.window.showInformationMessage as jest.Mock).mockClear();
-    await suggestDiscoveredIncludePaths(context);
+    await suggestDiscoveredIncludePaths(asExtensionContext(context));
 
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
@@ -1364,16 +1428,17 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
     fs.mkdirSync(path.join(dir, 'vendor'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'vendor', 'Dep.pm'), 'package Dep; 1;\n');
 
-    const context: any = { globalState: makeGlobalState() };
+    const context = makeContext();
+    context.globalState = makeGlobalState();
     const update = mountWorkspace(dir, ['lib', 'local/lib/perl5']);
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Add to Include Paths');
 
-    await suggestDiscoveredIncludePaths(context);
+    await suggestDiscoveredIncludePaths(asExtensionContext(context));
 
     expect(update).toHaveBeenCalledWith(
       'includePaths',
       expect.arrayContaining(['lib', 'local/lib/perl5', 'vendor']),
-      vscode.ConfigurationTarget.Workspace
+      vscode.ConfigurationTarget.Workspace,
     );
   });
 
@@ -1382,18 +1447,20 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
     fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'src', 'MyLib.pm'), 'package MyLib; 1;\n');
 
-    const context: any = { globalState: makeGlobalState() };
+    const context = makeContext();
+    context.globalState = makeGlobalState();
     mountWorkspace(dir, ['lib', 'src']);
 
-    await suggestDiscoveredIncludePaths(context);
+    await suggestDiscoveredIncludePaths(asExtensionContext(context));
 
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
   test('stays silent when there are no workspace folders', async () => {
-    const context: any = { globalState: makeGlobalState() };
-    (vscode.workspace as any).workspaceFolders = undefined;
-    await suggestDiscoveredIncludePaths(context);
+    const context = makeContext();
+    context.globalState = makeGlobalState();
+    (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = undefined;
+    await suggestDiscoveredIncludePaths(asExtensionContext(context));
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
@@ -1404,13 +1471,17 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
     // check, the scanner would incorrectly suggest adding "local" as an additional root.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-discover-subpath-'));
     fs.mkdirSync(path.join(dir, 'local', 'lib', 'perl5'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'local', 'lib', 'perl5', 'Installed.pm'), 'package Installed; 1;\n');
+    fs.writeFileSync(
+      path.join(dir, 'local', 'lib', 'perl5', 'Installed.pm'),
+      'package Installed; 1;\n',
+    );
 
-    const context: any = { globalState: makeGlobalState() };
+    const context = makeContext();
+    context.globalState = makeGlobalState();
     // local/lib/perl5 is already in includePaths — "local" should be suppressed
     mountWorkspace(dir, ['lib', 'local/lib/perl5']);
 
-    await suggestDiscoveredIncludePaths(context);
+    await suggestDiscoveredIncludePaths(asExtensionContext(context));
 
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
@@ -1421,10 +1492,14 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
 // ---------------------------------------------------------------------------
 describe('suggestAiCompletionIfSupported (#1634)', () => {
   function makeWorkspaceState(shown = false) {
-    const store = new Map<string, any>([['perl-lsp.aiCompletion.firstRunNotificationShown', shown]]);
+    const store = new Map<string, unknown>([
+      ['perl-lsp.aiCompletion.firstRunNotificationShown', shown],
+    ]);
     return {
-      get: jest.fn((key: string, defaultValue?: any) => (store.has(key) ? store.get(key) : defaultValue)),
-      update: jest.fn(async (key: string, value: any) => {
+      get: jest.fn((key: string, defaultValue?: unknown) =>
+        store.has(key) ? store.get(key) : defaultValue,
+      ),
+      update: jest.fn(async (key: string, value: unknown) => {
         store.set(key, value);
       }),
     };
@@ -1433,18 +1508,18 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
   function mountConfig(enabled: boolean) {
     const update = jest.fn(async () => undefined);
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
-      get: jest.fn((key: string, defaultValue?: any) =>
-        key === 'aiCompletion.enabled' ? enabled : defaultValue
+      get: jest.fn((key: string, defaultValue?: unknown) =>
+        key === 'aiCompletion.enabled' ? enabled : defaultValue,
       ),
       update,
     }));
     return update;
   }
 
-  const clientWithInline: any = {
+  const clientWithInline: CapabilityClient = {
     initializeResult: { capabilities: { inlineCompletionProvider: {} } },
   };
-  const clientWithoutInline: any = {
+  const clientWithoutInline: CapabilityClient = {
     initializeResult: { capabilities: { hoverProvider: true } },
   };
 
@@ -1455,69 +1530,80 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
 
   test('prompts once and enables AI completion when accepted', async () => {
     const update = mountConfig(false);
-    const context: any = { workspaceState: makeWorkspaceState(false) };
+    const context = makeContext();
+    context.workspaceState = makeWorkspaceState(false);
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Enable');
 
-    await suggestAiCompletionIfSupported(context, clientWithInline);
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithInline);
 
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
       expect.stringContaining('AI-powered inline completions'),
       'Enable',
       'Learn More',
-      'Dismiss'
+      'Dismiss',
     );
-    expect(update).toHaveBeenCalledWith('aiCompletion.enabled', true, vscode.ConfigurationTarget.Workspace);
+    expect(update).toHaveBeenCalledWith(
+      'aiCompletion.enabled',
+      true,
+      vscode.ConfigurationTarget.Workspace,
+    );
     expect(context.workspaceState.update).toHaveBeenCalledWith(
       'perl-lsp.aiCompletion.firstRunNotificationShown',
-      true
+      true,
     );
   });
 
   test('stays silent when the server does not advertise inline completion', async () => {
     mountConfig(false);
-    const context: any = { workspaceState: makeWorkspaceState(false) };
-    await suggestAiCompletionIfSupported(context, clientWithoutInline);
+    const context = makeContext();
+    context.workspaceState = makeWorkspaceState(false);
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithoutInline);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
   test('stays silent when AI completion is already enabled', async () => {
     mountConfig(true);
-    const context: any = { workspaceState: makeWorkspaceState(false) };
-    await suggestAiCompletionIfSupported(context, clientWithInline);
+    const context = makeContext();
+    context.workspaceState = makeWorkspaceState(false);
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithInline);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
   test('does not prompt twice in the same workspace', async () => {
     mountConfig(false);
-    const context: any = { workspaceState: makeWorkspaceState(true) };
-    await suggestAiCompletionIfSupported(context, clientWithInline);
+    const context = makeContext();
+    context.workspaceState = makeWorkspaceState(true);
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithInline);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
   test('stays silent when there is no client', async () => {
     mountConfig(false);
-    const context: any = { workspaceState: makeWorkspaceState(false) };
-    await suggestAiCompletionIfSupported(context, undefined);
+    const context = makeContext();
+    context.workspaceState = makeWorkspaceState(false);
+    await suggestAiCompletionIfSupported(asExtensionContext(context), undefined);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
   test('stays silent when inlineCompletionProvider is false (server explicitly opt-out)', async () => {
     mountConfig(false);
-    const context: any = { workspaceState: makeWorkspaceState(false) };
-    const clientExplicitlyOff: any = {
+    const context = makeContext();
+    context.workspaceState = makeWorkspaceState(false);
+    const clientExplicitlyOff: CapabilityClient = {
       initializeResult: { capabilities: { inlineCompletionProvider: false } },
     };
-    await suggestAiCompletionIfSupported(context, clientExplicitlyOff);
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientExplicitlyOff);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
   test('stays silent when inlineCompletionProvider is null', async () => {
     mountConfig(false);
-    const context: any = { workspaceState: makeWorkspaceState(false) };
-    const clientNull: any = {
+    const context = makeContext();
+    context.workspaceState = makeWorkspaceState(false);
+    const clientNull: CapabilityClient = {
       initializeResult: { capabilities: { inlineCompletionProvider: null } },
     };
-    await suggestAiCompletionIfSupported(context, clientNull);
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientNull);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 });
@@ -1536,15 +1622,17 @@ describe('openDemoProjectCommand (#1635)', () => {
 
   test('opens the bundled demo project and records engagement', async () => {
     const update = jest.fn(async () => undefined);
-    const context: any = { extensionPath: extRoot, globalState: { get: jest.fn(), update } };
+    const context = makeContext();
+    context.extensionPath = extRoot;
+    context.globalState = { get: jest.fn(), update };
 
-    await openDemoProjectCommand(context);
+    await openDemoProjectCommand(asExtensionContext(context));
 
     expect(update).toHaveBeenCalledWith('perl-lsp.demoProjectOpened', true);
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
       'vscode.openFolder',
       expect.objectContaining({ fsPath: path.join(extRoot, 'assets', 'demo-project') }),
-      { forceNewWindow: true }
+      { forceNewWindow: true },
     );
     expect(vscode.window.showInformationMessage).toHaveBeenCalled();
   });
@@ -1552,17 +1640,19 @@ describe('openDemoProjectCommand (#1635)', () => {
   test('reports an error when the demo project is not bundled', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-nodemo-'));
     const update = jest.fn(async () => undefined);
-    const context: any = { extensionPath: tmp, globalState: { get: jest.fn(), update } };
+    const context = makeContext();
+    context.extensionPath = tmp;
+    context.globalState = { get: jest.fn(), update };
 
-    await openDemoProjectCommand(context);
+    await openDemoProjectCommand(asExtensionContext(context));
 
     expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
-      expect.stringContaining('demo project is not available')
+      expect.stringContaining('demo project is not available'),
     );
     expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
       'vscode.openFolder',
       expect.anything(),
-      expect.anything()
+      expect.anything(),
     );
   });
 });

@@ -1,0 +1,415 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/agents/bounded-subagent-result-v1.schema.json",
+  "title": "Bounded Subagent Result v1",
+  "description": "A compact evidence result returned to the root thread. It distinguishes author claims from observed or independent evidence and keeps raw logs in referenced overflow artifacts.",
+  "type": "object",
+  "required": [
+    "schema",
+    "work_item",
+    "issue",
+    "role",
+    "basis_sha",
+    "verdict",
+    "summary",
+    "findings",
+    "changes",
+    "proof",
+    "uncertainty",
+    "recommended_next_action",
+    "overflow"
+  ],
+  "properties": {
+    "schema": {
+      "const": "bounded-subagent-result-v1"
+    },
+    "work_item": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The issue/spec/PR identity carried from the brief."
+    },
+    "issue": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "pr": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "explorer",
+        "oracle",
+        "planner",
+        "writer",
+        "verifier",
+        "reviewer",
+        "ci_triager",
+        "cleanup_auditor"
+      ]
+    },
+    "basis_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{7,64}$"
+    },
+    "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{7,64}$",
+      "description": "Required whenever a PR or exact implementation head is being reported."
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["clear", "revise", "blocked", "not_proven"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A bounded synthesis; raw logs and full diffs belong in overflow references."
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/finding"
+      }
+    },
+    "changes": {
+      "type": "array",
+      "description": "Only changes authorized by the input brief may appear here.",
+      "items": {
+        "$ref": "#/definitions/change"
+      }
+    },
+    "proof": {
+      "type": "array",
+      "description": "Direct command, receipt, issue, PR, or external-oracle references supporting the verdict.",
+      "items": {
+        "$ref": "#/definitions/proof_reference"
+      },
+      "minItems": 1
+    },
+    "uncertainty": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "recommended_next_action": {
+      "type": "string",
+      "minLength": 1
+    },
+    "overflow": {
+      "type": "array",
+      "description": "Stable references to raw logs, full inventories, or full diffs; never the raw transcript itself.",
+      "items": {
+        "$ref": "#/definitions/overflow_reference"
+      }
+    }
+  },
+  "dependencies": {
+    "pr": ["head_sha"]
+  },
+  "definitions": {
+    "finding": {
+      "type": "object",
+      "required": ["severity", "claim", "evidence"],
+      "properties": {
+        "severity": {
+          "type": "string",
+          "enum": ["P0", "P1", "P2", "P3", "info"]
+        },
+        "claim": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/evidence_reference"
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "evidence_reference": {
+      "type": "object",
+      "required": ["kind", "ref"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["author_claim", "observed", "independent", "none_found"]
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The searched surface and limit required for a scoped none_found result."
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"kind": {"const": "none_found"}},
+            "required": ["kind"]
+          },
+          "then": {
+            "required": ["scope"]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "change": {
+      "type": "object",
+      "required": ["path", "summary"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "proof_reference": {
+      "type": "object",
+      "required": ["kind", "ref", "claim"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["author_claim", "observed", "independent", "none_found"]
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "claim": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The searched surface and limit required for a scoped none_found result."
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"kind": {"const": "none_found"}},
+            "required": ["kind"]
+          },
+          "then": {
+            "required": ["scope"]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "overflow_reference": {
+      "type": "object",
+      "required": ["ref", "reason", "truncated"],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "counts": {
+          "$ref": "#/definitions/overflow_counts"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"truncated": {"const": true}},
+            "required": ["truncated"]
+          },
+          "then": {
+            "required": ["counts"],
+            "properties": {
+              "counts": {
+                "properties": {
+                  "omitted": {
+                    "minimum": 1,
+                    "description": "A truncated result must omit at least one item."
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "overflow_counts": {
+      "type": "object",
+      "description": "Counts must satisfy selected + omitted = total; the arithmetic invariant is enforced by bounded-result consumers because draft-07 has no cross-property arithmetic keyword.",
+      "x-bounded-result-invariants": [
+        {
+          "id": "overflow-counts-sum",
+          "expression": "selected + omitted == total"
+        }
+      ],
+      "required": ["selected", "omitted", "total"],
+      "properties": {
+        "selected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omitted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"role": {"const": "writer"}},
+        "required": ["role"]
+      },
+      "then": {},
+      "else": {
+        "properties": {
+          "changes": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"role": {"const": "reviewer"}},
+        "required": ["role"]
+      },
+      "then": {
+        "required": ["pr", "head_sha"]
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "examples": [
+    {
+      "schema": "bounded-subagent-result-v1",
+      "work_item": "issue-1234-review",
+      "issue": 1234,
+      "pr": 5678,
+      "role": "reviewer",
+      "basis_sha": "0123456789abcdef",
+      "head_sha": "89abcdef01234567",
+      "verdict": "clear",
+      "summary": "No correctness or integration finding was identified at the inspected head.",
+      "findings": [],
+      "changes": [],
+      "proof": [
+        {"kind": "independent", "ref": "github:PR/5678@89abcdef01234567", "claim": "The review was bound to the published head."}
+      ],
+      "uncertainty": [],
+      "recommended_next_action": "Continue with current-head integration adjudication.",
+      "overflow": []
+    },
+    {
+      "schema": "bounded-subagent-result-v1",
+      "work_item": "issue-1234-build",
+      "issue": 1234,
+      "role": "writer",
+      "basis_sha": "0123456789abcdef",
+      "verdict": "clear",
+      "summary": "The admitted edit cage was changed and focused proof was run.",
+      "findings": [],
+      "changes": [
+        {"path": "crates/example/src/example.rs", "summary": "Implemented the compiled builder view."}
+      ],
+      "proof": [
+        {"kind": "author_claim", "ref": "local:cargo-test-example", "claim": "The focused test command passed locally."}
+      ],
+      "uncertainty": ["The local green result is an author claim until independent current-head proof exists."],
+      "recommended_next_action": "Publish the branch and request exact-head review.",
+      "overflow": []
+    },
+    {
+      "schema": "bounded-subagent-result-v1",
+      "work_item": "issue-1234-plan-challenge",
+      "issue": 1234,
+      "role": "planner",
+      "basis_sha": "0123456789abcdef",
+      "verdict": "not_proven",
+      "summary": "The plan has a contradiction between its accepted premise and current source evidence.",
+      "findings": [
+        {
+          "severity": "P1",
+          "claim": "The plan assumes the adapter capability is available.",
+          "evidence": [
+            {"kind": "author_claim", "ref": "issue:1234:plan"},
+            {"kind": "independent", "ref": "runtime-help:2026-07-15"}
+          ]
+        }
+      ],
+      "changes": [],
+      "proof": [
+        {"kind": "independent", "ref": "runtime-help:2026-07-15", "claim": "The installed runtime capability was inspected."}
+      ],
+      "uncertainty": ["The issue plan and its comments are one source, not independent confirmations."],
+      "recommended_next_action": "Return to the issue and resolve the capability premise before writing configuration.",
+      "overflow": []
+    },
+    {
+      "schema": "bounded-subagent-result-v1",
+      "work_item": "issue-1234-ci",
+      "issue": 1234,
+      "pr": 5678,
+      "role": "ci_triager",
+      "basis_sha": "0123456789abcdef",
+      "head_sha": "89abcdef01234567",
+      "verdict": "blocked",
+      "summary": "The check stopped in runner setup before repository proof executed.",
+      "findings": [
+        {
+          "severity": "P1",
+          "claim": "The failure is infrastructure-side and does not establish a product regression.",
+          "evidence": [
+            {"kind": "observed", "ref": "github:check/ci@89abcdef01234567"}
+          ]
+        }
+      ],
+      "changes": [],
+      "proof": [
+        {"kind": "observed", "ref": "github:check/ci@89abcdef01234567", "claim": "The job failed before its repository test step."}
+      ],
+      "uncertainty": ["A rerun is required to establish repository behavior."],
+      "recommended_next_action": "Park the runner blocker and rerun against the same head.",
+      "overflow": [
+        {"ref": "github:check-log/ci@89abcdef01234567", "reason": "Full log retained outside the root result.", "truncated": true, "counts": {"selected": 20, "omitted": 480, "total": 500}}
+      ]
+    }
+  ]
+}

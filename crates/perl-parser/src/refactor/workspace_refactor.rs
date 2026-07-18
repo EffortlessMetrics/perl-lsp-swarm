@@ -283,21 +283,21 @@ impl WorkspaceRefactor {
 
             for doc in store.all_documents() {
                 // Pre-check if the document even contains the target string to avoid unnecessary work
-                if !doc.text.contains(old_name) {
+                if !doc.text().contains(old_name) {
                     continue;
                 }
 
                 let idx = doc.line_index.clone();
                 let mut pos = 0;
-                let _text_bytes = doc.text.as_bytes();
+                let _text_bytes = doc.text().as_bytes();
 
                 // Use faster byte-based searching with matches iterator
-                while let Some(found) = doc.text[pos..].find(old_name) {
+                while let Some(found) = doc.text()[pos..].find(old_name) {
                     let start = pos + found;
                     let end = start + old_name.len();
 
                     // Early bounds checking to avoid invalid positions
-                    if start >= doc.text.len() || end > doc.text.len() {
+                    if start >= doc.text().len() || end > doc.text().len() {
                         break;
                     }
 
@@ -440,9 +440,9 @@ impl WorkspaceRefactor {
                 details: format!("Invalid start line: {}", start_line),
             }
         })?;
-        let end_off = idx.position_to_offset(end_line as u32, 0).unwrap_or(doc.text.len());
+        let end_off = idx.position_to_offset(end_line as u32, 0).unwrap_or(doc.text().len());
 
-        let extracted = doc.text[start_off..end_off].to_string();
+        let extracted = doc.text()[start_off..end_off].to_string();
 
         // Original file edit - replace selection with use statement
         let original_edits = vec![TextEdit {
@@ -492,7 +492,7 @@ impl WorkspaceRefactor {
         for doc in self._index.document_store().all_documents() {
             let Some(path) = uri_to_fs_path(&doc.uri) else { continue };
 
-            let analysis = optimizer.analyze_content(&doc.text)?;
+            let analysis = optimizer.analyze_content(doc.text())?;
             let optimized = optimizer.generate_optimized_imports(&analysis);
 
             if optimized.is_empty() {
@@ -501,7 +501,7 @@ impl WorkspaceRefactor {
 
             // Replace the existing import block at the top of the file
             let (start, end) = if let Some(import_block_re) = get_import_block_regex() {
-                if let Some(m) = import_block_re.find(&doc.text) {
+                if let Some(m) = import_block_re.find(doc.text()) {
                     (m.start(), m.end())
                 } else {
                     (0, 0)
@@ -613,7 +613,7 @@ impl WorkspaceRefactor {
                     ),
                 }
             })?;
-        let sub_text = doc.text[start_off..end_off].to_string();
+        let sub_text = doc.text()[start_off..end_off].to_string();
 
         // Remove from original file
         let mut file_edits = vec![FileEdit {
@@ -627,7 +627,7 @@ impl WorkspaceRefactor {
             RefactorError::UriConversion(format!("Failed to convert target path to URI: {}", e))
         })?;
         let target_doc = store.get(&target_uri);
-        let insertion_offset = target_doc.as_ref().map(|d| d.text.len()).unwrap_or(0);
+        let insertion_offset = target_doc.as_ref().map(|d| d.text().len()).unwrap_or(0);
 
         file_edits.push(FileEdit {
             file_path: target_path.clone(),
@@ -717,7 +717,7 @@ impl WorkspaceRefactor {
 
         // Naively find definition line (variable declaration with "my")
         let def_line_idx = doc
-            .text
+            .text()
             .lines()
             .position(|l| l.trim_start().starts_with("my ") && l.contains(var_name))
             .ok_or_else(|| RefactorError::SymbolNotFound {
@@ -731,8 +731,8 @@ impl WorkspaceRefactor {
             }
         })?;
         let def_line_end =
-            idx.position_to_offset(def_line_idx as u32 + 1, 0).unwrap_or(doc.text.len());
-        let def_line = doc.text.lines().nth(def_line_idx).unwrap_or("");
+            idx.position_to_offset(def_line_idx as u32 + 1, 0).unwrap_or(doc.text().len());
+        let def_line = doc.text().lines().nth(def_line_idx).unwrap_or("");
         let expr = def_line
             .split('=')
             .nth(1)
@@ -756,7 +756,7 @@ impl WorkspaceRefactor {
 
         // Replace remaining occurrences
         let mut search_pos = def_line_end;
-        while let Some(found) = doc.text[search_pos..].find(var_name) {
+        while let Some(found) = doc.text()[search_pos..].find(var_name) {
             let start = search_pos + found;
             let end = start + var_name.len();
             edits_map.entry(file_path.to_path_buf()).or_default().push(TextEdit {
@@ -810,7 +810,7 @@ impl WorkspaceRefactor {
         let (sigil, bare) = normalize_var(var_name);
 
         let def_line_idx = def_doc
-            .text
+            .text()
             .lines()
             .position(|l| l.trim_start().starts_with("my ") && l.contains(var_name))
             .ok_or_else(|| RefactorError::SymbolNotFound {
@@ -822,8 +822,8 @@ impl WorkspaceRefactor {
         // This correctly handles files with multiple `package` declarations by using the last
         // `package` statement before the definition, rather than the first one in the file.
         let def_line_byte_offset =
-            def_doc.text.lines().take(def_line_idx).map(|l| l.len() + 1).sum::<usize>();
-        let package_name = find_package_at_offset(&def_doc.text, def_line_byte_offset)
+            def_doc.text().lines().take(def_line_idx).map(|l| l.len() + 1).sum::<usize>();
+        let package_name = find_package_at_offset(def_doc.text(), def_line_byte_offset)
             .unwrap_or_else(|| "main".to_string());
 
         let key = SymbolKey {
@@ -833,7 +833,7 @@ impl WorkspaceRefactor {
             kind: SymKind::Var,
         };
 
-        let def_line = def_doc.text.lines().nth(def_line_idx).unwrap_or("");
+        let def_line = def_doc.text().lines().nth(def_line_idx).unwrap_or("");
 
         let expr = def_line
             .split('=')
@@ -867,21 +867,21 @@ impl WorkspaceRefactor {
 
         if all_locations.is_empty() {
             for doc in store.all_documents() {
-                if !doc.text.contains(var_name) {
+                if !doc.text().contains(var_name) {
                     continue;
                 }
-                if !is_document_in_package_scope(&doc.text, &package_name) {
+                if !is_document_in_package_scope(doc.text(), &package_name) {
                     continue;
                 }
 
                 let idx = doc.line_index.clone();
                 let mut pos = 0;
 
-                while let Some(found) = doc.text[pos..].find(var_name) {
+                while let Some(found) = doc.text()[pos..].find(var_name) {
                     let start = pos + found;
                     let end = start + var_name.len();
 
-                    if start >= doc.text.len() || end > doc.text.len() {
+                    if start >= doc.text().len() || end > doc.text().len() {
                         break;
                     }
 
@@ -935,7 +935,7 @@ impl WorkspaceRefactor {
                 let start_off =
                     doc.line_index.position_to_offset(loc.range.start.line, loc.range.start.column);
                 let location_package =
-                    start_off.and_then(|offset| find_package_at_offset(&doc.text, offset));
+                    start_off.and_then(|offset| find_package_at_offset(doc.text(), offset));
                 if location_package.as_deref().unwrap_or("main") != package_name {
                     continue;
                 }
@@ -949,16 +949,17 @@ impl WorkspaceRefactor {
 
                 if let (Some(start_off), Some(end_off)) = (start_off, end_off) {
                     let is_definition = doc.uri == def_uri
-                        && doc.text[start_off.saturating_sub(10)..start_off.min(doc.text.len())]
+                        && doc.text()
+                            [start_off.saturating_sub(10)..start_off.min(doc.text().len())]
                             .contains("my ");
 
                     if is_definition {
                         let line_start =
-                            doc.text[..start_off].rfind('\n').map(|p| p + 1).unwrap_or(0);
-                        let line_end = doc.text[end_off..]
+                            doc.text()[..start_off].rfind('\n').map(|p| p + 1).unwrap_or(0);
+                        let line_end = doc.text()[end_off..]
                             .find('\n')
                             .map(|p| end_off + p + 1)
-                            .unwrap_or(doc.text.len());
+                            .unwrap_or(doc.text().len());
 
                         edits_by_file.entry(path).or_default().push(TextEdit {
                             start: line_start,

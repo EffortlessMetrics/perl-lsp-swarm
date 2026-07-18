@@ -7,6 +7,10 @@
 //! - Capability advertisement in server initialization
 //! - WorkspaceEdit response structure validation
 
+// Tests are permitted to use `.expect()`/`.expect_err()` on Result/Option per
+// the repo's coding standards (unlike production code, where they are banned).
+#![allow(clippy::expect_used)]
+
 mod support;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -474,7 +478,7 @@ fn test_rename_mismatched_sigil_is_rejected() -> TestResult {
     // The PR returns JsonRpcError(-32602), which harness surfaces as Err.
     match result {
         Err(e) => {
-            let msg = format!("{e}");
+            let msg = e.to_string();
             assert!(
                 msg.contains("sigil") || msg.contains("Invalid") || msg.contains("32602"),
                 "error should mention sigil mismatch or invalid identifier, got: {msg}"
@@ -524,7 +528,7 @@ print $x;
 
     match result {
         Err(e) => {
-            let msg = format!("{e}");
+            let msg = e.to_string();
             assert!(
                 msg.contains("empty") || msg.contains("Invalid") || msg.contains("32602"),
                 "empty newName should error with invalid-identifier, got: {msg}"
@@ -579,7 +583,7 @@ fn test_rename_invalid_identifier_is_rejected() -> TestResult {
 
     match result {
         Err(e) => {
-            let msg = format!("{e}");
+            let msg = e.to_string();
             assert!(
                 msg.contains("Invalid") || msg.contains("32602"),
                 "digit-leading identifier should error, got: {msg}"
@@ -826,7 +830,7 @@ greet();
 
     match result {
         Err(e) => {
-            let msg = format!("{e}");
+            let msg = e.to_string();
             assert!(
                 msg.contains("reserved") || msg.contains("keyword") || msg.contains("32602"),
                 "renaming sub to keyword should error with keyword-related message, got: {msg}"
@@ -905,7 +909,7 @@ fn test_rename_variable_to_keyword_allowed() -> TestResult {
         Err(e) => {
             // If the server returns an error, it must NOT be a keyword-related message,
             // because variables are allowed to have keyword names in Perl.
-            let msg = format!("{e}");
+            let msg = e.to_string();
             assert!(
                 !msg.contains("reserved keyword") && !msg.contains("keyword"),
                 "renaming variable to keyword name `$if` must not be rejected as a keyword: {msg}"
@@ -987,5 +991,296 @@ fn test_workspace_rename_workspace_edit_rolls_back_cleanly() -> TestResult {
         "workspace rename inverse edits must restore the original documents exactly"
     );
 
+    Ok(())
+}
+
+/// Verify that prepare rename returns `{defaultBehavior: true}` when the client
+/// advertises `prepareSupportDefaultBehavior: 1` (LSP 3.16 Identifier variant)
+/// and the cursor is on a plain (non-sigiled) identifier such as a sub name.
+#[test]
+fn test_prepare_rename_returns_default_behavior_variant() -> TestResult {
+    let mut harness = LspHarness::new();
+    let caps = json!({
+        "textDocument": {
+            "rename": {
+                "prepareSupport": true,
+                "prepareSupportDefaultBehavior": 1
+            }
+        }
+    });
+    harness.initialize(Some(caps))?;
+
+    let doc_uri = "file:///test_prepare_default.pl";
+    harness.open(doc_uri, "sub greet {\n    return \"hello\";\n}\ngreet();\n")?;
+
+    // cursor on "greet" (line 0, character 4) — plain identifier, no sigil
+    let response = harness.request(
+        "textDocument/prepareRename",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 0, "character": 4 }
+        }),
+    )?;
+
+    assert!(!response.is_null(), "prepareRename on a valid sub should not return null");
+    assert_eq!(
+        response.get("defaultBehavior").and_then(|v| v.as_bool()),
+        Some(true),
+        "client with prepareSupportDefaultBehavior=1 should receive {{defaultBehavior: true}} for plain identifier; got: {response:?}"
+    );
+    assert!(
+        response.get("range").is_none() && response.get("placeholder").is_none(),
+        "defaultBehavior variant must not include range or placeholder; got: {response:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_prepare_rename_ignores_out_of_range_default_behavior() -> TestResult {
+    let mut harness = LspHarness::new();
+    let caps = json!({
+        "textDocument": {
+            "rename": {
+                "prepareSupport": true,
+                "prepareSupportDefaultBehavior": 257
+            }
+        }
+    });
+    harness.initialize(Some(caps))?;
+
+    let doc_uri = "file:///test_prepare_out_of_range.pl";
+    harness.open(doc_uri, "sub greet {\n    return \"hello\";\n}\n")?;
+    let response = harness.request(
+        "textDocument/prepareRename",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 0, "character": 4 }
+        }),
+    )?;
+
+    assert!(response.get("range").is_some());
+    assert!(response.get("placeholder").is_some());
+    assert!(response.get("defaultBehavior").is_none());
+    Ok(())
+}
+
+#[test]
+fn test_prepare_rename_rejects_keyword_with_default_behavior() -> TestResult {
+    let mut harness = LspHarness::new();
+    let caps = json!({
+        "textDocument": {
+            "rename": {
+                "prepareSupport": true,
+                "prepareSupportDefaultBehavior": 1
+            }
+        }
+    });
+    harness.initialize(Some(caps))?;
+
+    let doc_uri = "file:///test_prepare_keyword.pl";
+    harness.open(doc_uri, "use strict;\n")?;
+    let response = harness.request(
+        "textDocument/prepareRename",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 0, "character": 1 }
+        }),
+    )?;
+
+    assert!(
+        response.is_null(),
+        "prepareRename must reject a Perl keyword rather than delegate it to default behavior; got: {response:?}"
+    );
+    Ok(())
+}
+
+/// Verify that prepare rename still returns `{range, placeholder}` for sigiled
+/// variables even when the client advertises prepareSupportDefaultBehavior=1.
+/// Sigiled tokens need server-controlled range so the sigil is included.
+#[test]
+fn test_prepare_rename_sigiled_variable_always_returns_range_placeholder() -> TestResult {
+    let mut harness = LspHarness::new();
+    let caps = json!({
+        "textDocument": {
+            "rename": {
+                "prepareSupport": true,
+                "prepareSupportDefaultBehavior": 1
+            }
+        }
+    });
+    harness.initialize(Some(caps))?;
+
+    let doc_uri = "file:///test_prepare_sigil.pl";
+    harness.open(doc_uri, "my $count = 0;\n$count++;\n")?;
+
+    // cursor on "$count" sigil (line 0, character 3)
+    let response = harness.request(
+        "textDocument/prepareRename",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 0, "character": 3 }
+        }),
+    )?;
+
+    assert!(!response.is_null(), "prepareRename on a sigiled variable should not return null");
+    assert!(
+        response.get("range").is_some(),
+        "sigiled variable should always return {{range, placeholder}} so the sigil is included in the rename range; got: {response:?}"
+    );
+    assert!(
+        response.get("placeholder").is_some(),
+        "sigiled variable response must include placeholder; got: {response:?}"
+    );
+    assert!(
+        response.get("defaultBehavior").is_none(),
+        "sigiled variable response must not include defaultBehavior; got: {response:?}"
+    );
+    assert_eq!(
+        response.get("placeholder").and_then(Value::as_str),
+        Some("$count"),
+        "sigiled variable placeholder must include the sigil; got: {response:?}"
+    );
+    assert_eq!(response["range"]["start"]["character"], 3);
+    assert_eq!(response["range"]["end"]["character"], 9);
+    assert_eq!(response.as_object().map(|object| object.len()), Some(2));
+    Ok(())
+}
+
+/// Verify that the rename response uses the documentChanges array format when
+/// the client advertises workspace.workspaceEdit.documentChanges: true.
+#[test]
+fn test_rename_respects_documentchanges_client_capability() -> TestResult {
+    let mut harness = LspHarness::new();
+    let caps = json!({
+        "textDocument": {
+            "completion": { "completionItem": { "snippetSupport": true } }
+        },
+        "workspace": {
+            "workspaceEdit": {
+                "documentChanges": true
+            }
+        }
+    });
+    harness.initialize(Some(caps))?;
+
+    let doc_uri = "file:///test_dc_rename.pl";
+    harness.open(
+        doc_uri,
+        "sub process {\n    my $count = 0;\n    $count++;\n    return $count;\n}\n",
+    )?;
+
+    let response = harness.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 1, "character": 7 },
+            "newName": "$total"
+        }),
+    )?;
+
+    assert!(
+        response.is_object(),
+        "rename response must be an object when documentChanges is supported; got: {response:?}"
+    );
+    assert!(
+        response.get("documentChanges").is_some(),
+        "response must use documentChanges array format when client capability is advertised; got: {response:?}"
+    );
+    assert!(
+        response.get("changes").is_none(),
+        "response must not include legacy changes map when documentChanges is preferred; got: {response:?}"
+    );
+
+    let doc_changes = response
+        .get("documentChanges")
+        .and_then(|v| v.as_array())
+        .ok_or("documentChanges must be an array")?;
+    assert!(
+        !doc_changes.is_empty(),
+        "documentChanges array must not be empty for a valid rename; got: {doc_changes:?}"
+    );
+
+    let first = &doc_changes[0];
+    assert!(
+        first.get("textDocument").is_some(),
+        "each documentChange entry must include textDocument; got: {first:?}"
+    );
+    assert_eq!(
+        first["textDocument"]["uri"], doc_uri,
+        "documentChange must preserve the changed document URI; got: {first:?}"
+    );
+    assert_eq!(
+        first["textDocument"]["version"], 1,
+        "documentChange must preserve the open document version; got: {first:?}"
+    );
+    assert!(
+        first.get("edits").and_then(|e| e.as_array()).is_some_and(|e| !e.is_empty()),
+        "each documentChange entry must have a non-empty edits array; got: {first:?}"
+    );
+    let first_edit = &first["edits"][0];
+    assert!(first_edit.get("range").is_some(), "each text edit must include a range");
+    assert!(first_edit.get("newText").is_some(), "each text edit must include newText");
+
+    Ok(())
+}
+
+#[test]
+fn test_empty_rename_respects_documentchanges_client_capability() -> TestResult {
+    let mut harness = LspHarness::new();
+    let caps = json!({
+        "workspace": {
+            "workspaceEdit": {
+                "documentChanges": true
+            }
+        }
+    });
+    harness.initialize(Some(caps))?;
+
+    let doc_uri = "file:///test_empty_documentchanges_rename.pl";
+    harness.open(doc_uri, "my $x = \"target\";\n")?;
+    let response = harness.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 0, "character": 10 },
+            "newName": "renamed"
+        }),
+    )?;
+
+    assert!(response.is_object(), "empty rename response must be an object; got: {response:?}");
+    assert!(response.get("changes").is_none());
+    assert_eq!(response["documentChanges"], json!([]));
+    Ok(())
+}
+
+/// Verify that without documentChanges capability the legacy changes format is returned.
+#[test]
+fn test_rename_uses_legacy_changes_without_documentchanges_capability() -> TestResult {
+    let mut harness = LspHarness::new();
+    // Default capabilities do not include workspace.workspaceEdit.documentChanges
+    harness.initialize(None)?;
+
+    let doc_uri = "file:///test_legacy_rename.pl";
+    harness.open(doc_uri, "sub go {\n    my $x = 1;\n    $x++;\n    return $x;\n}\n")?;
+
+    let response = harness.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 1, "character": 7 },
+            "newName": "$y"
+        }),
+    )?;
+
+    assert!(response.is_object(), "rename response must be an object; got: {response:?}");
+    // Without documentChanges capability, expect legacy changes format
+    assert!(
+        response.get("changes").is_some_and(Value::is_object),
+        "without documentChanges capability, response must use an object-valued changes map; got: {response:?}"
+    );
+    assert!(
+        response.get("documentChanges").is_none(),
+        "without documentChanges capability, response must not use documentChanges format; got: {response:?}"
+    );
     Ok(())
 }

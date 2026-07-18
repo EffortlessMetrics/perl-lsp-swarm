@@ -63,6 +63,18 @@ fn find_workspace_perlcritic_profile(
     None
 }
 
+fn critic_range_to_byte_range(
+    content: &str,
+    start_line: u32,
+    start_column: u32,
+    end_line: u32,
+    end_column: u32,
+) -> Option<(usize, usize)> {
+    let start = crate::util::position_to_offset(content, start_line, start_column)?;
+    let end = crate::util::position_to_offset(content, end_line, end_column)?;
+    (start <= end).then_some((start, end))
+}
+
 /// Orchestrator for pull diagnostics operations.
 ///
 /// Coordinates between LspServer state and the pure-logic PullDiagnosticsProvider.
@@ -203,7 +215,11 @@ impl PullDiagnosticsOrchestrator {
 
         // Check if perlcritic is available (unless bypassed for tests)
         let skip_check = server.skip_perlcritic_command_check.load(Ordering::Relaxed);
-        if !skip_check && !crate::execute_command::command_exists("perlcritic") {
+        let force_unavailable =
+            server.force_perlcritic_command_unavailable.load(std::sync::atomic::Ordering::Relaxed);
+        if force_unavailable
+            || (!skip_check && !crate::execute_command::command_exists("perlcritic"))
+        {
             self.emit_warning(
                 server,
                 "missing-binary".to_string(),
@@ -299,19 +315,24 @@ impl PullDiagnosticsOrchestrator {
                         }
                     };
 
-                    // Convert line/column to byte offset
-                    let start_byte = crate::util::position_to_offset(
+                    let Some((start_byte, end_byte)) = critic_range_to_byte_range(
                         doc_text,
                         v.range.start.line,
                         v.range.start.column,
-                    )
-                    .unwrap_or(0);
-                    let end_byte = crate::util::position_to_offset(
-                        doc_text,
                         v.range.end.line,
                         v.range.end.column,
-                    )
-                    .unwrap_or(start_byte.saturating_add(1));
+                    ) else {
+                        tracing::trace!(
+                            uri,
+                            policy = %v.policy,
+                            start_line = v.range.start.line,
+                            start_column = v.range.start.column,
+                            end_line = v.range.end.line,
+                            end_column = v.range.end.column,
+                            "dropping malformed perlcritic diagnostic range"
+                        );
+                        continue;
+                    };
 
                     diagnostics.push(InternalDiagnostic {
                         range: (start_byte, end_byte),
@@ -457,18 +478,31 @@ impl LspServer {
         // because parking_lot::Mutex is not reentrant.
         let snapshot = {
             let documents = self.documents.lock();
-            documents.get(&normalized_uri).or_else(|| documents.get(uri)).map(|doc| {
-                (
-                    doc.ast.clone(),
+            documents.get(&normalized_uri).or_else(|| documents.get(uri)).and_then(|doc| {
+                // `current_parsed()` is `None` when the document's text
+                // generation is ahead of the last published parse snapshot
+                // (#3396 PR4 -- the pending-parse gap a future async parse
+                // worker can open). Skip the push entirely in that case
+                // rather than falling through to the `ast: None` branch
+                // below: that would publish an empty (or parse-error-only)
+                // diagnostics set computed from no current-generation AST at
+                // all, silently overwriting whatever the client is currently
+                // displaying with a false "nothing wrong" claim. Preserve the
+                // client's last-known-good display instead -- the debounced
+                // publish (or the next didChange's publish) fires again once
+                // a fresh snapshot lands for this generation.
+                let parsed = doc.current_parsed()?;
+                Some((
+                    parsed.ast().cloned(),
                     doc.text.clone(),
-                    doc.parse_errors.clone(),
+                    parsed.parse_errors_arc(),
                     doc.version,
-                    doc.degradation_tier,
+                    parsed.degradation_tier(),
                     doc.line_starts.clone(),
                     doc.rope.clone(),
                     Arc::clone(&doc.generation),
                     doc.generation.load(Ordering::SeqCst),
-                )
+                ))
             })
             // lock is released here
         };
@@ -626,6 +660,9 @@ impl LspServer {
                         crate::error::ParseError::SyntaxError { location, message } => {
                             (*location, message.clone())
                         }
+                        crate::error::ParseError::Advisory { location, message } => {
+                            (*location, message.clone())
+                        }
                         crate::error::ParseError::UnexpectedEof => {
                             (text.len(), "Unexpected end of input".to_string())
                         }
@@ -651,7 +688,7 @@ impl LspServer {
                             "start": {"line": line, "character": character},
                             "end": {"line": line, "character": character + 1},
                         },
-                        "severity": 1, // Error
+                        "severity": if e.blocks_clean_parse() { 1 } else { 2 },
                         "code": DiagnosticCode::ParseError.as_str(),
                         "source": "perl-parser",
                         "message": message,
@@ -720,6 +757,9 @@ impl LspServer {
                     crate::error::ParseError::SyntaxError { location, message } => {
                         (*location, message.clone())
                     }
+                    crate::error::ParseError::Advisory { location, message } => {
+                        (*location, message.clone())
+                    }
                     crate::error::ParseError::UnexpectedEof => {
                         (text.len(), "Unexpected end of input".to_string())
                     }
@@ -749,7 +789,7 @@ impl LspServer {
                         "start": {"line": line, "character": character},
                         "end": {"line": line, "character": character + 1},
                     },
-                    "severity": 1, // Error
+                    "severity": if e.blocks_clean_parse() { 1 } else { 2 },
                     "code": DiagnosticCode::ParseError.as_str(),
                     "source": "perl-parser",
                     "message": Self::diagnostic_message_value(
@@ -769,16 +809,22 @@ impl LspServer {
 
         let snapshot = {
             let documents = self.documents.lock();
-            documents.get(&normalized_uri).or_else(|| documents.get(uri)).map(|doc| {
-                (
-                    doc.parse_errors.clone(),
+            documents.get(&normalized_uri).or_else(|| documents.get(uri)).and_then(|doc| {
+                // Pending-parse gap guard (#3396 PR4) -- mirrors `publish_diagnostics`.
+                // Skip the push entirely rather than publishing an empty
+                // parse-errors set computed from no current-generation
+                // snapshot; that would overwrite whatever the client is
+                // currently displaying with a false "no errors" claim.
+                let parsed = doc.current_parsed()?;
+                Some((
+                    parsed.parse_errors_arc(),
                     doc.text.clone(),
                     doc.version,
                     doc.line_starts.clone(),
                     doc.rope.clone(),
                     Arc::clone(&doc.generation),
                     doc.generation.load(Ordering::SeqCst),
-                )
+                ))
             })
         };
 
@@ -846,8 +892,19 @@ impl LspServer {
         let snapshot = {
             let documents = self.documents.lock();
             documents.get(&normalized_uri).or_else(|| documents.get(uri)).map(|doc| {
+                // Pending-parse gap (#3396 PR4): `current_parsed()` is `None`
+                // when the text generation is ahead of the last published
+                // snapshot. `parse_errors` deliberately collapses to empty in
+                // that case rather than falling back to a stale generation's
+                // errors -- the empty-check right below then skips the fast
+                // publish entirely, which is exactly the desired "don't
+                // publish a claim for a generation we haven't parsed yet"
+                // behavior (same policy as `publish_diagnostics`).
+                let parse_errors = doc
+                    .current_parsed()
+                    .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| p.parse_errors_arc());
                 (
-                    doc.parse_errors.clone(),
+                    parse_errors,
                     doc.version,
                     doc.line_starts.clone(),
                     doc.rope.clone(),
@@ -858,7 +915,8 @@ impl LspServer {
         };
         let Some((parse_errors, version, line_starts, rope, text)) = snapshot else { return };
 
-        // Nothing to fast-publish when there are no parse errors.
+        // Nothing to fast-publish when there are no parse errors (this also
+        // covers the pending-parse gap -- see comment above).
         if parse_errors.is_empty() {
             return;
         }
@@ -874,6 +932,9 @@ impl LspServer {
                             (*location, format!("Expected {}, found {}", expected, found))
                         }
                         crate::error::ParseError::SyntaxError { location, message } => {
+                            (*location, message.clone())
+                        }
+                        crate::error::ParseError::Advisory { location, message } => {
                             (*location, message.clone())
                         }
                         crate::error::ParseError::UnexpectedEof => {
@@ -896,7 +957,7 @@ impl LspServer {
                             "start": {"line": line, "character": character},
                             "end": {"line": line, "character": character + 1},
                         },
-                        "severity": 1,
+                        "severity": if e.blocks_clean_parse() { 1 } else { 2 },
                         "code": DiagnosticCode::ParseError.as_str(),
                         "source": "perl-parser",
                         "message": message,
@@ -989,8 +1050,11 @@ impl LspServer {
             };
             if let Some((doc, generation, gen_at_snapshot)) = doc_snapshot {
                 let markup_message_support = self.client_capabilities.lock().markup_message_support;
+                let parse_errors = doc
+                    .current_parsed()
+                    .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| p.parse_errors_arc());
                 let items = Self::syntax_only_lsp_diagnostics(
-                    &doc.parse_errors,
+                    &parse_errors,
                     &doc.text,
                     &doc.line_starts,
                     &doc.rope,
@@ -1393,7 +1457,9 @@ impl LspServer {
             let prev_id =
                 previous_result_ids.iter().find(|(u, _)| u == uri_str).map(|(_, id)| id.clone());
 
-            if let Some(ast) = &doc.ast {
+            let Some(parsed) = doc.current_parsed() else { continue };
+            if let Some(ast) = parsed.ast() {
+                let parse_errors = parsed.parse_errors();
                 let provider = DiagnosticsProvider::new(ast, doc.text.clone());
                 // Position-aware resolver: each `use` statement is checked against only
                 // the @INC roots that are lexically active at its offset, so `no lib`
@@ -1422,7 +1488,7 @@ impl LspServer {
                             |file_id, queries| {
                                 provider.get_diagnostics_with_search_context_and_semantics(
                                     ast,
-                                    &doc.parse_errors,
+                                    parse_errors,
                                     &doc.text,
                                     Some(&resolver),
                                     &search_context,
@@ -1436,7 +1502,7 @@ impl LspServer {
                     semantic_diags.unwrap_or_else(|| {
                         provider.get_diagnostics_with_search_context(
                             ast,
-                            &doc.parse_errors,
+                            parse_errors,
                             &doc.text,
                             Some(&resolver),
                             &search_context,
@@ -1447,7 +1513,7 @@ impl LspServer {
                 #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
                 let mut diagnostics = provider.get_diagnostics_with_search_context(
                     ast,
-                    &doc.parse_errors,
+                    parse_errors,
                     &doc.text,
                     Some(&resolver),
                     &search_context,
@@ -1821,7 +1887,11 @@ impl LspServer {
         // injection without a real `perlcritic` binary.
         let skip_check =
             self.skip_perlcritic_command_check.load(std::sync::atomic::Ordering::Relaxed);
-        if !skip_check && !crate::execute_command::command_exists("perlcritic") {
+        let force_unavailable =
+            self.force_perlcritic_command_unavailable.load(std::sync::atomic::Ordering::Relaxed);
+        if force_unavailable
+            || (!skip_check && !crate::execute_command::command_exists("perlcritic"))
+        {
             self.emit_perlcritic_workspace_warning(
                 "missing-binary".to_string(),
                 "Perl::Critic is enabled but `perlcritic` was not found on PATH. Install Perl::Critic (for example: `cpanm Perl::Critic`) or disable perl.perlcritic.enabled.",
@@ -1922,13 +1992,24 @@ impl LspServer {
                         crate::perl_critic::Severity::Brutal => InternalDiagnosticSeverity::Hint,
                     };
 
-                    // Convert 0-indexed line/column from CriticAnalyzer to byte offsets.
-                    let line_0 = v.range.start.line;
-                    let col_0 = v.range.start.column;
-                    let start_byte = position_to_offset(doc_text, line_0, col_0).unwrap_or(0);
-                    let end_byte =
-                        position_to_offset(doc_text, v.range.end.line, v.range.end.column)
-                            .unwrap_or(start_byte.saturating_add(1));
+                    let Some((start_byte, end_byte)) = critic_range_to_byte_range(
+                        doc_text,
+                        v.range.start.line,
+                        v.range.start.column,
+                        v.range.end.line,
+                        v.range.end.column,
+                    ) else {
+                        tracing::trace!(
+                            uri,
+                            policy = %v.policy,
+                            start_line = v.range.start.line,
+                            start_column = v.range.start.column,
+                            end_line = v.range.end.line,
+                            end_column = v.range.end.column,
+                            "dropping malformed perlcritic diagnostic range"
+                        );
+                        continue;
+                    };
 
                     diagnostics.push(InternalDiagnostic {
                         range: (start_byte, end_byte),
@@ -2081,11 +2162,15 @@ fn builtin_violation_to_diagnostic(
 
 #[cfg(test)]
 mod tests {
+    // Tests are permitted to use `.expect()` on Result/Option per the repo's
+    // coding standards (unlike production code, where it is banned).
+    #![allow(clippy::expect_used)]
+
     use super::*;
     use serde_json::json;
     use std::io::Write;
     use std::sync::Arc as StdArc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// Shared-buffer writer for capturing outbound LSP notifications in tests.
     struct SharedVecWriter {
@@ -2122,6 +2207,84 @@ mod tests {
         (server, buf)
     }
 
+    fn capture_until(
+        buffer: &StdArc<parking_lot::Mutex<Vec<u8>>>,
+        predicate: impl Fn(&str) -> bool,
+    ) -> String {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
+            if predicate(&output) || Instant::now() >= deadline {
+                return output;
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn critic_range_mapping_rejects_malformed_positions() {
+        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 0, 0, 0, 2), Some((0, 2)));
+        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 0, 2, 0, 2), Some((2, 2)));
+        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 3, 0, 3, 1), None);
+        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 0, 4, 0, 2), None);
+    }
+
+    #[test]
+    fn push_perlcritic_drops_malformed_ranges() {
+        use perl_lsp_rs_core::config::CriticEngine;
+        use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
+
+        let (server, buffer) = make_server_with_capture_and_tuning(
+            perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults(),
+        );
+        let uri = if cfg!(windows) { "file:///C:/tmp/test.pl" } else { "file:///tmp/test.pl" };
+        server.test_configure_perlcritic(true, 3, None);
+        server.test_configure_critic_engine(CriticEngine::Legacy);
+
+        let runtime = StdArc::new(MockSubprocessRuntime::new());
+        let mock_response = MockResponse::success(
+            b"test.pl:1:1:3:TestingAndDebugging::RequireUseStrict:valid range\n\
+              test.pl:99:1:3:TestingAndDebugging::RequireUseStrict:bad line range\n\
+              test.pl:1:99:3:TestingAndDebugging::RequireUseStrict:bad column range\n"
+                .to_vec(),
+        );
+        runtime.add_response(mock_response);
+        let runtime_for_server: StdArc<dyn perl_subprocess_runtime::SubprocessRuntime> =
+            runtime.clone();
+        server.test_install_mock_critic_runtime(runtime_for_server);
+        server.test_bypass_perlcritic_command_check();
+
+        server
+            .test_handle_did_open(Some(json!({
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "perl",
+                        "version": 1,
+                        "text": "print 'hello';\n"
+                    }
+            })))
+            .expect("didOpen should succeed");
+        let _initial_output =
+            capture_until(&buffer, |output| output.contains("publishDiagnostics"));
+        server
+            .test_publish_parse_for_current_generation(uri)
+            .expect("test parse should publish the current snapshot");
+        buffer.lock().clear();
+        server.publish_diagnostics(uri);
+        capture_until(&buffer, |output| output.contains("valid range"));
+        drop(server);
+        let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
+
+        assert!(
+            output.contains("valid range"),
+            "valid external critic range must publish a diagnostic: {output:?}"
+        );
+        assert!(
+            !output.contains("bad line range") && !output.contains("bad column range"),
+            "malformed external critic ranges must not publish diagnostics: {output:?}"
+        );
+    }
+
     /// Positive case: when no concurrent change arrives during diagnostic computation,
     /// `publish_diagnostics` MUST send a `textDocument/publishDiagnostics` notification.
     #[test]
@@ -2147,40 +2310,104 @@ mod tests {
         );
     }
 
-    /// Guard wire test: advancing the generation counter before `publish_diagnostics`
-    /// is called must not suppress publication â€” the snapshot captures the CURRENT
-    /// generation, so stable-during-computation is still the common case.
-    /// This confirms the guard does not false-positive.
+    /// Pending-parse gap (#3396 PR4): bumping the generation counter WITHOUT
+    /// publishing a new `ParsedSnapshot` for it forces `current_parsed()` to
+    /// return `None` -- exactly the state a future async parse worker can
+    /// leave the document in between a fast text update and a slower parse
+    /// completion. `publish_diagnostics` must skip the push entirely in that
+    /// state rather than publishing an empty/parse-error-only diagnostics set
+    /// computed from no current-generation AST: that would silently overwrite
+    /// whatever the client is currently displaying with a false "nothing
+    /// wrong" claim.
+    ///
+    /// Before #3396 PR4 this scenario (deliberately) published anyway, because
+    /// the only guard was "did the generation change during computation" --
+    /// it never checked whether the snapshot was already stale *before*
+    /// computation started. This test replaces the old
+    /// `pre_advanced_generation_does_not_suppress_publish` assertion, which
+    /// encoded the pre-ParsedSnapshot-seam behavior that this PR corrects.
     #[test]
-    fn pre_advanced_generation_does_not_suppress_publish() {
+    fn pending_parse_gap_suppresses_push_publish() -> Result<(), Box<dyn std::error::Error>> {
         let (server, buf) = make_server_with_capture();
         let uri = "file:///pre_advanced_gen_test.pl";
-        server
-            .test_handle_did_open(Some(json!({
-                "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "my $y = 2;\n"}
-            })))
-            .unwrap();
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "my $y = 2;\n"}
+        })))?;
+        // `didOpen` publishes once via the outbound notification channel,
+        // which flushes to `buf` on a background writer thread -- wait for
+        // it to land before clearing, otherwise the clear can race ahead of
+        // the write and this test would flakily "see" the didOpen publish
+        // instead of the (correctly suppressed) publish under test.
+        std::thread::sleep(Duration::from_millis(50));
+        buf.lock().clear();
 
-        // Advance generation BEFORE calling publish_diagnostics (simulates a prior
-        // didChange that already completed). The snapshot will read this new value,
-        // computation runs, and the guard check sees the same value â†’ publishes.
-        {
-            let docs = server.documents.lock();
-            if let Some(doc) = docs.get(uri) {
-                doc.generation.fetch_add(1, Ordering::SeqCst);
-            }
-        }
+        // Advance generation BEFORE calling publish_diagnostics, WITHOUT
+        // republishing a snapshot for it -- this opens the pending-parse gap.
+        server
+            .test_apply_text_change_without_reparse(uri, "my $y = 2;\n", 2)
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
         server.publish_diagnostics(uri);
         drop(server);
         std::thread::sleep(Duration::from_millis(50));
 
         let bytes = buf.lock().clone();
-        let text = String::from_utf8(bytes).unwrap_or_default();
+        let text = String::from_utf8(bytes)?;
+        assert!(
+            !text.contains("publishDiagnostics"),
+            "pending-parse gap (current_parsed() == None) must suppress the push publish \
+             instead of overwriting the client's display with an empty/parse-error-only \
+             diagnostics set; got: {text:?}"
+        );
+        Ok(())
+    }
+
+    /// Companion to `pending_parse_gap_suppresses_push_publish`: once a
+    /// snapshot is published for the current generation, `publish_diagnostics`
+    /// resumes normally -- the gap is transient, not a permanent suppression.
+    #[test]
+    fn publish_resumes_once_generation_gap_closes() -> Result<(), Box<dyn std::error::Error>> {
+        let (server, buf) = make_server_with_capture();
+        let uri = "file:///gap_closes_publish_test.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "my $y = 2;\n"}
+        })))?;
+        // Wait for didOpen's own publish to flush through the outbound
+        // channel before clearing, so the clear can't race ahead of it (see
+        // the identical comment in `pending_parse_gap_suppresses_push_publish`).
+        std::thread::sleep(Duration::from_millis(50));
+
+        server
+            .test_apply_text_change_without_reparse(uri, "my $y = 3;\n", 2)
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        buf.lock().clear();
+
+        // While the gap is open, nothing is published.
+        server.publish_diagnostics(uri);
+        {
+            let bytes = buf.lock().clone();
+            let text = String::from_utf8(bytes)?;
+            assert!(
+                !text.contains("publishDiagnostics"),
+                "gap must still suppress publish before republication; got: {text:?}"
+            );
+        }
+
+        // Close the gap by publishing a snapshot for the current generation.
+        server
+            .test_publish_parse_for_current_generation(uri)
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let bytes = buf.lock().clone();
+        let text = String::from_utf8(bytes)?;
         assert!(
             text.contains("publishDiagnostics"),
-            "pre-advanced generation must not suppress publish (guard must not false-positive); got: {text:?}"
+            "publish must resume once a fresh snapshot closes the pending-parse gap; got: {text:?}"
         );
+        Ok(())
     }
 
     #[test]

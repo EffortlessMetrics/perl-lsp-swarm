@@ -1,0 +1,212 @@
+name: Agent Capability Gate
+
+# M4b (#3763): review/audit agents must be mechanically read-only. This gate
+# parses `.claude/agents/*.md` and fails if any review/audit agent grants a
+# write/mutating tool (Edit/Write/NotebookEdit/MultiEdit/Agent/Task/Artifact)
+# or lacks an explicit read-only tools: allowlist.
+
+on:
+  pull_request:
+    paths:
+      - '.claude/agents/**'
+      - 'xtask/src/tasks/agent_capability_policy.rs'
+      - '.github/workflows/agent-capability-gate.yml'
+  merge_group:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  route-agent-capability-gate:
+    name: Route agent capability gate
+    if: >-
+      github.event_name == 'pull_request' ||
+      github.event_name == 'merge_group' ||
+      github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      target: ${{ steps.route.outputs.target }}
+      reason: ${{ steps.route.outputs.reason }}
+      error: ${{ steps.route.outputs.error }}
+      fallback_allowed: ${{ steps.route.outputs.fallback_allowed }}
+    steps:
+      - name: Decide target runner
+        id: route
+        env:
+          GH_TOKEN: ${{ secrets.EM_RUNNER_READ_TOKEN }}
+          ORG: ${{ github.repository_owner }}
+          IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
+          IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          PR_AUTHOR_LOGIN: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login || '' }}
+          PR_AUTHOR_TYPE: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.type || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          emit() {
+            local target="$1" reason="$2" error="$3" fallback_allowed="$4"
+            echo "router_target=$target"
+            echo "router_reason=$reason"
+            echo "router_error=$error"
+            echo "router_fallback_allowed=$fallback_allowed"
+            {
+              echo "target=$target"
+              echo "reason=$reason"
+              echo "error=$error"
+              echo "fallback_allowed=$fallback_allowed"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "### Agent Capability Gate Route"
+              echo ""
+              echo "- router_target: \`$target\`"
+              echo "- router_reason: \`$reason\`"
+              echo "- router_error: \`$error\`"
+              echo "- router_fallback_allowed: \`$fallback_allowed\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          if [ "$IS_FORK_PR" = "true" ]; then
+            emit "github" "fork_pr" "false" "true"
+            exit 0
+          fi
+
+          if [ "$IS_PULL_REQUEST" = "true" ]; then
+            pr_author_login_lc="$(printf '%s' "${PR_AUTHOR_LOGIN:-}" | tr '[:upper:]' '[:lower:]')"
+            pr_author_type_lc="$(printf '%s' "${PR_AUTHOR_TYPE:-}" | tr '[:upper:]' '[:lower:]')"
+            is_bot_pr="false"
+
+            case "$pr_author_login_lc" in
+              dependabot*|app/*|*\[bot\]) is_bot_pr="true" ;;
+            esac
+            if [ "$pr_author_type_lc" = "bot" ]; then is_bot_pr="true"; fi
+
+            if [ "$is_bot_pr" = "true" ]; then
+              emit "github" "bot_pr_github_hosted" "false" "true"
+              exit 0
+            fi
+          fi
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            emit "github" "runner_token_missing" "true" "true"
+            exit 0
+          fi
+
+          if ! group_response="$(mktemp)"; then
+            echo "::warning::tempfile creation failed; falling back to GitHub-hosted"
+            emit "github" "tempfile_creation_failed" "true" "true"
+            exit 0
+          fi
+          if ! GH_TOKEN="$GH_TOKEN" gh api --paginate --slurp \
+            "/orgs/$ORG/actions/runner-groups?per_page=100" > "$group_response"; then
+            echo "::warning::runner group API failed; falling back to GitHub-hosted"
+            emit "github" "runner_group_api_failed" "true" "true"
+            exit 0
+          fi
+
+          if ! nano_group_id="$(jq -r \
+            '[.[].runner_groups[]? | select(.name == "em-ci-nano") | .id][0] // empty' \
+            "$group_response")"; then
+            echo "::warning::runner group response parse failed; falling back to GitHub-hosted"
+            emit "github" "runner_group_response_parse_failed" "true" "true"
+            exit 0
+          fi
+          if [ -z "$nano_group_id" ]; then
+            echo "::warning::runner group em-ci-nano was not found; falling back to GitHub-hosted"
+            emit "github" "runner_group_missing" "true" "true"
+            exit 0
+          fi
+
+          if ! response="$(mktemp)"; then
+            echo "::warning::tempfile creation failed; falling back to GitHub-hosted"
+            emit "github" "tempfile_creation_failed" "true" "true"
+            exit 0
+          fi
+          if ! GH_TOKEN="$GH_TOKEN" gh api --paginate --slurp \
+            "/orgs/$ORG/actions/runners?per_page=100" > "$response"; then
+            echo "::warning::runner API failed; falling back to GitHub-hosted"
+            emit "github" "runner_api_failed" "true" "true"
+            exit 0
+          fi
+
+          idle_runner_count() {
+            jq --argjson nano_group_id "$nano_group_id" '
+              [ .[]?.runners[]?
+                | select(.status == "online")
+                | select(.busy == false)
+                | select(.runner_group_id == $nano_group_id)
+                | ([.labels[].name | ascii_downcase] // []) as $have
+                | select(
+                    ($have | index("self-hosted")) and
+                    ($have | index("linux")) and
+                    ($have | index("x64")) and
+                    ($have | index("em-ci")) and
+                    ($have | index("trusted-pr")) and
+                    ($have | index("workflow-nano"))
+                  )
+              ] | length
+            ' "$response"
+          }
+
+          if ! idle_runner_count_value="$(idle_runner_count)"; then
+            echo "::warning::runner response parse failed; falling back to GitHub-hosted"
+            emit "github" "runner_response_parse_failed" "true" "true"
+            exit 0
+          fi
+          echo "idle_workflow_nano=${idle_runner_count_value:-0}"
+
+          if [ "${idle_runner_count_value:-0}" -gt 0 ]; then
+            emit "self_hosted" "workflow_nano_idle" "false" "false"
+          else
+            emit "github" "no_idle_runner" "false" "true"
+          fi
+
+  agent-capability-gate-self-hosted:
+    name: Agent Capability Gate on workflow-nano
+    needs: route-agent-capability-gate
+    if: >-
+      needs.route-agent-capability-gate.result == 'success' &&
+      needs.route-agent-capability-gate.outputs.target == 'self_hosted'
+    runs-on:
+      group: em-ci-nano
+      labels: [self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # stable
+        with:
+          toolchain: stable
+
+      - name: Enforce review/audit read-only capability boundary
+        run: cargo xtask check-agent-capabilities
+
+  agent-capability-gate-hosted:
+    name: Agent Capability Gate on GitHub-hosted fallback
+    needs: route-agent-capability-gate
+    if: >-
+      needs.route-agent-capability-gate.result == 'success' &&
+      needs.route-agent-capability-gate.outputs.target == 'github'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # stable
+        with:
+          toolchain: stable
+
+      - name: Enforce review/audit read-only capability boundary
+        run: cargo xtask check-agent-capabilities
