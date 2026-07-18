@@ -721,8 +721,51 @@ fn test_unclosed_qw_suffix_scan_disables_nested_qw_recovery() -> Result<(), Stri
     let code = "my @items = qw(word\nmy @nested = qw(inner\nprint 1;";
     let mut parser = Parser::new(code);
     let ast = parser.parse().map_err(|error| format!("nested malformed qw failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 2
+        || !matches!(
+            statements.first().map(|node| &node.kind),
+            Some(NodeKind::VariableDeclaration { .. })
+        )
+        || !matches!(
+            statements.get(1).map(|node| &node.kind),
+            Some(NodeKind::ExpressionStatement { .. })
+        )
+        || !sexp.contains("@nested")
+        || !sexp.contains("print")
+        || parser.errors().is_empty()
+    {
+        return Err(format!("nested malformed qw lost recovered statements: {sexp}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_recovers_parenthesized_lexical_declaration() -> Result<(), String> {
+    let code = "my @items = qw(word\nmy ($x) = 1;\nprint $x;";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("parenthesized my recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    if statements.len() != 3 || parser.errors().is_empty() {
+        return Err(format!("parenthesized my was swallowed: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_long_single_line_stays_linear_candidate_scan() -> Result<(), String> {
+    let words = "word ".repeat(8_192);
+    let code = format!("my @items = qw({words}");
+    let mut parser = Parser::new(&code);
+    let ast = parser.parse().map_err(|error| format!("long single-line qw failed: {error}"))?;
     if parser.errors().is_empty() {
-        return Err(format!("nested malformed qw recorded no recovery: {}", ast.to_sexp()));
+        return Err(format!("long unclosed qw recorded no recovery: {}", ast.to_sexp()));
     }
     Ok(())
 }

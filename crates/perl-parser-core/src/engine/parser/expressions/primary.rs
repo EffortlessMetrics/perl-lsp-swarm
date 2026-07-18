@@ -275,9 +275,15 @@ impl<'a> Parser<'a> {
                         ) {
                             content_str
                         } else {
-                            let (open, content) =
-                                quote_parser::quote_operator_open_and_content(text, "qw")
-                                    .unwrap_or(('(', text.strip_prefix("qw").unwrap_or(text)));
+                            let (open, content) = quote_parser::quote_operator_open_and_content(
+                                text, "qw",
+                            )
+                            .ok_or_else(|| {
+                                ParseError::syntax(
+                                    "Invalid qw delimiter while recovering an unclosed list",
+                                    start,
+                                )
+                            })?;
                             let close_kind = match open {
                                 '[' => TokenKind::RightBracket,
                                 '{' => TokenKind::RightBrace,

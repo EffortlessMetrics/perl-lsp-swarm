@@ -3207,11 +3207,17 @@ impl<'a> PerlLexer<'a> {
         let close = paired.unwrap_or(delim);
         let mut depth = i32::from(paired.is_some());
         let mut escaped = false;
+        let mut at_line_prefix = false;
 
         for (offset, ch) in self.input[self.position..].char_indices() {
             let position = self.position.saturating_add(offset);
-            if self.qw_statement_boundary_at(position) {
+            if at_line_prefix && !ch.is_whitespace() && self.qw_statement_boundary_at(position) {
                 return self.qw_has_top_level_closer_after(position, close);
+            }
+            if ch == '\n' {
+                at_line_prefix = true;
+            } else if at_line_prefix && !ch.is_whitespace() {
+                at_line_prefix = false;
             }
             if escaped {
                 escaped = false;
@@ -3265,7 +3271,7 @@ impl<'a> PerlLexer<'a> {
         for keyword in ["my", "our", "state", "local"] {
             if let Some(after) = remaining.strip_prefix(keyword)
                 && after.starts_with(char::is_whitespace)
-                && after.trim_start().starts_with(['$', '@', '%'])
+                && after.trim_start().starts_with(['$', '@', '%', '('])
                 && line.contains(';')
             {
                 return true;
