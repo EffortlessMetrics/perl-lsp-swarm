@@ -111,12 +111,8 @@ fn prepend_use_lib_paths(
 
 impl LspServer {
     pub(crate) fn evict_use_lib_hir_cache(&self, uri: &str) {
-        let uri_keys = self.uri_key_variants(uri);
         let mut cache = self.use_lib_hir_cache.lock();
         cache.entries.remove(&Some(self.normalize_uri_key(uri)));
-        for key in uri_keys {
-            cache.entries.remove(&Some(key));
-        }
     }
 
     pub(crate) fn cached_hir_use_lib_paths(
