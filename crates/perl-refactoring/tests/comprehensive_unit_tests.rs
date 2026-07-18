@@ -1229,50 +1229,65 @@ fn import_optimizer_suggests_symbol_dedup() -> Result<(), Box<dyn std::error::Er
 // ===================================================================
 
 /// Find the single modernization suggestion whose matched span slices back
-/// to `expected` in `code`, asserting the offsets are populated (non-zero,
-/// start < end) and byte-exact.
-fn assert_span(code: &str, expected: &str) {
+/// to `expected` in `code`, verifying the offsets form a non-empty, bounded,
+/// byte-exact span. A valid match may begin at byte zero.
+fn assert_span(code: &str, expected: &str) -> Result<(), Box<dyn std::error::Error>> {
     let m = LegacyModernizer::new();
     let suggestions = m.analyze(code);
-    let hit =
-        suggestions.iter().find(|s| s.end > s.start && code.get(s.start..s.end) == Some(expected));
-    assert!(
-        hit.is_some(),
-        "expected a suggestion whose [start..end] slices to {expected:?}; got {suggestions:?}"
-    );
-    let hit = hit.expect("checked is_some above");
-    assert_eq!(
-        code.get(hit.start..hit.end),
-        Some(expected),
-        "span must slice exactly to the matched pattern"
-    );
-    assert!(hit.start > 0, "offset should reflect real position, not the old 0/0 default");
+    let hit = suggestions
+        .iter()
+        .find(|s| s.end > s.start && s.end <= code.len() && code.get(s.start..s.end) == Some(expected))
+        .ok_or_else(|| {
+            format!(
+                "expected a non-empty, bounded suggestion span for {expected:?}; got {suggestions:?}"
+            )
+        })?;
+    let actual = code.get(hit.start..hit.end).ok_or_else(|| {
+        format!("suggestion span {}..{} is not a valid byte range", hit.start, hit.end)
+    })?;
+    if actual != expected {
+        return Err(format!("span must slice exactly to {expected:?}; got {actual:?}").into());
+    }
+    Ok(())
 }
 
 #[test]
-fn legacy_modernizer_two_arg_open_has_real_offset() {
-    assert_span("my $x = 1; open(FH, 'file.txt')", "open(FH, 'file.txt')");
+fn legacy_modernizer_two_arg_open_has_real_offset() -> Result<(), Box<dyn std::error::Error>> {
+    assert_span("my $x = 1; open(FH, 'file.txt')", "open(FH, 'file.txt')")
 }
 
 #[test]
-fn legacy_modernizer_defined_array_has_real_offset() {
-    assert_span("if (defined @array) { }", "defined @array");
+fn legacy_modernizer_defined_array_has_real_offset() -> Result<(), Box<dyn std::error::Error>> {
+    assert_span("if (defined @array) { }", "defined @array")
 }
 
 #[test]
-fn legacy_modernizer_each_array_has_real_offset() {
-    assert_span("while (my ($i, $val) = each @array) { }", "each @array");
+fn legacy_modernizer_each_array_has_real_offset() -> Result<(), Box<dyn std::error::Error>> {
+    assert_span("while (my ($i, $val) = each @array) { }", "each @array")
 }
 
 #[test]
-fn legacy_modernizer_string_eval_has_real_offset() {
+fn legacy_modernizer_string_eval_has_real_offset() -> Result<(), Box<dyn std::error::Error>> {
     // Only the `eval "` opening is matched; the span anchors on it.
-    assert_span("my $r = eval \"print 1\";", "eval \"");
+    assert_span("my $r = eval \"print 1\";", "eval \"")
 }
 
 #[test]
-fn legacy_modernizer_print_newline_has_real_offset() {
-    assert_span("sub f { print \"Hello\\n\" }", "print \"Hello\\n\"");
+fn legacy_modernizer_print_newline_has_real_offset() -> Result<(), Box<dyn std::error::Error>> {
+    assert_span("sub f { print \"Hello\\n\" }", "print \"Hello\\n\"")
+}
+
+#[test]
+fn legacy_modernizer_indirect_myclass_has_real_offset() -> Result<(), Box<dyn std::error::Error>> {
+    // The indirect-notation patterns already reported real offsets, but were
+    // never span-checked; guard them now that they derive `end` from the
+    // pattern length rather than a hardcoded literal.
+    assert_span("my $obj = new MyClass();", "new MyClass")
+}
+
+#[test]
+fn legacy_modernizer_indirect_class_has_real_offset() -> Result<(), Box<dyn std::error::Error>> {
+    assert_span("new Class();", "new Class")
 }
 
 #[test]
