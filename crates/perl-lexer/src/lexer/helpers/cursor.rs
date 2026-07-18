@@ -169,43 +169,91 @@ mod tests {
     use crate::LexerConfig;
 
     #[test]
-    fn peek_char_uses_character_offsets_for_ascii_and_utf8() {
+    fn peek_char_uses_character_offsets_for_ascii_and_utf8() -> Result<(), String> {
         let ascii = PerlLexer::new("abc");
-        assert_eq!(ascii.peek_char(0), Some('a'));
-        assert_eq!(ascii.peek_char(2), Some('c'));
-        assert_eq!(ascii.peek_char(3), None);
+        let actual = ascii.peek_char(0);
+        if actual != Some('a') {
+            return Err(format!("ASCII offset 0 returned {actual:?}"));
+        }
+        let actual = ascii.peek_char(2);
+        if actual != Some('c') {
+            return Err(format!("ASCII offset 2 returned {actual:?}"));
+        }
+        let actual = ascii.peek_char(3);
+        if actual.is_some() {
+            return Err(format!("ASCII EOF returned {actual:?}"));
+        }
 
         let bmp = PerlLexer::new("éxy");
-        assert_eq!(bmp.peek_char(0), Some('é'));
-        assert_eq!(bmp.peek_char(1), Some('x'));
-        assert_eq!(bmp.peek_char(2), Some('y'));
+        let actual = bmp.peek_char(0);
+        if actual != Some('é') {
+            return Err(format!("BMP offset 0 returned {actual:?}"));
+        }
+        let actual = bmp.peek_char(1);
+        if actual != Some('x') {
+            return Err(format!("BMP offset 1 returned {actual:?}"));
+        }
+        let actual = bmp.peek_char(2);
+        if actual != Some('y') {
+            return Err(format!("BMP offset 2 returned {actual:?}"));
+        }
 
         let non_bmp = PerlLexer::new("😀xy");
-        assert_eq!(non_bmp.peek_char(0), Some('😀'));
-        assert_eq!(non_bmp.peek_char(1), Some('x'));
-        assert_eq!(non_bmp.peek_char(2), Some('y'));
+        let actual = non_bmp.peek_char(0);
+        if actual != Some('😀') {
+            return Err(format!("non-BMP offset 0 returned {actual:?}"));
+        }
+        let actual = non_bmp.peek_char(1);
+        if actual != Some('x') {
+            return Err(format!("non-BMP offset 1 returned {actual:?}"));
+        }
+        let actual = non_bmp.peek_char(2);
+        if actual != Some('y') {
+            return Err(format!("non-BMP offset 2 returned {actual:?}"));
+        }
+
+        Ok(())
     }
 
     #[test]
-    fn peek_char_preserves_eof_and_max_lookahead_bounds() {
+    fn peek_char_preserves_eof_and_max_lookahead_bounds() -> Result<(), String> {
         let config = LexerConfig { max_lookahead: 1, ..LexerConfig::default() };
         let lexer = PerlLexer::with_config("éxy", config);
 
-        assert_eq!(lexer.peek_char(1), Some('x'));
-        assert_eq!(lexer.peek_char(2), None);
+        let actual = lexer.peek_char(1);
+        if actual != Some('x') {
+            return Err(format!("lookahead offset 1 returned {actual:?}"));
+        }
+        let actual = lexer.peek_char(2);
+        if actual.is_some() {
+            return Err(format!("bounded lookahead returned {actual:?}"));
+        }
 
         let eof = PerlLexer::new("éx");
-        assert_eq!(eof.peek_char(2), None);
+        let actual = eof.peek_char(2);
+        if actual.is_some() {
+            return Err(format!("EOF returned {actual:?}"));
+        }
+
+        Ok(())
     }
 
     #[test]
-    fn peek_char_handles_nonzero_positions_on_ascii_and_utf8_paths() {
+    fn peek_char_handles_nonzero_positions_on_ascii_and_utf8_paths() -> Result<(), String> {
         let mut ascii = PerlLexer::new("zabc");
         ascii.position = 1;
-        assert_eq!(ascii.peek_char(2), Some('c'));
+        let actual = ascii.peek_char(2);
+        if actual != Some('c') {
+            return Err(format!("nonzero ASCII offset 2 returned {actual:?}"));
+        }
 
         let mut utf8 = PerlLexer::new("zéxy");
         utf8.position = 1;
-        assert_eq!(utf8.peek_char(2), Some('y'));
+        let actual = utf8.peek_char(2);
+        if actual != Some('y') {
+            return Err(format!("nonzero UTF-8 offset 2 returned {actual:?}"));
+        }
+
+        Ok(())
     }
 }
