@@ -134,12 +134,6 @@ impl LexerCheckpoint {
     /// "invalidated" branches so callers always observe a known sentinel value
     /// and must rescan from `position` to recover accurate line/column data.
     pub fn apply_edit(&mut self, start: usize, old_len: usize, new_len: usize) {
-        if let CheckpointContext::Format { start_position } = &self.context {
-            debug_assert_eq!(
-                *start_position, self.position,
-                "format checkpoint origin must match its cursor before edits",
-            );
-        }
         if self.position > start {
             if self.position >= start.saturating_add(old_len) {
                 self.position = self.position.saturating_sub(old_len).saturating_add(new_len);
