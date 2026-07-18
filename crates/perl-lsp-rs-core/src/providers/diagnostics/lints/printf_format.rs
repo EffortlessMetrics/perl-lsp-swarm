@@ -106,7 +106,7 @@ fn check_format_args(name: &str, args: &[Node], node: &Node, diagnostics: &mut V
 /// - `%*d` counts as 2 specifiers: one for width (*), one for value (d).
 /// - `%.*f` counts as 2 specifiers: one for precision (*), one for value (f).
 /// - `%*.*s` counts as 3 specifiers: one for width (*), one for precision (*), one for value (s).
-fn count_format_specifiers(s: &str) -> usize {
+pub(crate) fn count_format_specifiers(s: &str) -> usize {
     let bytes = s.as_bytes();
     let mut count = 0;
     let mut i = 0;
@@ -193,7 +193,7 @@ fn count_format_specifiers(s: &str) -> usize {
 /// `NodeKind::String { value }` stores the raw lexer token including delimiters.
 /// Returns the content between the outermost quote pair, or the original string
 /// if no recognized quote pair is found.
-fn unquote_string(raw: &str) -> &str {
+pub(crate) fn unquote_string(raw: &str) -> &str {
     if raw.len() >= 2 {
         let bytes = raw.as_bytes();
         let first = bytes[0];

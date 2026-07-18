@@ -168,6 +168,22 @@ review_after = "2026-07-10"
 expires = "2026-09-30"
 
 # -----------------------------------------------------------------------------
+# Agent capability workflow contract test: diff-scoped RIPR currently treats
+# fallible YAML contract-test plumbing as a production seam.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-agent-capability-workflow-contract-test"
+kind = "test_receipt_surface"
+paths = ["xtask/tests/agent_capability_gate_workflow_policy.rs"]
+classification = ["weakly_exposed", "reachable_unrevealed", "error_path", "call_deletion", "return_value", "field_construction", "predicate"]
+owner = "ci"
+issue = "#4056"
+reason = "PR #4056 adds a fallible YAML contract test whose six diff-scoped RIPR gaps are test-harness plumbing (mapping/sequence parsing, Result propagation, exact contract values, and the terminal Ok(()) marker), not production behavior. The test directly observes the workflow's static runner, routing, fallback, trigger, permission, action-pin, and command-presence contracts; the production workflow remains subject to the normal workflow-policy and exact-head checks. This is the ripr#1428 test-surface limitation already covered by the repository's seam-proof suppressions. Remove when RIPR can distinguish contract-test plumbing from production seams."
+created = "2026-07-17"
+review_after = "2026-08-17"
+expires = "2026-09-30"
+
+# -----------------------------------------------------------------------------
 # goals-selector --json CLI regression test: same ripr#1428 class as
 # ripr-suppress-seam-proof-tests, one file.
 #
@@ -2171,3 +2187,21 @@ created = "2026-07-11"
 review_after = "2026-08-11"
 expires = "2026-09-30"
 removal_criteria = "ripr correctly recognizes the guarding assert_eq!/happy-path match arms as the discriminator for a sibling `other => return Err(...)` fallback arm in Result<(), String> test functions, OR ripr#1428 is fixed upstream."
+
+# -----------------------------------------------------------------------------
+# Repository Contract receipt/check runner (#3987): deterministic contract
+# plumbing is covered by focused unit and exact-head receipt proof, but RIPR
+# 0.9.x cannot trace the subprocess, serialization, and in-module test seams.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-repository-contract-receipt-seams"
+kind = "call_presence_static_tracing_limit"
+paths = ["xtask/src/tasks/ci_contract.rs"]
+classification = ["reachable_unrevealed", "weakly_exposed"]
+owner = "ci"
+issue = "#3987"
+reason = "Issue #3987 adds ci_contract.rs, a deterministic exact-head repository-contract receipt builder and bounded check runner. Focused tests cover check selection, exact two-dot diff identity, status precedence, exit/result mapping including instrument failures and explicit WARN findings, full object identity validation, bounded output, and JSON/Markdown receipt identity. The exact-head command is also executed locally against the committed branch and produces the documented advisory POLICY_FINDING baseline. RIPR 0.9.x reports reachable_unrevealed/weakly_exposed seams across subprocess draining, serialization, and the in-module contract-test harness because it cannot connect those contract oracles through the receipt/check boundary. This narrow single-file suppression preserves the required gate while keeping the receipt, focused tests, workflow-contract checks, and cargo-allow proof authoritative. Remove when RIPR can trace subprocess-backed contract receipts or targeted mutation replaces this advisory path."
+created = "2026-07-17"
+review_after = "2026-08-17"
+expires = "2026-09-30"
+removal_criteria = "RIPR can trace the exact-head receipt/check runner through its focused contract oracles, or targeted mutation replaces this advisory static path."

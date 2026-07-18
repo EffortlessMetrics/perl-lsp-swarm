@@ -849,6 +849,43 @@ fn cursor_in_regex_capture(regex: &regex::Regex, text: &str, cursor: usize, grou
         .any(|cap| cap.get(group).is_some_and(|m| cursor >= m.start() && cursor <= m.end()))
 }
 
+#[cfg(feature = "workspace")]
+#[derive(Debug, PartialEq, Eq)]
+enum FqnCursorComponent {
+    Prefix,
+    Final { package: String, name: String },
+}
+
+#[cfg(feature = "workspace")]
+fn fqn_component_at_cursor(
+    regex: &regex::Regex,
+    text: &str,
+    cursor: usize,
+) -> Option<FqnCursorComponent> {
+    regex.captures_iter(text).find_map(|cap| {
+        let matched = cap.get(1)?;
+        if cursor < matched.start() || cursor > matched.end() {
+            return None;
+        }
+
+        let value = matched.as_str();
+        let parts: Vec<&str> = value.split("::").collect();
+        if parts.len() < 2 {
+            return None;
+        }
+
+        let cursor_relative = cursor.saturating_sub(matched.start());
+        let final_component_start = value.rfind("::").map_or(0, |offset| offset + 2);
+        if cursor_relative < final_component_start {
+            Some(FqnCursorComponent::Prefix)
+        } else {
+            let name = parts.last().copied().unwrap_or_default().to_string();
+            let package = parts[..parts.len() - 1].join("::");
+            Some(FqnCursorComponent::Final { package, name })
+        }
+    })
+}
+
 impl LspServer {
     fn navigation_decision_trace_context(
         params: Option<&Value>,
@@ -875,6 +912,7 @@ impl LspServer {
         &self,
         context: Option<&NavigationDecisionTraceContext>,
         result: Option<&Value>,
+        semantic_shadow_receipt: Option<Value>,
     ) {
         let Some(context) = context else {
             return;
@@ -886,9 +924,7 @@ impl LspServer {
             ("acted", "live_provider_result", "live_provider")
         };
 
-        self.record_provider_decision_trace(
-            context.provider,
-            &json!({
+        let mut receipt = json!({
                 "provider": context.provider,
                 "provider_action": context.provider_action,
                 "decision": decision,
@@ -907,8 +943,14 @@ impl LspServer {
                 "dynamic_boundary": false,
                 "trace_only_no_live_behavior_change": true,
                 "claim_boundary": "records existing navigation response only; no broader live navigation cutover"
-            }),
-        );
+        });
+        if let Some(semantic_shadow_receipt) = semantic_shadow_receipt {
+            if let Some(receipt_object) = receipt.as_object_mut() {
+                receipt_object
+                    .insert("semantic_shadow_receipt".to_string(), semantic_shadow_receipt);
+            }
+        }
+        self.record_provider_decision_trace(context.provider, &receipt);
     }
 
     /// Handle textDocument/declaration request
@@ -1078,8 +1120,17 @@ impl LspServer {
             "textDocument/definition",
             None,
         )?;
+        #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+        let semantic_shadow_receipt =
+            params.as_ref().and_then(|params| self.definition_semantic_shadow_receipt(params));
+        #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
+        let semantic_shadow_receipt = None;
         let result = self.handle_definition_inner(params)?;
-        self.record_navigation_provider_decision_trace(trace_context.as_ref(), result.as_ref());
+        self.record_navigation_provider_decision_trace(
+            trace_context.as_ref(),
+            result.as_ref(),
+            semantic_shadow_receipt,
+        );
         Ok(result)
     }
 
@@ -1450,48 +1501,23 @@ impl LspServer {
                     // qualified name regardless of cursor position and would navigate
                     // to the wrong symbol.  Track whether the cursor is on a prefix
                     // and return early if so.
-                    let mut cursor_on_fqn_prefix = false;
                     let fqn_regex = get_fqn_regex()?;
-                    for cap in fqn_regex.captures_iter(&text_around) {
-                        if let Some(m) = cap.get(1) {
-                            if cursor_in_text >= m.start() && cursor_in_text <= m.end() {
-                                let parts: Vec<&str> = m.as_str().split("::").collect();
-                                if parts.len() >= 2 {
-                                    // Determine which component the cursor falls on.
-                                    // Only resolve when the cursor is on the final component
-                                    // (the sub/function name). Resolving when the cursor is
-                                    // on a package prefix (e.g. `Foo` in `Foo::bar`) would
-                                    // silently navigate to the wrong target — the sub — when
-                                    // the user clicked on the package name.
-                                    let cursor_rel = cursor_in_text.saturating_sub(m.start());
-                                    let last_sep_offset =
-                                        m.as_str().rfind("::").map_or(0, |p| p + 2);
-
-                                    if cursor_rel >= last_sep_offset {
-                                        let name = parts.last().copied().unwrap_or("");
-                                        let pkg = parts[..parts.len() - 1].join("::");
-
-                                        if let Some(result) = lookup_workspace_definition(
-                                            self.coordinator(),
-                                            &pkg,
-                                            name,
-                                            Some(uri),
-                                        ) {
-                                            return Ok(Some(result));
-                                        }
-                                    } else {
-                                        // Cursor is on a package-prefix component.  Block
-                                        // the AST-based fallback paths that ignore cursor
-                                        // position within a qualified name.
-                                        cursor_on_fqn_prefix = true;
-                                    }
+                    if let Some(component) =
+                        fqn_component_at_cursor(fqn_regex, &text_around, cursor_in_text)
+                    {
+                        match component {
+                            FqnCursorComponent::Final { package, name } => {
+                                if let Some(result) = lookup_workspace_definition(
+                                    self.coordinator(),
+                                    &package,
+                                    &name,
+                                    Some(uri),
+                                ) {
+                                    return Ok(Some(result));
                                 }
-                                break;
                             }
+                            FqnCursorComponent::Prefix => return Ok(None),
                         }
-                    }
-                    if cursor_on_fqn_prefix {
-                        return Ok(None);
                     }
 
                     // Attempt to resolve Package->method calls
@@ -1837,6 +1863,42 @@ impl LspServer {
         }
     }
 
+    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+    fn definition_semantic_shadow_receipt(&self, params: &Value) -> Option<Value> {
+        let uri = req_uri(params).ok()?;
+        let (line, character) = req_position(params).ok()?;
+        let (symbol, byte_offset, text_around, cursor_in_text, document_generation) =
+            self.navigation_runtime_snapshot(uri, line, character)?;
+        let fqn_regex = get_fqn_regex().ok()?;
+        if matches!(
+            fqn_component_at_cursor(fqn_regex, &text_around, cursor_in_text),
+            Some(FqnCursorComponent::Prefix)
+        ) {
+            return None;
+        }
+        let IndexAccessMode::Full(coordinator) = route_index_access(self.coordinator()) else {
+            return None;
+        };
+        let index = coordinator.index();
+        let snapshot_is_current = || {
+            document_generation == 0
+                || (self.document_generation(uri) == Some(document_generation)
+                    && index.indexed_generation(uri) == Some(document_generation))
+        };
+        if !snapshot_is_current() {
+            return None;
+        }
+        let receipt = index.with_semantic_queries_for_uri(uri, |file_id, queries| {
+            let context = QueryContext::new(file_id, None, Some(byte_offset));
+            goto_definition_live_exact_or_imported(index.as_ref(), &queries, &symbol, &context)
+                .receipt
+        })?;
+        if !snapshot_is_current() {
+            return None;
+        }
+        serde_json::to_value(receipt).ok()
+    }
+
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) fn definition_runtime_quality_receipt(
         &self,
@@ -1872,7 +1934,8 @@ impl LspServer {
 
             let uri = req_uri(&params)?;
             let (line, character) = req_position(&params)?;
-            let Some((symbol, byte_offset)) = self.navigation_runtime_symbol(uri, line, character)
+            let Some((symbol, byte_offset, _, _, _)) =
+                self.navigation_runtime_snapshot(uri, line, character)
             else {
                 return Ok(Some(json!({
                     "provider": "definition",
@@ -1919,16 +1982,32 @@ impl LspServer {
         }
     }
 
-    #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
-    fn navigation_runtime_symbol(
+    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+    fn navigation_runtime_snapshot(
         &self,
         uri: &str,
         line: u32,
         character: u32,
-    ) -> Option<(String, u32)> {
+    ) -> Option<(String, u32, String, usize, u32)> {
         let documents = self.documents_guard();
         let doc = self.get_document(&documents, uri)?;
+        let document_generation = doc.current_generation();
         let offset = self.pos16_to_offset(doc, line, character);
+        let (symbol, byte_offset) =
+            self.navigation_runtime_symbol_from_document(doc, line, character, offset)?;
+        let (text_start, text_around) = self.get_text_window_around_offset(&doc.text, offset, 50);
+        let cursor_in_text = offset.min(doc.text.len()).saturating_sub(text_start);
+        Some((symbol, byte_offset, text_around, cursor_in_text, document_generation))
+    }
+
+    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+    fn navigation_runtime_symbol_from_document(
+        &self,
+        doc: &DocumentState,
+        line: u32,
+        character: u32,
+        offset: usize,
+    ) -> Option<(String, u32)> {
         #[cfg(not(target_arch = "wasm32"))]
         let parsed = doc.current_parsed();
         if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
@@ -2378,6 +2457,20 @@ impl LspServer {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn fqn_component_classifier_matches_navigation_boundaries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let regex = get_fqn_regex()?;
+        assert_eq!(fqn_component_at_cursor(regex, "Foo::bar", 1), Some(FqnCursorComponent::Prefix));
+        assert_eq!(
+            fqn_component_at_cursor(regex, "Foo::bar", 5),
+            Some(FqnCursorComponent::Final { package: "Foo".to_string(), name: "bar".to_string() })
+        );
+        assert_eq!(fqn_component_at_cursor(regex, "Foo::bar", 9), None);
+        Ok(())
+    }
 
     /// Serializes tests in this module that touch
     /// `NAVIGATION_SAME_DOC_FALLBACK_GAP`, mirroring `toctou_hook_lock` in

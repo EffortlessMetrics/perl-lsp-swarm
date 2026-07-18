@@ -169,6 +169,36 @@ impl PirContext {
     }
 }
 
+/// HIR literal category preserved by a PIR literal operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PirLiteralKind {
+    /// Numeric literal.
+    Number,
+    /// String literal.
+    String,
+    /// `undef`.
+    Undef,
+    /// Array/list literal.
+    Array,
+    /// Hash literal.
+    Hash,
+}
+
+impl PirLiteralKind {
+    /// Stable name used in receipts and snapshots.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Number => "Number",
+            Self::String => "String",
+            Self::Undef => "Undef",
+            Self::Array => "Array",
+            Self::Hash => "Hash",
+        }
+    }
+}
+
 /// A lexical (`my`/`state`) variable named by a PIR operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -329,6 +359,11 @@ pub enum PirOperation {
     },
     /// An assignment expression.
     Assign,
+    /// A scalar or aggregate literal.
+    Literal {
+        /// Literal category preserved from HIR.
+        kind: PirLiteralKind,
+    },
     /// A subroutine or function call.
     Call {
         /// The callee.
@@ -386,6 +421,7 @@ impl PirOperation {
             Self::Modify { .. } => "Modify",
             Self::StashModify { .. } => "StashModify",
             Self::Assign => "Assign",
+            Self::Literal { .. } => "Literal",
             Self::Call { .. } => "Call",
             Self::MethodCall { .. } => "MethodCall",
             Self::Deref { .. } => "Deref",
@@ -408,6 +444,7 @@ impl PirOperation {
         "DynamicBoundary",
         "LexicalRead",
         "LexicalWrite",
+        "Literal",
         "Loop",
         "MethodCall",
         "Modify",
@@ -666,6 +703,7 @@ mod tests {
             "DynamicBoundary",
             "LexicalRead",
             "LexicalWrite",
+            "Literal",
             "Loop",
             "MethodCall",
             "Modify",
@@ -692,6 +730,13 @@ mod tests {
             name: LexicalName { sigil: "$".to_string(), name: "x".to_string() },
         };
         assert_eq!(op.name(), "LexicalWrite");
+    }
+
+    #[test]
+    fn pir_operation_literal_name() {
+        let op = PirOperation::Literal { kind: PirLiteralKind::Hash };
+        assert_eq!(op.name(), "Literal");
+        assert_eq!(PirLiteralKind::Hash.name(), "Hash");
     }
 
     #[test]

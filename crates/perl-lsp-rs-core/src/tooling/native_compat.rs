@@ -6,7 +6,7 @@
 //! artifacts; this module provides the small stable report model needed by the
 //! installed `perllsp` binary.
 
-use super::perl_critic::NativeCriticRegistry;
+use super::perl_critic::{NativeCriticProfile, NativeCriticRegistry};
 use serde::Serialize;
 use std::collections::BTreeSet;
 
@@ -82,7 +82,7 @@ pub struct PerlcriticCompatReport {
     pub native_equivalent_count: usize,
     /// Items where native critic behavior is broader or more precise.
     pub native_superset_count: usize,
-    /// Items approximated by the current native recommended profile.
+    /// Items approximated by the current native strict profile.
     pub approximated_count: usize,
     /// Settings that are safe to ignore for structured native diagnostics.
     pub unsupported_safe_count: usize,
@@ -99,7 +99,7 @@ pub struct PerlcriticCompatReport {
 pub struct PerlcriticNativeConfigSuggestion {
     /// Native critic engine to use for the migrated config.
     pub engine: &'static str,
-    /// Conservative native profile used as the migration target.
+    /// Native profile used as the migration target.
     pub profile: &'static str,
     /// Project config severity derived from `severity`, when present and valid.
     pub perlcritic_severity: Option<u8>,
@@ -153,7 +153,7 @@ pub fn classify_perltidy_profile(raw: &str) -> PerltidyCompatReport {
 /// Classify a `.perlcriticrc`-style profile against native critic support.
 #[must_use]
 pub fn classify_perlcritic_profile(raw: &str) -> PerlcriticCompatReport {
-    let native_rules = NativeCriticRegistry::recommended()
+    let native_rules = NativeCriticRegistry::for_profile(NativeCriticProfile::Strict)
         .rule_ids()
         .into_iter()
         .map(ToOwned::to_owned)
@@ -161,7 +161,7 @@ pub fn classify_perlcritic_profile(raw: &str) -> PerlcriticCompatReport {
     let mut items = Vec::new();
     let mut suggested_config = PerlcriticNativeConfigSuggestion {
         engine: "native",
-        profile: "recommended",
+        profile: "strict",
         perlcritic_severity: None,
         include: Vec::new(),
         exclude: Vec::new(),
@@ -631,7 +631,7 @@ fn classify_perlcritic_policy(
             None,
             "external_only",
             Some(native_rule),
-            "mapped native rule is not currently present in the recommended registry",
+            "mapped native rule is not currently present in the strict registry",
         ),
         None => perlcritic_item(
             "policy",
@@ -861,7 +861,7 @@ fn classify_perlcritic_theme_setting(value: Option<String>) -> PerlcriticCompatI
             value,
             "approximated",
             None,
-            "native critic recommended profile approximates common perlcritic themes with currently implemented native rules",
+            "native critic strict profile approximates common perlcritic themes with currently implemented native rules",
         )
     } else {
         perlcritic_item(
@@ -989,7 +989,7 @@ color = 1
         assert_eq!(report.items[5].native_rule, Some("native.io.two_arg_open"));
         assert_eq!(report.items[6].native_rule, Some("native.io.unchecked_open_close"));
         assert_eq!(report.suggested_config.engine, "native");
-        assert_eq!(report.suggested_config.profile, "recommended");
+        assert_eq!(report.suggested_config.profile, "strict");
         assert_eq!(report.suggested_config.perlcritic_severity, Some(3));
         assert_eq!(report.suggested_config.include, vec!["native.testing.require_use_strict"]);
         assert_eq!(
@@ -1027,6 +1027,20 @@ exclude = InputOutput::ProhibitTwoArgOpen Variables::ProhibitUnusedVariables
             "exclude = [\"native.io.two_arg_open\", \"native.variables.unused_lexical\"]"
         ));
         assert!(markdown.contains("- include: `Unknown::Policy`"));
+    }
+
+    #[test]
+    fn perlcritic_strict_only_include_selects_strict_profile() {
+        let report = classify_perlcritic_profile("include = Documentation::RequirePodSections\n");
+
+        assert_eq!(report.suggested_config.profile, "strict");
+        assert_eq!(
+            report.suggested_config.include,
+            vec!["native.documentation.require_pod_sections"]
+        );
+
+        let markdown = render_perlcritic_compat_markdown(".perlcriticrc", &report);
+        assert!(markdown.contains("profile = \"strict\""));
     }
 
     #[test]

@@ -148,7 +148,7 @@ pub struct Scope {
     pub symbols: HashSet<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// Classification of lexical scope types in Perl for Parse/Analyze workflows.
 ///
 /// Defines different scope boundaries with specific symbol visibility
@@ -310,7 +310,7 @@ impl SymbolTable {
     ///
     /// Invariant: when two or more scopes share the same `location.start`,
     /// the tie is broken by `id`. Scope IDs are assigned in monotonically
-    /// increasing, strictly nested push order (see [`Self::push_scope`]), so
+    /// increasing, strictly nested push order (see the private `push_scope`), so
     /// a child scope always has a greater `id` than its parent. Ranking by
     /// `(location.start, id)` therefore always selects the innermost scope
     /// among same-start candidates, never an outer sibling or ancestor.
@@ -407,7 +407,7 @@ pub enum WebFrameworkKind {
     PlackBuilder,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// Async framework variant detected via `use` statements during Parse/Analyze workflows.
 pub enum AsyncFrameworkKind {
     /// `use AnyEvent;`
@@ -430,6 +430,8 @@ pub enum AsyncFrameworkKind {
     MojoRedis,
     /// `use Mojo::Pg;`
     MojoPg,
+    /// `use Mojo::mysql;`
+    MojoMysql,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -445,6 +447,9 @@ pub struct FrameworkFlags {
     pub web_framework: Option<WebFrameworkKind>,
     /// Async framework variant, if any (IO::Async).
     pub async_framework: Option<AsyncFrameworkKind>,
+    /// All async frameworks imported by the package, preserving multiple
+    /// adapters such as `Mojo::Pg` and `Mojo::mysql`.
+    pub async_frameworks: HashSet<AsyncFrameworkKind>,
     /// Catalyst controller/package marker used for action synthesis.
     pub catalyst_controller: bool,
 }
@@ -2124,28 +2129,47 @@ impl SymbolExtractor {
 
     /// Synthesize class symbols for async framework namespaces used in method-call form.
     fn synthesize_async_framework_class_symbol(&mut self, object: &Node) -> bool {
-        let Some(flags) = self.framework_flags.get(&self.table.current_package) else {
-            return false;
-        };
+        let mut framework_kinds = self
+            .framework_flags
+            .get(&self.table.current_package)
+            .map(|flags| flags.async_frameworks.clone())
+            .unwrap_or_default();
+        if let Some(kind) = self
+            .framework_flags
+            .get(&self.table.current_package)
+            .and_then(|flags| flags.async_framework)
+        {
+            framework_kinds.insert(kind);
+        }
 
-        let (module_name, framework_name, exact_match) = match flags.async_framework {
-            Some(AsyncFrameworkKind::AnyEvent) => ("AnyEvent", "AnyEvent", false),
-            Some(AsyncFrameworkKind::EV) => ("EV", "EV", true),
-            Some(AsyncFrameworkKind::Future) => ("Future", "Future", true),
-            Some(AsyncFrameworkKind::FutureXS) => ("Future::XS", "Future::XS", true),
-            Some(AsyncFrameworkKind::Promise) => ("Promise", "Promise", true),
-            Some(AsyncFrameworkKind::PromiseXS) => ("Promise::XS", "Promise::XS", true),
-            Some(AsyncFrameworkKind::POE) => ("POE", "POE", false),
-            Some(AsyncFrameworkKind::IOAsync) => ("IO::Async", "IO::Async", false),
-            Some(AsyncFrameworkKind::MojoRedis) => ("Mojo::Redis", "Mojo::Redis", true),
-            Some(AsyncFrameworkKind::MojoPg) => ("Mojo::Pg", "Mojo::Pg", true),
-            None => return false,
+        framework_kinds
+            .into_iter()
+            .any(|kind| self.synthesize_async_framework_class_symbol_for_kind(object, kind))
+    }
+
+    fn synthesize_async_framework_class_symbol_for_kind(
+        &mut self,
+        object: &Node,
+        async_framework: AsyncFrameworkKind,
+    ) -> bool {
+        let (module_name, framework_name, exact_match) = match async_framework {
+            AsyncFrameworkKind::AnyEvent => ("AnyEvent", "AnyEvent", false),
+            AsyncFrameworkKind::EV => ("EV", "EV", true),
+            AsyncFrameworkKind::Future => ("Future", "Future", true),
+            AsyncFrameworkKind::FutureXS => ("Future::XS", "Future::XS", true),
+            AsyncFrameworkKind::Promise => ("Promise", "Promise", true),
+            AsyncFrameworkKind::PromiseXS => ("Promise::XS", "Promise::XS", true),
+            AsyncFrameworkKind::POE => ("POE", "POE", false),
+            AsyncFrameworkKind::IOAsync => ("IO::Async", "IO::Async", false),
+            AsyncFrameworkKind::MojoRedis => ("Mojo::Redis", "Mojo::Redis", true),
+            AsyncFrameworkKind::MojoPg => ("Mojo::Pg", "Mojo::Pg", true),
+            AsyncFrameworkKind::MojoMysql => ("Mojo::mysql", "Mojo::mysql", true),
         };
 
         let Some(name) = Self::single_symbol_name(object) else {
             return false;
         };
-        if flags.async_framework == Some(AsyncFrameworkKind::AnyEvent) {
+        if async_framework == AsyncFrameworkKind::AnyEvent {
             if !matches!(
                 name.as_str(),
                 "AnyEvent" | "AnyEvent::CondVar" | "AnyEvent::Timer" | "AnyEvent::IO"
@@ -2184,6 +2208,12 @@ impl SymbolExtractor {
         });
 
         true
+    }
+
+    fn mark_async_framework(&mut self, package: &str, kind: AsyncFrameworkKind) {
+        let flags = self.framework_flags.entry(package.to_string()).or_default();
+        flags.async_framework = Some(kind);
+        flags.async_frameworks.insert(kind);
     }
 
     /// Synthesize the `EV` namespace symbol when the framework is imported.
@@ -2387,62 +2417,57 @@ impl SymbolExtractor {
         }
 
         if module == "IO::Async" || module.starts_with("IO::Async::") {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::IOAsync);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::IOAsync);
             return;
         }
 
         if module == "AnyEvent" {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::AnyEvent);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::AnyEvent);
             return;
         }
 
         if module == "EV" {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::EV);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::EV);
             return;
         }
 
         if module == "Future" {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::Future);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::Future);
             return;
         }
 
         if module == "Future::XS" {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::FutureXS);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::FutureXS);
             return;
         }
 
         if module == "Promise" {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::Promise);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::Promise);
             return;
         }
 
         if module == "Promise::XS" {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::PromiseXS);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::PromiseXS);
             return;
         }
 
         if module == "POE" || module.starts_with("POE::") {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::POE);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::POE);
             return;
         }
 
         if module == "Mojo::Redis" {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::MojoRedis);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::MojoRedis);
             return;
         }
 
         if module == "Mojo::Pg" {
-            self.framework_flags.entry(pkg.clone()).or_default().async_framework =
-                Some(AsyncFrameworkKind::MojoPg);
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::MojoPg);
+            return;
+        }
+
+        if module == "Mojo::mysql" {
+            self.mark_async_framework(&pkg, AsyncFrameworkKind::MojoMysql);
             return;
         }
 
