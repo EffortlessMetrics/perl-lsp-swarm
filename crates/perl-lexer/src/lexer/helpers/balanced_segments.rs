@@ -1,6 +1,17 @@
 use crate::{PerlLexer, limits::MAX_DELIM_NEST};
 
 impl PerlLexer<'_> {
+    #[inline]
+    fn consume_nested_opener(&mut self, depth: &mut usize) -> bool {
+        if *depth >= MAX_DELIM_NEST {
+            return false;
+        }
+
+        *depth += 1;
+        self.advance();
+        true
+    }
+
     /// General-purpose balanced-segment consumer (no quote-boundary recovery).
     ///
     /// For use inside double-quoted string interpolation where the outer `"` must
@@ -23,11 +34,9 @@ impl PerlLexer<'_> {
                     }
                 }
                 c if c == open => {
-                    if depth >= MAX_DELIM_NEST {
+                    if !self.consume_nested_opener(&mut depth) {
                         return None;
                     }
-                    depth += 1;
-                    self.advance();
                 }
                 c if c == close => {
                     self.advance();
@@ -71,11 +80,9 @@ impl PerlLexer<'_> {
                     return None;
                 }
                 c if c == open => {
-                    if depth >= MAX_DELIM_NEST {
+                    if !self.consume_nested_opener(&mut depth) {
                         return None;
                     }
-                    depth += 1;
-                    self.advance();
                 }
                 c if c == close => {
                     self.advance();
