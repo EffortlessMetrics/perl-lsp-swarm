@@ -944,13 +944,7 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
         if self.is_delimiter_recovery_point() {
-            let pos = self.current_position();
-            let site = Self::recovery_site_for_closer(kind);
-            self.errors.push(ParseError::Recovered {
-                site,
-                kind: RecoveryKind::InsertedCloser,
-                location: pos,
-            });
+            self.record_inserted_closer(kind);
             return Ok(());
         }
         let pos = self.current_position();
@@ -959,6 +953,16 @@ impl<'a> Parser<'a> {
             self.peek_kind().map(|k| k.display_name()).unwrap_or("end of input"),
             pos,
         ))
+    }
+
+    fn record_inserted_closer(&mut self, kind: TokenKind) {
+        let pos = self.current_position();
+        let site = Self::recovery_site_for_closer(kind);
+        self.errors.push(ParseError::Recovered {
+            site,
+            kind: RecoveryKind::InsertedCloser,
+            location: pos,
+        });
     }
 
     /// Map a closing-delimiter token to its [`RecoverySite`] for recovery annotations.

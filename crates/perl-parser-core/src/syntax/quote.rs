@@ -969,15 +969,7 @@ pub fn validate_substitution_modifiers(modifiers_str: &str) -> Result<String, ch
 /// assert_eq!(parse_quote_operator_content("qwfoo", "qw"), None);
 /// ```
 pub fn parse_quote_operator_content<'a>(s: &'a str, operator: &str) -> Option<&'a str> {
-    // Perl allows whitespace and line comments between a quote-like operator
-    // and its opening delimiter, e.g. `qw [a b]` or `q # comment\n "x"#`.
-    let rest = skip_paired_replacement_gap(s.strip_prefix(operator)?);
-    let mut chars = rest.chars();
-    let open = chars.next()?;
-    // Reject bareword: `qwfoo` where the char after qw is alphanumeric/underscore.
-    if open.is_ascii_alphanumeric() || open == '_' {
-        return None;
-    }
+    let (open, content) = quote_operator_open_and_content(s, operator)?;
     let close = match open {
         '(' => ')',
         '{' => '}',
@@ -985,15 +977,25 @@ pub fn parse_quote_operator_content<'a>(s: &'a str, operator: &str) -> Option<&'
         '<' => '>',
         other => other,
     };
-    if !rest.ends_with(close) {
+    if !content.ends_with(close) {
         return None;
     }
-    let start = open.len_utf8();
-    let end = rest.len().checked_sub(close.len_utf8())?;
-    if end < start {
+    let end = content.len().checked_sub(close.len_utf8())?;
+    Some(&content[..end])
+}
+
+pub(crate) fn quote_operator_open_and_content<'a>(
+    s: &'a str,
+    operator: &str,
+) -> Option<(char, &'a str)> {
+    // Perl allows whitespace and line comments between a quote-like operator
+    // and its opening delimiter, e.g. `qw [a b]` or `q # comment\n "x"#`.
+    let rest = skip_paired_replacement_gap(s.strip_prefix(operator)?);
+    let open = rest.chars().next()?;
+    if open.is_ascii_alphanumeric() || open == '_' {
         return None;
     }
-    Some(&rest[start..end])
+    Some((open, rest.get(open.len_utf8()..)?))
 }
 
 /// Parse a `qw(...)` expression and return the whitespace-split word list.
