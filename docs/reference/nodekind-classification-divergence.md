@@ -90,8 +90,12 @@ executable.
 Provider moved since #914 was filed: the canonical implementation is now
 `crates/perl-lsp-rs-core/src/providers/semantic_tokens/semantic_tokens.rs`
 (the old `crates/perl-lsp-rs/src/features/semantic_tokens_provider.rs` no longer
-exists). The `is_declaration_context` symbol #914 named has also left the
-provider — it now lives only in `perl-parser-core` as a parse-time concern.
+exists). The `is_declaration_context` flag #914 described in the provider is also
+gone — the provider no longer threads a declaration-context boolean at all, and no
+symbol by that name exists in the codebase today. (The only similarly-named symbol,
+`is_field_declaration_context` at
+`crates/perl-parser-core/src/engine/parser/helpers.rs:73`, is a `field`-keyword
+parse-time helper, unrelated to `use` or to token painting.)
 
 **Side A — semantic tokens** — `semantic_tokens.rs`
 
@@ -110,14 +114,20 @@ provider — it now lives only in `perl-parser-core` as a parse-time concern.
   `declarations::handle_use`.
 - `handle_use` (`declarations.rs:271-323`) treats `use vars` as a **binding
   introducer** — it declares the named variables into the current scope
-  (`declarations.rs:291-299`, `declare_variable_parts_in_context(...)`).
+  (`declarations.rs:291-299`, `declare_variable_parts_in_context(...)`). Note the
+  binding path is gated on `module == "vars"` (`declarations.rs:281`), so an
+  ordinary `use Foo;` no-ops here — only the `use vars qw(...)` form exercises the
+  divergence.
 - Sibling binding/scope introducers for comparison: `VariableListDeclaration`
   (`mod.rs:663`), `Subroutine` (`mod.rs:830`), `Package` (`mod.rs:857`).
 
 **Divergence:** semantic tokens treats `Use` as **non-declaration** (only a
-read-only-module probe); the scope analyzer treats `Use` (`use vars`) as a
-**binding introducer** that declares symbols. Same node, two answers — the
-fixture `use Foo;` is classified differently by each consumer.
+read-only-module probe); the scope analyzer treats the `use vars` form as a
+**binding introducer** that declares symbols. Same `NodeKind::Use`, two answers —
+the fixture `use vars qw($x);` declares `$x` in the scope analyzer but is painted
+as a non-declaration by semantic tokens. (An ordinary `use Foo;` is a weaker
+example: both consumers agree it declares nothing, because `handle_use` only acts
+on `module == "vars"`.)
 
 ## Divergence 3 — "scope-introducing / foldable", If/While/Given/Try (MEDIUM-HIGH impact)
 
