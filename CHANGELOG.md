@@ -713,7 +713,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.16.0] - 2026-06-06
+## [0.16.0] - Unreleased
 
 Release notes: [v0.16.0](docs/releases/v0.16.0.md)
 
