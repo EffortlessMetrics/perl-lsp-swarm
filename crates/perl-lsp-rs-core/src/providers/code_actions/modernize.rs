@@ -243,16 +243,58 @@ fn has_flagged_mojolicious_use(source: &str) -> bool {
             _ => {}
         }
 
-        // Import arguments = text up to the terminating `;`. Whitespace-insensitive,
-        // so a wrapped continuation line is captured. `()` is the explicit
-        // empty-import list, which skips `import` entirely -> no strict.
+        // Import arguments = text up to the terminating `;`. A wrapped
+        // continuation line is captured because the scan is over the whole
+        // source, not per line.
         let args = source[name_end..].split(';').next().unwrap_or_default();
-        let compact: String = args.chars().filter(|c| !c.is_whitespace()).collect();
-        if !compact.is_empty() && compact != "()" {
+        if import_list_enables_strict(args) {
             return true;
         }
     }
     false
+}
+
+/// Whether the import-argument text of a `use Mojolicious <args>;` statement
+/// actually reaches `Mojo::Base::import`'s flag branch (and so enables
+/// strict/warnings).
+///
+/// Returns `false` for the forms that pass no import arguments:
+/// - empty (`use Mojolicious;`);
+/// - a leading `use Module VERSION;` version literal, which Perl consumes
+///   before calling `import`, so `import` receives no args
+///   (`use Mojolicious 9.0;`, `use Mojolicious v9.0;`);
+/// - the explicit empty import list `()` (`import` is skipped entirely);
+/// - an empty `qw//` list in any delimiter (`qw()`, `qw[]`, `qw{}`, `qw<>`,
+///   `qw//`), which passes an empty list so the `import`'s
+///   `return unless @flags` guard short-circuits.
+fn import_list_enables_strict(args: &str) -> bool {
+    let mut rest = args.trim();
+
+    // `use Module VERSION LIST;` — a leading numeric or v-string version is
+    // consumed by `use` itself and never forwarded to `import`.
+    let starts_with_version = rest.starts_with(|c: char| c.is_ascii_digit())
+        || (rest.starts_with('v') && rest[1..].starts_with(|c: char| c.is_ascii_digit()));
+    if starts_with_version {
+        rest = rest.split_once(char::is_whitespace).map_or("", |(_, r)| r).trim();
+    }
+
+    if rest.is_empty() {
+        return false;
+    }
+
+    let compact: String = rest.chars().filter(|c| !c.is_whitespace()).collect();
+    if compact == "()" {
+        return false;
+    }
+    // Empty `qw` list regardless of delimiter: `qw` + an opening + a closing
+    // char and nothing between them.
+    if let Some(body) = compact.strip_prefix("qw")
+        && body.chars().count() == 2
+    {
+        return false;
+    }
+
+    true
 }
 
 /// Detect missing `use strict` / `use warnings` and suggest adding both.
@@ -815,6 +857,33 @@ mod tests {
             let actions = find_missing_strict_warnings(source);
             assert!(actions.is_empty(), "flagged Mojolicious must suppress for: {source:?}");
         }
+    }
+
+    #[test]
+    fn version_or_empty_qw_mojolicious_does_not_suppress() {
+        // `use Mojolicious VERSION;` consumes the version before import(), and
+        // an empty `qw//` list passes no flags -- neither enables strict, so
+        // the add-strict/warnings action must still be offered.
+        for source in [
+            "use Mojolicious 9.0;\nprint 'hi';",
+            "use Mojolicious v9.0;\nprint 'hi';",
+            "use Mojolicious qw();\nprint 'hi';",
+            "use Mojolicious qw//;\nprint 'hi';",
+        ] {
+            let actions = find_missing_strict_warnings(source);
+            assert!(
+                actions.iter().any(|a| a.title.contains("use strict")),
+                "non-flag Mojolicious import must not suppress the action: {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn versioned_flag_mojolicious_still_suppresses() {
+        // A version followed by a real flag still reaches import()'s flag branch.
+        let source = "use Mojolicious 9.0 -base;\nprint 'hi';";
+        let actions = find_missing_strict_warnings(source);
+        assert!(actions.is_empty(), "`use Mojolicious 9.0 -base;` must suppress the action");
     }
 
     #[test]
