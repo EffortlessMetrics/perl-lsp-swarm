@@ -466,7 +466,7 @@ impl WorkspaceRename {
             }
 
             // Search for the old name in this document's text
-            let text = &doc.text;
+            let text = doc.text();
             if !text.contains(old_bare) {
                 files_processed += 1;
                 continue;
