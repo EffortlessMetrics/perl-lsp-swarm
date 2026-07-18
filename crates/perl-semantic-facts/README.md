@@ -21,8 +21,7 @@ boundary linkage, invalidation dependencies, and a stable reason code.
 Providers can call `SemanticFactEnvelope::status()` without inspecting AST, HIR, or PIR:
 
 - `Exact` means all required identity and authority metadata is known, confidence is high,
-  freshness is `Fresh`, the reason code is `ExactSource` or `GeneratedFromSource`, and no
-  boundary is linked.
+  freshness is `Fresh`, the reason code is `ExactSource`, and no boundary is linked.
 - `Degraded` means the fact is usable as advisory/shadow evidence but has reduced certainty.
 - `Refused` means a linked boundary explicitly forbids promotion or the reason code is
   `UnsupportedEffect`, even when no boundary link is present.

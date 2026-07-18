@@ -343,10 +343,7 @@ impl SemanticFactEnvelope {
             SemanticReasonCode::StaleDependency => return SemanticFactStatus::Stale,
             _ => {}
         }
-        if !matches!(
-            self.reason_code,
-            SemanticReasonCode::ExactSource | SemanticReasonCode::GeneratedFromSource
-        ) {
+        if !matches!(self.reason_code, SemanticReasonCode::ExactSource) {
             return SemanticFactStatus::Degraded;
         }
         if self.has_malformed_structure() {
@@ -504,14 +501,24 @@ mod tests {
     }
 
     #[test]
-    fn exact_reason_codes_remain_exact() {
-        for reason_code in
-            [SemanticReasonCode::ExactSource, SemanticReasonCode::GeneratedFromSource]
-        {
-            let mut envelope = exact_envelope(Vec::new());
-            envelope.reason_code = reason_code;
-            assert_eq!(envelope.status(), SemanticFactStatus::Exact);
-        }
+    fn exact_source_reason_remains_exact() {
+        let mut envelope = exact_envelope(Vec::new());
+        envelope.reason_code = SemanticReasonCode::ExactSource;
+        assert_eq!(envelope.status(), SemanticFactStatus::Exact);
+    }
+
+    #[test]
+    fn generated_source_reason_remains_degraded() {
+        let mut envelope = exact_envelope(Vec::new());
+        envelope.reason_code = SemanticReasonCode::GeneratedFromSource;
+        assert_eq!(envelope.status(), SemanticFactStatus::Degraded);
+    }
+
+    #[test]
+    fn stale_dependency_reason_is_stale() {
+        let mut envelope = exact_envelope(Vec::new());
+        envelope.reason_code = SemanticReasonCode::StaleDependency;
+        assert_eq!(envelope.status(), SemanticFactStatus::Stale);
     }
 
     #[test]
