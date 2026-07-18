@@ -844,6 +844,90 @@ fn legacy_modernizer_no_suggestions_for_clean_code() -> Result<(), Box<dyn std::
 }
 
 // ===================================================================
+// Legacy PerlModernizer byte-offset correctness (issue #3922)
+//
+// Every suggestion that carries a non-empty `old_pattern` must expose a
+// `start..end` range that slices the exact detected substring out of the
+// source. Regression guard: several patterns previously hard-coded
+// `start: 0, end: 0`, losing the position LSP code actions need to apply a
+// precise edit. Each fixture places the pattern at a non-zero offset so a
+// `start: 0` regression fails the slice assertion.
+// ===================================================================
+
+/// Returns the first suggestion whose `old_pattern` contains `needle`, or an
+/// error if none matched (keeps tests free of `unwrap`/`expect` per lint policy).
+fn find_suggestion<'a>(
+    suggestions: &'a [perl_refactoring::modernize::ModernizationSuggestion],
+    needle: &str,
+) -> Result<&'a perl_refactoring::modernize::ModernizationSuggestion, Box<dyn std::error::Error>> {
+    suggestions
+        .iter()
+        .find(|s| s.old_pattern.contains(needle))
+        .ok_or_else(|| format!("expected a suggestion containing {needle:?}").into())
+}
+
+#[test]
+fn legacy_modernizer_two_arg_open_offsets_slice_pattern() -> Result<(), Box<dyn std::error::Error>>
+{
+    let m = LegacyModernizer::new();
+    let code = "my $x = 1;\nopen(FH, 'file.txt');\n";
+    let suggestions = m.analyze(code);
+    let s = find_suggestion(&suggestions, "open(FH")?;
+    assert_ne!(s.start, s.end, "byte range must be non-empty");
+    assert_eq!(&code[s.start..s.end], "open(FH, 'file.txt')");
+    assert_eq!(s.start, code.find("open(FH").ok_or("pattern present")?);
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_defined_array_offsets_slice_pattern() -> Result<(), Box<dyn std::error::Error>>
+{
+    let m = LegacyModernizer::new();
+    let code = "my $x = 1;\nif (defined @array) { }\n";
+    let suggestions = m.analyze(code);
+    let s = find_suggestion(&suggestions, "defined @array")?;
+    assert_ne!(s.start, s.end, "byte range must be non-empty");
+    assert_eq!(&code[s.start..s.end], "defined @array");
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_each_array_offsets_slice_pattern() -> Result<(), Box<dyn std::error::Error>> {
+    let m = LegacyModernizer::new();
+    let code = "my $x = 1;\nwhile (my ($i, $v) = each @array) { }\n";
+    let suggestions = m.analyze(code);
+    let s = find_suggestion(&suggestions, "each @array")?;
+    assert_ne!(s.start, s.end, "byte range must be non-empty");
+    assert_eq!(&code[s.start..s.end], "each @array");
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_string_eval_offsets_slice_pattern() -> Result<(), Box<dyn std::error::Error>> {
+    let m = LegacyModernizer::new();
+    let code = "my $x = 1;\neval \"print 1\";\n";
+    let suggestions = m.analyze(code);
+    let s = find_suggestion(&suggestions, "eval")?;
+    assert_ne!(s.start, s.end, "byte range must be non-empty");
+    // The detector matches the `eval "` prefix; the range must slice exactly that.
+    assert_eq!(&code[s.start..s.end], "eval \"");
+    assert_eq!(s.start, code.find("eval \"").ok_or("pattern present")?);
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_print_newline_offsets_slice_pattern() -> Result<(), Box<dyn std::error::Error>>
+{
+    let m = LegacyModernizer::new();
+    let code = "my $x = 1;\nprint \"Hello\\n\";\n";
+    let suggestions = m.analyze(code);
+    let s = find_suggestion(&suggestions, "print \"Hello")?;
+    assert_ne!(s.start, s.end, "byte range must be non-empty");
+    assert_eq!(&code[s.start..s.end], "print \"Hello\\n\"");
+    Ok(())
+}
+
+// ===================================================================
 // Refactored PerlModernizer (modernize_refactored.rs)
 // ===================================================================
 
