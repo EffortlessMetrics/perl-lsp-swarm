@@ -1147,6 +1147,39 @@ fn test_unclosed_qw_parenthesized_print_recovers() -> Result<(), String> {
     Ok(())
 }
 
+/// #4491 review (blocker): a starter-shaped word that is bare quote-word content
+/// must not borrow the block `{`/`;` of an unrelated statement on a *later* line.
+/// Before the header-on-one-line guard these silently dropped the word and
+/// mis-parsed the following real statement as a bogus declaration.
+#[test]
+fn test_unclosed_qw_block_starter_word_does_not_borrow_later_statement() -> Result<(), String> {
+    for (label, code, keyword_word) in [
+        ("sub then return-hashref", "my @a = qw(word\nsub\nreturn { a => 1 };", "\"sub\""),
+        ("package then return", "my @a = qw(word\npackage\nreturn 5;", "\"package\""),
+        (
+            "class then method call",
+            "my @a = qw(word\nclass->new(1)->run({ x => 1 });",
+            "class->new",
+        ),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        // The keyword-shaped word stays inside the qw list; it is not consumed as a
+        // declaration, and the following statement is not mis-parsed.
+        if !sexp.contains(keyword_word) {
+            return Err(format!("[{label}] keyword word was wrongly consumed: {sexp}"));
+        }
+        if statements.len() != 1 {
+            return Err(format!("[{label}] borrowed a later statement's boundary: {sexp}"));
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn test_recovery_unclosed_q_brace() {
     let code = "my $str = q{ hello world print 1;";

@@ -3314,26 +3314,48 @@ impl<'a> PerlLexer<'a> {
                 && self.qw_statement_terminates(position);
         }
 
-        // Declaration/phaser starters must reach a top-level block `{` before any
-        // other statement. `package`/`class` also have a valid semicolon form
-        // (`package Foo;`); `sub` recovery requires an actual block to stay well
-        // clear of bare quote-word content like `sub run more`.
-        let allows_semicolon_form = matches!(keyword, "package" | "class");
-        if !matches!(
-            keyword,
-            "sub" | "package" | "class" | "BEGIN" | "END" | "INIT" | "CHECK" | "UNITCHECK"
-        ) {
+        let is_phaser = matches!(keyword, "BEGIN" | "END" | "INIT" | "CHECK" | "UNITCHECK");
+        let is_named = matches!(keyword, "sub" | "package" | "class");
+        if !is_phaser && !is_named {
             return false;
         }
+        // `package`/`class` also have a valid semicolon form (`package Foo;`); `sub`
+        // recovery requires an actual block.
+        let allows_semicolon_form = matches!(keyword, "package" | "class");
 
+        // The token immediately after the keyword fixes the shape: a phaser opens
+        // its block directly (`BEGIN {`), while a named declaration must be followed
+        // by an identifier name — never an operator such as `->`, which would make
+        // the word a method-call invocant (`class->new(...)`), not a declaration.
+        let Some(second) = lexer.next_token() else {
+            return false;
+        };
+        match (is_phaser, &second.token_type) {
+            (true, TokenType::LeftBrace) => {
+                return Self::header_stays_on_one_line(source, second.start)
+                    && self.qw_statement_terminates(position);
+            }
+            (true, _) => return false,
+            (false, TokenType::Identifier(_)) => {}
+            (false, _) => return false,
+        }
+
+        // A real `sub NAME {` / `package NAME;` header never spans a newline. Bounding
+        // the scan to the keyword's physical line is the false-positive guard: without
+        // it a bare quote-word keyword followed on a *later* line by an unrelated
+        // statement (`qw(word\nsub\nreturn { … };`) would borrow that statement's
+        // `{`/`;` and silently swallow real code as a bogus declaration (#4491 review).
         let mut depth = 0usize;
         while let Some(token) = lexer.next_token() {
             match token.token_type {
                 TokenType::LeftBrace if depth == 0 => {
-                    return self.qw_statement_terminates(position);
+                    return Self::header_stays_on_one_line(source, token.start)
+                        && self.qw_statement_terminates(position);
                 }
                 TokenType::Semicolon if depth == 0 => {
-                    return allows_semicolon_form && self.qw_statement_terminates(position);
+                    return allows_semicolon_form
+                        && Self::header_stays_on_one_line(source, token.start)
+                        && self.qw_statement_terminates(position);
                 }
                 TokenType::LeftParen | TokenType::LeftBracket | TokenType::LeftBrace => {
                     depth = depth.saturating_add(1);
@@ -3345,6 +3367,14 @@ impl<'a> PerlLexer<'a> {
             }
         }
         false
+    }
+
+    /// The candidate statement header — from the starter keyword at the front of
+    /// `source` up to (but excluding) the terminator token at `terminator_start` —
+    /// must not contain a newline, so a starter-shaped quote-word cannot borrow a
+    /// `{`/`;` that belongs to an unrelated statement on a later line (#4491).
+    fn header_stays_on_one_line(source: &str, terminator_start: usize) -> bool {
+        !source[..terminator_start].contains('\n')
     }
 
     /// A candidate line-start statement inside an unclosed `qw(` is a real recovery
