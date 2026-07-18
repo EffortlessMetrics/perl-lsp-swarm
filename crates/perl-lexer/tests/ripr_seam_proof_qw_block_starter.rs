@@ -31,6 +31,9 @@ fn block_form_starters_end_the_qw_token() -> Result<(), String> {
         ("package semi", "my @a = qw(word\npackage Foo;", "package"),
         ("class block", "my @a = qw(word\nclass Foo { 1; }", "class"),
         ("BEGIN block", "my @a = qw(word\nBEGIN { 1; }", "BEGIN"),
+        ("INIT block", "my @a = qw(word\nINIT { 1; }", "INIT"),
+        ("CHECK block", "my @a = qw(word\nCHECK { 1; }", "CHECK"),
+        ("UNITCHECK block", "my @a = qw(word\nUNITCHECK { 1; }", "UNITCHECK"),
         ("paren print", "my @a = qw(word\nprint(1);", "print"),
     ] {
         let span = qw_recovery_span(input)?;

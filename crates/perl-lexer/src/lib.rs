@@ -3296,7 +3296,8 @@ impl<'a> PerlLexer<'a> {
     /// opener (`{`) or a terminating `;` for the declaration-shaped starters, and an
     /// immediate `(` for `print`. The shape requirement is the false-positive guard —
     /// bare `qw` words like `sub run more` (no block, no `;`) stay quote-word content.
-    /// The candidate must also form a complete statement per `qw_statement_terminates`.
+    /// The block shape is self-contained, so — unlike the whitespace `print` form —
+    /// a following line-start statement does not defeat the boundary.
     fn qw_block_statement_boundary_at(&self, position: usize) -> bool {
         let source = &self.input[position..];
         let mut lexer = Self::without_qw_recovery(source, self.config.clone());
@@ -3319,9 +3320,11 @@ impl<'a> PerlLexer<'a> {
         if !is_phaser && !is_named {
             return false;
         }
-        // `package`/`class` also have a valid semicolon form (`package Foo;`); `sub`
-        // recovery requires an actual block.
-        let allows_semicolon_form = matches!(keyword, "package" | "class");
+        // Only `package Foo;` has a semicolon form the parser recovers into a clean
+        // declaration node; `class`/`sub` require an actual block here (the parser
+        // errors on the unbraced `class Foo;` statement form), so claiming a boundary
+        // for them would only synchronize onto an Error node.
+        let allows_semicolon_form = keyword == "package";
 
         // The token immediately after the keyword fixes the shape: a phaser opens
         // its block directly (`BEGIN {`), while a named declaration must be followed
@@ -3332,8 +3335,7 @@ impl<'a> PerlLexer<'a> {
         };
         match (is_phaser, &second.token_type) {
             (true, TokenType::LeftBrace) => {
-                return Self::header_stays_on_one_line(source, second.start)
-                    && self.qw_statement_terminates(position);
+                return Self::header_stays_on_one_line(source, second.start);
             }
             (true, _) => return false,
             (false, TokenType::Identifier(_)) => {}
@@ -3345,17 +3347,21 @@ impl<'a> PerlLexer<'a> {
         // it a bare quote-word keyword followed on a *later* line by an unrelated
         // statement (`qw(word\nsub\nreturn { … };`) would borrow that statement's
         // `{`/`;` and silently swallow real code as a bogus declaration (#4491 review).
+        //
+        // The block `{` (or `package`/`class` `;`) that closes the header on one line
+        // is itself the boundary proof — unlike the whitespace `print`/`my` forms, a
+        // strong block shape does *not* additionally require `qw_statement_terminates`
+        // over the whole tail. Requiring it swallowed the declaration whenever another
+        // line-start statement followed (`sub run { … }\nmy $x = 1;`) (#4491 review).
         let mut depth = 0usize;
         while let Some(token) = lexer.next_token() {
             match token.token_type {
                 TokenType::LeftBrace if depth == 0 => {
-                    return Self::header_stays_on_one_line(source, token.start)
-                        && self.qw_statement_terminates(position);
+                    return Self::header_stays_on_one_line(source, token.start);
                 }
                 TokenType::Semicolon if depth == 0 => {
                     return allows_semicolon_form
-                        && Self::header_stays_on_one_line(source, token.start)
-                        && self.qw_statement_terminates(position);
+                        && Self::header_stays_on_one_line(source, token.start);
                 }
                 TokenType::LeftParen | TokenType::LeftBracket | TokenType::LeftBrace => {
                     depth = depth.saturating_add(1);

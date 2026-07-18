@@ -1045,14 +1045,20 @@ fn test_unclosed_qw_semicolonless_recovers_regex_match_statement() -> Result<(),
 /// unclosed qw into its own statement instead of being swallowed as words.
 #[test]
 fn test_unclosed_qw_recovers_block_form_starters() -> Result<(), String> {
-    for (label, code, swallowed_marker) in [
-        ("sub block", "my @a = qw(word\nsub run { print 1; }", "\"sub\""),
-        ("package block", "my @a = qw(word\npackage Foo { 1; }", "\"package\""),
-        ("package semi", "my @a = qw(word\npackage Foo;", "\"package\""),
-        ("class block", "my @a = qw(word\nclass Foo { 1; }", "\"class\""),
-        ("BEGIN block", "my @a = qw(word\nBEGIN { 1; }", "\"BEGIN\""),
-        ("END block", "my @a = qw(word\nEND { 1; }", "\"END\""),
-        ("print paren", "my @a = qw(word\nprint(\"hi\");", "\"print(\\\"hi\\\");\""),
+    // Each row also names the recovered node's sexp head so the assertion proves the
+    // starter parsed into its *own* declaration/phase/expression node, not merely that
+    // the statement count rose (a fallback Error node would also lift the count).
+    for (label, code, swallowed_marker, recovered_head) in [
+        ("sub block", "my @a = qw(word\nsub run { print 1; }", "\"sub\"", "(sub run"),
+        ("package block", "my @a = qw(word\npackage Foo { 1; }", "\"package\"", "(package Foo"),
+        ("package semi", "my @a = qw(word\npackage Foo;", "\"package\"", "(package Foo"),
+        ("class block", "my @a = qw(word\nclass Foo { 1; }", "\"class\"", "(class Foo"),
+        ("BEGIN block", "my @a = qw(word\nBEGIN { 1; }", "\"BEGIN\"", "(BEGIN"),
+        ("END block", "my @a = qw(word\nEND { 1; }", "\"END\"", "(END"),
+        ("INIT block", "my @a = qw(word\nINIT { 1; }", "\"INIT\"", "(INIT"),
+        ("CHECK block", "my @a = qw(word\nCHECK { 1; }", "\"CHECK\"", "(CHECK"),
+        ("UNITCHECK block", "my @a = qw(word\nUNITCHECK { 1; }", "\"UNITCHECK\"", "(UNITCHECK"),
+        ("print paren", "my @a = qw(word\nprint(\"hi\");", "\"print(\\\"hi\\\");\"", "print"),
     ] {
         let mut parser = Parser::new(code);
         let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
@@ -1064,11 +1070,57 @@ fn test_unclosed_qw_recovers_block_form_starters() -> Result<(), String> {
         if statements.len() != 2 || sexp.contains(swallowed_marker) {
             return Err(format!("[{label}] starter was swallowed by unclosed qw: {sexp}"));
         }
+        // The recovered node is the real construct (not an Error fallback) and carries
+        // its declared name / phase.
+        let recovered = &statements[1];
+        if matches!(recovered.kind, NodeKind::Error { .. }) {
+            return Err(format!(
+                "[{label}] recovered into an Error node, not a declaration: {sexp}"
+            ));
+        }
+        if !recovered.to_sexp().contains(recovered_head) {
+            return Err(format!(
+                "[{label}] recovered node is not the expected starter (want {recovered_head:?}): {}",
+                recovered.to_sexp()
+            ));
+        }
         if !sexp.contains("\"word\"") {
             return Err(format!("[{label}] lost the recovered qw content: {sexp}"));
         }
         if parser.errors().is_empty() {
             return Err(format!("[{label}] unclosed qw recorded no error"));
+        }
+    }
+    Ok(())
+}
+
+/// #4491 review (codex P2): a strong block starter must recover even when another
+/// line-start statement follows it — the block shape is self-contained, so the
+/// declaration is not swallowed into the qw just because more code trails it.
+#[test]
+fn test_unclosed_qw_block_starter_recovers_before_trailing_statement() -> Result<(), String> {
+    for (label, code, recovered_head) in [
+        ("sub then my", "my @a = qw(word\nsub run { print 1; }\nmy $x = 1;", "(sub run"),
+        ("package then print", "my @a = qw(word\npackage Foo { 1; }\nprint 2;", "(package Foo"),
+        ("BEGIN then my", "my @a = qw(word\nBEGIN { 1; }\nmy $y = 2;", "(BEGIN"),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        // decl (qw) · recovered starter · trailing statement == three separate nodes.
+        if statements.len() != 3 {
+            return Err(format!(
+                "[{label}] block starter did not split from trailing code: {sexp}"
+            ));
+        }
+        if !statements[1].to_sexp().contains(recovered_head) {
+            return Err(format!("[{label}] middle node is not the recovered starter: {sexp}"));
+        }
+        if !sexp.contains("\"word\"") {
+            return Err(format!("[{label}] lost the recovered qw content: {sexp}"));
         }
     }
     Ok(())
