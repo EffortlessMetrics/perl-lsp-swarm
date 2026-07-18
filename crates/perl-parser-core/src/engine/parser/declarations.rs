@@ -1,4 +1,34 @@
 impl<'a> Parser<'a> {
+    /// Parse a package name, accepting an optional leading `::` main-namespace
+    /// qualifier (e.g. `package ::My::App;`, valid Perl — verified against
+    /// perl 5.38.2). This mirrors the leading-`::` handling in `parse_subroutine`
+    /// (`sub ::PCDATA { }`); the rest of the name is delegated to
+    /// [`Self::parse_qualified_name`] and the `::` prefix is preserved (#2834).
+    fn parse_package_qualified_name(&mut self) -> ParseResult<(String, SourceLocation)> {
+        let leading = self.peek_kind() == Some(TokenKind::DoubleColon)
+            || (self.peek_kind() == Some(TokenKind::Colon)
+                && self.tokens.peek_second().map(|t| t.kind) == Ok(TokenKind::Colon));
+        if !leading {
+            return self.parse_qualified_name(true);
+        }
+
+        let lead_start = self.current_position();
+        let lead_end = if self.peek_kind() == Some(TokenKind::DoubleColon) {
+            self.tokens.next()?.end // consume '::'
+        } else {
+            self.tokens.next()?; // consume first ':'
+            self.tokens.next()?.end // consume second ':'
+        };
+
+        if self.peek_kind().is_some_and(Self::can_be_sub_name) {
+            let (rest, rest_span) = self.parse_qualified_name(true)?;
+            Ok((format!("::{rest}"), SourceLocation { start: lead_start, end: rest_span.end }))
+        } else {
+            // Bare `package ::` with no following name — mirror `sub ::`.
+            Ok(("::".to_string(), SourceLocation { start: lead_start, end: lead_end }))
+        }
+    }
+
     fn parse_qualified_name(
         &mut self,
         allow_trailing_separator: bool,
@@ -687,7 +717,7 @@ impl<'a> Parser<'a> {
         let start = self.current_position();
         self.tokens.next()?; // consume 'package'
 
-        let (mut name, name_span) = self.parse_qualified_name(true)?;
+        let (mut name, name_span) = self.parse_package_qualified_name()?;
 
         // Check for optional version number or v-string
         let version = if self.peek_kind() == Some(TokenKind::Number)
