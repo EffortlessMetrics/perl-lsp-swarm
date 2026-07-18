@@ -3277,9 +3277,74 @@ impl<'a> PerlLexer<'a> {
                 return true;
             }
         }
-        remaining.strip_prefix("print").is_some_and(|after| {
-            after.starts_with(char::is_whitespace) && self.qw_statement_terminates(position)
-        })
+        if remaining
+            .strip_prefix("print")
+            .is_some_and(|after| after.starts_with(char::is_whitespace))
+            && self.qw_statement_terminates(position)
+        {
+            return true;
+        }
+        self.qw_block_statement_boundary_at(position)
+    }
+
+    /// Recognize block-form and parenthesized statement starters that follow an
+    /// unclosed `qw(` (#4491): `sub NAME { … }`, `package NAME;` / `package NAME { … }`,
+    /// `class NAME { … }`, phaser blocks (`BEGIN`/`END`/`INIT`/`CHECK`/`UNITCHECK { … }`),
+    /// and parenthesized `print( … )`.
+    ///
+    /// These are only recovery boundaries in a specific syntactic shape: a block
+    /// opener (`{`) or a terminating `;` for the declaration-shaped starters, and an
+    /// immediate `(` for `print`. The shape requirement is the false-positive guard —
+    /// bare `qw` words like `sub run more` (no block, no `;`) stay quote-word content.
+    /// The candidate must also form a complete statement per `qw_statement_terminates`.
+    fn qw_block_statement_boundary_at(&self, position: usize) -> bool {
+        let source = &self.input[position..];
+        let mut lexer = Self::without_qw_recovery(source, self.config.clone());
+        let Some(first) = lexer.next_token() else {
+            return false;
+        };
+        let keyword = first.text.as_ref();
+
+        // Parenthesized `print(...)`: the whitespace form is handled by the caller,
+        // so here the distinguishing shape is `print` immediately followed by `(`.
+        if keyword == "print" {
+            return lexer
+                .next_token()
+                .is_some_and(|token| token.token_type == TokenType::LeftParen)
+                && self.qw_statement_terminates(position);
+        }
+
+        // Declaration/phaser starters must reach a top-level block `{` before any
+        // other statement. `package`/`class` also have a valid semicolon form
+        // (`package Foo;`); `sub` recovery requires an actual block to stay well
+        // clear of bare quote-word content like `sub run more`.
+        let allows_semicolon_form = matches!(keyword, "package" | "class");
+        if !matches!(
+            keyword,
+            "sub" | "package" | "class" | "BEGIN" | "END" | "INIT" | "CHECK" | "UNITCHECK"
+        ) {
+            return false;
+        }
+
+        let mut depth = 0usize;
+        while let Some(token) = lexer.next_token() {
+            match token.token_type {
+                TokenType::LeftBrace if depth == 0 => {
+                    return self.qw_statement_terminates(position);
+                }
+                TokenType::Semicolon if depth == 0 => {
+                    return allows_semicolon_form && self.qw_statement_terminates(position);
+                }
+                TokenType::LeftParen | TokenType::LeftBracket | TokenType::LeftBrace => {
+                    depth = depth.saturating_add(1);
+                }
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
+                    depth = depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     /// A candidate line-start statement inside an unclosed `qw(` is a real recovery

@@ -1039,6 +1039,114 @@ fn test_unclosed_qw_semicolonless_recovers_regex_match_statement() -> Result<(),
     Ok(())
 }
 
+// -- #4491: block-form and parenthesized statement starters after unclosed qw( --
+
+/// Every supported block/parenthesized starter must synchronize out of the
+/// unclosed qw into its own statement instead of being swallowed as words.
+#[test]
+fn test_unclosed_qw_recovers_block_form_starters() -> Result<(), String> {
+    for (label, code, swallowed_marker) in [
+        ("sub block", "my @a = qw(word\nsub run { print 1; }", "\"sub\""),
+        ("package block", "my @a = qw(word\npackage Foo { 1; }", "\"package\""),
+        ("package semi", "my @a = qw(word\npackage Foo;", "\"package\""),
+        ("class block", "my @a = qw(word\nclass Foo { 1; }", "\"class\""),
+        ("BEGIN block", "my @a = qw(word\nBEGIN { 1; }", "\"BEGIN\""),
+        ("END block", "my @a = qw(word\nEND { 1; }", "\"END\""),
+        ("print paren", "my @a = qw(word\nprint(\"hi\");", "\"print(\\\"hi\\\");\""),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        // Recovered as a second statement, and the starter is no longer a qw word.
+        if statements.len() != 2 || sexp.contains(swallowed_marker) {
+            return Err(format!("[{label}] starter was swallowed by unclosed qw: {sexp}"));
+        }
+        if !sexp.contains("\"word\"") {
+            return Err(format!("[{label}] lost the recovered qw content: {sexp}"));
+        }
+        if parser.errors().is_empty() {
+            return Err(format!("[{label}] unclosed qw recorded no error"));
+        }
+    }
+    Ok(())
+}
+
+/// A `sub`/`package`-shaped word with no block or terminating `;` is ordinary qw
+/// content and must not create a false boundary at EOF.
+#[test]
+fn test_unclosed_qw_block_starter_word_without_shape_stays_word() -> Result<(), String> {
+    for (label, code) in [
+        ("bare sub words", "my @a = qw(word\nsub run more"),
+        ("bare package words", "my @a = qw(word\npackage more words"),
+        ("bare class words", "my @a = qw(word\nclass more words"),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        if statements.len() != 1 || !sexp.contains("\"more\"") {
+            return Err(format!("[{label}] keyword-like word triggered a false boundary: {sexp}"));
+        }
+        if parser.errors().is_empty() {
+            return Err(format!("[{label}] unclosed qw recorded no error"));
+        }
+    }
+    Ok(())
+}
+
+/// Closed multiline qw content containing block-starter-shaped words (including a
+/// balanced `{ }` group) must keep its existing single-declaration behavior.
+#[test]
+fn test_closed_multiline_qw_keeps_block_starter_words() -> Result<(), String> {
+    for (label, code) in [
+        ("closed sub words", "my @a = qw(word\nsub run more);"),
+        ("closed package words", "my @a = qw(alpha\npackage beta\ngamma);"),
+        ("closed brace group", "my @a = qw(word\nsub run { 1 } more);"),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] did not parse: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        if statements.len() != 1 || !parser.errors().is_empty() {
+            return Err(format!("[{label}] closed qw changed behavior: {}", ast.to_sexp()));
+        }
+    }
+    Ok(())
+}
+
+/// Parenthesized `print(...)` recovers, but the whitespace form `print ...` keeps
+/// its existing behavior (both should recover, via different paths).
+#[test]
+fn test_unclosed_qw_parenthesized_print_recovers() -> Result<(), String> {
+    let code = "my @a = qw(word\nprint(join q{,}, 1, 2);";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("parenthesized print did not recover: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 2
+        || !matches!(
+            statements.get(1).map(|node| &node.kind),
+            Some(NodeKind::ExpressionStatement { .. })
+        )
+        || !sexp.contains("print")
+    {
+        return Err(format!("parenthesized print was swallowed: {sexp}"));
+    }
+    if parser.errors().is_empty() {
+        return Err("unclosed qw before parenthesized print recorded no error".to_string());
+    }
+    Ok(())
+}
+
 #[test]
 fn test_recovery_unclosed_q_brace() {
     let code = "my $str = q{ hello world print 1;";
