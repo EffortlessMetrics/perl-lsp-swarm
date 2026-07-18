@@ -1,0 +1,31 @@
+# PR-time dependency delta policy.
+#
+# This file is read from the protected base revision by the workflow. It is
+# intentionally separate from the pull request's evaluated checkout.
+
+fail-on-severity: high
+fail-on-scopes:
+  - runtime
+  - development
+  - unknown
+
+vulnerability-check: true
+license-check: true
+allow-licenses:
+  - MIT
+  - Apache-2.0
+  - Apache-2.0 WITH LLVM-exception
+  - BSD-2-Clause
+  - BSD-3-Clause
+  - ISC
+  - Unicode-3.0
+  - CC0-1.0
+  - Zlib
+  - CDLA-Permissive-2.0
+
+comment-summary-in-pr: never
+show-openssf-scorecard: true
+warn-on-openssf-scorecard-level: 4
+show-patched-versions: true
+retry-on-snapshot-warnings: true
+retry-on-snapshot-warnings-timeout: 120
