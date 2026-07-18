@@ -1138,6 +1138,50 @@ fn test_unclosed_qw_keeps_incomplete_block_as_content() -> Result<(), String> {
 }
 
 #[test]
+fn test_unclosed_qw_ignores_block_keyword_prefixes() -> Result<(), String> {
+    // #4491 negative control: identifiers that merely start with a block keyword
+    // (`substr`, `classify`, `packaged`, `printf(`, `BEGINNER`) are not block starters and
+    // must not split the qw list into a recovered block statement.
+    for trailing in
+        ["substr($x, 0, 1)", "classify { }", "packaged Foo { }", "printf(\"x\")", "BEGINNER { }"]
+    {
+        let code = format!("my @items = qw(word1 word2\n{trailing}");
+        let mut parser = Parser::new(&code);
+        let ast =
+            parser.parse().map_err(|error| format!("`{trailing}` prefix parse failed: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("expected program root, got {}", ast.to_sexp()));
+        };
+        if statements.len() != 1 {
+            return Err(format!("`{trailing}` prefix falsely split the qw: {}", ast.to_sexp()));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_recovers_block_after_multibyte_content() -> Result<(), String> {
+    // #4491: multibyte qw content before the boundary must not break byte-offset handling
+    // when a trailing block statement recovers.
+    let code = "my @items = qw(café 😀 word2\nsub run { print 1; }";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("multibyte block recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 2
+        || !matches!(statements.get(1).map(|node| &node.kind), Some(NodeKind::Subroutine { .. }))
+        || !sexp.contains("sub run")
+        || parser.errors().is_empty()
+    {
+        return Err(format!("multibyte block recovery lost the sub: {sexp}"));
+    }
+    Ok(())
+}
+
+#[test]
 fn test_recovery_unclosed_q_brace() {
     let code = "my $str = q{ hello world print 1;";
     let mut parser = Parser::new(code);
