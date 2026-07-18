@@ -16,9 +16,9 @@ use toml::Value;
 struct ReleaseSurface {
     version: String,
     published_crate_count: usize,
-    shipped_date: String,
-    prior_version: String,
-    prior_shipped_date: String,
+    shipped_date: Option<String>,
+    prior_version: Option<String>,
+    prior_shipped_date: Option<String>,
     next_version: String,
 }
 
@@ -133,20 +133,32 @@ fn collect_release_surface(root: &Path) -> Result<ReleaseSurface> {
     })
 }
 
-fn collect_release_dates(root: &Path, version: &str) -> Result<(String, String, String)> {
+fn collect_release_dates(
+    root: &Path,
+    version: &str,
+) -> Result<(Option<String>, Option<String>, Option<String>)> {
     let changelog_path = root.join("CHANGELOG.md");
     let changelog = fs::read_to_string(&changelog_path)
         .with_context(|| format!("reading {}", changelog_path.display()))?;
-    let mut releases = changelog.lines().filter_map(parse_changelog_release);
-    let Some((current_version, shipped_date)) =
-        releases.find(|(candidate, _)| *candidate == version)
-    else {
-        bail!("CHANGELOG.md: release heading for v{version} not found");
-    };
-    let Some((prior_version, prior_shipped_date)) = releases.next() else {
-        bail!("CHANGELOG.md: prior release heading after v{current_version} not found");
-    };
-    Ok((shipped_date.to_string(), prior_version.to_string(), prior_shipped_date.to_string()))
+    let releases: Vec<(&str, &str)> =
+        changelog.lines().filter_map(parse_changelog_release).collect();
+    if releases.is_empty() {
+        bail!("CHANGELOG.md: no release headings found");
+    }
+
+    let current_index = releases.iter().position(|(candidate, _)| *candidate == version);
+    let shipped_date = current_index.and_then(|index| releases.get(index)).and_then(|(_, date)| {
+        (!date.eq_ignore_ascii_case("unreleased")).then_some((*date).to_string())
+    });
+    let prior_index = current_index.map_or(0, |index| index.saturating_add(1));
+    let (prior_version, prior_shipped_date) = releases
+        .get(prior_index)
+        .map(|(prior_version, prior_shipped_date)| {
+            ((*prior_version).to_string(), (*prior_shipped_date).to_string())
+        })
+        .map_or((None, None), |(version, date)| (Some(version), Some(date)));
+
+    Ok((shipped_date, prior_version, prior_shipped_date))
 }
 
 fn parse_changelog_release(line: &str) -> Option<(&str, &str)> {
@@ -219,12 +231,30 @@ fn sync_current_status(content: &str, surface: &ReleaseSurface) -> Result<String
             ));
             version_seen = true;
         } else if line.starts_with("| **Current release train** | ") {
+            let release_facts = match (
+                surface.shipped_date.as_deref(),
+                surface.prior_version.as_deref(),
+                surface.prior_shipped_date.as_deref(),
+            ) {
+                (Some(shipped_date), Some(prior_version), Some(prior_shipped_date)) => format!(
+                    "`v{}` latest public beta ({}); prior `v{}` ({})",
+                    surface.version, shipped_date, prior_version, prior_shipped_date
+                ),
+                (Some(shipped_date), _, _) => format!(
+                    "`v{}` latest public beta ({}); prior release receipt unavailable",
+                    surface.version, shipped_date
+                ),
+                (None, Some(prior_version), Some(prior_shipped_date)) => format!(
+                    "`v{}` release preparation; latest shipped public beta `v{}` ({})",
+                    surface.version, prior_version, prior_shipped_date
+                ),
+                (None, _, _) => format!(
+                    "`v{}` release preparation; shipped release receipt unavailable",
+                    surface.version
+                ),
+            };
             lines.push(format!(
-                "| **Current release train** | `v{}` latest public beta ({}); prior `v{}` ({}) | [CHANGELOG.md](../../CHANGELOG.md) |",
-                surface.version,
-                surface.shipped_date,
-                surface.prior_version,
-                surface.prior_shipped_date
+                "| **Current release train** | {release_facts} | [CHANGELOG.md](../../CHANGELOG.md) |"
             ));
             train_seen = true;
         } else if line.starts_with("| **Published crate surface** | ") {
@@ -234,9 +264,19 @@ fn sync_current_status(content: &str, surface: &ReleaseSurface) -> Result<String
             ));
             count_seen = true;
         } else if line.starts_with("| **Active milestone** | `") {
+            let milestone = if surface.shipped_date.is_some() {
+                format!(
+                    "`v{}` shipped public beta; `v{}` next public-beta train",
+                    surface.version, surface.next_version
+                )
+            } else {
+                format!(
+                    "`v{}` release preparation; `v{}` next public-beta train",
+                    surface.version, surface.next_version
+                )
+            };
             lines.push(format!(
-                "| **Active milestone** | `v{}` shipped public beta; `v{}` next public-beta train | [status/index.md](status/index.md) |",
-                surface.version, surface.next_version
+                "| **Active milestone** | {milestone} | [status/index.md](status/index.md) |"
             ));
             milestone_seen = true;
         } else {
@@ -268,9 +308,24 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
     let mut now_section_seen = false;
     let mut now_gate_seen = false;
     let mut next_header_seen = false;
+    let mut in_active_release = false;
+    let mut in_now_section = false;
+    let mut in_next_section = false;
 
     let mut lines: Vec<String> = Vec::new();
     for line in content.lines() {
+        if line.starts_with("## ") {
+            in_active_release = line.starts_with("## Active: ");
+            in_now_section = false;
+            in_next_section = false;
+        } else if line.starts_with("### Now (") {
+            in_now_section = true;
+            in_next_section = false;
+        } else if line.starts_with("### Next (") {
+            in_now_section = false;
+            in_next_section = true;
+        }
+
         if line.starts_with("- Workspace version line: `v") {
             lines.push(format!("- Workspace version line: `v{}`", surface.version));
             workspace_version_seen = true;
@@ -297,7 +352,8 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
             || line.starts_with("## Active: Public-Alpha Channel Closeout (v")
         {
             lines.push(format!(
-                "## Active: Public-Beta Release (v{})",
+                "## Active: Public-Beta Release{} (v{})",
+                if surface.shipped_date.is_some() { "" } else { " Preparation" },
                 surface.version
             ));
             active_section_seen = true;
@@ -306,18 +362,84 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
                 || line.contains("shipped public beta)")
                 || line.contains("public-alpha channel closeout)"))
         {
-            lines.push(format!("### Now (v{} shipped public beta)", surface.version));
+            lines.push(if surface.shipped_date.is_some() {
+                format!("### Now (v{} shipped public beta)", surface.version)
+            } else {
+                format!("### Now (v{} release preparation)", surface.version)
+            });
             now_section_seen = true;
         } else if line.starts_with("- `v")
             && (line.contains("is staged as the next public-alpha patch release; run the release-prep checks before dispatching the train")
                 || line.contains("is shipped public beta; keep each distribution channel pending until its receipt is verified")
                 || line.contains("is the current public-alpha release line; finish receipt closeout before treating the release as fully closed"))
         {
+            lines.push(if surface.shipped_date.is_some() {
+                format!(
+                    "- `v{}` is shipped public beta; keep each distribution channel pending until its receipt is verified",
+                    surface.version
+                )
+            } else {
+                format!(
+                    "- `v{}` is in release preparation; run the release-prep checks before dispatching the train",
+                    surface.version
+                )
+            });
+            now_gate_seen = true;
+        } else if in_active_release && line.starts_with("- GitHub Release and crates.io surfaces show ") {
+            lines.push(if surface.shipped_date.is_some() {
+                format!(
+                    "- GitHub Release assets for `v{}` are verified; crates.io, Docker, VS Code Marketplace, Open VSX, and Homebrew remain pending/not proven until their receipts are verified",
+                    surface.version
+                )
+            } else {
+                format!(
+                    "- GitHub Release, crates.io, Docker, VS Code Marketplace, Open VSX, and Homebrew surfaces for `v{}` remain pending until their release receipts are verified",
+                    surface.version
+                )
+            });
+        } else if in_active_release
+            && line.starts_with("- Public install language must say public alpha")
+        {
+            lines.push("- Public install language must say public beta and avoid stable/GA claims".to_string());
+        } else if in_active_release && line.starts_with("| Version surface | ") {
             lines.push(format!(
-                "- `v{}` is shipped public beta; keep each distribution channel pending until its receipt is verified",
+                "| Version surface | Workspace package version, `features.toml` metadata, extension packaging, release notes, and changelog align with the current `v{}` train | [`../../Cargo.toml`](../../Cargo.toml), [`../../features.toml`](../../features.toml), [docs/releases/v{}.md](../releases/v{}.md) |",
+                surface.version, surface.version, surface.version
+            ));
+        } else if in_active_release && line.starts_with("| Publish surface | ") {
+            lines.push(format!(
+                "| Publish surface | The {}-crate allowlist has dry-run or publish receipts, and deferred items have successor issues rather than silent drops | [`[workspace.metadata.publish.allow]`](../../Cargo.toml), [docs/releases/v{}.md](../releases/v{}.md) |",
+                surface.published_crate_count, surface.version, surface.version
+            ));
+        } else if in_active_release && line.starts_with("| Install channels | ") {
+            lines.push(format!(
+                "| Install channels | GitHub assets, crates.io, Docker, VS Code Marketplace, Open VSX, and Homebrew each have an install/smoke receipt or an explicit pending/deferred state | [status/release.md](status/release.md), [CURRENT_STATUS.md](CURRENT_STATUS.md), [docs/releases/v{}.md](../releases/v{}.md) |",
+                surface.version, surface.version
+            ));
+        } else if in_active_release && line.starts_with("| Public wording | ") {
+            lines.push(format!(
+                "| Public wording | User-facing docs call the release public beta and avoid stable/GA promises | [docs/releases/v{}.md](../releases/v{}.md), [CURRENT_STATUS.md](CURRENT_STATUS.md) |",
+                surface.version, surface.version
+            ));
+        } else if in_now_section && line.starts_with("- Reconcile the live `v") {
+            lines.push(format!(
+                "- Keep the verified `v{}` release receipt linked to release notes, release history, generated status, and the remaining channel receipts",
                 surface.version
             ));
-            now_gate_seen = true;
+        } else if in_next_section && line.starts_with("1. **Close release receipts first.**") {
+            lines.push(format!(
+                "1. **Close release receipts first.** Do not start broad feature cleanup until the `v{}` channel ledger is explicit about what shipped, what is pending, and what users should install.",
+                surface.version
+            ));
+        } else if in_next_section && line.starts_with("5. **Burn down tracked debt by ledger.**") {
+            lines.push(format!(
+                "5. **Burn down tracked debt by ledger.** Use successor issues from [docs/releases/v{}.md](../releases/v{}.md) for tracked follow-up work and explicit claim boundaries.",
+                surface.version, surface.version
+            ));
+        } else if in_next_section && line.starts_with("- Keep public-alpha release notes ") {
+            lines.push("- Keep public-beta release notes concise and tied to concrete channel receipts".to_string());
+        } else if in_next_section && line.starts_with("- **Distribution maturity:** ") {
+            lines.push("- **Distribution maturity:** make Homebrew, Docker, crates.io, VS Code Marketplace, Open VSX, and GitHub Releases behave like one coherent public-beta install story".to_string());
         } else if line.starts_with("### Next (post v") {
             lines.push(format!("### Next (post v{})", surface.version));
             next_header_seen = true;
@@ -363,12 +485,27 @@ fn sync_status_index(content: &str, surface: &ReleaseSurface) -> Result<String> 
     let mut lines: Vec<String> = Vec::new();
     for line in content.lines() {
         if line.starts_with("- **Release posture**: `v") {
+            let release_facts = match (
+                surface.shipped_date.as_deref(),
+                surface.prior_version.as_deref(),
+                surface.prior_shipped_date.as_deref(),
+            ) {
+                (Some(shipped_date), _, _) => format!(
+                    "`v{}` is the current workspace version and shipped public-beta release ({})",
+                    surface.version, shipped_date
+                ),
+                (None, Some(prior_version), Some(prior_shipped_date)) => format!(
+                    "`v{}` is the current workspace version and release-preparation train; latest shipped public-beta release is `v{}` ({})",
+                    surface.version, prior_version, prior_shipped_date
+                ),
+                (None, _, _) => format!(
+                    "`v{}` is the current workspace version and release-preparation train",
+                    surface.version
+                ),
+            };
             lines.push(format!(
-                "- **Release posture**: `v{}` is the current workspace version and shipped public-beta release ({}); `v{}` is the next public-beta train, not a maturity promotion or version bump in this tree. The published crate surface is {} crates. See [release.md](release.md) for channel receipts.",
-                surface.version,
-                surface.shipped_date,
-                surface.next_version,
-                surface.published_crate_count
+                "- **Release posture**: {release_facts}; `v{}` is the next public-beta train, not a maturity promotion or version bump in this tree. The published crate surface is {} crates. See [release.md](release.md) for channel receipts.",
+                surface.next_version, surface.published_crate_count
             ));
             release_posture_seen = true;
         } else if line.starts_with("**Now (active milestone: v") {
@@ -428,10 +565,17 @@ fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String>
     let mut lines: Vec<String> = Vec::new();
     for line in content.lines() {
         if line.starts_with("**Current release train**: `v") {
-            lines.push(format!(
-                "**Current release train**: `v{}` — shipped {} as public beta",
-                surface.version, surface.shipped_date
-            ));
+            lines.push(if let Some(shipped_date) = surface.shipped_date.as_deref() {
+                format!(
+                    "**Current release train**: `v{}` — shipped {} as public beta",
+                    surface.version, shipped_date
+                )
+            } else {
+                format!(
+                    "**Current release train**: `v{}` — release preparation; shipped release receipt pending",
+                    surface.version
+                )
+            });
             train_seen = true;
         } else if line.starts_with("**Workspace version line**: `v") {
             lines.push(format!("**Workspace version line**: `v{}`", surface.version));
@@ -486,9 +630,9 @@ mod tests {
         ReleaseSurface {
             version: "0.17.0".to_string(),
             published_crate_count: 32,
-            shipped_date: "2026-06-28".to_string(),
-            prior_version: "0.16.0".to_string(),
-            prior_shipped_date: "2026-06-06".to_string(),
+            shipped_date: Some("2026-06-28".to_string()),
+            prior_version: Some("0.16.0".to_string()),
+            prior_shipped_date: Some("2026-06-06".to_string()),
             next_version: "0.18.0".to_string(),
         }
     }
@@ -512,6 +656,22 @@ mod tests {
         if second != first {
             bail!("second current-status sync was not idempotent");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_release_dates_allows_unreleased_workspace_version() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::write(
+            dir.path().join("CHANGELOG.md"),
+            "## [0.17.0] - 2026-06-28\n\n## [0.16.0] - Unreleased\n",
+        )?;
+
+        let (shipped_date, prior_version, prior_shipped_date) =
+            collect_release_dates(dir.path(), "0.18.0")?;
+        assert_eq!(shipped_date, None);
+        assert_eq!(prior_version.as_deref(), Some("0.17.0"));
+        assert_eq!(prior_shipped_date.as_deref(), Some("2026-06-28"));
         Ok(())
     }
 
@@ -606,6 +766,37 @@ Publication discipline: `v0.17.0` uses a normal SemVer package version while the
         if second != first {
             bail!("second roadmap sync was not idempotent");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_roadmap_rewrites_stale_active_release_facts() -> Result<()> {
+        let input = r#"- Workspace version line: `v0.14.0`
+- Current release train: `v0.14.0` public-alpha closeout
+- Published crate surface target: 31 crates
+Publication discipline: `v0.14.0` uses a normal SemVer package version for release channels while the human-facing product posture remains public alpha.
+## Active: Public-Alpha Channel Closeout (v0.14.0)
+- GitHub Release and crates.io surfaces show `v0.14.0` live; Docker, VS Code Marketplace, Open VSX, and Homebrew tap receipts are still tracked separately until verified
+- Public install language must say public alpha, not stable/GA
+| Version surface | Workspace package version, `features.toml` metadata, extension packaging, release notes, and changelog all name the same `v0.14.0` train | old |
+| Publish surface | The 31-crate allowlist has dry-run or publish receipts, and deferred items have successor issues rather than silent drops | old |
+| Public wording | User-facing docs call the release public alpha and avoid stable/GA promises | old |
+### Now (v0.14.0 public-alpha channel closeout)
+- Reconcile the live `v0.14.0` GitHub Release and crates.io surfaces with release notes, release history, generated status, and remaining channel receipts.
+- `v0.14.0` is the current public-alpha release line; finish receipt closeout before treating the release as fully closed
+### Next (post v0.14.0 closeout)
+#### Post-Release Sequencing
+1. **Close release receipts first.** Do not start broad feature cleanup until the v0.14.0 channel ledger is explicit about what shipped, what is pending, and what users should install.
+5. **Burn down tracked debt by ledger.** Use successor issues from [docs/releases/v0.14.0.md](../releases/v0.14.0.md) for tracked follow-up work.
+"#;
+
+        let synced = sync_roadmap(input, &release_surface())?;
+        assert!(synced.contains("GitHub Release assets for `v0.17.0` are verified"));
+        assert!(synced.contains("User-facing docs call the release public beta"));
+        assert!(!synced.contains("v0.14.0` live"));
+        assert!(!synced.contains("public alpha, not stable/GA"));
+        assert!(!synced.contains("v0.14.0 channel ledger"));
+        assert!(sync_roadmap(&synced, &release_surface())? == synced);
         Ok(())
     }
 }

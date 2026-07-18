@@ -85,6 +85,16 @@ fn test_format_crate_quality_table_empty_maps() {
 }
 
 #[test]
+fn test_format_crate_quality_table_keeps_unattributed_tests_out_of_crate_rows() {
+    let mutation = BTreeMap::new();
+    let tests = BTreeMap::from([(String::from("unattributed"), 2usize)]);
+    let table = format_crate_quality_table(&mutation, &tests);
+
+    assert!(!table.contains("| unattributed |"));
+    assert!(table.contains("2 discovered test(s) had no crate attribution"));
+}
+
+#[test]
 fn test_parse_per_crate_test_counts_parses_unix_and_windows_paths() {
     let output = "Running unittests src/lib.rs \
         (target/debug/deps/perl_parser_core-abc123)\n\

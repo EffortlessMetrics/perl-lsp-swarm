@@ -189,13 +189,21 @@ pub(super) fn format_crate_quality_table(
         crates.insert(k.as_str());
     }
     for k in tests.keys() {
-        crates.insert(k.as_str());
+        if k != "unattributed" {
+            crates.insert(k.as_str());
+        }
     }
     if crates.is_empty() {
-        return "| Crate | Mutants listed | Tests (lib) |\n\
+        let mut table = "| Crate | Mutants listed | Tests (lib) |\n\
                 |-------|---------------|-------------|\n\
                 | — | no data yet | no data yet |"
             .to_string();
+        if let Some(unattributed) = tests.get("unattributed") {
+            table.push_str(&format!(
+                "\n\n> Note: {unattributed} discovered test(s) had no crate attribution and are excluded from the per-crate table."
+            ));
+        }
+        return table;
     }
     let mut lines = vec![
         "| Crate | Mutants listed | Tests (lib) |".to_string(),
@@ -206,7 +214,13 @@ pub(super) fn format_crate_quality_table(
         let t = tests.get(c).map_or_else(|| "—".to_string(), |n| n.to_string());
         lines.push(format!("| {c} | {m} | {t} |"));
     }
-    lines.join("\n")
+    let mut table = lines.join("\n");
+    if let Some(unattributed) = tests.get("unattributed") {
+        table.push_str(&format!(
+            "\n\n> Note: {unattributed} discovered test(s) had no crate attribution and are excluded from the per-crate table."
+        ));
+    }
+    table
 }
 
 // ---------------------------------------------------------------------------

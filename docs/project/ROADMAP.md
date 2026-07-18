@@ -235,9 +235,9 @@ Released 2026-03-30. Cleanup completed 2026-04-02.
 
 ## Active: Public-Beta Release (v0.17.0)
 
-- GitHub Release and crates.io surfaces show `v0.14.0` live; Docker, VS Code Marketplace, Open VSX, and Homebrew tap receipts are still tracked separately until verified
+- GitHub Release assets for `v0.17.0` are verified; crates.io, Docker, VS Code Marketplace, Open VSX, and Homebrew remain pending/not proven until their receipts are verified
 - The owned Homebrew path is `brew install effortlessmetrics/tap/perllsp`
-- Public install language must say public alpha, not stable/GA
+- Public install language must say public beta and avoid stable/GA claims
 - Follow-on quality cleanup resumes after the remaining release-channel receipts are closed or explicitly deferred
 
 ### Release Exit Criteria
@@ -246,11 +246,11 @@ The release train is complete only when each criterion has an evidence link in t
 
 | Area | Exit criterion | Evidence source |
 | --- | --- | --- |
-| Version surface | Workspace package version, `features.toml` metadata, extension packaging, release notes, and changelog all name the same `v0.14.0` train | [`../../Cargo.toml`](../../Cargo.toml), [`../../features.toml`](../../features.toml), [docs/releases/v0.14.0.md](../releases/v0.14.0.md) |
-| Publish surface | The 31-crate allowlist has dry-run or publish receipts, and deferred items have successor issues rather than silent drops | [`[workspace.metadata.publish.allow]`](../../Cargo.toml), [docs/releases/v0.14.0.md](../releases/v0.14.0.md) |
-| Install channels | GitHub assets, crates.io, Docker, VS Code Marketplace, Open VSX, and Homebrew each have an install/smoke receipt or an explicit pending/deferred state | [status/release.md](status/release.md), [CURRENT_STATUS.md](CURRENT_STATUS.md), [docs/releases/v0.14.0.md](../releases/v0.14.0.md) |
+| Version surface | Workspace package version, `features.toml` metadata, extension packaging, release notes, and changelog align with the current `v0.17.0` train | [`../../Cargo.toml`](../../Cargo.toml), [`../../features.toml`](../../features.toml), [docs/releases/v0.17.0.md](../releases/v0.17.0.md) |
+| Publish surface | The 32-crate allowlist has dry-run or publish receipts, and deferred items have successor issues rather than silent drops | [`[workspace.metadata.publish.allow]`](../../Cargo.toml), [docs/releases/v0.17.0.md](../releases/v0.17.0.md) |
+| Install channels | GitHub assets, crates.io, Docker, VS Code Marketplace, Open VSX, and Homebrew each have an install/smoke receipt or an explicit pending/deferred state | [status/release.md](status/release.md), [CURRENT_STATUS.md](CURRENT_STATUS.md), [docs/releases/v0.17.0.md](../releases/v0.17.0.md) |
 | Local gate | The canonical merge receipt is fresh for the branch being released or the post-release closeout branch | [protocols/verification.md](protocols/verification.md) |
-| Public wording | User-facing docs call the release public alpha and avoid stable/GA promises | [docs/releases/v0.14.0.md](../releases/v0.14.0.md), [CURRENT_STATUS.md](CURRENT_STATUS.md) |
+| Public wording | User-facing docs call the release public beta and avoid stable/GA promises | [docs/releases/v0.17.0.md](../releases/v0.17.0.md), [CURRENT_STATUS.md](CURRENT_STATUS.md) |
 
 ### Tracks
 
@@ -480,7 +480,7 @@ dedicated release-lineage plan.
 
 ### Now (v0.17.0 shipped public beta)
 
-- Reconcile the live `v0.14.0` GitHub Release and crates.io surfaces with release notes, release history, generated status, and remaining channel receipts.
+- Keep the verified `v0.17.0` release receipt linked to release notes, release history, generated status, and the remaining channel receipts
 - CI/control-plane Wave 2 substrate already landed and should not be re-implemented in parallel follow-up PRs:
   - Per-gate timeout regression coverage in gate receipts (#7525)
   - Bounded build-plane/agent storage contract (`cargo-safe`, `devplane-init`, `storage-doctor`) (#7449)
@@ -516,22 +516,22 @@ dedicated release-lineage plan.
 - Resume parser, corpus, semantic, and DAP hardening after the release-channel receipts close
 - Run the editor-trust wave through [EDITOR_TRUST_WAVE.md](EDITOR_TRUST_WAVE.md): one lane, one canonical PR, one acceptance checklist, one verification receipt
 - Keep the install story verified across all distribution channels
-- Keep public-alpha release notes concise and tied to concrete channel receipts
+- Keep public-beta release notes concise and tied to concrete channel receipts
 
 #### Post-Release Sequencing
 
-1. **Close release receipts first.** Do not start broad feature cleanup until the v0.14.0 channel ledger is explicit about what shipped, what is pending, and what users should install.
+1. **Close release receipts first.** Do not start broad feature cleanup until the `v0.17.0` channel ledger is explicit about what shipped, what is pending, and what users should install.
 2. **Stabilize the control plane.** Land the CI wave in narrow, reviewable PRs so follow-on parser/provider work can trust queue state and status receipts.
 3. **Promote compiler-backed provider slices.** Prefer source/freshness/provenance proof and live-with-fallback cutovers over blanket rewrites. Retire legacy heuristics only after the dashboard shows reliable real-workspace behavior.
 4. **Expand real-Perl acceptance.** Add corpus and editor-trust receipts for workflows that users actually exercise: navigation across generated exports, import-heavy modules, refactoring previews, diagnostics, and DAP launch/attach paths.
-5. **Burn down tracked debt by ledger.** Use successor issues from [docs/releases/v0.14.0.md](../releases/v0.14.0.md) for PerlOracleEnv seams, clippy suppressions, coverage claim boundaries, file-policy wiring, and DAP runtime module breakpoints.
+5. **Burn down tracked debt by ledger.** Use successor issues from [docs/releases/v0.17.0.md](../releases/v0.17.0.md) for tracked follow-up work and explicit claim boundaries.
 
 #### Later Themes
 
 - **API and wire-behavior stability:** document which facade APIs and LSP responses are compatibility commitments before `v1.0.0`.
 - **Large-workspace performance:** keep indexing, completion, and provider latency measured on realistic file and symbol counts before expanding advertised performance claims.
 - **Security and supply chain:** tighten subprocess environment seams, publish/install verification, SBOM/signature posture, and dependency freshness policy.
-- **Distribution maturity:** make Homebrew, Docker, crates.io, VS Code Marketplace, Open VSX, and GitHub Releases behave like one coherent public-alpha install story.
+- **Distribution maturity:** make Homebrew, Docker, crates.io, VS Code Marketplace, Open VSX, and GitHub Releases behave like one coherent public-beta install story
 
 ## Milestone Ladder
 
