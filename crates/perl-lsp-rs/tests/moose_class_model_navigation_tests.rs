@@ -492,7 +492,7 @@ mod moose_class_model_navigation_tests {
             "around modifier hover must mention 'around', got: {around_content}"
         );
 
-        // The three cards must not be identical (before ≠ after, before ≠ around)
+        // The three cards must be pairwise distinct.
         assert_ne!(
             before_content, after_content,
             "before and after modifier hover cards should produce distinct content"
@@ -500,6 +500,10 @@ mod moose_class_model_navigation_tests {
         assert_ne!(
             before_content, around_content,
             "before and around modifier hover cards should produce distinct content"
+        );
+        assert_ne!(
+            after_content, around_content,
+            "after and around modifier hover cards should produce distinct content"
         );
         Ok(())
     }
