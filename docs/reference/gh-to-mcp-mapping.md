@@ -4,6 +4,13 @@
 **Verified against:** the GitHub MCP server tool surface available in Claude Code
 web/remote sessions (2026-07-18).
 
+> **Revalidation.** The dated snapshot above reflects one point-in-time tool
+> surface, not a standing guarantee — the MCP server's tools and method enums can
+> change. The **tool + method names** are the durable reference; treat a mismatch
+> as "re-check the tool schema", not "the doc is authoritative". Revalidate when
+> the GitHub MCP server is upgraded (fetch each cited tool's schema and confirm the
+> method enum) rather than trusting this page indefinitely.
+
 ## Why this exists
 
 The swarm control plane (`.claude/agents/*.md`, `.claude/commands/*.md`) hard-codes
@@ -111,6 +118,24 @@ else
   echo "::notice::gh absent (web/MCP session) — use mcp__github__pull_request_read (get / get_status)."
   echo "See docs/reference/gh-to-mcp-mapping.md"
 fi
+```
+
+In the MCP branch, the agent calls the tool directly instead of shelling out — for
+the `gh pr view` case above, the concrete equivalent is:
+
+```jsonc
+// gh pr view <PR> --json mergeable,statusCheckRollup   →
+mcp__github__pull_request_read({
+  "method": "get",          // mergeable_state, draft, head/base SHAs
+  "owner": "EffortlessMetrics", "repo": "perl-lsp-swarm",
+  "pullNumber": <PR>
+})
+// …then, for the check rollup:
+mcp__github__pull_request_read({
+  "method": "get_status",   // combined commit status on the head
+  "owner": "EffortlessMetrics", "repo": "perl-lsp-swarm",
+  "pullNumber": <PR>
+})
 ```
 
 The MCP tools return structured JSON directly, so the parsing that followed a
