@@ -183,13 +183,15 @@ use crate::limits::{
 enum QwStatementProbe {
     /// A top-level semicolon terminates the candidate — a fully-formed statement.
     Terminated,
-    /// The candidate is not a clean standalone statement: either another
-    /// statement starter appears before any terminator, or the candidate itself
-    /// contains an unclosed construct (an error token that runs to end of input
-    /// and hides the real following structure). Do not synchronize here.
+    /// The candidate is not the place to synchronize: either another statement
+    /// starter appears before any terminator, or the candidate is fronted by an
+    /// unclosed construct that swallows the rest of the input and hides a later,
+    /// cleaner statement boundary inside it. Do not synchronize here.
     Interrupted,
     /// Input ends before a terminator or an interruption — a trailing
-    /// semicolonless statement at EOF that is still recoverable (#4494).
+    /// semicolonless statement at EOF that is still recoverable (#4494). This
+    /// includes a trailing statement whose own tail is an unclosed construct that
+    /// runs to EOF but hides no further statement.
     Eof,
 }
 
@@ -3321,12 +3323,22 @@ impl<'a> PerlLexer<'a> {
             if token.token_type == TokenType::Semicolon && delimiter_depth == 0 {
                 return QwStatementProbe::Terminated;
             }
-            // An error token is an unclosed construct that runs to end of input.
-            // Its presence means the candidate is not a clean trailing statement:
-            // the recovery-disabled probe cannot see the real structure it hides,
-            // so a following statement would be swallowed if we synchronized here.
-            if matches!(token.token_type, TokenType::Error(_)) {
-                return QwStatementProbe::Interrupted;
+            // An error token is an unclosed construct. It only hides following
+            // structure when it swallows the source to end of input; when it does,
+            // classify by what it swallowed. If the swallowed tail contains an
+            // interior line-start statement starter, a later and cleaner
+            // synchronization point exists there, so this candidate is not the
+            // place to synchronize (the nested-unclosed-qw guard). Otherwise the
+            // candidate genuinely runs to EOF and stays recoverable (#4494). A
+            // mid-stream error token (input continues past it, e.g. a malformed
+            // numeric literal) hides nothing: fall through so the real terminating
+            // semicolon or the next statement starter still drives the decision.
+            if matches!(token.token_type, TokenType::Error(_)) && token.end >= source.len() {
+                return if Self::qw_probe_span_hides_statement(&source[token.start..]) {
+                    QwStatementProbe::Interrupted
+                } else {
+                    QwStatementProbe::Eof
+                };
             }
             if !first && delimiter_depth == 0 {
                 let prefix = &source[..token.start];
@@ -3349,6 +3361,29 @@ impl<'a> PerlLexer<'a> {
             first = false;
         }
         QwStatementProbe::Eof
+    }
+
+    /// Does `span` — the tail an unclosed construct swallowed to end of input —
+    /// contain an interior line-start statement starter? If so, that starter is a
+    /// later, cleaner synchronization point, so the current candidate should defer
+    /// to it rather than swallow it. Recognition mirrors the visible statement
+    /// starter check in `qw_statement_probe`: a bare `my`/`our`/`state`/`local`/
+    /// `print` keyword at a line prefix (after a newline), delimited by a
+    /// non-identifier character so `myfunc`/`printer` do not match.
+    fn qw_probe_span_hides_statement(span: &str) -> bool {
+        let mut rest = span;
+        while let Some(newline) = rest.find('\n') {
+            rest = &rest[newline + 1..];
+            let after = rest.trim_start_matches([' ', '\t']);
+            for keyword in ["my", "our", "state", "local", "print"] {
+                if let Some(tail) = after.strip_prefix(keyword)
+                    && !tail.starts_with(is_perl_identifier_continue)
+                {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Parse a quote operator after we've seen the delimiter

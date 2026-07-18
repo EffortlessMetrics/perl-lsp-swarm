@@ -1007,6 +1007,70 @@ fn test_unclosed_qw_nested_unclosed_candidate_does_not_synchronize() -> Result<(
 }
 
 #[test]
+fn test_unclosed_qw_recovers_trailing_declaration_with_malformed_numeric_rhs() -> Result<(), String>
+{
+    // #4494 regression guard: a semicolon-terminated trailing declaration whose
+    // RHS contains a mid-stream error token (a malformed numeric literal) must
+    // still recover — the error token does not run to EOF, so the terminating
+    // semicolon drives the decision.
+    let code = "my @items = qw(word\nmy $x = 0b;";
+    let mut parser = Parser::new(code);
+    let ast = parser
+        .parse()
+        .map_err(|error| format!("malformed-numeric RHS declaration did not recover: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    // The trailing `my $x = 0b;` must synchronize into its own statement rather
+    // than be absorbed into the qw word list. (`0b` is invalid Perl, so the parser
+    // emits an error node for it — the point is it is not swallowed as qw words:
+    // the `my`, `$x`, and `=` tokens must not appear as qw strings.)
+    if statements.len() != 2 || sexp.contains("(string \"my\")") || sexp.contains("(string \"=\")")
+    {
+        return Err(format!("trailing declaration with malformed numeric was swallowed: {sexp}"));
+    }
+    if parser.errors().is_empty() {
+        return Err(
+            "unclosed qw before malformed-numeric declaration recorded no error".to_string()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_recovers_trailing_declaration_with_unterminated_quote_rhs() -> Result<(), String>
+{
+    // #4494: a trailing declaration at EOF whose RHS is itself an unterminated
+    // quote-like construct runs to true EOF but hides no further statement, so it
+    // remains recoverable rather than being swallowed as qw words.
+    let code = "my @items = qw(word\nmy $x = qq(unterminated";
+    let mut parser = Parser::new(code);
+    let ast = parser
+        .parse()
+        .map_err(|error| format!("unterminated-quote RHS declaration did not recover: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 2
+        || !matches!(
+            statements.get(1).map(|node| &node.kind),
+            Some(NodeKind::VariableDeclaration { .. })
+        )
+        || !sexp.contains("$ x")
+    {
+        return Err(format!("trailing declaration with unterminated quote was swallowed: {sexp}"));
+    }
+    if parser.errors().is_empty() {
+        return Err(
+            "unclosed qw before unterminated-quote declaration recorded no error".to_string()
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn test_unclosed_non_parenthesized_qw_keeps_trailing_semicolonless_behavior() -> Result<(), String>
 {
     // #4494 non-goal: non-parenthesized quote-word operators keep prior behavior
