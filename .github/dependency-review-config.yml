@@ -1,7 +1,8 @@
-# PR-time dependency delta policy.
+# Protected PR-time dependency delta policy.
 #
 # Authority boundary:
 # - this file governs newly introduced dependency vulnerabilities/licenses;
+# - the workflow reads it from the protected base revision, never the PR head;
 # - deny.toml remains the Cargo whole-graph license/source/bans authority;
 # - cargo-audit and Trivy remain whole-tree vulnerability scanners;
 # - Dependabot remains the update/advisory remediation bot.

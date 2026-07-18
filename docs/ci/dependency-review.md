@@ -1,10 +1,10 @@
 # Dependency Review
 
-`Dependency Review` is the pull-request delta gate for newly introduced third-party dependencies.
+`Dependency Review` is the pull-request delta gate for third-party dependency changes.
 
 It answers one question:
 
-> Does this pull request add a dependency with a high-or-critical known vulnerability or a license outside the repository allowlist?
+> Does this pull request introduce or update a dependency with a high-or-critical known vulnerability or a license outside the repository allowlist?
 
 ## Trigger surface
 
@@ -15,6 +15,10 @@ The workflow runs only when a pull request changes:
 - the dependency-review policy or workflow itself.
 
 The job is read-only and does not post or update pull-request comments. Findings remain in the check summary and logs.
+
+The policy file is fetched from the pull request base commit, so the evaluated
+head cannot weaken the rule that evaluates it. The checked-out head is still
+used as the dependency-review action's comparison input.
 
 ## Policy
 

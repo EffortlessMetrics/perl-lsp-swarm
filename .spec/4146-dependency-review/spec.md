@@ -25,8 +25,9 @@ never converted into a clean result by a fallback scanner or `continue-on-error`
 - Trigger only for pull requests targeting `main` whose changed paths include
   Cargo manifests/lockfiles, the VS Code extension manifest/lockfile, or this
   workflow/configuration.
-- Check out the event's exact pull-request head SHA so the policy file and
-  workflow inputs are from the evaluated head.
+- Check out the event's exact pull-request head SHA so dependency graph inputs
+  are from the evaluated head; fetch the policy file from the protected base
+  commit so the evaluated head cannot weaken the gate.
 - Run `actions/dependency-review-action` v5 at an immutable commit with
   `contents: read` only and no PR-comment write permission.
 - Block newly introduced high or critical vulnerabilities in runtime,
@@ -67,8 +68,9 @@ security debt solely for test data.
 - [x] High/critical newly introduced advisories are configured to fail the
       action; no intentionally vulnerable fixture is introduced in this lane.
 - [x] License policy matches `deny.toml` without creating a second authority.
-- [x] Pinned action, least privilege, exact-head checkout, and path routing are
-      structurally proven; fork limitations remain fail-closed by the action.
+- [x] Pinned action, least privilege, exact-head checkout, protected-base policy,
+      and path routing are structurally proven; fork limitations remain
+      fail-closed by the action.
 - [x] A real base-to-head graph comparison passed on the exact PR head.
 - [x] Unavailable dependency graph data failed explicitly as `NOT_PROVEN` in
       the pre-enable run.
