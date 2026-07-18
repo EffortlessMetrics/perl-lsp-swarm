@@ -343,6 +343,31 @@ mod tests {
     }
 
     #[test]
+    fn include_paths_with_cancellations_call_presence_observer() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let script_path = workspace.join("script.pl");
+        std::fs::create_dir_all(&workspace)?;
+        let script_uri = file_uri(&script_path)?;
+        let server = LspServer::new();
+        let source = "use lib 'lib';\nno lib 'lib';\nuse Observed;\n";
+        let offset = source.rfind("use Observed").ok_or("offset not found")?;
+        let configured_lib = "lib".to_string();
+
+        let paths = assembly::include_paths_with_cancellations(
+            &server,
+            Some(&script_uri),
+            Some(source),
+            Some(offset),
+            &workspace,
+            vec![configured_lib],
+        );
+
+        assert_eq!(paths, Vec::<String>::new());
+        Ok(())
+    }
+
+    #[test]
     fn effective_inc_context_returns_none_without_root() {
         let server = LspServer::new();
         assert!(server.effective_inc_context_for_doc(None, None, None).is_none());
