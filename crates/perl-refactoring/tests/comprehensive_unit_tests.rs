@@ -1276,6 +1276,19 @@ fn legacy_modernizer_print_newline_has_real_offset() {
 }
 
 #[test]
+fn legacy_modernizer_indirect_myclass_has_real_offset() {
+    // The indirect-notation patterns already reported real offsets, but were
+    // never span-checked; guard them now that they derive `end` from the
+    // pattern length rather than a hardcoded literal.
+    assert_span("my $obj = new MyClass();", "new MyClass");
+}
+
+#[test]
+fn legacy_modernizer_indirect_class_has_real_offset() {
+    assert_span("my $obj = new Class();", "new Class");
+}
+
+#[test]
 fn legacy_modernizer_offsets_never_zero_length_when_matched() {
     // Every emitted suggestion that carries a non-empty old_pattern should
     // have a span that slices back to a real substring of the source.
