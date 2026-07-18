@@ -24,7 +24,7 @@ This document defines the 7 gates, the agents within each, when to skip, how age
 
 ## Learning is continuous; consolidation is dedicated
 
-**Every agent in every gate captures learning artifacts** when something novel is encountered. This is existing doctrine (CLAUDE.md: "Learning is continuous — every agent-wrapup captures what was learned.").
+**Every agent in every gate captures learning artifacts** when something novel is encountered. This is existing doctrine: CLAUDE.md names **Learn** as the final lifecycle moment, and every agent's `agent-wrapup` captures what was learned (see [docs/learnings/](../learnings/README.md)).
 
 Agents produce learning artifacts as they work:
 - Memory candidate notes ("this pattern recurred — worth saving")
