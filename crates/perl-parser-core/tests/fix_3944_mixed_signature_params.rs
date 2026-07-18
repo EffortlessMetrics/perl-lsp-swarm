@@ -10,7 +10,7 @@
 
 mod cpan_test_helpers;
 
-use cpan_test_helpers::{assert_clean_parse, parse};
+use cpan_test_helpers::*;
 use perl_parser_core::{Node, NodeKind};
 
 /// Walk the tree collecting `(external_name, required, has_default)` for every
@@ -39,7 +39,9 @@ sub process($x, $y, :$verbose = 0, :$debug) {
 fn mixed_signature_preserves_named_required_and_default_flags()
 -> Result<(), Box<dyn std::error::Error>> {
     // `:$verbose = 0` is optional (has a default); `:$debug` is required (none).
-    let ast = parse("sub process($x, $y, :$verbose = 0, :$debug) { }");
+    let source = "sub process($x, $y, :$verbose = 0, :$debug) { }";
+    assert_clean_parse(source); // fail on any Error/Missing* node before inspecting params
+    let ast = parse(source);
     let mut named = Vec::new();
     collect_named(&ast, &mut named);
 
