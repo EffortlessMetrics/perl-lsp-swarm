@@ -403,6 +403,9 @@ impl DebugAdapter {
 
         match cmd.spawn() {
             Ok(child) => {
+                // Only advance the session generation once spawning has succeeded. A rejected
+                // launch must leave the currently active reader valid for its existing session.
+                self.prepare_replacement_session();
                 let thread_id = {
                     if let Ok(mut counter) = self.thread_counter.lock() {
                         *counter += 1;
@@ -559,6 +562,8 @@ impl DebugAdapter {
         let last_exception_message = self.last_exception_message.clone();
         let tcp_session = self.tcp_session.clone();
         let attached_pid = self.attached_pid.clone();
+        let termination_state = self.termination_state.clone();
+        let session_generation = self.current_session_generation();
 
         thread::spawn(move || {
             // Perl's debugger prompt and evaluation output are emitted on stderr.
@@ -585,19 +590,21 @@ impl DebugAdapter {
                 tracing::warn!(
                     "No debugger output stream available - output reader thread exiting"
                 );
-                // Send termination event
                 if let Some(ref sender) = sender {
-                    emit_event_safe(
+                    emit_terminated_event(
                         sender,
                         &seq,
-                        "terminated",
+                        &termination_state,
+                        Some(session_generation),
                         Some(json!({"reason": "no_debugger_stream"})),
                     );
                 }
-                DebugAdapter::clear_active_session_state_with_state(
+                DebugAdapter::clear_active_session_state_for_generation(
                     &session,
                     &tcp_session,
                     &attached_pid,
+                    &termination_state,
+                    session_generation,
                 );
                 return;
             };
@@ -615,10 +622,21 @@ impl DebugAdapter {
                 match reader.read_line(&mut line) {
                     Ok(0) => {
                         tracing::debug!("Perl debugger process terminated");
-                        DebugAdapter::clear_active_session_state_with_state(
+                        if let Some(ref sender) = sender {
+                            emit_terminated_event(
+                                sender,
+                                &seq,
+                                &termination_state,
+                                Some(session_generation),
+                                Some(json!({"reason": "debugger_eof"})),
+                            );
+                        }
+                        DebugAdapter::clear_active_session_state_for_generation(
                             &session,
                             &tcp_session,
                             &attached_pid,
+                            &termination_state,
+                            session_generation,
                         );
                         break;
                     }
@@ -977,17 +995,20 @@ impl DebugAdapter {
                         tracing::error!(error = %e, "Error reading from debugger");
                         // Send termination event before exiting
                         if let Some(ref sender) = sender {
-                            emit_event_safe(
+                            emit_terminated_event(
                                 sender,
                                 &seq,
-                                "terminated",
+                                &termination_state,
+                                Some(session_generation),
                                 Some(json!({"reason": "read_error", "error": e.to_string()})),
                             );
                         }
-                        DebugAdapter::clear_active_session_state_with_state(
+                        DebugAdapter::clear_active_session_state_for_generation(
                             &session,
                             &tcp_session,
                             &attached_pid,
+                            &termination_state,
+                            session_generation,
                         );
                         break;
                     }
@@ -1038,6 +1059,7 @@ impl DebugAdapter {
                 }
 
                 // Reset existing process/tcp attachment state before switching to PID mode.
+                self.begin_session_generation();
                 self.clear_active_session_state();
 
                 if let Ok(mut guard) = self.attached_pid.lock() {
@@ -1197,31 +1219,32 @@ impl DebugAdapter {
                 // Attempt to connect
                 match session.connect(&config) {
                     Ok(()) => {
+                        if let Err(e) = session.start_reader() {
+                            tracing::error!(error = %e, "Failed to start TCP reader");
+                            return DapMessage::Response {
+                                seq,
+                                request_seq,
+                                success: false,
+                                command: "attach".to_string(),
+                                body: None,
+                                message: Some(format!("Failed to start TCP reader: {}", e)),
+                            };
+                        }
+
+                        // The TCP session is fully connected and has a reader before it becomes
+                        // the active session, so a failed attach does not invalidate an existing
+                        // session's generation.
+                        self.prepare_replacement_session();
                         // Store session
                         if let Ok(mut guard) = self.tcp_session.lock() {
                             *guard = Some(session);
                         }
 
-                        // Start reader thread
-                        if let Ok(mut guard) = self.tcp_session.lock() {
-                            if let Some(ref mut s) = *guard {
-                                if let Err(e) = s.start_reader() {
-                                    tracing::error!(error = %e, "Failed to start TCP reader");
-                                    return DapMessage::Response {
-                                        seq,
-                                        request_seq,
-                                        success: false,
-                                        command: "attach".to_string(),
-                                        body: None,
-                                        message: Some(format!("Failed to start TCP reader: {}", e)),
-                                    };
-                                }
-                            }
-                        }
-
                         // Start event handler thread for TCP events
                         let seq_counter = self.seq.clone();
                         let event_sender = self.event_sender.clone();
+                        let termination_state = self.termination_state.clone();
+                        let session_generation = self.current_session_generation();
                         thread::spawn(move || {
                             while let Ok(event) = rx.recv() {
                                 match event {
@@ -1276,17 +1299,13 @@ impl DebugAdapter {
                                     }
                                     DapEvent::Terminated { reason } => {
                                         if let Some(ref sender) = event_sender {
-                                            let mut seq_lock = seq_counter
-                                                .lock()
-                                                .unwrap_or_else(|e| e.into_inner());
-                                            *seq_lock += 1;
-                                            let _ = sender.send(DapMessage::Event {
-                                                seq: *seq_lock,
-                                                event: "terminated".to_string(),
-                                                body: Some(json!({
-                                                    "reason": reason
-                                                })),
-                                            });
+                                            emit_terminated_event(
+                                                sender,
+                                                &seq_counter,
+                                                &termination_state,
+                                                Some(session_generation),
+                                                Some(json!({"reason": reason})),
+                                            );
                                         }
                                     }
                                     DapEvent::Error { message } => {
@@ -1369,6 +1388,16 @@ impl DebugAdapter {
         );
     }
 
+    /// Advance the session generation and tear down the prior active session.
+    ///
+    /// Callers invoke this only after a replacement launch or attach has
+    /// successfully completed its external setup, so rejected replacements
+    /// leave the existing session untouched.
+    fn prepare_replacement_session(&self) {
+        self.begin_session_generation();
+        self.clear_active_session_state();
+    }
+
     pub(super) fn clear_active_session_state_with_state(
         session: &Arc<Mutex<Option<DebugSession>>>,
         tcp_session: &Arc<Mutex<Option<TcpAttachSession>>>,
@@ -1398,6 +1427,21 @@ impl DebugAdapter {
         if let Ok(mut guard) = attached_pid.lock() {
             *guard = None;
         }
+    }
+
+    fn clear_active_session_state_for_generation(
+        session: &Arc<Mutex<Option<DebugSession>>>,
+        tcp_session: &Arc<Mutex<Option<TcpAttachSession>>>,
+        attached_pid: &Arc<Mutex<Option<u32>>>,
+        termination_state: &Mutex<TerminationState>,
+        expected_generation: u64,
+    ) {
+        let state = lock_or_recover(termination_state, "debug_adapter.termination_state");
+        if state.generation != expected_generation {
+            return;
+        }
+
+        Self::clear_active_session_state_with_state(session, tcp_session, attached_pid);
     }
 
     pub(super) fn wait_for_child_exit(process: &mut Child, timeout: Duration) -> bool {
@@ -1459,10 +1503,10 @@ impl DebugAdapter {
         let _args: Option<DisconnectArguments> =
             arguments.and_then(|v| serde_json::from_value(v).ok());
 
+        if let Some(ref sender) = self.event_sender {
+            emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
+        }
         self.clear_active_session_state();
-
-        // Send terminated event
-        self.send_event("terminated", None);
 
         DapMessage::Response {
             seq,
@@ -1486,10 +1530,17 @@ impl DebugAdapter {
 
         let restart = args.and_then(|a| a.restart);
 
-        self.clear_active_session_state();
-
         let terminated_body = restart.map(|restart| json!({ "restart": restart }));
-        self.send_event("terminated", terminated_body);
+        if let Some(ref sender) = self.event_sender {
+            emit_terminated_event(
+                sender,
+                &self.seq,
+                &self.termination_state,
+                None,
+                terminated_body,
+            );
+        }
+        self.clear_active_session_state();
 
         DapMessage::Response {
             seq,
@@ -1794,11 +1845,177 @@ impl DebugAdapter {
     }
 }
 
+fn emit_terminated_event(
+    sender: &Sender<DapMessage>,
+    seq: &Mutex<i64>,
+    termination_state: &Mutex<TerminationState>,
+    expected_generation: Option<u64>,
+    body: Option<Value>,
+) -> bool {
+    let mut state = lock_or_recover(termination_state, "debug_adapter.termination_state");
+    if expected_generation.is_some_and(|generation| generation != state.generation) || state.emitted
+    {
+        return false;
+    }
+    state.emitted = true;
+    emit_event_safe(sender, seq, "terminated", body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        DebugAdapter, detect_perl_info, format_perl_spawn_error, is_valid_perl_interpreter,
+        DebugAdapter, detect_perl_info, emit_terminated_event, format_perl_spawn_error,
+        is_valid_perl_interpreter,
     };
+    use std::sync::mpsc::{TryRecvError, channel};
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn competing_termination_sources_emit_one_structured_event() -> Result<(), String> {
+        let (sender, receiver) = channel();
+        let seq = Arc::new(Mutex::new(0));
+        let termination_state =
+            Arc::new(Mutex::new(super::TerminationState { generation: 1, emitted: false }));
+        let first_sender = sender.clone();
+        let first_seq = seq.clone();
+        let first_guard = termination_state.clone();
+        let first = std::thread::spawn(move || {
+            emit_terminated_event(
+                &first_sender,
+                &first_seq,
+                &first_guard,
+                Some(1),
+                Some(serde_json::json!({"reason": "debugger_eof"})),
+            )
+        });
+        let second = emit_terminated_event(&sender, &seq, &termination_state, None, None);
+        let first = first.join().map_err(|_| "termination worker panicked".to_string())?;
+        if first == second {
+            return Err(format!(
+                "expected exactly one emitter, got first={first}, second={second}"
+            ));
+        }
+
+        let message = receiver.try_recv().map_err(|error| error.to_string())?;
+        match message {
+            super::DapMessage::Event { event, body, .. } => {
+                let reason = body
+                    .as_ref()
+                    .and_then(|value| value.get("reason"))
+                    .and_then(serde_json::Value::as_str);
+                if event != "terminated" || (reason != Some("debugger_eof") && reason.is_some()) {
+                    return Err(format!("unexpected termination event: {event}, {body:?}"));
+                }
+            }
+            other => return Err(format!("expected termination event, got {other:?}")),
+        }
+
+        match receiver.try_recv() {
+            Err(TryRecvError::Empty) => Ok(()),
+            Err(error) => Err(format!("termination channel error: {error}")),
+            Ok(other) => Err(format!("duplicate termination event: {other:?}")),
+        }
+    }
+
+    #[test]
+    fn stale_session_generation_cannot_emit_termination() -> Result<(), String> {
+        let (sender, receiver) = channel();
+        let seq = Arc::new(Mutex::new(0));
+        let termination_state =
+            Mutex::new(super::TerminationState { generation: 2, emitted: false });
+
+        if emit_terminated_event(
+            &sender,
+            &seq,
+            &termination_state,
+            Some(1),
+            Some(serde_json::json!({"reason": "stale_reader"})),
+        ) {
+            return Err("stale reader unexpectedly emitted termination".to_string());
+        }
+        if receiver.try_recv().is_ok() {
+            return Err("stale reader sent a termination event".to_string());
+        }
+
+        if !emit_terminated_event(
+            &sender,
+            &seq,
+            &termination_state,
+            Some(2),
+            Some(serde_json::json!({"reason": "current_session"})),
+        ) {
+            return Err("current session failed to emit termination".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn stale_session_generation_cannot_clear_attached_pid() -> Result<(), String> {
+        let session = Arc::new(Mutex::new(None));
+        let tcp_session = Arc::new(Mutex::new(None));
+        let attached_pid = Arc::new(Mutex::new(Some(4242_u32)));
+        let termination_state =
+            Mutex::new(super::TerminationState { generation: 2, emitted: false });
+
+        DebugAdapter::clear_active_session_state_for_generation(
+            &session,
+            &tcp_session,
+            &attached_pid,
+            &termination_state,
+            1,
+        );
+        let pid_after_stale_cleanup = attached_pid
+            .lock()
+            .map(|guard| *guard)
+            .map_err(|_| "attached PID lock was poisoned after stale cleanup".to_string())?;
+        if pid_after_stale_cleanup != Some(4242) {
+            return Err(format!(
+                "stale generation cleared the replacement PID: {pid_after_stale_cleanup:?}"
+            ));
+        }
+
+        DebugAdapter::clear_active_session_state_for_generation(
+            &session,
+            &tcp_session,
+            &attached_pid,
+            &termination_state,
+            2,
+        );
+        let pid_after_current_cleanup = attached_pid
+            .lock()
+            .map(|guard| *guard)
+            .map_err(|_| "attached PID lock was poisoned after current cleanup".to_string())?;
+        if pid_after_current_cleanup.is_some() {
+            return Err(format!(
+                "current generation left the attached PID in place: {pid_after_current_cleanup:?}"
+            ));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn replacement_session_cleanup_clears_previous_attached_pid() -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        if let Ok(mut guard) = adapter.attached_pid.lock() {
+            *guard = Some(4242);
+        } else {
+            return Err("attached PID lock was poisoned before replacement cleanup".to_string());
+        }
+
+        adapter.prepare_replacement_session();
+
+        let pid_after_cleanup =
+            adapter.attached_pid.lock().map(|guard| *guard).map_err(|_| {
+                "attached PID lock was poisoned after replacement cleanup".to_string()
+            })?;
+        if pid_after_cleanup.is_some() {
+            return Err(format!(
+                "replacement cleanup left the previous attached PID in place: {pid_after_cleanup:?}"
+            ));
+        }
+        Ok(())
+    }
 
     /// An explicit, non-empty interpreter is honored verbatim — from the
     /// documented `perlPath` key or the `perl` alias — and the toolchain
