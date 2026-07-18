@@ -849,6 +849,197 @@ fn test_unclosed_non_parenthesized_qw_keeps_existing_behavior() -> Result<(), St
 }
 
 #[test]
+fn test_unclosed_qw_recovers_semicolonless_trailing_declaration() -> Result<(), String> {
+    // #4494: a trailing declaration at EOF with no terminating semicolon must
+    // still synchronize out of the unclosed qw( body instead of being swallowed.
+    let code = "my @items = qw(word1 word2\nmy $x = 42";
+    let mut parser = Parser::new(code);
+    let ast = parser
+        .parse()
+        .map_err(|error| format!("semicolonless trailing declaration failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 2
+        || !matches!(
+            statements.first().map(|node| &node.kind),
+            Some(NodeKind::VariableDeclaration { .. })
+        )
+        || !matches!(
+            statements.get(1).map(|node| &node.kind),
+            Some(NodeKind::VariableDeclaration { .. })
+        )
+    {
+        return Err(format!("semicolonless trailing declaration was swallowed: {sexp}"));
+    }
+    if !sexp.contains("\"word1\"") || !sexp.contains("\"word2\"") || !sexp.contains("$ x") {
+        return Err(format!("recovery lost qw words or trailing declaration: {sexp}"));
+    }
+    if parser.errors().is_empty() {
+        return Err("semicolonless recovery did not record a recovery diagnostic".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_recovers_semicolonless_trailing_print() -> Result<(), String> {
+    // #4494: a trailing print statement at EOF without a semicolon must recover.
+    let code = "my @items = qw(word1 word2\nprint \"tail\"";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("semicolonless trailing print failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 2
+        || !matches!(
+            statements.get(1).map(|node| &node.kind),
+            Some(NodeKind::ExpressionStatement { .. })
+        )
+        || !sexp.contains("print")
+        || !sexp.contains("\"word1\"")
+    {
+        return Err(format!("semicolonless trailing print was swallowed: {sexp}"));
+    }
+    if parser.errors().is_empty() {
+        return Err("semicolonless print recovery did not record an error".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_recovers_semicolonless_compact_declarations() -> Result<(), String> {
+    // #4494: sigil-adjacent declaration keywords must recover at EOF without a semicolon.
+    for (declaration, variable) in [
+        ("my$x = 1", "$ x"),
+        ("our@x = ()", "@ x"),
+        ("state%x = ()", "% x"),
+        ("local$x = 1", "$ x"),
+    ] {
+        let code = format!("my @items = qw(word\n{declaration}");
+        let mut parser = Parser::new(&code);
+        let ast = parser
+            .parse()
+            .map_err(|error| format!("compact semicolonless recovery failed: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        if statements.len() != 2
+            || !matches!(
+                statements.get(1).map(|node| &node.kind),
+                Some(NodeKind::VariableDeclaration { .. })
+            )
+            || !sexp.contains(variable)
+            || parser.errors().is_empty()
+        {
+            return Err(format!("compact semicolonless declaration was swallowed: {sexp}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_semicolonless_keeps_unbalanced_trailing_as_content() -> Result<(), String> {
+    // #4494 negative control: a trailing statement whose delimiters do not balance
+    // at EOF is not a clean recovery boundary and must not be treated as a statement.
+    let code = "my @items = qw(word\nmy $x = (1, 2";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("unbalanced trailing recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    if statements.len() != 1 || parser.errors().is_empty() {
+        return Err(format!("unbalanced trailing statement was falsely split: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_closed_qw_semicolonless_keeps_keyword_words_at_eof() -> Result<(), String> {
+    // #4494 negative control: a closed qw ending at EOF with no trailing semicolon and a
+    // line-start declaration-shaped word must stay closed content, not trigger recovery.
+    let code = "my @items = qw(word1\nmy $x word2)";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("closed eof qw failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 1
+        || !parser.errors().is_empty()
+        || !sexp.contains("\"word1\"")
+        || !sexp.contains("\"my\"")
+        || !sexp.contains("\"word2\"")
+    {
+        return Err(format!("closed eof qw changed behavior: {sexp}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_semicolonless_keeps_unterminated_regex_as_content() -> Result<(), String> {
+    // #4494 negative control: a trailing statement whose own bare `/regex/` is unterminated
+    // consumes to EOF without emitting a token. It must not be misclassified as a clean
+    // trailing statement (which would split the qw and silently drop the regex text).
+    let code = "my @items = qw(word1 word2\nprint $y =~ /unterminated";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("unterminated regex recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    if statements.len() != 1 || parser.errors().is_empty() {
+        return Err(format!("unterminated trailing regex was falsely split: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_semicolonless_keeps_unterminated_heredoc_as_content() -> Result<(), String> {
+    // #4494 negative control: a trailing declaration opening a heredoc with no closing
+    // terminator is not a complete statement and must stay swallowed, not split the qw.
+    let code = "my @items = qw(word1 word2\nmy $x = <<EOF\nbody line with no terminator";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("unterminated heredoc recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    if statements.len() != 1 || parser.errors().is_empty() {
+        return Err(format!("unterminated trailing heredoc was falsely split: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_semicolonless_recovers_regex_match_statement() -> Result<(), String> {
+    // #4494: a trailing statement containing a *closed* bind/match still recovers at EOF —
+    // the unterminated-construct guard must not over-reject well-formed trailing statements.
+    let code = "my @items = qw(word1 word2\nprint $y =~ /done/";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("closed regex recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 2
+        || !matches!(
+            statements.get(1).map(|node| &node.kind),
+            Some(NodeKind::ExpressionStatement { .. })
+        )
+        || !sexp.contains("\"word1\"")
+        || parser.errors().is_empty()
+    {
+        return Err(format!("closed trailing match failed to recover: {sexp}"));
+    }
+    Ok(())
+}
+
+#[test]
 fn test_recovery_unclosed_q_brace() {
     let code = "my $str = q{ hello world print 1;";
     let mut parser = Parser::new(code);
