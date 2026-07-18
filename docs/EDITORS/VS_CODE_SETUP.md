@@ -204,7 +204,7 @@ settings.
 | `perl-lsp.autoUpdate` | boolean | `false` | Automatically download and install a new `perllsp` binary when available. |
 | `perl-lsp.updateCheckInterval` | number | `24` | Hours between automatic update checks. |
 | `perl-lsp.trace.server` | string | `"off"` | LSP traffic logging: `off`, `messages`, `verbose`. |
-| `perl-lsp.channel` | string | `"latest"` | Use `latest` for the newest release, `stable` for the newest non-prerelease, or `tag` for an arbitrary pinned release tag. |
+| `perl-lsp.channel` | string | `"latest"` | `latest` uses GitHub's latest non-prerelease endpoint; `stable` selects the first non-prerelease from the release list (falling back to its first entry if none exists); `tag` pins an arbitrary release tag. |
 | `perl-lsp.versionTag` | string | `""` | Specific release tag when channel is `tag`. |
 | `perl-lsp.downloadBaseUrl` | string | `""` | Internal base URL for hosting `perllsp` archives and SHA256SUMS. |
 
@@ -569,8 +569,9 @@ Pin to a specific release or use a different download channel:
 }
 ```
 
-Use `latest` for the newest release, `stable` for the newest non-prerelease, or
-`tag` when you need an arbitrary pinned release tag.
+Use `latest` for GitHub's latest non-prerelease endpoint. `stable` selects the
+first non-prerelease from the release list and falls back to its first entry if
+none exists. Use `tag` when you need an arbitrary pinned release tag.
 
 ### Internal Deployment
 

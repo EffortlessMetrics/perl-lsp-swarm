@@ -8,7 +8,7 @@ it is visible on your `PATH`. If you still need the binary, start with
 [INSTALLATION.md](INSTALLATION.md).
 
 The verified GitHub `v0.17.0` assets are public beta. Marketplace and package-
-manager versions are independent; verify `perllsp --version` and
+manager versions remain pending or not proven by that receipt; verify `perllsp --version` and
 `perllsp --health` before changing editor settings.
 
 If the server starts but the editor does not behave correctly, see
