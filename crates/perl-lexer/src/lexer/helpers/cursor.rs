@@ -203,7 +203,9 @@ mod tests {
             return Err("non-BMP offset 2 returned an unexpected character".to_string());
         }
 
-        Ok(())
+        (non_bmp.peek_char(2) == Some('y'))
+            .then_some(())
+            .ok_or_else(|| "non-BMP offset 2 returned an unexpected character".to_string())
     }
 
     #[test]
@@ -223,7 +225,10 @@ mod tests {
             return Err("EOF returned a character".to_string());
         }
 
-        Ok(())
+        eof.peek_char(2)
+            .is_none()
+            .then_some(())
+            .ok_or_else(|| "EOF returned a character".to_string())
     }
 
     #[test]
@@ -240,6 +245,8 @@ mod tests {
             return Err("nonzero UTF-8 offset 2 returned an unexpected character".to_string());
         }
 
-        Ok(())
+        (utf8.peek_char(2) == Some('y'))
+            .then_some(())
+            .ok_or_else(|| "nonzero UTF-8 offset 2 returned an unexpected character".to_string())
     }
 }
