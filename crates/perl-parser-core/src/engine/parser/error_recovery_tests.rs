@@ -1099,10 +1099,15 @@ fn test_unclosed_qw_recovers_block_form_starters() -> Result<(), String> {
 /// declaration is not swallowed into the qw just because more code trails it.
 #[test]
 fn test_unclosed_qw_block_starter_recovers_before_trailing_statement() -> Result<(), String> {
-    for (label, code, recovered_head) in [
-        ("sub then my", "my @a = qw(word\nsub run { print 1; }\nmy $x = 1;", "(sub run"),
-        ("package then print", "my @a = qw(word\npackage Foo { 1; }\nprint 2;", "(package Foo"),
-        ("BEGIN then my", "my @a = qw(word\nBEGIN { 1; }\nmy $y = 2;", "(BEGIN"),
+    for (label, code, recovered_head, trailing_is_decl) in [
+        ("sub then my", "my @a = qw(word\nsub run { print 1; }\nmy $x = 1;", "(sub run", true),
+        (
+            "package then print",
+            "my @a = qw(word\npackage Foo { 1; }\nprint 2;",
+            "(package Foo",
+            false,
+        ),
+        ("BEGIN then my", "my @a = qw(word\nBEGIN { 1; }\nmy $y = 2;", "(BEGIN", true),
     ] {
         let mut parser = Parser::new(code);
         let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
@@ -1118,6 +1123,20 @@ fn test_unclosed_qw_block_starter_recovers_before_trailing_statement() -> Result
         }
         if !statements[1].to_sexp().contains(recovered_head) {
             return Err(format!("[{label}] middle node is not the recovered starter: {sexp}"));
+        }
+        // The trailing statement is the real parsed construct, not an Error fallback —
+        // otherwise a boundary that mis-parses the tail would still satisfy the count.
+        let trailing = &statements[2];
+        let trailing_ok = if trailing_is_decl {
+            matches!(trailing.kind, NodeKind::VariableDeclaration { .. })
+        } else {
+            matches!(trailing.kind, NodeKind::ExpressionStatement { .. })
+        };
+        if !trailing_ok {
+            return Err(format!(
+                "[{label}] trailing statement did not parse cleanly, got {:?}: {sexp}",
+                trailing.kind
+            ));
         }
         if !sexp.contains("\"word\"") {
             return Err(format!("[{label}] lost the recovered qw content: {sexp}"));

@@ -3293,8 +3293,9 @@ impl<'a> PerlLexer<'a> {
     /// and parenthesized `print( … )`.
     ///
     /// These are only recovery boundaries in a specific syntactic shape: a block
-    /// opener (`{`) or a terminating `;` for the declaration-shaped starters, and an
-    /// immediate `(` for `print`. The shape requirement is the false-positive guard —
+    /// opener (`{`), a terminating `;` for `package` only (the parser errors on the
+    /// unbraced `class Foo;` form, so it is not accepted here), and an immediate `(`
+    /// for `print`. The shape requirement is the false-positive guard —
     /// bare `qw` words like `sub run more` (no block, no `;`) stay quote-word content.
     /// The block shape is self-contained, so — unlike the whitespace `print` form —
     /// a following line-start statement does not defeat the boundary.
@@ -3348,7 +3349,7 @@ impl<'a> PerlLexer<'a> {
         // statement (`qw(word\nsub\nreturn { … };`) would borrow that statement's
         // `{`/`;` and silently swallow real code as a bogus declaration (#4491 review).
         //
-        // The block `{` (or `package`/`class` `;`) that closes the header on one line
+        // The block `{` (or the `package` `;` semicolon form) that closes the header on one line
         // is itself the boundary proof — unlike the whitespace `print`/`my` forms, a
         // strong block shape does *not* additionally require `qw_statement_terminates`
         // over the whole tail. Requiring it swallowed the declaration whenever another
