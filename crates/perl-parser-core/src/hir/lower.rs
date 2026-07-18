@@ -858,11 +858,7 @@ impl Lowerer {
                 self.visit_children(node, confidence);
             }
             NodeKind::LoopControl { op, label } => {
-                let kind = match op.as_str() {
-                    "last" => ControlTransferKind::Last,
-                    "redo" => ControlTransferKind::Redo,
-                    _ => ControlTransferKind::Next,
-                };
+                let kind = loop_control_kind(op);
                 self.push_item(
                     node,
                     None,
@@ -2766,11 +2762,7 @@ impl<'a> BodyBuilder2<'a> {
             NodeKind::ExpressionStatement { expression } => self.lower_statement(expression),
 
             NodeKind::LoopControl { op, label } => {
-                let verb = match op.as_str() {
-                    "last" => ControlTransferKind::Last,
-                    "redo" => ControlTransferKind::Redo,
-                    _ => ControlTransferKind::Next,
-                };
+                let verb = loop_control_kind(op);
                 self.alloc_stmt(HirStmt::LoopControl { verb, target_label: label.clone() }, range)
             }
 
@@ -3129,6 +3121,14 @@ fn statement_modifier_kind(modifier: &str) -> StatementModifierKind {
         "until" => StatementModifierKind::Until,
         "for" | "foreach" => StatementModifierKind::Foreach,
         _ => StatementModifierKind::Other,
+    }
+}
+
+fn loop_control_kind(op: &str) -> ControlTransferKind {
+    match op {
+        "last" => ControlTransferKind::Last,
+        "redo" => ControlTransferKind::Redo,
+        _ => ControlTransferKind::Next,
     }
 }
 
