@@ -514,12 +514,15 @@ mod moose_class_model_navigation_tests {
         // Check all three modifier declarations
         for (needle, target_line) in [("save", 8), ("save", 13), ("save", 18)] {
             let resp = hover_at(code, uri, needle, target_line)?;
-            if let Some(content) = semantic::hover_content(&resp) {
-                assert!(
-                    !content.contains("**Subroutine**"),
-                    "Modifier declaration hover on line {target_line} should not say '**Subroutine**', got: {content}"
-                );
-            }
+            let content = semantic::hover_content(&resp).ok_or_else(|| {
+                format!(
+                    "Expected hover content for modifier declaration on line {target_line}"
+                )
+            })?;
+            assert!(
+                !content.contains("**Subroutine**"),
+                "Modifier declaration hover on line {target_line} should not say '**Subroutine**', got: {content}"
+            );
         }
         Ok(())
     }
@@ -535,12 +538,12 @@ mod moose_class_model_navigation_tests {
         // Line 28 (0-indexed): `sub plain_method {`
         let resp = hover_at(code, uri, "plain_method", 28)?;
 
-        if let Some(content) = semantic::hover_content(&resp) {
-            assert!(
-                !content.contains("Method Modifier"),
-                "Plain method hover should not say 'Method Modifier', got: {content}"
-            );
-        }
+        let content = semantic::hover_content(&resp)
+            .ok_or("Expected hover content for plain method declaration")?;
+        assert!(
+            !content.contains("Method Modifier"),
+            "Plain method hover should not say 'Method Modifier', got: {content}"
+        );
         Ok(())
     }
 
@@ -563,6 +566,10 @@ mod moose_class_model_navigation_tests {
         assert!(
             resp.get("error").is_none(),
             "Hover on $self->save call site should not return an error, got: {resp:#}"
+        );
+        assert!(
+            resp.get("result").is_some(),
+            "Hover on $self->save call site should return an LSP result field, got: {resp:#}"
         );
         Ok(())
     }
