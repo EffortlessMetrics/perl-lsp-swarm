@@ -3276,12 +3276,9 @@ impl<'a> PerlLexer<'a> {
                 return true;
             }
         }
-        remaining
-            .strip_prefix("print")
-            .is_some_and(|after| {
-                after.starts_with(char::is_whitespace)
-                    && self.qw_statement_has_semicolon(position)
-            })
+        remaining.strip_prefix("print").is_some_and(|after| {
+            after.starts_with(char::is_whitespace) && self.qw_statement_has_semicolon(position)
+        })
     }
 
     fn qw_statement_has_semicolon(&self, position: usize) -> bool {
