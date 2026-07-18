@@ -90,6 +90,28 @@ jobs:
           tar -xzf "${RUNNER_TEMP}/${archive}" -C "${install_dir}"
           echo "${install_dir}/gh_${GH_CLI_VERSION}_linux_amd64/bin" >> "${GITHUB_PATH}"
           "${install_dir}/gh_${GH_CLI_VERSION}_linux_amd64/bin/gh" --version
+      - name: Install pinned Droid CLI
+        id: install_droid
+        shell: bash
+        env:
+          DROID_CLI_VERSION: "0.175.0"
+          DROID_CLI_SHA256: dccc99755fbba9a1ef561a8273fb317aa47f750e4721748bd830d2ea8581c12c
+        run: |
+          set -euo pipefail
+
+          install_dir="${RUNNER_TEMP}/droid-cli"
+          partial_path="${install_dir}/droid.partial"
+          droid_path="${install_dir}/droid"
+          mkdir -p "${install_dir}"
+
+          curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL \
+            "https://downloads.factory.ai/factory-cli/releases/${DROID_CLI_VERSION}/linux/x64-baseline/droid" \
+            -o "${partial_path}"
+          printf '%s  %s\n' "${DROID_CLI_SHA256}" "${partial_path}" | sha256sum -c -
+          mv "${partial_path}" "${droid_path}"
+          chmod +x "${droid_path}"
+          "${droid_path}" --version
+          echo "path=${droid_path}" >> "${GITHUB_OUTPUT}"
       - name: Run Droid Auto Review
         id: droid_review
         uses: EffortlessMetrics/droid-action-safe@7c1377ccbacddc95560d1570547a5baa51de01ec # based on Factory-AI/droid-action v5; raw debug artifact upload disabled
@@ -105,6 +127,7 @@ jobs:
           review_depth: shallow
           review_model: custom:MiniMax-M3-0
           automatic_security_review: false
+          path_to_droid_executable: ${{ steps.install_droid.outputs.path }}
       - name: Write Droid live-run receipt
         if: always()
         shell: bash
