@@ -5,22 +5,10 @@
 
 use std::collections::HashMap;
 
-/// A suggestion for modernizing legacy Perl code patterns.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ModernizationSuggestion {
-    /// The original code pattern that should be replaced.
-    pub old_pattern: String,
-    /// The modern replacement pattern.
-    pub new_pattern: String,
-    /// Human-readable explanation of why this change is recommended.
-    pub description: String,
-    /// Whether this suggestion requires manual review before applying.
-    pub manual_review_required: bool,
-    /// Start byte offset of the pattern in the source code.
-    pub start: usize,
-    /// End byte offset of the pattern in the source code.
-    pub end: usize,
-}
+// `ModernizationSuggestion` is defined once in `modernization_suggestion` and
+// re-exported here so `modernize_refactored::ModernizationSuggestion` keeps
+// resolving.
+pub use super::modernization_suggestion::ModernizationSuggestion;
 
 /// A pattern definition for detecting legacy Perl idioms.
 #[derive(Debug, Clone)]
