@@ -3237,38 +3237,16 @@ impl<'a> PerlLexer<'a> {
     }
 
     fn qw_has_top_level_closer_after(&self, position: usize, close: char) -> bool {
-        let mut nesting = Vec::new();
-        let mut quote = None;
-        let mut escaped = false;
-        let mut comment = false;
-
-        for ch in self.input[position..].chars() {
-            if comment {
-                if ch == '\n' {
-                    comment = false;
-                }
-                continue;
-            }
-            if let Some(quote_char) = quote {
-                if escaped {
-                    escaped = false;
-                } else if ch == '\\' {
-                    escaped = true;
-                } else if ch == quote_char {
-                    quote = None;
-                }
-                continue;
-            }
-            match ch {
-                '#' => comment = true,
-                '\'' | '"' => quote = Some(ch),
-                '(' => nesting.push(')'),
-                '[' => nesting.push(']'),
-                '{' => nesting.push('}'),
-                ')' | ']' | '}' if nesting.last() == Some(&ch) => {
-                    nesting.pop();
-                }
-                _ if ch == close && nesting.is_empty() => return true,
+        if close != ')' {
+            return false;
+        }
+        let mut lexer = Self::without_qw_recovery(&self.input[position..]);
+        let mut depth = 0usize;
+        while let Some(token) = lexer.next_token() {
+            match token.token_type {
+                TokenType::LeftParen => depth = depth.saturating_add(1),
+                TokenType::RightParen if depth == 0 => return true,
+                TokenType::RightParen => depth = depth.saturating_sub(1),
                 _ => {}
             }
         }
@@ -3284,28 +3262,18 @@ impl<'a> PerlLexer<'a> {
 
         let remaining = &self.input[position..];
         let line = remaining.split_once('\n').map_or(remaining, |(line, _)| line);
-        if !line.contains(';') {
-            return false;
-        }
         for keyword in ["my", "our", "state", "local"] {
             if let Some(after) = remaining.strip_prefix(keyword)
                 && after.starts_with(char::is_whitespace)
                 && after.trim_start().starts_with(['$', '@', '%'])
+                && line.contains(';')
             {
                 return true;
             }
         }
-        for keyword in ["sub", "package", "use", "require", "BEGIN", "END"] {
-            if remaining.strip_prefix(keyword).is_some_and(|after| {
-                after.chars().next().is_some_and(char::is_whitespace) || after.starts_with('{')
-            }) {
-                return true;
-            }
-        }
-        remaining.strip_prefix("print").is_some_and(|after| {
-            after.starts_with(char::is_whitespace)
-                && !line.strip_prefix("print").unwrap_or_default().trim().is_empty()
-        })
+        remaining
+            .strip_prefix("print")
+            .is_some_and(|after| after.starts_with(char::is_whitespace) && line.contains(';'))
     }
 
     /// Parse a quote operator after we've seen the delimiter
@@ -3337,7 +3305,7 @@ impl<'a> PerlLexer<'a> {
                 self.parse_regex_modifiers(&quote_handler::M_SPEC);
                 body_closed
             }
-            "qw" => {
+            "qw" if delimiter == '(' && self.qw_recovery_enabled => {
                 let (_body, body_closed) = self.read_qw_body(delimiter);
                 body_closed
             }

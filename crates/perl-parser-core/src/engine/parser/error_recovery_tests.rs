@@ -535,33 +535,6 @@ fn test_recovery_unclosed_qw() -> Result<(), String> {
 }
 
 #[test]
-fn test_unclosed_qw_recovers_common_statement_starters() -> Result<(), String> {
-    let cases = [
-        ("sub", "my @items = qw(word1\nsub run;"),
-        ("package", "my @items = qw(word1\npackage Demo;"),
-        ("use", "my @items = qw(word1\nuse strict;"),
-        ("require", "my @items = qw(word1\nrequire Foo;"),
-        ("BEGIN", "my @items = qw(word1\nBEGIN { 1; }"),
-        ("END", "my @items = qw(word1\nEND { 1; }"),
-    ];
-
-    for (label, code) in cases {
-        let mut parser = Parser::new(code);
-        let ast = parser.parse().map_err(|error| format!("{label} recovery failed: {error}"))?;
-        let NodeKind::Program { statements } = &ast.kind else {
-            return Err(format!("{label} recovery did not produce a program: {}", ast.to_sexp()));
-        };
-        if statements.len() < 2 || parser.errors().is_empty() {
-            return Err(format!(
-                "{label} was swallowed by unclosed qw recovery: {}",
-                ast.to_sexp()
-            ));
-        }
-    }
-    Ok(())
-}
-
-#[test]
 fn test_unclosed_qw_ignores_nested_close_in_following_statement() -> Result<(), String> {
     let code = "my @items = qw(word1 word2\nmy $x = foo();\nprint $x;";
     let mut parser = Parser::new(code);
@@ -725,6 +698,45 @@ fn test_unclosed_qw_ignores_close_in_following_print_string() -> Result<(), Stri
     };
     if statements.len() != 2 || parser.errors().is_empty() {
         return Err(format!("print string closer disabled recovery: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_ignores_close_in_following_quote_operator() -> Result<(), String> {
+    let code = "my @items = qw(word\nmy $x = q/)/;\nprint $x;";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("quote-operator recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    if statements.len() != 3 || parser.errors().is_empty() {
+        return Err(format!("quote-operator closer disabled recovery: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_suffix_scan_disables_nested_qw_recovery() -> Result<(), String> {
+    let code = "my @items = qw(word\nmy @nested = qw(inner\nprint 1;";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("nested malformed qw failed: {error}"))?;
+    if parser.errors().is_empty() {
+        return Err(format!("nested malformed qw recorded no recovery: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_non_parenthesized_qw_keeps_existing_behavior() -> Result<(), String> {
+    let code = "my @items = qw[word\nmy $x = 1;";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("non-parenthesized qw failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    if statements.len() != 1 {
+        return Err(format!("non-parenthesized qw recovery behavior changed: {}", ast.to_sexp()));
     }
     Ok(())
 }

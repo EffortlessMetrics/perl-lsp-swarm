@@ -33,6 +33,7 @@ pub struct PerlLexer<'a> {
     pub(crate) line_start_offset: usize,
     pub(crate) emit_heredoc_body_tokens: bool,
     pub(crate) current_quote_op: Option<quote_handler::QuoteOperatorInfo>,
+    pub(crate) qw_recovery_enabled: bool,
     pub(crate) eof_emitted: bool,
     pub(crate) start_time: Instant,
 }

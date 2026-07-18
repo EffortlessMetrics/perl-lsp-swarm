@@ -284,12 +284,15 @@ impl<'a> Parser<'a> {
                                 '<' => TokenKind::Greater,
                                 _ => TokenKind::RightParen,
                             };
-                            let followed_by_identifier_statement = token.text.ends_with('\n')
+                            let followed_by_identifier_statement = token
+                                .text
+                                .trim_end_matches([' ', '\t', '\r'])
+                                .ends_with('\n')
                                 && self.tokens.peek().is_ok_and(|next| {
                                     next.kind == TokenKind::Identifier
                                         && matches!(
                                             next.text.as_ref(),
-                                            "print" | "require" | "BEGIN" | "END"
+                                            "print"
                                         )
                                 });
                             if followed_by_identifier_statement {
