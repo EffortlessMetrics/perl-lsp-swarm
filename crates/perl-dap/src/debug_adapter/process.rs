@@ -599,10 +599,12 @@ impl DebugAdapter {
                         Some(json!({"reason": "no_debugger_stream"})),
                     );
                 }
-                DebugAdapter::clear_active_session_state_with_state(
+                DebugAdapter::clear_active_session_state_for_generation(
                     &session,
                     &tcp_session,
                     &attached_pid,
+                    &termination_state,
+                    session_generation,
                 );
                 return;
             };
@@ -629,10 +631,12 @@ impl DebugAdapter {
                                 Some(json!({"reason": "debugger_eof"})),
                             );
                         }
-                        DebugAdapter::clear_active_session_state_with_state(
+                        DebugAdapter::clear_active_session_state_for_generation(
                             &session,
                             &tcp_session,
                             &attached_pid,
+                            &termination_state,
+                            session_generation,
                         );
                         break;
                     }
@@ -999,10 +1003,12 @@ impl DebugAdapter {
                                 Some(json!({"reason": "read_error", "error": e.to_string()})),
                             );
                         }
-                        DebugAdapter::clear_active_session_state_with_state(
+                        DebugAdapter::clear_active_session_state_for_generation(
                             &session,
                             &tcp_session,
                             &attached_pid,
+                            &termination_state,
+                            session_generation,
                         );
                         break;
                     }
@@ -1411,6 +1417,21 @@ impl DebugAdapter {
         if let Ok(mut guard) = attached_pid.lock() {
             *guard = None;
         }
+    }
+
+    fn clear_active_session_state_for_generation(
+        session: &Arc<Mutex<Option<DebugSession>>>,
+        tcp_session: &Arc<Mutex<Option<TcpAttachSession>>>,
+        attached_pid: &Arc<Mutex<Option<u32>>>,
+        termination_state: &Mutex<TerminationState>,
+        expected_generation: u64,
+    ) {
+        let state = lock_or_recover(termination_state, "debug_adapter.termination_state");
+        if state.generation != expected_generation {
+            return;
+        }
+
+        Self::clear_active_session_state_with_state(session, tcp_session, attached_pid);
     }
 
     pub(super) fn wait_for_child_exit(process: &mut Child, timeout: Duration) -> bool {
@@ -1915,6 +1936,51 @@ mod tests {
         ) {
             return Err("current session failed to emit termination".to_string());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn stale_session_generation_cannot_clear_attached_pid() -> Result<(), String> {
+        let session = Arc::new(Mutex::new(None));
+        let tcp_session = Arc::new(Mutex::new(None));
+        let attached_pid = Arc::new(Mutex::new(Some(4242_u32)));
+        let termination_state =
+            Mutex::new(super::TerminationState { generation: 2, emitted: false });
+
+        DebugAdapter::clear_active_session_state_for_generation(
+            &session,
+            &tcp_session,
+            &attached_pid,
+            &termination_state,
+            1,
+        );
+        let pid_after_stale_cleanup = attached_pid
+            .lock()
+            .map(|guard| *guard)
+            .map_err(|_| "attached PID lock was poisoned after stale cleanup".to_string())?;
+        if pid_after_stale_cleanup != Some(4242) {
+            return Err(format!(
+                "stale generation cleared the replacement PID: {pid_after_stale_cleanup:?}"
+            ));
+        }
+
+        DebugAdapter::clear_active_session_state_for_generation(
+            &session,
+            &tcp_session,
+            &attached_pid,
+            &termination_state,
+            2,
+        );
+        let pid_after_current_cleanup = attached_pid
+            .lock()
+            .map(|guard| *guard)
+            .map_err(|_| "attached PID lock was poisoned after current cleanup".to_string())?;
+        if pid_after_current_cleanup.is_some() {
+            return Err(format!(
+                "current generation left the attached PID in place: {pid_after_current_cleanup:?}"
+            ));
+        }
+
         Ok(())
     }
 
