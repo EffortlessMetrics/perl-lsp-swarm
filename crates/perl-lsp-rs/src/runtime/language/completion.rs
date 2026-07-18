@@ -214,7 +214,8 @@ impl LspServer {
             .next_back()
             .filter(|(_, character)| matches!(character, '{' | '['))
             .is_some_and(|(position, _)| before_cursor[..position].trim_end().ends_with("->"));
-        member_subscript || token.contains("->") || token.contains("::")
+        let preceded_by_member_arrow = before_cursor[..token_start].trim_end().ends_with("->");
+        member_subscript || preceded_by_member_arrow || token.contains("->") || token.contains("::")
     }
 
     fn record_completion_provider_decision_trace(
@@ -273,7 +274,11 @@ impl LspServer {
             "dynamic_boundary_item_count": summary.dynamic_boundary_items,
             "fallback_candidate_count": summary.fallback_items,
             "sample_labels": summary.sample_labels,
-            "claim_boundary": "records existing comparable visibility completions and semantic shadow evidence; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+            "claim_boundary": if semantic_shadow_receipt.is_some() {
+                "records existing comparable visibility completions and semantic shadow evidence; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+            } else {
+                "records existing comparable visibility completions only; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+            }
         });
         if let Some(shadow_receipt) = semantic_shadow_receipt {
             if let Some(object) = receipt.as_object_mut() {
@@ -2595,6 +2600,37 @@ mod tests {
     }
 
     #[test]
+    fn completion_provider_decision_claim_boundary_requires_shadow_receipt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let context = CompletionDecisionContext {
+            uri: "file:///workspace/completion-no-shadow-receipt.pl",
+            line: 0,
+            character: 0,
+            ast_available: false,
+            workspace_index_state: "none",
+            workspace_index_reason: None,
+            is_incomplete: false,
+        };
+
+        server.record_completion_provider_decision_trace(&context, &[], None);
+
+        let explanation = explain_provider_decision(&server, "completion")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing persisted completion request receipt")?;
+        assert!(receipt.get("semantic_shadow_receipt").is_none());
+        assert_eq!(
+            receipt.get("claim_boundary").and_then(Value::as_str),
+            Some(
+                "records existing comparable visibility completions only; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
     fn completion_provider_decision_embeds_semantic_shadow_receipt()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::default();
@@ -2689,6 +2725,10 @@ mod tests {
         assert!(LspServer::is_qualified_member_completion_context(
             "$object->[idx",
             "$object->[idx".len(),
+        ));
+        assert!(LspServer::is_qualified_member_completion_context(
+            "$object -> method",
+            "$object -> method".len(),
         ));
         Ok(())
     }
