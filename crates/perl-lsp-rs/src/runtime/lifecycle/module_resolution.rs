@@ -9,10 +9,34 @@ use perl_module::resolution::{
     resolve_module_path as resolve_workspace_module_path, resolve_module_uri_with_effective_inc,
 };
 use perl_parser_core::hir::{IncRootAction, lower_ast};
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+
+/// Runtime-owned cache for compiler-backed `use lib` recovery paths.
+///
+/// There is one active entry per document scope. Replacing the entry on a
+/// generation, content, workspace-root, or document-directory change keeps
+/// memory bounded while ensuring edits and `FindBin` contexts cannot reuse a
+/// stale path set.
+#[derive(Default)]
+pub(crate) struct UseLibHirCache {
+    entries: HashMap<Option<String>, UseLibHirCacheEntry>,
+}
+
+#[derive(PartialEq, Eq)]
+struct UseLibHirCacheFingerprint {
+    generation: Option<u32>,
+    text_digest: [u8; 16],
+    workspace_root: PathBuf,
+    file_dir: Option<PathBuf>,
+}
+
+struct UseLibHirCacheEntry {
+    fingerprint: UseLibHirCacheFingerprint,
+    paths: Vec<String>,
+}
 
 /// A single resolution scope representing a workspace folder's search context.
 ///
@@ -46,10 +70,12 @@ pub struct ResolutionContext {
 /// ahead of the configured workspace paths.
 /// Paths are scoped to this call only — `workspace_config.include_paths` is never mutated.
 fn prepend_use_lib_paths(
+    server: &LspServer,
     include_paths: &mut Vec<String>,
     doc_text: &str,
     workspace_root: &std::path::Path,
     file_dir: Option<&std::path::Path>,
+    doc_uri: Option<&str>,
 ) {
     let mut dynamic = resolve_use_lib_paths_from_source(doc_text, workspace_root, file_dir);
     // The source extractor covers ordinary static `use lib`/`no lib` syntax
@@ -57,7 +83,7 @@ fn prepend_use_lib_paths(
     // that the source scanner could not recover; this keeps the legacy resolver
     // cheap while retaining compiler-backed roots where they add information.
     if dynamic.is_empty() {
-        dynamic = hir_use_lib_paths(doc_text, workspace_root, file_dir);
+        dynamic = server.cached_hir_use_lib_paths(doc_uri, doc_text, workspace_root, file_dir);
     }
 
     // Keep the resolver's precedence and deduplication policy in one place.
@@ -73,6 +99,38 @@ fn prepend_use_lib_paths(
     // Keep configured/system include paths untouched in this legacy method:
     // without a request offset, a later `no lib` must not cancel a root while
     // resolving an earlier use/import in the same document.
+}
+
+impl LspServer {
+    fn cached_hir_use_lib_paths(
+        &self,
+        doc_uri: Option<&str>,
+        doc_text: &str,
+        workspace_root: &Path,
+        file_dir: Option<&Path>,
+    ) -> Vec<String> {
+        let scope = doc_uri.map(|uri| self.normalize_uri_key(uri));
+        let fingerprint = UseLibHirCacheFingerprint {
+            generation: doc_uri.and_then(|uri| self.document_generation(uri)),
+            text_digest: md5::compute(doc_text).0,
+            workspace_root: workspace_root.to_path_buf(),
+            file_dir: file_dir.map(Path::to_path_buf),
+        };
+
+        {
+            let cache = self.use_lib_hir_cache.lock();
+            if let Some(entry) = cache.entries.get(&scope)
+                && entry.fingerprint == fingerprint
+            {
+                return entry.paths.clone();
+            }
+        }
+
+        let paths = hir_use_lib_paths(doc_text, workspace_root, file_dir);
+        let mut cache = self.use_lib_hir_cache.lock();
+        cache.entries.insert(scope, UseLibHirCacheEntry { fingerprint, paths: paths.clone() });
+        paths
+    }
 }
 
 fn hir_use_lib_paths(
@@ -235,7 +293,7 @@ impl LspServer {
         append_system_inc_paths(&mut config, &mut include_paths);
 
         if let Some(text) = doc_text {
-            prepend_use_lib_paths(&mut include_paths, text, &root, None);
+            prepend_use_lib_paths(self, &mut include_paths, text, &root, None, None);
         }
 
         resolve_workspace_module_path(&root, module, &include_paths)
@@ -280,7 +338,14 @@ impl LspServer {
             if file_dir.is_none() && doc_uri.is_some() {
                 tracing::trace!("Module URI resolution failed for doc_uri: {:?}", doc_uri);
             }
-            prepend_use_lib_paths(&mut include_paths, text, &root, file_dir.as_deref());
+            prepend_use_lib_paths(
+                self,
+                &mut include_paths,
+                text,
+                &root,
+                file_dir.as_deref(),
+                doc_uri,
+            );
         }
 
         resolve_workspace_module_path(&root, module, &include_paths)
@@ -804,6 +869,39 @@ mod tests {
             .resolve_module_path("Foo", Some("use lib './local';\nuse Foo;\n"))
             .ok_or("expected Foo.pm to resolve through the HIR use lib fact")?;
         assert_eq!(resolved, module_file);
+        Ok(())
+    }
+
+    #[test]
+    fn cached_hir_use_lib_paths_replace_entries_when_document_content_changes() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace)?;
+        let document = workspace.join("main.pl");
+        let doc_uri = url::Url::from_file_path(&document)
+            .map_err(|_| "failed to create document URI")?
+            .to_string();
+        let server = LspServer::new();
+        server
+            .documents
+            .lock()
+            .insert(doc_uri.clone(), DocumentState::new("use lib './first';\n", 1));
+
+        let first = server.cached_hir_use_lib_paths(
+            Some(&doc_uri),
+            "use lib './first';\n",
+            &workspace,
+            None,
+        );
+        assert_eq!(first, vec!["./first"]);
+        let second = server.cached_hir_use_lib_paths(
+            Some(&doc_uri),
+            "use lib './second';\n",
+            &workspace,
+            None,
+        );
+        assert_eq!(second, vec!["./second"]);
+        assert_eq!(server.use_lib_hir_cache.lock().entries.len(), 1);
         Ok(())
     }
 
