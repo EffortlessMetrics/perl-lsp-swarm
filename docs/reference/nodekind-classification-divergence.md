@@ -17,6 +17,14 @@ the concrete divergences a shared classification must subsume.
 The `file:line` references in #914's body were written in May 2026 and have since
 drifted; every anchor below was re-derived from current `main`.
 
+> **Durability note.** The line numbers here are a snapshot at the SHA above and
+> **will drift** as code moves. The **named symbols** — functions, `NodeKind`
+> variants, and file paths — are the durable references; the line numbers are only
+> a convenience. To re-verify, grep for the named function/variant rather than
+> trusting a line number verbatim (e.g. `rg 'fn handle_use' crates/perl-semantic-analyzer`).
+> A migration builder acting on this evidence should re-anchor against the current
+> `main` before editing.
+
 ## Headline finding: the classification primitive exists, but its divergence-relevant flags are unwired
 
 `crates/perl-ast/src/classification.rs` already defines the exact shape #911
@@ -137,7 +145,7 @@ containers. There is no single authoritative "introduces_scope" list driving bot
 
 `src/` only, `.rs` files. `NodeKind::` is a raw grep line count (construction,
 imports, match arms, and tests all included); `matches!(…NodeKind` counts
-`matches!` sites touching `NodeKind`. These are **directional evidence of
+`matches!` sites touching `NodeKind`. These counts are **directional evidence of
 duplication**, not a curated hand-match census — do not treat any single number as
 load-bearing. (#914's "~489" was a narrower May estimate and is superseded.)
 
