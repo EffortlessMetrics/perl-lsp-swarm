@@ -40,7 +40,6 @@ impl LspServer {
 
         let default_features = feature_profile.advertised_features();
         let default_feature_ids = feature_profile.build_flags().to_feature_ids();
-        let default_feature_ids = feature_profile.build_flags().to_feature_ids();
         let (outbound, outbound_writer_handle) = outbound::spawn_writer(Box::new(io::stdout()));
 
         Self {
@@ -211,6 +210,7 @@ impl LspServer {
         let index_coordinator = Some(Arc::new(IndexCoordinator::new()));
 
         let default_features = feature_profile.advertised_features();
+        let default_feature_ids = feature_profile.build_flags().to_feature_ids();
         let (outbound, outbound_writer_handle) =
             outbound::spawn_writer(writer as Box<dyn Write + Send>);
 
