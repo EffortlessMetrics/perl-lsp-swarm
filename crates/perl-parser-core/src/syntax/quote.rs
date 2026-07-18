@@ -43,6 +43,8 @@ fn strip_match_prefix(text: &str) -> Option<&str> {
 pub enum SubstitutionError {
     /// Invalid modifier character found
     InvalidModifier(char),
+    /// Invalid delimiter after `s` (alphanumeric or whitespace)
+    InvalidDelimiter(char),
     /// Missing delimiter after 's'
     MissingDelimiter,
     /// Pattern is missing or empty (just `s/`)
@@ -84,6 +86,10 @@ pub enum TransliterationError {
 ///
 /// Returns `Err(SubstitutionError::InvalidModifier(c))` if an invalid modifier character is found.
 /// Valid modifiers are: g, i, m, s, x, o, e, r
+///
+/// Returns `Err(SubstitutionError::InvalidDelimiter(c))` if the delimiter after `s`
+/// (or the paired replacement delimiter) is alphanumeric or whitespace, mirroring the
+/// delimiter validation in `extract_transliteration_parts_strict`.
 pub fn extract_substitution_parts_strict(
     text: &str,
 ) -> Result<(String, String, String), SubstitutionError> {
@@ -98,6 +104,12 @@ pub fn extract_substitution_parts_strict(
         Some(d) => d,
         None => return Err(SubstitutionError::MissingDelimiter),
     };
+    // Perl forbids alphanumeric and whitespace delimiters for `s///`; reject them as a
+    // distinct error rather than misreporting a missing closing delimiter. Mirrors the
+    // delimiter validation in `extract_transliteration_parts_strict`.
+    if delimiter.is_ascii_alphanumeric() || delimiter.is_whitespace() {
+        return Err(SubstitutionError::InvalidDelimiter(delimiter));
+    }
     let closing = get_closing_delimiter(delimiter);
     let is_paired = delimiter != closing;
 
@@ -133,6 +145,13 @@ pub fn extract_substitution_parts_strict(
         // for the replacement side (e.g. s{foo}/bar/ and s[foo]{bar}).
         let trimmed = skip_paired_replacement_gap(rest1);
         if let Some(rd) = trimmed.chars().next() {
+            // After a paired pattern delimiter (e.g. `{...}`), the replacement must also
+            // start with a valid non-alphanumeric, non-whitespace delimiter. An
+            // alphanumeric character here (e.g. `s{foo}bar`) is an invalid delimiter,
+            // not merely a missing replacement (mirrors the transliteration path).
+            if rd.is_ascii_alphanumeric() || rd.is_whitespace() {
+                return Err(SubstitutionError::InvalidDelimiter(rd));
+            }
             let repl_closing = get_closing_delimiter(rd);
             extract_delimited_content_strict(trimmed, rd, repl_closing)
         } else {

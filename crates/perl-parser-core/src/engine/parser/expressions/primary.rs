@@ -354,6 +354,12 @@ impl<'a> Parser<'a> {
                                         c
                                     )
                                 }
+                                quote_parser::SubstitutionError::InvalidDelimiter(c) => {
+                                    format!(
+                                        "Invalid substitution delimiter '{}'. Delimiter must be a non-alphanumeric, non-whitespace character",
+                                        c
+                                    )
+                                }
                                 quote_parser::SubstitutionError::MissingDelimiter => {
                                     "Missing delimiter after 's'".to_string()
                                 }
