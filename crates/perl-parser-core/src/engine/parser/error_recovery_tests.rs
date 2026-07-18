@@ -826,6 +826,12 @@ fn test_unclosed_non_parenthesized_qw_keeps_existing_behavior() -> Result<(), St
     if statements.len() != 1 {
         return Err(format!("non-parenthesized qw recovery behavior changed: {}", ast.to_sexp()));
     }
+    let errors = format!("{:?}", parser.errors());
+    if !errors.contains("Unclosed qw() delimiter: missing closing delimiter before end of file")
+        || errors.contains("InsertedCloser")
+    {
+        return Err(format!("non-parenthesized qw diagnostic changed: {errors}"));
+    }
     Ok(())
 }
 

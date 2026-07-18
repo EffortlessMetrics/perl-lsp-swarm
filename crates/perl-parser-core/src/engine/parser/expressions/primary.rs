@@ -284,27 +284,25 @@ impl<'a> Parser<'a> {
                                     start,
                                 )
                             })?;
-                            let close_kind = match open {
-                                '[' => TokenKind::RightBracket,
-                                '{' => TokenKind::RightBrace,
-                                '<' => TokenKind::Greater,
-                                _ => TokenKind::RightParen,
-                            };
-                            let followed_by_identifier_statement = token
-                                .text
-                                .trim_end_matches([' ', '\t', '\r'])
-                                .ends_with('\n')
-                                && self.tokens.peek().is_ok_and(|next| {
-                                    next.kind == TokenKind::Identifier
-                                        && matches!(
-                                            next.text.as_ref(),
-                                            "print"
-                                        )
-                                });
-                            if followed_by_identifier_statement {
-                                self.record_inserted_closer(close_kind);
+                            if open != '(' {
+                                self.record_error(ParseError::syntax(
+                                    "Unclosed qw() delimiter: missing closing delimiter before end of file",
+                                    start,
+                                ));
                             } else {
-                                self.expect_closing_delimiter(close_kind)?;
+                                let followed_by_identifier_statement = token
+                                    .text
+                                    .trim_end_matches([' ', '\t', '\r'])
+                                    .ends_with('\n')
+                                    && self.tokens.peek().is_ok_and(|next| {
+                                        next.kind == TokenKind::Identifier
+                                            && next.text.as_ref() == "print"
+                                    });
+                                if followed_by_identifier_statement {
+                                    self.record_inserted_closer(TokenKind::RightParen);
+                                } else {
+                                    self.expect_closing_delimiter(TokenKind::RightParen)?;
+                                }
                             }
                             content
                         };
