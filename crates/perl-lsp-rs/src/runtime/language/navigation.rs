@@ -1880,7 +1880,12 @@ impl LspServer {
             return None;
         };
         let index = coordinator.index();
-        if document_generation != 0 && index.is_index_generation_stale(uri, document_generation) {
+        let snapshot_is_current = || {
+            document_generation == 0
+                || (self.document_generation(uri) == Some(document_generation)
+                    && index.indexed_generation(uri) == Some(document_generation))
+        };
+        if !snapshot_is_current() {
             return None;
         }
         let receipt = index.with_semantic_queries_for_uri(uri, |file_id, queries| {
@@ -1888,6 +1893,9 @@ impl LspServer {
             goto_definition_live_exact_or_imported(index.as_ref(), &queries, &symbol, &context)
                 .receipt
         })?;
+        if !snapshot_is_current() {
+            return None;
+        }
         serde_json::to_value(receipt).ok()
     }
 

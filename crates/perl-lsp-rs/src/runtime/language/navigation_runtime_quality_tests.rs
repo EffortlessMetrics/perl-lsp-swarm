@@ -250,9 +250,10 @@ fn navigation_provider_decision_replays_definition_and_references_traces()
     assert!(
         candidate_identities.iter().any(|identity| {
             identity.as_str().is_some_and(|identity| {
-                trace_anchor_ids
-                    .iter()
-                    .any(|anchor_id| identity.ends_with(&format!("target:anchor:{anchor_id}")))
+                trace_anchor_ids.iter().any(|anchor_id| {
+                    identity.starts_with("Real::Nav::target")
+                        && identity.ends_with(&format!("target:anchor:{anchor_id}"))
+                })
             })
         }),
         "definition candidate identities must match a traced target anchor: {candidate_identities:?}"
