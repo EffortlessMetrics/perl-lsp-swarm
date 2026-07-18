@@ -235,7 +235,7 @@ cargo test -p perl-parser --features lsp-ga-lock --test lsp_capabilities_contrac
 3. Define feature contract in `perl-lsp-feature-contracts`
 4. Add feature ID to `perl-lsp-feature-ids`
 5. Update capability advertisement in `lsp_server.rs`
-6. Update `LSP_ACTUAL_STATUS.md` and README.md
+6. Update the [capability status index](../project/status/index.md) and README.md
 
 ### Feature Stability Levels
 

@@ -44,14 +44,15 @@ impl PerlModernizer {
         }
 
         // Check for bareword filehandles
-        if let Some(pos) = code.find("open FH") {
+        let bareword_fh = "open FH";
+        if let Some(pos) = code.find(bareword_fh) {
             suggestions.push(ModernizationSuggestion {
-                old_pattern: "open FH".to_string(),
+                old_pattern: bareword_fh.to_string(),
                 new_pattern: "open my $fh".to_string(),
                 description: "Use lexical filehandles instead of barewords".to_string(),
                 manual_review_required: false,
                 start: pos,
-                end: pos + 7,
+                end: pos + bareword_fh.len(),
             });
         }
 
@@ -83,25 +84,27 @@ impl PerlModernizer {
         }
 
         // Check for indirect object notation - handle both Class and MyClass
-        if let Some(pos) = code.find("new MyClass") {
+        let indirect_myclass = "new MyClass";
+        let indirect_class = "new Class";
+        if let Some(pos) = code.find(indirect_myclass) {
             suggestions.push(ModernizationSuggestion {
-                old_pattern: "new MyClass".to_string(),
+                old_pattern: indirect_myclass.to_string(),
                 new_pattern: "MyClass->new".to_string(),
                 description: "Use direct method call instead of indirect object notation"
                     .to_string(),
                 manual_review_required: false,
                 start: pos,
-                end: pos + 11,
+                end: pos + indirect_myclass.len(),
             });
-        } else if let Some(pos) = code.find("new Class") {
+        } else if let Some(pos) = code.find(indirect_class) {
             suggestions.push(ModernizationSuggestion {
-                old_pattern: "new Class".to_string(),
+                old_pattern: indirect_class.to_string(),
                 new_pattern: "Class->new".to_string(),
                 description: "Use direct method call instead of indirect object notation"
                     .to_string(),
                 manual_review_required: false,
                 start: pos,
-                end: pos + 9,
+                end: pos + indirect_class.len(),
             });
         }
 
