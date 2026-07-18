@@ -3223,7 +3223,7 @@ impl WorkspaceIndex {
                 let end = usize::try_from(anchor.span_end_byte).ok()?;
                 let next_location = WireLocation::new(
                     shard.source_uri.clone(),
-                    WireRange::from_byte_offsets(&doc.text, start, end),
+                    WireRange::from_byte_offsets(doc.text(), start, end),
                 );
                 if location.replace(next_location).is_some() {
                     return None;
@@ -3259,11 +3259,11 @@ impl WorkspaceIndex {
         let doc = self.document_store.get(&shard.source_uri)?;
         let start = usize::try_from(anchor.span_start_byte).ok()?;
         let end = usize::try_from(anchor.span_end_byte).ok()?;
-        doc.text.get(start..end)?;
+        doc.text().get(start..end)?;
 
         Some(WireLocation::new(
             shard.source_uri.clone(),
-            WireRange::from_byte_offsets(&doc.text, start, end),
+            WireRange::from_byte_offsets(doc.text(), start, end),
         ))
     }
 
@@ -3638,7 +3638,7 @@ impl WorkspaceIndex {
         let doc = self.document_store.get(&shard.source_uri)?;
         let start = usize::try_from(anchor.span_start_byte).ok()?;
         let end = usize::try_from(anchor.span_end_byte).ok()?;
-        doc.text.get(start..end)?;
+        doc.text().get(start..end)?;
         let ((start_line, start_col), (end_line, end_col)) = doc.line_index.range(start, end);
         Some(Range {
             start: Position { byte: start, line: start_line, column: start_col },
@@ -7726,7 +7726,8 @@ sub hello {
         // facts.
         let stored_doc = must_some(index.document_store().get(uri.as_str()));
         assert_eq!(
-            stored_doc.text, gen_n_plus_1_text_for_assertion,
+            stored_doc.text(),
+            gen_n_plus_1_text_for_assertion,
             "document_store must hold the newer generation's text, matching self.files -- an \
              older out-of-order write must not leave document_store and self.files disagreeing \
              about which generation is current"
@@ -7831,11 +7832,11 @@ sub hello {
 
             let stored_doc = must_some(index.document_store().get(uri.as_str()));
             assert!(
-                !stored_doc.text.contains("gen_n_symbol"),
+                !stored_doc.text().contains("gen_n_symbol"),
                 "iteration {iteration}: document_store must never end up holding generation N's \
                  (older) text once generation N+1 has been reserved, even while N+1 is still \
                  parsing when N's early guard runs; got: {:?}",
-                stored_doc.text
+                stored_doc.text()
             );
         }
 

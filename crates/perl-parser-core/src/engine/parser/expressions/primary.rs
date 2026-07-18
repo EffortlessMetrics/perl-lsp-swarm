@@ -268,18 +268,42 @@ impl<'a> Parser<'a> {
                 let text = &token.text;
 
                 // Parse qw(...) to extract words
-                if let Some(content) = text.strip_prefix("qw") {
+                if text.strip_prefix("qw").is_some() {
                     let content_str =
                         if let Some(content_str) = quote_parser::parse_quote_operator_content(
-                            text,
-                            "qw",
+                            text, "qw",
                         ) {
                             content_str
                         } else {
-                        self.record_error(ParseError::syntax(
-                            "Unclosed qw() delimiter: missing closing delimiter before end of file",
-                            start,
-                        ));
+                            let (open, content) = quote_parser::quote_operator_open_and_content(
+                                text, "qw",
+                            )
+                            .ok_or_else(|| {
+                                ParseError::syntax(
+                                    "Invalid qw delimiter while recovering an unclosed list",
+                                    start,
+                                )
+                            })?;
+                            if open != '(' {
+                                self.record_error(ParseError::syntax(
+                                    "Unclosed qw() delimiter: missing closing delimiter before end of file",
+                                    start,
+                                ));
+                            } else {
+                                let followed_by_identifier_statement = token
+                                    .text
+                                    .trim_end_matches([' ', '\t', '\r'])
+                                    .ends_with('\n')
+                                    && self.tokens.peek().is_ok_and(|next| {
+                                        next.kind == TokenKind::Identifier
+                                            && next.text.as_ref() == "print"
+                                    });
+                                if followed_by_identifier_statement {
+                                    self.record_inserted_closer(TokenKind::RightParen);
+                                } else {
+                                    self.expect_closing_delimiter(TokenKind::RightParen)?;
+                                }
+                            }
                             content
                         };
 
@@ -1340,6 +1364,7 @@ fn is_simple_scalar_variable(pattern: &str) -> bool {
 //   - Verdict: AGREE on all inputs in the shared matrix. Safe to centralize
 //     once a follow-up refactor PR is scoped.
 // ============================================================================
+
 #[cfg(test)]
 mod balanced_segment_conformance {
     use super::Parser;

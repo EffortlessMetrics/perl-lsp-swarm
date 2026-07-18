@@ -154,3 +154,18 @@ fn test_from_tokens_does_not_require_cancellation_flag() {
     let result = parser.parse();
     assert!(result.is_ok(), "from_tokens parse should succeed");
 }
+
+#[test]
+fn test_from_tokens_recovers_following_statements_after_unclosed_qw() -> Result<(), String> {
+    let source = "my @items = qw(word1 word2\nmy $x = 42;\nprint $x;";
+    let tokens = lex_to_tokens(source);
+    let mut parser = Parser::from_tokens(tokens, source);
+    let ast = parser.parse().map_err(|error| format!("from_tokens did not recover: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    if statements.len() != 3 || parser.errors().is_empty() {
+        return Err(format!("from_tokens recovery lost following statements: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
