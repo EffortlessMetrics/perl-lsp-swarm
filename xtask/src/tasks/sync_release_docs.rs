@@ -359,8 +359,11 @@ fn sync_status_index(content: &str, surface: &ReleaseSurface) -> Result<String> 
     for line in content.lines() {
         if line.starts_with("- **Release posture**: `v") {
             lines.push(format!(
-                "- **Release posture**: `v{}` is the current workspace version and shipped public-beta release. The published crate surface is {} crates; distribution channels remain independently receipted.",
-                surface.version, surface.published_crate_count
+                "- **Release posture**: `v{}` is the current workspace version and shipped public-beta release ({}); `v{}` is the next public-beta train, not a maturity promotion or version bump in this tree. The published crate surface is {} crates. See [release.md](release.md) for channel receipts.",
+                surface.version,
+                surface.shipped_date,
+                surface.next_version,
+                surface.published_crate_count
             ));
             release_posture_seen = true;
         } else if line.starts_with("**Now (active milestone: v") {
@@ -525,6 +528,30 @@ mod tests {
         let second = sync_release_notes(&first, &release_surface())?;
         if second != first {
             bail!("second release-notes sync was not idempotent");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_status_index_preserves_release_posture_on_first_and_second_write() -> Result<()> {
+        let input = "- **Release posture**: `v0.16.0` is in release preparation.\n\
+**Now (active milestone: v0.16.0 release preparation)**\n\
+- Run the `v0.16.0` release-prep checks before dispatching release orchestration\n\
+- Keep the top-level README and status docs aligned with the 31-crate published surface\n\
+**Next (post v0.16.0 release preparation)**\n";
+        let expected = "- **Release posture**: `v0.17.0` is the current workspace version and shipped public-beta release (2026-06-28); `v0.18.0` is the next public-beta train, not a maturity promotion or version bump in this tree. The published crate surface is 32 crates. See [release.md](release.md) for channel receipts.\n\
+**Now (active milestone: v0.17.0 shipped public beta)**\n\
+- Run the `v0.17.0` release-prep checks before dispatching release orchestration\n\
+- Keep the top-level README, status docs, and release runbooks aligned with the actual `perllsp` asset line, the `perl-lsp-rs` extension package, and the 32-crate published surface\n\
+**Next (post v0.17.0 public beta)**\n";
+
+        let first = sync_status_index(input, &release_surface())?;
+        if first != expected {
+            bail!("first status-index sync did not retain the exact release posture facts");
+        }
+        let second = sync_status_index(&first, &release_surface())?;
+        if second != first {
+            bail!("second status-index sync was not idempotent");
         }
         Ok(())
     }
