@@ -21,7 +21,7 @@
 //! - **Req 14.4**: Cycle detection — terminate traversal and report cycle rather than looping.
 
 use perl_semantic_facts::{
-    EntityId, FileId, PackageEdge, PackageEdgeKind, PackageKind, PackageNode,
+    AnchorId, EntityId, FileId, PackageEdge, PackageEdgeKind, PackageKind, PackageNode,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -51,10 +51,18 @@ pub struct PackageGraphIndex {
     /// Package name → outgoing edges (edges where `from_package` == key).
     outgoing_edges: HashMap<String, Vec<PackageEdge>>,
 
+    /// Source URI for each outgoing edge, kept in lockstep with
+    /// [`Self::outgoing_edges`].  Equal edges can be contributed by multiple
+    /// files, so edge equality alone is not sufficient for replacement.
+    outgoing_edge_sources: HashMap<String, Vec<String>>,
+
     /// Tracks which file URIs have contributed edges so that
     /// [`remove_edges_for_file`](Self::remove_edges_for_file) can purge
     /// stale entries.
     file_edges: HashMap<String, Vec<PackageEdge>>,
+
+    /// File identity for each URI's source-package contribution.
+    file_edge_ids: HashMap<String, FileId>,
 }
 
 impl PackageGraphIndex {
@@ -71,6 +79,7 @@ impl PackageGraphIndex {
     pub fn add_edges(&mut self, source_uri: &str, file_id: FileId, edges: Vec<PackageEdge>) {
         // Store edges for later removal.
         self.file_edges.insert(source_uri.to_string(), edges.clone());
+        self.file_edge_ids.insert(source_uri.to_string(), file_id);
 
         for edge in &edges {
             // Ensure the source package node exists.
@@ -81,6 +90,10 @@ impl PackageGraphIndex {
 
             // Record the outgoing edge.
             self.outgoing_edges.entry(edge.from_package.clone()).or_default().push(edge.clone());
+            self.outgoing_edge_sources
+                .entry(edge.from_package.clone())
+                .or_default()
+                .push(source_uri.to_string());
         }
     }
 
@@ -93,25 +106,52 @@ impl PackageGraphIndex {
             Some(edges) => edges,
             None => return,
         };
+        self.file_edge_ids.remove(source_uri);
 
         // Collect the package names whose outgoing edges need pruning.
         let affected_packages: HashSet<String> =
             removed_edges.iter().map(|e| e.from_package.clone()).collect();
 
-        // Remove the specific edges from the outgoing_edges map.
+        // Remove only the edges owned by this file.  Two files may contribute
+        // equal HIR edges (which commonly have no anchor), so comparing edge
+        // values alone would incorrectly delete another file's contribution.
         for pkg in &affected_packages {
-            if let Some(edges) = self.outgoing_edges.get_mut(pkg) {
-                edges.retain(|e| !removed_edges.contains(e));
+            if let (Some(edges), Some(sources)) =
+                (self.outgoing_edges.get_mut(pkg), self.outgoing_edge_sources.get_mut(pkg))
+            {
+                // The two vectors are a lockstep ownership projection. If a
+                // future mutation corrupts that invariant, preserve the
+                // existing graph rather than silently dropping unmatched
+                // entries through `zip`.
+                if edges.len() != sources.len() {
+                    debug_assert_eq!(
+                        edges.len(),
+                        sources.len(),
+                        "package graph edge/source ownership vectors diverged"
+                    );
+                    continue;
+                }
+                let mut kept_edges = Vec::with_capacity(edges.len());
+                let mut kept_sources = Vec::with_capacity(sources.len());
+                for (edge, owner) in edges.drain(..).zip(sources.drain(..)) {
+                    if owner != source_uri {
+                        kept_edges.push(edge);
+                        kept_sources.push(owner);
+                    }
+                }
+                *edges = kept_edges;
+                *sources = kept_sources;
             }
         }
 
         // Clean up empty edge buckets.
         self.outgoing_edges.retain(|_, v| !v.is_empty());
+        self.outgoing_edge_sources.retain(|_, v| !v.is_empty());
 
-        // Remove nodes that are no longer referenced by any edge (either as
-        // source or target) and were not contributed by another file.
-        let all_referenced: HashSet<String> = self.all_referenced_packages();
-        self.nodes.retain(|name, _| all_referenced.contains(name));
+        // Rebuild source metadata from the remaining owners. A package can be
+        // contributed by multiple files; retaining the original node would
+        // leave a removed file's FileId attached to the surviving package.
+        self.rebuild_node_metadata();
     }
 
     /// Traverse the inheritance chain (Inherits edges) starting from
@@ -271,16 +311,65 @@ impl PackageGraphIndex {
         });
     }
 
-    /// Collect all package names referenced by any edge (source or target).
-    fn all_referenced_packages(&self) -> HashSet<String> {
-        let mut referenced = HashSet::new();
-        for edges in self.file_edges.values() {
+    /// Reconstruct node metadata from the currently live edge ownership.
+    fn rebuild_node_metadata(&mut self) {
+        let mut source_nodes: HashMap<String, (PackageKind, Option<AnchorId>, FileId)> =
+            HashMap::new();
+        let mut target_kinds: HashMap<String, PackageKind> = HashMap::new();
+
+        for (source_uri, edges) in &self.file_edges {
+            let Some(file_id) = self.file_edge_ids.get(source_uri).copied() else {
+                continue;
+            };
             for edge in edges {
-                referenced.insert(edge.from_package.clone());
-                referenced.insert(edge.to_package.clone());
+                let source_kind = match edge.kind {
+                    PackageEdgeKind::ComposesRole => PackageKind::Class,
+                    _ => PackageKind::Package,
+                };
+                source_nodes
+                    .entry(edge.from_package.clone())
+                    .and_modify(|(kind, anchor_id, existing_file_id)| {
+                        if source_kind == PackageKind::Class {
+                            *kind = PackageKind::Class;
+                        }
+                        if file_id < *existing_file_id {
+                            *anchor_id = edge.anchor_id;
+                            *existing_file_id = file_id;
+                        } else if file_id == *existing_file_id && anchor_id.is_none() {
+                            // An anchor from the same file can improve an
+                            // earlier anchor-less edge; never borrow an anchor
+                            // from a different file while retaining its owner.
+                            *anchor_id = edge.anchor_id;
+                        }
+                    })
+                    .or_insert((source_kind, edge.anchor_id, file_id));
+
+                let target_kind = match edge.kind {
+                    PackageEdgeKind::ComposesRole => PackageKind::Role,
+                    _ => PackageKind::External,
+                };
+                target_kinds
+                    .entry(edge.to_package.clone())
+                    .and_modify(|kind| {
+                        if target_kind == PackageKind::Role {
+                            *kind = PackageKind::Role;
+                        }
+                    })
+                    .or_insert(target_kind);
             }
         }
-        referenced
+
+        let mut nodes = HashMap::with_capacity(source_nodes.len() + target_kinds.len());
+        for (name, kind) in target_kinds {
+            nodes.insert(name.clone(), PackageNode::new(EntityId(0), name, kind, None, None));
+        }
+        for (name, (kind, anchor_id, file_id)) in source_nodes {
+            nodes.insert(
+                name.clone(),
+                PackageNode::new(EntityId(0), name, kind, anchor_id, Some(file_id)),
+            );
+        }
+        self.nodes = nodes;
     }
 }
 
@@ -559,6 +648,56 @@ mod tests {
         assert!(index.get_node("A").is_none());
         assert!(index.get_node("B").is_some());
         assert!(index.get_node("Base").is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn removing_one_file_preserves_equal_edge_owned_by_another_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        let edge = inherits_edge("Child", "Base");
+        index.add_edges("file:///lib/Child-one.pm", FileId(1), vec![edge.clone()]);
+        index.add_edges("file:///lib/Child-two.pm", FileId(2), vec![edge]);
+
+        assert_eq!(index.edge_count(), 2);
+        assert_eq!(index.ancestors("Child").ancestors, vec!["Base"]);
+
+        index.remove_edges_for_file("file:///lib/Child-one.pm");
+
+        assert_eq!(index.edge_count(), 1);
+        assert_eq!(index.ancestors("Child").ancestors, vec!["Base"]);
+        assert!(index.get_node("Child").is_some());
+        assert!(index.get_node("Base").is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn removing_one_file_reassigns_shared_source_node_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        let edge = inherits_edge("Child", "Base");
+        index.add_edges("file:///lib/Child-one.pm", FileId(1), vec![edge.clone()]);
+        index.add_edges("file:///lib/Child-two.pm", FileId(2), vec![edge]);
+
+        assert_eq!(index.get_node("Child").and_then(|node| node.file_id), Some(FileId(1)));
+        index.remove_edges_for_file("file:///lib/Child-one.pm");
+        assert_eq!(index.get_node("Child").and_then(|node| node.file_id), Some(FileId(2)));
+        Ok(())
+    }
+
+    #[test]
+    fn rebuild_node_metadata_keeps_anchor_and_file_owner_paired()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        let mut anchorless = inherits_edge("Child", "Base");
+        anchorless.anchor_id = None;
+        let anchored = inherits_edge("Child", "Base");
+        index.add_edges("file:///lib/Child-one.pm", FileId(1), vec![anchorless]);
+        index.add_edges("file:///lib/Child-two.pm", FileId(2), vec![anchored]);
+
+        let child = index.get_node("Child").ok_or("expected Child node")?;
+        assert_eq!(child.file_id, Some(FileId(1)));
+        assert_eq!(child.anchor_id, None);
         Ok(())
     }
 
