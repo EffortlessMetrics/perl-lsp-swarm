@@ -155,17 +155,12 @@ fn hir_use_lib_paths(
         if fact.kind != perl_parser_core::hir::IncRootKind::UseLib {
             continue;
         }
-        // HIR records these as non-dynamic strings, but FindBin-derived forms
-        // still require the resolver's source-aware expansion below.
-        if fact.path.contains('$') {
+        let Some(use_lib_path) = hir_use_lib_path(fact.path) else {
             continue;
-        }
+        };
 
         let resolved = perl_module::resolution::use_lib::resolve_use_lib_paths(
-            &[perl_module::resolution::use_lib::UseLibPath {
-                path: fact.path,
-                from_findbin: false,
-            }],
+            &[use_lib_path],
             workspace_root,
             file_dir,
         );
@@ -187,6 +182,34 @@ fn hir_use_lib_paths(
     }
 
     paths
+}
+
+fn hir_use_lib_path(path: String) -> Option<perl_module::resolution::use_lib::UseLibPath> {
+    const FINDBIN_PREFIXES: [&str; 8] = [
+        "$FindBin::Bin",
+        "$FindBin::RealBin",
+        "${FindBin::Bin}",
+        "${FindBin::RealBin}",
+        "$Bin",
+        "$RealBin",
+        "${Bin}",
+        "${RealBin}",
+    ];
+
+    for prefix in FINDBIN_PREFIXES {
+        if let Some(rest) = path.strip_prefix(prefix) {
+            return Some(perl_module::resolution::use_lib::UseLibPath {
+                path: rest.strip_prefix('/').unwrap_or(rest).to_string(),
+                from_findbin: true,
+            });
+        }
+    }
+
+    if path.contains('$') {
+        return None;
+    }
+
+    Some(perl_module::resolution::use_lib::UseLibPath { path, from_findbin: false })
 }
 
 fn workspace_root_for_doc(workspace_folders: &[String], doc_uri: Option<&str>) -> Option<PathBuf> {
@@ -877,6 +900,20 @@ mod tests {
             .resolve_module_path("Foo", Some("use lib './local';\nuse Foo;\n"))
             .ok_or("expected Foo.pm to resolve through the HIR use lib fact")?;
         assert_eq!(resolved, module_file);
+        Ok(())
+    }
+
+    #[test]
+    fn hir_use_lib_facts_resolve_findbin_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let scripts = workspace.join("scripts");
+        fs::create_dir_all(&scripts)?;
+
+        let paths =
+            hir_use_lib_paths("use lib \"$FindBin::Bin/lib\";\n", &workspace, Some(&scripts));
+
+        assert_eq!(paths, vec!["scripts/lib"]);
         Ok(())
     }
 
