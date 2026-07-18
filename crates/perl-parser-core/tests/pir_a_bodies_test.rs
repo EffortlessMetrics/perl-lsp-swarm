@@ -974,6 +974,38 @@ fn pir_a_loop_body_does_not_create_unconditional_fallthrough()
     Ok(())
 }
 
+#[test]
+fn pir_a_loop_control_breaks_intra_body_fallthrough() -> Result<(), Box<dyn std::error::Error>> {
+    use perl_parser_core::pir::PirEdgeKind;
+
+    let graph = parse_and_lower("while (1) { my $before = 0; last; my $after = 2; }");
+    let before = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalWrite { name } if name.name == "before"
+            )
+        })
+        .ok_or("statement before loop control is missing")?;
+    let after = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalWrite { name } if name.name == "after"
+            )
+        })
+        .ok_or("statement after loop control is missing")?;
+
+    assert!(!graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough && edge.from == before.id && edge.to == Some(after.id)
+    }));
+    Ok(())
+}
+
 // ── 29. Cross-body no spurious fallthrough edges ─────────────────────────────
 // When a file has both a subroutine body and the program-root body, the last
 // PIR node of the sub body must NOT be connected by a Fallthrough edge to the

@@ -805,6 +805,11 @@ impl BodyLowerer {
             }
             HirStmt::LoopControl { .. } => {
                 *self.unsupported.entry("LoopControl").or_insert(0) += 1;
+                // Loop-control transfers (`last`/`next`/`redo`) do not emit a
+                // PIR node, but they still terminate the unconditional path
+                // from the preceding node. Do not let a later statement in
+                // this body inherit a spurious fallthrough predecessor.
+                self.last_in_scope.remove(&None);
             }
             HirStmt::PostfixCondition { statement, condition, .. } => {
                 *self.unsupported.entry("PostfixCondition").or_insert(0) += 1;
