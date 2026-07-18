@@ -111,7 +111,7 @@ fn test_parse_per_crate_test_counts_parses_absolute_external_target_paths() {
 }
 
 #[test]
-fn test_parse_per_crate_test_counts_ignores_tests_without_active_crate() {
+fn test_parse_per_crate_test_counts_preserves_tests_without_active_crate() {
     let output = "orphan_test: test\n\
         Running unittests src/lib.rs (target/debug/deps/perl_parser_core-abc123)\n\
         parser_smoke: test\n\
@@ -121,7 +121,8 @@ fn test_parse_per_crate_test_counts_ignores_tests_without_active_crate() {
     let counts = parse_per_crate_test_counts(output);
     assert_eq!(counts.get("perl-parser-core"), Some(&2));
     assert_eq!(counts.get("perl-lexer"), Some(&1));
-    assert_eq!(counts.len(), 2);
+    assert_eq!(counts.get("unattributed"), Some(&1));
+    assert_eq!(counts.values().sum::<usize>(), 4);
 }
 
 // ---------------------------------------------------------------------------

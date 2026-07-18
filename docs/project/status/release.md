@@ -5,15 +5,17 @@
 
 ## Current Release Call
 
-**Current release train**: `v0.17.0` — shipped 2026-06-28
+**Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta
+**Release track**: Public beta; this is not a stable/GA claim
 **Workspace version line**: `v0.17.0` (Cargo.toml workspace.package.version)
 **Published crate surface**: 32 crates
-**Release target**: `v0.17.0` is the current train; the next minor is planned but not yet cut
-**Ship readiness**: `v0.17.0` (2026-06-28) is tagged; prior `v0.16.0` shipped 2026-06-06. See `docs/releases/v0.17.0.md` for the ship-readiness record and `RELEASE_HISTORY.md` for the canonical cross-channel ledger.
+**Release target**: `v0.18.0` is the next public-beta train; no version bump or candidate is staged here
+**Authority**: development `perl-lsp-swarm/main`; release lineage and publication `perl-lsp/master`
+**Ship readiness**: GitHub Release `v0.17.0` was published on 2026-06-28 and observed on 2026-07-17 at `ffee2824938f415e54923112c7b79e3f22040699` with seven platform archives, VSIX, `SHA256SUMS`, and SPDX SBOM. Other channels remain independent facts and are not proven by that receipt.
 
 ## Active Blockers
 
-- None currently tracked for the shipped `v0.17.0` train. Record new blockers here as they are identified.
+- crates.io, VS Code Marketplace, Open VSX, Docker, and Homebrew receipts remain pending or not proven in this repository ledger.
 
 ## 0.15.2 Hotfix Receipts (2026-05-26)
 
@@ -81,15 +83,15 @@
 
 | Component | Status | Notes |
 | --- | --- | --- |
-| `perl-parser` | Public alpha | Native parser path |
-| `perl-lsp` | Public alpha | Coverage tracked via `features.toml` |
+| `perl-parser` | Public beta | Native parser path; shipped component of the public-beta product |
+| `perl-lsp` | Public beta | Coverage tracked via `features.toml` |
 | `perl-dap` | Preview (Native + Bridge) | Native adapter is present; compatibility path retained |
-| `perl-lexer` | Public alpha | Context-aware tokenizer |
-| `perl-corpus` | Public alpha | Corpus counts tracked in computed metrics |
+| `perl-lexer` | Public beta | Context-aware tokenizer; shipped component of the public-beta product |
+| `perl-corpus` | Public beta | Corpus counts tracked in computed metrics |
 
 ## DAP Stance
 
-Native + Bridge preview. Harden preview flows is active work.
+Native + Bridge remain preview within the overall public-beta distribution. Hardening preview flows is active work.
 
 ## Corpus Tracking Receipts
 

@@ -16,7 +16,7 @@
 
 A fast, native Perl 5 language server extension. Written in Rust for speed and reliability. No runtime dependencies -- just install and code.
 
-> **Public Alpha** -- This extension is under active development. Every feature listed below is wired up and exercised by tests, but as an alpha you will find edge cases where behavior is incomplete or wrong. Please [report issues](https://github.com/EffortlessMetrics/perl-lsp/issues/new/choose) if you encounter problems. For what the project's headline numbers mean (and do not mean), see the [status overview](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/project/status/index.md).
+> **Public Beta** -- This extension is under active development. Every feature listed below is wired up and exercised by tests, but as a beta you will find edge cases where behavior is incomplete or wrong. Please [report issues](https://github.com/EffortlessMetrics/perl-lsp/issues/new/choose) if you encounter problems. For what the project's headline numbers mean (and do not mean), see the [status overview](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/project/status/index.md).
 
 `perl-lsp` uses proof-backed answers where it has fresh, source-backed facts and
 keeps fallback or no-edit behavior where Perl is dynamic, generated, stale,
@@ -124,7 +124,8 @@ media assets and recording notes live in:
 
 Install from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs) or [Open VSX Registry](https://open-vsx.org/extension/EffortlessMetrics/perl-lsp-rs).
 
-Current extension and managed-binary artifacts are public alpha.
+The extension can manage verified public-beta GitHub release binaries; registry
+publication is independent, so check the displayed extension version.
 
 ```bash
 # VS Code
@@ -180,23 +181,23 @@ Then point the extension to your `perllsp` binary via `perl-lsp.serverPath`.
 
 All settings are under the `perl-lsp.*` namespace. Open settings with `Ctrl+,` and search for "perl-lsp".
 
-| Setting                          | Default                      | Description                                                                                                                                 |
-| -------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `perl-lsp.autoDownload`          | `true`                       | Automatically download `perllsp` if not found locally                                                                                       |
-| `perl-lsp.serverPath`            | `""`                         | Absolute path to a `perllsp` binary (overrides auto-download)                                                                               |
-| `perl-lsp.channel`               | `"latest"`                   | Release channel. Use `latest` for the current public-alpha line or `tag` for a pinned public-alpha release                                  |
-| `perl-lsp.versionTag`            | `""`                         | Specific release tag (e.g. `v0.12.1`) when channel is `tag`                                                                                 |
-| `perl-lsp.linuxLibc`             | `"auto"`                     | Linux libc release asset selection: `auto`, `gnu`, `glibc`, or `musl`                                                                       |
-| `perl-lsp.enableSemanticTokens`  | `true`                       | Enable semantic syntax highlighting (requires server restart to apply)                                                                      |
-| `perl-lsp.enableFormatting`      | `true`                       | Enable native document formatting (`perltidy` not required; server restart to apply)                                                        |
-| `perl-lsp.formatOnSave`          | `false`                      | Format document on save                                                                                                                     |
-| `perl-lsp.enableTestIntegration` | `true`                       | Enable Test Explorer integration                                                                                                            |
-| `perl-lsp.includePaths`          | `["lib", "local/lib/perl5"]` | Additional library paths for module resolution                                                                                              |
-| `perl-lsp.perltidyConfig`        | `""`                         | Path to `.perltidyrc` (auto-detected if empty)                                                                                              |
-| `perl-lsp.trace.server`          | `"off"`                      | LSP trace level for debugging: `off`, `messages`, `verbose`                                                                                 |
-| `perl-lsp.featureProfile`        | `"auto"`                     | Runtime capability profile. Keep `auto` unless you need a specific compatibility profile                                                    |
-| `perl-lsp.downloadBaseUrl`       | `""`                         | Internal mirror URL for air-gapped deployments                                                                                              |
-| `perl-lsp.mcp.servers`           | `[]`                         | Optional MCP stdio server definitions (`label`, `command`, `args`, `cwd`, `env`, `version`, `enabled`) published to VS Code language models |
+| Setting                          | Default                      | Description                                                                                                                                                              |
+| -------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `perl-lsp.autoDownload`          | `true`                       | Automatically download `perllsp` if not found locally                                                                                                                    |
+| `perl-lsp.serverPath`            | `""`                         | Absolute path to a `perllsp` binary (overrides auto-download)                                                                                                            |
+| `perl-lsp.channel`               | `"latest"`                   | `latest` uses GitHub's latest non-prerelease endpoint; `stable` selects the first non-prerelease and falls back to the first listed release; `tag` pins an arbitrary tag |
+| `perl-lsp.versionTag`            | `""`                         | Specific release tag (e.g. `v0.12.1`) when channel is `tag`                                                                                                              |
+| `perl-lsp.linuxLibc`             | `"auto"`                     | Linux libc release asset selection: `auto`, `gnu`, `glibc`, or `musl`                                                                                                    |
+| `perl-lsp.enableSemanticTokens`  | `true`                       | Enable semantic syntax highlighting (requires server restart to apply)                                                                                                   |
+| `perl-lsp.enableFormatting`      | `true`                       | Enable native document formatting (`perltidy` not required; server restart to apply)                                                                                     |
+| `perl-lsp.formatOnSave`          | `false`                      | Format document on save                                                                                                                                                  |
+| `perl-lsp.enableTestIntegration` | `true`                       | Enable Test Explorer integration                                                                                                                                         |
+| `perl-lsp.includePaths`          | `["lib", "local/lib/perl5"]` | Additional library paths for module resolution                                                                                                                           |
+| `perl-lsp.perltidyConfig`        | `""`                         | Path to `.perltidyrc` (auto-detected if empty)                                                                                                                           |
+| `perl-lsp.trace.server`          | `"off"`                      | LSP trace level for debugging: `off`, `messages`, `verbose`                                                                                                              |
+| `perl-lsp.featureProfile`        | `"auto"`                     | Runtime capability profile. Keep `auto` unless you need a specific compatibility profile                                                                                 |
+| `perl-lsp.downloadBaseUrl`       | `""`                         | Internal mirror URL for air-gapped deployments                                                                                                                           |
+| `perl-lsp.mcp.servers`           | `[]`                         | Optional MCP stdio server definitions (`label`, `command`, `args`, `cwd`, `env`, `version`, `enabled`) published to VS Code language models                              |
 
 ### Internal / Air-Gapped Deployment
 
