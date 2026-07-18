@@ -686,6 +686,7 @@ impl LspServer {
     /// caches after close.
     pub(crate) fn evict_open_document_session_state(&self, uri: &str) {
         let uri_keys = self.uri_key_variants(uri);
+        self.evict_use_lib_hir_cache(uri);
 
         for key in &uri_keys {
             self.stream_sessions().cancel_for_uri(key);

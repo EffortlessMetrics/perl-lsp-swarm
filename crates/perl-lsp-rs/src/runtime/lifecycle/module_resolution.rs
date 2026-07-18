@@ -102,6 +102,14 @@ fn prepend_use_lib_paths(
 }
 
 impl LspServer {
+    pub(crate) fn evict_use_lib_hir_cache(&self, uri: &str) {
+        let uri_keys = self.uri_key_variants(uri);
+        let mut cache = self.use_lib_hir_cache.lock();
+        for key in uri_keys {
+            cache.entries.remove(&Some(key));
+        }
+    }
+
     fn cached_hir_use_lib_paths(
         &self,
         doc_uri: Option<&str>,
@@ -902,6 +910,9 @@ mod tests {
         );
         assert_eq!(second, vec!["./second"]);
         assert_eq!(server.use_lib_hir_cache.lock().entries.len(), 1);
+
+        server.evict_open_document_session_state(&doc_uri);
+        assert_eq!(server.use_lib_hir_cache.lock().entries.len(), 0);
         Ok(())
     }
 
