@@ -1167,6 +1167,40 @@ fn pir_a_postfix_loop_lowers_statement_before_condition() -> Result<(), Box<dyn 
     Ok(())
 }
 
+#[test]
+fn pir_a_postfix_foreach_lowers_list_before_statement() -> Result<(), Box<dyn std::error::Error>> {
+    let graph = parse_and_lower("my $conditional = 1 for $items;");
+    let conditional = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalWrite { name } if name.name == "conditional"
+            )
+        })
+        .ok_or("postfix foreach statement is missing")?;
+    let iterable = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalRead { name } if name.name == "items"
+            ) || matches!(
+                &node.operation,
+                PirOperation::StashRead { symbol } if symbol.name == "items"
+            )
+        })
+        .ok_or("postfix foreach list is missing")?;
+
+    assert!(
+        iterable.id < conditional.id,
+        "postfix foreach must lower its list before its statement"
+    );
+    Ok(())
+}
+
 // ── 29. Cross-body no spurious fallthrough edges ─────────────────────────────
 // When a file has both a subroutine body and the program-root body, the last
 // PIR node of the sub body must NOT be connected by a Fallthrough edge to the
