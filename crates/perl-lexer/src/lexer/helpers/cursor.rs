@@ -52,19 +52,15 @@ impl PerlLexer<'_> {
             return None;
         }
 
-        let pos = self.position.checked_add(offset)?;
-        if pos < self.input_bytes.len() {
-            // For ASCII, direct access is safe
-            let byte = Self::byte_at(self.input_bytes, pos);
-            if byte < 128 {
-                Some(byte as char)
-            } else {
-                // For non-ASCII, use chars iterator
-                self.input.get(self.position..).and_then(|s| s.chars().nth(offset))
-            }
-        } else {
-            None
+        let rest = self.input.get(self.position..)?;
+        let prefix_len = offset.checked_add(1)?;
+        if let Some(prefix) = rest.as_bytes().get(..prefix_len)
+            && prefix.is_ascii()
+        {
+            return rest.as_bytes().get(offset).map(|&byte| byte as char);
         }
+
+        rest.chars().nth(offset)
     }
 
     #[allow(clippy::inline_always)] // Performance critical in lexer hot path
@@ -136,7 +132,7 @@ impl PerlLexer<'_> {
     /// Purely a lookahead over a fresh `chars()` iterator sliced from the
     /// current byte position — never mutates `self.position`, so it is safe
     /// to call speculatively and discard the result. Unbounded (unlike
-    /// `peek_char`'s `max_lookahead`-limited byte-offset lookahead), which is
+    /// `peek_char`'s `max_lookahead`-limited character lookahead), which is
     /// correct here: a real Perl package-qualified name is not pathologically
     /// long, and the loop always terminates on end-of-input, a `}`, or the
     /// first character that isn't part of a valid `::segment`.
@@ -164,5 +160,66 @@ impl PerlLexer<'_> {
             }
             return chars.next() == Some('}');
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::LexerConfig;
+
+    fn require_char(actual: Option<char>, expected: Option<char>) -> Result<(), String> {
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(format!("expected {expected:?}, got {actual:?}"))
+        }
+    }
+
+    #[test]
+    fn peek_char_uses_character_offsets_for_ascii_and_utf8() -> Result<(), String> {
+        let ascii = PerlLexer::new("abc");
+        require_char(ascii.peek_char(0), Some('a'))?;
+        require_char(ascii.peek_char(2), Some('c'))?;
+        require_char(ascii.peek_char(3), None)?;
+
+        let bmp = PerlLexer::new("éxy");
+        require_char(bmp.peek_char(0), Some('é'))?;
+        require_char(bmp.peek_char(1), Some('x'))?;
+        require_char(bmp.peek_char(2), Some('y'))?;
+
+        let non_bmp = PerlLexer::new("😀xy");
+        require_char(non_bmp.peek_char(0), Some('😀'))?;
+        require_char(non_bmp.peek_char(1), Some('x'))?;
+        require_char(non_bmp.peek_char(2), Some('y'))?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn peek_char_preserves_eof_and_max_lookahead_bounds() -> Result<(), String> {
+        let config = LexerConfig { max_lookahead: 1, ..LexerConfig::default() };
+        let lexer = PerlLexer::with_config("éxy", config);
+
+        require_char(lexer.peek_char(1), Some('x'))?;
+        require_char(lexer.peek_char(2), None)?;
+
+        let eof = PerlLexer::new("éx");
+        require_char(eof.peek_char(2), None)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn peek_char_handles_nonzero_positions_on_ascii_and_utf8_paths() -> Result<(), String> {
+        let mut ascii = PerlLexer::new("zabc");
+        ascii.position = 1;
+        require_char(ascii.peek_char(2), Some('c'))?;
+
+        let mut utf8 = PerlLexer::new("zéxy");
+        utf8.position = 1;
+        require_char(utf8.peek_char(2), Some('y'))?;
+
+        Ok(())
     }
 }
