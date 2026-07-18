@@ -197,6 +197,30 @@ fn find_legacy_require_version(source: &str) -> Vec<CodeAction> {
     actions
 }
 
+/// Whether `source` contains a `use Mojolicious <flags>;` statement with a
+/// non-empty flag list (e.g. `use Mojolicious -base;`), which forwards into
+/// `Mojo::Base::import` and enables strict/warnings for the caller.
+///
+/// Bare `use Mojolicious;` (no flags -> no strict) and `use Mojolicious::Lite`
+/// (matched unconditionally by the module list) are deliberately excluded, as
+/// is any longer identifier that merely starts with `Mojolicious`.
+fn has_flagged_mojolicious_use(source: &str) -> bool {
+    source.lines().any(|line| {
+        let Some(after) = line.trim_start().strip_prefix("use Mojolicious") else {
+            return false;
+        };
+        // The character immediately after `Mojolicious` must be a statement
+        // boundary (whitespace before the flags). `;` is bare, `:` is a
+        // sub-package (`::Lite`), and any other char is a longer module name.
+        match after.chars().next() {
+            Some(c) if c.is_whitespace() => {
+                !after.split(';').next().unwrap_or_default().trim().is_empty()
+            }
+            _ => false,
+        }
+    })
+}
+
 /// Detect missing `use strict` / `use warnings` and suggest adding both.
 fn find_missing_strict_warnings(source: &str) -> Vec<CodeAction> {
     let mut actions = Vec::new();
@@ -208,13 +232,31 @@ fn find_missing_strict_warnings(source: &str) -> Vec<CodeAction> {
         return actions;
     }
 
+    // Modules / version pragmas whose plain `use <X>;` unconditionally enables
+    // strict (and usually warnings) in the importing file.
+    //
+    // Mirrors the corrected diagnostic source of truth in
+    // `providers/diagnostics/lints/strict_warnings.rs` (issue #3644 item 3 /
+    // #3729), verified against primary CPAN sources:
+    //   * `Catalyst` removed -- `Catalyst::import` only does Moose meta/superclass
+    //     setup; it never calls `strict->import`/`warnings->import` for the
+    //     caller. Keeping it here wrongly *suppressed* the add-strict suggestion.
+    //   * bare `Mojolicious` removed -- `Mojolicious.pm` defines no own `import`;
+    //     it inherits `Mojo::Base::import`, whose `return unless my @flags = @_;`
+    //     short-circuits on the empty arg list of a bare `use Mojolicious;`. The
+    //     flagged form (`use Mojolicious -base;`) is handled separately below.
+    //   * `Mojolicious::Lite` added -- its `import` always forwards a non-empty
+    //     `-strict` flag to `Mojo::Base::import`, unconditionally enabling strict.
+    //
+    // Version pragmas (`use v5.12`+) also enable strict and are matched here by
+    // prefix because this string scan -- unlike the diagnostics path -- has no
+    // `PragmaTracker` to resolve them.
     let implicit_strict = [
         "use Moo",
         "use Moose",
         "use Mouse",
         "use Dancer2",
-        "use Mojolicious",
-        "use Catalyst",
+        "use Mojolicious::Lite",
         "use Modern::Perl",
         "use common::sense",
         "use Mojo::Base",
@@ -239,6 +281,14 @@ fn find_missing_strict_warnings(source: &str) -> Vec<CodeAction> {
         if source.contains(pattern) {
             return actions;
         }
+    }
+
+    // `use Mojolicious -base;` (a non-empty flag list) DOES forward into
+    // `Mojo::Base::import` and enable strict/warnings, whereas bare
+    // `use Mojolicious;` does not. Mirror the args-awareness of
+    // strict_warnings.rs's `implies_strict`.
+    if has_flagged_mojolicious_use(source) {
+        return actions;
     }
 
     let insert_pos = find_pragma_insert_pos(source);
@@ -649,6 +699,77 @@ mod tests {
         let source = "use Moose;\nprint 'hello';";
         let actions = find_missing_strict_warnings(source);
         assert!(actions.is_empty());
+    }
+
+    // --- issue #3730: implicit_strict list must match the corrected diagnostic
+    // source of truth (strict_warnings.rs, fixed in #3729). `Catalyst` and bare
+    // `Mojolicious` do NOT enable strict for the caller; `Mojolicious::Lite`
+    // does. These first two are the reproduction gate (they suppressed wrongly
+    // before the fix). ---
+
+    #[test]
+    fn catalyst_does_not_suppress_missing_strict_or_warnings() {
+        // Catalyst::import only does Moose meta/superclass setup; it never
+        // enables strict/warnings for the caller. The code action must still
+        // offer to add them.
+        let source = "use Catalyst;\nprint 'hello';";
+        let actions = find_missing_strict_warnings(source);
+        assert!(
+            actions.iter().any(|a| a.title.contains("use strict")),
+            "Catalyst must not suppress the add-strict/warnings action"
+        );
+    }
+
+    #[test]
+    fn bare_mojolicious_does_not_suppress_missing_strict_or_warnings() {
+        // Bare `use Mojolicious;` (no flags) inherits Mojo::Base::import(),
+        // whose `return unless my @flags = @_;` short-circuits on empty args,
+        // so it enables nothing. The action must still be offered.
+        let source = "use Mojolicious;\nprint 'hello';";
+        let actions = find_missing_strict_warnings(source);
+        assert!(
+            actions.iter().any(|a| a.title.contains("use strict")),
+            "bare Mojolicious must not suppress the add-strict/warnings action"
+        );
+    }
+
+    #[test]
+    fn mojolicious_lite_suppresses_missing_strict_and_warnings() {
+        // Mojolicious::Lite::import always forwards a non-empty `-strict` flag
+        // to Mojo::Base::import, unconditionally enabling strict/warnings.
+        let source = "use Mojolicious::Lite;\nprint 'hello';";
+        let actions = find_missing_strict_warnings(source);
+        assert!(
+            actions.is_empty(),
+            "Mojolicious::Lite must suppress the add-strict/warnings action"
+        );
+    }
+
+    #[test]
+    fn flagged_mojolicious_suppresses_missing_strict_and_warnings() {
+        // `use Mojolicious -base;` forwards a non-empty flag list into
+        // Mojo::Base::import(), which DOES enable strict/warnings -- mirror the
+        // args-awareness of strict_warnings.rs.
+        let source = "use Mojolicious -base;\nprint 'hello';";
+        let actions = find_missing_strict_warnings(source);
+        assert!(actions.is_empty(), "flagged `use Mojolicious -base;` must suppress the action");
+    }
+
+    #[test]
+    fn kept_implicit_strict_modules_still_suppress() {
+        // Over-suppression guard: the legitimate entries must keep suppressing.
+        for source in [
+            "use Moo;\nprint 'hi';",
+            "use Mouse;\nprint 'hi';",
+            "use Dancer2;\nprint 'hi';",
+            "use Modern::Perl;\nprint 'hi';",
+            "use common::sense;\nprint 'hi';",
+            "use Mojo::Base 'Foo';\nprint 'hi';",
+            "use v5.36;\nprint 'hi';",
+        ] {
+            let actions = find_missing_strict_warnings(source);
+            assert!(actions.is_empty(), "expected suppression for: {source:?}");
+        }
     }
 
     #[test]
