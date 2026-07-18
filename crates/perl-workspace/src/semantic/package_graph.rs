@@ -198,11 +198,18 @@ impl PackageGraphIndex {
     /// the result stays complete for every acyclic path.
     pub fn transitive_composed_roles(&self, package_name: &str) -> RoleCompositionResult {
         let mut on_stack = HashSet::new();
+        let mut collected = HashSet::new();
         let mut roles = Vec::new();
         let mut cycle_detected = false;
 
         on_stack.insert(package_name.to_string());
-        self.collect_composed_roles(package_name, &mut on_stack, &mut roles, &mut cycle_detected);
+        self.collect_composed_roles(
+            package_name,
+            &mut on_stack,
+            &mut collected,
+            &mut roles,
+            &mut cycle_detected,
+        );
 
         RoleCompositionResult { roles, cycle_detected }
     }
@@ -220,10 +227,15 @@ impl PackageGraphIndex {
     /// acyclic edges are unrelated to the cycle and must still be collected.
     /// Aborting the entire DFS on the first back-edge would silently drop
     /// those siblings depending on edge-insertion order.
+    ///
+    /// `collected` mirrors `roles` as a set so convergent-composition
+    /// de-duplication is O(1) per edge rather than an O(n) scan of the ordered
+    /// output vector; `roles` remains the deterministic DFS pre-order list.
     fn collect_composed_roles(
         &self,
         package_name: &str,
         on_stack: &mut HashSet<String>,
+        collected: &mut HashSet<String>,
         roles: &mut Vec<String>,
         cycle_detected: &mut bool,
     ) {
@@ -236,13 +248,13 @@ impl PackageGraphIndex {
             }
 
             // Skip already-collected roles (convergent composition).
-            if roles.contains(&role) {
+            if !collected.insert(role.clone()) {
                 continue;
             }
 
             roles.push(role.clone());
             on_stack.insert(role.clone());
-            self.collect_composed_roles(&role, on_stack, roles, cycle_detected);
+            self.collect_composed_roles(&role, on_stack, collected, roles, cycle_detected);
             on_stack.remove(&role);
         }
     }

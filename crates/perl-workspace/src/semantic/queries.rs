@@ -1288,12 +1288,6 @@ impl<'a> WorkspaceSemanticQueries<'a> {
         }
     }
 
-    /// Find method/subroutine/generated-member entities in a package that
-    /// match the given method name.
-    ///
-    /// Searches all fact shards for entities whose canonical name is
-    /// `package::method_name` and whose kind is Method, Subroutine, or
-    /// GeneratedMember.
     /// Enumerate the bare names of all method-like entities directly defined in
     /// `package`, across every fact shard.
     ///
@@ -1332,6 +1326,12 @@ impl<'a> WorkspaceSemanticQueries<'a> {
         names
     }
 
+    /// Find method/subroutine/generated-member entities in a package that
+    /// match the given method name.
+    ///
+    /// Searches all fact shards for entities whose canonical name is
+    /// `package::method_name` and whose kind is Method, Subroutine, or
+    /// GeneratedMember.
     fn find_method_entities(&self, package: &str, method_name: &str) -> Vec<DefinitionCandidate> {
         let qualified = format!("{package}::{method_name}");
         let mut candidates = Vec::new();

@@ -4,7 +4,13 @@
 //! method names. Roles defined in the same file are resolved from the local
 //! [`ClassModel`]; roles defined in other files — and roles reached through
 //! transitive composition — are resolved via the `resolve_role_methods`
-//! callback, which is backed by the workspace semantic index in production.
+//! callback. That callback is backed by the workspace semantic index *only
+//! when the caller supplies a graph-backed `SemanticQueries`*
+//! (`transitive_role_methods`). The current production diagnostics path
+//! constructs its queries without a `PackageGraphIndex`, so the resolver
+//! returns empty there and the lint degrades to same-file analysis until that
+//! wiring lands; cross-file/transitive detection is exercised by tests and
+//! ready for it.
 //!
 //! An unresolved role (external, dynamically composed, or simply not indexed)
 //! contributes no methods and therefore cannot create a conflict: the lint
@@ -91,10 +97,10 @@ pub fn check_role_conflicts(
             }
 
             for (method, origin) in role_method_origins {
-                let consumers = method_consumers.entry(method.clone()).or_default();
-                if !consumers.contains(role_name) {
-                    consumers.push(role_name.clone());
-                }
+                // `role_method_origins` is keyed by method, and `seen_roles`
+                // guarantees each role is processed once, so `(method, role)`
+                // is unique here — push directly, no membership scan needed.
+                method_consumers.entry(method.clone()).or_default().push(role_name.clone());
                 method_origins.entry(method).or_default().insert(origin);
             }
         }
