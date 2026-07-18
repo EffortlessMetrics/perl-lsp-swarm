@@ -68,27 +68,27 @@ impl PerlModernizer {
         }
 
         // Check for two-argument open
-        if code.contains("open(FH, 'file.txt')") {
+        if let Some(pos) = code.find("open(FH, 'file.txt')") {
             suggestions.push(ModernizationSuggestion {
                 old_pattern: "open(FH, 'file.txt')".to_string(),
                 new_pattern: "open(my $fh, '<', 'file.txt')".to_string(),
                 description: "Use three-argument open for safety".to_string(),
                 manual_review_required: false,
-                start: 0,
-                end: 0,
+                start: pos,
+                end: pos + "open(FH, 'file.txt')".len(),
             });
         }
 
         // Check for defined on arrays
-        if code.contains("defined @array") {
+        if let Some(pos) = code.find("defined @array") {
             suggestions.push(ModernizationSuggestion {
                 old_pattern: "defined @array".to_string(),
                 new_pattern: "@array".to_string(),
                 description: "defined(@array) is deprecated, use @array in boolean context"
                     .to_string(),
                 manual_review_required: false,
-                start: 0,
-                end: 0,
+                start: pos,
+                end: pos + "defined @array".len(),
             });
         }
 
@@ -116,40 +116,43 @@ impl PerlModernizer {
         }
 
         // Check for each on arrays
-        if code.contains("each @array") {
+        if let Some(pos) = code.find("each @array") {
             suggestions.push(ModernizationSuggestion {
                 old_pattern: "each @array".to_string(),
                 new_pattern: "0..$#array".to_string(),
                 description: "each(@array) can cause unexpected behavior, use foreach with index"
                     .to_string(),
                 manual_review_required: false,
-                start: 0,
-                end: 0,
+                start: pos,
+                end: pos + "each @array".len(),
             });
         }
 
         // Check for string eval (requires manual review)
-        if code.contains("eval \"") {
+        if let Some(pos) = code.find("eval \"") {
             suggestions.push(ModernizationSuggestion {
                 old_pattern: "eval \"...\"".to_string(),
                 new_pattern: "eval { ... }".to_string(),
                 description: "String eval is risky, consider block eval or require".to_string(),
                 manual_review_required: true,
-                start: 0,
-                end: 0,
+                // Anchor to the detected `eval "` marker; the full string-eval
+                // extent is only known after manual review, so we bound the
+                // range to the recognizable prefix rather than guessing.
+                start: pos,
+                end: pos + "eval \"".len(),
             });
         }
 
         // Check for print with \n
-        if code.contains("print \"Hello\\n\"") {
+        if let Some(pos) = code.find("print \"Hello\\n\"") {
             suggestions.push(ModernizationSuggestion {
                 old_pattern: "print \"Hello\\n\"".to_string(),
                 new_pattern: "say \"Hello\"".to_string(),
                 description: "Use 'say' instead of print with \\n (requires use feature 'say')"
                     .to_string(),
                 manual_review_required: false,
-                start: 0,
-                end: 0,
+                start: pos,
+                end: pos + "print \"Hello\\n\"".len(),
             });
         }
 

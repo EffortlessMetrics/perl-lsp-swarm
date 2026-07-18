@@ -843,6 +843,85 @@ fn legacy_modernizer_no_suggestions_for_clean_code() -> Result<(), Box<dyn std::
     Ok(())
 }
 
+// Regression for #3922: several patterns previously reported start=0, end=0,
+// losing the position information LSP code-action handlers need to apply edits.
+// Each pattern is placed after a non-empty prefix so a real offset (start != 0)
+// distinguishes a computed offset from the old hardcoded zero, and the reported
+// [start, end) slice must round-trip to the detected text.
+
+fn legacy_offset_slice<'a>(
+    m: &LegacyModernizer,
+    code: &'a str,
+    old_pattern: &str,
+) -> Result<(usize, usize, &'a str), Box<dyn std::error::Error>> {
+    let suggestions = m.analyze(code);
+    let s = suggestions
+        .iter()
+        .find(|s| s.old_pattern == old_pattern)
+        .ok_or_else(|| format!("expected a suggestion with old_pattern {old_pattern:?}"))?;
+    let slice = code
+        .get(s.start..s.end)
+        .ok_or("suggestion offsets out of bounds / not on char boundary")?;
+    Ok((s.start, s.end, slice))
+}
+
+#[test]
+fn legacy_modernizer_two_arg_open_reports_offsets() -> Result<(), Box<dyn std::error::Error>> {
+    let m = LegacyModernizer::new();
+    let code = "my $x = 1;\nopen(FH, 'file.txt');\n";
+    let (start, end, slice) = legacy_offset_slice(&m, code, "open(FH, 'file.txt')")?;
+    assert!(start > 0, "offset should be computed from source, not hardcoded 0");
+    assert_eq!(slice, "open(FH, 'file.txt')", "[start,end) must span the detected pattern");
+    assert_eq!(end, start + "open(FH, 'file.txt')".len());
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_defined_array_reports_offsets() -> Result<(), Box<dyn std::error::Error>> {
+    let m = LegacyModernizer::new();
+    let code = "my $x = 1;\nif (defined @array) { }\n";
+    let (start, end, slice) = legacy_offset_slice(&m, code, "defined @array")?;
+    assert!(start > 0, "offset should be computed from source, not hardcoded 0");
+    assert_eq!(slice, "defined @array");
+    assert_eq!(end, start + "defined @array".len());
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_each_array_reports_offsets() -> Result<(), Box<dyn std::error::Error>> {
+    let m = LegacyModernizer::new();
+    let code = "my $x = 1;\nwhile (my ($i, $v) = each @array) { }\n";
+    let (start, end, slice) = legacy_offset_slice(&m, code, "each @array")?;
+    assert!(start > 0, "offset should be computed from source, not hardcoded 0");
+    assert_eq!(slice, "each @array");
+    assert_eq!(end, start + "each @array".len());
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_string_eval_reports_offsets() -> Result<(), Box<dyn std::error::Error>> {
+    let m = LegacyModernizer::new();
+    let code = "my $x = 1;\neval \"print 1\";\n";
+    // old_pattern is a descriptive `eval "..."`; the range anchors the detected
+    // `eval "` marker (manual-review pattern, so full extent is intentionally left).
+    let (start, end, slice) = legacy_offset_slice(&m, code, "eval \"...\"")?;
+    assert!(start > 0, "offset should be computed from source, not hardcoded 0");
+    assert_eq!(slice, "eval \"", "range should anchor the detected string-eval marker");
+    assert_eq!(end, start + "eval \"".len());
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_print_newline_reports_offsets() -> Result<(), Box<dyn std::error::Error>> {
+    let m = LegacyModernizer::new();
+    let code = "my $x = 1;\nprint \"Hello\\n\";\n";
+    let (start, end, slice) = legacy_offset_slice(&m, code, "print \"Hello\\n\"")?;
+    assert!(start > 0, "offset should be computed from source, not hardcoded 0");
+    assert_eq!(slice, "print \"Hello\\n\"");
+    assert_eq!(end, start + "print \"Hello\\n\"".len());
+    Ok(())
+}
+
 // ===================================================================
 // Refactored PerlModernizer (modernize_refactored.rs)
 // ===================================================================
