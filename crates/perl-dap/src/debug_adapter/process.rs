@@ -127,7 +127,6 @@ impl DebugAdapter {
         }
 
         if let Some(args) = arguments {
-            self.begin_session_generation();
             // Store launch arguments for restart support
             *lock_or_recover(&self.last_launch_args, "debug_adapter.last_launch_args") =
                 Some(args.clone());
@@ -404,6 +403,9 @@ impl DebugAdapter {
 
         match cmd.spawn() {
             Ok(child) => {
+                // Only advance the session generation once spawning has succeeded. A rejected
+                // launch must leave the currently active reader valid for its existing session.
+                self.begin_session_generation();
                 let thread_id = {
                     if let Ok(mut counter) = self.thread_counter.lock() {
                         *counter += 1;
@@ -1034,7 +1036,6 @@ impl DebugAdapter {
     ) -> DapMessage {
         // Parse attach arguments
         if let Some(args) = arguments {
-            self.begin_session_generation();
             let process_id =
                 args.get("processId").and_then(|p| p.as_u64()).map(Self::u64_to_u32_saturating);
 
@@ -1052,6 +1053,7 @@ impl DebugAdapter {
                 }
 
                 // Reset existing process/tcp attachment state before switching to PID mode.
+                self.begin_session_generation();
                 self.clear_active_session_state();
 
                 if let Ok(mut guard) = self.attached_pid.lock() {
@@ -1211,26 +1213,25 @@ impl DebugAdapter {
                 // Attempt to connect
                 match session.connect(&config) {
                     Ok(()) => {
+                        if let Err(e) = session.start_reader() {
+                            tracing::error!(error = %e, "Failed to start TCP reader");
+                            return DapMessage::Response {
+                                seq,
+                                request_seq,
+                                success: false,
+                                command: "attach".to_string(),
+                                body: None,
+                                message: Some(format!("Failed to start TCP reader: {}", e)),
+                            };
+                        }
+
+                        // The TCP session is fully connected and has a reader before it becomes
+                        // the active session, so a failed attach does not invalidate an existing
+                        // session's generation.
+                        self.begin_session_generation();
                         // Store session
                         if let Ok(mut guard) = self.tcp_session.lock() {
                             *guard = Some(session);
-                        }
-
-                        // Start reader thread
-                        if let Ok(mut guard) = self.tcp_session.lock() {
-                            if let Some(ref mut s) = *guard {
-                                if let Err(e) = s.start_reader() {
-                                    tracing::error!(error = %e, "Failed to start TCP reader");
-                                    return DapMessage::Response {
-                                        seq,
-                                        request_seq,
-                                        success: false,
-                                        command: "attach".to_string(),
-                                        body: None,
-                                        message: Some(format!("Failed to start TCP reader: {}", e)),
-                                    };
-                                }
-                            }
                         }
 
                         // Start event handler thread for TCP events
@@ -1826,7 +1827,6 @@ fn emit_terminated_event(
         return false;
     }
     state.emitted = true;
-    drop(state);
     emit_event_safe(sender, seq, "terminated", body)
 }
 
