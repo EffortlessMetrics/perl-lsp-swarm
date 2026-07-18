@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "total_files": 28,
-  "total_bytes": 1478647,
+  "total_files": 27,
+  "total_bytes": 158192,
   "files": {
-    "README.md": 21701,
+    "README.md": 22276,
     "package.json": 53908,
     "LICENSE": 1069,
     "language-configuration.json": 1010,
@@ -16,7 +16,6 @@
     "syntaxes/gherkin.tmLanguage.json": 1875,
     "snippets/perl.json": 12172,
     "snippets/launch.json": 1139,
-    "out/extension.js": 1321030,
     "media/walkthrough/welcome.svg": 756,
     "media/walkthrough/verify-perl.svg": 1189,
     "media/walkthrough/try-goto-definition.svg": 1852,
