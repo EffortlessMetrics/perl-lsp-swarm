@@ -686,8 +686,45 @@ fn test_unclosed_spaced_qw_recovers_following_declaration() -> Result<(), String
     let NodeKind::Program { statements } = &ast.kind else {
         return Err(format!("expected program root, got {}", ast.to_sexp()));
     };
-    if statements.len() != 3 || parser.errors().is_empty() {
+    let sexp = ast.to_sexp();
+    if statements.len() != 3
+        || parser.errors().is_empty()
+        || !sexp.contains("\"word1\"")
+        || !sexp.contains("\"word2\"")
+        || sexp.contains("\"(word1\"")
+    {
         return Err(format!("spaced qw recovery lost following statements: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_closed_multiline_qw_keeps_declaration_shaped_words() -> Result<(), String> {
+    let code = "my @items = qw(\nword1\nmy $x;\nword2\n);";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("closed declaration-like qw failed: {error}"))?;
+    let sexp = ast.to_sexp();
+    if !parser.errors().is_empty()
+        || !sexp.contains("\"my\"")
+        || !sexp.contains("\"$x;\"")
+        || !sexp.contains("\"word2\"")
+    {
+        return Err(format!("closed declaration-like qw changed behavior: {sexp}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_ignores_close_in_following_print_string() -> Result<(), String> {
+    let code = "my @items = qw(word\nprint \"x)\";";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("print-string recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    if statements.len() != 2 || parser.errors().is_empty() {
+        return Err(format!("print string closer disabled recovery: {}", ast.to_sexp()));
     }
     Ok(())
 }

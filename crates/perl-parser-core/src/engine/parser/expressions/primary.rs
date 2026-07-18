@@ -268,17 +268,20 @@ impl<'a> Parser<'a> {
                 let text = &token.text;
 
                 // Parse qw(...) to extract words
-                if let Some(content) = text.strip_prefix("qw") {
+                if text.strip_prefix("qw").is_some() {
                     let content_str =
                         if let Some(content_str) = quote_parser::parse_quote_operator_content(
                             text, "qw",
                         ) {
                             content_str
                         } else {
-                            let close_kind = match content.chars().next() {
-                                Some('[') => TokenKind::RightBracket,
-                                Some('{') => TokenKind::RightBrace,
-                                Some('<') => TokenKind::Greater,
+                            let (open, content) =
+                                quote_parser::quote_operator_open_and_content(text, "qw")
+                                    .unwrap_or(('(', text.strip_prefix("qw").unwrap_or(text)));
+                            let close_kind = match open {
+                                '[' => TokenKind::RightBracket,
+                                '{' => TokenKind::RightBrace,
+                                '<' => TokenKind::Greater,
                                 _ => TokenKind::RightParen,
                             };
                             let followed_by_identifier_statement = token.text.ends_with('\n')
@@ -294,8 +297,7 @@ impl<'a> Parser<'a> {
                             } else {
                                 self.expect_closing_delimiter(close_kind)?;
                             }
-                            let opening_len = content.chars().next().map_or(0, char::len_utf8);
-                            content.get(opening_len..).unwrap_or(content)
+                            content
                         };
 
                     // Split into words, stripping # line comments first (perlop).

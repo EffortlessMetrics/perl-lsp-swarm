@@ -3211,15 +3211,7 @@ impl<'a> PerlLexer<'a> {
         for (offset, ch) in self.input[self.position..].char_indices() {
             let position = self.position.saturating_add(offset);
             if self.qw_statement_boundary_at(position) {
-                let line = self.input[position..]
-                    .split_once('\n')
-                    .map_or(&self.input[position..], |(line, _)| line);
-                let closer_before_terminator = line.find(close).is_some_and(|closer| {
-                    line.find(';').is_some_and(|terminator| closer < terminator)
-                });
-                if !line.starts_with("print") || !closer_before_terminator {
-                    return false;
-                }
+                return self.qw_has_top_level_closer_after(position, close);
             }
             if escaped {
                 escaped = false;
@@ -3239,6 +3231,45 @@ impl<'a> PerlLexer<'a> {
                 if depth == 0 {
                     return true;
                 }
+            }
+        }
+        false
+    }
+
+    fn qw_has_top_level_closer_after(&self, position: usize, close: char) -> bool {
+        let mut nesting = Vec::new();
+        let mut quote = None;
+        let mut escaped = false;
+        let mut comment = false;
+
+        for ch in self.input[position..].chars() {
+            if comment {
+                if ch == '\n' {
+                    comment = false;
+                }
+                continue;
+            }
+            if let Some(quote_char) = quote {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == quote_char {
+                    quote = None;
+                }
+                continue;
+            }
+            match ch {
+                '#' => comment = true,
+                '\'' | '"' => quote = Some(ch),
+                '(' => nesting.push(')'),
+                '[' => nesting.push(']'),
+                '{' => nesting.push('}'),
+                ')' | ']' | '}' if nesting.last() == Some(&ch) => {
+                    nesting.pop();
+                }
+                _ if ch == close && nesting.is_empty() => return true,
+                _ => {}
             }
         }
         false
