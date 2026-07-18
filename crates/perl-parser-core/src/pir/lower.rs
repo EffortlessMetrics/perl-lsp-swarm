@@ -937,6 +937,10 @@ impl BodyLowerer {
                     self.lower_expr(body, *condition, file);
                 }
                 if let Some(iterator_binding) = iterator_binding {
+                    // A foreach iterable may be empty, so evaluating the
+                    // iterator binding is not an unconditional successor of
+                    // the iterable expression.
+                    self.last_in_scope.remove(&None);
                     self.lower_expr(body, *iterator_binding, file);
                 }
                 // Loop bodies execute zero or more times. They must not look

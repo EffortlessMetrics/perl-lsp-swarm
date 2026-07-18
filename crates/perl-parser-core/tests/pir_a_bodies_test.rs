@@ -1094,6 +1094,44 @@ fn pir_a_elsif_condition_does_not_create_unconditional_fallthrough()
     Ok(())
 }
 
+#[test]
+fn pir_a_foreach_iterable_does_not_force_iterator_binding() -> Result<(), Box<dyn std::error::Error>>
+{
+    use perl_parser_core::pir::PirEdgeKind;
+
+    let graph = parse_and_lower("for my $item ($items) { my $inside = 1; }");
+    let iterable = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalRead { name } if name.name == "items"
+            ) || matches!(
+                &node.operation,
+                PirOperation::StashRead { symbol } if symbol.name == "items"
+            )
+        })
+        .ok_or("foreach iterable read is missing")?;
+    let binding = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalWrite { name } if name.name == "item"
+            )
+        })
+        .ok_or("foreach iterator binding is missing")?;
+
+    assert!(!graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == iterable.id
+            && edge.to == Some(binding.id)
+    }));
+    Ok(())
+}
+
 // ── 29. Cross-body no spurious fallthrough edges ─────────────────────────────
 // When a file has both a subroutine body and the program-root body, the last
 // PIR node of the sub body must NOT be connected by a Fallthrough edge to the
