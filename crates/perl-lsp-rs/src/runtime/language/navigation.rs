@@ -1867,7 +1867,7 @@ impl LspServer {
     fn definition_semantic_shadow_receipt(&self, params: &Value) -> Option<Value> {
         let uri = req_uri(params).ok()?;
         let (line, character) = req_position(params).ok()?;
-        let (symbol, byte_offset, text_around, cursor_in_text) =
+        let (symbol, byte_offset, text_around, cursor_in_text, document_generation) =
             self.navigation_runtime_snapshot(uri, line, character)?;
         let fqn_regex = get_fqn_regex().ok()?;
         if matches!(
@@ -1876,14 +1876,13 @@ impl LspServer {
         ) {
             return None;
         }
-        if self.workspace_index_stale_for_document(uri) {
-            return None;
-        }
-
         let IndexAccessMode::Full(coordinator) = route_index_access(self.coordinator()) else {
             return None;
         };
         let index = coordinator.index();
+        if document_generation != 0 && index.is_index_generation_stale(uri, document_generation) {
+            return None;
+        }
         let receipt = index.with_semantic_queries_for_uri(uri, |file_id, queries| {
             let context = QueryContext::new(file_id, None, Some(byte_offset));
             goto_definition_live_exact_or_imported(index.as_ref(), &queries, &symbol, &context)
@@ -1927,7 +1926,7 @@ impl LspServer {
 
             let uri = req_uri(&params)?;
             let (line, character) = req_position(&params)?;
-            let Some((symbol, byte_offset, _, _)) =
+            let Some((symbol, byte_offset, _, _, _)) =
                 self.navigation_runtime_snapshot(uri, line, character)
             else {
                 return Ok(Some(json!({
@@ -1981,15 +1980,16 @@ impl LspServer {
         uri: &str,
         line: u32,
         character: u32,
-    ) -> Option<(String, u32, String, usize)> {
+    ) -> Option<(String, u32, String, usize, u32)> {
         let documents = self.documents_guard();
         let doc = self.get_document(&documents, uri)?;
+        let document_generation = doc.current_generation();
         let offset = self.pos16_to_offset(doc, line, character);
         let (symbol, byte_offset) =
             self.navigation_runtime_symbol_from_document(doc, line, character, offset)?;
         let (text_start, text_around) = self.get_text_window_around_offset(&doc.text, offset, 50);
         let cursor_in_text = offset.min(doc.text.len()).saturating_sub(text_start);
-        Some((symbol, byte_offset, text_around, cursor_in_text))
+        Some((symbol, byte_offset, text_around, cursor_in_text, document_generation))
     }
 
     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
