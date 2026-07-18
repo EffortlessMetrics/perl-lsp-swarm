@@ -127,6 +127,7 @@ impl DebugAdapter {
         }
 
         if let Some(args) = arguments {
+            self.terminated_emitted.store(false, Ordering::Release);
             // Store launch arguments for restart support
             *lock_or_recover(&self.last_launch_args, "debug_adapter.last_launch_args") =
                 Some(args.clone());
@@ -559,6 +560,7 @@ impl DebugAdapter {
         let last_exception_message = self.last_exception_message.clone();
         let tcp_session = self.tcp_session.clone();
         let attached_pid = self.attached_pid.clone();
+        let terminated_emitted = self.terminated_emitted.clone();
 
         thread::spawn(move || {
             // Perl's debugger prompt and evaluation output are emitted on stderr.
@@ -585,12 +587,11 @@ impl DebugAdapter {
                 tracing::warn!(
                     "No debugger output stream available - output reader thread exiting"
                 );
-                // Send termination event
                 if let Some(ref sender) = sender {
-                    emit_event_safe(
+                    emit_terminated_event(
                         sender,
                         &seq,
-                        "terminated",
+                        &terminated_emitted,
                         Some(json!({"reason": "no_debugger_stream"})),
                     );
                 }
@@ -615,6 +616,14 @@ impl DebugAdapter {
                 match reader.read_line(&mut line) {
                     Ok(0) => {
                         tracing::debug!("Perl debugger process terminated");
+                        if let Some(ref sender) = sender {
+                            emit_terminated_event(
+                                sender,
+                                &seq,
+                                &terminated_emitted,
+                                Some(json!({"reason": "debugger_eof"})),
+                            );
+                        }
                         DebugAdapter::clear_active_session_state_with_state(
                             &session,
                             &tcp_session,
@@ -1021,6 +1030,7 @@ impl DebugAdapter {
     ) -> DapMessage {
         // Parse attach arguments
         if let Some(args) = arguments {
+            self.terminated_emitted.store(false, Ordering::Release);
             let process_id =
                 args.get("processId").and_then(|p| p.as_u64()).map(Self::u64_to_u32_saturating);
 
@@ -1459,10 +1469,10 @@ impl DebugAdapter {
         let _args: Option<DisconnectArguments> =
             arguments.and_then(|v| serde_json::from_value(v).ok());
 
+        if let Some(ref sender) = self.event_sender {
+            emit_terminated_event(sender, &self.seq, &self.terminated_emitted, None);
+        }
         self.clear_active_session_state();
-
-        // Send terminated event
-        self.send_event("terminated", None);
 
         DapMessage::Response {
             seq,
@@ -1486,10 +1496,11 @@ impl DebugAdapter {
 
         let restart = args.and_then(|a| a.restart);
 
-        self.clear_active_session_state();
-
         let terminated_body = restart.map(|restart| json!({ "restart": restart }));
-        self.send_event("terminated", terminated_body);
+        if let Some(ref sender) = self.event_sender {
+            emit_terminated_event(sender, &self.seq, &self.terminated_emitted, terminated_body);
+        }
+        self.clear_active_session_state();
 
         DapMessage::Response {
             seq,
@@ -1794,11 +1805,72 @@ impl DebugAdapter {
     }
 }
 
+fn emit_terminated_event(
+    sender: &Sender<DapMessage>,
+    seq: &Mutex<i64>,
+    terminated_emitted: &AtomicBool,
+    body: Option<Value>,
+) -> bool {
+    if terminated_emitted.swap(true, Ordering::AcqRel) {
+        return false;
+    }
+    emit_event_safe(sender, seq, "terminated", body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        DebugAdapter, detect_perl_info, format_perl_spawn_error, is_valid_perl_interpreter,
+        DebugAdapter, detect_perl_info, emit_terminated_event, format_perl_spawn_error,
+        is_valid_perl_interpreter,
     };
+    use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc::{TryRecvError, channel};
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn competing_termination_sources_emit_one_structured_event() -> Result<(), String> {
+        let (sender, receiver) = channel();
+        let seq = Arc::new(Mutex::new(0));
+        let terminated_emitted = Arc::new(AtomicBool::new(false));
+        let first_sender = sender.clone();
+        let first_seq = seq.clone();
+        let first_guard = terminated_emitted.clone();
+        let first = std::thread::spawn(move || {
+            emit_terminated_event(
+                &first_sender,
+                &first_seq,
+                &first_guard,
+                Some(serde_json::json!({"reason": "debugger_eof"})),
+            )
+        });
+        let second = emit_terminated_event(&sender, &seq, &terminated_emitted, None);
+        let first = first.join().map_err(|_| "termination worker panicked".to_string())?;
+        if first == second {
+            return Err(format!(
+                "expected exactly one emitter, got first={first}, second={second}"
+            ));
+        }
+
+        let message = receiver.try_recv().map_err(|error| error.to_string())?;
+        match message {
+            super::DapMessage::Event { event, body, .. } => {
+                let reason = body
+                    .as_ref()
+                    .and_then(|value| value.get("reason"))
+                    .and_then(serde_json::Value::as_str);
+                if event != "terminated" || (reason != Some("debugger_eof") && reason.is_some()) {
+                    return Err(format!("unexpected termination event: {event}, {body:?}"));
+                }
+            }
+            other => return Err(format!("expected termination event, got {other:?}")),
+        }
+
+        match receiver.try_recv() {
+            Err(TryRecvError::Empty) => Ok(()),
+            Err(error) => Err(format!("termination channel error: {error}")),
+            Ok(other) => Err(format!("duplicate termination event: {other:?}")),
+        }
+    }
 
     /// An explicit, non-empty interpreter is honored verbatim — from the
     /// documented `perlPath` key or the `perl` alias — and the toolchain
