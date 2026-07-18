@@ -774,14 +774,27 @@ fn test_unclosed_qw_recovers_parenthesized_lexical_declaration() -> Result<(), S
 
 #[test]
 fn test_unclosed_qw_recovers_compact_lexical_declarations() -> Result<(), String> {
-    for declaration in ["my$x = 1;", "our@x = ();", "state%x = ();", "local$x = 1;"] {
+    for (declaration, variable) in [
+        ("my$x = 1;", "$ x"),
+        ("our@x = ();", "@ x"),
+        ("state%x = ();", "% x"),
+        ("local$x = 1;", "$ x"),
+    ] {
         let code = format!("my @items = qw(word\n{declaration}\nprint 1;");
         let mut parser = Parser::new(&code);
         let ast = parser.parse().map_err(|error| format!("compact recovery failed: {error}"))?;
         let NodeKind::Program { statements } = &ast.kind else {
             return Err(format!("expected program root, got {}", ast.to_sexp()));
         };
-        if statements.len() != 3 || parser.errors().is_empty() {
+        let sexp = ast.to_sexp();
+        if statements.len() != 3
+            || !matches!(
+                statements.get(1).map(|node| &node.kind),
+                Some(NodeKind::VariableDeclaration { .. })
+            )
+            || !sexp.contains(variable)
+            || parser.errors().is_empty()
+        {
             return Err(format!("compact declaration was swallowed: {}", ast.to_sexp()));
         }
     }
