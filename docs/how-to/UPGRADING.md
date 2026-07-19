@@ -1,7 +1,7 @@
 # Upgrading perl-lsp
 
 Use this guide when you already have `perl-lsp` installed and need to move to
-the current public-alpha release line without breaking your editor, workspace
+the current public-beta release line without breaking your editor, workspace
 config, or downstream crate builds.
 
 The live release truth is:
@@ -15,7 +15,7 @@ The live release truth is:
 
 | Situation | Read this | What to do |
 | --- | --- | --- |
-| You installed the binary with Cargo | [Installation Guide](INSTALLATION.md) | Reinstall the current public-alpha release with `cargo install --locked perllsp` |
+| You installed the binary with Cargo | [Installation Guide](INSTALLATION.md) | Reinstall from the independently versioned registry with `cargo install --locked perllsp`, or pin `--version 0.17.0` only after verifying that registry receipt |
 | You launch through an editor | [Editor Setup](EDITOR_SETUP.md) | Update the server path, then restart the editor |
 | You use a project config file | [Configuration Reference](../reference/CONFIG.md) | Reopen the workspace so new settings are picked up |
 | You build against the crates | [Changelog](../../CHANGELOG.md) | Bump related crate versions together and rerun tests |
@@ -23,7 +23,7 @@ The live release truth is:
 
 ## 1. Reinstall the server
 
-If you want the current published public-alpha binary, reinstall it rather than
+If you want the current published public-beta binary, reinstall it rather than
 trying to patch an old checkout in place.
 
 ```bash
@@ -58,9 +58,9 @@ See:
 ## 3. Upgrade downstream crates
 
 If your project depends on `perl-lsp` crates directly, upgrade the related
-crates together so the public-alpha version line stays aligned.
+crates together so the public-beta version line stays aligned.
 
-- Update the dependent crate versions to the current public-alpha release line.
+- Update the dependent crate versions to the current public-beta release line.
 - Regenerate your lockfile.
 - Rebuild and rerun your tests.
 - If compile errors mention removed or renamed APIs, check the matching release notes in `CHANGELOG.md` before changing code.

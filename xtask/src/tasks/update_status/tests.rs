@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, bail};
 use regex::Regex;
 
 use super::{replace_block, run_cmd};
@@ -110,6 +110,9 @@ pub(super) fn generate_tests_status(
     missing_docs_baseline: Option<usize>,
     original: &str,
 ) -> Result<String> {
+    if !matches!(tests.tier_a_lib_tests, Some(count) if count > 0) {
+        bail!("test discovery returned no Tier A lib tests; refusing to overwrite tests.md");
+    }
     let tier_a_tests_str =
         tests.tier_a_lib_tests.map_or_else(|| "UNVERIFIED".to_string(), |n| n.to_string());
 
@@ -154,4 +157,38 @@ pub(super) fn generate_tests_status(
         &bullets_content,
     )?;
     Ok(text)
+}
+
+#[cfg(test)]
+mod fail_closed_tests {
+    use super::*;
+
+    const STATUS_TEMPLATE: &str = "<!-- BEGIN: TESTS_TABLE_ROWS -->\nold\n<!-- END: TESTS_TABLE_ROWS -->\n\
+<!-- BEGIN: TESTS_METRICS_BULLETS -->\nold\n<!-- END: TESTS_METRICS_BULLETS -->\n";
+
+    #[test]
+    fn generate_tests_status_rejects_zero_discovery() -> Result<()> {
+        let counts = TestCounts {
+            tier_a_lib_tests: Some(0),
+            ignored_total: Some(0),
+            bug_count: Some(0),
+            manual_count: Some(0),
+        };
+        let result = generate_tests_status(&counts, Some(0), Some(0), STATUS_TEMPLATE);
+        color_eyre::eyre::ensure!(result.is_err(), "zero discovery must not overwrite tests.md");
+        Ok(())
+    }
+
+    #[test]
+    fn generate_tests_status_rejects_missing_discovery() -> Result<()> {
+        let counts = TestCounts {
+            tier_a_lib_tests: None,
+            ignored_total: Some(0),
+            bug_count: Some(0),
+            manual_count: Some(0),
+        };
+        let result = generate_tests_status(&counts, Some(0), Some(0), STATUS_TEMPLATE);
+        color_eyre::eyre::ensure!(result.is_err(), "missing discovery must not overwrite tests.md");
+        Ok(())
+    }
 }

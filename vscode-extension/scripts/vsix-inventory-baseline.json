@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "total_files": 28,
-  "total_bytes": 1478647,
+  "total_bytes": 1479222,
   "files": {
-    "README.md": 21701,
+    "README.md": 22276,
     "package.json": 53908,
     "LICENSE": 1069,
     "language-configuration.json": 1010,

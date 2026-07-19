@@ -8,7 +8,7 @@ Welcome to the perl-lsp project! This guide will get you up to speed quickly.
 
 ## 📍 You Are Here
 
-**Project Status**: public-alpha; current shipped train is `v0.17.0` (2026-06-28). For the live version, crate surface, and metrics, `docs/project/CURRENT_STATUS.md` is canonical — this line is a snapshot only.
+**Project Status**: public beta; current shipped train is `v0.17.0` (2026-06-28). For the live version, crate surface, and metrics, `docs/project/CURRENT_STATUS.md` is canonical — this line is a snapshot only.
 **Open Issues**: See GitHub milestones/issues for live counts
 
 ## 🎯 5-Minute Orientation

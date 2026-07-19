@@ -107,7 +107,8 @@ copy_doc "$DOCS_DIR/project/status/quality.md" "$BOOK_SRC/reference/status/quali
 copy_doc "$DOCS_DIR/project/status/release.md" "$BOOK_SRC/reference/status/release.md"
 copy_doc "$DOCS_DIR/project/ROADMAP.md" "$BOOK_SRC/reference/roadmap.md"
 copy_doc "$DOCS_DIR/project/MILESTONES.md" "$BOOK_SRC/reference/milestones.md"
-copy_doc "$DOCS_DIR/reference/STABILITY.md" "$BOOK_SRC/reference/stability.md"
+# stability.md is a committed mdBook include of the canonical contract. Do not
+# overwrite it with a copied snapshot, which can drift between population runs.
 copy_doc "$DOCS_DIR/how-to/UPGRADING.md" "$BOOK_SRC/reference/upgrading.md"
 copy_doc "$DOCS_DIR/reference/ERROR_HANDLING_API_CONTRACTS.md" "$BOOK_SRC/reference/error-handling-contracts.md"
 copy_doc "$DOCS_DIR/reference/LSP_MISSING_FEATURES_REPORT.md" "$BOOK_SRC/reference/lsp-missing-features.md"
