@@ -1,73 +1,134 @@
 ---
-description: Ops step 1 — find merge-ready PRs in the queue
+description: Ops step 1 — classify exact-head PR readiness without ceremonial branch refresh
 user-invocable: false
 ---
 
 # Ops Check Queue
 
-Find PRs that are ready to merge.
+Find PRs that are ready to merge or need one precise next transition.
+
+Canonical authorities:
+
+- PR disposition: `docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md`
+- authority map: `docs/reference/CONTROL_PLANE_AUTHORITY.md`
+- review convergence: `scripts/ci/check-pr-review-convergence`
+- required checks: live repository policy, reconciled with `.ci/policies/required-checks.toml`
+
+## Rules
+
+- PR age, inactivity, or commits-behind are observations, not merge or repair
+  dispositions.
+- Fetch current `main` to inspect semantic interaction. Do not update the PR
+  branch merely because it is behind.
+- `DIRTY`/`CONFLICTING` means inspect an actual conflict. It does not mean
+  automatic rebase.
+- `UNKNOWN` means `NOT_PROVEN`; retry boundedly or report it.
+- Labels locate candidates and routing work. They are not current-head proof.
+- Same-head CI refresh and base integration are separate operations.
 
 ## Steps
 
-### Step 0 — Sweep stale in-build claims
+### 0. Review orphaned `in-build` claims without age-only mutation
 
-Before checking the merge queue, clear noise from stale builder claims.
-
-Issues with `in-build` but no linked open PR for more than 7 days are routing dead weight.
-Each one adds latency to every orchestrator dispatch decision.
+List issues carrying `in-build`, then inspect each candidate's linked PR,
+branch/worktree ownership, and salvage state.
 
 ```bash
-gh issue list --label "in-build" --state open --json number,title,updatedAt --jq '.[] | select((now - (.updatedAt | fromdateiso8601)) > (7*86400)) | "#\(.number) \(.title)"'
+gh issue list --label "in-build" --state open --json number,title,updatedAt
 ```
-> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(owner, repo, labels:["in-build"], state:"OPEN")` → filter by `updatedAt` in agent logic for >7 days stale (the `since` parameter filters issues updated *after* a date, not before — apply the stale-age filter client-side).
 
-For each result, check if a linked open PR exists:
+> **MCP alternative (web/no-gh sessions):** list issues with the `in-build`
+> label, then inspect linked PR and ownership state. `updatedAt` may select a
+> claim for review; it does not authorize label removal.
+
+Classify:
+
+- **Linked open PR or active ownership**: keep the claim.
+- **No open PR and no current ownership evidence**: report an orphaned-claim
+  candidate; remove the label only after verifying no dirty, unpublished, or
+  salvageable work exists.
+- **Ambiguous or unavailable ownership state**: `NOT_PROVEN`; do not mutate.
+
+### 1. Capture live PR identity and merge state
 
 ```bash
-gh pr list --search "closes #<number>" --state open --json number,title
+gh pr list --state open --limit 200 \
+  --json number,title,headRefOid,baseRefOid,mergeable,mergeStateStatus,isDraft,reviewDecision,labels,updatedAt
 ```
-> **MCP alternative (web/no-gh sessions):** `mcp__github__search_pull_requests(query:"closes #<number> is:open repo:effortlessmetrics/perl-lsp-swarm")`
 
-Classify and act:
-- **Has open PR**: skip — builder is active.
-- **No open PR, > 7 days stale**: remove `in-build` label and add a comment: `in-build label removed — no linked PR after 7 days; issue returned to queue`.
+Record the full head SHA before interpreting checks or reviews.
 
-1. List all open PRs with their merge state:
-   ```bash
-   gh pr list --state open --limit 50 --json number,title,mergeable,mergeStateStatus,isDraft,reviewDecision --jq '.[] | "\(.number)\t\(.mergeable)/\(.mergeStateStatus)\tdraft:\(.isDraft)\treview:\(.reviewDecision)\t\(.title)"'
-   ```
-   > **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:50)` — `mergeable`, `mergeStateStatus`, `isDraft`, `reviewDecision` fields available on each PR object.
+### 2. Classify mergeability separately from proof
 
-2. Filter for merge candidates:
-   - **mergeStateStatus = CLEAN** (NOT UNSTABLE, NOT UNKNOWN, NOT DIRTY). UNSTABLE means non-required check failing or in flight — wait, don't merge.
-   - Not a draft (or promote with `gh pr ready` if appropriate)
-   - reviewDecision: APPROVED or no review required
-   - **No active `needs-*` routing label** (per the 2026-04-26 sign-off-as-routing rule). Filter out PRs with any of: `needs-builder-fix`, `needs-ci-fix`, `needs-diff-fix`, `needs-spec-fix`, `needs-red-tdd-fix`. Sign-off and routing labels are mutually exclusive at the same gate; presence of `needs-*` means the gate has not actually cleared.
+- `MERGEABLE` / `CLEAN`: no textual conflict reported; continue.
+- `CONFLICTING` / `DIRTY`: inspect the exact conflict and route through
+  `RESOLVE_CONFLICTS` or `REVIEW_SEMANTIC_INTERACTION`.
+- `UNKNOWN`: `UNKNOWN_NOT_PROVEN`; retry boundedly or report.
+- `UNSTABLE`: decompose required checks, advisory checks, review, and policy;
+  do not treat the summary as a disposition.
 
-   Filter command (post-Step-1 list narrowing):
-   ```bash
-   gh pr list --state open --label merge-ready --limit 50 --json number,labels,mergeStateStatus,isDraft -q '[.[] | select(.isDraft | not) | select(.mergeStateStatus == "CLEAN") | select(.labels | map(.name) | (contains(["needs-builder-fix"]) or contains(["needs-ci-fix"]) or contains(["needs-diff-fix"]) or contains(["needs-spec-fix"]) or contains(["needs-red-tdd-fix"])) | not)] | .[].number'
-   ```
-   > **MCP alternative (web/no-gh sessions):** `mcp__github__search_pull_requests(query:"is:open is:pr label:merge-ready repo:effortlessmetrics/perl-lsp-swarm")` then filter `needs-*` labels in agent code after fetching.
+A behind-only, conflict-free PR remains eligible for current-head review and
+squash merge without changing its head.
 
-3. Check CI on each candidate using **latest-per-check filter** (per `feedback_status_check_rollup_stale_entries.md`):
-   ```bash
-   gh pr view <number> --json statusCheckRollup --jq '.statusCheckRollup | group_by(.name // .context) | map(sort_by(.completedAt // .startedAt) | last) | [.[] | select(.conclusion == "FAILURE") | (.context // .name)]'
-   ```
-   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_check_runs", owner, repo, pullNumber:<number>)` → apply the same group-by-name, sort-by-completedAt, take-last logic in agent code rather than jq.
+### 3. Evaluate current-head proof
 
-4. Classify:
-   - **MERGE NOW**: CLEAN + latest CI all green + no `needs-*` + `just pre-merge-check <number>` passes
-   - **WAIT**: CI still running (mergeStateStatus = UNSTABLE / UNKNOWN)
-   - **BLOCKED**: CI failures on latest run — note which check failed
-   - **NEEDS REBASE**: CONFLICTING / DIRTY
-   - **CONTRADICTORY**: has `merge-ready` AND a `needs-*` label — strip `merge-ready` and route to the appropriate fixer
+For each candidate:
+
+1. pin `headRefOid`;
+2. discover the required check set from live policy;
+3. read check runs attributable to that exact head;
+4. distinguish required success, pending, failed, missing, stale, cancelled,
+   skipped/not-applicable, instrument failure, and advisory findings;
+5. run the canonical review-convergence check;
+6. re-read the head after collection.
+
+```bash
+HEAD_SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
+gh api repos/:owner/:repo/commits/$HEAD_SHA/check-runs --paginate \
+  --jq '.check_runs[] | {name,status,conclusion,head_sha,details_url}'
+scripts/ci/check-pr-review-convergence <number>
+```
+
+> **MCP alternative (web/no-gh sessions):** fetch the PR, exact-head check
+> runs, review threads, and requested reviews through the canonical connector
+> mappings. Keep all evidence bound to the captured head.
+
+Do not use `update-branch`, a merge-main commit, rebase, force-push, or an empty
+commit solely to obtain missing proof. Request a same-head rerun/dispatch when
+supported; otherwise report `NOT_PROVEN`. A genuine integration requirement is
+routed separately.
+
+### 4. Respect routing labels without treating them as proof
+
+A `needs-*` label means a named repair is still requested. A contradictory
+`merge-ready` plus `needs-*` projection should be reconciled before merge.
+
+Do not infer semantic supersession or branch freshness from any label.
+
+### 5. Emit one bounded result
+
+Use these queue results:
+
+- **MERGE NOW**: expected head is unchanged; not draft; mergeable; required
+  exact-head checks succeed; review convergence succeeds; live policy and any
+  applicable integration proof permit squash merge.
+- **WAIT**: a named required input is pending.
+- **BLOCKED**: a deterministic product, review, policy, or conflict finding
+  prevents integration.
+- **CONFLICTING**: actual textual conflict requires inspection; no automatic
+  resolution strategy is chosen.
+- **UNKNOWN_NOT_PROVEN**: GitHub/tool state cannot establish the answer.
+- **RETURN TO REVIEW**: the head moved after evidence was collected.
+- **ADVISORY**: non-required concern remains visible without becoming a merge
+  requirement.
 
 ## Output
 
-Record in your task:
-```
-Merge candidates: #NNN, #NNN, #NNN
-Blocked: #NNN (reason), #NNN (reason)
-Waiting: #NNN (CI running)
+```text
+Merge candidates: #NNN @ <full-head-sha>
+Waiting: #NNN (exact required input)
+Blocked: #NNN (finding and next action)
+Conflicting: #NNN (files/seam to inspect)
+Not proven: #NNN (missing state/tool)
+Advisory: #NNN (non-required concern)
 ```
