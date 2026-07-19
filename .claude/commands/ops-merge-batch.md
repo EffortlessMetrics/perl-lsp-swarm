@@ -29,24 +29,44 @@ old base.
 
 ### 2. Capture one live readiness packet per PR
 
-Immediately before each merge, capture:
+Immediately before each merge, query the PR head and GitHub's combined status
+rollup together:
 
 ```bash
-gh pr view <number> \
-  --json isDraft,mergeable,mergeStateStatus,labels,headRefOid,baseRefOid,reviewRequests,reviewDecision
-gh api repos/:owner/:repo/commits/<head-sha>/check-runs --paginate
-scripts/ci/check-pr-review-convergence <number>
+PR_NUMBER=<decimal-pr-number>
+[[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || { echo "invalid PR number" >&2; exit 2; }
+PR_STATE=$(gh pr view "$PR_NUMBER" \
+  --json isDraft,mergeable,mergeStateStatus,labels,headRefOid,baseRefOid,reviewRequests,reviewDecision,statusCheckRollup,title)
+EXPECTED_HEAD=$(printf '%s' "$PR_STATE" | jq -r '.headRefOid')
+printf '%s' "$PR_STATE" | jq -r '
+  .statusCheckRollup[] |
+  {
+    kind: (.__typename // "unknown"),
+    name: (.name // .context),
+    state: (.conclusion // .state // .status),
+    started_at: .startedAt,
+    completed_at: .completedAt,
+    details_url: (.detailsUrl // .targetUrl)
+  }'
+scripts/ci/check-pr-review-convergence "$PR_NUMBER"
 ```
 
-> **MCP alternative:** fetch the PR, exact-head check runs, review threads, and
-> requested reviews through the canonical connector map. Keep the packet bound
-> to the captured full head SHA.
+`statusCheckRollup` includes both CheckRun and commit StatusContext entries for
+the current PR head. Querying `check-runs` alone can omit required or advisory
+contexts published through the commit-status API. Fetch a focused underlying
+run/status only when duplicate or terminal evidence needs classification.
+
+> **MCP alternative:** fetch the PR, its combined current-head status rollup (or
+> both check-run and commit-status contexts), review threads, and requested
+> reviews through the canonical connector map. Keep the packet bound to the
+> captured full head SHA.
 
 Required at merge time:
 
 - PR is not draft;
 - GitHub reports no actual textual conflict;
-- required checks discovered from live policy succeed on the exact head;
+- required checks discovered from live policy succeed in the combined rollup on
+  the exact head;
 - review convergence succeeds for the exact head;
 - no active repair request contradicts readiness;
 - Changie/release-note disposition and other live policy inputs are satisfied;
@@ -64,37 +84,72 @@ conflict to inspect, not an automatic rebase instruction.
 ### 3. Run the repository pre-merge guard
 
 ```bash
-just pre-merge-check <number>
-# or: bash scripts/pre-merge-check.sh <number>
+just pre-merge-check "$PR_NUMBER"
+# or: bash scripts/pre-merge-check.sh "$PR_NUMBER"
 ```
 
 Treat its result according to the current repository contract. A local tool or
 instrument failure is `NOT_PROVEN`; it is not permission to bypass protected
 GitHub evidence.
 
-### 4. Prepare a useful squash commit message
+### 4. Prepare a reviewed squash message safely
+
+Do not paste a PR title or body into shell source. Both are contributor-controlled
+text and may contain quotes, substitutions, backticks, or newlines.
+
+Create the reviewed summary as data in a temporary file:
 
 ```bash
-gh pr view <number> --json title,body
+SUMMARY_FILE=$(mktemp)
+PAYLOAD_FILE=$(mktemp)
+trap 'rm -f "$SUMMARY_FILE" "$PAYLOAD_FILE"' EXIT
+
+cat >"$SUMMARY_FILE" <<'SUMMARY'
+<one to three reviewed sentences explaining what changed and why>
+SUMMARY
+
+PR_TITLE=$(printf '%s' "$PR_STATE" | jq -r '.title')
+COMMIT_TITLE="$PR_TITLE (#$PR_NUMBER)"
+
+jq -n \
+  --arg merge_method "squash" \
+  --arg sha "$EXPECTED_HEAD" \
+  --arg commit_title "$COMMIT_TITLE" \
+  --rawfile commit_message "$SUMMARY_FILE" \
+  '{
+    merge_method: $merge_method,
+    sha: $sha,
+    commit_title: $commit_title,
+    commit_message: $commit_message
+  }' >"$PAYLOAD_FILE"
 ```
 
-Use `<PR title> (#<number>)` as the subject and a concise explanation of what
-changed and why as the body.
+`jq --arg` and `--rawfile` encode untrusted text as JSON data; no PR-controlled
+text is evaluated by the shell.
 
 ### 5. Re-read and squash-merge the expected head
 
 ```bash
-EXPECTED_HEAD=$(gh pr view <number> --json headRefOid --jq .headRefOid)
-# Re-evaluate readiness for EXPECTED_HEAD, then:
-gh api -X PUT repos/:owner/:repo/pulls/<number>/merge \
-  -f merge_method=squash \
-  -f sha="$EXPECTED_HEAD" \
-  -f commit_title="<title> (#<number>)" \
-  -f commit_message="<summary>"
+CURRENT_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)
+test "$CURRENT_HEAD" = "$EXPECTED_HEAD" || {
+  echo "RETURN TO REVIEW: head moved from $EXPECTED_HEAD to $CURRENT_HEAD" >&2
+  exit 1
+}
+
+gh api -X PUT "repos/:owner/:repo/pulls/$PR_NUMBER/merge" \
+  --input "$PAYLOAD_FILE"
 ```
 
-> **MCP alternative:** call the merge endpoint with `merge_method: "squash"`
-> and `expected_head_sha: <full sha>`.
+The REST merge endpoint with `merge_method: squash` and `sha: EXPECTED_HEAD`
+uses GitHub's ordinary protected merge path. Required checks, review rules,
+conversation-resolution rules, and rulesets still apply; the SHA field adds a
+compare-and-swap guard and does not bypass protection. Use no admin/bypass
+credential or exception path. A 405/409/422 policy or SHA rejection is
+`BLOCKED`/`RETURN TO REVIEW`, not permission to retry with weaker protection.
+
+> **MCP alternative:** call the normal protected merge endpoint with
+> `merge_method: "squash"`, the reviewed title/message as data fields, and
+> `expected_head_sha: <full sha>`.
 
 If the head moved, the merge must fail closed and return to current-head review.
 Never silently merge the replacement head.
@@ -122,11 +177,11 @@ branch delta is safe to delete.
 - `CONFLICTING` → inspect mechanical versus semantic conflict; select a reviewed
   resolution strategy.
 - `UNKNOWN_NOT_PROVEN` → retry boundedly or report missing state.
-- required check pending → wait for that named input.
+- required check pending → `WAIT` for that named input.
 - required check failed → classify product/test/instrument/policy failure.
 - current-head proof missing/stale → request same-head rerun/dispatch; do not
   mutate the branch merely to trigger CI.
-- head moved → `RETURN_TO_REVIEW`.
+- head moved → `RETURN TO REVIEW`.
 - draft → remain in review.
 - active `needs-*` → route the named repair.
 - advisory failure only → record it and apply the declared advisory policy.
