@@ -1666,7 +1666,18 @@ impl Lowerer {
         match &lhs.kind {
             NodeKind::Typeglob { name } => {
                 let (package, symbol) = package_and_symbol(name, self.package_context.as_deref());
-                if let Some((slot_kind, alias_target)) = static_glob_alias_target(rhs) {
+                // A dynamically dereferenced glob (`*{$name} = ...`) captures its
+                // destination symbol from a runtime expression, so `name` is the raw
+                // capture text (e.g. "$name") rather than a resolvable bareword. Such an
+                // assignment is a dynamic stash mutation even when the RHS is a static
+                // alias — it must not mint an ExactAst alias slot for an unknown symbol
+                // (#4504). Only a *directly written* glob name — a bareword, a
+                // `::`-qualified name, a caret control var (`^X`), or a punctuation glob
+                // — is a statically resolvable stash symbol; every computed `*{EXPR}`
+                // capture stays dynamic.
+                let lhs_is_static = is_direct_glob_name(name);
+                let static_alias = if lhs_is_static { static_glob_alias_target(rhs) } else { None };
+                if let Some((slot_kind, alias_target)) = static_alias {
                     self.record_slot(
                         package,
                         stash_slot(
@@ -1681,13 +1692,18 @@ impl Lowerer {
                         ),
                     );
                 } else {
+                    let reason = if lhs_is_static {
+                        "typeglob assignment has a non-static RHS"
+                    } else {
+                        "typeglob assignment has a dynamic LHS"
+                    };
                     let boundary_item = self.push_item(
                         lhs,
                         Some(lhs.location),
                         confidence,
                         HirKind::DynamicBoundary(DynamicBoundary {
                             kind: DynamicBoundaryKind::DynamicStashMutation,
-                            reason: "typeglob assignment has a non-static RHS".to_string(),
+                            reason: reason.to_string(),
                         }),
                         self.package_context.clone(),
                         Some(self.current_scope()),
@@ -1698,7 +1714,7 @@ impl Lowerer {
                         range,
                         Some(boundary_item),
                         StashDynamicBoundaryKind::DynamicStashMutation,
-                        "typeglob assignment has a non-static RHS",
+                        reason,
                     );
                 }
             }
@@ -2170,6 +2186,31 @@ fn is_bareword_like(value: &str) -> bool {
     };
     (first == '_' || first.is_ascii_alphabetic())
         && value.chars().all(|ch| ch == '_' || ch == ':' || ch.is_ascii_alphanumeric())
+}
+
+/// Whether a `NodeKind::Typeglob` name is a *directly written* glob symbol rather
+/// than the normalized text of a computed `*{EXPR}` dereference. Directly written
+/// globs are the only statically resolvable stash targets: a bareword or
+/// `::`-qualified name (`foo`, `Foo::bar`), a caret control-character special
+/// variable (`^X`, `^WIDE_SYSTEM_CALLS`), or a single-character punctuation glob
+/// (`@`, `<`, …). Everything else is a computed dereference whose destination symbol
+/// is not known at lower time — `*{$name}`, `*{$^X}`, `*{$$}`, `*{foo()}`,
+/// `*{ $a . $b }`, `*{'Sym'}` — and must become a dynamic stash boundary (#4504).
+fn is_direct_glob_name(name: &str) -> bool {
+    if is_bareword_like(name) {
+        return true;
+    }
+    // Caret control-character variable: `^` followed by a bareword (`^X`, `^W`).
+    if let Some(rest) = name.strip_prefix('^') {
+        return is_bareword_like(rest);
+    }
+    // Single-character punctuation glob (`@`, `<`, `!`, …). A computed `*{…}` capture
+    // is never a lone punctuation character (it carries a sigil, call, or quote).
+    let mut chars = name.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some(ch), None) if !ch.is_ascii_alphanumeric() && ch != '_'
+    )
 }
 
 fn contains_interpolation_marker(value: &str) -> bool {
