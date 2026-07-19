@@ -69,12 +69,13 @@ PR_NUMBER=<decimal-pr-number>
 PR_STATE=$(gh pr view "$PR_NUMBER" \
   --json isDraft,mergeable,mergeStateStatus,labels,headRefOid,baseRefName,baseRefOid,reviewRequests,reviewDecision,statusCheckRollup,title)
 EXPECTED_HEAD=$(printf '%s' "$PR_STATE" | jq -r '.headRefOid')
-printf '%s' "$PR_STATE" | jq -r '
+printf '%s' "$PR_STATE" | jq -r --arg head "$EXPECTED_HEAD" '
   .statusCheckRollup[] |
   {
     kind: (.__typename // "unknown"),
     name: (.name // .context),
     state: (.conclusion // .state // .status),
+    head_sha: (.headSha // .sha // $head),
     started_at: .startedAt,
     completed_at: .completedAt,
     details_url: (.detailsUrl // .targetUrl)
@@ -84,7 +85,8 @@ scripts/ci/check-pr-review-convergence "$PR_NUMBER"
 
 `statusCheckRollup` includes both CheckRun and commit StatusContext entries for
 the current PR head. Querying `check-runs` alone can omit required or advisory
-contexts published through the commit-status API. Fetch a focused underlying
+contexts published through the commit-status API. The emitted `head_sha`
+preserves the packet's exact-head audit trail. Fetch a focused underlying
 run/status only when duplicate or terminal evidence needs classification.
 
 > **Connector alternative:** fetch the PR, its combined current-head status
