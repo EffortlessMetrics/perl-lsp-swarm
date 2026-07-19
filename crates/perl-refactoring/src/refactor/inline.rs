@@ -593,13 +593,20 @@ fn body_calls_self(body: &str, sub_name: &str) -> bool {
 // Argument extraction
 // ---------------------------------------------------------------------------
 
-/// Characters that continue a Perl identifier, including the `::` and `'`
-/// package separators. A bare sub name must not boundary-match inside a
-/// package-qualified name: `add'count` / `add::count` are calls to
-/// `add::count`, and `Foo::add` / `Foo'add` name a *different* sub than a bare
-/// `add`, so none of them should be treated as a call to `add`.
+/// Characters that continue a Perl identifier: ASCII word characters, the `::`
+/// and `'` package separators, and — conservatively — any non-ASCII character.
+///
+/// A bare sub name must not boundary-match inside a larger identifier:
+/// `add'count` / `add::count` call `add::count`; `Foo::add` / `Foo'add` name a
+/// *different* sub than a bare `add`; and under `use utf8` a Perl identifier can
+/// continue with Unicode letters, digits, combining marks, or connector
+/// punctuation (`addé`, `add‿count`). Rather than depend on a full XID_Continue
+/// table for a text-heuristic matcher, treat every non-ASCII char as
+/// continuation: for this matcher the safe direction is to reject an ambiguous
+/// match, never to silently inline the wrong sub. Genuine unqualified calls end
+/// in an ASCII boundary (`(`, space, `&`, …), so they are unaffected.
 fn continues_perl_identifier(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || c == ':' || c == '\''
+    c.is_ascii_alphanumeric() || c == '_' || c == ':' || c == '\'' || !c.is_ascii()
 }
 
 /// Find `needle` in `haystack` at an identifier word boundary — i.e. not as a
@@ -888,6 +895,28 @@ mod tests {
                 "package-qualified `{expr}` must not match bare `add`"
             );
         }
+    }
+
+    #[test]
+    fn extract_call_args_rejects_unicode_identifier_continuation() {
+        use super::{InlineError, extract_call_args};
+        // Under `use utf8`, a Perl identifier can continue with combining marks
+        // or connector punctuation. A bare `add` must not match a distinct sub
+        // like `add\u{0301}` (add + combining acute) or `add\u{203F}count`.
+        for expr in ["add\u{0301}(1, 2)", "add\u{203F}count(1, 2)"] {
+            assert!(
+                matches!(
+                    extract_call_args(expr, "add"),
+                    Err(InlineError::CallSiteParseFailed { .. })
+                ),
+                "Unicode-continued `{expr}` must not match bare `add`"
+            );
+        }
+        // A genuine UTF-8 sub name still resolves normally (ends at an ASCII `(`).
+        assert_eq!(
+            extract_call_args("café(1, 2)", "café").ok(),
+            Some(vec!["1".to_string(), "2".to_string()])
+        );
     }
 }
 
