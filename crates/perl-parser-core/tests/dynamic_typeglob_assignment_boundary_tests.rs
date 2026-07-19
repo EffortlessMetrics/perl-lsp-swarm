@@ -97,6 +97,20 @@ fn qualified_static_typeglob_assignment_still_records_exact_alias() {
 }
 
 #[test]
+fn control_char_special_typeglob_assignment_still_records_exact_alias() {
+    // Negative control: a control-char special-variable glob (`*^X`, the `$^X` glob)
+    // is a direct, statically-known symbol — not a dynamic `*{...}` capture — so it
+    // must stay an ExactAst alias even though its name is not bareword-like.
+    let file = lower_source("package Child;\n*^X = \\&foo;\n");
+
+    let aliases = typeglob_alias_slots(&file.stash_graph);
+    assert!(
+        aliases.iter().any(|slot| slot == "Child::^X target=foo"),
+        "control-char special-variable typeglob alias must stay an ExactAst TypeglobAlias slot, got: {aliases:?}"
+    );
+}
+
+#[test]
 fn braced_bareword_typeglob_assignment_still_records_exact_alias() {
     // Negative control: a braced *bareword* target (`*{name}`, `*{ name }`) resolves
     // to a static symbol, so it must stay an ExactAst alias — the dynamic-boundary

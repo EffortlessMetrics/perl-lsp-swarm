@@ -1671,11 +1671,11 @@ impl Lowerer {
                 // capture text (e.g. "$name") rather than a resolvable bareword. Such an
                 // assignment is a dynamic stash mutation even when the RHS is a static
                 // alias — it must not mint an ExactAst alias slot for an unknown symbol
-                // (#4504).
-                let lhs_is_static = is_bareword_like(name);
-                if let Some((slot_kind, alias_target)) =
-                    static_glob_alias_target(rhs).filter(|_| lhs_is_static)
-                {
+                // (#4504). A *direct* glob name — a bareword, a `::`-qualified name, or a
+                // punctuation/special-variable glob such as `^X` — stays static.
+                let lhs_is_static = !is_dynamic_glob_capture(name);
+                let static_alias = if lhs_is_static { static_glob_alias_target(rhs) } else { None };
+                if let Some((slot_kind, alias_target)) = static_alias {
                     self.record_slot(
                         package,
                         stash_slot(
@@ -2184,6 +2184,23 @@ fn is_bareword_like(value: &str) -> bool {
     };
     (first == '_' || first.is_ascii_alphabetic())
         && value.chars().all(|ch| ch == '_' || ch == ':' || ch.is_ascii_alphanumeric())
+}
+
+/// Whether a `NodeKind::Typeglob` name was captured from a dynamic `*{…}`
+/// dereference (`*{$name}`, `*{@x}`, `*{'Sym'}`, `*{ EXPR }`) rather than written as
+/// a direct glob. A captured name begins with a variable sigil followed by an
+/// identifier, or with a quote (a symbolic string); a direct glob name — a bareword,
+/// a `::`-qualified name, or a punctuation/special-variable glob such as `^X` or `@`
+/// — never does and remains a statically resolvable stash symbol (#4504).
+fn is_dynamic_glob_capture(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some('$' | '@' | '%') => {
+            chars.next().is_some_and(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+        }
+        Some('\'' | '"') => true,
+        _ => false,
+    }
 }
 
 fn contains_interpolation_marker(value: &str) -> bool {
