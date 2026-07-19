@@ -95,7 +95,7 @@ fn derive_changed_crates(changed_files: &[String]) -> Vec<String> {
     let mut crates: Vec<String> = changed_files
         .iter()
         .filter_map(|f| f.strip_prefix("crates/"))
-        .filter_map(|rest| rest.split('/').next())
+        .filter_map(|rest| rest.split_once('/').map(|(name, _)| name))
         .filter(|name| !name.is_empty())
         .map(str::to_string)
         .collect();
@@ -207,7 +207,7 @@ fn render_report(report: &SeamDiffReport, format: &str) -> Result<String> {
                 report.changed_crates.join(", ")
             ));
             output.push_str(&format!("is_empty: {}\n", report.is_empty));
-            output.push_str(&format!("is_non_substantive: {}", report.is_non_substantive));
+            output.push_str(&format!("is_non_substantive: {}\n", report.is_non_substantive));
             output
         }
         "json" => {
@@ -554,6 +554,21 @@ mod tests {
         ensure!(value["changed_crates"][0] == "perl-lsp");
         ensure!(value["is_empty"] == false);
         ensure!(value["is_non_substantive"] == false);
+        Ok(())
+    }
+
+    #[test]
+    fn test_derive_changed_crates_ignores_files_directly_under_crates() -> Result<()> {
+        let changed_files = vec![
+            "crates/README.md".to_string(),
+            "crates/perl-lsp/src/lib.rs".to_string(),
+            "crates/perl-parser/Cargo.toml".to_string(),
+        ];
+
+        ensure!(
+            derive_changed_crates(&changed_files) == vec!["perl-lsp", "perl-parser"],
+            "only crates/<name>/... paths should produce crate names"
+        );
         Ok(())
     }
 }
