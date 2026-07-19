@@ -448,7 +448,8 @@ impl<'a> Parser<'a> {
             && self.peek_kind() != Some(TokenKind::Assign)
         {
             let inner_text = &name[1..name.len() - 1];
-            let operand = parse_inline_expression(inner_text, token.start + 2)?;
+            let (operand, diagnostics) = parse_inline_expression(inner_text, token.start + 2)?;
+            self.errors.extend(diagnostics);
             let end = token.end;
             let node = Node::new(
                 NodeKind::Unary { op: "*{}".to_string(), operand: Box::new(operand) },
@@ -1644,9 +1645,15 @@ impl<'a> Parser<'a> {
 
 /// Parse an expression captured inside the lexer's single `*{...}` token and
 /// restore its source offsets relative to the containing source file.
-fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<Node> {
+fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<(Node, Vec<ParseError>)> {
     let mut parser = Parser::new(source);
     let ast = parser.parse().map_err(|error| offset_parse_error(error, offset))?;
+    let diagnostics = parser
+        .errors()
+        .iter()
+        .cloned()
+        .map(|error| offset_parse_error(error, offset))
+        .collect();
     let NodeKind::Program { mut statements } = ast.kind else {
         return Err(ParseError::syntax("Expected an expression program", offset));
     };
@@ -1668,7 +1675,7 @@ fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<Node> {
         shift_node_locations(&mut expression, offset);
         expressions.push(expression);
     }
-    build_deref_body(expressions, offset)
+    Ok((build_deref_body(expressions, offset)?, diagnostics))
 }
 
 fn build_deref_body(mut expressions: Vec<Node>, body_start: usize) -> ParseResult<Node> {
@@ -1822,7 +1829,7 @@ mod inline_expression_tests {
 
     #[test]
     fn multi_statement_inline_expression_preserves_every_expression() -> ParseResult<()> {
-        let node = parse_inline_expression("$tmp; 'STDOUT'", 17)?;
+        let (node, _) = parse_inline_expression("$tmp; 'STDOUT'", 17)?;
 
         let NodeKind::Block { statements } = node.kind else {
             return Err(ParseError::syntax(
@@ -1831,6 +1838,29 @@ mod inline_expression_tests {
             ));
         };
         assert_eq!(statements.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn inline_expression_forwards_recoverable_diagnostics() -> ParseResult<()> {
+        let source = r#""abab" =~ /(?:[^b]*(?=(b)|(a))ab)*/"#;
+        let (_, diagnostics) = parse_inline_expression(source, 17)?;
+        if !diagnostics.iter().any(|diagnostic| {
+            matches!(diagnostic, ParseError::Advisory { message, .. }
+                if message.contains("Nested quantifiers detected"))
+        }) {
+            return Err(ParseError::syntax(
+                "expected inline parser advisory to be forwarded",
+                17,
+            ));
+        }
+        if !diagnostics.iter().all(|diagnostic| diagnostic.location().is_none_or(|location| location >= 17))
+        {
+            return Err(ParseError::syntax(
+                "expected forwarded inline diagnostics to retain the outer offset",
+                17,
+            ));
+        }
         Ok(())
     }
 }

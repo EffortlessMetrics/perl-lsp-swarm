@@ -336,17 +336,24 @@ impl<'a> Parser<'a> {
                                 }
                                 TokenKind::LeftBrace => {
                                     // Dynamic typeglob *{$name}
-                                    let brace_expr = self.parse_postfix()?; // This will handle { ... }
+                                    // Parse the braced primary before looking for assignment so a
+                                    // postfix such as `*{$glob}{CODE}` cannot be mistaken for a
+                                    // direct dynamic typeglob assignment.
+                                    let brace_expr = self.parse_primary()?;
+                                    let direct_assignment =
+                                        self.peek_kind() == Some(TokenKind::Assign);
+                                    let body_end = brace_expr.location.end;
+                                    let brace_expr = self.parse_postfix_chain(brace_expr)?;
                                     let end = brace_expr.location.end;
-                                    if self.peek_kind() == Some(TokenKind::Assign) {
+                                    if direct_assignment {
                                         let name = String::from_utf8_lossy(
-                                            &self.src_bytes[start.saturating_add(1)..end],
+                                            &self.src_bytes[start.saturating_add(1)..body_end],
                                         )
                                         .trim()
                                         .to_string();
                                         return Ok(Node::new(
                                             NodeKind::Typeglob { name },
-                                            SourceLocation { start, end },
+                                            SourceLocation { start, end: body_end },
                                         ));
                                     }
                                     let node = Node::new(

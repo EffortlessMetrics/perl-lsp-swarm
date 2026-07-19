@@ -104,8 +104,40 @@ fn split_token_glob_assignment_preserves_typeglob_lhs() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn postfix_dynamic_glob_assignment_is_not_typeglob() -> Result<(), Box<dyn std::error::Error>> {
+    let source = "* { $glob }{CODE} = \\&target;";
+    let mut parser = Parser::new(source);
+    let ast = parser.parse()?;
+    let assignment = find_assignment(&ast).ok_or("expected postfix dynamic glob assignment")?;
+    let NodeKind::Assignment { lhs, .. } = &assignment.kind else {
+        return Err("find_assignment returned a non-assignment node".into());
+    };
+    if matches!(lhs.kind, NodeKind::Typeglob { .. }) {
+        return Err("postfix dynamic glob assignment must not use a Typeglob LHS".into());
+    }
+    if find_unary_operand(lhs, "*{}").is_none() {
+        return Err("expected postfix dynamic glob assignment to retain its deref LHS".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn braced_glob_postfix_form_remains_a_deref() {
     let source = "*{$glob}{CODE};";
     assert_clean_parse(source);
     assert_clean_parse("* { $glob }{CODE};");
+}
+
+#[test]
+fn inline_glob_forwards_recoverable_diagnostics() -> Result<(), Box<dyn std::error::Error>> {
+    let source = r#"*{"abab" =~ /(?:[^b]*(?=(b)|(a))ab)*/};"#;
+    let mut parser = Parser::new(source);
+    parser.parse()?;
+    if !parser.errors().iter().any(|diagnostic| {
+        matches!(diagnostic, perl_parser_core::ParseError::Advisory { message, .. }
+            if message.contains("Nested quantifiers detected"))
+    }) {
+        return Err(format!("expected forwarded inline advisory, got {:?}", parser.errors()).into());
+    }
+    Ok(())
 }
