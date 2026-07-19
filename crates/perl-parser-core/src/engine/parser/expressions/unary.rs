@@ -336,12 +336,37 @@ impl<'a> Parser<'a> {
                                 }
                                 TokenKind::LeftBrace => {
                                     // Dynamic typeglob *{$name}
-                                    let brace_expr = self.parse_postfix()?; // This will handle { ... }
+                                    // Parse the braced primary before looking for assignment so a
+                                    // postfix such as `*{$glob}{CODE}` cannot be mistaken for a
+                                    // direct dynamic typeglob assignment.
+                                    let brace_expr = self.parse_primary()?;
+                                    let direct_assignment =
+                                        self.peek_kind() == Some(TokenKind::Assign);
+                                    let body_start = brace_expr.location.start.saturating_add(1);
+                                    let body_end = brace_expr.location.end;
+                                    let brace_expr = self.parse_postfix_chain(brace_expr)?;
                                     let end = brace_expr.location.end;
-                                    return Ok(Node::new(
-                                        NodeKind::Unary { op: "*".to_string(), operand: Box::new(brace_expr) },
+                                    if direct_assignment {
+                                        let name = String::from_utf8_lossy(
+                                            &self.src_bytes[body_start..body_end.saturating_sub(1)],
+                                        )
+                                        .trim()
+                                        .trim_end_matches(';')
+                                        .trim()
+                                        .to_string();
+                                        return Ok(Node::new(
+                                            NodeKind::Typeglob { name },
+                                            SourceLocation { start, end: body_end },
+                                        ));
+                                    }
+                                    let node = Node::new(
+                                        NodeKind::Unary {
+                                            op: "*{}".to_string(),
+                                            operand: Box::new(brace_expr),
+                                        },
                                         SourceLocation { start, end },
-                                    ));
+                                    );
+                                    return self.parse_postfix_chain(node);
                                 }
                                 TokenKind::BitwiseXor => {
                                     // *^X typeglob for control variable $^X (e.g. *^N, *^W, *^F)

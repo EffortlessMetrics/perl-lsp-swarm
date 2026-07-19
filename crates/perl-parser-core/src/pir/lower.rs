@@ -1152,6 +1152,7 @@ mod tests {
             ("@{$ref};", DerefAggregateKind::Array),
             ("%{$ref};", DerefAggregateKind::Hash),
             ("&{$ref}();", DerefAggregateKind::Code),
+            ("*{$ref};", DerefAggregateKind::Glob),
         ] {
             let graph = lower(source);
             assert!(
