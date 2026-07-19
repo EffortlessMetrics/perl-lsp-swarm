@@ -43,8 +43,15 @@ These are not sufficient:
 - preference for a clean graph;
 - a desire to retrigger CI.
 
-If no valid disposition/reason is recorded and the PR is conflict-free, stop
-with `NO_ACTION_REQUIRED` and preserve the existing head/review/check evidence.
+Do not apply the no-action rule until GitHub has established mergeability. If
+`mergeable` or `mergeStateStatus` is `UNKNOWN`, retry boundedly and then return
+`NOT_PROVEN` without mutation. If `mergeStateStatus` is `UNSTABLE`, decompose it
+into proof/review/policy state; it is neither proof of a conflict nor proof that
+no integration action is needed.
+
+Only when mergeability is proven conflict-free and no valid reason is recorded,
+stop with `NO_ACTION_REQUIRED` and preserve the existing head/review/check
+evidence.
 
 ## Steps
 
@@ -70,24 +77,33 @@ After validation, pass it as one quoted argument:
 
 ```bash
 # TARGET is already validated data from the command runtime.
-gh pr view "$TARGET" \
-  --json number,title,headRefName,headRefOid,baseRefName,baseRefOid,mergeable,mergeStateStatus,isDraft
+PR_STATE=$(gh pr view "$TARGET" \
+  --json number,title,headRefName,headRefOid,baseRefName,baseRefOid,mergeable,mergeStateStatus,isDraft)
+PR_NUMBER=$(printf '%s' "$PR_STATE" | jq -r '.number')
+BRANCH=$(printf '%s' "$PR_STATE" | jq -r '.headRefName')
+OLD_HEAD=$(printf '%s' "$PR_STATE" | jq -r '.headRefOid')
+MERGEABLE=$(printf '%s' "$PR_STATE" | jq -r '.mergeable')
+MERGE_STATE_STATUS=$(printf '%s' "$PR_STATE" | jq -r '.mergeStateStatus')
 ```
 
 When a branch name is supplied, require that GitHub resolves it to exactly one
-open PR. Record:
+open PR. Apply the `UNKNOWN`/`UNSTABLE` fail-closed rule above before choosing
+`NO_ACTION_REQUIRED` or mutating.
+
+Record:
 
 ```yaml
 pr:
 branch:
 old_head_sha:
 base_sha:
+mergeable:
 merge_state:
 reviewed_disposition:
 base_update_reason:
 ```
 
-### 2. Verify ownership, worktree isolation, and mutation authority
+### 2. Verify ownership, pinned-head worktree isolation, and mutation authority
 
 Before checkout, rebase, or any remote mutation:
 
@@ -97,7 +113,9 @@ Before checkout, rebase, or any remote mutation:
 - verify maintainers are authorized to modify the branch;
 - record whether history rewrite is permitted;
 - inspect dirty, unpushed, or salvageable work;
-- allocate or resume one **dedicated isolated worktree** for this PR branch.
+- allocate or resume one **dedicated isolated worktree** for this PR branch;
+- require that the worktree HEAD equals the pinned GitHub `OLD_HEAD`, not merely
+  that its local branch name matches.
 
 The coordination/root checkout must never be switched or used for mutation. The
 selected worktree must be a different path, map to the expected branch/head, and
@@ -115,6 +133,11 @@ test "$(git -C "$WORKTREE" rev-parse HEAD)" = "$OLD_HEAD"
 test "$(cd "$WORKTREE" && pwd -P)" != "$(cd "$COORDINATION_ROOT" && pwd -P)"
 ```
 
+If an existing local branch/worktree does not equal `OLD_HEAD`, do not rebase or
+reset it as if it were the PR head. First preserve any unique dirty/unpushed
+state, then create a separate dedicated worktree pinned to `OLD_HEAD` or return
+`SALVAGE_REQUIRED`.
+
 Do not create a second worktree for a branch already checked out elsewhere.
 Resume the proven owner or stop.
 
@@ -127,6 +150,9 @@ git -C "$WORKTREE" fetch origin main
 git -C "$WORKTREE" fetch origin "$BRANCH"
 ```
 
+After fetch, re-check that the worktree remains at `OLD_HEAD`; fetching the
+remote must not silently substitute a newer local branch head.
+
 Inspect:
 
 - actual textual conflicts;
@@ -136,13 +162,13 @@ Inspect:
 - whether an equivalent implementation already landed.
 
 A finding of no material interaction is a valid reason to stop and leave the
-head unchanged.
+head unchanged, subject to live integration policy.
 
 ### 4. Select the smallest correct strategy
 
 | Situation | Preferred action |
 | --- | --- |
-| Conflict-free; no material interaction | leave head unchanged |
+| Conflict-free; no material interaction or policy requirement | leave head unchanged |
 | Simple mechanical textual conflict | resolve with the least destructive branch update compatible with ownership |
 | Semantic conflict | compare models and repair intentionally; do not take one side wholesale |
 | Stacked parent squash-merged | preserve the child-only delta; retarget/rebase/cherry-pick only as needed |
@@ -196,7 +222,21 @@ test "$(git rev-parse HEAD)" = "$OLD_HEAD"
 #### Authorized rebase
 
 ```bash
-git rebase origin/main
+if ! git rebase origin/main; then
+  # Resolve only when the reviewed semantic decision is sufficient. Otherwise
+  # restore the pinned pre-rebase state before returning BLOCKED.
+  if ! git rebase --abort; then
+    echo "SALVAGE_REQUIRED: rebase could not be aborted cleanly; preserve this worktree" >&2
+    exit 2
+  fi
+  test "$(git rev-parse HEAD)" = "$OLD_HEAD" || {
+    echo "NOT_PROVEN: abort did not restore the pinned head" >&2
+    exit 2
+  }
+  echo "BLOCKED: conflict requires a new reviewed resolution" >&2
+  exit 1
+fi
+
 NEW_HEAD=$(git rev-parse HEAD)
 EXPECTED_REMOTE_HEAD=$OLD_HEAD
 verify_expected_remote_head || {
@@ -208,7 +248,9 @@ git push \
   origin HEAD:"refs/heads/$BRANCH"
 ```
 
-Never use naked `--force`.
+Never use naked `--force`. If conflict work is intentionally preserved instead
+of aborted, mark the dedicated worktree `SALVAGE_REQUIRED`, record its exact
+rebase state, and do not report the PR as updated.
 
 #### Authorized merge-main
 
@@ -238,6 +280,7 @@ verify_expected_remote_head || {
 }
 gh api -X PUT "repos/:owner/:repo/pulls/$PR_NUMBER/update-branch" \
   -f expected_head_sha="$EXPECTED_REMOTE_HEAD"
+NEW_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)
 ```
 
 #### `SALVAGE_UNIQUE_DELTA`
@@ -254,12 +297,35 @@ gh api -X PUT "repos/:owner/:repo/pulls/$PR_NUMBER/update-branch" \
 Any retarget or PR metadata mutation also re-reads the current head immediately
 before the GitHub write and passes validated values as quoted/data fields.
 
-### 7. Verify and report evidence invalidation
+### 7. Prove the published head before reporting success
 
-After mutation:
+A successful local operation or push command is not enough. Re-read both GitHub
+and the remote branch and require them to equal the resulting `NEW_HEAD`:
 
 ```bash
-NEW_HEAD=$(git -C "$WORKTREE" rev-parse HEAD)
+PUBLISHED_PR_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)
+PUBLISHED_REMOTE_HEAD=$(
+  git ls-remote --exit-code --heads origin "refs/heads/$BRANCH" |
+    awk 'NR == 1 { print $1 }'
+)
+
+test "$PUBLISHED_PR_HEAD" = "$NEW_HEAD" || {
+  echo "NOT_PROVEN: PR head does not equal the resulting head" >&2
+  exit 2
+}
+test "$PUBLISHED_REMOTE_HEAD" = "$NEW_HEAD" || {
+  echo "NOT_PROVEN: remote branch does not equal the resulting head" >&2
+  exit 2
+}
+```
+
+For `SALVAGE_UNIQUE_DELTA`, verify the new salvage branch separately and verify
+that the original PR head remains the recorded original head unless an explicit
+later transition repoints or supersedes it.
+
+### 8. Verify and report evidence invalidation
+
+```bash
 git -C "$WORKTREE" diff --check origin/main...HEAD
 ```
 
@@ -274,7 +340,7 @@ which prior evidence is stale:
 
 Do not claim the PR is ready merely because the base operation succeeded.
 
-### 8. Return without switching the coordination checkout
+### 9. Return without switching the coordination checkout
 
 ```bash
 cd "$COORDINATION_ROOT"
@@ -292,11 +358,12 @@ dirty, unpushed, active, or salvageable state remains.
 - Branch: <headRefName>
 - Dedicated worktree: <path>
 - Old head: <full sha>
-- New head: <full sha or unchanged>
+- New/published head: <full sha or unchanged>
 - Disposition: RESOLVE_CONFLICTS / REVIEW_SEMANTIC_INTERACTION / UPDATE_BASE_REQUIRED / SALVAGE_UNIQUE_DELTA
 - Concrete reason: <reason>
 - Strategy: no action / rebase / merge-main / update / retarget / salvage
-- Remote-head revalidation: <expected and observed heads>
+- Remote-head revalidation: <expected and observed heads before mutation>
+- Published-head verification: <PR and remote heads after mutation>
 - Conflicts and semantic decisions: <details>
 - Proof run: <details>
 - Evidence invalidated: <details>
