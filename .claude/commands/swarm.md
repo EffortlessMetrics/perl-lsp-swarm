@@ -30,10 +30,10 @@ POST-MERGE: wisdom
 ## Phase 1: Bootstrap
 
 ```bash
-git fetch origin && git pull origin master
+git fetch origin && git pull origin main
 gh pr list --state open --limit 200 --json number | jq length
 gh issue list --state open --limit 200 --json number | jq length
-gh run list --branch master --limit 1
+gh run list --branch main --limit 1
 just clean-worktrees 2>/dev/null || git worktree prune
 ```
 > **MCP alternative (web/no-gh sessions):**
@@ -42,7 +42,7 @@ just clean-worktrees 2>/dev/null || git worktree prune
 > - CI status on main: `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"}, per_page:1)`
 > - Note: the default branch is `main` (not `master`). See [docs/reference/GH_MCP_FALLBACK.md].
 
-**Stop if master CI is red.** Fix it first.
+**Stop if main CI is red.** Fix it first.
 
 ## Phase 2: Assess
 
@@ -234,7 +234,7 @@ Labels are the authoritative state of every issue and PR. Agents write labels; t
 gh pr list --state open --limit 20 --json number,title,labels
 gh issue list --label builder-ready --state open --limit 10
 gh issue list --label in-build --state open --limit 10
-gh run list --branch master --limit 3
+gh run list --branch main --limit 3
 
 # Advanced queries
 # Issues with builder-ready but missing plan-reviewed (skipped plan-review)

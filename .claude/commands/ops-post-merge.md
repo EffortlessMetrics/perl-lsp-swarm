@@ -31,7 +31,7 @@ After a merge batch, lock in gains and update metrics.
 
 3. Check for systemic CI issues:
    ```bash
-   gh run list --branch master --limit 3 --json status,conclusion --jq '.[] | "\(.status) \(.conclusion)"'
+   gh run list --branch main --limit 3 --json status,conclusion --jq '.[] | "\(.status) \(.conclusion)"'
    ```
    > **MCP alternative (web/no-gh sessions):** `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"}, per_page:5)` — check `status` and `conclusion` per run. Note: the default branch is `main` (not `master`). See [docs/reference/GH_MCP_FALLBACK.md].
 
@@ -49,7 +49,7 @@ After a merge batch, lock in gains and update metrics.
    ## Merge Summary
 
    **Merged:** <list of PRs merged in this batch>
-   **Master status:** <CI passing | blocked>
+   **Main status:** <CI passing | blocked>
    **Corpus ratcheted:** <yes (new count) | no | N/A>
    **User-visible changes:** <list or none>
    MERGE_EOF
@@ -63,6 +63,6 @@ Record in your task:
 ```
 Corpus ratcheted: yes/no (new count)
 Status updated: yes/no
-Master CI: green/red
+Main CI: green/red
 Changelog candidates: <list of user-visible PRs>
 ```
