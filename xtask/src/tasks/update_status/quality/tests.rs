@@ -67,8 +67,10 @@ fn test_collect_per_crate_mutation_invalid_json_returns_empty_map() -> Result<()
 fn test_format_crate_quality_table_has_header_and_data() {
     let mut mutation = BTreeMap::new();
     mutation.insert("perl-quote".to_string(), 249);
-    let mut tests = BTreeMap::new();
-    tests.insert("perl-quote".to_string(), 42);
+    let tests = PerCrateTestCounts {
+        by_crate: BTreeMap::from([(String::from("perl-quote"), 42)]),
+        unattributed: 0,
+    };
     let table = format_crate_quality_table(&mutation, &tests);
     assert!(
         table.contains("Crate")
@@ -80,8 +82,18 @@ fn test_format_crate_quality_table_has_header_and_data() {
 
 #[test]
 fn test_format_crate_quality_table_empty_maps() {
-    let table = format_crate_quality_table(&BTreeMap::new(), &BTreeMap::new());
+    let table = format_crate_quality_table(&BTreeMap::new(), &PerCrateTestCounts::default());
     assert!(table.contains("no data yet"));
+}
+
+#[test]
+fn test_format_crate_quality_table_keeps_unattributed_tests_out_of_crate_rows() {
+    let mutation = BTreeMap::new();
+    let tests = PerCrateTestCounts { by_crate: BTreeMap::new(), unattributed: 2 };
+    let table = format_crate_quality_table(&mutation, &tests);
+
+    assert!(!table.contains("| unattributed |"));
+    assert!(table.contains("2 discovered test(s) had no crate attribution"));
 }
 
 #[test]
@@ -93,8 +105,8 @@ fn test_parse_per_crate_test_counts_parses_unix_and_windows_paths() {
         (target\\debug\\deps\\perl_workspace-123def.exe)\n\
         index_builds: test\n";
     let counts = parse_per_crate_test_counts(output);
-    assert_eq!(counts.get("perl-parser-core"), Some(&2));
-    assert_eq!(counts.get("perl-workspace"), Some(&1));
+    assert_eq!(counts.by_crate.get("perl-parser-core"), Some(&2));
+    assert_eq!(counts.by_crate.get("perl-workspace"), Some(&1));
 }
 
 #[test]
@@ -106,12 +118,12 @@ fn test_parse_per_crate_test_counts_parses_absolute_external_target_paths() {
         (/tmp/cargo-out/debug/deps/perl_workspace_index-feed456)\n\
         workspace_indexes: test\n";
     let counts = parse_per_crate_test_counts(output);
-    assert_eq!(counts.get("perl-lsp-rs"), Some(&1));
-    assert_eq!(counts.get("perl-workspace-index"), Some(&1));
+    assert_eq!(counts.by_crate.get("perl-lsp-rs"), Some(&1));
+    assert_eq!(counts.by_crate.get("perl-workspace-index"), Some(&1));
 }
 
 #[test]
-fn test_parse_per_crate_test_counts_ignores_tests_without_active_crate() {
+fn test_parse_per_crate_test_counts_preserves_tests_without_active_crate() {
     let output = "orphan_test: test\n\
         Running unittests src/lib.rs (target/debug/deps/perl_parser_core-abc123)\n\
         parser_smoke: test\n\
@@ -119,9 +131,32 @@ fn test_parse_per_crate_test_counts_ignores_tests_without_active_crate() {
         Running unittests src/lib.rs (target/debug/deps/perl_lexer-987def)\n\
         lexer_smoke: test\n";
     let counts = parse_per_crate_test_counts(output);
-    assert_eq!(counts.get("perl-parser-core"), Some(&2));
-    assert_eq!(counts.get("perl-lexer"), Some(&1));
-    assert_eq!(counts.len(), 2);
+    assert_eq!(counts.by_crate.get("perl-parser-core"), Some(&2));
+    assert_eq!(counts.by_crate.get("perl-lexer"), Some(&1));
+    assert_eq!(counts.unattributed, 1);
+    assert_eq!(counts.by_crate.values().sum::<usize>() + counts.unattributed, 4);
+}
+
+#[test]
+fn test_parse_per_crate_test_counts_preserves_a_real_unattributed_package() {
+    let output = "orphan_test: test\n\
+        Running unittests src/lib.rs (target/debug/deps/unattributed-abc123)\n\
+        package_test: test\n";
+    let counts = parse_per_crate_test_counts(output);
+
+    assert_eq!(counts.by_crate.get("unattributed"), Some(&1));
+    assert_eq!(counts.unattributed, 1);
+}
+
+#[test]
+fn test_validate_per_crate_test_counts_rejects_zero_discovery() -> Result<()> {
+    let counts = PerCrateTestCounts {
+        by_crate: BTreeMap::from([(String::from("perl-parser"), 0)]),
+        unattributed: 0,
+    };
+    let result = validate_per_crate_test_counts(counts);
+    color_eyre::eyre::ensure!(result.is_err(), "zero discovery must fail closed");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

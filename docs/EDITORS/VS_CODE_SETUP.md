@@ -122,9 +122,10 @@ If you prefer using a generic LSP client extension:
 
 ## Configuration
 
-The extension exposes settings in the `perl-lsp.*` namespace. Current public
-install artifacts are public alpha; keep pinned deployments explicit when you
-need reproducible editor setup.
+The extension exposes settings in the `perl-lsp.*` namespace. The verified
+GitHub `v0.17.0` assets are public beta; Marketplace and package-manager
+channels remain independently versioned. Pin deployments when reproducibility
+matters.
 
 ### Basic Configuration
 
@@ -204,7 +205,7 @@ settings.
 | `perl-lsp.autoUpdate` | boolean | `false` | Automatically download and install a new `perllsp` binary when available. |
 | `perl-lsp.updateCheckInterval` | number | `24` | Hours between automatic update checks. |
 | `perl-lsp.trace.server` | string | `"off"` | LSP traffic logging: `off`, `messages`, `verbose`. |
-| `perl-lsp.channel` | string | `"latest"` | Release channel. Use `latest` for the current public-alpha line or `tag` for a pinned public-alpha release. |
+| `perl-lsp.channel` | string | `"latest"` | `latest` uses GitHub's latest non-prerelease endpoint; `stable` selects the first non-prerelease from the release list (falling back to its first entry if none exists); `tag` pins an arbitrary release tag. |
 | `perl-lsp.versionTag` | string | `""` | Specific release tag when channel is `tag`. |
 | `perl-lsp.downloadBaseUrl` | string | `""` | Internal base URL for hosting `perllsp` archives and SHA256SUMS. |
 
@@ -565,12 +566,13 @@ Pin to a specific release or use a different download channel:
 ```json
 {
   "perl-lsp.channel": "tag",
-  "perl-lsp.versionTag": "v0.12.0"
+  "perl-lsp.versionTag": "v0.17.0"
 }
 ```
 
-Use `latest` for the current public-alpha line or `tag` when you need a pinned
-public-alpha release.
+Use `latest` for GitHub's latest non-prerelease endpoint. `stable` selects the
+first non-prerelease from the release list and falls back to its first entry if
+none exists. Use `tag` when you need an arbitrary pinned release tag.
 
 ### Internal Deployment
 

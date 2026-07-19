@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, bail};
 use regex::Regex;
 
 use super::editor_ux::count_ux_scenarios;
@@ -31,6 +31,12 @@ static RUNNING_TEST_BINARY_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 static TEST_LIST_LINE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r":\s*test\s*$").expect("test-list-line regex is valid"));
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PerCrateTestCounts {
+    by_crate: BTreeMap<String, usize>,
+    unattributed: usize,
+}
 
 // ---------------------------------------------------------------------------
 // Metric collectors
@@ -56,39 +62,50 @@ pub(super) fn collect_per_crate_mutation(root: &Path) -> BTreeMap<String, usize>
     by_crate
 }
 
-/// Run `cargo test --workspace --lib -- --list` and return a map of crate-name → test count.
+/// Run `cargo test --workspace --lib -- --list` and return per-crate counts plus unowned tests.
 ///
 /// `cargo test -- --list` writes crate headers ("Running unittests …") to stderr and test
 /// names to stdout.  `run_cmd_merged` (shell `2>&1`) ensures headers appear immediately
 /// before the test names they introduce, so the parser correctly associates each name with
 /// its crate.
-pub(super) fn collect_per_crate_test_counts(root: &Path) -> BTreeMap<String, usize> {
+fn collect_per_crate_test_counts(root: &Path) -> Result<PerCrateTestCounts> {
     let output = run_cmd_merged(
         root,
         &["cargo", "test", "--workspace", "--lib", "--exclude", "tree-sitter-perl", "--", "--list"],
         Duration::from_mins(3),
     );
     if output.is_empty() {
-        return BTreeMap::new();
+        bail!("quality test discovery failed or returned no output");
     }
-    parse_per_crate_test_counts(&output)
+    validate_per_crate_test_counts(parse_per_crate_test_counts(&output))
 }
 
-fn parse_per_crate_test_counts(output: &str) -> BTreeMap<String, usize> {
+fn validate_per_crate_test_counts(counts: PerCrateTestCounts) -> Result<PerCrateTestCounts> {
+    if counts.by_crate.values().sum::<usize>() + counts.unattributed == 0 {
+        bail!("quality test discovery returned zero tests; refusing to overwrite quality.md");
+    }
+    Ok(counts)
+}
+
+fn parse_per_crate_test_counts(output: &str) -> PerCrateTestCounts {
     let mut by_crate: BTreeMap<String, usize> = BTreeMap::new();
     let mut current_crate: Option<String> = None;
+    let mut discovered = 0usize;
+    let mut attributed = 0usize;
     for line in output.lines() {
         if let Some(caps) = RUNNING_TEST_BINARY_RE.captures(line) {
             current_crate = Some(caps[1].replace('_', "-"));
             continue;
         }
-        if TEST_LIST_LINE_RE.is_match(line)
-            && let Some(ref krate) = current_crate
-        {
-            *by_crate.entry(krate.clone()).or_default() += 1;
+        if TEST_LIST_LINE_RE.is_match(line) {
+            discovered += 1;
+            if let Some(ref krate) = current_crate {
+                *by_crate.entry(krate.clone()).or_default() += 1;
+                attributed += 1;
+            }
         }
     }
-    by_crate
+    PerCrateTestCounts { by_crate, unattributed: discovered.saturating_sub(attributed) }
 }
 
 /// Read `docs/project/status/editor_ux.md` and return the diagnostics p50 latency in ms,
@@ -164,22 +181,29 @@ pub(super) fn format_quality_metrics_bullet(root: &Path) -> String {
 }
 
 /// Format a per-crate markdown table showing mutation count and test count.
-pub(super) fn format_crate_quality_table(
+fn format_crate_quality_table(
     mutation: &BTreeMap<String, usize>,
-    tests: &BTreeMap<String, usize>,
+    tests: &PerCrateTestCounts,
 ) -> String {
     let mut crates: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for k in mutation.keys() {
         crates.insert(k.as_str());
     }
-    for k in tests.keys() {
+    for k in tests.by_crate.keys() {
         crates.insert(k.as_str());
     }
     if crates.is_empty() {
-        return "| Crate | Mutants listed | Tests (lib) |\n\
+        let mut table = "| Crate | Mutants listed | Tests (lib) |\n\
                 |-------|---------------|-------------|\n\
                 | — | no data yet | no data yet |"
             .to_string();
+        if tests.unattributed > 0 {
+            table.push_str(&format!(
+                "\n\n> Note: {} discovered test(s) had no crate attribution and are excluded from the per-crate table.",
+                tests.unattributed
+            ));
+        }
+        return table;
     }
     let mut lines = vec![
         "| Crate | Mutants listed | Tests (lib) |".to_string(),
@@ -187,10 +211,17 @@ pub(super) fn format_crate_quality_table(
     ];
     for c in crates {
         let m = mutation.get(c).map_or_else(|| "—".to_string(), |n| n.to_string());
-        let t = tests.get(c).map_or_else(|| "—".to_string(), |n| n.to_string());
+        let t = tests.by_crate.get(c).map_or_else(|| "—".to_string(), |n| n.to_string());
         lines.push(format!("| {c} | {m} | {t} |"));
     }
-    lines.join("\n")
+    let mut table = lines.join("\n");
+    if tests.unattributed > 0 {
+        table.push_str(&format!(
+            "\n\n> Note: {} discovered test(s) had no crate attribution and are excluded from the per-crate table.",
+            tests.unattributed
+        ));
+    }
+    table
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +230,7 @@ pub(super) fn format_crate_quality_table(
 
 pub(super) fn generate_quality_status(root: &Path, original: &str) -> Result<String> {
     let mutation_by_crate = collect_per_crate_mutation(root);
-    let tests_by_crate = collect_per_crate_test_counts(root);
+    let tests_by_crate = collect_per_crate_test_counts(root)?;
     let ux_scenarios = count_ux_scenarios(root);
     let flaky = collect_flaky_test_summary(root);
 
@@ -220,7 +251,7 @@ pub(super) fn generate_quality_status(root: &Path, original: &str) -> Result<Str
          - **Mutation testing**: {mutation_note}\n\
          - **Lexer performance scorecard**: `cargo bench -p perl-lexer --bench lexer_benchmarks` writes `benchmarks/results/lexer_scorecard.json` for trend comparisons
 \
-         - **Production Status**: LSP server public alpha (`just ci-gate` passing)"
+         - **Production Status**: LSP server public beta (`just ci-gate` passing)"
     );
 
     let crate_table = format_crate_quality_table(&mutation_by_crate, &tests_by_crate);

@@ -44,6 +44,15 @@ Tag commit timestamps may differ from release dates.
 | 0.5.0 | `v0.5.0` | — | 2025-08-03 (tag) | `60190640` | — | — | — | — | — |
 | 0.1.0-pest | `v0.1.0-pest` | — | 2025-07-20 (tag) | `4f92dc57` | — | — | — | — | — |
 
+### Corrections and receipts
+
+- **2026-07-17 — v0.17.0:** verified the GitHub Release published 2026-06-28 at
+  `ffee2824938f415e54923112c7b79e3f22040699`, with seven platform archives,
+  VSIX, `SHA256SUMS`, and SPDX SBOM. The existing crates.io and VS Code
+  Marketplace cells are historical assertions without current receipts and
+  remain **not proven**; Homebrew, Open VSX, and Docker are also not proven by
+  this GitHub receipt.
+
 ### Legend
 
 - **"—"** = does not exist / not applicable

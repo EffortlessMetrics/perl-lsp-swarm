@@ -272,7 +272,7 @@ fn ensure_release_notes_scaffold(repo_root: &Path, new_version: &str) -> Result<
          tag: \"v{new_version}\"\n\
          release_date_utc: \"{today}\"\n\
          notes_status: draft\n\
-         release_track: public-alpha\n\
+         release_track: public-beta\n\
          release_kind: minor\n\
          channels:\n\
          \x20 github_release: pending\n\
@@ -295,10 +295,8 @@ fn ensure_release_notes_scaffold(repo_root: &Path, new_version: &str) -> Result<
 /// Append a row + 4 link refs to `RELEASE_HISTORY.md` for `new_version`.
 /// Idempotent: returns `Ok(false)` if a row already exists for this version.
 ///
-/// The row uses placeholder values for fields that aren't known at bump
-/// time (tag commit SHA — release-orchestration backfills) and best-effort
-/// values for fields that are roughly knowable (today's date, schema-shape
-/// asset/crate counts that match recent releases).
+/// The row uses pending values for publication facts that are not known at
+/// bump time. Release orchestration backfills them only after verification.
 ///
 /// If `RELEASE_HISTORY.md` does not exist, this is a no-op (some forks may
 /// not maintain a ledger). Existing files must be parseable (have a prior
@@ -328,14 +326,12 @@ fn append_release_history_row(repo_root: &Path, new_version: &str) -> Result<boo
         )
     })?;
 
-    let today = today_iso_date();
     let new_row = format!(
-        "| [{v}] | `v{v}` | [yes][gh-{v}] | {date} | `pending` | [v{prev}...v{v}] | \
-         10 (7 binaries, VSIX, SHA256SUMS, SBOM) | {v} (31 crates) | [perl-lsp-rs][vsce] | \
+        "| [{v}] | `v{v}` | pending | pending | `pending` | [v{prev}...v{v}] | \
+         pending | pending | pending | \
          [v{v}][n-{v}] |",
         v = new_version,
         prev = prev_version,
-        date = today,
     );
     let new_n_ref = format!("[n-{v}]: docs/releases/v{v}.md", v = new_version);
     let new_v_ref = format!("[{v}]: docs/releases/v{v}.md", v = new_version);
@@ -446,8 +442,12 @@ fn find_topmost_ledger_version(content: &str) -> Option<String> {
 fn today_iso_date() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    iso_date_from_unix_days(now.div_euclid(86_400))
+}
+
+fn iso_date_from_unix_days(days_since_epoch: i64) -> String {
     // Ymd from unix epoch: standard civil-from-days conversion (Howard Hinnant).
-    let z = now.div_euclid(86_400) + 719_468;
+    let z = days_since_epoch + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;
     let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
@@ -1250,6 +1250,10 @@ perl-token = { path = "../perl-token", version = "0.42.0" }
             content.contains("`pending`"),
             "tag-commit SHA should be `pending` placeholder for release-orchestration to fill in"
         );
+        assert!(
+            content.contains("| [0.13.4] | `v0.13.4` | pending | pending | `pending`"),
+            "unpublished channel facts must remain pending at bump time"
+        );
 
         fs::remove_dir_all(&dir).ok();
         Ok(())
@@ -1331,6 +1335,39 @@ perl-token = { path = "../perl-token", version = "0.42.0" }
         assert!((2025..=2100).contains(&year), "year {year} out of expected range");
         assert!((1..=12).contains(&month), "month {month} invalid");
         assert!((1..=31).contains(&day), "day {day} invalid");
+    }
+
+    #[test]
+    fn iso_date_from_unix_days_boundary_discriminator() -> Result<()> {
+        let january = iso_date_from_unix_days(0);
+        if january != "1970-01-01" {
+            bail!("unix epoch should map to 1970-01-01, got {january}");
+        }
+        let march = iso_date_from_unix_days(59);
+        if march != "1970-03-01" {
+            bail!("day 59 after the unix epoch should map to 1970-03-01, got {march}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_sites_call_presence_observer() -> Result<()> {
+        let repo_root = unique_temp_repo_dir("collect-sites")?;
+        fs::write(repo_root.join("Cargo.toml"), "[workspace.package]\nversion = \"0.42.0\"\n")
+            .map_err(|e| eyre!("writing workspace Cargo.toml: {e}"))?;
+
+        let sites = collect_sites(&repo_root)?;
+        if sites.len() != 1 {
+            bail!("expected one workspace version site, got {}", sites.len());
+        }
+        let site = sites.first().ok_or_else(|| eyre!("workspace version site not collected"))?;
+        if site.found != "0.42.0" {
+            bail!("expected collected workspace version 0.42.0, got {}", site.found);
+        }
+
+        fs::remove_dir_all(&repo_root)
+            .map_err(|e| eyre!("cleanup {}: {e}", repo_root.display()))?;
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -1552,6 +1589,10 @@ perl-token = { path = "../perl-token", version = "0.42.0" }
         assert!(content.contains("version: \"0.42.0\""), "frontmatter must contain version");
         assert!(content.contains("tag: \"v0.42.0\""), "frontmatter must contain tag");
         assert!(content.contains("notes_status: draft"), "frontmatter must have draft status");
+        assert!(
+            content.contains("release_track: public-beta"),
+            "new release scaffolds must preserve the declared beta track"
+        );
         assert!(content.contains("# v0.42.0"), "scaffold must have version heading");
 
         fs::remove_dir_all(&repo_root).ok();
