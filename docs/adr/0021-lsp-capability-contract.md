@@ -42,7 +42,7 @@ LSP clients rely on capability advertisements to determine available features. A
 2. **Add acceptance tests** in `crates/perl-parser/tests/…`
 3. **Flip the advertised bit** in `lsp_server.rs` **in the same PR**
 4. **Update documentation**:
-   - `LSP_ACTUAL_STATUS.md` (status/percent)
+   - [Capability status index](../project/status/index.md) (status/percent)
    - `README.md` (matrix row)
    - Contract tests (`lsp_capabilities_contract_full.rs`)
 

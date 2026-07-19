@@ -12,7 +12,7 @@
 //! authoritative contract is [`PLSP-SPEC-0025`](../../../../docs/specs/PLSP-SPEC-0025-pir-v0.md).
 
 use crate::SourceLocation;
-use crate::hir::{HirId, HirScopeId};
+use crate::hir::{DerefAggregateKind, DerefOperandKind, HirId, HirScopeId};
 use perl_semantic_facts::AnchorId;
 use std::collections::BTreeMap;
 
@@ -165,6 +165,36 @@ impl PirContext {
             Self::Void => "Void",
             Self::Lvalue => "Lvalue",
             Self::Unknown => "Unknown",
+        }
+    }
+}
+
+/// HIR literal category preserved by a PIR literal operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PirLiteralKind {
+    /// Numeric literal.
+    Number,
+    /// String literal.
+    String,
+    /// `undef`.
+    Undef,
+    /// Array/list literal.
+    Array,
+    /// Hash literal.
+    Hash,
+}
+
+impl PirLiteralKind {
+    /// Stable name used in receipts and snapshots.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Number => "Number",
+            Self::String => "String",
+            Self::Undef => "Undef",
+            Self::Array => "Array",
+            Self::Hash => "Hash",
         }
     }
 }
@@ -329,6 +359,11 @@ pub enum PirOperation {
     },
     /// An assignment expression.
     Assign,
+    /// A scalar or aggregate literal.
+    Literal {
+        /// Literal category preserved from HIR.
+        kind: PirLiteralKind,
+    },
     /// A subroutine or function call.
     Call {
         /// The callee.
@@ -344,6 +379,14 @@ pub enum PirOperation {
         method: PirMethod,
         /// Number of parsed arguments.
         arg_count: usize,
+    },
+    /// An aggregate or slot dereference whose target expression is preserved
+    /// as a runtime-shaped operand rather than evaluated by PIR.
+    Deref {
+        /// Aggregate or slot selected by the dereference.
+        aggregate_kind: DerefAggregateKind,
+        /// Syntactic shape supplying the runtime target.
+        operand_kind: DerefOperandKind,
     },
     /// A branch (condition is populated by later control-flow lowering).
     Branch {
@@ -378,8 +421,10 @@ impl PirOperation {
             Self::Modify { .. } => "Modify",
             Self::StashModify { .. } => "StashModify",
             Self::Assign => "Assign",
+            Self::Literal { .. } => "Literal",
             Self::Call { .. } => "Call",
             Self::MethodCall { .. } => "MethodCall",
+            Self::Deref { .. } => "Deref",
             Self::Branch { .. } => "Branch",
             Self::Loop { .. } => "Loop",
             Self::Return => "Return",
@@ -395,9 +440,11 @@ impl PirOperation {
         "Assign",
         "Branch",
         "Call",
+        "Deref",
         "DynamicBoundary",
         "LexicalRead",
         "LexicalWrite",
+        "Literal",
         "Loop",
         "MethodCall",
         "Modify",
@@ -652,9 +699,11 @@ mod tests {
             "Assign",
             "Branch",
             "Call",
+            "Deref",
             "DynamicBoundary",
             "LexicalRead",
             "LexicalWrite",
+            "Literal",
             "Loop",
             "MethodCall",
             "Modify",
@@ -681,6 +730,13 @@ mod tests {
             name: LexicalName { sigil: "$".to_string(), name: "x".to_string() },
         };
         assert_eq!(op.name(), "LexicalWrite");
+    }
+
+    #[test]
+    fn pir_operation_literal_name() {
+        let op = PirOperation::Literal { kind: PirLiteralKind::Hash };
+        assert_eq!(op.name(), "Literal");
+        assert_eq!(PirLiteralKind::Hash.name(), "Hash");
     }
 
     #[test]
@@ -726,6 +782,15 @@ mod tests {
             arg_count: 1,
         };
         assert_eq!(op.name(), "MethodCall");
+    }
+
+    #[test]
+    fn pir_operation_deref_name() {
+        let op = PirOperation::Deref {
+            aggregate_kind: DerefAggregateKind::Array,
+            operand_kind: DerefOperandKind::Variable,
+        };
+        assert_eq!(op.name(), "Deref");
     }
 
     #[test]

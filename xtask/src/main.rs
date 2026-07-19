@@ -160,8 +160,8 @@ enum Commands {
         #[arg(long)]
         json: bool,
 
-        /// Override the auto-detected default program (falls back to
-        /// `.perl-lsp/goals/active.toml`'s `default_program`/`active_program`).
+        /// Stamp an explicit program id into the receipt. Portfolio state does
+        /// not auto-select a repository-global program.
         #[arg(long)]
         program: Option<String>,
 
@@ -215,6 +215,13 @@ enum Commands {
     PrLedger {
         #[command(subcommand)]
         command: PrLedgerCommand,
+    },
+
+    /// Check target-only development commits before a release sync.
+    #[command(name = "sync-divergence")]
+    SyncDivergence {
+        #[command(subcommand)]
+        command: SyncDivergenceCommand,
     },
 
     /// Issue Research / Plan Review Desk tooling (report-only audit, etc.).
@@ -879,6 +886,22 @@ enum Commands {
         /// Output format: `json` or `text` (default: json).
         #[arg(long, default_value = "json")]
         format: String,
+    },
+
+    /// Run the thin exact-head repository contract advisory (issue #3987).
+    CiContract {
+        /// Base git ref or full SHA for the evaluated range.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+        /// Head git ref or full SHA for the evaluated range.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+        /// JSON receipt output path.
+        #[arg(long, default_value = "target/receipts/ci-contract.json")]
+        receipt: PathBuf,
+        /// Markdown summary output path.
+        #[arg(long, default_value = "target/receipts/ci-contract.md")]
+        summary: PathBuf,
     },
 
     /// Resolve a change set (base/head SHAs + changed paths) via the single
@@ -2672,6 +2695,15 @@ enum FreshnessCheckMode {
 
 #[derive(Subcommand)]
 enum MergeReadyCommand {
+    /// Evaluate a live current-head fan-in snapshot without mutating GitHub state.
+    Evaluate {
+        /// JSON snapshot produced by the live GitHub collector.
+        #[arg(long)]
+        snapshot: PathBuf,
+        /// Optional output path for the deterministic evaluation JSON.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Emit a merge-readiness receipt for a PR.
     Emit {
         /// Pull request number.
@@ -3272,6 +3304,28 @@ enum PrLedgerCommand {
 }
 
 #[derive(Subcommand)]
+enum SyncDivergenceCommand {
+    /// Validate the target-only commit reconciliation ledger and write a receipt.
+    Check {
+        /// Common source/target base used for the git cherry comparison.
+        #[arg(long)]
+        base: String,
+        /// Active swarm source ref.
+        #[arg(long)]
+        source: String,
+        /// Release-repo target ref, normally the first parent of the sync merge.
+        #[arg(long)]
+        target: String,
+        /// Machine-readable reconciliation ledger.
+        #[arg(long)]
+        ledger: PathBuf,
+        /// Output source-sync receipt JSON.
+        #[arg(long)]
+        receipt: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum IssuePlanSubcommand {
     /// Report-only audit of issue-plan quality (builder-ready completeness,
     /// label drift, `#0000` placeholder references). Always exits 0.
@@ -3353,8 +3407,8 @@ enum GoalsCommand {
     /// READ-ONLY: never creates a branch, worktree, or PR.
     Next {
         /// Explicitly select a program by id (`.perl-lsp/goals/programs/<id>.toml`).
-        /// Defaults to `active.toml`'s governed `default_program`
-        /// (falling back to `active_program`).
+        /// No implicit repository-global program is selected; pass `--program`
+        /// to inspect one program explicitly.
         #[arg(long)]
         program: Option<String>,
 
@@ -3374,8 +3428,8 @@ enum GoalsCommand {
     /// Exits non-zero when findings exist.
     Reconcile {
         /// Explicitly select a program by id (`.perl-lsp/goals/programs/<id>.toml`).
-        /// Defaults to `active.toml`'s governed `default_program`
-        /// (falling back to `active_program`).
+        /// No implicit repository-global program is selected; pass `--program`
+        /// to reconcile one program explicitly.
         #[arg(long)]
         program: Option<String>,
 
@@ -3604,6 +3658,17 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::PrLedger { command } => match command {
             PrLedgerCommand::Generate { repos, out, fixture } => {
                 tasks::pr_ledger::generate(tasks::pr_ledger::GenerateConfig { repos, out, fixture })
+            }
+        },
+        Commands::SyncDivergence { command } => match command {
+            SyncDivergenceCommand::Check { base, source, target, ledger, receipt } => {
+                tasks::sync_divergence::check(tasks::sync_divergence::CheckConfig {
+                    base,
+                    source,
+                    target,
+                    ledger,
+                    receipt,
+                })
             }
         },
         Commands::Build { release, features, c_scanner, rust_scanner } => {
@@ -3859,6 +3924,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CiScope { base, format } => {
             ci_scope::run(ci_scope::CiScopeConfig { base, format })
         }
+        Commands::CiContract { base, head, receipt, summary } => {
+            ci_contract::run(ci_contract::CiContractConfig { base, head, receipt, summary })
+        }
         Commands::ChangeSet { base, head, format, root } => {
             change_set::run(change_set::ChangeSetConfig { base, head, format, root })
         }
@@ -3873,7 +3941,13 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
 
         Commands::WorkflowTriggerLint { policy, receipt, fixture, format } => {
-            workflow_trigger_lint::run(policy, receipt, fixture, format)
+            match workflow_trigger_lint::run(policy, receipt, fixture, format) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    eprintln!("workflow-trigger-lint: instrument failure: {error}");
+                    std::process::exit(2);
+                }
+            }
         }
         Commands::CheckVersionSync => check_version_sync::run(),
         Commands::SyncReleaseDocs { write } => sync_release_docs::run(write),
@@ -4207,6 +4281,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             })
         }
         Commands::MergeReady { command } => match command {
+            MergeReadyCommand::Evaluate { snapshot, output } => {
+                merge_ready::evaluate_snapshot_file(&snapshot, output.as_deref())
+            }
             MergeReadyCommand::Emit { pr, receipt } => merge_ready::emit(pr, receipt),
             MergeReadyCommand::Verify { pr, fixture } => merge_ready::verify(pr, fixture),
             MergeReadyCommand::Reconcile { apply, dry_run } => {
@@ -4419,7 +4496,13 @@ fn run_cli(cli: Cli) -> Result<()> {
             ..gates::GateRunnerConfig::default()
         }),
         Commands::GatePolicy { command } => match command {
-            GatePolicyCommand::Check => tasks::gate_policy::check(),
+            GatePolicyCommand::Check => match tasks::gate_policy::check() {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    eprintln!("gate-policy: instrument failure: {error}");
+                    std::process::exit(2);
+                }
+            },
             GatePolicyCommand::Effective { profile } => tasks::gate_policy::effective(profile),
         },
         Commands::Changelog { command } => match command {

@@ -370,7 +370,8 @@ impl BuiltInFormatter {
     #[must_use]
     pub fn format(&self, code: &str) -> String {
         let mut result = String::new();
-        let mut indent_level: i32 = 0;
+        let mut delimiter_stack = Vec::new();
+        let mut delimiter_scan_state = DelimiterScanState::default();
         let lines: Vec<&str> = code.lines().collect();
         let had_trailing_newline = code.ends_with('\n');
         let indent_str = if self.config.tabs.unwrap_or(false) {
@@ -381,8 +382,8 @@ impl BuiltInFormatter {
 
         for (index, line) in lines.iter().enumerate() {
             let trimmed = line.trim();
-            let leading_closers = count_leading_closers(trimmed) as i32;
-            indent_level = indent_level.saturating_sub(leading_closers);
+            let leading_closers = count_matching_leading_closers(trimmed, &delimiter_stack);
+            let indent_level = delimiter_stack.len().saturating_sub(leading_closers);
 
             if !trimmed.is_empty() {
                 for _ in 0..indent_level {
@@ -396,59 +397,201 @@ impl BuiltInFormatter {
                 result.push('\n');
             }
 
-            // net_delimiter_delta counts all delimiters including leading closers.
-            // We already decremented by leading_closers before printing, so add them
-            // back to avoid double-counting: the net change for the *next* line is
-            // delta + leading_closers (leading closers cancel in the net formula).
-            indent_level = (indent_level + net_delimiter_delta(trimmed) + leading_closers).max(0);
+            apply_delimiter_events_with_state(
+                trimmed,
+                &mut delimiter_stack,
+                &mut delimiter_scan_state,
+            );
         }
 
         result
     }
 }
 
-fn count_leading_closers(line: &str) -> usize {
-    line.chars().take_while(|ch| matches!(ch, '}' | ')' | ']')).count()
+fn count_matching_leading_closers(line: &str, delimiter_stack: &[char]) -> usize {
+    let mut stack_index = delimiter_stack.len();
+    let mut matched = 0;
+
+    for closer in line.chars().take_while(|ch| matches!(ch, '}' | ')' | ']')) {
+        let Some(&opening) =
+            stack_index.checked_sub(1).and_then(|index| delimiter_stack.get(index))
+        else {
+            break;
+        };
+        if matching_closer(opening) != Some(closer) {
+            break;
+        }
+        matched += 1;
+        stack_index -= 1;
+    }
+
+    matched
 }
 
-fn net_delimiter_delta(line: &str) -> i32 {
-    let mut delta = 0_i32;
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut escaped = false;
+fn apply_delimiter_events_with_state(
+    line: &str,
+    delimiter_stack: &mut Vec<char>,
+    state: &mut DelimiterScanState,
+) {
+    for delimiter in significant_delimiters_with_state(line, state) {
+        match delimiter {
+            opening @ ('{' | '(' | '[') => delimiter_stack.push(opening),
+            closer @ ('}' | ')' | ']') => {
+                if delimiter_stack.last().copied().and_then(matching_closer) == Some(closer) {
+                    delimiter_stack.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
-    for ch in line.chars() {
-        if escaped {
-            escaped = false;
+fn matching_closer(opening: char) -> Option<char> {
+    match opening {
+        '{' => Some('}'),
+        '(' => Some(')'),
+        '[' => Some(']'),
+        _ => None,
+    }
+}
+
+#[derive(Default)]
+struct DelimiterScanState {
+    in_single: bool,
+    in_double: bool,
+    regex_closer: Option<char>,
+    regex_opener: Option<char>,
+    regex_nesting: usize,
+    regex_char_class: bool,
+    regex_is_substitution: bool,
+    pending_replacement: Option<(Option<char>, char)>,
+    escaped: bool,
+    last_non_whitespace: Option<char>,
+    second_last_non_whitespace: Option<char>,
+}
+
+impl DelimiterScanState {
+    fn record_non_whitespace(&mut self, ch: char) {
+        self.second_last_non_whitespace = self.last_non_whitespace;
+        self.last_non_whitespace = Some(ch);
+    }
+
+    fn clear_regex(&mut self) {
+        self.regex_closer = None;
+        self.regex_opener = None;
+        self.regex_nesting = 0;
+        self.regex_char_class = false;
+        self.regex_is_substitution = false;
+    }
+}
+
+fn significant_delimiters_with_state(line: &str, state: &mut DelimiterScanState) -> Vec<char> {
+    let mut delimiters = Vec::new();
+    let chars: Vec<char> = line.chars().collect();
+
+    for (index, ch) in chars.iter().copied().enumerate() {
+        if state.escaped {
+            state.escaped = false;
             continue;
         }
 
         if ch == '\\' {
-            escaped = true;
+            state.escaped = true;
             continue;
         }
 
-        if in_single {
+        if state.regex_closer.is_none() {
+            if let Some((replacement_opener, replacement_closer)) = state.pending_replacement {
+                if replacement_opener.is_some() {
+                    if let Some((opener, closer, nesting)) = replacement_delimiter(ch) {
+                        state.pending_replacement = None;
+                        state.regex_opener = opener;
+                        state.regex_closer = Some(closer);
+                        state.regex_nesting = nesting;
+                        state.regex_char_class = false;
+                        state.regex_is_substitution = false;
+                        state.record_non_whitespace(ch);
+                        continue;
+                    }
+                } else {
+                    state.pending_replacement = None;
+                    state.regex_opener = None;
+                    state.regex_closer = Some(replacement_closer);
+                    state.regex_nesting = 0;
+                    state.regex_char_class = false;
+                    state.regex_is_substitution = false;
+                }
+            }
+        }
+
+        if state.regex_closer.is_some() {
+            if ch == '[' {
+                state.regex_char_class = true;
+            } else if ch == ']' && state.regex_char_class {
+                state.regex_char_class = false;
+            } else if !state.regex_char_class {
+                if state.regex_opener.is_some() && Some(ch) == state.regex_opener {
+                    state.regex_nesting += 1;
+                } else if Some(ch) == state.regex_closer {
+                    let replacement = state.regex_is_substitution;
+                    let replacement_opener = state.regex_opener;
+                    let replacement_closer = state.regex_closer;
+                    if state.regex_opener.is_some() && state.regex_nesting > 1 {
+                        state.regex_nesting -= 1;
+                    } else {
+                        state.clear_regex();
+                        if replacement {
+                            if let Some(closer) = replacement_closer {
+                                state.pending_replacement = Some((replacement_opener, closer));
+                            }
+                        }
+                    }
+                    state.record_non_whitespace(ch);
+                }
+            }
+            continue;
+        }
+
+        if state.in_single {
             if ch == '\'' {
-                in_single = false;
+                state.in_single = false;
+                state.record_non_whitespace(ch);
             }
             continue;
         }
 
-        if in_double {
+        if state.in_double {
             if ch == '"' {
-                in_double = false;
+                state.in_double = false;
+                state.record_non_whitespace(ch);
             }
+            continue;
+        }
+
+        if let Some((regex_opener, regex_closer, regex_nesting, regex_is_substitution)) =
+            regex_start(&chars, index, ch, state)
+        {
+            // Ignore delimiters inside Perl regex and quote-like forms. The
+            // state is carried across physical lines so a multiline pattern
+            // cannot leak its contents into the formatter's stack.
+            state.regex_opener = regex_opener;
+            state.regex_closer = Some(regex_closer);
+            state.regex_nesting = regex_nesting;
+            state.regex_char_class = false;
+            state.regex_is_substitution = regex_is_substitution;
+            state.record_non_whitespace(ch);
             continue;
         }
 
         if ch == '\'' {
-            in_single = true;
+            state.in_single = true;
+            state.record_non_whitespace(ch);
             continue;
         }
 
         if ch == '"' {
-            in_double = true;
+            state.in_double = true;
+            state.record_non_whitespace(ch);
             continue;
         }
 
@@ -456,12 +599,110 @@ fn net_delimiter_delta(line: &str) -> i32 {
             break;
         }
 
-        match ch {
-            '{' | '(' | '[' => delta += 1,
-            '}' | ')' | ']' => delta -= 1,
-            _ => {}
+        if matches!(ch, '{' | '(' | '[' | '}' | ')' | ']') {
+            delimiters.push(ch);
+        }
+
+        if !ch.is_whitespace() {
+            state.record_non_whitespace(ch);
         }
     }
 
-    delta
+    delimiters
+}
+
+fn regex_start(
+    chars: &[char],
+    index: usize,
+    ch: char,
+    state: &DelimiterScanState,
+) -> Option<(Option<char>, char, usize, bool)> {
+    let quote_like = preceding_word(chars, index);
+    let is_quote_like = matches!(
+        quote_like.as_deref(),
+        Some("m" | "q" | "qr" | "qq" | "qw" | "qx" | "s" | "tr" | "y")
+    );
+    let is_substitution = matches!(quote_like.as_deref(), Some("s" | "tr" | "y"));
+
+    if is_quote_like {
+        if let Some((opener, closer, nesting)) = replacement_delimiter(ch) {
+            return Some((opener, closer, nesting, is_substitution));
+        }
+    }
+
+    if ch != '/' {
+        return None;
+    }
+
+    let starts_expression = state.last_non_whitespace.is_none()
+        || matches!(
+            state.last_non_whitespace,
+            Some('(' | '[' | '{' | '=' | '!' | '?' | ':' | ',' | ';' | '~')
+        )
+        || (state.last_non_whitespace == Some('~')
+            && matches!(state.second_last_non_whitespace, Some('=') | Some('!')))
+        || matches!(
+            quote_like.as_deref(),
+            Some("m" | "q" | "qr" | "qq" | "qw" | "qx" | "s" | "tr" | "y")
+        );
+
+    starts_expression.then_some((None, '/', 0, false))
+}
+
+fn replacement_delimiter(ch: char) -> Option<(Option<char>, char, usize)> {
+    match ch {
+        '{' => Some((Some('{'), '}', 1)),
+        '(' => Some((Some('('), ')', 1)),
+        '[' => Some((Some('['), ']', 1)),
+        '/' => Some((None, '/', 0)),
+        _ => None,
+    }
+}
+
+fn preceding_word(chars: &[char], index: usize) -> Option<String> {
+    let mut end = index;
+    while end > 0 && chars[end - 1].is_whitespace() {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && chars[start - 1].is_ascii_alphabetic() {
+        start -= 1;
+    }
+    (start < end).then(|| chars[start..end].iter().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DelimiterScanState, apply_delimiter_events_with_state, count_matching_leading_closers,
+        significant_delimiters_with_state,
+    };
+
+    #[test]
+    fn count_matching_leading_closers_requires_typed_matches() {
+        let stack = vec!['{', '('];
+
+        assert_eq!(count_matching_leading_closers(")", &stack), 1);
+        assert_eq!(count_matching_leading_closers("})", &stack), 0);
+    }
+
+    #[test]
+    fn apply_delimiter_events_preserves_unmatched_closers() {
+        let mut stack = vec!['{', '('];
+        let mut state = DelimiterScanState::default();
+
+        apply_delimiter_events_with_state("})", &mut stack, &mut state);
+
+        assert_eq!(stack, vec!['{']);
+    }
+
+    #[test]
+    fn significant_delimiters_ignores_regex_character_classes() {
+        let mut state = DelimiterScanState::default();
+
+        assert_eq!(
+            significant_delimiters_with_state("if ($x =~ /[[]/) {", &mut state),
+            vec!['(', ')', '{']
+        );
+    }
 }

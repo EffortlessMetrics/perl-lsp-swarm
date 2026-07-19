@@ -20,3 +20,13 @@ around 'save' => sub {
     my ($orig, $self, @args) = @_;
     return $self->$orig(@args);
 };
+
+sub process {
+    my ($self) = @_;
+    $self->save;  # call site — hover on 'save' here to test call-site behavior
+}
+
+sub plain_method {
+    my ($self) = @_;
+    return 'plain';
+}

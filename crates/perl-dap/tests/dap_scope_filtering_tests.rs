@@ -52,6 +52,47 @@ use tempfile::tempdir;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[test]
+fn wait_stopped_reports_termination_and_bounded_output_metadata() -> TestResult {
+    let (sender, receiver) = channel();
+    for seq in 1..=10 {
+        sender.send(DapMessage::Event {
+            seq,
+            event: "output".to_string(),
+            body: Some(json!({
+                "category": format!("category-{seq}-{}\nsecret", "x".repeat(80)),
+                "output": "sensitive debugger output"
+            })),
+        })?;
+    }
+    sender.send(DapMessage::Event {
+        seq: 11,
+        event: "terminated".to_string(),
+        body: Some(json!({"reason": "debugger_eof"})),
+    })?;
+
+    let session =
+        DapWorkflowSession::with_receiver_for_test(receiver, std::time::Duration::from_secs(1));
+    let error = session.wait_stopped().err().ok_or("wait_stopped unexpectedly succeeded")?;
+    for required in [
+        "adapter terminated (debugger_eof)",
+        "output(category=category-10-",
+        "bytes=25)",
+        "terminated(reason=debugger_eof)",
+    ] {
+        if !error.contains(required) {
+            return Err(format!("diagnostic missing {required:?}: {error}").into());
+        }
+    }
+    if error.contains("sensitive debugger output") {
+        return Err("diagnostic exposed debugger output content".into());
+    }
+    if error.contains("category-3-") || error.contains('\n') || error.len() > 1_000 {
+        return Err(format!("diagnostic was not bounded and flattened: {error:?}").into());
+    }
+    Ok(())
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /// Extract the `variablesReference` value for a named scope from a `scopes`
@@ -535,10 +576,10 @@ fn multi_scope_script_content() -> &'static str {
 
 const BP_INNER: u64 = 9; // my $inner_y = 20 — inside inner_sub
 
-/// Locals scope contains only the inner sub's `my` vars (`$inner_x`, `$inner_y`)
-/// and must NOT contain the outer `my $outer_var` or the `our $pkg_counter`.
+/// Execution stops inside the named sub, and its Locals scope must NOT contain
+/// the outer `my $outer_var`, the `our $pkg_counter`, or built-in globals.
 #[test]
-fn test_e2e_locals_scope_contains_only_inner_sub_my_vars() -> TestResult {
+fn test_e2e_named_sub_breakpoint_excludes_outer_and_global_vars() -> TestResult {
     if !perl_available() {
         return Ok(()); // skip: perl not available
     }
@@ -552,11 +593,23 @@ fn test_e2e_locals_scope_contains_only_inner_sub_my_vars() -> TestResult {
     let mut session = DapWorkflowSession::new(timeout)?;
 
     session.launch(&script_str)?;
-    session.set_breakpoints(&script_str, &[BP_INNER])?;
+    let resolved_lines = session.set_breakpoints_checked(&script_str, &[BP_INNER])?;
+    if resolved_lines != [BP_INNER as i64] {
+        return Err(format!(
+            "setBreakpoints resolved {resolved_lines:?}; expected line {BP_INNER}"
+        )
+        .into());
+    }
     session.configuration_done()?;
 
     let stopped = session.wait_stopped()?;
-    assert_eq!(stopped.reason, "breakpoint", "must stop at breakpoint inside inner_sub");
+    if stopped.reason != "breakpoint" {
+        return Err(format!(
+            "expected breakpoint stop inside inner_sub, got reason {:?}",
+            stopped.reason
+        )
+        .into());
+    }
 
     let (frame_id, _, _) = session.stack_trace(stopped.thread_id)?;
     let locals_ref = session.scopes_locals_ref(frame_id)?;
@@ -591,11 +644,14 @@ fn test_e2e_locals_scope_contains_only_inner_sub_my_vars() -> TestResult {
         );
     }
 
-    // Scope-type integrity: the outer `my $outer_var` and `our $pkg_counter` may or may
-    // not appear depending on whether the live debugger surfaces outer-scope vars. We verify
-    // the no-`::` invariant above, which covers package contamination.
-    // The dedicated outer-lexical-leak test below (test_e2e_outer_lexical_does_not_leak_into_inner_sub_locals)
-    // makes the outer-var assertion when the debugger returns real variable names.
+    assert!(
+        !local_names.contains("$outer_var"),
+        "outer-scope lexical '$outer_var' must NOT appear in named-sub Locals: {local_names:?}"
+    );
+    assert!(
+        !local_names.contains("$pkg_counter"),
+        "package variable '$pkg_counter' must NOT appear in named-sub Locals: {local_names:?}"
+    );
 
     session.disconnect()?;
     Ok(())

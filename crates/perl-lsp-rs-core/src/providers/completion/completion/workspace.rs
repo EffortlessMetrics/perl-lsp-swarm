@@ -1064,12 +1064,19 @@ fn source_backed_receiver_fact_evidence(
     source: &str,
     type_engine: Option<&TypeInferenceEngine>,
 ) -> Option<ReceiverEvidence> {
-    let current_prefix = source.get(context.prefix_start..context.position)?;
-    if current_prefix != context.prefix.as_str() {
+    let receiver_prefix = context.receiver_prefix();
+    let receiver_start = if context.prefix.ends_with("->") {
+        context.prefix_start
+    } else {
+        context.prefix_start.checked_sub(receiver_prefix.len())?
+    };
+    let current_receiver_prefix =
+        source.get(receiver_start..receiver_start + receiver_prefix.len())?;
+    if current_receiver_prefix != receiver_prefix {
         return None;
     }
 
-    let receiver_source = context.prefix.strip_suffix("->")?.trim();
+    let receiver_source = receiver_prefix.strip_suffix("->")?.trim();
     if receiver_source.is_empty() {
         return None;
     }
@@ -1175,7 +1182,7 @@ fn type_engine_receiver(
     context: &CompletionContext,
     type_engine: Option<&TypeInferenceEngine>,
 ) -> Option<String> {
-    let arrow_prefix = context.prefix.trim_end_matches("->");
+    let arrow_prefix = context.receiver_prefix().trim_end_matches("->");
     let var_name = arrow_prefix.strip_prefix('$')?;
     let ty = type_engine?.get_type_at(var_name)?;
     match ty {
@@ -1195,7 +1202,7 @@ pub(super) fn classify_text_pattern_receiver(
     context: &CompletionContext,
     source: &str,
 ) -> ReceiverEvidence {
-    let arrow_prefix = context.prefix.trim_end_matches("->");
+    let arrow_prefix = context.receiver_prefix().trim_end_matches("->");
 
     // Case 1: Static method call like `My::Package->meth` or `Package->meth`.
     // The prefix already contains the package name (starts with uppercase, no sigil).

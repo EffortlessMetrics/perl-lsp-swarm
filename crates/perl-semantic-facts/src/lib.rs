@@ -8,6 +8,10 @@
 
 use serde::{Deserialize, Serialize};
 
+mod envelope;
+
+pub use envelope::*;
+
 macro_rules! id_newtype {
     ($name:ident) => {
         #[derive(

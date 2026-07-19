@@ -52,19 +52,15 @@ impl PerlLexer<'_> {
             return None;
         }
 
-        let pos = self.position.checked_add(offset)?;
-        if pos < self.input_bytes.len() {
-            // For ASCII, direct access is safe
-            let byte = Self::byte_at(self.input_bytes, pos);
-            if byte < 128 {
-                Some(byte as char)
-            } else {
-                // For non-ASCII, use chars iterator
-                self.input.get(self.position..).and_then(|s| s.chars().nth(offset))
-            }
-        } else {
-            None
+        let rest = self.input.get(self.position..)?;
+        let prefix_len = offset.checked_add(1)?;
+        if let Some(prefix) = rest.as_bytes().get(..prefix_len)
+            && prefix.is_ascii()
+        {
+            return rest.as_bytes().get(offset).map(|&byte| byte as char);
         }
+
+        rest.chars().nth(offset)
     }
 
     #[allow(clippy::inline_always)] // Performance critical in lexer hot path
@@ -136,7 +132,7 @@ impl PerlLexer<'_> {
     /// Purely a lookahead over a fresh `chars()` iterator sliced from the
     /// current byte position — never mutates `self.position`, so it is safe
     /// to call speculatively and discard the result. Unbounded (unlike
-    /// `peek_char`'s `max_lookahead`-limited byte-offset lookahead), which is
+    /// `peek_char`'s `max_lookahead`-limited character lookahead), which is
     /// correct here: a real Perl package-qualified name is not pathologically
     /// long, and the loop always terminates on end-of-input, a `}`, or the
     /// first character that isn't part of a valid `::segment`.
@@ -165,4 +161,8 @@ impl PerlLexer<'_> {
             return chars.next() == Some('}');
         }
     }
+}
+#[cfg(test)]
+mod tests {
+    include!("../../../tests/fixtures/ripr_seam_proof_peek_char_unit.inc");
 }

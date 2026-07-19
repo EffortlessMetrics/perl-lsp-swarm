@@ -247,6 +247,26 @@ fn next_char_boundary_after(source: &str, index: usize) -> usize {
     source[index..].chars().next().map_or(source.len(), |ch| index + ch.len_utf8())
 }
 
+fn word_prefix(source: &str, position: usize) -> (String, usize) {
+    let word_start = source[..position]
+        .rfind(|c: char| {
+            !c.is_alphanumeric()
+                && c != '_'
+                && c != ':'
+                && c != '$'
+                && c != '@'
+                && c != '%'
+                && c != '&'
+        })
+        .map(|p| next_char_boundary_after(source, p))
+        .unwrap_or(0);
+    (source[word_start..position].to_string(), word_start)
+}
+
+pub(super) fn is_completion_identifier_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
 impl CompletionProvider {
     /// Create a new completion provider from parsed AST for Perl script analysis
     ///
@@ -763,20 +783,19 @@ impl CompletionProvider {
             let receiver_start = method_receiver_start(source, position.saturating_sub(1));
             let receiver = &source[receiver_start..position - 1];
             (format!("{receiver}->"), receiver_start)
+        } else if let Some(arrow_start) = source[..position].rfind("->") {
+            // Preserve the receiver in the context while replacing only the
+            // method token after `->` (for example, `Mojo::Pg->d`).
+            let typed_method = &source[arrow_start + 2..position];
+            let receiver_start = method_receiver_start(source, arrow_start);
+            let receiver = &source[receiver_start..arrow_start];
+            if !receiver.is_empty() && typed_method.chars().all(is_completion_identifier_char) {
+                (source[receiver_start..position].to_string(), arrow_start + 2)
+            } else {
+                word_prefix(source, position)
+            }
         } else {
-            let word_start = source[..position]
-                .rfind(|c: char| {
-                    !c.is_alphanumeric()
-                        && c != '_'
-                        && c != ':'
-                        && c != '$'
-                        && c != '@'
-                        && c != '%'
-                        && c != '&'
-                })
-                .map(|p| next_char_boundary_after(source, p))
-                .unwrap_or(0);
-            (source[word_start..position].to_string(), word_start)
+            word_prefix(source, position)
         };
 
         // Detect trigger character (trigger chars are ASCII, so byte access is safe)

@@ -297,9 +297,9 @@ pub fn load_goto_gold_fixtures<P: AsRef<Path>>(
 pub enum CompletionAssertionKind {
     /// Completion list must not be empty
     CompletionNonEmpty,
-    /// Item must be at position [0] in the list
+    /// Item must be at position `[0]` in the list
     CompletionTop1 { expected_label: String },
-    /// Item must be in positions [0..4]
+    /// Item must be in positions `[0..4]`
     CompletionTop5 { expected_label: String },
     /// Item must appear anywhere in the list
     CompletionPresent { expected_label: String },

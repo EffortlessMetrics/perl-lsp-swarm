@@ -1,7 +1,7 @@
 # TODOs & Missing Features
 
-> **Last Updated**: 2026-04-10
-> **Sources of truth**: `docs/project/ROADMAP.md` (planning), `docs/project/CURRENT_STATUS.md` (evidence), `features.toml` (capabilities)
+> **Last Updated**: 2026-07-17
+> **Sources of truth**: `docs/project/ROADMAP.md` (planning), `docs/project/CURRENT_STATUS.md` (evidence — current shipped line is `v0.17.0`), `features.toml` (capabilities)
 > **Rule**: If this file conflicts with those sources, update this backlog file (not the canonical sources).
 
 ---
@@ -14,7 +14,7 @@
 
 ---
 
-## Now (post-v0.12.3 / pre-v0.13.0) - TODOs
+## Now - TODOs
 
 ### Quality Cleanup
 
@@ -26,14 +26,14 @@
 ### Release Surface Consistency
 
 - [ ] Keep release truth aligned across GitHub Releases, VS Code Marketplace, Open VSX, and crates.io.
-- [ ] Verify docs references to the shipped line (`v0.12.3`) remain consistent after each release PR.
+- [ ] Verify docs references to the current shipped line (see `docs/project/CURRENT_STATUS.md`) remain consistent after each release PR.
 - [ ] Track any channel split explicitly in release docs until crates.io catches up.
 - [ ] Add a short stability statement in `docs/README.md` describing the compatibility policy for CLI flags, LSP capability advertising, and DAP preview boundaries.
 - [ ] Expand `docs/how-to/UPGRADING.md` with compatibility promises, patch/minor expectations, deprecation notice windows, and emergency-break guidance for security fixes.
 - [ ] Add a `Distribution Matrix` doc under `docs/project/` covering published crates, prebuilt artifacts, source-build-only paths, support tiers by OS/arch, and editor install-path expectations.
 - [ ] Add a receipt template in `benchmarks/results/README.md` that records command, machine/runtime metadata, before/after SHAs, and artifact location.
 - [ ] Ensure committed benchmark results link back to the initiating change or issue.
-- [ ] Document config key renames/removals and migration steps for the v0.8.x -> v0.9.x upgrade path.
+- [ ] Document config key renames/removals and migration steps for release-to-release upgrade paths.
 - [ ] Add known behavior deltas for parser/LSP/DAP roll-forward guidance and rollback/cache-reset steps for editor clients.
 - [ ] Capture dependency ordering and owners in `docs/project/CI_LOCAL_VALIDATION.md`.
 - [ ] Add a short "what changed after #210 lands" checklist for contributors.
@@ -66,7 +66,7 @@
 
 ---
 
-## Later (Post v0.13.0)
+## Later
 
 - [ ] Stabilize API/versioning policy language for the path to `v1.0.0`.
 - [ ] Harden large-workspace performance budgets and monitoring.

@@ -640,18 +640,19 @@ fn is_index_in_rust_literal(
 }
 
 fn is_prefixed_string_start(bytes: &[u8], idx: usize, prefix: u8) -> bool {
-    bytes[idx] == prefix && idx + 1 < bytes.len() && bytes[idx + 1] == b'"'
+    // Bounds-safe: index via `.get()` so an out-of-range `idx` yields `false`
+    // instead of panicking, making this a total function (#2132).
+    bytes.get(idx) == Some(&prefix) && bytes.get(idx + 1) == Some(&b'"')
 }
 
 fn raw_string_prefix_len(bytes: &[u8], idx: usize) -> usize {
-    if bytes[idx] == b'r' {
-        return 1;
+    // Bounds-safe: index via `.get()` so an out-of-range `idx` yields `0`
+    // instead of panicking, making this a total function (#2134).
+    match bytes.get(idx) {
+        Some(b'r') => 1,
+        Some(b'b') | Some(b'c') if bytes.get(idx + 1) == Some(&b'r') => 2,
+        _ => 0,
     }
-    if idx + 1 < bytes.len() && (bytes[idx] == b'b' || bytes[idx] == b'c') && bytes[idx + 1] == b'r'
-    {
-        return 2;
-    }
-    0
 }
 
 fn rust_raw_string_state_after_line(
@@ -808,4 +809,48 @@ fn read_lines(path: &Path) -> Result<Vec<String>> {
     let contents =
         fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     Ok(contents.lines().map(str::to_owned).collect())
+}
+
+#[cfg(test)]
+mod bounds_safe_prefix_tests {
+    use super::{is_prefixed_string_start, raw_string_prefix_len};
+
+    #[test]
+    fn raw_string_prefix_len_in_bounds_behaviour_preserved() {
+        assert_eq!(raw_string_prefix_len(b"r\"x\"", 0), 1);
+        assert_eq!(raw_string_prefix_len(b"br\"x\"", 0), 2);
+        assert_eq!(raw_string_prefix_len(b"cr\"x\"", 0), 2);
+        // `b`/`c` not followed by `r` is not a raw-string prefix.
+        assert_eq!(raw_string_prefix_len(b"bx", 0), 0);
+        assert_eq!(raw_string_prefix_len(b"x", 0), 0);
+        // Trailing `b`/`c` with nothing after must not read past the end.
+        assert_eq!(raw_string_prefix_len(b"ab", 1), 0);
+    }
+
+    #[test]
+    fn raw_string_prefix_len_out_of_bounds_returns_zero() {
+        // #2134: an out-of-range index must yield 0, not panic.
+        assert_eq!(raw_string_prefix_len(b"r", 1), 0);
+        assert_eq!(raw_string_prefix_len(b"", 0), 0);
+        assert_eq!(raw_string_prefix_len(b"abc", 99), 0);
+    }
+
+    #[test]
+    fn is_prefixed_string_start_in_bounds_behaviour_preserved() {
+        assert!(is_prefixed_string_start(b"b\"x\"", 0, b'b'));
+        assert!(is_prefixed_string_start(b"c\"x\"", 0, b'c'));
+        assert!(!is_prefixed_string_start(b"b\"x\"", 0, b'c'));
+        // Prefix not followed by a quote is not a prefixed-string start.
+        assert!(!is_prefixed_string_start(b"bx", 0, b'b'));
+        // Prefix at the very end with nothing after must not read past the end.
+        assert!(!is_prefixed_string_start(b"ab", 1, b'b'));
+    }
+
+    #[test]
+    fn is_prefixed_string_start_out_of_bounds_returns_false() {
+        // #2132: an out-of-range index must yield false, not panic.
+        assert!(!is_prefixed_string_start(b"b", 1, b'b'));
+        assert!(!is_prefixed_string_start(b"", 0, b'b'));
+        assert!(!is_prefixed_string_start(b"abc", 99, b'b'));
+    }
 }

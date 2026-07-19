@@ -3,22 +3,10 @@
 //! Provides lightweight pattern checks for modernizing Perl code while keeping
 //! refactorings safe and fast in LSP workflows.
 
-/// A suggestion for modernizing legacy Perl code patterns.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ModernizationSuggestion {
-    /// The deprecated or outdated code pattern to be replaced.
-    pub old_pattern: String,
-    /// The modern replacement pattern.
-    pub new_pattern: String,
-    /// Human-readable explanation of why this change is recommended.
-    pub description: String,
-    /// Whether this suggestion requires human review before applying.
-    pub manual_review_required: bool,
-    /// Byte offset where the pattern starts in the source code.
-    pub start: usize,
-    /// Byte offset where the pattern ends in the source code.
-    pub end: usize,
-}
+// `ModernizationSuggestion` is defined once in `modernization_suggestion` and
+// re-exported here so existing `modernize::ModernizationSuggestion` paths keep
+// resolving while the definition stays shared with `modernize_refactored` (#3924).
+pub use super::modernization_suggestion::ModernizationSuggestion;
 
 /// Analyzes and modernizes legacy Perl code patterns.
 ///
@@ -56,100 +44,110 @@ impl PerlModernizer {
         }
 
         // Check for bareword filehandles
-        if let Some(pos) = code.find("open FH") {
+        let bareword_fh = "open FH";
+        if let Some(pos) = code.find(bareword_fh) {
             suggestions.push(ModernizationSuggestion {
-                old_pattern: "open FH".to_string(),
+                old_pattern: bareword_fh.to_string(),
                 new_pattern: "open my $fh".to_string(),
                 description: "Use lexical filehandles instead of barewords".to_string(),
                 manual_review_required: false,
                 start: pos,
-                end: pos + 7,
+                end: pos + bareword_fh.len(),
             });
         }
 
         // Check for two-argument open
-        if code.contains("open(FH, 'file.txt')") {
+        let two_arg_open = "open(FH, 'file.txt')";
+        if let Some(pos) = code.find(two_arg_open) {
             suggestions.push(ModernizationSuggestion {
-                old_pattern: "open(FH, 'file.txt')".to_string(),
+                old_pattern: two_arg_open.to_string(),
                 new_pattern: "open(my $fh, '<', 'file.txt')".to_string(),
                 description: "Use three-argument open for safety".to_string(),
                 manual_review_required: false,
-                start: 0,
-                end: 0,
+                start: pos,
+                end: pos + two_arg_open.len(),
             });
         }
 
         // Check for defined on arrays
-        if code.contains("defined @array") {
+        let defined_array = "defined @array";
+        if let Some(pos) = code.find(defined_array) {
             suggestions.push(ModernizationSuggestion {
-                old_pattern: "defined @array".to_string(),
+                old_pattern: defined_array.to_string(),
                 new_pattern: "@array".to_string(),
                 description: "defined(@array) is deprecated, use @array in boolean context"
                     .to_string(),
                 manual_review_required: false,
-                start: 0,
-                end: 0,
+                start: pos,
+                end: pos + defined_array.len(),
             });
         }
 
         // Check for indirect object notation - handle both Class and MyClass
-        if let Some(pos) = code.find("new MyClass") {
+        let indirect_myclass = "new MyClass";
+        let indirect_class = "new Class";
+        if let Some(pos) = code.find(indirect_myclass) {
             suggestions.push(ModernizationSuggestion {
-                old_pattern: "new MyClass".to_string(),
+                old_pattern: indirect_myclass.to_string(),
                 new_pattern: "MyClass->new".to_string(),
                 description: "Use direct method call instead of indirect object notation"
                     .to_string(),
                 manual_review_required: false,
                 start: pos,
-                end: pos + 11,
+                end: pos + indirect_myclass.len(),
             });
-        } else if let Some(pos) = code.find("new Class") {
+        } else if let Some(pos) = code.find(indirect_class) {
             suggestions.push(ModernizationSuggestion {
-                old_pattern: "new Class".to_string(),
+                old_pattern: indirect_class.to_string(),
                 new_pattern: "Class->new".to_string(),
                 description: "Use direct method call instead of indirect object notation"
                     .to_string(),
                 manual_review_required: false,
                 start: pos,
-                end: pos + 9,
+                end: pos + indirect_class.len(),
             });
         }
 
         // Check for each on arrays
-        if code.contains("each @array") {
+        let each_array = "each @array";
+        if let Some(pos) = code.find(each_array) {
             suggestions.push(ModernizationSuggestion {
-                old_pattern: "each @array".to_string(),
+                old_pattern: each_array.to_string(),
                 new_pattern: "0..$#array".to_string(),
                 description: "each(@array) can cause unexpected behavior, use foreach with index"
                     .to_string(),
                 manual_review_required: false,
-                start: 0,
-                end: 0,
+                start: pos,
+                end: pos + each_array.len(),
             });
         }
 
         // Check for string eval (requires manual review)
-        if code.contains("eval \"") {
+        let string_eval = "eval \"";
+        if let Some(pos) = code.find(string_eval) {
             suggestions.push(ModernizationSuggestion {
                 old_pattern: "eval \"...\"".to_string(),
                 new_pattern: "eval { ... }".to_string(),
                 description: "String eval is risky, consider block eval or require".to_string(),
                 manual_review_required: true,
-                start: 0,
-                end: 0,
+                // Only the `eval "` opening is matched; mark that span so the
+                // code action anchors on the risky construct rather than 0..0.
+                start: pos,
+                end: pos + string_eval.len(),
             });
         }
 
         // Check for print with \n
-        if code.contains("print \"Hello\\n\"") {
+        let print_newline = "print \"Hello\\n\"";
+        if let Some(pos) = code.find(print_newline) {
             suggestions.push(ModernizationSuggestion {
-                old_pattern: "print \"Hello\\n\"".to_string(),
+                old_pattern: print_newline.to_string(),
                 new_pattern: "say \"Hello\"".to_string(),
                 description: "Use 'say' instead of print with \\n (requires use feature 'say')"
                     .to_string(),
                 manual_review_required: false,
-                start: 0,
-                end: 0,
+                start: pos,
+                end: pos + print_newline.len(),
             });
         }
 

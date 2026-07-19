@@ -1380,4 +1380,11 @@ pub struct ClientCapabilities {
     /// the first encoding from the client's list that it supports, or defaults
     /// to UTF-16 if the list is empty or missing.
     pub position_encoding: crate::textdoc::PosEnc,
+    /// Preferred default behavior for PrepareRename responses (LSP 3.16+).
+    ///
+    /// Parsed from `capabilities.textDocument.rename.prepareSupportDefaultBehavior`.
+    /// Value 1 (`PrepareSupportDefaultBehavior::Identifier`) means the client can
+    /// handle `{defaultBehavior: true}` PrepareRenameResult responses; the server
+    /// may delegate word-boundary selection to the client when this is set.
+    pub prepare_support_default_behavior: u8,
 }

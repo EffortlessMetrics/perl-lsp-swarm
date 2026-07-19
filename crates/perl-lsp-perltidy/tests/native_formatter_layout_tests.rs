@@ -658,6 +658,63 @@ fn native_formatter_expands_simple_subroutine_blocks() {
 }
 
 #[test]
+fn native_formatter_handles_consecutive_empty_statements() {
+    let formatter = NativeFormatter::new();
+    let sources = [
+        ";\n",
+        "print 1;;;\n",
+        "if($ok){;}\n",
+        "if($ok){;;}\n",
+        "if($ok){print 1;;}\n",
+        "if($ok){if($nested){;;}}\n",
+        "sub answer{;;}\n",
+        "sub answer{if($ok){;;}}\n",
+        "while($ok){;;}continue{;;}\n",
+        "for(;;){;;}\n",
+        "for($i=0;;$i++){;;}\n",
+        "foreach $x(@xs){;;}\n",
+        "if($ok){print 1;}else{;;}\n",
+    ];
+
+    let assert_unchanged = |source: &str| {
+        let result = formatter.format_document(source, &FormatConfig::default());
+        assert_eq!(result.formatted, source, "unsupported input must remain unchanged: {source:?}");
+        assert!(!result.changed, "unsupported input must not report changes: {source:?}");
+        assert!(result.edits.is_empty(), "unsupported input must not emit edits: {source:?}");
+        assert!(
+            result.diagnostics.is_empty(),
+            "valid unsupported input must stay diagnostic-free: {source:?}"
+        );
+    };
+
+    for source in sources {
+        assert_unchanged(source);
+    }
+
+    let bodies = [
+        ";",
+        ";;",
+        ";;;",
+        "print 1;;",
+        ";print 1;",
+        "if($nested){;;};",
+        "if($nested){print 1;;};",
+        "for(;;){;;};",
+    ];
+    for body in bodies {
+        for source in [format!("sub answer{{{body}}}\n"), format!("if($ok){{{body}}}\n")] {
+            assert_unchanged(&source);
+        }
+    }
+
+    let valid_source = "if($ok){return 1;}\n";
+    let result = formatter.format_document(valid_source, &FormatConfig::default());
+    assert!(result.changed, "valid statements should still be formatted");
+    assert_eq!(result.formatted, "if ($ok) {\n    return 1;\n}\n");
+    assert!(result.diagnostics.is_empty());
+}
+
+#[test]
 fn native_formatter_places_opening_braces_on_next_line_when_configured() {
     let formatter = NativeFormatter::new();
     let config =
