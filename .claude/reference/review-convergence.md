@@ -338,7 +338,7 @@ re-examining the whole diff from scratch. An empty or non-substantive
 everything outside the reported seams.
 
 **This is advisory reporting only.** `seam-diff` composes the existing
-#3985 `change_set::resolve_change_set_with_mode` resolver in
+`#3985` `change_set::resolve_change_set_with_mode` resolver in
 `DiffMode::DirectTwoDot` mode (no new git-diff or
 base-resolution logic) and prints a report; it does not wire into any bot
 trigger, required check, or branch-protection rule, and it does not decide

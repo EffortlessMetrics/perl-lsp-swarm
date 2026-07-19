@@ -207,7 +207,7 @@ fn render_report(report: &SeamDiffReport, format: &str) -> Result<String> {
                 report.changed_crates.join(", ")
             ));
             output.push_str(&format!("is_empty: {}\n", report.is_empty));
-            output.push_str(&format!("is_non_substantive: {}\n", report.is_non_substantive));
+            output.push_str(&format!("is_non_substantive: {}", report.is_non_substantive));
             output
         }
         "json" => {
@@ -544,6 +544,10 @@ mod tests {
         ensure!(human.contains("  crates/perl-lsp/src/lib.rs"));
         ensure!(human.contains("Changed crates (1): perl-lsp"));
         ensure!(human.contains("is_non_substantive: false"));
+        ensure!(
+            !human.ends_with('\n'),
+            "the renderer leaves the single trailing newline to run()'s println!"
+        );
 
         let json = render_report(&report, "json")?;
         let value: serde_json::Value =
