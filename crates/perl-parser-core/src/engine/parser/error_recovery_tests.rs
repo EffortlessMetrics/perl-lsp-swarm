@@ -1246,6 +1246,40 @@ fn test_unclosed_qw_recovers_keyword_and_vstring_sub_names() -> Result<(), Strin
     Ok(())
 }
 
+/// Dotted v-strings are not valid named subroutine declarations; they remain
+/// quote-word content instead of creating a false recovery boundary.
+#[test]
+fn test_unclosed_qw_rejects_dotted_vstring_sub_name() -> Result<(), String> {
+    let code = "my @a = qw(word\nsub v1.2 { 1; }";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("dotted v-string parse failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 1 || !sexp.contains("v1.2") || parser.errors().is_empty() {
+        return Err(format!("dotted v-string became a false boundary: {sexp}"));
+    }
+    Ok(())
+}
+
+/// Phaser attributes still split a recovered unclosed `qw(` at their block,
+/// preserving the labeled statement for the parser rather than swallowing it.
+#[test]
+fn test_unclosed_qw_recovers_phaser_attribute_block() -> Result<(), String> {
+    let code = "my @a = qw(word\nBEGIN :lvalue { 1; }";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("phaser attribute parse failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 2 {
+        return Err(format!("phaser attribute was swallowed: {sexp}"));
+    }
+    Ok(())
+}
+
 /// A mismatched nested delimiter is not a complete subroutine body and must
 /// not become a recovery boundary for an unclosed `qw(`.
 #[test]

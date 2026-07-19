@@ -3339,10 +3339,18 @@ impl<'a> PerlLexer<'a> {
                 return Self::header_ends_at_own_terminator(source, second.start)
                     && Self::block_statement_terminates(&mut lexer);
             }
-            (true, _) => return false,
+            (true, TokenType::Operator(operator))
+                if operator.as_ref() == ":"
+                    && Self::phaser_attribute_block_boundary(source, &mut lexer) =>
+            {
+                return true;
+            }
             (false, TokenType::Identifier(_)) => {}
-            (false, TokenType::Keyword(_) | TokenType::Version(_)) if keyword == "sub" => {}
+            (false, TokenType::Keyword(_)) if keyword == "sub" => {}
+            (false, TokenType::Version(version))
+                if keyword == "sub" && !version.as_ref().contains('.') => {}
             (false, _) => return false,
+            (true, _) => return false,
         }
 
         // A real `sub NAME {` / `package NAME;` header may put its terminator on the
@@ -3409,6 +3417,61 @@ impl<'a> PerlLexer<'a> {
                         return true;
                     }
                 }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Continue a phaser recovery boundary through its optional attribute list,
+    /// such as `BEGIN :lvalue { ... }`, while rejecting malformed headers.
+    fn phaser_attribute_block_boundary(source: &str, lexer: &mut Self) -> bool {
+        let mut expect_name = true;
+        while let Some(token) = lexer.next_token() {
+            if expect_name {
+                if !matches!(token.token_type, TokenType::Identifier(_) | TokenType::Keyword(_)) {
+                    return false;
+                }
+                expect_name = false;
+                continue;
+            }
+            match token.token_type {
+                TokenType::Operator(operator) if operator.as_ref() == ":" => expect_name = true,
+                TokenType::LeftParen => {
+                    if !Self::attribute_arguments_terminate(lexer) {
+                        return false;
+                    }
+                }
+                TokenType::LeftBrace => {
+                    return Self::header_ends_at_own_terminator(source, token.start)
+                        && Self::block_statement_terminates(lexer);
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Consume a balanced attribute argument list after its opening `(`.
+    fn attribute_arguments_terminate(lexer: &mut Self) -> bool {
+        let mut expected_closers = vec![TokenType::RightParen];
+        while let Some(token) = lexer.next_token() {
+            match token.token_type {
+                TokenType::LeftParen => expected_closers.push(TokenType::RightParen),
+                TokenType::LeftBracket => expected_closers.push(TokenType::RightBracket),
+                TokenType::LeftBrace => expected_closers.push(TokenType::RightBrace),
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
+                    let Some(expected) = expected_closers.pop() else {
+                        return false;
+                    };
+                    if expected != token.token_type {
+                        return false;
+                    }
+                    if expected_closers.is_empty() {
+                        return true;
+                    }
+                }
+                TokenType::Error(_) | TokenType::UnknownRest => return false,
                 _ => {}
             }
         }
