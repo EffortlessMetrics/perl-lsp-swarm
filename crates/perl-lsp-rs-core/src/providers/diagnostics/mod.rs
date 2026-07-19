@@ -42,6 +42,9 @@ mod internal_types;
 pub(crate) mod lints;
 /// Parse error to diagnostic conversion
 mod parse_errors;
+/// Scoped role-provider graph for cross-file PL303 detection.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod role_graph_scope;
 /// Scope analysis integration
 pub mod scope;
 /// AST walker utilities
