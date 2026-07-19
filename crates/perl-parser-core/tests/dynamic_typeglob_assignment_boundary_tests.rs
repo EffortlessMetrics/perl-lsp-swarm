@@ -95,3 +95,36 @@ fn qualified_static_typeglob_assignment_still_records_exact_alias() {
         "qualified bareword typeglob alias must stay an ExactAst TypeglobAlias slot, got: {aliases:?}"
     );
 }
+
+#[test]
+fn braced_bareword_typeglob_assignment_still_records_exact_alias() {
+    // Negative control: a braced *bareword* target (`*{name}`, `*{ name }`) resolves
+    // to a static symbol, so it must stay an ExactAst alias — the dynamic-boundary
+    // routing only applies to names that are not bareword-like.
+    for source in ["package Child;\n*{name} = \\&foo;\n", "package Child;\n*{ name } = \\&foo;\n"] {
+        let file = lower_source(source);
+        let aliases = typeglob_alias_slots(&file.stash_graph);
+        assert!(
+            aliases.iter().any(|slot| slot == "Child::name target=foo"),
+            "braced bareword typeglob alias must stay an ExactAst TypeglobAlias slot for {source:?}, got: {aliases:?}"
+        );
+    }
+}
+
+#[test]
+fn symbolic_string_typeglob_assignment_records_boundary() {
+    // A quoted symbolic name (`*{'STDOUT'}`) is not a resolvable bareword: the target
+    // is a symbolic (string) glob, so it stays a dynamic boundary rather than a
+    // claimed ExactAst alias — consistent with symbolic deref handling elsewhere.
+    let file = lower_source("package Child;\n*{'STDOUT'} = \\&foo;\n");
+
+    let aliases = typeglob_alias_slots(&file.stash_graph);
+    assert!(
+        aliases.is_empty(),
+        "symbolic-string typeglob assignment must not create a static TypeglobAlias slot, got: {aliases:?}"
+    );
+    assert!(
+        has_typeglob_boundary(&file.stash_graph),
+        "symbolic-string typeglob assignment must record a typeglob dynamic-stash boundary"
+    );
+}
