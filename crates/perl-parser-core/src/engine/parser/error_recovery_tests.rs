@@ -1185,6 +1185,7 @@ fn test_unclosed_qw_block_starter_comment_does_not_fake_name() -> Result<(), Str
     for (label, code, retained_word) in [
         ("sub comment", "my @a = qw(word\nsub # still qw content\nrun\n{ 1; }", "run"),
         ("package comment", "my @a = qw(word\npackage # still qw content\nFoo\n{ 1; }", "Foo"),
+        ("class comment", "my @a = qw(word\nclass # still qw content\nFoo\n{ 1; }", "Foo"),
     ] {
         let mut parser = Parser::new(code);
         let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
@@ -1206,7 +1207,13 @@ fn test_unclosed_qw_block_starter_comment_does_not_fake_name() -> Result<(), Str
 /// delimiter-recovery path does after a malformed preceding statement.
 #[test]
 fn test_synchronize_preserves_phaser_blocks() -> Result<(), String> {
-    for (label, phaser) in [("INIT", "INIT"), ("CHECK", "CHECK"), ("UNITCHECK", "UNITCHECK")] {
+    for (label, phaser) in [
+        ("BEGIN", "BEGIN"),
+        ("END", "END"),
+        ("INIT", "INIT"),
+        ("CHECK", "CHECK"),
+        ("UNITCHECK", "UNITCHECK"),
+    ] {
         let code = format!("my $x = 1; ???\n{phaser} {{ do_thing() }}\nprint 2;");
         let mut parser = Parser::new(&code);
         let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
@@ -1214,6 +1221,44 @@ fn test_synchronize_preserves_phaser_blocks() -> Result<(), String> {
         if !sexp.contains(&format!("({label}")) || !sexp.contains("print") {
             return Err(format!("[{label}] phaser was consumed during synchronization: {sexp}"));
         }
+    }
+    Ok(())
+}
+
+/// Keyword and v-string names accepted by the parser must also be recognized
+/// as `sub` recovery boundaries by the lexer.
+#[test]
+fn test_unclosed_qw_recovers_keyword_and_vstring_sub_names() -> Result<(), String> {
+    for (label, code, recovered) in [
+        ("keyword name", "my @a = qw(word\nsub return { 1; }", "(sub return"),
+        ("v-string name", "my @a = qw(word\nsub v5 { 1; }", "(sub v5"),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        if statements.len() != 2 || !sexp.contains(recovered) {
+            return Err(format!("[{label}] sub name was swallowed: {sexp}"));
+        }
+    }
+    Ok(())
+}
+
+/// A mismatched nested delimiter is not a complete subroutine body and must
+/// not become a recovery boundary for an unclosed `qw(`.
+#[test]
+fn test_unclosed_qw_rejects_mismatched_block_delimiters() -> Result<(), String> {
+    let code = "my @a = qw(word\nsub run { ( ] }";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("mismatched block parse failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 1 || !sexp.contains("\"sub\"") || parser.errors().is_empty() {
+        return Err(format!("mismatched block became a false boundary: {sexp}"));
     }
     Ok(())
 }
@@ -1351,7 +1396,11 @@ fn test_unclosed_qw_recovers_block_after_multibyte_content() -> Result<(), Strin
         return Err(format!("expected program root, got {}", ast.to_sexp()));
     };
     let sexp = ast.to_sexp();
-    if statements.len() != 2 || !sexp.contains("sub run") || parser.errors().is_empty() {
+    if statements.len() != 2
+        || !matches!(&statements[1].kind, NodeKind::Subroutine { .. })
+        || !sexp.contains("sub run")
+        || parser.errors().is_empty()
+    {
         return Err(format!("multibyte block recovery lost the sub: {sexp}"));
     }
     Ok(())

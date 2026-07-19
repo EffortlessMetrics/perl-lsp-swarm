@@ -3341,6 +3341,7 @@ impl<'a> PerlLexer<'a> {
             }
             (true, _) => return false,
             (false, TokenType::Identifier(_)) => {}
+            (false, TokenType::Keyword(_) | TokenType::Version(_)) if keyword == "sub" => {}
             (false, _) => return false,
         }
 
@@ -3355,22 +3356,27 @@ impl<'a> PerlLexer<'a> {
         // strong block shape does *not* additionally require `qw_statement_terminates`
         // over the whole tail. Requiring it swallowed the declaration whenever another
         // line-start statement followed (`sub run { … }\nmy $x = 1;`) (#4491 review).
-        let mut depth = 0usize;
+        let mut expected_closers = Vec::new();
         while let Some(token) = lexer.next_token() {
             match token.token_type {
-                TokenType::LeftBrace if depth == 0 => {
+                TokenType::LeftBrace if expected_closers.is_empty() => {
                     return Self::header_ends_at_own_terminator(source, token.start)
                         && Self::block_statement_terminates(&mut lexer);
                 }
-                TokenType::Semicolon if depth == 0 => {
+                TokenType::Semicolon if expected_closers.is_empty() => {
                     return allows_semicolon_form
                         && Self::header_ends_at_own_terminator(source, token.start);
                 }
-                TokenType::LeftParen | TokenType::LeftBracket | TokenType::LeftBrace => {
-                    depth = depth.saturating_add(1);
-                }
+                TokenType::LeftParen => expected_closers.push(TokenType::RightParen),
+                TokenType::LeftBracket => expected_closers.push(TokenType::RightBracket),
+                TokenType::LeftBrace => expected_closers.push(TokenType::RightBrace),
                 TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
-                    depth = depth.saturating_sub(1);
+                    let Some(expected) = expected_closers.pop() else {
+                        return false;
+                    };
+                    if expected != token.token_type {
+                        return false;
+                    }
                 }
                 _ => {}
             }
@@ -3383,18 +3389,23 @@ impl<'a> PerlLexer<'a> {
     /// while allowing a later statement after a complete block to be scanned
     /// independently (#4491).
     fn block_statement_terminates(lexer: &mut Self) -> bool {
-        let mut depth = 1usize;
+        let mut expected_closers = vec![TokenType::RightBrace];
         while let Some(token) = lexer.next_token() {
             if matches!(token.token_type, TokenType::Error(_) | TokenType::UnknownRest) {
                 return false;
             }
             match token.token_type {
-                TokenType::LeftParen | TokenType::LeftBracket | TokenType::LeftBrace => {
-                    depth = depth.saturating_add(1);
-                }
+                TokenType::LeftParen => expected_closers.push(TokenType::RightParen),
+                TokenType::LeftBracket => expected_closers.push(TokenType::RightBracket),
+                TokenType::LeftBrace => expected_closers.push(TokenType::RightBrace),
                 TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
-                    depth = depth.saturating_sub(1);
-                    if token.token_type == TokenType::RightBrace && depth == 0 {
+                    let Some(expected) = expected_closers.pop() else {
+                        return false;
+                    };
+                    if expected != token.token_type {
+                        return false;
+                    }
+                    if expected_closers.is_empty() {
                         return true;
                     }
                 }
