@@ -3108,12 +3108,36 @@ impl<'a> PerlLexer<'a> {
     /// Returns `(body, closed)` where `closed` is `true` if the closing
     /// delimiter was found before EOF, and `false` if EOF was reached first.
     fn read_delimited_body(&mut self, delim: char) -> (String, bool) {
+        self.read_delimited_body_with_recovery(delim, |_lexer, _position| false)
+    }
+
+    /// Read a delimited body while allowing a caller-specific recovery boundary.
+    ///
+    /// Quote-like operators share escape, nesting, and close-delimiter semantics;
+    /// `qw` additionally needs to stop before a safe statement boundary when its
+    /// closer is missing. Keeping that policy as a callback makes the scanner
+    /// behavior-preserving for ordinary operators without duplicating the loop.
+    /// The callback runs before the character at `position` is consumed. It must
+    /// only inspect the lexer and position; advancing or otherwise mutating the
+    /// lexer would desynchronize the scanner's escape and nesting state.
+    fn read_delimited_body_with_recovery<F>(
+        &mut self,
+        delim: char,
+        mut should_recover: F,
+    ) -> (String, bool)
+    where
+        F: FnMut(&Self, usize) -> bool,
+    {
         let paired = quote_handler::paired_close(delim);
         let close = paired.unwrap_or(delim);
         let mut body = String::new();
         let mut depth = i32::from(paired.is_some());
 
         while let Some(ch) = self.current_char() {
+            if should_recover(self, self.position) {
+                return (body, false);
+            }
+
             if ch == '\\' {
                 body.push(ch);
                 self.advance();
@@ -3156,50 +3180,10 @@ impl<'a> PerlLexer<'a> {
     }
 
     fn read_qw_body(&mut self, delim: char) -> (String, bool) {
-        let paired = quote_handler::paired_close(delim);
-        let close = paired.unwrap_or(delim);
-        let mut body = String::new();
-        let mut depth = i32::from(paired.is_some());
         let recover_at_statement = !self.qw_has_closing_delimiter(delim);
-
-        while let Some(ch) = self.current_char() {
-            if recover_at_statement && self.qw_statement_boundary_at(self.position) {
-                return (body, false);
-            }
-            if ch == '\\' {
-                body.push(ch);
-                self.advance();
-                if let Some(next) = self.current_char() {
-                    body.push(next);
-                    self.advance();
-                }
-                continue;
-            }
-            if paired.is_some() && ch == delim {
-                body.push(ch);
-                self.advance();
-                depth += 1;
-                continue;
-            }
-            if ch == close {
-                if paired.is_some() {
-                    depth -= 1;
-                    if depth == 0 {
-                        self.advance();
-                        return (body, true);
-                    }
-                    body.push(ch);
-                    self.advance();
-                } else {
-                    self.advance();
-                    return (body, true);
-                }
-                continue;
-            }
-            body.push(ch);
-            self.advance();
-        }
-        (body, false)
+        self.read_delimited_body_with_recovery(delim, |lexer, position| {
+            recover_at_statement && lexer.qw_statement_boundary_at(position)
+        })
     }
 
     fn qw_has_closing_delimiter(&self, delim: char) -> bool {
