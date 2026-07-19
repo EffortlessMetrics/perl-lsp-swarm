@@ -2698,6 +2698,83 @@ mod tests {
     }
 
     #[test]
+    fn method_candidates_finds_role_composed_generated_members()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A class that composes a role must see the role's *generated* members
+        // (e.g. a Moo `has` accessor), not just its plain subs. This is the
+        // intersection of `method_candidates_finds_role_composed_method`
+        // (role + Method) and `method_candidates_includes_generated_members`
+        // (receiver-package GeneratedMember) — neither covers a generated member
+        // that lives in a composed role (#1642).
+        let file_class = FileId(1);
+        let file_role = FileId(2);
+
+        // Class file declares no members of its own.
+        let shard_class =
+            make_shard("file:///lib/MyClass.pm", file_class, vec![], vec![], vec![], vec![]);
+
+        // Role file exposes a generated accessor from `has 'log_level'`.
+        let shard_role = make_shard(
+            "file:///lib/MyRole.pm",
+            file_role,
+            vec![AnchorFact {
+                id: AnchorId(40),
+                file_id: file_role,
+                span_start_byte: 0,
+                span_end_byte: 15,
+                scope_id: None,
+                provenance: Provenance::FrameworkSynthesis,
+                confidence: Confidence::Medium,
+            }],
+            vec![EntityFact {
+                id: EntityId(400),
+                kind: EntityKind::GeneratedMember,
+                canonical_name: "MyRole::log_level".to_string(),
+                anchor_id: Some(AnchorId(40)),
+                scope_id: None,
+                provenance: Provenance::FrameworkSynthesis,
+                confidence: Confidence::Medium,
+            }],
+            vec![],
+            vec![],
+        );
+
+        let mut shards = HashMap::new();
+        shards.insert(shard_class.source_uri.clone(), shard_class);
+        shards.insert(shard_role.source_uri.clone(), shard_role);
+
+        let mut pkg_graph = PackageGraphIndex::new();
+        pkg_graph.add_edges(
+            "file:///lib/MyClass.pm",
+            file_class,
+            vec![PackageEdge::new(
+                "MyClass".to_string(),
+                "MyRole".to_string(),
+                PackageEdgeKind::ComposesRole,
+                Some(AnchorId(1)),
+                Provenance::ExactAst,
+                Confidence::High,
+            )],
+        );
+
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = WorkspaceSemanticQueries::with_package_graph(
+            &ref_index, &ie_index, &shards, &pkg_graph,
+        );
+
+        let candidates = queries.method_candidates("MyClass", "log_level");
+        assert_eq!(
+            candidates.len(),
+            1,
+            "class must resolve the role-composed generated member; got: {candidates:?}"
+        );
+        assert_eq!(candidates[0].kind, EntityKind::GeneratedMember);
+        assert_eq!(candidates[0].canonical_name, "MyRole::log_level");
+        Ok(())
+    }
+
+    #[test]
     fn method_candidates_returns_empty_for_unknown_package()
     -> Result<(), Box<dyn std::error::Error>> {
         let shards = HashMap::new();
