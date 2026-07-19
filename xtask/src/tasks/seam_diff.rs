@@ -1,7 +1,7 @@
 //! Seam-diff reporter — advisory, read-only slice 1 of issue #3986.
 //!
 //! `cargo xtask seam-diff --base <epochSHA> [--head <sha>] [--format
-//! json|human]` composes the #3985 `change_set::resolve_change_set`
+//! json|human]` composes the #3985 `change_set::resolve_change_set_with_mode`
 //! resolver over a `CommitRange { base: epochSHA, head }` identity to
 //! report which "seams" (changed files, plus a coarse changed-crate set) a
 //! push changed since a recorded review-epoch marker SHA. It is pure
@@ -58,8 +58,12 @@ use crate::tasks::ci_scope;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeamDiffReport {
     /// Repo-relative changed paths, as returned by
-    /// [`change_set::resolve_change_set`].
+    /// [`change_set::resolve_change_set_with_mode`].
     pub changed_files: Vec<String>,
+    /// Concrete base commit SHA actually resolved and diffed.
+    pub base_sha: String,
+    /// Concrete head commit SHA actually resolved and diffed.
+    pub head_sha: String,
     /// Coarse crate names touched, derived from `crates/<name>/...` path
     /// prefixes only (see module doc comment).
     pub changed_crates: Vec<String>,
@@ -122,6 +126,12 @@ pub fn seam_diff(base_sha: &str, head_sha: &str, root: &Path) -> Result<SeamDiff
     let resolved = change_set::resolve_change_set_with_mode(identity, root, DiffMode::DirectTwoDot)
         .context("seam-diff: failed to resolve change set")?;
 
+    let base_sha = resolved
+        .base_sha
+        .ok_or_else(|| eyre!("seam-diff: resolver returned no base SHA for a commit range"))?;
+    let head_sha = resolved
+        .head_sha
+        .ok_or_else(|| eyre!("seam-diff: resolver returned no head SHA for a commit range"))?;
     let changed_files = resolved.changed_paths;
     let changed_crates = derive_changed_crates(&changed_files);
     let is_empty = changed_files.is_empty();
@@ -130,7 +140,14 @@ pub fn seam_diff(base_sha: &str, head_sha: &str, root: &Path) -> Result<SeamDiff
         diff_class == "prose_only" || diff_class == "docs_as_code"
     };
 
-    Ok(SeamDiffReport { changed_files, changed_crates, is_empty, is_non_substantive })
+    Ok(SeamDiffReport {
+        base_sha,
+        head_sha,
+        changed_files,
+        changed_crates,
+        is_empty,
+        is_non_substantive,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -139,7 +156,8 @@ pub fn seam_diff(base_sha: &str, head_sha: &str, root: &Path) -> Result<SeamDiff
 
 /// Configuration for the `seam-diff` subcommand.
 pub struct SeamDiffConfig {
-    /// Review-epoch marker base SHA to diff from.
+    /// Review-epoch marker base SHA to diff from. See
+    /// `.claude/reference/review-convergence.md` § Review-epoch markers.
     pub base: String,
     /// Head git ref/SHA to diff to.
     pub head: String,
@@ -168,7 +186,7 @@ pub fn run(config: SeamDiffConfig) -> Result<()> {
 
     match config.format.as_str() {
         "human" => {
-            println!("Seam diff: {} -> {}", config.base, config.head);
+            println!("Seam diff: {} -> {}", report.base_sha, report.head_sha);
             println!("Changed files ({}):", report.changed_files.len());
             for file in &report.changed_files {
                 println!("  {file}");
@@ -183,8 +201,8 @@ pub fn run(config: SeamDiffConfig) -> Result<()> {
         }
         "json" => {
             let json = serde_json::json!({
-                "base": config.base,
-                "head": config.head,
+                "base": report.base_sha,
+                "head": report.head_sha,
                 "changed_files": report.changed_files,
                 "changed_crates": report.changed_crates,
                 "is_empty": report.is_empty,
@@ -271,6 +289,8 @@ mod tests {
         let epoch = head_sha(&repo)?;
 
         let report = seam_diff(&epoch, "HEAD", &repo)?;
+        ensure!(report.base_sha == epoch, "report must retain the resolved base SHA");
+        ensure!(report.head_sha == epoch, "report must retain the resolved head SHA");
         ensure!(
             report.changed_files.is_empty(),
             "expected no changed files, got {:?}",
