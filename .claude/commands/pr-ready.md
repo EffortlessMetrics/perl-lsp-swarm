@@ -15,7 +15,7 @@ Extract the PR number from $ARGUMENTS. If not provided, list open draft PRs:
 ```bash
 gh pr list --state open --draft --json number,title,headRefName --template '{{range .}}#{{.number}} {{.title}} ({{.headRefName}}){{"\n"}}{{end}}'
 ```
-> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(owner, repo, state:"open")` then filter client-side for `draft: true`.
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(owner, repo, state:"open")` then filter client-side for `isDraft: true`.
 
 ### 2. Verify PR exists and is a draft
 

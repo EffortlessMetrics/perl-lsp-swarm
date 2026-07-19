@@ -58,7 +58,7 @@ Message `lead-discovery` when the builder-ready queue is running low.
 - **In-flight PRs**: `gh pr list --state open --json number,title,labels`  
   *MCP:* `mcp__github__list_pull_requests(owner, repo, state:"open")`
 - **Draft PRs needing continuation**: `gh pr list --draft --state open`  
-  *MCP:* `mcp__github__list_pull_requests(owner, repo, state:"open")` then filter `draft: true`
+  *MCP:* `mcp__github__list_pull_requests(owner, repo, state:"open")` then filter `isDraft: true`
 
 ## Workers you spawn
 
