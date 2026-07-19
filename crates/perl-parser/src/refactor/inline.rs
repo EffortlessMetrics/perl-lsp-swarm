@@ -510,6 +510,12 @@ fn body_calls_self(body: &str, sub_name: &str) -> bool {
 /// (e.g. `add` inside `add_count`). Prevents a call to `add_count` from being
 /// misread as a call to `add`.
 fn find_identifier_boundary(haystack: &str, needle: &str) -> Option<usize> {
+    // An empty needle has zero length, so advancing the scan cursor by the
+    // match length below would never make progress — guard it explicitly. An
+    // empty sub name is never a real call target.
+    if needle.is_empty() {
+        return None;
+    }
     let mut start = 0;
     while let Some(rel) = haystack[start..].find(needle) {
         let pos = start + rel;
@@ -841,6 +847,29 @@ sub choose {
         assert!(
             matches!(err, Err(InlineError::CallSiteParseFailed { .. })),
             "a substring name collision must be rejected, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn extract_call_args_rejects_empty_sub_name() {
+        // #3914 follow-up: an empty sub name must not hang the boundary scan
+        // (`find("")` matches at a zero-length step forever); it is never a
+        // real call target.
+        assert!(matches!(
+            extract_call_args("foo(1, 2)", ""),
+            Err(InlineError::CallSiteParseFailed { .. })
+        ));
+    }
+
+    #[test]
+    fn extract_call_args_treats_package_separator_as_boundary() {
+        // Documents current (unchanged) behavior: `::` is a boundary, so a bare
+        // `add` boundary-matches inside `Foo::add(...)`. This is a known
+        // limitation outside #3914's scope (add vs add_count), not a regression
+        // — the pre-fix substring search behaved identically.
+        assert_eq!(
+            extract_call_args("Foo::add(1, 2)", "add").ok(),
+            Some(vec!["1".to_string(), "2".to_string()])
         );
     }
 
