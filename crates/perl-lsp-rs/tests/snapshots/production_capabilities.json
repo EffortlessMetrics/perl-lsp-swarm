@@ -77,6 +77,7 @@
       "perl.goToImplementation",
       "perl.explainProviderDecision",
       "perl.workspaceTrustReport",
+      "perl.agentContext",
       "perl.previewSafeDelete",
       "perl.safeDeleteSymbol",
       "perl.previewPackageRename",

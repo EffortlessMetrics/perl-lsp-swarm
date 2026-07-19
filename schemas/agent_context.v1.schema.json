@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/agent_context.v1.schema.json",
+  "title": "Perl LSP agent context v1",
+  "description": "Read-only, versioned orientation payload for agentic LSP clients.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "command",
+    "user_message",
+    "readiness",
+    "workspace",
+    "features",
+    "commands",
+    "setup_hints",
+    "recommended_workflow",
+    "claim_boundary"
+  ],
+  "properties": {
+    "schema_version": { "const": "agent_context.v1" },
+    "command": { "const": "perl.agentContext" },
+    "user_message": { "type": "string" },
+    "readiness": {
+      "type": "object",
+      "required": ["status", "workspace_root_class", "trust_report_command", "guidance"],
+      "properties": {
+        "status": { "enum": ["ready", "needs_attention"] },
+        "workspace_root_class": { "enum": ["none", "single_root", "multi_root"] },
+        "trust_report_command": { "const": "perl.workspaceTrustReport" },
+        "guidance": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "required": ["workspace_folder_count", "open_document_count"]
+    },
+    "features": { "type": "array", "items": { "type": "string" } },
+    "commands": { "type": "array", "items": { "type": "string" } },
+    "setup_hints": { "type": ["object", "null"] },
+    "recommended_workflow": { "type": "array", "minItems": 4 },
+    "claim_boundary": { "type": "string" }
+  }
+}

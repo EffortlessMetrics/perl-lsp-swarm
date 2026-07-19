@@ -282,6 +282,9 @@ impl ExecuteCommandProvider {
             "perl.workspaceTrustReport" => {
                 Err("perl.workspaceTrustReport requires the live LSP runtime state".to_string())
             }
+            "perl.agentContext" => {
+                Err("perl.agentContext requires the live LSP runtime state".to_string())
+            }
             "perl.previewSafeDelete" => {
                 Err("perl.previewSafeDelete requires the live LSP runtime workspace index"
                     .to_string())
@@ -1692,6 +1695,7 @@ pub fn get_supported_commands() -> Vec<String> {
         "perl.goToImplementation".to_string(),
         "perl.explainProviderDecision".to_string(),
         "perl.workspaceTrustReport".to_string(),
+        "perl.agentContext".to_string(),
         "perl.previewSafeDelete".to_string(),
         "perl.safeDeleteSymbol".to_string(),
         "perl.previewPackageRename".to_string(),

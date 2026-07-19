@@ -38,6 +38,10 @@ fn test_error(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message.into())
 }
 
+fn require(condition: bool, message: impl Into<String>) -> Result<(), Box<dyn std::error::Error>> {
+    if condition { Ok(()) } else { Err(test_error(message).into()) }
+}
+
 fn sorted_object_keys_at(
     value: &Value,
     pointer: &str,
@@ -63,6 +67,21 @@ fn workspace_trust_report_schema() -> Result<Value, Box<dyn std::error::Error>> 
         .join("..")
         .join("schemas")
         .join("workspace_trust_report.v1.schema.json");
+    let schema_text = std::fs::read_to_string(&schema_path).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("failed to read {}: {error}", schema_path.display()),
+        )
+    })?;
+    Ok(serde_json::from_str(&schema_text)?)
+}
+
+fn agent_context_schema() -> Result<Value, Box<dyn std::error::Error>> {
+    let schema_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("schemas")
+        .join("agent_context.v1.schema.json");
     let schema_text = std::fs::read_to_string(&schema_path).map_err(|error| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -308,11 +327,189 @@ fn test_execute_command_capabilities() -> Result<(), Box<dyn std::error::Error>>
     assert!(command_strs.contains(&"perl.runCritic"));
     assert!(command_strs.contains(&"perl.explainProviderDecision"));
     assert!(command_strs.contains(&"perl.workspaceTrustReport"));
+    require(command_strs.contains(&"perl.agentContext"), "perl.agentContext should be advertised")?;
     assert!(command_strs.contains(&"perl.previewSafeDelete"));
     assert!(command_strs.contains(&"perl.safeDeleteSymbol"));
     assert!(command_strs.contains(&"perl.previewPackageRename"));
     assert!(command_strs.contains(&"perl.explainMissingModuleLookup"));
 
+    Ok(())
+}
+
+#[test]
+fn test_execute_command_agent_context() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let root_path = temp_dir.path().to_string_lossy().to_string();
+    let server = setup_server(Some(root_path.clone()));
+
+    let configuration_request = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "workspace/didChangeConfiguration".to_string(),
+        params: Some(json!({
+            "settings": {
+                "perl": {
+                    "workspace": {
+                        "includePaths": ["lib"],
+                        "useSystemInc": true,
+                        "perlPath": "/usr/bin/perl"
+                    }
+                }
+            }
+        })),
+        id: None,
+    };
+    let _ = server.handle_request(configuration_request);
+
+    let execute_request = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "workspace/executeCommand".to_string(),
+        params: Some(json!({
+            "command": "perl.agentContext",
+            "arguments": []
+        })),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(3_i64)),
+    };
+    let response =
+        server.handle_request(execute_request).ok_or("No response from agent context command")?;
+    let result = response.result.ok_or("No result in agent context response")?;
+
+    let schema = agent_context_schema()?;
+    assert_schema_required_fields_present(&result, &schema, "/required", "agent context")?;
+    assert_schema_required_fields_present(
+        result.get("readiness").ok_or("missing readiness")?,
+        &schema,
+        "/properties/readiness/required",
+        "agent context readiness",
+    )?;
+    require(
+        result.get("schema_version").and_then(Value::as_str) == Some("agent_context.v1"),
+        "agent context schema version should be agent_context.v1",
+    )?;
+    require(
+        result.get("command").and_then(Value::as_str) == Some("perl.agentContext"),
+        "agent context command should be perl.agentContext",
+    )?;
+    require(
+        result.pointer("/readiness/status").and_then(Value::as_str) == Some("ready"),
+        "configured workspace should be ready",
+    )?;
+    require(
+        result.pointer("/readiness/guidance").and_then(Value::as_array).is_some_and(Vec::is_empty),
+        "ready workspace should return an empty guidance list",
+    )?;
+    require(
+        result
+            .get("features")
+            .and_then(Value::as_array)
+            .is_some_and(|features| !features.is_empty()),
+        "agent context should include advertised features",
+    )?;
+    require(
+        result.get("commands").and_then(Value::as_array).is_some_and(|commands| {
+            commands.iter().any(|command| {
+                command.as_str() == Some("perl.agentContext")
+                    && commands
+                        .iter()
+                        .any(|entry| entry.as_str() == Some("perl.workspaceTrustReport"))
+            })
+        }),
+        "agent context should include canonical commands",
+    )?;
+    require(
+        result.pointer("/recommended_workflow/0/step").and_then(Value::as_str) == Some("orient"),
+        "workflow should begin with orientation",
+    )?;
+    require(
+        result.pointer("/recommended_workflow/3/step").and_then(Value::as_str)
+            == Some("preview_edits"),
+        "workflow should end with preview edits",
+    )?;
+    require(
+        !result.to_string().contains(&root_path),
+        "agent context must not expose the raw workspace root",
+    )?;
+    require(
+        !result.to_string().contains("/usr/bin/perl"),
+        "agent context must not expose the configured Perl path",
+    )?;
+    require(
+        result
+            .get("claim_boundary")
+            .and_then(Value::as_str)
+            .is_some_and(|claim| claim.contains("does not scan files")),
+        "agent context should state its no-scan boundary",
+    )?;
+
+    Ok(())
+}
+
+#[test]
+fn test_execute_command_agent_context_reports_setup_guidance()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server(None);
+    let configuration_request = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "workspace/didChangeConfiguration".to_string(),
+        params: Some(json!({
+            "settings": {
+                "perl": {
+                    "workspace": {
+                        "includePaths": [""]
+                    }
+                }
+            }
+        })),
+        id: None,
+    };
+    let _ = server.handle_request(configuration_request);
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "workspace/executeCommand".to_string(),
+        params: Some(json!({
+            "command": "perl.agentContext",
+            "arguments": []
+        })),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(5_i64)),
+    };
+
+    let response = server.handle_request(request).ok_or("No response")?;
+    let result = response.result.ok_or("No result")?;
+    require(
+        result.pointer("/readiness/status").and_then(Value::as_str) == Some("needs_attention"),
+        "invalid setup should need attention",
+    )?;
+    require(
+        result.pointer("/readiness/guidance").and_then(Value::as_array).is_some_and(|guidance| {
+            guidance.iter().any(|hint| {
+                hint.get("code").and_then(Value::as_str) == Some("include_path_empty_entry")
+            })
+        }),
+        "invalid include path should produce guidance",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn test_execute_command_agent_context_rejects_arguments() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = setup_server(None);
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "workspace/executeCommand".to_string(),
+        params: Some(json!({
+            "command": "perl.agentContext",
+            "arguments": [{}]
+        })),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(4_i64)),
+    };
+
+    let response = server.handle_request(request).ok_or("No response")?;
+    let error = response.error.ok_or("Expected invalid-params error")?;
+    require(error.code == -32602, "agent context arguments should be invalid")?;
+    require(
+        error.message.contains("does not accept arguments"),
+        "agent context should explain its empty-arguments contract",
+    )?;
     Ok(())
 }
 

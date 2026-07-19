@@ -1584,6 +1584,12 @@ impl LspServer {
                 "perl.workspaceTrustReport" => {
                     return self.workspace_trust_report(arguments.first());
                 }
+                "perl.agentContext" => {
+                    if !arguments.is_empty() {
+                        return Err(invalid_params("perl.agentContext does not accept arguments"));
+                    }
+                    return self.agent_context();
+                }
                 "perl.previewSafeDelete" => {
                     let request = arguments
                         .first()

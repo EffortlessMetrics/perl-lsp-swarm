@@ -127,6 +127,7 @@ pub fn get_supported_commands() -> Vec<String> {
         "perl.goToImplementation".to_string(),
         "perl.explainProviderDecision".to_string(),
         "perl.workspaceTrustReport".to_string(),
+        "perl.agentContext".to_string(),
         "perl.previewSafeDelete".to_string(),
         "perl.safeDeleteSymbol".to_string(),
         "perl.previewPackageRename".to_string(),

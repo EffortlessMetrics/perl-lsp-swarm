@@ -11,6 +11,8 @@ use std::sync::atomic::Ordering;
 const WORKSPACE_TRUST_REPORT_SCHEMA_VERSION: &str = "workspace_trust_report.v1";
 const WORKSPACE_TRUST_REPORT_COPYABLE_PAYLOAD_SCHEMA_VERSION: &str =
     "workspace_trust_report_copyable.v1";
+const AGENT_CONTEXT_SCHEMA_VERSION: &str = "agent_context.v1";
+const AGENT_CONTEXT_COMMAND: &str = "perl.agentContext";
 const SUPPORT_TIER_LINK: &str = "docs/project/status/SUPPORT_TIERS.md#claim-rows";
 const DYNAMIC_BOUNDARY_POLICY: &str = "Generated, dynamic, stale, low-confidence, ambiguous, and fallback facts remain labeled, gated, or blocked according to each provider support tier.";
 
@@ -293,6 +295,69 @@ fn workspace_root_hash(workspace_roots: &[String]) -> Option<String> {
     Some(format!("{:x}", md5::compute(roots.join("\n"))))
 }
 
+fn agent_context_guidance(report: &Value) -> (String, Vec<Value>) {
+    let guidance = report
+        .pointer("/setup_hints/hints")
+        .and_then(Value::as_array)
+        .map(|hints| {
+            hints
+                .iter()
+                .filter(|hint| {
+                    matches!(
+                        hint.get("severity").and_then(Value::as_str),
+                        Some("warning" | "error")
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let readiness = if guidance.is_empty() { "ready" } else { "needs_attention" };
+    (readiness.to_string(), guidance)
+}
+
+fn agent_context_workflow() -> Value {
+    json!([
+        {
+            "step": "orient",
+            "command": AGENT_CONTEXT_COMMAND,
+            "purpose": "Read the versioned feature, trust, and next-action summary."
+        },
+        {
+            "step": "guidance",
+            "command": "perl.workspaceTrustReport",
+            "purpose": "Inspect setup hints and the report-only claim boundary."
+        },
+        {
+            "step": "evidence",
+            "method": "textDocument/diagnostic",
+            "receipt_command": "perl.explainProviderDecision",
+            "purpose": "Request diagnostics, then inspect the provider evidence when a decision needs explanation."
+        },
+        {
+            "step": "preview_edits",
+            "commands": ["perl.previewSafeDelete", "perl.previewPackageRename"],
+            "purpose": "Preview an edit-producing action before asking the client to apply changes."
+        }
+    ])
+}
+
+fn agent_context_setup_hints(report: &Value) -> Value {
+    let mut setup_hints = report.get("setup_hints").cloned().unwrap_or_else(|| json!({}));
+    if let Some(perl_binary) = setup_hints.get_mut("perl_binary").and_then(Value::as_object_mut) {
+        let configured = perl_binary
+            .get("configured_path")
+            .and_then(Value::as_str)
+            .is_some_and(|path| !path.trim().is_empty());
+        perl_binary.insert(
+            "configured_path".to_string(),
+            if configured { json!("configured") } else { Value::Null },
+        );
+    }
+    setup_hints
+}
+
 fn workspace_trust_copyable_payload(
     workspace_roots: &[String],
     workspace_folder_count: usize,
@@ -423,6 +488,55 @@ fn index_report(server: &LspServer) -> Value {
 }
 
 impl LspServer {
+    pub(crate) fn agent_context(&self) -> Result<Option<Value>, JsonRpcError> {
+        let report = self.workspace_trust_report(None)?.ok_or_else(|| JsonRpcError {
+            code: -32603,
+            message: "perl.agentContext could not construct the workspace trust report".to_string(),
+            data: None,
+        })?;
+        let (readiness, guidance) = agent_context_guidance(&report);
+        let advertised_features = self.advertised_features.lock().to_feature_ids();
+        let commands = perl_lsp_rs_core::protocol::capabilities::get_supported_commands();
+        let setup_hints = agent_context_setup_hints(&report);
+        let workspace_root_class = if report
+            .pointer("/workspace/root_path")
+            .is_some_and(|root| root.as_str().is_some_and(|value| !value.trim().is_empty()))
+        {
+            if report
+                .pointer("/workspace/workspace_folder_count")
+                .and_then(Value::as_u64)
+                .is_some_and(|count| count > 1)
+            {
+                "multi_root"
+            } else {
+                "single_root"
+            }
+        } else {
+            "none"
+        };
+
+        Ok(Some(json!({
+            "schema_version": AGENT_CONTEXT_SCHEMA_VERSION,
+            "command": AGENT_CONTEXT_COMMAND,
+            "user_message": "Perl LSP agent context is ready for deterministic orientation.",
+            "readiness": {
+                "status": readiness,
+                "workspace_root_class": workspace_root_class,
+                "trust_report_command": "perl.workspaceTrustReport",
+                "guidance": guidance,
+            },
+            "workspace": {
+                "workspace_folder_count": report.pointer("/workspace/workspace_folder_count"),
+                "open_document_count": report.pointer("/workspace/open_document_count"),
+            },
+            "features": advertised_features,
+            "commands": commands,
+            "setup_hints": setup_hints,
+            "recommended_workflow": agent_context_workflow(),
+            "claim_boundary": "This context summarizes current server state and canonical registries only. It does not scan files, probe Perl, run perldoc, launch DAP, emit telemetry, or mutate configuration.",
+        })))
+    }
+
     pub(crate) fn workspace_trust_report(
         &self,
         argument: Option<&Value>,

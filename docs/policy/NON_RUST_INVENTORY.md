@@ -1885,6 +1885,7 @@
 | `queries/highlights.scm` | `scm` |
 | `ripr/pr/pr.diff` | `diff` |
 | `ripr/pr/repo-exposure.json` | `json` |
+| `schemas/agent_context.v1.schema.json` | `json` |
 | `schemas/diagnostic_explanation.v1.schema.json` | `json` |
 | `schemas/documentation-standards.schema.yml` | `yml` |
 | `schemas/oracle_fixture_manifest.v1.schema.json` | `json` |

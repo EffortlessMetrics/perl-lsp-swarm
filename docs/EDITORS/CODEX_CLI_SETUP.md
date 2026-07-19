@@ -130,6 +130,31 @@ Inside Codex, run:
 
 Confirm the `perl_lsp` MCP server is listed and tools are available.
 
+### Orient an agentic client with one LSP request
+
+An LSP-to-MCP bridge can forward the additive `workspace/executeCommand`
+orientation command. Send this request before composing provider-specific calls:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "workspace/executeCommand",
+  "params": {
+    "command": "perl.agentContext",
+    "arguments": []
+  }
+}
+```
+
+The `agent_context.v1` response reports current readiness, canonical advertised
+features and commands, deterministic setup guidance, and the safe next actions.
+Use the actions in order: orient with `perl.agentContext`, follow guidance from
+`perl.workspaceTrustReport`, request diagnostics/provider evidence, then preview
+edit-producing operations before applying workspace edits. The command is
+read-only: it does not scan the workspace, probe Perl, run `perldoc`, launch DAP,
+emit telemetry, or change configuration.
+
 Good test prompts:
 
 ```text

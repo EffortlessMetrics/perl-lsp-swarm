@@ -1795,6 +1795,7 @@ fn test_supported_commands_includes_all_advertised() {
         "perl.debugFile",
         "perl.debugTest",
         "perl.workspaceTrustReport",
+        "perl.agentContext",
         "perl.explainMissingModuleLookup",
     ];
     for cmd in &required {
