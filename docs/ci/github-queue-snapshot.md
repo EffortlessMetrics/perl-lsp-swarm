@@ -3,7 +3,7 @@
 Status: active
 Scope: read-only queue observation
 Owner: issue [#4554](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4554)
-Authority map: [CONTROL_PLANE_AUTHORITY.md](../reference/CONTROL_PLANE_AUTHORITY.md)
+Authority-map rollout: issue [#4561](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4561)
 
 `cargo xtask queue snapshot` captures a stable JSON snapshot of open PR state.
 It is a navigation and reconciliation input, not merge authorization and not a
