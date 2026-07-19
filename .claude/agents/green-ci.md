@@ -68,14 +68,14 @@ BASE_BRANCH=$(printf '%s' "$PR_STATE" | jq -r '.baseRefName')
 ### 2. Discover live required policy and compare the mirror
 
 Read every page of rules applying to the base branch and the classic required
-status-check policy. A 404 from the classic endpoint is ambiguous: it may mean
-"no classic protection" or "the token cannot read protection." Unless a
-permissioned canonical collector independently proves absence, return
-`NOT_PROVEN` rather than treating 404 as an empty policy.
+status-check policy. A classic required-status-checks 404 is accepted as an
+empty classic source only when the same token can read the branch and every
+applicable ruleset page. A missing branch, ruleset failure, permission failure,
+or any non-404 error is `NOT_PROVEN`.
 
 The procedure below preserves app/integration identity instead of reducing live
 requirements to context names prematurely. A genuinely empty required-check set
-is valid only when both live sources were read successfully and the checked-in
+is valid only when the live sources were read successfully and the checked-in
 mirror is also empty.
 
 ```bash
@@ -99,9 +99,16 @@ fi
 if ! gh api \
   "repos/:owner/:repo/branches/$BASE_BRANCH/protection/required_status_checks" \
   >"$POLICY_DIR/classic.json" 2>"$POLICY_DIR/classic.err"; then
-  cat "$POLICY_DIR/classic.err" >&2
-  echo "NOT_PROVEN: classic required-check policy is absent or inaccessible; the API result is ambiguous" >&2
-  exit 2
+  if grep -q 'HTTP 404' "$POLICY_DIR/classic.err" &&
+     gh api "repos/:owner/:repo/branches/$BASE_BRANCH" \
+       >"$POLICY_DIR/branch.json" 2>"$POLICY_DIR/branch.err"; then
+    printf '{"contexts":[],"checks":[]}\n' >"$POLICY_DIR/classic.json"
+  else
+    cat "$POLICY_DIR/classic.err" >&2
+    test ! -s "$POLICY_DIR/branch.err" || cat "$POLICY_DIR/branch.err" >&2
+    echo "NOT_PROVEN: classic required-check policy is inaccessible or the branch could not be verified" >&2
+    exit 2
+  fi
 fi
 
 if ! jq -e 'type == "array"' "$POLICY_DIR/rules.json" >/dev/null; then
