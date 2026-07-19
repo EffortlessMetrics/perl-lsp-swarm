@@ -16,7 +16,7 @@
 ## Active Blockers
 
 - crates.io, VS Code Marketplace, Open VSX, Docker, and Homebrew receipts remain pending or not proven in this repository ledger.
-- Remaining work is operational: finish `v0.17.0` prep verification, then publish and record final channel receipts
+- Remaining work is operational: verify the existing `v0.17.0` release receipt and close the remaining channel receipts; do not dispatch release orchestration for an already-shipped train.
 
 ## 0.15.2 Hotfix Receipts (2026-05-26)
 

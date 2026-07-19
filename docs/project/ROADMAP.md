@@ -531,7 +531,7 @@ dedicated release-lineage plan.
 - **API and wire-behavior stability:** document which facade APIs and LSP responses are compatibility commitments before `v1.0.0`.
 - **Large-workspace performance:** keep indexing, completion, and provider latency measured on realistic file and symbol counts before expanding advertised performance claims.
 - **Security and supply chain:** tighten subprocess environment seams, publish/install verification, SBOM/signature posture, and dependency freshness policy.
-- **Distribution maturity:** make Homebrew, Docker, crates.io, VS Code Marketplace, Open VSX, and GitHub Releases behave like one coherent public-beta install story
+- **Distribution maturity:** make Homebrew, Docker, crates.io, VS Code Marketplace, Open VSX, and GitHub Releases behave like one coherent public-beta install story.
 
 ## Milestone Ladder
 

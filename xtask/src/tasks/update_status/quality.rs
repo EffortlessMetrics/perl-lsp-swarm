@@ -62,7 +62,7 @@ pub(super) fn collect_per_crate_mutation(root: &Path) -> BTreeMap<String, usize>
     by_crate
 }
 
-/// Run `cargo test --workspace --lib -- --list` and return a map of crate-name → test count.
+/// Run `cargo test --workspace --lib -- --list` and return per-crate counts plus unowned tests.
 ///
 /// `cargo test -- --list` writes crate headers ("Running unittests …") to stderr and test
 /// names to stdout.  `run_cmd_merged` (shell `2>&1`) ensures headers appear immediately
