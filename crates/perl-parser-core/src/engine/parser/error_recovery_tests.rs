@@ -1101,6 +1101,37 @@ fn test_unclosed_qw_recovers_block_form_starters() -> Result<(), String> {
     Ok(())
 }
 
+/// Leading-qualified declaration names are valid parser forms and must remain
+/// recovery boundaries after an unclosed `qw(`.
+#[test]
+fn test_unclosed_qw_recovers_leading_qualified_declarations() -> Result<(), String> {
+    for (label, code, name, marker) in [
+        ("sub leading-qualified", "my @a = qw(word\nsub ::PCDATA { 1; }", "PCDATA", "\"sub\""),
+        (
+            "package leading-qualified",
+            "my @a = qw(word\npackage ::My::App { 1; }",
+            "My::App",
+            "\"package\"",
+        ),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] parse failed: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        if statements.len() != 2
+            || matches!(&statements[1].kind, NodeKind::Error { .. })
+            || sexp.contains(marker)
+            || !sexp.contains(name)
+            || parser.errors().is_empty()
+        {
+            return Err(format!("[{label}] qualified declaration was swallowed: {sexp}"));
+        }
+    }
+    Ok(())
+}
+
 /// #4491 review (codex P2): a strong block starter must recover even when another
 /// line-start statement follows it — the block shape is self-contained, so the
 /// declaration is not swallowed into the qw just because more code trails it.

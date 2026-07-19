@@ -3346,6 +3346,7 @@ impl<'a> PerlLexer<'a> {
                 return true;
             }
             (false, TokenType::Identifier(_)) => {}
+            (false, TokenType::Operator(operator)) if is_named && operator.as_ref() == "::" => {}
             (false, TokenType::Keyword(_)) if keyword == "sub" => {}
             (false, TokenType::Version(version))
                 if keyword == "sub" && !version.as_ref().contains('.') => {}
