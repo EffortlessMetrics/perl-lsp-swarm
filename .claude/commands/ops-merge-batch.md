@@ -60,14 +60,14 @@ proof after the first merge; do not automatically mutate its head.
 
 ### 2. Capture one live readiness packet per PR
 
-Immediately before each merge, query the PR head and GitHub's combined status
-rollup together:
+Immediately before preparing a merge, query the PR head and GitHub's combined
+status rollup together:
 
 ```bash
 PR_NUMBER=<decimal-pr-number>
 [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || { echo "invalid PR number" >&2; exit 2; }
 PR_STATE=$(gh pr view "$PR_NUMBER" \
-  --json isDraft,mergeable,mergeStateStatus,labels,headRefOid,baseRefOid,reviewRequests,reviewDecision,statusCheckRollup,title)
+  --json isDraft,mergeable,mergeStateStatus,labels,headRefOid,baseRefName,baseRefOid,reviewRequests,reviewDecision,statusCheckRollup,title)
 EXPECTED_HEAD=$(printf '%s' "$PR_STATE" | jq -r '.headRefOid')
 printf '%s' "$PR_STATE" | jq -r '
   .statusCheckRollup[] |
@@ -87,10 +87,10 @@ the current PR head. Querying `check-runs` alone can omit required or advisory
 contexts published through the commit-status API. Fetch a focused underlying
 run/status only when duplicate or terminal evidence needs classification.
 
-> **MCP alternative:** fetch the PR, its combined current-head status rollup (or
-> both check-run and commit-status contexts), review threads, and requested
-> reviews through the canonical connector map. Keep the packet bound to the
-> captured full head SHA.
+> **Connector alternative:** fetch the PR, its combined current-head status
+> rollup (or both check-run and commit-status contexts), review threads, and
+> requested reviews through the canonical connector map. Keep the packet bound
+> to the captured full head SHA.
 
 Required at merge time:
 
@@ -128,16 +128,24 @@ GitHub evidence.
 Do not paste a PR title or body into shell source. Both are contributor-controlled
 text and may contain quotes, substitutions, backticks, or newlines.
 
-Create the reviewed summary as data in a temporary file:
+Create the reviewed summary as data in a temporary file and reject the template
+placeholder or an empty/whitespace-only message:
 
 ```bash
 SUMMARY_FILE=$(mktemp)
 PAYLOAD_FILE=$(mktemp)
 trap 'rm -f "$SUMMARY_FILE" "$PAYLOAD_FILE"' EXIT
 
+SUMMARY_PLACEHOLDER='<one to three reviewed sentences explaining what changed and why>'
 cat >"$SUMMARY_FILE" <<'SUMMARY'
 <one to three reviewed sentences explaining what changed and why>
 SUMMARY
+
+if grep -Fqx "$SUMMARY_PLACEHOLDER" "$SUMMARY_FILE" ||
+   ! grep -q '[^[:space:]]' "$SUMMARY_FILE"; then
+  echo "BLOCKED: replace the squash-message placeholder with a reviewed summary" >&2
+  exit 2
+fi
 
 PR_TITLE=$(printf '%s' "$PR_STATE" | jq -r '.title')
 COMMIT_TITLE="$PR_TITLE (#$PR_NUMBER)"
@@ -158,15 +166,60 @@ jq -n \
 `jq --arg` and `--rawfile` encode untrusted text as JSON data; no PR-controlled
 text is evaluated by the shell.
 
-### 5. Re-read and squash-merge the expected head
+### 5. Recollect the complete readiness packet immediately before merge
+
+Do not reuse Step 2 or Step 3 results after message preparation or other
+operator work. Immediately before the irreversible call:
+
+1. query a fresh `PR_STATE` with the same complete field set;
+2. require the head still equals `EXPECTED_HEAD`;
+3. rerun the full live-policy and combined-rollup procedure from
+   `.claude/agents/green-ci.md` and require `GREEN` for that head;
+4. rerun `scripts/ci/check-pr-review-convergence "$PR_NUMBER"`;
+5. rerun `just pre-merge-check "$PR_NUMBER"`;
+6. re-evaluate draft, mergeability, routing labels, Changie/policy, and applicable
+   integration evidence from the fresh packet;
+7. rebuild `PAYLOAD_FILE` from the reviewed message and unchanged head;
+8. re-read `headRefOid` once more immediately before the API call.
 
 ```bash
+FINAL_STATE=$(gh pr view "$PR_NUMBER" \
+  --json isDraft,mergeable,mergeStateStatus,labels,headRefOid,baseRefName,baseRefOid,reviewRequests,reviewDecision,statusCheckRollup,title)
+FINAL_HEAD=$(printf '%s' "$FINAL_STATE" | jq -r '.headRefOid')
+test "$FINAL_HEAD" = "$EXPECTED_HEAD" || {
+  echo "RETURN TO REVIEW: head moved from $EXPECTED_HEAD to $FINAL_HEAD" >&2
+  exit 1
+}
+
+# Run the complete green-ci live-policy/rollup procedure here and require GREEN.
+scripts/ci/check-pr-review-convergence "$PR_NUMBER"
+just pre-merge-check "$PR_NUMBER"
+
+# Rebuild the payload after final readiness succeeds.
+PR_TITLE=$(printf '%s' "$FINAL_STATE" | jq -r '.title')
+COMMIT_TITLE="$PR_TITLE (#$PR_NUMBER)"
+jq -n \
+  --arg merge_method "squash" \
+  --arg sha "$EXPECTED_HEAD" \
+  --arg commit_title "$COMMIT_TITLE" \
+  --rawfile commit_message "$SUMMARY_FILE" \
+  '{merge_method:$merge_method,sha:$sha,commit_title:$commit_title,commit_message:$commit_message}' \
+  >"$PAYLOAD_FILE"
+
 CURRENT_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)
 test "$CURRENT_HEAD" = "$EXPECTED_HEAD" || {
   echo "RETURN TO REVIEW: head moved from $EXPECTED_HEAD to $CURRENT_HEAD" >&2
   exit 1
 }
+```
 
+If any fresh input is pending, failed, stale, contradictory, or `NOT_PROVEN`, do
+not merge. GitHub's endpoint still re-enforces live protections, but that is a
+last line of defense, not a substitute for recollecting repository readiness.
+
+### 6. Squash-merge only the expected head
+
+```bash
 gh api -X PUT "repos/:owner/:repo/pulls/$PR_NUMBER/merge" \
   --input "$PAYLOAD_FILE"
 ```
@@ -178,16 +231,18 @@ compare-and-swap guard and does not bypass protection. Use no admin/bypass
 credential or exception path. A 405/409/422 policy or SHA rejection is
 `BLOCKED`/`RETURN TO REVIEW`, not permission to retry with weaker protection.
 
-> **MCP alternative:** call the normal protected merge endpoint with
-> `merge_method: "squash"`, the reviewed title/message as data fields, and
-> `expected_head_sha: <full sha>`.
+> **Connector alternative:** inspect the selected merge tool's actual schema.
+> Use `expected_head_sha` only when that field is explicitly supported by the
+> connector, or use the raw REST endpoint's `sha` field. If the selected tool
+> exposes neither an expected-head field nor the raw protected endpoint, return
+> `NOT_PROVEN`; do not invent an argument or merge without compare-and-swap.
 
 If the head moved, the merge must fail closed and return to current-head review.
 Never silently merge the replacement head.
 
 Do not use `--admin`, protection bypass, or naked force operations.
 
-### 6. Verify and reconcile
+### 7. Verify and reconcile
 
 After a successful merge:
 
@@ -203,7 +258,7 @@ A squash merge means the feature branch's commit ancestry is not the mainline
 history. Do not use commit ancestry alone to decide that a worktree or unique
 branch delta is safe to delete.
 
-### 7. Handle non-ready results precisely
+### 8. Handle non-ready results precisely
 
 - `CONFLICTING` → inspect mechanical versus semantic conflict; select a reviewed
   resolution strategy.
@@ -219,7 +274,7 @@ branch delta is safe to delete.
 - integration basis stale → refresh integration proof; do not automatically
   change the PR head.
 
-### 8. Verify main health at bounded checkpoints
+### 9. Verify main health at bounded checkpoints
 
 After a high-risk parser/lexer/public-API merge, or after the batch, verify the
 latest `main` run for the merged SHA. Halt when `main` has a real required
