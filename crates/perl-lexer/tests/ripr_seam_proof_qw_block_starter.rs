@@ -34,6 +34,11 @@ fn block_form_starters_end_the_qw_token() -> Result<(), String> {
         ("sub leading-qualified block", "my @a = qw(word\nsub ::PCDATA { 1; }", "sub"),
         ("sub multiline block", "my @a = qw(word\nsub run\n{ print 1; }", "sub"),
         ("sub multiline prototype block", "my @a = qw(word\nsub run\n($) { print 1; }", "sub"),
+        (
+            "sub multiline prototype string block",
+            "my @a = qw(word\nsub run\n($x = \")\") { print 1; }",
+            "sub",
+        ),
         ("package block", "my @a = qw(word\npackage Foo { 1; }", "package"),
         ("package leading-qualified block", "my @a = qw(word\npackage ::My::App { 1; }", "package"),
         ("package multiline block", "my @a = qw(word\npackage Foo\n{ 1; }", "package"),

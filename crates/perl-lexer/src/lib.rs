@@ -3586,8 +3586,21 @@ impl<'a> PerlLexer<'a> {
             return false;
         }
         let mut depth = 0usize;
+        let mut quote = None;
+        let mut escaped = false;
         for (index, character) in trimmed.char_indices() {
+            if let Some(delimiter) = quote {
+                if escaped {
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == delimiter {
+                    quote = None;
+                }
+                continue;
+            }
             match character {
+                '\'' | '"' => quote = Some(character),
                 '(' => depth = depth.saturating_add(1),
                 ')' => {
                     depth = depth.saturating_sub(1);

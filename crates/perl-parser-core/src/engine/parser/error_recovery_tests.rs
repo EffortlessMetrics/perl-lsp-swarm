@@ -1057,6 +1057,12 @@ fn test_unclosed_qw_recovers_block_form_starters() -> Result<(), String> {
             "\"sub\"",
             "(sub run",
         ),
+        (
+            "sub multiline prototype string block",
+            "my @a = qw(word\nsub run\n($x = \")\") { print 1; }",
+            "\"sub\"",
+            "(sub run",
+        ),
         ("package block", "my @a = qw(word\npackage Foo { 1; }", "\"package\"", "(package Foo"),
         (
             "package multiline block",
