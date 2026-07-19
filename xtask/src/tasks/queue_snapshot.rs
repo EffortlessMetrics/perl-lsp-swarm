@@ -235,6 +235,19 @@ fn snapshot_from_gh_cli() -> Result<QueueSnapshot> {
     })
 }
 
+fn is_terminal_check_failure(state: &str) -> bool {
+    matches!(
+        state.to_ascii_uppercase().as_str(),
+        "ACTION_REQUIRED"
+            | "CANCELLED"
+            | "ERROR"
+            | "FAILURE"
+            | "STALE"
+            | "STARTUP_FAILURE"
+            | "TIMED_OUT"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +321,25 @@ mod tests {
     }
 
     #[test]
+    fn every_terminal_github_failure_routes_to_needs_ci_fix() {
+        for (number, state) in [
+            (12, "ERROR"),
+            (13, "STARTUP_FAILURE"),
+            (14, "STALE"),
+        ] {
+            let buckets = derive_buckets(&[make_pr(number, vec![], vec![("ci", state)])]);
+            assert!(
+                buckets.needs_ci_fix.contains(&number),
+                "{state} must route to needs_ci_fix"
+            );
+            assert!(
+                !buckets.pending_or_unclassified.contains(&number),
+                "{state} must not look pending"
+            );
+        }
+    }
+
+    #[test]
     fn dirty_routes_to_conflicting_not_unknown() {
         let prs = vec![make_pr_with_state(6, "DIRTY", vec![], vec![("ci", "IN_PROGRESS")])];
         let buckets = derive_buckets(&prs);
@@ -366,10 +398,10 @@ mod tests {
 pub fn derive_buckets(prs: &[PullRequestSnapshot]) -> DerivedBuckets {
     let mut buckets = DerivedBuckets::default();
     for pr in prs {
-        let has_failing = pr.status_check_rollup.iter().any(|check| {
-            let s = check.state.to_ascii_uppercase();
-            s == "FAILURE" || s == "CANCELLED" || s == "TIMED_OUT" || s == "ACTION_REQUIRED"
-        });
+        let has_failing = pr
+            .status_check_rollup
+            .iter()
+            .any(|check| is_terminal_check_failure(&check.state));
         let all_green = !pr.status_check_rollup.is_empty()
             && pr.status_check_rollup.iter().all(|check| {
                 check.state.eq_ignore_ascii_case("success")
