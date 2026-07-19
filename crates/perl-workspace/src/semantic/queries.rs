@@ -2771,6 +2771,15 @@ mod tests {
         );
         assert_eq!(candidates[0].kind, EntityKind::GeneratedMember);
         assert_eq!(candidates[0].canonical_name, "MyRole::log_level");
+
+        // Negative control: the resolver must not over-match. An unrelated method
+        // name on the same class resolves nothing (the role exposes only
+        // `log_level`), so a non-empty result here would mean the composed-role
+        // walk returns members regardless of the requested name.
+        assert!(
+            queries.method_candidates("MyClass", "no_such_method").is_empty(),
+            "unrelated method name must not match the role's generated member"
+        );
         Ok(())
     }
 
