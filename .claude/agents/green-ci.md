@@ -23,7 +23,8 @@ Canonical authorities:
 1. Pin the full PR head SHA before reading proof.
 2. Discover the required check set from live repository policy and reconcile it
    with the checked-in policy mirror. Do not rely on a prompt-maintained list.
-3. Count only evidence attributable to the exact head.
+3. Use GitHub's combined `statusCheckRollup` contract so both CheckRun and commit
+   StatusContext evidence are included for the current head.
 4. Keep required, advisory, pending, failed, missing, stale, cancelled,
    skipped/not-applicable, neutral, and instrument-failed states distinct.
 5. Re-read the PR head after collection. Head movement returns the PR to review.
@@ -49,25 +50,42 @@ a differently versioned local install is useful diagnosis, not final-head proof.
 
 ## Verification procedure
 
-### 1. Pin identity
+### 1. Pin identity and read the combined rollup
+
+Query the head and rollup in one GitHub read:
 
 ```bash
-HEAD_SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
-gh pr view <number> --json isDraft,mergeable,mergeStateStatus,baseRefOid,headRefOid
+PR_STATE=$(gh pr view <number> \
+  --json headRefOid,baseRefOid,isDraft,mergeable,mergeStateStatus,statusCheckRollup)
+HEAD_SHA=$(printf '%s' "$PR_STATE" | jq -r '.headRefOid')
 ```
 
 > **MCP alternative:** fetch the PR and retain its full `headRefOid` as the
 > expected head for every following query.
 
-### 2. Read exact-head check runs
+### 2. Classify CheckRun and StatusContext entries
 
 ```bash
-gh api repos/:owner/:repo/commits/$HEAD_SHA/check-runs --paginate \
-  --jq '.check_runs[] | {name,status,conclusion,head_sha,started_at,completed_at,details_url}'
+printf '%s' "$PR_STATE" | jq -r '
+  .statusCheckRollup[] |
+  {
+    kind: (.__typename // "unknown"),
+    name: (.name // .context),
+    state: (.conclusion // .state // .status),
+    started_at: .startedAt,
+    completed_at: .completedAt,
+    details_url: (.detailsUrl // .targetUrl)
+  }'
 ```
 
-Reduce duplicate runs according to repository policy. Do not mix older-head
-success into the current result.
+`statusCheckRollup` is the combined current-head contract. A CheckRun normally
+uses `name` and `conclusion`; a commit StatusContext uses `context` and `state`.
+Do not query only `check-runs`, because that can omit required or advisory status
+contexts published through the commit-status API.
+
+When duplicate entries, cancellation timing, or a terminal failure needs deeper
+classification, fetch the focused underlying run or status. Keep the combined
+rollup as the completeness boundary.
 
 ### 3. Classify each applicable input
 
@@ -77,8 +95,9 @@ success into the current result.
 - `INSTRUMENT_FAILURE`: bootstrap, runner, storage, or reporting failed before
   the product claim was established.
 - `CANCELLED`: classify scheduler/concurrency versus developer cancellation.
-- `MISSING`: no applicable current-head run exists.
-- `STALE`: evidence exists only for another head.
+- `MISSING`: no applicable current-head rollup entry exists.
+- `STALE`: evidence was gathered for another head or the head moved during the
+  evaluation.
 - `NOT_APPLICABLE`: live contract says this proof does not apply.
 - `ADVISORY`: useful non-required finding.
 - `NOT_PROVEN`: state, policy, permission, or tooling could not be established.
@@ -155,7 +174,7 @@ and one bounded next action.
 ## Todo
 
 ```text
-1. Capture expected head and live required policy.
+1. Capture expected head, combined status rollup, and live required policy.
 2. Classify exact-head required and advisory evidence.
 3. Consume review convergence and mergeability.
 4. Re-read head.
