@@ -389,7 +389,9 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
                 format!("### Now (v{} release preparation)", surface.version)
             });
             now_section_seen = true;
-        } else if line.starts_with("- `v")
+        } else if in_active_release
+            && in_now_section
+            && line.starts_with("- `v")
             && (line.contains("is staged as the next public-alpha patch release; run the release-prep checks before dispatching the train")
                 || line.contains("is shipped public beta; keep each distribution channel pending until its receipt is verified")
                 || line.contains("is in release preparation; run the release-prep checks before dispatching the train")
@@ -934,16 +936,16 @@ Publication discipline: `v0.17.0` uses a normal SemVer package version while the
 ### Next (post v0.17.0 closeout)\n\
 ## Active: Public-Alpha Release Prep (v0.13.0)\n\
 ### Now (v0.13.0 release preparation)\n\
-- `v0.13.0` is in release preparation; preserve this historical fact\n\
+- `v0.13.0` is in release preparation; run the release-prep checks before dispatching the train\n\
 ### Next (post v0.13.0)\n";
 
         let synced = sync_roadmap(input, &release_surface())?;
         assert!(synced.contains("## Active: Public-Alpha Release Prep (v0.13.0)"));
         assert!(synced.contains("### Now (v0.17.0 shipped public beta)"));
         assert!(synced.contains("### Now (v0.13.0 release preparation)"));
-        assert!(
-            synced.contains("v0.13.0` is in release preparation; preserve this historical fact")
-        );
+        assert!(synced.contains(
+            "v0.13.0` is in release preparation; run the release-prep checks before dispatching the train"
+        ));
         assert!(synced.contains("### Next (post v0.13.0)"));
         Ok(())
     }
