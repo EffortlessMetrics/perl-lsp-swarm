@@ -390,6 +390,37 @@ fn test_execute_command_agent_context_is_read_only_and_actionable()
 }
 
 #[test]
+fn test_execute_command_agent_context_accepts_empty_arguments()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let root_path = temp_dir.path().to_string_lossy().to_string();
+    let server = setup_server(Some(root_path));
+
+    let execute_request = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "workspace/executeCommand".to_string(),
+        params: Some(json!({
+            "command": "perl.agentContext",
+            "arguments": []
+        })),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(4_i64)),
+    };
+
+    let response =
+        server.handle_request(execute_request).ok_or("No response from agent-context command")?;
+    let result = response.result.ok_or("No result in agent-context response")?;
+    let schema = agent_context_schema()?;
+    assert_schema_required_fields_present(&result, &schema, "/required", "agent context response")?;
+
+    assert_eq!(result.get("schema_version").and_then(Value::as_str), Some("agent_context.v1"));
+    assert_eq!(result.get("command").and_then(Value::as_str), Some("perl.agentContext"));
+    assert!(result.get("workspace_trust_report").is_some());
+    assert!(result.get("advertised_feature_ids").and_then(Value::as_array).is_some());
+    assert!(result.get("execute_commands").and_then(Value::as_array).is_some());
+    Ok(())
+}
+
+#[test]
 fn test_execute_command_workspace_trust_report() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let root_path = temp_dir.path().to_string_lossy().to_string();
