@@ -79,6 +79,12 @@ impl LspServer {
             workspace_indexing_invocation_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             readiness_receipt_observer_id: AtomicU64::new(0),
+            #[cfg(feature = "workspace")]
+            workspace_readiness_receipt: Arc::new(Mutex::new(
+                crate::runtime::readiness::WorkspaceReadinessReceipt::default(),
+            )),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            workspace_indexing_start_gate: Arc::new(std::sync::Mutex::new(None)),
             pod_cache: Arc::new(Mutex::new(HashMap::new())),
             pending_index_task_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
@@ -88,6 +94,7 @@ impl LspServer {
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
@@ -99,6 +106,8 @@ impl LspServer {
             critic_runtime_override: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
+            #[cfg(not(target_arch = "wasm32"))]
+            force_perlcritic_command_unavailable: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
@@ -239,6 +248,12 @@ impl LspServer {
             workspace_indexing_invocation_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             readiness_receipt_observer_id: AtomicU64::new(0),
+            #[cfg(feature = "workspace")]
+            workspace_readiness_receipt: Arc::new(Mutex::new(
+                crate::runtime::readiness::WorkspaceReadinessReceipt::default(),
+            )),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            workspace_indexing_start_gate: Arc::new(std::sync::Mutex::new(None)),
             pod_cache: Arc::new(Mutex::new(HashMap::new())),
             pending_index_task_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
@@ -248,6 +263,7 @@ impl LspServer {
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
@@ -259,6 +275,8 @@ impl LspServer {
             critic_runtime_override: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
+            #[cfg(not(target_arch = "wasm32"))]
+            force_perlcritic_command_unavailable: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
@@ -340,6 +358,12 @@ impl LspServer {
             workspace_indexing_invocation_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             readiness_receipt_observer_id: AtomicU64::new(0),
+            #[cfg(feature = "workspace")]
+            workspace_readiness_receipt: Arc::new(Mutex::new(
+                crate::runtime::readiness::WorkspaceReadinessReceipt::default(),
+            )),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            workspace_indexing_start_gate: Arc::new(std::sync::Mutex::new(None)),
             pod_cache: Arc::new(Mutex::new(HashMap::new())),
             pending_index_task_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
@@ -349,6 +373,7 @@ impl LspServer {
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
@@ -360,6 +385,8 @@ impl LspServer {
             critic_runtime_override: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
+            #[cfg(not(target_arch = "wasm32"))]
+            force_perlcritic_command_unavailable: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]

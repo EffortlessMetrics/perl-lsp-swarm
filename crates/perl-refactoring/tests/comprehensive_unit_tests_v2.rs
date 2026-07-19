@@ -1563,6 +1563,35 @@ fn refactored_modernizer_suggestion_positions() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+/// Regression (#4468, sibling of #3922): the two-arg-open, deprecated-pattern,
+/// and risky-eval suggestions in the refactored engine previously hardcoded
+/// `start: 0, end: 0`. Each must now span the detected pattern at its real
+/// (non-zero) byte offset. Placing the pattern past column 0 makes a zeroed
+/// offset fail the slice assertion.
+#[test]
+fn refactored_modernizer_all_suggestions_have_real_offsets()
+-> Result<(), Box<dyn std::error::Error>> {
+    let m = RefactoredModernizer::new();
+    // (source, substring of old_pattern to select the suggestion, expected [start,end) slice)
+    let cases: [(&str, &str, &str); 5] = [
+        ("my $x = 1;\nopen(FH, 'file.txt')", "open(FH", "open(FH, 'file.txt')"),
+        ("if (defined @array) { }", "defined @array", "defined @array"),
+        ("while (each @array) { }", "each @array", "each @array"),
+        ("my $x = 1; print \"Hello\\n\"", "print \"Hello", "print \"Hello\\n\""),
+        ("my $r = eval \"code\";", "eval \"", "eval \""),
+    ];
+    for (src, pat_sub, needle) in cases {
+        let suggestions = m.analyze(src);
+        let s = suggestions
+            .iter()
+            .find(|s| s.old_pattern.contains(pat_sub))
+            .ok_or_else(|| format!("no suggestion selected by {pat_sub:?} in {src:?}"))?;
+        assert_eq!(&src[s.start..s.end], needle, "offsets must span {needle:?} in {src:?}");
+        assert!(s.start > 0, "start should reflect the real position for {needle:?}");
+    }
+    Ok(())
+}
+
 // ===================================================================
 // Modernization suggestion clone and debug
 // ===================================================================

@@ -11,6 +11,8 @@ const SCHEMA_VERSION: u32 = 1;
 const CHECK_NAME: &str = "merge-readiness";
 const DEFAULT_RECEIPT_PATH: &str = "target/receipts/merge-readiness.json";
 const REQUIRED_CHECKS_PATH: &str = ".ci/policies/required-checks.toml";
+const FAN_IN_SCHEMA_VERSION: u32 = 1;
+const FAN_IN_CHECK_NAME: &str = "merge-readiness-fan-in";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MergeReadinessReceipt {
@@ -38,6 +40,109 @@ pub enum VerifyStatus {
     Missing,
 }
 
+/// Result class reported by an upstream exact-head evidence producer.
+///
+/// These values intentionally preserve instrument state instead of collapsing
+/// every non-success into a product failure. The fan-in is read-only and must
+/// never turn a skipped, cancelled, stale, or instrument-failed input into
+/// merge authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum EvidenceClass {
+    Success,
+    PolicyFinding,
+    NotProven,
+    DraftSkip,
+    Cancelled,
+    NotApplicable,
+    Stale,
+    Pending,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RequiredCheckEvidence {
+    pub name: String,
+    pub evaluated_sha: String,
+    pub result: EvidenceClass,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReviewConvergenceEvidence {
+    pub evaluated_sha: String,
+    pub result: EvidenceClass,
+    pub converged: bool,
+    pub unresolved_conversations: u32,
+    pub evidenced_dispositions: bool,
+    pub required_review_in_flight: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChangelogEvidence {
+    pub evaluated_sha: String,
+    pub result: EvidenceClass,
+    pub disposition: Option<String>,
+    pub blocking: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProtectionEvidence {
+    pub evaluated_sha: String,
+    #[serde(default)]
+    pub evaluated_merge_group_sha: Option<String>,
+    pub result: EvidenceClass,
+    pub merge_permitted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MergeReadinessSnapshot {
+    pub schema_version: u32,
+    pub repository: String,
+    pub pr: u64,
+    pub base_sha: String,
+    pub head_sha: String,
+    pub merge_group_sha: Option<String>,
+    pub draft: bool,
+    pub required_check_names: Vec<String>,
+    pub checks: Vec<RequiredCheckEvidence>,
+    pub review: ReviewConvergenceEvidence,
+    pub changelog: ChangelogEvidence,
+    pub protection: ProtectionEvidence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MergeReadinessStatus {
+    Ready,
+    Blocked,
+    Pending,
+    NotProven,
+    Stale,
+    DraftSkip,
+    Cancelled,
+    NotApplicable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MergeReadinessFinding {
+    pub source: String,
+    pub class: EvidenceClass,
+    pub blocking: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MergeReadinessEvaluation {
+    pub check: String,
+    pub schema_version: u32,
+    pub repository: String,
+    pub pr: u64,
+    pub base_sha: String,
+    pub head_sha: String,
+    pub merge_group_sha: Option<String>,
+    pub status: MergeReadinessStatus,
+    pub findings: Vec<MergeReadinessFinding>,
+}
+
 impl VerifyStatus {
     fn as_str(self) -> &'static str {
         match self {
@@ -49,6 +154,351 @@ impl VerifyStatus {
             Self::Missing => "missing",
         }
     }
+}
+
+/// Evaluate a caller-supplied live snapshot without querying GitHub or
+/// changing repository/PR state. This is the M1 seam: callers own collection
+/// of GitHub facts, while this function owns one deterministic fan-in rule.
+pub fn evaluate_snapshot_file(snapshot_path: &Path, output_path: Option<&Path>) -> Result<()> {
+    let raw = fs::read_to_string(snapshot_path)
+        .with_context(|| format!("failed to read snapshot: {}", snapshot_path.display()))?;
+    let snapshot: MergeReadinessSnapshot = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse snapshot: {}", snapshot_path.display()))?;
+    let evaluation = evaluate_snapshot(&snapshot)?;
+    let json =
+        serde_json::to_string_pretty(&evaluation).context("failed to serialize evaluation")?;
+
+    if let Some(path) = output_path {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create directory: {}", parent.display()))?;
+            }
+        }
+        fs::write(path, json)
+            .with_context(|| format!("failed to write evaluation: {}", path.display()))?;
+        println!("wrote {}", path.display());
+    } else {
+        println!("{json}");
+    }
+
+    Ok(())
+}
+
+fn validate_object_id(field: &str, value: &str) -> Result<()> {
+    if value.len() != 40 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("merge-readiness snapshot {field} must be a full 40-character object ID");
+    }
+    Ok(())
+}
+
+pub fn evaluate_snapshot(snapshot: &MergeReadinessSnapshot) -> Result<MergeReadinessEvaluation> {
+    if snapshot.schema_version != FAN_IN_SCHEMA_VERSION {
+        bail!(
+            "unsupported merge-readiness snapshot schema: {} (expected {})",
+            snapshot.schema_version,
+            FAN_IN_SCHEMA_VERSION
+        );
+    }
+    if snapshot.repository.trim().is_empty() {
+        bail!("merge-readiness snapshot repository is empty");
+    }
+    if snapshot.pr == 0 {
+        bail!("merge-readiness snapshot PR number must be positive");
+    }
+    validate_object_id("base_sha", &snapshot.base_sha)?;
+    validate_object_id("head_sha", &snapshot.head_sha)?;
+    if let Some(merge_group_sha) = snapshot.merge_group_sha.as_deref() {
+        validate_object_id("merge_group_sha", merge_group_sha)?;
+    }
+    if snapshot.required_check_names.is_empty() {
+        bail!("merge-readiness snapshot has no required checks");
+    }
+    let mut required_names = BTreeMap::new();
+    for name in &snapshot.required_check_names {
+        if name.trim().is_empty() {
+            bail!("merge-readiness snapshot contains a blank required check name");
+        }
+        if required_names.insert(name, ()).is_some() {
+            bail!("merge-readiness snapshot repeats required check name: {name}");
+        }
+    }
+    for check in &snapshot.checks {
+        if check.name.trim().is_empty() {
+            bail!("merge-readiness snapshot contains a blank check name");
+        }
+        validate_object_id("checks[].evaluated_sha", &check.evaluated_sha)?;
+    }
+    validate_object_id("review.evaluated_sha", &snapshot.review.evaluated_sha)?;
+    validate_object_id("changelog.evaluated_sha", &snapshot.changelog.evaluated_sha)?;
+    validate_object_id("protection.evaluated_sha", &snapshot.protection.evaluated_sha)?;
+    if let Some(merge_group_sha) = snapshot.protection.evaluated_merge_group_sha.as_deref() {
+        validate_object_id("protection.evaluated_merge_group_sha", merge_group_sha)?;
+    }
+
+    let mut findings = Vec::new();
+    if snapshot.draft {
+        findings.push(MergeReadinessFinding {
+            source: "pull_request".to_string(),
+            class: EvidenceClass::DraftSkip,
+            blocking: true,
+            detail: "draft pull requests are not evaluated for merge authorization".to_string(),
+        });
+    } else {
+        let mut checks_by_name: BTreeMap<&str, Vec<&RequiredCheckEvidence>> = BTreeMap::new();
+        for check in &snapshot.checks {
+            checks_by_name.entry(&check.name).or_default().push(check);
+        }
+
+        for required_name in &snapshot.required_check_names {
+            match checks_by_name.get(required_name.as_str()).map(Vec::as_slice) {
+                None | Some([]) => findings.push(MergeReadinessFinding {
+                    source: format!("required_check:{required_name}"),
+                    class: EvidenceClass::NotProven,
+                    blocking: true,
+                    detail: "required check is missing from the current check-run snapshot"
+                        .to_string(),
+                }),
+                Some([_, _, ..]) => findings.push(MergeReadinessFinding {
+                    source: format!("required_check:{required_name}"),
+                    class: EvidenceClass::NotProven,
+                    blocking: true,
+                    detail: "required check appears more than once in the snapshot".to_string(),
+                }),
+                Some([check]) if check.evaluated_sha != snapshot.head_sha => {
+                    findings.push(MergeReadinessFinding {
+                        source: format!("required_check:{required_name}"),
+                        class: EvidenceClass::Stale,
+                        blocking: true,
+                        detail: format!(
+                            "check evaluated {} but current PR head is {}",
+                            check.evaluated_sha, snapshot.head_sha
+                        ),
+                    });
+                }
+                Some([check]) if check.result != EvidenceClass::Success => {
+                    findings.push(MergeReadinessFinding {
+                        source: format!("required_check:{required_name}"),
+                        class: check.result,
+                        blocking: true,
+                        detail: "required check did not produce exact-head success".to_string(),
+                    });
+                }
+                Some([_]) => {}
+            }
+        }
+
+        evaluate_review(&snapshot.review, &snapshot.head_sha, &mut findings);
+        evaluate_changelog(&snapshot.changelog, &snapshot.head_sha, &mut findings);
+        evaluate_protection(
+            &snapshot.protection,
+            &snapshot.head_sha,
+            snapshot.merge_group_sha.as_deref(),
+            &mut findings,
+        );
+    }
+
+    let status = status_from_findings(&findings);
+    Ok(MergeReadinessEvaluation {
+        check: FAN_IN_CHECK_NAME.to_string(),
+        schema_version: FAN_IN_SCHEMA_VERSION,
+        repository: snapshot.repository.clone(),
+        pr: snapshot.pr,
+        base_sha: snapshot.base_sha.clone(),
+        head_sha: snapshot.head_sha.clone(),
+        merge_group_sha: snapshot.merge_group_sha.clone(),
+        status,
+        findings,
+    })
+}
+
+fn evaluate_review(
+    review: &ReviewConvergenceEvidence,
+    current_head: &str,
+    findings: &mut Vec<MergeReadinessFinding>,
+) {
+    if review.evaluated_sha != current_head {
+        findings.push(MergeReadinessFinding {
+            source: "review_convergence".to_string(),
+            class: EvidenceClass::Stale,
+            blocking: true,
+            detail: format!(
+                "review convergence evaluated {} but current PR head is {}",
+                review.evaluated_sha, current_head
+            ),
+        });
+        return;
+    }
+    if review.result != EvidenceClass::Success {
+        findings.push(MergeReadinessFinding {
+            source: "review_convergence".to_string(),
+            class: review.result,
+            blocking: true,
+            detail: "#3693 review convergence did not succeed".to_string(),
+        });
+    }
+    if !review.converged {
+        findings.push(MergeReadinessFinding {
+            source: "review_convergence".to_string(),
+            class: EvidenceClass::PolicyFinding,
+            blocking: true,
+            detail: "review convergence reports a non-converged current head".to_string(),
+        });
+    }
+    if review.unresolved_conversations != 0 {
+        findings.push(MergeReadinessFinding {
+            source: "review_convergence".to_string(),
+            class: EvidenceClass::PolicyFinding,
+            blocking: true,
+            detail: format!(
+                "{} unresolved conversation(s) remain, including outdated threads",
+                review.unresolved_conversations
+            ),
+        });
+    }
+    if !review.evidenced_dispositions {
+        findings.push(MergeReadinessFinding {
+            source: "review_convergence".to_string(),
+            class: EvidenceClass::PolicyFinding,
+            blocking: true,
+            detail: "review dispositions are not evidenced".to_string(),
+        });
+    }
+    if review.required_review_in_flight {
+        findings.push(MergeReadinessFinding {
+            source: "review_convergence".to_string(),
+            class: EvidenceClass::Pending,
+            blocking: true,
+            detail: "a required review is still in flight".to_string(),
+        });
+    }
+}
+
+fn evaluate_changelog(
+    changelog: &ChangelogEvidence,
+    current_head: &str,
+    findings: &mut Vec<MergeReadinessFinding>,
+) {
+    if changelog.evaluated_sha != current_head {
+        findings.push(MergeReadinessFinding {
+            source: "changelog".to_string(),
+            class: EvidenceClass::Stale,
+            blocking: true,
+            detail: format!(
+                "Changie disposition evaluated {} but current PR head is {}",
+                changelog.evaluated_sha, current_head
+            ),
+        });
+    } else if changelog.result != EvidenceClass::Success {
+        findings.push(MergeReadinessFinding {
+            source: "changelog".to_string(),
+            class: changelog.result,
+            blocking: changelog.result != EvidenceClass::PolicyFinding || changelog.blocking,
+            detail: "Changie disposition is not current-head success".to_string(),
+        });
+    } else if changelog
+        .disposition
+        .as_deref()
+        .is_none_or(|disposition| disposition.trim().is_empty())
+    {
+        findings.push(MergeReadinessFinding {
+            source: "changelog".to_string(),
+            class: EvidenceClass::NotProven,
+            blocking: true,
+            detail: "Changie evidence succeeded without a disposition".to_string(),
+        });
+    }
+}
+
+fn evaluate_protection(
+    protection: &ProtectionEvidence,
+    current_head: &str,
+    current_merge_group: Option<&str>,
+    findings: &mut Vec<MergeReadinessFinding>,
+) {
+    if protection.evaluated_sha != current_head {
+        findings.push(MergeReadinessFinding {
+            source: "protection".to_string(),
+            class: EvidenceClass::Stale,
+            blocking: true,
+            detail: format!(
+                "ruleset/merge permission evaluated {} but current PR head is {}",
+                protection.evaluated_sha, current_head
+            ),
+        });
+    } else {
+        if let Some(expected_merge_group) = current_merge_group {
+            match protection.evaluated_merge_group_sha.as_deref() {
+                None => findings.push(MergeReadinessFinding {
+                    source: "protection".to_string(),
+                    class: EvidenceClass::NotProven,
+                    blocking: true,
+                    detail:
+                        "merge-group SHA is present but protection evidence did not evaluate it"
+                            .to_string(),
+                }),
+                Some(actual_merge_group) if actual_merge_group != expected_merge_group => {
+                    findings.push(MergeReadinessFinding {
+                        source: "protection".to_string(),
+                        class: EvidenceClass::Stale,
+                        blocking: true,
+                        detail: format!(
+                            "protection evaluated merge group {} but current merge group is {}",
+                            actual_merge_group, expected_merge_group
+                        ),
+                    });
+                }
+                Some(_) => {}
+            }
+        } else if let Some(actual_merge_group) = protection.evaluated_merge_group_sha.as_deref() {
+            findings.push(MergeReadinessFinding {
+                source: "protection".to_string(),
+                class: EvidenceClass::Stale,
+                blocking: true,
+                detail: format!(
+                    "protection evidence evaluated unexpected merge group {} while snapshot has no merge group",
+                    actual_merge_group
+                ),
+            });
+        }
+
+        if protection.result != EvidenceClass::Success {
+            findings.push(MergeReadinessFinding {
+                source: "protection".to_string(),
+                class: protection.result,
+                blocking: true,
+                detail: "live protected integration state is not proven".to_string(),
+            });
+        } else if !protection.merge_permitted {
+            findings.push(MergeReadinessFinding {
+                source: "protection".to_string(),
+                class: EvidenceClass::PolicyFinding,
+                blocking: true,
+                detail: "branch protection or merge-queue policy does not permit integration"
+                    .to_string(),
+            });
+        }
+    }
+}
+
+fn status_from_findings(findings: &[MergeReadinessFinding]) -> MergeReadinessStatus {
+    let class_order = [
+        (EvidenceClass::Stale, MergeReadinessStatus::Stale),
+        (EvidenceClass::NotProven, MergeReadinessStatus::NotProven),
+        (EvidenceClass::Cancelled, MergeReadinessStatus::Cancelled),
+        (EvidenceClass::Pending, MergeReadinessStatus::Pending),
+        (EvidenceClass::NotApplicable, MergeReadinessStatus::NotApplicable),
+        (EvidenceClass::DraftSkip, MergeReadinessStatus::DraftSkip),
+        (EvidenceClass::PolicyFinding, MergeReadinessStatus::Blocked),
+    ];
+
+    for (class, status) in class_order {
+        if findings.iter().any(|finding| finding.blocking && finding.class == class) {
+            return status;
+        }
+    }
+
+    MergeReadinessStatus::Ready
 }
 
 pub fn emit(pr: u64, receipt_path: Option<PathBuf>) -> Result<()> {
@@ -658,6 +1108,331 @@ mod tests {
         assert_ne!(baseline, changed_checks);
         assert_ne!(baseline, changed_file);
 
+        Ok(())
+    }
+
+    fn fan_in_snapshot() -> MergeReadinessSnapshot {
+        MergeReadinessSnapshot {
+            schema_version: FAN_IN_SCHEMA_VERSION,
+            repository: "EffortlessMetrics/perl-lsp-swarm".to_string(),
+            pr: 3988,
+            base_sha: SHA_B.to_string(),
+            head_sha: SHA_A.to_string(),
+            merge_group_sha: None,
+            draft: false,
+            required_check_names: vec!["rust".to_string(), "ripr".to_string()],
+            checks: vec![
+                RequiredCheckEvidence {
+                    name: "rust".to_string(),
+                    evaluated_sha: SHA_A.to_string(),
+                    result: EvidenceClass::Success,
+                },
+                RequiredCheckEvidence {
+                    name: "ripr".to_string(),
+                    evaluated_sha: SHA_A.to_string(),
+                    result: EvidenceClass::Success,
+                },
+            ],
+            review: ReviewConvergenceEvidence {
+                evaluated_sha: SHA_A.to_string(),
+                result: EvidenceClass::Success,
+                converged: true,
+                unresolved_conversations: 0,
+                evidenced_dispositions: true,
+                required_review_in_flight: false,
+            },
+            changelog: ChangelogEvidence {
+                evaluated_sha: SHA_A.to_string(),
+                result: EvidenceClass::Success,
+                disposition: Some("exemption: ci".to_string()),
+                blocking: false,
+            },
+            protection: ProtectionEvidence {
+                evaluated_sha: SHA_A.to_string(),
+                evaluated_merge_group_sha: None,
+                result: EvidenceClass::Success,
+                merge_permitted: true,
+            },
+        }
+    }
+
+    #[test]
+    fn fan_in_ready_requires_all_exact_head_inputs() -> color_eyre::eyre::Result<()> {
+        let evaluation = evaluate_snapshot(&fan_in_snapshot())?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Ready);
+        color_eyre::eyre::ensure!(evaluation.findings.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_missing_required_check_is_not_proven() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.checks.pop();
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::NotProven);
+        color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+            finding.source == "required_check:ripr" && finding.class == EvidenceClass::NotProven
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_duplicate_required_check_is_not_proven() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.checks.push(snapshot.checks[0].clone());
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::NotProven);
+        color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+            finding.source == "required_check:rust"
+                && finding.class == EvidenceClass::NotProven
+                && finding.detail.contains("more than once")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_duplicate_required_name_is_rejected() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.required_check_names.push("rust".to_string());
+        let result = evaluate_snapshot(&snapshot);
+        color_eyre::eyre::ensure!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_blank_required_name_is_rejected() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.required_check_names[0] = "  ".to_string();
+        let result = evaluate_snapshot(&snapshot);
+        color_eyre::eyre::ensure!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_rejects_non_object_id_identity() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.head_sha = "matching-but-not-a-full-object-id".to_string();
+        let result = evaluate_snapshot(&snapshot);
+        color_eyre::eyre::ensure!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_older_head_success_is_stale() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.checks[0].evaluated_sha = SHA_C.to_string();
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Stale);
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_stale_precedes_missing_evidence() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.checks[0].evaluated_sha = SHA_C.to_string();
+        snapshot.checks.pop();
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Stale);
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_merge_group_evidence_must_match() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.merge_group_sha = Some(SHA_C.to_string());
+        snapshot.protection.evaluated_merge_group_sha = Some(SHA_B.to_string());
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Stale);
+        color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+            finding.source == "protection" && finding.class == EvidenceClass::Stale
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_unexpected_merge_group_evidence_is_stale() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.protection.evaluated_merge_group_sha = Some(SHA_C.to_string());
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Stale);
+        color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+            finding.source == "protection"
+                && finding.class == EvidenceClass::Stale
+                && finding.detail.contains(SHA_C)
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_review_in_flight_is_pending() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.review.required_review_in_flight = true;
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Pending);
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_preserves_non_success_check_classes() -> color_eyre::eyre::Result<()> {
+        for (class, status) in [
+            (EvidenceClass::NotProven, MergeReadinessStatus::NotProven),
+            (EvidenceClass::Cancelled, MergeReadinessStatus::Cancelled),
+            (EvidenceClass::NotApplicable, MergeReadinessStatus::NotApplicable),
+            (EvidenceClass::Pending, MergeReadinessStatus::Pending),
+            (EvidenceClass::PolicyFinding, MergeReadinessStatus::Blocked),
+        ] {
+            let mut snapshot = fan_in_snapshot();
+            snapshot.checks[0].result = class;
+            let evaluation = evaluate_snapshot(&snapshot)?;
+            color_eyre::eyre::ensure!(evaluation.status == status);
+            color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+                finding.source == "required_check:rust" && finding.class == class
+            }));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_draft_is_explicitly_skipped() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.draft = true;
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::DraftSkip);
+        color_eyre::eyre::ensure!(
+            evaluation
+                .findings
+                .iter()
+                .any(|finding| { finding.class == EvidenceClass::DraftSkip && finding.blocking })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_unresolved_conversations_block_even_when_outdated() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.review.unresolved_conversations = 1;
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Blocked);
+        color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+            finding.source == "review_convergence"
+                && finding.class == EvidenceClass::PolicyFinding
+                && finding.detail.contains("outdated")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_advisory_changelog_finding_remains_visible_without_blocking()
+    -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.changelog.result = EvidenceClass::PolicyFinding;
+        snapshot.changelog.disposition = None;
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Ready);
+        color_eyre::eyre::ensure!(evaluation.findings.len() == 1);
+        color_eyre::eyre::ensure!(!evaluation.findings[0].blocking);
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_stale_changelog_is_stale_even_when_advisory() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.changelog.evaluated_sha = SHA_C.to_string();
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Stale);
+        color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+            finding.source == "changelog"
+                && finding.class == EvidenceClass::Stale
+                && finding.blocking
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_blank_changelog_disposition_is_not_proven() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.changelog.disposition = Some("  ".to_string());
+        snapshot.changelog.blocking = true;
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::NotProven);
+        color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+            finding.source == "changelog" && finding.class == EvidenceClass::NotProven
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_advisory_changelog_failures_remain_blocking() -> color_eyre::eyre::Result<()> {
+        for result in [
+            EvidenceClass::NotProven,
+            EvidenceClass::Pending,
+            EvidenceClass::Cancelled,
+            EvidenceClass::NotApplicable,
+        ] {
+            let mut snapshot = fan_in_snapshot();
+            snapshot.changelog.result = result;
+            snapshot.changelog.blocking = false;
+            let evaluation = evaluate_snapshot(&snapshot)?;
+            color_eyre::eyre::ensure!(evaluation.status != MergeReadinessStatus::Ready);
+            color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+                finding.source == "changelog" && finding.class == result && finding.blocking
+            }));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_advisory_blank_changelog_disposition_remains_blocking() -> color_eyre::eyre::Result<()>
+    {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.changelog.disposition = Some("  ".to_string());
+        snapshot.changelog.blocking = false;
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::NotProven);
+        color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+            finding.source == "changelog"
+                && finding.class == EvidenceClass::NotProven
+                && finding.blocking
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_rejects_unknown_schema() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.schema_version = FAN_IN_SCHEMA_VERSION + 1;
+        let result = evaluate_snapshot(&snapshot);
+        color_eyre::eyre::ensure!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_cli_round_trips_checked_in_fixture() -> color_eyre::eyre::Result<()> {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("merge-ready")
+            .join("fan-in-ready.json");
+        let output = tempfile::NamedTempFile::new()?;
+        evaluate_snapshot_file(&fixture, Some(output.path()))?;
+        let raw = fs::read_to_string(output.path())?;
+        let evaluation: MergeReadinessEvaluation = serde_json::from_str(&raw)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Ready);
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_cli_reports_stale_checked_in_fixture() -> color_eyre::eyre::Result<()> {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("merge-ready")
+            .join("fan-in-stale-check.json");
+        let output = tempfile::NamedTempFile::new()?;
+        evaluate_snapshot_file(&fixture, Some(output.path()))?;
+        let raw = fs::read_to_string(output.path())?;
+        let evaluation: MergeReadinessEvaluation = serde_json::from_str(&raw)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Stale);
         Ok(())
     }
 }

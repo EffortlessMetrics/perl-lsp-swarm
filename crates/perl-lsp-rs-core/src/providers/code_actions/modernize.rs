@@ -4,17 +4,26 @@
 //! Registered as `source.modernize.perl` code action kind.
 
 use super::types::{CodeAction, CodeActionEdit, CodeActionKind};
+use crate::providers::diagnostics::lints::strict_warnings::{
+    collect_file_scope_use_modules, implies_strict,
+};
 use crate::providers::rename::TextEdit;
 use perl_parser_core::SourceLocation;
+use perl_parser_core::ast::Node;
+use perl_pragma::PragmaTracker;
 
 /// Scan source for modernization opportunities and return code actions.
-pub fn get_modernize_actions(source: &str) -> Vec<CodeAction> {
+///
+/// `ast` is the already-parsed syntax tree for `source`; it lets the
+/// strict/warnings detection walk file-scope `use` statements and consult the
+/// shared pragma tracker instead of scanning raw text.
+pub fn get_modernize_actions(source: &str, ast: &Node) -> Vec<CodeAction> {
     let mut actions = Vec::new();
 
     actions.extend(find_two_arg_open(source));
     actions.extend(find_deprecated_defined(source));
     actions.extend(find_legacy_require_version(source));
-    actions.extend(find_missing_strict_warnings(source));
+    actions.extend(find_missing_strict_warnings(source, ast));
     actions.extend(find_die_in_module(source));
 
     actions
@@ -197,51 +206,47 @@ fn find_legacy_require_version(source: &str) -> Vec<CodeAction> {
     actions
 }
 
-/// Detect missing `use strict` / `use warnings` and suggest adding both.
-fn find_missing_strict_warnings(source: &str) -> Vec<CodeAction> {
+/// Detect missing `use strict` / `use warnings` and suggest adding whichever
+/// is absent.
+///
+/// Detection is AST-based rather than a raw-text scan, and shares its source of
+/// truth with the PL100/PL101 diagnostic so the two surfaces can never disagree
+/// about the same file:
+/// - `use strict`, `use warnings`, and version pragmas (`use v5.NN`) are
+///   resolved through [`perl_pragma::PragmaTracker`] (version pragmas per their
+///   real semantics — `use v5.12` enables strict but not warnings — replacing
+///   the old blanket suppression of any `v5.NN`);
+/// - implicit-strict modules are matched via the shared
+///   [`collect_file_scope_use_modules`] + [`implies_strict`] over **file-scope**
+///   `use` statements only (so `use Mojolicious -base;` still suppresses but
+///   bare `use Mojolicious;` does not — the args-aware check the previous
+///   raw-text `has_flagged_mojolicious_use` scan approximated).
+///
+/// This makes the action immune to `use` text inside comments, POD, string
+/// literals, and heredocs, to `use` nested in a block/sub (non-file-scope), and
+/// to sub-token matches like `use MooseX::Types;`.
+fn find_missing_strict_warnings(source: &str, ast: &Node) -> Vec<CodeAction> {
     let mut actions = Vec::new();
 
-    let has_strict = source.contains("use strict");
-    let has_warnings = source.contains("use warnings");
+    // Pragma state via the shared tracker: honors `use strict` / `use warnings`,
+    // version pragmas, and lexical scope, exactly as the diagnostic path does.
+    let pragma_map = PragmaTracker::build(ast);
+    let state = PragmaTracker::final_state(&pragma_map);
+    let mut has_strict =
+        state.strict_vars || state.strict_subs || state.strict_refs || state.signatures_strict;
+    let mut has_warnings = state.warnings;
 
-    if has_strict && has_warnings {
-        return actions;
-    }
-
-    let implicit_strict = [
-        "use Moo",
-        "use Moose",
-        "use Mouse",
-        "use Dancer2",
-        "use Mojolicious",
-        "use Catalyst",
-        "use Modern::Perl",
-        "use common::sense",
-        "use Mojo::Base",
-        "use v5.12",
-        "use v5.14",
-        "use v5.16",
-        "use v5.18",
-        "use v5.20",
-        "use v5.22",
-        "use v5.24",
-        "use v5.26",
-        "use v5.28",
-        "use v5.30",
-        "use v5.32",
-        "use v5.34",
-        "use v5.36",
-        "use v5.38",
-        "use v5.40",
-    ];
-
-    for pattern in &implicit_strict {
-        if source.contains(pattern) {
-            return actions;
+    // A file-scope implicit-strict module implies both strict and warnings.
+    // Uses the same list + args-aware check as the diagnostic.
+    if !(has_strict && has_warnings) {
+        for (module, args) in collect_file_scope_use_modules(ast) {
+            if implies_strict(&module, &args) {
+                has_strict = true;
+                has_warnings = true;
+                break;
+            }
         }
     }
-
-    let insert_pos = find_pragma_insert_pos(source);
 
     let mut missing = Vec::new();
     if !has_strict {
@@ -250,6 +255,11 @@ fn find_missing_strict_warnings(source: &str) -> Vec<CodeAction> {
     if !has_warnings {
         missing.push("use warnings;");
     }
+    if missing.is_empty() {
+        return actions;
+    }
+
+    let insert_pos = find_pragma_insert_pos(source);
 
     let new_text = format!("{}\n", missing.join("\n"));
 
@@ -566,11 +576,18 @@ fn find_pragma_insert_pos(source: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_parser_core::Parser;
+    use perl_tdd_support::must;
+
+    /// Parse `source` into an AST for the strict/warnings code action tests.
+    fn parse(source: &str) -> Node {
+        must(Parser::new(source).parse())
+    }
 
     #[test]
     fn test_two_arg_open_detected() {
         let source = r#"open(FILE, ">output.txt");"#;
-        let actions = get_modernize_actions(source);
+        let actions = get_modernize_actions(source, &parse(source));
         assert!(
             actions.iter().any(|a| a.title.contains("three-arg open")),
             "Expected three-arg open suggestion, got: {:?}",
@@ -588,7 +605,7 @@ mod tests {
     #[test]
     fn test_deprecated_defined_array() {
         let source = "if (defined(@array)) { }";
-        let actions = get_modernize_actions(source);
+        let actions = get_modernize_actions(source, &parse(source));
         assert!(
             actions.iter().any(|a| a.title.contains("deprecated defined(@")),
             "Expected deprecated defined(@) action"
@@ -598,7 +615,7 @@ mod tests {
     #[test]
     fn test_deprecated_defined_hash() {
         let source = "if (defined(%hash)) { }";
-        let actions = get_modernize_actions(source);
+        let actions = get_modernize_actions(source, &parse(source));
         assert!(actions.iter().any(|a| a.title.contains("deprecated defined(%")));
     }
 
@@ -612,14 +629,14 @@ mod tests {
     #[test]
     fn test_require_version_to_use() {
         let source = "require 5.006;";
-        let actions = get_modernize_actions(source);
+        let actions = get_modernize_actions(source, &parse(source));
         assert!(actions.iter().any(|a| a.title.contains("use v5.6")));
     }
 
     #[test]
     fn test_require_version_5010() {
         let source = "require 5.010;";
-        let actions = get_modernize_actions(source);
+        let actions = get_modernize_actions(source, &parse(source));
         assert!(actions.iter().any(|a| a.title.contains("use v5.10")));
     }
 
@@ -633,29 +650,218 @@ mod tests {
     #[test]
     fn test_missing_strict_warnings() {
         let source = "print 'hello';";
-        let actions = get_modernize_actions(source);
+        let actions = get_modernize_actions(source, &parse(source));
         assert!(actions.iter().any(|a| a.title.contains("use strict")));
     }
 
     #[test]
     fn test_strict_warnings_present_no_action() {
         let source = "use strict;\nuse warnings;\nprint 'hello';";
-        let actions = find_missing_strict_warnings(source);
+        let actions = find_missing_strict_warnings(source, &parse(source));
         assert!(actions.is_empty());
     }
 
     #[test]
     fn test_moose_implies_strict() {
         let source = "use Moose;\nprint 'hello';";
-        let actions = find_missing_strict_warnings(source);
+        let actions = find_missing_strict_warnings(source, &parse(source));
         assert!(actions.is_empty());
+    }
+
+    // --- issue #3730: implicit_strict list must match the corrected diagnostic
+    // source of truth (strict_warnings.rs, fixed in #3729). `Catalyst` and bare
+    // `Mojolicious` do NOT enable strict for the caller; `Mojolicious::Lite`
+    // does. These first two are the reproduction gate (they suppressed wrongly
+    // before the fix). ---
+
+    #[test]
+    fn catalyst_does_not_suppress_missing_strict_or_warnings() {
+        // Catalyst::import only does Moose meta/superclass setup; it never
+        // enables strict/warnings for the caller. The code action must still
+        // offer to add them.
+        let source = "use Catalyst;\nprint 'hello';";
+        let actions = find_missing_strict_warnings(source, &parse(source));
+        assert!(
+            actions.iter().any(|a| a.title.contains("use strict")),
+            "Catalyst must not suppress the add-strict/warnings action"
+        );
+    }
+
+    #[test]
+    fn bare_mojolicious_does_not_suppress_missing_strict_or_warnings() {
+        // Bare `use Mojolicious;` (no flags) inherits Mojo::Base::import(),
+        // whose `return unless my @flags = @_;` short-circuits on empty args,
+        // so it enables nothing. The action must still be offered.
+        let source = "use Mojolicious;\nprint 'hello';";
+        let actions = find_missing_strict_warnings(source, &parse(source));
+        assert!(
+            actions.iter().any(|a| a.title.contains("use strict")),
+            "bare Mojolicious must not suppress the add-strict/warnings action"
+        );
+    }
+
+    #[test]
+    fn mojolicious_lite_suppresses_missing_strict_and_warnings() {
+        // Mojolicious::Lite::import always forwards a non-empty `-strict` flag
+        // to Mojo::Base::import, unconditionally enabling strict/warnings.
+        let source = "use Mojolicious::Lite;\nprint 'hello';";
+        let actions = find_missing_strict_warnings(source, &parse(source));
+        assert!(
+            actions.is_empty(),
+            "Mojolicious::Lite must suppress the add-strict/warnings action"
+        );
+    }
+
+    #[test]
+    fn flagged_mojolicious_suppresses_missing_strict_and_warnings() {
+        // `use Mojolicious -base;` forwards a non-empty flag list into
+        // Mojo::Base::import(), which DOES enable strict/warnings -- mirror the
+        // args-awareness of strict_warnings.rs.
+        let source = "use Mojolicious -base;\nprint 'hello';";
+        let actions = find_missing_strict_warnings(source, &parse(source));
+        assert!(actions.is_empty(), "flagged `use Mojolicious -base;` must suppress the action");
+    }
+
+    #[test]
+    fn empty_import_mojolicious_does_not_suppress() {
+        // `use Mojolicious ();` is the explicit empty-import list -- it skips
+        // import() entirely, so it enables nothing. Must still offer the action
+        // (matches how strict_warnings.rs treats the empty-arg case).
+        let source = "use Mojolicious ();\nprint 'hello';";
+        let actions = find_missing_strict_warnings(source, &parse(source));
+        assert!(
+            actions.iter().any(|a| a.title.contains("use strict")),
+            "`use Mojolicious ();` must not suppress the action"
+        );
+    }
+
+    #[test]
+    fn flagged_mojolicious_suppresses_regardless_of_whitespace_or_layout() {
+        // The flagged form enables strict/warnings irrespective of irregular
+        // whitespace, inline placement, or a wrapped continuation line.
+        for source in [
+            "use  Mojolicious -base;\nprint 'hi';",     // doubled space
+            "use\tMojolicious -base;\nprint 'hi';",     // tab
+            "package App; use Mojolicious -base;\n1;",  // inline statement
+            "use Mojolicious\n    -base;\nprint 'hi';", // wrapped flags
+        ] {
+            let actions = find_missing_strict_warnings(source, &parse(source));
+            assert!(actions.is_empty(), "flagged Mojolicious must suppress for: {source:?}");
+        }
+    }
+
+    #[test]
+    fn version_or_empty_qw_mojolicious_does_not_suppress() {
+        // `use Mojolicious VERSION;` consumes the version before import(), and
+        // an empty `qw//` list passes no flags -- neither enables strict, so
+        // the add-strict/warnings action must still be offered.
+        for source in [
+            "use Mojolicious 9.0;\nprint 'hi';",
+            "use Mojolicious v9.0;\nprint 'hi';",
+            "use Mojolicious qw();\nprint 'hi';",
+            "use Mojolicious qw//;\nprint 'hi';",
+        ] {
+            let actions = find_missing_strict_warnings(source, &parse(source));
+            assert!(
+                actions.iter().any(|a| a.title.contains("use strict")),
+                "non-flag Mojolicious import must not suppress the action: {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn versioned_flag_mojolicious_still_suppresses() {
+        // A version followed by a real flag still reaches import()'s flag branch.
+        let source = "use Mojolicious 9.0 -base;\nprint 'hi';";
+        let actions = find_missing_strict_warnings(source, &parse(source));
+        assert!(actions.is_empty(), "`use Mojolicious 9.0 -base;` must suppress the action");
+    }
+
+    #[test]
+    fn longer_bareword_starting_with_mojolicious_is_not_flagged() {
+        // A different module that merely starts with `Mojolicious` must not be
+        // treated as a flagged `use Mojolicious`.
+        let source = "use MojoliciousFoo -base;\nprint 'hi';";
+        let actions = find_missing_strict_warnings(source, &parse(source));
+        assert!(
+            actions.iter().any(|a| a.title.contains("use strict")),
+            "`use MojoliciousFoo` must not be treated as flagged Mojolicious"
+        );
+    }
+
+    #[test]
+    fn kept_implicit_strict_modules_still_suppress() {
+        // Over-suppression guard: the legitimate entries must keep suppressing.
+        for source in [
+            "use Moo;\nprint 'hi';",
+            "use Mouse;\nprint 'hi';",
+            "use Dancer2;\nprint 'hi';",
+            "use Modern::Perl;\nprint 'hi';",
+            "use Mojo::Base 'Foo';\nprint 'hi';",
+            "use v5.36;\nprint 'hi';",
+        ] {
+            let actions = find_missing_strict_warnings(source, &parse(source));
+            assert!(actions.is_empty(), "expected suppression for: {source:?}");
+        }
+    }
+
+    #[test]
+    fn common_sense_does_not_suppress_action() {
+        // `use common::sense;` is NOT a `use strict; use warnings;` equivalent
+        // (it enables only strict subs/vars — no `refs` — plus curated fatal
+        // warnings), so the action must still fire. Verified against metacpan.
+        let source = "use common::sense;\nprint 'hi';";
+        let actions = find_missing_strict_warnings(source, &parse(source));
+        assert!(
+            actions.iter().any(|a| a.title.contains("use strict")),
+            "common::sense must not suppress the add-strict/warnings action"
+        );
+    }
+
+    // ---- #4518: AST-based detection fixes raw-text false-suppressions ----
+
+    fn offers_strict_warnings(source: &str) -> bool {
+        find_missing_strict_warnings(source, &parse(source))
+            .iter()
+            .any(|a| a.title.contains("use strict") || a.title.contains("use warnings"))
+    }
+
+    #[test]
+    fn module_in_comment_does_not_suppress() {
+        // `# use Moose;` is a comment, not a real import.
+        assert!(offers_strict_warnings("# use Moose;\nprint 'hi';\n"));
+    }
+
+    #[test]
+    fn module_in_string_literal_does_not_suppress() {
+        assert!(offers_strict_warnings("my $x = \"use Moose\";\nprint $x;\n"));
+    }
+
+    #[test]
+    fn module_in_heredoc_does_not_suppress() {
+        let source = "my $doc = <<'END';\nuse Dancer2;\nEND\nprint $doc;\n";
+        assert!(offers_strict_warnings(source));
+    }
+
+    #[test]
+    fn subtoken_module_match_does_not_suppress() {
+        // `use MooseX::Types;` is not `Moose`; the old `contains("use Moose")`
+        // wrongly matched it.
+        assert!(offers_strict_warnings("use MooseX::Types;\nprint 'hi';\n"));
+    }
+
+    #[test]
+    fn non_file_scope_use_does_not_suppress() {
+        // A `use Moose` nested in a sub does not enable strict for the whole file.
+        let source = "sub inner {\n    use Moose;\n}\nprint 'hi';\n";
+        assert!(offers_strict_warnings(source));
     }
 
     #[test]
     fn test_missing_strict_warnings_crlf_insert_after_package_line()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = "#!/usr/bin/env perl\r\n\r\npackage Foo;\r\nprint 'hello';\r\n";
-        let actions = find_missing_strict_warnings(source);
+        let actions = find_missing_strict_warnings(source, &parse(source));
         let action = actions
             .iter()
             .find(|action| action.title.contains("use strict"))
@@ -677,7 +883,7 @@ mod tests {
     #[test]
     fn test_all_actions_have_modernize_kind() {
         let source = "require 5.006;\nopen(FILE, \">foo\");\nif (defined(@arr)) {}";
-        let actions = get_modernize_actions(source);
+        let actions = get_modernize_actions(source, &parse(source));
         for action in &actions {
             assert_eq!(action.kind, CodeActionKind::SourceModernize);
         }
@@ -704,7 +910,7 @@ mod tests {
     #[test]
     fn test_die_in_module_suggests_croak() {
         let source = "package Foo;\nuse strict;\ndie \"Something failed\";\n";
-        let actions = get_modernize_actions(source);
+        let actions = get_modernize_actions(source, &parse(source));
         assert!(
             actions.iter().any(|a| a.title.contains("croak")),
             "Expected croak suggestion in module context, got: {:?}",
@@ -1008,7 +1214,7 @@ mod tests {
     #[test]
     fn test_get_modernize_actions_empty_source() {
         // Empty string must not panic and must return empty actions.
-        let actions = get_modernize_actions("");
+        let actions = get_modernize_actions("", &parse(""));
         // The only possible action is "add strict/warnings" for a non-empty file.
         // An empty file has nothing to modernize and inserting pragmas would produce
         // a 0-byte insert — allowed, but it should not panic.
@@ -1019,7 +1225,7 @@ mod tests {
     #[test]
     fn test_get_modernize_actions_only_newlines() {
         // File of only newlines: no patterns to detect, must not panic.
-        let actions = get_modernize_actions("\n\n\n");
+        let actions = get_modernize_actions("\n\n\n", &parse("\n\n\n"));
         drop(actions);
     }
 }

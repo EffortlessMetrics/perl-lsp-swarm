@@ -21,7 +21,7 @@
 //! - **Req 14.4**: Cycle detection — terminate traversal and report cycle rather than looping.
 
 use perl_semantic_facts::{
-    EntityId, FileId, PackageEdge, PackageEdgeKind, PackageKind, PackageNode,
+    AnchorId, EntityId, FileId, PackageEdge, PackageEdgeKind, PackageKind, PackageNode,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -34,6 +34,20 @@ pub struct AncestorResult {
     /// Ancestor package names in traversal order (breadth-first).
     pub ancestors: Vec<String>,
     /// `true` when a circular inheritance chain was detected.
+    pub cycle_detected: bool,
+}
+
+/// Result of a transitive role-composition traversal through the package graph.
+///
+/// Contains the ordered list of transitively composed role names (excluding
+/// the starting package) and a flag indicating whether a composition cycle was
+/// detected during traversal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleCompositionResult {
+    /// Composed role names in deterministic DFS pre-order (excludes the
+    /// starting package).
+    pub roles: Vec<String>,
+    /// `true` when a circular role-composition chain was detected.
     pub cycle_detected: bool,
 }
 
@@ -51,10 +65,18 @@ pub struct PackageGraphIndex {
     /// Package name → outgoing edges (edges where `from_package` == key).
     outgoing_edges: HashMap<String, Vec<PackageEdge>>,
 
+    /// Source URI for each outgoing edge, kept in lockstep with
+    /// [`Self::outgoing_edges`].  Equal edges can be contributed by multiple
+    /// files, so edge equality alone is not sufficient for replacement.
+    outgoing_edge_sources: HashMap<String, Vec<String>>,
+
     /// Tracks which file URIs have contributed edges so that
     /// [`remove_edges_for_file`](Self::remove_edges_for_file) can purge
     /// stale entries.
     file_edges: HashMap<String, Vec<PackageEdge>>,
+
+    /// File identity for each URI's source-package contribution.
+    file_edge_ids: HashMap<String, FileId>,
 }
 
 impl PackageGraphIndex {
@@ -71,6 +93,7 @@ impl PackageGraphIndex {
     pub fn add_edges(&mut self, source_uri: &str, file_id: FileId, edges: Vec<PackageEdge>) {
         // Store edges for later removal.
         self.file_edges.insert(source_uri.to_string(), edges.clone());
+        self.file_edge_ids.insert(source_uri.to_string(), file_id);
 
         for edge in &edges {
             // Ensure the source package node exists.
@@ -81,6 +104,10 @@ impl PackageGraphIndex {
 
             // Record the outgoing edge.
             self.outgoing_edges.entry(edge.from_package.clone()).or_default().push(edge.clone());
+            self.outgoing_edge_sources
+                .entry(edge.from_package.clone())
+                .or_default()
+                .push(source_uri.to_string());
         }
     }
 
@@ -93,25 +120,52 @@ impl PackageGraphIndex {
             Some(edges) => edges,
             None => return,
         };
+        self.file_edge_ids.remove(source_uri);
 
         // Collect the package names whose outgoing edges need pruning.
         let affected_packages: HashSet<String> =
             removed_edges.iter().map(|e| e.from_package.clone()).collect();
 
-        // Remove the specific edges from the outgoing_edges map.
+        // Remove only the edges owned by this file.  Two files may contribute
+        // equal HIR edges (which commonly have no anchor), so comparing edge
+        // values alone would incorrectly delete another file's contribution.
         for pkg in &affected_packages {
-            if let Some(edges) = self.outgoing_edges.get_mut(pkg) {
-                edges.retain(|e| !removed_edges.contains(e));
+            if let (Some(edges), Some(sources)) =
+                (self.outgoing_edges.get_mut(pkg), self.outgoing_edge_sources.get_mut(pkg))
+            {
+                // The two vectors are a lockstep ownership projection. If a
+                // future mutation corrupts that invariant, preserve the
+                // existing graph rather than silently dropping unmatched
+                // entries through `zip`.
+                if edges.len() != sources.len() {
+                    debug_assert_eq!(
+                        edges.len(),
+                        sources.len(),
+                        "package graph edge/source ownership vectors diverged"
+                    );
+                    continue;
+                }
+                let mut kept_edges = Vec::with_capacity(edges.len());
+                let mut kept_sources = Vec::with_capacity(sources.len());
+                for (edge, owner) in edges.drain(..).zip(sources.drain(..)) {
+                    if owner != source_uri {
+                        kept_edges.push(edge);
+                        kept_sources.push(owner);
+                    }
+                }
+                *edges = kept_edges;
+                *sources = kept_sources;
             }
         }
 
         // Clean up empty edge buckets.
         self.outgoing_edges.retain(|_, v| !v.is_empty());
+        self.outgoing_edge_sources.retain(|_, v| !v.is_empty());
 
-        // Remove nodes that are no longer referenced by any edge (either as
-        // source or target) and were not contributed by another file.
-        let all_referenced: HashSet<String> = self.all_referenced_packages();
-        self.nodes.retain(|name, _| all_referenced.contains(name));
+        // Rebuild source metadata from the remaining owners. A package can be
+        // contributed by multiple files; retaining the original node would
+        // leave a removed file's FileId attached to the surviving package.
+        self.rebuild_node_metadata();
     }
 
     /// Traverse the inheritance chain (Inherits edges) starting from
@@ -169,6 +223,79 @@ impl PackageGraphIndex {
             if *cycle_detected {
                 return;
             }
+        }
+    }
+
+    /// Traverse the role-composition chain (`ComposesRole` edges) starting from
+    /// `package_name` and return every transitively composed role.
+    ///
+    /// Mirrors [`ancestors`](Self::ancestors): depth-first traversal with an
+    /// on-path set for cycle detection. Roles are returned in deterministic
+    /// DFS pre-order and de-duplicated; the starting package is **not**
+    /// included. When a composition cycle is detected,
+    /// [`RoleCompositionResult::cycle_detected`] is set and only the cyclic
+    /// branch is abandoned — unrelated sibling roles are still collected, so
+    /// the result stays complete for every acyclic path.
+    pub fn transitive_composed_roles(&self, package_name: &str) -> RoleCompositionResult {
+        let mut on_stack = HashSet::new();
+        let mut collected = HashSet::new();
+        let mut roles = Vec::new();
+        let mut cycle_detected = false;
+
+        on_stack.insert(package_name.to_string());
+        self.collect_composed_roles(
+            package_name,
+            &mut on_stack,
+            &mut collected,
+            &mut roles,
+            &mut cycle_detected,
+        );
+
+        RoleCompositionResult { roles, cycle_detected }
+    }
+
+    /// Recursively collect composed roles via DFS, using `on_stack` to track
+    /// the current traversal path for cycle detection.
+    ///
+    /// Roles are added to `on_stack` before recursing and removed after, so
+    /// only back-edges (true composition cycles) trigger `cycle_detected`.
+    /// Convergence via multiple composition paths is handled by checking
+    /// `roles` to avoid duplicates without flagging a cycle.
+    ///
+    /// A detected cycle abandons **only** the offending branch (`continue`),
+    /// never the whole traversal: sibling roles reached through other,
+    /// acyclic edges are unrelated to the cycle and must still be collected.
+    /// Aborting the entire DFS on the first back-edge would silently drop
+    /// those siblings depending on edge-insertion order.
+    ///
+    /// `collected` mirrors `roles` as a set so convergent-composition
+    /// de-duplication is O(1) per edge rather than an O(n) scan of the ordered
+    /// output vector; `roles` remains the deterministic DFS pre-order list.
+    fn collect_composed_roles(
+        &self,
+        package_name: &str,
+        on_stack: &mut HashSet<String>,
+        collected: &mut HashSet<String>,
+        roles: &mut Vec<String>,
+        cycle_detected: &mut bool,
+    ) {
+        for role in self.composed_roles(package_name) {
+            if on_stack.contains(&role) {
+                // Back-edge to a role on the current DFS path — a true cycle.
+                // Skip this branch only; keep collecting siblings.
+                *cycle_detected = true;
+                continue;
+            }
+
+            // Skip already-collected roles (convergent composition).
+            if !collected.insert(role.clone()) {
+                continue;
+            }
+
+            roles.push(role.clone());
+            on_stack.insert(role.clone());
+            self.collect_composed_roles(&role, on_stack, collected, roles, cycle_detected);
+            on_stack.remove(&role);
         }
     }
 
@@ -271,16 +398,65 @@ impl PackageGraphIndex {
         });
     }
 
-    /// Collect all package names referenced by any edge (source or target).
-    fn all_referenced_packages(&self) -> HashSet<String> {
-        let mut referenced = HashSet::new();
-        for edges in self.file_edges.values() {
+    /// Reconstruct node metadata from the currently live edge ownership.
+    fn rebuild_node_metadata(&mut self) {
+        let mut source_nodes: HashMap<String, (PackageKind, Option<AnchorId>, FileId)> =
+            HashMap::new();
+        let mut target_kinds: HashMap<String, PackageKind> = HashMap::new();
+
+        for (source_uri, edges) in &self.file_edges {
+            let Some(file_id) = self.file_edge_ids.get(source_uri).copied() else {
+                continue;
+            };
             for edge in edges {
-                referenced.insert(edge.from_package.clone());
-                referenced.insert(edge.to_package.clone());
+                let source_kind = match edge.kind {
+                    PackageEdgeKind::ComposesRole => PackageKind::Class,
+                    _ => PackageKind::Package,
+                };
+                source_nodes
+                    .entry(edge.from_package.clone())
+                    .and_modify(|(kind, anchor_id, existing_file_id)| {
+                        if source_kind == PackageKind::Class {
+                            *kind = PackageKind::Class;
+                        }
+                        if file_id < *existing_file_id {
+                            *anchor_id = edge.anchor_id;
+                            *existing_file_id = file_id;
+                        } else if file_id == *existing_file_id && anchor_id.is_none() {
+                            // An anchor from the same file can improve an
+                            // earlier anchor-less edge; never borrow an anchor
+                            // from a different file while retaining its owner.
+                            *anchor_id = edge.anchor_id;
+                        }
+                    })
+                    .or_insert((source_kind, edge.anchor_id, file_id));
+
+                let target_kind = match edge.kind {
+                    PackageEdgeKind::ComposesRole => PackageKind::Role,
+                    _ => PackageKind::External,
+                };
+                target_kinds
+                    .entry(edge.to_package.clone())
+                    .and_modify(|kind| {
+                        if target_kind == PackageKind::Role {
+                            *kind = PackageKind::Role;
+                        }
+                    })
+                    .or_insert(target_kind);
             }
         }
-        referenced
+
+        let mut nodes = HashMap::with_capacity(source_nodes.len() + target_kinds.len());
+        for (name, kind) in target_kinds {
+            nodes.insert(name.clone(), PackageNode::new(EntityId(0), name, kind, None, None));
+        }
+        for (name, (kind, anchor_id, file_id)) in source_nodes {
+            nodes.insert(
+                name.clone(),
+                PackageNode::new(EntityId(0), name, kind, anchor_id, Some(file_id)),
+            );
+        }
+        self.nodes = nodes;
     }
 }
 
@@ -480,6 +656,133 @@ mod tests {
     }
 
     #[test]
+    fn transitive_composed_roles_follows_role_chain() -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        // MyClass composes RoleA; RoleA composes RoleB; RoleB composes RoleC.
+        index.add_edges(
+            "file:///lib/MyClass.pm",
+            FileId(1),
+            vec![composes_edge("MyClass", "RoleA")],
+        );
+        index.add_edges("file:///lib/RoleA.pm", FileId(2), vec![composes_edge("RoleA", "RoleB")]);
+        index.add_edges("file:///lib/RoleB.pm", FileId(3), vec![composes_edge("RoleB", "RoleC")]);
+
+        let result = index.transitive_composed_roles("MyClass");
+        assert!(!result.cycle_detected);
+        // Starting package excluded; transitive roles in DFS pre-order.
+        assert_eq!(result.roles, vec!["RoleA", "RoleB", "RoleC"]);
+        Ok(())
+    }
+
+    #[test]
+    fn transitive_composed_roles_excludes_start_and_empty_for_leaf()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        index.add_edges("file:///lib/Plain.pm", FileId(1), vec![inherits_edge("Plain", "Base")]);
+
+        let result = index.transitive_composed_roles("Plain");
+        assert!(!result.cycle_detected);
+        assert!(result.roles.is_empty(), "a package composing no roles yields no transitive roles");
+        Ok(())
+    }
+
+    #[test]
+    fn transitive_composed_roles_detects_cycle() -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        // RoleA composes RoleB; RoleB composes RoleA (composition cycle).
+        index.add_edges("file:///lib/RoleA.pm", FileId(1), vec![composes_edge("RoleA", "RoleB")]);
+        index.add_edges("file:///lib/RoleB.pm", FileId(2), vec![composes_edge("RoleB", "RoleA")]);
+
+        let result = index.transitive_composed_roles("RoleA");
+        assert!(result.cycle_detected, "role-composition cycle must be detected");
+        // Traversal still terminates and collects the reachable role before the
+        // back-edge is found.
+        assert!(result.roles.contains(&"RoleB".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn transitive_composed_roles_convergent_paths_no_cycle()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        // Diamond over ComposesRole: Top -> L, Top -> R, L -> Shared, R -> Shared.
+        index.add_edges(
+            "file:///lib/Top.pm",
+            FileId(1),
+            vec![composes_edge("Top", "L"), composes_edge("Top", "R")],
+        );
+        index.add_edges("file:///lib/L.pm", FileId(2), vec![composes_edge("L", "Shared")]);
+        index.add_edges("file:///lib/R.pm", FileId(3), vec![composes_edge("R", "Shared")]);
+
+        let result = index.transitive_composed_roles("Top");
+        assert!(!result.cycle_detected, "convergent composition paths are not a cycle");
+        assert!(result.roles.contains(&"L".to_string()));
+        assert!(result.roles.contains(&"R".to_string()));
+        assert!(result.roles.contains(&"Shared".to_string()));
+        // "Shared" is collected exactly once despite two paths reaching it.
+        assert_eq!(result.roles.iter().filter(|r| *r == "Shared").count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn transitive_composed_roles_cycle_preserves_unrelated_siblings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        // Top composes RoleCyclic (first edge) and RoleClean (second edge).
+        // RoleCyclic composes back to Top (a genuine cycle); RoleClean is an
+        // unrelated acyclic sibling. The cycle must not drop RoleClean, even
+        // though RoleCyclic is visited first.
+        index.add_edges(
+            "file:///lib/Top.pm",
+            FileId(1),
+            vec![composes_edge("Top", "RoleCyclic"), composes_edge("Top", "RoleClean")],
+        );
+        index.add_edges(
+            "file:///lib/RoleCyclic.pm",
+            FileId(2),
+            vec![composes_edge("RoleCyclic", "Top")],
+        );
+
+        let result = index.transitive_composed_roles("Top");
+        assert!(result.cycle_detected, "the RoleCyclic -> Top back-edge is a cycle");
+        assert!(
+            result.roles.contains(&"RoleCyclic".to_string()),
+            "the cyclic role itself is still reached before the back-edge"
+        );
+        assert!(
+            result.roles.contains(&"RoleClean".to_string()),
+            "an unrelated sibling must survive a cycle in another branch: {:?}",
+            result.roles
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn transitive_composed_roles_reflects_stale_index_removal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        index.add_edges(
+            "file:///lib/MyClass.pm",
+            FileId(1),
+            vec![composes_edge("MyClass", "RoleA")],
+        );
+        index.add_edges("file:///lib/RoleA.pm", FileId(2), vec![composes_edge("RoleA", "RoleB")]);
+
+        assert_eq!(index.transitive_composed_roles("MyClass").roles, vec!["RoleA", "RoleB"]);
+
+        // Re-index RoleA.pm with the RoleB composition removed (incremental update).
+        index.remove_edges_for_file("file:///lib/RoleA.pm");
+
+        let result = index.transitive_composed_roles("MyClass");
+        assert_eq!(
+            result.roles,
+            vec!["RoleA"],
+            "stale transitive role must disappear after re-index"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn dependencies_returns_depends_on_targets() -> Result<(), Box<dyn std::error::Error>> {
         let mut index = PackageGraphIndex::new();
         index.add_edges(
@@ -559,6 +862,56 @@ mod tests {
         assert!(index.get_node("A").is_none());
         assert!(index.get_node("B").is_some());
         assert!(index.get_node("Base").is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn removing_one_file_preserves_equal_edge_owned_by_another_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        let edge = inherits_edge("Child", "Base");
+        index.add_edges("file:///lib/Child-one.pm", FileId(1), vec![edge.clone()]);
+        index.add_edges("file:///lib/Child-two.pm", FileId(2), vec![edge]);
+
+        assert_eq!(index.edge_count(), 2);
+        assert_eq!(index.ancestors("Child").ancestors, vec!["Base"]);
+
+        index.remove_edges_for_file("file:///lib/Child-one.pm");
+
+        assert_eq!(index.edge_count(), 1);
+        assert_eq!(index.ancestors("Child").ancestors, vec!["Base"]);
+        assert!(index.get_node("Child").is_some());
+        assert!(index.get_node("Base").is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn removing_one_file_reassigns_shared_source_node_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        let edge = inherits_edge("Child", "Base");
+        index.add_edges("file:///lib/Child-one.pm", FileId(1), vec![edge.clone()]);
+        index.add_edges("file:///lib/Child-two.pm", FileId(2), vec![edge]);
+
+        assert_eq!(index.get_node("Child").and_then(|node| node.file_id), Some(FileId(1)));
+        index.remove_edges_for_file("file:///lib/Child-one.pm");
+        assert_eq!(index.get_node("Child").and_then(|node| node.file_id), Some(FileId(2)));
+        Ok(())
+    }
+
+    #[test]
+    fn rebuild_node_metadata_keeps_anchor_and_file_owner_paired()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = PackageGraphIndex::new();
+        let mut anchorless = inherits_edge("Child", "Base");
+        anchorless.anchor_id = None;
+        let anchored = inherits_edge("Child", "Base");
+        index.add_edges("file:///lib/Child-one.pm", FileId(1), vec![anchorless]);
+        index.add_edges("file:///lib/Child-two.pm", FileId(2), vec![anchored]);
+
+        let child = index.get_node("Child").ok_or("expected Child node")?;
+        assert_eq!(child.file_id, Some(FileId(1)));
+        assert_eq!(child.anchor_id, None);
         Ok(())
     }
 

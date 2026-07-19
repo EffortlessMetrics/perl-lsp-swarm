@@ -1,3 +1,11 @@
+fn normalize_dynamic_typeglob_name(name: &str) -> String {
+    let inner = name
+        .strip_prefix('{')
+        .and_then(|inner| inner.strip_suffix('}'))
+        .unwrap_or(name);
+    inner.trim().trim_end_matches(';').trim().to_string()
+}
+
 impl<'a> Parser<'a> {
     /// Parse variable declaration (my, our, local, state)
     fn parse_variable_declaration(&mut self) -> ParseResult<Node> {
@@ -437,6 +445,27 @@ impl<'a> Parser<'a> {
             ));
         };
 
+        // The lexer intentionally keeps `*{...}` together as one identifier
+        // token so dynamic typeglob assignments remain unambiguous. In an
+        // rvalue position, recover the inner expression and expose the same
+        // dereference shell used by the other aggregate sigils. Keep the
+        // assignment path as a Typeglob for stash/alias analysis.
+        if sigil == "*"
+            && name.starts_with('{')
+            && name.ends_with('}')
+            && self.peek_kind() != Some(TokenKind::Assign)
+        {
+            let inner_text = &name[1..name.len() - 1];
+            let (operand, diagnostics) = parse_inline_expression(inner_text, token.start + 2)?;
+            self.errors.extend(diagnostics);
+            let end = token.end;
+            let node = Node::new(
+                NodeKind::Unary { op: "*{}".to_string(), operand: Box::new(operand) },
+                SourceLocation { start: token.start, end },
+            );
+            return self.parse_postfix_chain(node);
+        }
+
         if matches!(sigil.as_str(), "$" | "@" | "%")
             && name.is_empty()
             && self.peek_kind() == Some(TokenKind::LeftBrace)
@@ -597,8 +626,9 @@ impl<'a> Parser<'a> {
         }
 
         if sigil == "*" {
+            let name = normalize_dynamic_typeglob_name(&full_name);
             Ok(Node::new(
-                NodeKind::Typeglob { name: full_name },
+                NodeKind::Typeglob { name },
                 SourceLocation { start: token.start, end },
             ))
         } else if matches!(sigil.as_str(), "$" | "@" | "%")
@@ -815,6 +845,26 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Parse one or more expressions inside a split-token `* { ... }` body.
+    ///
+    /// A single expression keeps the historical operand shape. Multiple
+    /// expressions become a block so preceding statements remain available to
+    /// HIR/PIR traversal while the block's final expression remains its value.
+    fn parse_deref_body_expression(&mut self, body_start: usize) -> ParseResult<Node> {
+        let mut expressions = Vec::new();
+        loop {
+            if self.peek_kind() == Some(TokenKind::RightBrace) {
+                break;
+            }
+            expressions.push(self.parse_expression()?);
+            self.consume_deref_body_terminators()?;
+            if self.peek_kind() == Some(TokenKind::RightBrace) {
+                break;
+            }
+        }
+        build_deref_body(expressions, body_start)
+    }
+
     /// Parse a variable when we have a sigil token first
     fn parse_variable_from_sigil(&mut self) -> ParseResult<Node> {
         let sigil_token = self.consume_token()?;
@@ -1020,6 +1070,28 @@ impl<'a> Parser<'a> {
             }
         };
 
+        // Special handling for * sigil followed by { - dynamic typeglob dereference.
+        // Keep this distinct from a named typeglob (`*name`), which remains a
+        // Typeglob node for aliasing and slot analysis.
+        if sigil == "*" && name.is_empty() && self.peek_kind() == Some(TokenKind::LeftBrace) {
+            self.tokens.next()?; // consume {
+            let body_start = self.current_position();
+            let expr = self.parse_deref_body_expression(body_start)?;
+            self.expect(TokenKind::RightBrace)?;
+            let end = self.previous_position();
+            if self.peek_kind() == Some(TokenKind::Assign) {
+                let name = normalize_dynamic_typeglob_name(&String::from_utf8_lossy(
+                    &self.src_bytes[body_start..end.saturating_sub(1)],
+                ));
+                return Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }));
+            }
+            let node = Node::new(
+                NodeKind::Unary { op: "*{}".to_string(), operand: Box::new(expr) },
+                SourceLocation { start, end },
+            );
+            return self.parse_postfix_chain(node);
+        }
+
         // Special handling for @, %, or $ sigil followed by { - array/hash/scalar dereference
         // e.g. @{$ref}, %{$hash}, ${"${pkg}::$sym"}
         if (sigil == "@" || sigil == "%" || sigil == "$")
@@ -1071,6 +1143,7 @@ impl<'a> Parser<'a> {
 
             Ok(Node::new(NodeKind::FunctionCall { name, args }, SourceLocation { start, end }))
         } else if sigil == "*" {
+            let name = normalize_dynamic_typeglob_name(&name);
             Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }))
         } else if matches!(sigil.as_str(), "$" | "@" | "%")
             && Self::is_unbraced_scalar_deref_name(&name)
@@ -1580,6 +1653,94 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// Parse an expression captured inside the lexer's single `*{...}` token and
+/// restore its source offsets relative to the containing source file.
+fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<(Node, Vec<ParseError>)> {
+    let mut parser = Parser::new(source);
+    let ast = parser.parse().map_err(|error| offset_parse_error(error, offset))?;
+    let diagnostics = parser
+        .errors()
+        .iter()
+        .cloned()
+        .map(|error| offset_parse_error(error, offset))
+        .collect();
+    let NodeKind::Program { mut statements } = ast.kind else {
+        return Err(ParseError::syntax("Expected an expression program", offset));
+    };
+    let mut expressions = Vec::new();
+    for statement in statements.drain(..) {
+        let statement_start = statement.location.start;
+        let NodeKind::ExpressionStatement { expression: statement_expression } = statement.kind
+        else {
+            return Err(ParseError::syntax(
+                "Expected an expression statement",
+                offset.saturating_add(statement_start),
+            ));
+        };
+        // A braced dereference follows Perl block-expression semantics: when
+        // multiple expression statements are present, the final expression is
+        // the value used as the dereference target. Preserve every expression
+        // so HIR/PIR traversal does not lose preceding side effects.
+        let mut expression = *statement_expression;
+        shift_node_locations(&mut expression, offset);
+        expressions.push(expression);
+    }
+    Ok((build_deref_body(expressions, offset)?, diagnostics))
+}
+
+fn build_deref_body(mut expressions: Vec<Node>, body_start: usize) -> ParseResult<Node> {
+    if expressions.is_empty() {
+        return Err(ParseError::syntax("Expected an expression", body_start));
+    }
+    if expressions.len() == 1 {
+        return expressions
+            .pop()
+            .ok_or_else(|| ParseError::syntax("Expected an expression", body_start));
+    }
+
+    let start = expressions.first().map_or(body_start, |expression| expression.location.start);
+    let end = expressions.last().map_or(start, |expression| expression.location.end);
+    let statements = expressions
+        .into_iter()
+        .map(|expression| {
+            let location = expression.location;
+            Node::new(
+                NodeKind::ExpressionStatement { expression: Box::new(expression) },
+                location,
+            )
+        })
+        .collect();
+    Ok(Node::new(NodeKind::Block { statements }, SourceLocation { start, end }))
+}
+
+fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {
+    match error {
+        ParseError::UnexpectedToken { expected, found, location } => ParseError::UnexpectedToken {
+            expected,
+            found,
+            location: location.saturating_add(offset),
+        },
+        ParseError::SyntaxError { message, location } => {
+            ParseError::SyntaxError { message, location: location.saturating_add(offset) }
+        }
+        ParseError::Advisory { message, location } => {
+            ParseError::Advisory { message, location: location.saturating_add(offset) }
+        }
+        ParseError::Recovered { site, kind, location } => ParseError::Recovered {
+            site,
+            kind,
+            location: location.saturating_add(offset),
+        },
+        other => other,
+    }
+}
+
+fn shift_node_locations(node: &mut Node, offset: usize) {
+    node.location.start += offset;
+    node.location.end += offset;
+    node.for_each_child_mut(|child| shift_node_locations(child, offset));
+}
+
 /// Return `true` if `c` is a character that Perl permits in old-style prototypes.
 ///
 /// Valid characters (from perlsub):
@@ -1607,6 +1768,111 @@ fn is_simple_scalar_name(name: &str) -> bool {
         return false;
     }
     chars.all(|c| c.is_alphanumeric() || c == '_')
+}
+
+#[cfg(test)]
+mod inline_expression_tests {
+    use super::*;
+
+    #[test]
+    fn non_expression_inline_statement_reports_offset_location() -> ParseResult<()> {
+        let error = match parse_inline_expression("my $name;", 17) {
+            Ok(_) => {
+                return Err(ParseError::syntax(
+                    "expected a non-expression statement to be rejected",
+                    17,
+                ));
+            }
+            Err(error) => error,
+        };
+        if error.location() != Some(17) {
+            let location = match error.location() {
+                Some(location) => location,
+                None => 17,
+            };
+            return Err(ParseError::syntax(
+                "expected the non-expression error at the outer offset",
+                location,
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn non_expression_after_expression_is_not_discarded() -> Result<(), Box<dyn std::error::Error>> {
+        let error = match parse_inline_expression("$tmp; my $name;", 17) {
+            Ok(_) => return Err("expected a non-expression statement to be rejected".into()),
+            Err(error) => error,
+        };
+        assert_eq!(error.location(), Some(23));
+        Ok(())
+    }
+
+    #[test]
+    fn propagated_syntax_error_is_offset() {
+        let error = offset_parse_error(ParseError::syntax("bad", 3), 17);
+        assert_eq!(error.location(), Some(20));
+    }
+
+    #[test]
+    fn malformed_inline_expression_reports_outer_offset() -> ParseResult<()> {
+        let error = match parse_inline_expression("(", 17) {
+            Ok(_) => {
+                return Err(ParseError::syntax(
+                    "expected malformed inline expression to be rejected",
+                    17,
+                ));
+            }
+            Err(error) => error,
+        };
+        let Some(location) = error.location() else {
+            return Err(ParseError::syntax("expected a located parse error", 17));
+        };
+        if location < 17 {
+            return Err(ParseError::syntax(
+                "expected the parse error to retain its outer offset",
+                location,
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn multi_statement_inline_expression_preserves_every_expression() -> ParseResult<()> {
+        let (node, _) = parse_inline_expression("$tmp; 'STDOUT'", 17)?;
+
+        let NodeKind::Block { statements } = node.kind else {
+            return Err(ParseError::syntax(
+                "expected multi-statement inline expression to remain a block",
+                17,
+            ));
+        };
+        assert_eq!(statements.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn inline_expression_forwards_recoverable_diagnostics() -> ParseResult<()> {
+        let source = r#""abab" =~ /(?:[^b]*(?=(b)|(a))ab)*/"#;
+        let (_, diagnostics) = parse_inline_expression(source, 17)?;
+        if !diagnostics.iter().any(|diagnostic| {
+            matches!(diagnostic, ParseError::Advisory { message, .. }
+                if message.contains("Nested quantifiers detected"))
+        }) {
+            return Err(ParseError::syntax(
+                "expected inline parser advisory to be forwarded",
+                17,
+            ));
+        }
+        if !diagnostics.iter().all(|diagnostic| diagnostic.location().is_none_or(|location| location >= 17))
+        {
+            return Err(ParseError::syntax(
+                "expected forwarded inline diagnostics to retain the outer offset",
+                17,
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// `true` when `name` is a package-qualified scalar name made of two or

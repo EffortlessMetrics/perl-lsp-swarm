@@ -1615,4 +1615,80 @@ print "ok" foreach @ys;
 
         Ok(())
     }
+
+    /// Regression guard for the `modification` semantic-token modifier (issue #2810).
+    ///
+    /// The modifier (bit 7 = 128) distinguishes write from read occurrences of a
+    /// variable: the direct LHS of an assignment (`$x = ...`) is a write and must
+    /// carry the bit, while a plain read (`my $y = $x`) must not. A `my $x = ...`
+    /// declaration is tagged with declaration modifiers, not `modification`.
+    ///
+    /// The feature was implemented (legend bit 7 at :201, `assignment_lhs_spans`,
+    /// application at :896) but had no test pinning the read-vs-write distinction,
+    /// so a regression in the LHS-span detection would have gone unnoticed.
+    #[test]
+    fn assignment_lhs_variable_carries_modification_modifier()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const MODIFICATION_BIT: u32 = 128; // bit 7
+
+        let variable_idx =
+            *legend().map.get("variable").ok_or("variable token type missing from legend")?;
+
+        // Line 0: declaration (declaration modifiers, NOT modification)
+        // Line 1: reassignment — LHS write, modification bit set
+        // Line 2: `$x` read on the RHS of another declaration — no modification bit
+        let source = "my $x = 10;\n$x = 20;\nmy $y = $x;\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let tokens = collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset));
+
+        let lines: Vec<&str> = source.split('\n').collect();
+        let mut line = 0u32;
+        let mut col = 0u32;
+        // (line, painted substring, modifier bitfield) for each `variable` token.
+        let mut vars: Vec<(u32, String, u32)> = Vec::new();
+        for [delta_line, delta_start, length, token_type, mods] in tokens {
+            if delta_line == 0 {
+                col = col.saturating_add(delta_start);
+            } else {
+                line = line.saturating_add(delta_line);
+                col = delta_start;
+            }
+            if token_type == variable_idx {
+                let src_line = lines.get(line as usize).ok_or("token line out of range")?;
+                let painted: String =
+                    src_line.chars().skip(col as usize).take(length as usize).collect();
+                vars.push((line, painted, mods));
+            }
+        }
+
+        let var_on = |ln: u32| -> Result<u32, Box<dyn std::error::Error>> {
+            vars.iter()
+                .find(|(l, painted, _)| *l == ln && painted == "$x")
+                .map(|(_, _, mods)| *mods)
+                .ok_or_else(|| format!("no `$x` variable token on line {ln}; got {vars:?}").into())
+        };
+
+        let decl_mods = var_on(0)?;
+        let write_mods = var_on(1)?;
+        let read_mods = var_on(2)?;
+
+        assert_eq!(
+            write_mods & MODIFICATION_BIT,
+            MODIFICATION_BIT,
+            "assignment LHS `$x` (`$x = 20`) must carry the modification modifier (bit 7), got mods={write_mods}"
+        );
+        assert_eq!(
+            read_mods & MODIFICATION_BIT,
+            0,
+            "read `$x` (`my $y = $x`) must NOT carry the modification modifier, got mods={read_mods}"
+        );
+        assert_eq!(
+            decl_mods & MODIFICATION_BIT,
+            0,
+            "declaration `my $x` must NOT carry the modification modifier (it is a declaration), got mods={decl_mods}"
+        );
+
+        Ok(())
+    }
 }

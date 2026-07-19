@@ -39,7 +39,7 @@ mod heredoc_antipatterns;
 /// Internal diagnostic types (Diagnostic, RelatedInformation) for this crate's linting machinery.
 mod internal_types;
 /// Lint checks (common mistakes, deprecations, strict warnings, security)
-mod lints;
+pub(crate) mod lints;
 /// Parse error to diagnostic conversion
 mod parse_errors;
 /// Scope analysis integration
@@ -58,6 +58,7 @@ pub use lints::common_mistakes;
 pub use lints::deprecated;
 pub use lints::missing_module;
 pub use lints::package_subroutine;
+pub(crate) use lints::printf_format::{count_format_specifiers, unquote_string};
 /// Same-file Moo/Moose role conflict detection.
 pub use lints::role_conflicts;
 pub use lints::security;

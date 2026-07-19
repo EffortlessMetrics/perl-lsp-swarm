@@ -39,6 +39,22 @@ export enum TestRunProfileKind {
   Coverage = 3,
 }
 
+export enum TaskScope {
+  Global = 1,
+}
+
+export enum TaskRevealKind {
+  Always = 1,
+  Silent = 2,
+  Never = 3,
+}
+
+export enum TaskPanelKind {
+  Shared = 1,
+  Dedicated = 2,
+  New = 3,
+}
+
 export enum ProgressLocation {
   SourceControl = 1,
   Window = 10,
@@ -50,13 +66,21 @@ export class Range {
   public end: { line: number; character: number };
 
   constructor(
-    public startLine: number,
-    public startCharacter: number,
-    public endLine: number,
-    public endCharacter: number,
+    startOrLine: { line: number; character: number } | number,
+    endOrStartChar: { line: number; character: number } | number,
+    endLine?: number,
+    endChar?: number,
   ) {
-    this.start = { line: startLine, character: startCharacter };
-    this.end = { line: endLine, character: endCharacter };
+    if (typeof startOrLine === 'number') {
+      this.start = { line: startOrLine, character: endOrStartChar as number };
+      this.end = { line: endLine ?? 0, character: endChar ?? 0 };
+    } else {
+      this.start = { line: startOrLine.line, character: startOrLine.character };
+      this.end = {
+        line: (endOrStartChar as { line: number; character: number }).line,
+        character: (endOrStartChar as { line: number; character: number }).character,
+      };
+    }
   }
 }
 
@@ -95,17 +119,48 @@ export class TestMessage {
 
 export class CancellationTokenSource {
   token = { isCancellationRequested: false };
-  dispose() {}
+  cancel(): void {
+    this.token.isCancellationRequested = true;
+  }
+  dispose(): void {}
 }
 
-const _commands = new Map<string, (...args: any[]) => any>();
+export class ProcessExecution {
+  constructor(
+    public command: string,
+    public args: string[],
+    public options?: unknown,
+  ) {}
+}
+
+export class Task {
+  presentationOptions: unknown;
+
+  constructor(
+    public definition: unknown,
+    public scope: unknown,
+    public name: string,
+    public source: string,
+    public execution: ProcessExecution,
+  ) {}
+}
+
+type CommandCallback = (...args: unknown[]) => unknown | Promise<unknown>;
+type ProgressReporter = { report: jest.Mock };
+type CancellationToken = { isCancellationRequested: boolean };
+type ProgressTask = (
+  progress: ProgressReporter,
+  token: CancellationToken,
+) => unknown | Promise<unknown>;
+
+const _commands = new Map<string, CommandCallback>();
 
 export const commands = {
-  registerCommand: jest.fn((command: string, callback: (...args: any[]) => any) => {
+  registerCommand: jest.fn((command: string, callback: CommandCallback) => {
     _commands.set(command, callback);
     return { dispose: jest.fn() };
   }),
-  executeCommand: jest.fn(async (command: string, ...args: any[]) => {
+  executeCommand: jest.fn(async (command: string, ...args: unknown[]) => {
     const handler = _commands.get(command);
     if (handler) return handler(...args);
   }),
@@ -113,6 +168,7 @@ export const commands = {
 
 export const window = {
   createOutputChannel: jest.fn(() => ({
+    clear: jest.fn(),
     appendLine: jest.fn(),
     show: jest.fn(),
     dispose: jest.fn(),
@@ -132,17 +188,17 @@ export const window = {
   showQuickPick: jest.fn(async () => undefined),
   showInputBox: jest.fn(async () => undefined),
   showTextDocument: jest.fn(async () => undefined),
-  withProgress: jest.fn(async (_options: any, task: any) => {
+  withProgress: jest.fn(async (_options: unknown, task: ProgressTask) => {
     const progress = { report: jest.fn() };
     const token = { isCancellationRequested: false };
     return task(progress, token);
   }),
-  activeTextEditor: undefined as any,
+  activeTextEditor: undefined as { document: unknown } | undefined,
 };
 
 export const workspace = {
-  getConfiguration: jest.fn((section?: string) => ({
-    get: jest.fn((key: string, defaultValue?: any) => defaultValue),
+  getConfiguration: jest.fn((_section?: string) => ({
+    get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
     has: jest.fn(() => false),
     inspect: jest.fn(),
     update: jest.fn(),
@@ -159,19 +215,28 @@ export const workspace = {
   onDidCreateFiles: jest.fn(() => ({ dispose: jest.fn() })),
   onWillSaveTextDocument: jest.fn(() => ({ dispose: jest.fn() })),
   onDidChangeConfiguration: jest.fn(() => ({ dispose: jest.fn() })),
+  getWorkspaceFolder: jest.fn(
+    (_uri: unknown) => undefined as { uri: { fsPath: string } } | undefined,
+  ),
+  asRelativePath: jest.fn((uri: { fsPath: string }) => uri.fsPath),
   textDocuments: [],
   findFiles: jest.fn(async () => []),
-  openTextDocument: jest.fn(async (value: any) => ({
+  openTextDocument: jest.fn(async (value: string | { fsPath: string }) => ({
     uri: typeof value === 'string' ? { fsPath: value } : value,
     getText: jest.fn(() => ''),
   })),
-  workspaceFolders: undefined as any[] | undefined,
+  applyEdit: jest.fn(async () => true),
+  workspaceFolders: undefined as Array<{ uri: { fsPath: string } }> | undefined,
+};
+
+export const tasks = {
+  executeTask: jest.fn(async (task: Task) => task),
 };
 
 export const tests = {
   createTestController: jest.fn(() => ({
     createRunProfile: jest.fn(),
-    createTestItem: jest.fn((id: string, label: string, uri?: any) => ({
+    createTestItem: jest.fn((id: string, label: string, uri?: unknown) => ({
       id,
       label,
       uri,
@@ -217,7 +282,7 @@ export class DebugAdapterExecutable {
   constructor(
     public command: string,
     public args: string[],
-    public options?: any,
+    public options?: unknown,
   ) {}
 }
 
@@ -227,7 +292,7 @@ export const env = {
 };
 
 export const extensions = {
-  all: [] as any[],
+  all: [] as unknown[],
   getExtension: jest.fn(() => undefined),
 };
 
@@ -259,7 +324,7 @@ export enum ConfigurationTarget {
 
 export const languages = {
   onDidChangeDiagnostics: jest.fn(() => ({ dispose: jest.fn() })),
-  getDiagnostics: jest.fn(() => [] as Array<[any, any[]]>),
+  getDiagnostics: jest.fn(() => [] as Array<[unknown, unknown[]]>),
   registerDocumentSymbolProvider: jest.fn(() => ({ dispose: jest.fn() })),
   registerFoldingRangeProvider: jest.fn(() => ({ dispose: jest.fn() })),
   registerCodeActionsProvider: jest.fn(() => ({ dispose: jest.fn() })),

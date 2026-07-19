@@ -34,9 +34,9 @@
 //! longer arbitrates any of these pairs by label-apply timestamp
 //! ("whichever was applied later wins") — click-order is not authority.
 //!
-//! For `diff-audited`/`needs-diff-fix` and `review-reviewed`/`needs-builder-fix`,
-//! a SHA-bound review receipt already resolves the contradiction against a
-//! concrete artifact (see `ReviewReceipt` /
+//! For `diff-audited`/`needs-diff-fix`, `review-reviewed`/`needs-builder-fix`,
+//! and `maintainer-pr-reviewed`/`needs-builder-fix`, a SHA-bound review receipt
+//! already resolves the contradiction against a concrete artifact (see `ReviewReceipt` /
 //! `contradictions_from_current_review_receipt` below): a current-head
 //! *independent* `Approved` receipt (one where the reviewer did not also
 //! fix-forward in the same pass — invariant #4, a fix-forward pass can't
@@ -87,16 +87,13 @@ const REQUIRED_CHECKS_PATH: &str = ".ci/policies/required-checks.toml";
 
 const MERGE_READY: &str = "merge-ready";
 const CI_GREEN: &str = "ci-green";
-// deep-reviewed/needs-deep-review and maintainer-pr-reviewed are no longer resolved
-// by this reconciler (#4005 D5 removed the label-pair timestamp arbitration) — they
-// remain un-arbitrated navigation labels. Kept as named constants (rather than
-// inlined strings) because they document the full review-label taxonomy this module
-// is aware of, and the "left alone" behavior is pinned by tests below.
+// #4005 D5 removed label-pair timestamp arbitration. Deep-review labels remain
+// un-arbitrated navigation labels, while SHA-bound review receipts arbitrate the
+// standard and maintainer approval labels against needs-builder-fix.
 #[allow(dead_code)]
 const DEEP_REVIEWED: &str = "deep-reviewed";
 const DIFF_AUDITED: &str = "diff-audited";
 const REVIEW_REVIEWED: &str = "review-reviewed";
-#[allow(dead_code)]
 const MAINTAINER_PR_REVIEWED: &str = "maintainer-pr-reviewed";
 
 const NEEDS_CI_FIX: &str = "needs-ci-fix";
@@ -527,6 +524,14 @@ pub fn contradictions_from_current_review_receipt(
                     keep: NEEDS_BUILDER_FIX.to_string(),
                     strip: REVIEW_REVIEWED.to_string(),
                     reason: "current needs_builder receipt strips approval label".to_string(),
+                });
+            }
+            if has(MAINTAINER_PR_REVIEWED) {
+                out.push(Contradiction {
+                    keep: NEEDS_BUILDER_FIX.to_string(),
+                    strip: MAINTAINER_PR_REVIEWED.to_string(),
+                    reason: "current needs_builder receipt strips maintainer approval label"
+                        .to_string(),
                 });
             }
             if has(DIFF_AUDITED) {
@@ -1536,17 +1541,19 @@ required = false
 
     #[test]
     fn current_needs_builder_receipt_strips_approval_labels() {
-        let pr = make_pr(8, &[REVIEW_REVIEWED, DIFF_AUDITED, NEEDS_BUILDER_FIX]);
+        let pr =
+            make_pr(8, &[REVIEW_REVIEWED, MAINTAINER_PR_REVIEWED, DIFF_AUDITED, NEEDS_BUILDER_FIX]);
         let receipt = make_review_receipt(8, "sha-8", ReviewReceiptVerdict::NeedsBuilder);
         let c = contradictions_from_current_review_receipt(&pr, Some(&receipt));
         assert!(c.iter().any(|item| item.strip == REVIEW_REVIEWED));
+        assert!(c.iter().any(|item| item.strip == MAINTAINER_PR_REVIEWED));
         assert!(c.iter().any(|item| item.strip == DIFF_AUDITED));
     }
 
     #[test]
     fn stale_sha_receipt_is_ignored() {
-        let pr = make_pr(9, &[REVIEW_REVIEWED, DIFF_AUDITED, NEEDS_DIFF_FIX]);
-        let receipt = make_review_receipt(9, "different-sha", ReviewReceiptVerdict::NeedsDiff);
+        let pr = make_pr(9, &[MAINTAINER_PR_REVIEWED, NEEDS_BUILDER_FIX]);
+        let receipt = make_review_receipt(9, "different-sha", ReviewReceiptVerdict::NeedsBuilder);
         let c = contradictions_from_current_review_receipt(&pr, Some(&receipt));
         assert!(c.is_empty());
     }

@@ -1974,6 +1974,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "perl-test-facts"
+version = "0.17.0"
+
+[[package]]
 name = "perl-test-generators"
 version = "0.17.0"
 dependencies = [
@@ -3243,9 +3247,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter"
-version = "0.26.10"
+version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c343ed63e3f5c64d1acdecb5d2c13d4e169cb5fde0052106ebaa6c6f27f9e55"
+checksum = "af1c71c1c4cc0920b20d6b0f6572e7682cd07a6a2faec71067a31fa394c586df"
 dependencies = [
  "cc",
  "regex",

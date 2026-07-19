@@ -837,7 +837,7 @@ pub fn run(config: CiScopeConfig) -> Result<()> {
 // single `git diff` they now share with `gates::compute_scope_output` and
 // `targeted_checks::run`.
 
-fn load_metadata(root: &Path) -> Result<serde_json::Value> {
+pub(crate) fn load_metadata(root: &Path) -> Result<serde_json::Value> {
     let output = cmd("cargo", &["metadata", "--format-version", "1"])
         .dir(root)
         .stdout_capture()

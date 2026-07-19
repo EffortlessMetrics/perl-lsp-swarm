@@ -28,8 +28,15 @@ impl<'a> PerlLexer<'a> {
             line_start_offset: 0,
             emit_heredoc_body_tokens: false,
             current_quote_op: None,
+            qw_recovery_enabled: true,
             eof_emitted: false,
             start_time: std::time::Instant::now(),
         }
+    }
+
+    pub(crate) fn without_qw_recovery(input: &'a str, config: LexerConfig) -> Self {
+        let mut lexer = Self::with_config(input, config);
+        lexer.qw_recovery_enabled = false;
+        lexer
     }
 }

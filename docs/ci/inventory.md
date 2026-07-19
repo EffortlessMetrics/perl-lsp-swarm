@@ -45,6 +45,7 @@ is decided in PR 15+ once actuals confirm the overlap.
 | `workflow-policy.yml` | `workflow-policy-lint` | `pull_request`, `workflow_dispatch` | yes | `ubuntu-24.04` | Workflow trigger / policy lint | 2 | _add in PR 11_ | — | keep, extend in PR 11 |
 | `workflow-trigger-lint.yml` | `workflow-trigger-lint` | `pull_request` | yes | `ubuntu-24.04` | Trigger policy lint (legacy) | 1 | _add in PR 11_ | `workflow:workflow-policy` | **decide PR 15** |
 | `droid-review.yml` | `droid` | `pull_request` (opened/ready/reopened) | no | `self-hosted, linux, x64, em-ci, trusted-pr, review-nano, droid-review` | External AI review | 4 | `droid_auto_review` | — | keep |
+| `agent-capability-gate.yml` | `route-agent-capability-gate` + execution jobs | `pull_request` (agent-policy paths), `merge_group`, `push` (main/master) | no | mixed (`workflow-nano` with `ubuntu-24.04` fallback) | M4b review/audit-agent read-only capability enforcement | 2 | `agent_capability_gate` | — | keep |
 | `pipeline-labels.yml` | `apply-pipeline-labels` | `pull_request`, `pull_request_target` | no | `ubuntu-24.04` | Apply pipeline state labels | 1 | _add in PR 11_ | — | keep |
 | `flake-detection.yml` | `flake-detect` | `pull_request`, `schedule` | no | `ubuntu-24.04` | Detect flaky tests | varies | _add in PR 11_ | — | keep |
 

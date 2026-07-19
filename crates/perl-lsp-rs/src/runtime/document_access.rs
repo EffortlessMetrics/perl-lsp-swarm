@@ -212,6 +212,23 @@ impl LspServer {
         docs.get(&normalized).map(|d| d.generation.load(std::sync::atomic::Ordering::SeqCst))
     }
 
+    /// Capture the document generation, version, and instance identity under
+    /// one document-store lock acquisition.
+    pub(crate) fn document_freshness(
+        &self,
+        uri: &str,
+    ) -> Option<(u32, i32, Arc<std::sync::atomic::AtomicU32>)> {
+        let docs = self.documents.lock();
+        let normalized = self.normalize_uri_key(uri);
+        docs.get(&normalized).map(|doc| {
+            (
+                doc.generation.load(std::sync::atomic::Ordering::SeqCst),
+                doc.version,
+                Arc::clone(&doc.generation),
+            )
+        })
+    }
+
     /// Current LSP document version for `uri`, if the document is open.
     ///
     /// Normalizes the URI so the lookup aligns with the normalized keys used

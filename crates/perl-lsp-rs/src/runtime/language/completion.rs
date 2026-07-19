@@ -23,6 +23,8 @@ use crate::{
     state::{completion_cap, completion_deadline},
 };
 use perl_lexer::LSP_RUNTIME_COMPLETION_KEYWORDS;
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+use perl_lsp_rs_core::providers::completion::completion_shadow::completion_visibility_shadow;
 use perl_module::resolution::{IncRoot, IncRootKind};
 use regex::Regex;
 use serde_json::{Value, json};
@@ -117,6 +119,11 @@ struct CompletionDecisionContext<'a> {
     is_incomplete: bool,
 }
 
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+struct CompletionShadowBudget<'a> {
+    should_continue: &'a dyn Fn() -> bool,
+}
+
 fn get_snippet_placeholder_regex() -> Option<&'static Regex> {
     SNIPPET_PLACEHOLDER_RE.get_or_init(|| Regex::new(r"\$\{(\d+):([^}]+)\}")).as_ref().ok()
 }
@@ -143,10 +150,147 @@ fn commit_chars_for_kind(kind: CompletionItemKind) -> Option<&'static [&'static 
 }
 
 impl LspServer {
+    fn completion_visibility_shadow_labels(
+        completions: &[crate::completion::CompletionItem],
+    ) -> Vec<String> {
+        completions
+            .iter()
+            .filter(|completion| {
+                matches!(
+                    completion.kind,
+                    CompletionItemKind::Variable
+                        | CompletionItemKind::Function
+                        | CompletionItemKind::Constant
+                ) && !(completion.kind == CompletionItemKind::Function
+                    && completion
+                        .sort_text
+                        .as_deref()
+                        .is_some_and(|sort_text| sort_text.starts_with("3_")))
+            })
+            .map(|completion| completion.label.clone())
+            .collect()
+    }
+
+    fn is_member_subscript_completion_context(before_cursor: &str, token_start: usize) -> bool {
+        let mut nested_brackets = 0usize;
+        let mut saw_open_subscript = false;
+
+        for (position, character) in before_cursor[..token_start].char_indices().rev() {
+            let previous = before_cursor[..position].chars().next_back();
+            let next = before_cursor[position + character.len_utf8()..].chars().next();
+            let is_member_arrow = (character == '-' && next == Some('>'))
+                || (character == '>' && previous == Some('-'));
+
+            if matches!(character, ']' | '}') {
+                nested_brackets += 1;
+                continue;
+            }
+            if matches!(character, '[' | '{') {
+                if nested_brackets > 0 {
+                    nested_brackets -= 1;
+                    continue;
+                }
+                if before_cursor[..position].trim_end().ends_with("->") {
+                    return true;
+                }
+                saw_open_subscript = true;
+                continue;
+            }
+            if saw_open_subscript && is_member_arrow {
+                return true;
+            }
+
+            let is_boundary = character.is_whitespace()
+                || matches!(
+                    character,
+                    ';' | '='
+                        | '+'
+                        | '-'
+                        | '*'
+                        | '/'
+                        | '%'
+                        | '.'
+                        | '!'
+                        | '<'
+                        | '>'
+                        | '&'
+                        | '|'
+                        | '^'
+                        | '~'
+                        | '?'
+                        | ':'
+                        | '('
+                        | ')'
+                        | ','
+                );
+            let is_token_start_boundary = position + character.len_utf8() == token_start;
+            if saw_open_subscript && nested_brackets == 0 && is_boundary && !is_token_start_boundary
+            {
+                return false;
+            }
+        }
+
+        false
+    }
+
+    fn is_qualified_member_completion_context(doc_text: &str, offset: usize) -> bool {
+        let Some(before_cursor) = doc_text.get(..offset.min(doc_text.len())) else {
+            return false;
+        };
+        let token_start = before_cursor
+            .char_indices()
+            .rev()
+            .find_map(|(position, character)| {
+                let previous = before_cursor[..position].chars().next_back();
+                let next = before_cursor[position + character.len_utf8()..].chars().next();
+                let is_member_arrow = (character == '-' && next == Some('>'))
+                    || (character == '>' && previous == Some('-'));
+                let is_package_separator =
+                    character == ':' && (previous == Some(':') || next == Some(':'));
+                let is_boundary = !is_member_arrow
+                    && !is_package_separator
+                    && (character.is_whitespace()
+                        || matches!(
+                            character,
+                            ';' | '='
+                                | '+'
+                                | '-'
+                                | '*'
+                                | '/'
+                                | '%'
+                                | '.'
+                                | '!'
+                                | '<'
+                                | '>'
+                                | '&'
+                                | '|'
+                                | '^'
+                                | '~'
+                                | '?'
+                                | ':'
+                                | '('
+                                | ')'
+                                | '{'
+                                | '}'
+                                | '['
+                                | ']'
+                                | ','
+                        ));
+                is_boundary.then_some(position + character.len_utf8())
+            })
+            .unwrap_or(0);
+        let token = &before_cursor[token_start..];
+        let member_subscript =
+            Self::is_member_subscript_completion_context(before_cursor, token_start);
+        let preceded_by_member_arrow = before_cursor[..token_start].trim_end().ends_with("->");
+        member_subscript || preceded_by_member_arrow || token.contains("->") || token.contains("::")
+    }
+
     fn record_completion_provider_decision_trace(
         &self,
         context: &CompletionDecisionContext<'_>,
         completions: &[crate::completion::CompletionItem],
+        semantic_shadow_receipt: Option<Value>,
     ) {
         let summary = Self::completion_decision_summary(completions);
         let item_count = completions.len();
@@ -176,33 +320,92 @@ impl LspServer {
             "fallback_policy"
         };
 
-        self.record_provider_decision_trace(
-            "completion",
-            &json!({
-                "provider": "completion",
-                "provider_action": "textDocument/completion",
-                "decision": if item_count > 0 { "acted" } else { "fallback" },
-                "reason": reason,
-                "uri": context.uri,
-                "line": context.line,
-                "character": context.character,
-                "item_count": item_count,
-                "is_incomplete": context.is_incomplete,
-                "ast_available": context.ast_available,
-                "fact_source": fact_source,
-                "confidence": if item_count > 0 { "high" } else { "low" },
-                "freshness": "fresh",
-                "fallback_state": fallback_state,
-                "workspace_index_state": context.workspace_index_state,
-                "workspace_index_reason": context.workspace_index_reason,
-                "compiler_fact_item_count": summary.compiler_fact_items,
-                "generated_item_count": summary.generated_items,
-                "dynamic_boundary_item_count": summary.dynamic_boundary_items,
-                "fallback_candidate_count": summary.fallback_items,
-                "sample_labels": summary.sample_labels,
-                "claim_boundary": "records existing completion response only; no new completion candidates or ranking changes"
-            }),
-        );
+        let mut receipt = json!({
+            "provider": "completion",
+            "provider_action": "textDocument/completion",
+            "decision": if item_count > 0 { "acted" } else { "fallback" },
+            "reason": reason,
+            "uri": context.uri,
+            "line": context.line,
+            "character": context.character,
+            "item_count": item_count,
+            "is_incomplete": context.is_incomplete,
+            "ast_available": context.ast_available,
+            "fact_source": fact_source,
+            "confidence": if item_count > 0 { "high" } else { "low" },
+            "freshness": "fresh",
+            "fallback_state": fallback_state,
+            "workspace_index_state": context.workspace_index_state,
+            "workspace_index_reason": context.workspace_index_reason,
+            "compiler_fact_item_count": summary.compiler_fact_items,
+            "generated_item_count": summary.generated_items,
+            "dynamic_boundary_item_count": summary.dynamic_boundary_items,
+            "fallback_candidate_count": summary.fallback_items,
+            "sample_labels": summary.sample_labels,
+            "claim_boundary": if semantic_shadow_receipt.is_some() {
+                "records existing comparable visibility completions and semantic shadow evidence; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+            } else {
+                "records existing comparable visibility completions only; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+            }
+        });
+        if let Some(shadow_receipt) = semantic_shadow_receipt {
+            if let Some(object) = receipt.as_object_mut() {
+                object.insert("semantic_shadow_receipt".to_string(), shadow_receipt);
+            }
+        }
+        self.record_provider_decision_trace("completion", &receipt);
+    }
+
+    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+    fn completion_semantic_shadow_receipt(
+        &self,
+        uri: &str,
+        doc_text: &str,
+        byte_offset: usize,
+        position: (u32, u32),
+        completions: &[crate::completion::CompletionItem],
+        workspace_mode: &IndexAccessMode<'_>,
+        budget: CompletionShadowBudget<'_>,
+    ) -> Option<Value> {
+        let IndexAccessMode::Full(coordinator) = workspace_mode else {
+            return None;
+        };
+        if Self::is_module_import_completion_context(doc_text, byte_offset)
+            || Self::is_qualified_member_completion_context(doc_text, byte_offset)
+        {
+            return None;
+        }
+        let byte_offset = u32::try_from(byte_offset).ok()?;
+        let (line, character) = position;
+        let input_label = format!("{uri}:{line}:{character}");
+        let legacy_symbols = Self::completion_visibility_shadow_labels(completions);
+        if legacy_symbols.is_empty() {
+            return None;
+        }
+        if !(budget.should_continue)() {
+            return None;
+        }
+        let index = coordinator.index();
+        let receipt = index.with_semantic_queries_for_uri(uri, |file_id, queries| {
+            if !(budget.should_continue)() {
+                return None;
+            }
+            Some(
+                completion_visibility_shadow(
+                    legacy_symbols,
+                    &queries,
+                    file_id,
+                    byte_offset,
+                    None,
+                    &input_label,
+                )
+                .receipt,
+            )
+        })??;
+        if !(budget.should_continue)() {
+            return None;
+        }
+        serde_json::to_value(receipt).ok()
     }
 
     #[cfg(feature = "workspace")]
@@ -1127,9 +1330,22 @@ impl LspServer {
                     workspace_index_reason,
                     is_incomplete,
                 };
+                #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+                let semantic_shadow_receipt = self.completion_semantic_shadow_receipt(
+                    uri,
+                    &doc.text,
+                    offset,
+                    (line, character),
+                    &completions,
+                    &workspace_mode,
+                    CompletionShadowBudget { should_continue: &|| start.elapsed() < deadline },
+                );
+                #[cfg(any(not(feature = "workspace"), target_arch = "wasm32"))]
+                let semantic_shadow_receipt: Option<Value> = None;
                 self.record_completion_provider_decision_trace(
                     &completion_decision_context,
                     &completions,
+                    semantic_shadow_receipt,
                 );
 
                 // Snapshot capability flags once before the loop to avoid
@@ -1195,6 +1411,9 @@ impl LspServer {
         params: Option<Value>,
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+        let request_start = Instant::now();
+
         // Convert raw Value ID to typed ID at the boundary.
         let typed_id = request_id.and_then(JsonRpcId::try_from_value);
         // RAII guard ensures cleanup on all exit paths (early returns, errors, panics)
@@ -1399,9 +1618,27 @@ impl LspServer {
                     workspace_index_reason,
                     is_incomplete: false,
                 };
+                #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+                let semantic_shadow_receipt = self.completion_semantic_shadow_receipt(
+                    uri,
+                    &doc.text,
+                    offset,
+                    (line, character),
+                    &completions,
+                    &workspace_mode,
+                    CompletionShadowBudget {
+                        should_continue: &|| {
+                            request_start.elapsed() < completion_deadline()
+                                && !token.is_cancelled_relaxed()
+                        },
+                    },
+                );
+                #[cfg(any(not(feature = "workspace"), target_arch = "wasm32"))]
+                let semantic_shadow_receipt: Option<Value> = None;
                 self.record_completion_provider_decision_trace(
                     &completion_decision_context,
                     &completions,
+                    semantic_shadow_receipt,
                 );
 
                 // Convert to JSON format with highly optimized cancellation checks
@@ -2307,11 +2544,14 @@ mod tests {
         assert_eq!(receipt.get("character").and_then(Value::as_u64), Some(17));
         assert_eq!(receipt.get("freshness").and_then(Value::as_str), Some("fresh"));
         assert_eq!(receipt.get("fallback").and_then(Value::as_str), Some("none"));
+        let expected_claim_boundary = if receipt.get("semantic_shadow_receipt").is_some() {
+            "records existing comparable visibility completions and semantic shadow evidence; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+        } else {
+            "records existing comparable visibility completions only; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+        };
         assert_eq!(
             receipt.get("claim_boundary").and_then(Value::as_str),
-            Some(
-                "records existing completion response only; no new completion candidates or ranking changes"
-            )
+            Some(expected_claim_boundary)
         );
         assert!(
             receipt.get("item_count").and_then(Value::as_u64).is_some_and(|count| count > 0),
@@ -2447,6 +2687,157 @@ mod tests {
             "stale current-document index must downgrade cancellable completion index access"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn completion_provider_decision_claim_boundary_requires_shadow_receipt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let context = CompletionDecisionContext {
+            uri: "file:///workspace/completion-no-shadow-receipt.pl",
+            line: 0,
+            character: 0,
+            ast_available: false,
+            workspace_index_state: "none",
+            workspace_index_reason: None,
+            is_incomplete: false,
+        };
+
+        server.record_completion_provider_decision_trace(&context, &[], None);
+
+        let explanation = explain_provider_decision(&server, "completion")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing persisted completion request receipt")?;
+        assert!(receipt.get("semantic_shadow_receipt").is_none());
+        assert_eq!(
+            receipt.get("claim_boundary").and_then(Value::as_str),
+            Some(
+                "records existing comparable visibility completions only; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_provider_decision_embeds_semantic_shadow_receipt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let context = CompletionDecisionContext {
+            uri: "file:///workspace/completion-shadow-receipt.pl",
+            line: 0,
+            character: 2,
+            ast_available: true,
+            workspace_index_state: "full",
+            workspace_index_reason: None,
+            is_incomplete: false,
+        };
+        let shadow_receipt = json!({
+            "schema_version": 2,
+            "query": "completion_visibility",
+            "verdict": "same"
+        });
+
+        server.record_completion_provider_decision_trace(
+            &context,
+            &[],
+            Some(shadow_receipt.clone()),
+        );
+
+        let explanation = explain_provider_decision(&server, "completion")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing persisted completion request receipt")?;
+        assert_eq!(receipt.get("semantic_shadow_receipt"), Some(&shadow_receipt));
+        assert_eq!(
+            receipt.get("claim_boundary").and_then(Value::as_str),
+            Some(
+                "records existing comparable visibility completions and semantic shadow evidence; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_visibility_shadow_filters_non_visibility_items()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let item = |label: &str, kind: CompletionItemKind, sort_text: Option<&str>| {
+            crate::completion::CompletionItem {
+                label: label.to_string(),
+                kind,
+                detail: None,
+                documentation: None,
+                insert_text: None,
+                sort_text: sort_text.map(str::to_string),
+                filter_text: None,
+                additional_edits: Vec::new(),
+                text_edit_range: None,
+                commit_characters: None,
+                label_details: None,
+            }
+        };
+        let completions = vec![
+            item("$value", CompletionItemKind::Variable, None),
+            item("user_sub", CompletionItemKind::Function, Some("2_user_sub")),
+            item("open", CompletionItemKind::Function, Some("3_open")),
+            item("if", CompletionItemKind::Keyword, Some("5_if")),
+            item("Foo", CompletionItemKind::Module, Some("4_Foo")),
+            item("file.pl", CompletionItemKind::File, None),
+            item("CONST", CompletionItemKind::Constant, Some("3_CONST")),
+            item("key", CompletionItemKind::Property, None),
+        ];
+
+        assert_eq!(
+            LspServer::completion_visibility_shadow_labels(&completions),
+            vec!["$value".to_string(), "user_sub".to_string(), "CONST".to_string()]
+        );
+        assert!(LspServer::is_qualified_member_completion_context("Foo::", 5));
+        assert!(LspServer::is_qualified_member_completion_context("Foo::bar", "Foo::bar".len(),));
+        assert!(LspServer::is_qualified_member_completion_context("$object->", 9));
+        assert!(!LspServer::is_qualified_member_completion_context("$value", 6));
+        assert!(!LspServer::is_qualified_member_completion_context(
+            "Foo::bar+$value",
+            "Foo::bar+$value".len(),
+        ));
+        assert!(!LspServer::is_qualified_member_completion_context(
+            "Foo::bar-$value",
+            "Foo::bar-$value".len(),
+        ));
+        assert!(!LspServer::is_qualified_member_completion_context(
+            "Foo::bar.$value",
+            "Foo::bar.$value".len(),
+        ));
+        assert!(!LspServer::is_qualified_member_completion_context(
+            "condition ? Foo::bar:$value",
+            "condition ? Foo::bar:$value".len(),
+        ));
+        assert!(LspServer::is_qualified_member_completion_context(
+            "$object->{key",
+            "$object->{key".len(),
+        ));
+        assert!(LspServer::is_qualified_member_completion_context(
+            "$object->[idx",
+            "$object->[idx".len(),
+        ));
+        assert!(LspServer::is_qualified_member_completion_context(
+            "$object->{$array[0",
+            "$object->{$array[0".len(),
+        ));
+        assert!(LspServer::is_qualified_member_completion_context(
+            "$object->method[0",
+            "$object->method[0".len(),
+        ));
+        assert!(!LspServer::is_qualified_member_completion_context(
+            "$value + $object[0",
+            "$value + $object[0".len(),
+        ));
+        assert!(LspServer::is_qualified_member_completion_context(
+            "$object -> method",
+            "$object -> method".len(),
+        ));
         Ok(())
     }
 
