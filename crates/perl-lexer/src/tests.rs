@@ -1,4 +1,5 @@
 use super::*;
+use perl_tdd_support::must;
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
 
@@ -40,12 +41,16 @@ fn shared_delimiter_scanner_preserves_nested_escaped_and_unclosed_cases() -> Tes
     for (input, delimiter, expected_body, expected_closed) in cases {
         let mut lexer = PerlLexer::new(input);
         let (body, closed) = lexer.read_delimited_body(delimiter);
-        if body != expected_body || closed != expected_closed {
-            return Err(format!(
+        must::<(), Box<dyn std::error::Error>>(
+            if body == expected_body && closed == expected_closed {
+                Ok(())
+            } else {
+                Err(format!(
                 "delimiter scan for {delimiter:?} returned ({body:?}, {closed}), expected ({expected_body:?}, {expected_closed})"
             )
-            .into());
-        }
+            .into())
+            },
+        );
     }
 
     Ok(())
@@ -55,21 +60,23 @@ fn shared_delimiter_scanner_preserves_nested_escaped_and_unclosed_cases() -> Tes
 fn qw_scanner_uses_recovery_only_when_the_closer_is_missing() -> TestResult {
     let mut recovering = PerlLexer::new("word\nmy $x = 1;\n");
     let (body, closed) = recovering.read_qw_body('(');
-    if body != "word\n" || closed {
-        return Err(format!(
+    must::<(), Box<dyn std::error::Error>>(if body == "word\n" && !closed {
+        Ok(())
+    } else {
+        Err(format!(
             "unclosed qw recovery returned ({body:?}, {closed}), expected (\"word\\n\", false)"
         )
-        .into());
-    }
+        .into())
+    });
 
     let mut closed = PerlLexer::new("word) trailing");
     let (body, is_closed) = closed.read_qw_body('(');
-    if body != "word" || !is_closed {
-        return Err(format!(
-            "closed qw scan returned ({body:?}, {is_closed}), expected (\"word\", true)"
-        )
-        .into());
-    }
+    must::<(), Box<dyn std::error::Error>>(if body == "word" && is_closed {
+        Ok(())
+    } else {
+        Err(format!("closed qw scan returned ({body:?}, {is_closed}), expected (\"word\", true)")
+            .into())
+    });
 
     Ok(())
 }
@@ -80,21 +87,25 @@ fn delimiter_scanner_callback_controls_recovery_boundary() -> TestResult {
     let boundary = "prefix\n".len();
     let (body, closed) =
         bounded.read_delimited_body_with_recovery('/', |_lexer, position| position == boundary);
-    if body != "prefix\n" || closed {
-        return Err(format!(
+    must::<(), Box<dyn std::error::Error>>(if body == "prefix\n" && !closed {
+        Ok(())
+    } else {
+        Err(format!(
             "callback-delimited scan returned ({body:?}, {closed}), expected (\"prefix\\n\", false)"
         )
-        .into());
-    }
+        .into())
+    });
 
     let mut eof = PerlLexer::new("prefix");
     let (body, closed) = eof.read_delimited_body_with_recovery('/', |_lexer, _position| false);
-    if body != "prefix" || closed {
-        return Err(format!(
+    must::<(), Box<dyn std::error::Error>>(if body == "prefix" && !closed {
+        Ok(())
+    } else {
+        Err(format!(
             "unbounded delimiter scan returned ({body:?}, {closed}), expected (\"prefix\", false)"
         )
-        .into());
-    }
+        .into())
+    });
 
     Ok(())
 }
