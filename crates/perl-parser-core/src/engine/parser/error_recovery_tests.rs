@@ -1177,6 +1177,47 @@ fn test_unclosed_qw_block_starter_word_without_shape_stays_word() -> Result<(), 
     Ok(())
 }
 
+/// Comments after a named block starter do not satisfy its required name. The
+/// following-line identifier and block opener belong to qw content instead of a
+/// declaration borrowed from later source.
+#[test]
+fn test_unclosed_qw_block_starter_comment_does_not_fake_name() -> Result<(), String> {
+    for (label, code, retained_word) in [
+        ("sub comment", "my @a = qw(word\nsub # still qw content\nrun\n{ 1; }", "run"),
+        ("package comment", "my @a = qw(word\npackage # still qw content\nFoo\n{ 1; }", "Foo"),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        if statements.len() != 1 || !sexp.contains(&format!("\"{retained_word}\"")) {
+            return Err(format!("[{label}] comment faked a block-starter name: {sexp}"));
+        }
+        if parser.errors().is_empty() {
+            return Err(format!("[{label}] unclosed qw recorded no error"));
+        }
+    }
+    Ok(())
+}
+
+/// General parser synchronization must preserve phaser blocks just like the
+/// delimiter-recovery path does after a malformed preceding statement.
+#[test]
+fn test_synchronize_preserves_phaser_blocks() -> Result<(), String> {
+    for (label, phaser) in [("INIT", "INIT"), ("CHECK", "CHECK"), ("UNITCHECK", "UNITCHECK")] {
+        let code = format!("my $x = 1; ???\n{phaser} {{ do_thing() }}\nprint 2;");
+        let mut parser = Parser::new(&code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
+        let sexp = ast.to_sexp();
+        if !sexp.contains(&format!("({label}")) || !sexp.contains("print") {
+            return Err(format!("[{label}] phaser was consumed during synchronization: {sexp}"));
+        }
+    }
+    Ok(())
+}
+
 /// Closed multiline qw content containing block-starter-shaped words (including a
 /// balanced `{ }` group) must keep its existing single-declaration behavior.
 #[test]

@@ -1038,6 +1038,9 @@ impl<'a> Parser<'a> {
             | Some(TokenKind::Class)
             | Some(TokenKind::Begin)
             | Some(TokenKind::End)
+            | Some(TokenKind::Init)
+            | Some(TokenKind::Check)
+            | Some(TokenKind::Unitcheck)
             | Some(TokenKind::Use) => true,
             Some(TokenKind::If) | Some(TokenKind::Unless) => true,
             Some(TokenKind::Elsif) | Some(TokenKind::Else) => true,

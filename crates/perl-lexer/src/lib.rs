@@ -3412,9 +3412,11 @@ impl<'a> PerlLexer<'a> {
     fn header_ends_at_own_terminator(source: &str, terminator_start: usize) -> bool {
         let header = &source[..terminator_start];
         let first_line = header.lines().next().unwrap_or_default();
-        let first_word = first_line.split_whitespace().next();
+        let first_line_before_comment =
+            first_line.split_once('#').map_or(first_line, |(code, _)| code);
+        let first_word = first_line_before_comment.split_whitespace().next();
         if matches!(first_word, Some("sub" | "package" | "class"))
-            && first_line.split_whitespace().nth(1).is_none()
+            && first_line_before_comment.split_whitespace().nth(1).is_none()
         {
             return false;
         }
