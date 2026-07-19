@@ -363,7 +363,8 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
                 surface.version
             ));
             publication_discipline_seen = true;
-        } else if !active_section_seen
+        } else if in_active_release
+            && !active_section_seen
             && (line.starts_with("## Active: Public-Alpha Release Prep (v")
                 || line.starts_with("## Active: Public-Beta Release (v")
                 || line.starts_with("## Active: Public-Beta Release Preparation (v")
@@ -468,7 +469,7 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
             lines.push("- Keep public-beta release notes concise and tied to concrete channel receipts".to_string());
         } else if in_next_section && line.starts_with("- **Distribution maturity:** ") {
             lines.push("- **Distribution maturity:** make Homebrew, Docker, crates.io, VS Code Marketplace, Open VSX, and GitHub Releases behave like one coherent public-beta install story.".to_string());
-        } else if line.starts_with("### Next (post v") {
+        } else if in_active_release && line.starts_with("### Next (post v") {
             lines.push(format!("### Next (post v{})", surface.version));
             next_header_seen = true;
         } else {
@@ -943,6 +944,7 @@ Publication discipline: `v0.17.0` uses a normal SemVer package version while the
         assert!(
             synced.contains("v0.13.0` is in release preparation; preserve this historical fact")
         );
+        assert!(synced.contains("### Next (post v0.13.0)"));
         Ok(())
     }
 }
