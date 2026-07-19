@@ -77,24 +77,42 @@ squash merge without changing its head.
 
 For each candidate:
 
-1. pin `headRefOid`;
-2. discover the required check set from live policy;
-3. read check runs attributable to that exact head;
-4. distinguish required success, pending, failed, missing, stale, cancelled,
+1. query `headRefOid` and `statusCheckRollup` together;
+2. pin the returned full head SHA;
+3. discover the required check set from live policy;
+4. classify every rollup entry attributable to that current head, including
+   both GitHub CheckRun entries (`name`/`conclusion`) and commit StatusContext
+   entries (`context`/`state`);
+5. distinguish required success, pending, failed, missing, stale, cancelled,
    skipped/not-applicable, instrument failure, and advisory findings;
-5. run the canonical review-convergence check;
-6. re-read the head after collection.
+6. run the canonical review-convergence check;
+7. re-read the head after collection.
 
 ```bash
-HEAD_SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
-gh api repos/:owner/:repo/commits/$HEAD_SHA/check-runs --paginate \
-  --jq '.check_runs[] | {name,status,conclusion,head_sha,details_url}'
+PR_STATE=$(gh pr view <number> --json headRefOid,statusCheckRollup)
+HEAD_SHA=$(printf '%s' "$PR_STATE" | jq -r '.headRefOid')
+printf '%s' "$PR_STATE" | jq -r '
+  .statusCheckRollup[] |
+  {
+    kind: (.__typename // "unknown"),
+    name: (.name // .context),
+    state: (.conclusion // .state // .status),
+    started_at: .startedAt,
+    completed_at: .completedAt,
+    details_url: (.detailsUrl // .targetUrl)
+  }'
 scripts/ci/check-pr-review-convergence <number>
 ```
 
-> **MCP alternative (web/no-gh sessions):** fetch the PR, exact-head check
-> runs, review threads, and requested reviews through the canonical connector
-> mappings. Keep all evidence bound to the captured head.
+`statusCheckRollup` is the repository's combined current-head status contract;
+querying only `check-runs` would omit legacy/external commit-status contexts.
+For duplicate or failed entries, inspect the focused underlying run/status only
+as needed; do not replace the combined rollup with one status system.
+
+> **MCP alternative (web/no-gh sessions):** fetch the PR's combined status
+> rollup or equivalent current-head check-run plus commit-status contexts,
+> together with review threads and requested reviews. Keep all evidence bound to
+> the captured head and re-read it afterward.
 
 Do not use `update-branch`, a merge-main commit, rebase, force-push, or an empty
 commit solely to obtain missing proof. Request a same-head rerun/dispatch when
@@ -122,17 +140,19 @@ Use these queue results:
   resolution strategy is chosen.
 - **UNKNOWN_NOT_PROVEN**: GitHub/tool state cannot establish the answer; this is
   the queue-facing form of `NOT_PROVEN` for mergeability.
-- **RETURN TO REVIEW**: the head moved after evidence was collected.
+- **RETURN TO REVIEW**: the head moved after evidence was collected; discard the
+  stale authorization and evaluate the new head.
 - **ADVISORY**: non-required concern remains visible without becoming a merge
   requirement.
 
 ## Output
 
 ```text
-Merge candidates: #NNN @ <full-head-sha>
-Waiting: #NNN (exact required input)
-Blocked: #NNN (finding and next action)
-Conflicting: #NNN (files/seam to inspect)
-Not proven: #NNN (missing state/tool)
-Advisory: #NNN (non-required concern)
+MERGE NOW: #NNN @ <full-head-sha>
+WAIT: #NNN (exact required input)
+BLOCKED: #NNN (finding and next action)
+CONFLICTING: #NNN (files/seam to inspect)
+UNKNOWN_NOT_PROVEN: #NNN (missing state/tool)
+RETURN TO REVIEW: #NNN (old head -> new head; stale evidence discarded)
+ADVISORY: #NNN (non-required concern)
 ```
