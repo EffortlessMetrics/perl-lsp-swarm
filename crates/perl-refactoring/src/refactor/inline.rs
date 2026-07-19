@@ -593,11 +593,20 @@ fn body_calls_self(body: &str, sub_name: &str) -> bool {
 // Argument extraction
 // ---------------------------------------------------------------------------
 
+/// Characters that continue a Perl identifier, including the `::` and `'`
+/// package separators. A bare sub name must not boundary-match inside a
+/// package-qualified name: `add'count` / `add::count` are calls to
+/// `add::count`, and `Foo::add` / `Foo'add` name a *different* sub than a bare
+/// `add`, so none of them should be treated as a call to `add`.
+fn continues_perl_identifier(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == ':' || c == '\''
+}
+
 /// Find `needle` in `haystack` at an identifier word boundary — i.e. not as a
-/// substring of a larger identifier. Returns the byte offset of the first such
-/// occurrence, or `None` if `needle` only appears embedded in another word
-/// (e.g. `add` inside `add_count`). Prevents a call to `add_count` from being
-/// misread as a call to `add`.
+/// substring of a larger (possibly package-qualified) identifier. Returns the
+/// byte offset of the first such occurrence, or `None` if `needle` only appears
+/// embedded in another identifier (`add` inside `add_count`, `add::count`,
+/// `Foo::add`, …). Prevents such names from being misread as a call to `add`.
 fn find_identifier_boundary(haystack: &str, needle: &str) -> Option<usize> {
     // An empty needle has zero length, so advancing the scan cursor by the
     // match length below would never make progress — guard it explicitly. An
@@ -609,10 +618,10 @@ fn find_identifier_boundary(haystack: &str, needle: &str) -> Option<usize> {
     while let Some(rel) = haystack[start..].find(needle) {
         let pos = start + rel;
         let before_ok =
-            haystack[..pos].chars().next_back().is_none_or(|c| !c.is_alphanumeric() && c != '_');
+            haystack[..pos].chars().next_back().is_none_or(|c| !continues_perl_identifier(c));
         let after = pos + needle.len();
         let after_ok =
-            haystack[after..].chars().next().is_none_or(|c| !c.is_alphanumeric() && c != '_');
+            haystack[after..].chars().next().is_none_or(|c| !continues_perl_identifier(c));
         if before_ok && after_ok {
             return Some(pos);
         }
@@ -864,15 +873,21 @@ mod tests {
     }
 
     #[test]
-    fn extract_call_args_treats_package_separator_as_boundary() {
-        use super::extract_call_args;
-        // Documents current (unchanged) behavior: `::` is a boundary, so a bare
-        // `add` boundary-matches inside `Foo::add(...)`. Known limitation
-        // outside #3914's scope (add vs add_count), not a regression.
-        assert_eq!(
-            extract_call_args("Foo::add(1, 2)", "add").ok(),
-            Some(vec!["1".to_string(), "2".to_string()])
-        );
+    fn extract_call_args_rejects_package_qualified_names() {
+        use super::{InlineError, extract_call_args};
+        // `::` and `'` are Perl package separators, so a bare `add` must not
+        // match inside a qualified identifier: `Foo::add` / `Foo'add` name a
+        // *different* sub, and `add::count` / `add'count` are calls to
+        // `add::count`. None is a call to bare `add`.
+        for expr in ["Foo::add(1, 2)", "Foo'add(1, 2)", "add::count(1, 2)", "add'count(1, 2)"] {
+            assert!(
+                matches!(
+                    extract_call_args(expr, "add"),
+                    Err(InlineError::CallSiteParseFailed { .. })
+                ),
+                "package-qualified `{expr}` must not match bare `add`"
+            );
+        }
     }
 }
 
