@@ -363,10 +363,11 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
                 surface.version
             ));
             publication_discipline_seen = true;
-        } else if line.starts_with("## Active: Public-Alpha Release Prep (v")
-            || line.starts_with("## Active: Public-Beta Release (v")
-            || line.starts_with("## Active: Public-Beta Release Preparation (v")
-            || line.starts_with("## Active: Public-Alpha Channel Closeout (v")
+        } else if !active_section_seen
+            && (line.starts_with("## Active: Public-Alpha Release Prep (v")
+                || line.starts_with("## Active: Public-Beta Release (v")
+                || line.starts_with("## Active: Public-Beta Release Preparation (v")
+                || line.starts_with("## Active: Public-Alpha Channel Closeout (v"))
         {
             lines.push(format!(
                 "## Active: Public-Beta Release{} (v{})",
@@ -936,6 +937,7 @@ Publication discipline: `v0.17.0` uses a normal SemVer package version while the
 ### Next (post v0.13.0)\n";
 
         let synced = sync_roadmap(input, &release_surface())?;
+        assert!(synced.contains("## Active: Public-Alpha Release Prep (v0.13.0)"));
         assert!(synced.contains("### Now (v0.17.0 shipped public beta)"));
         assert!(synced.contains("### Now (v0.13.0 release preparation)"));
         assert!(
