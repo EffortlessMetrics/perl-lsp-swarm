@@ -3366,14 +3366,87 @@ impl<'a> PerlLexer<'a> {
         // over the whole tail. Requiring it swallowed the declaration whenever another
         // line-start statement followed (`sub run { … }\nmy $x = 1;`) (#4491 review).
         let mut expected_closers = Vec::new();
+        let mut expect_name_segment = matches!(
+            &second.token_type,
+            TokenType::Operator(operator) if operator.as_ref() == "::"
+        );
+        let mut expect_attribute_name = false;
+        let mut package_version_started = false;
+        let mut package_version_needs_component = false;
         while let Some(token) = lexer.next_token() {
+            if is_named && expected_closers.is_empty() {
+                if expect_name_segment {
+                    if matches!(
+                        &token.token_type,
+                        TokenType::Identifier(_) | TokenType::Keyword(_) | TokenType::Version(_)
+                    ) {
+                        expect_name_segment = false;
+                        continue;
+                    }
+                    return false;
+                }
+                if expect_attribute_name {
+                    match token.token_type {
+                        TokenType::Identifier(_) | TokenType::Keyword(_) => {
+                            expect_attribute_name = false;
+                            continue;
+                        }
+                        TokenType::Operator(operator) if operator.as_ref() == "::" => continue,
+                        _ => return false,
+                    }
+                }
+                match &token.token_type {
+                    TokenType::Operator(operator) if operator.as_ref() == "::" => {
+                        expect_name_segment = true;
+                        continue;
+                    }
+                    TokenType::Operator(operator) if operator.as_ref() == ":" => {
+                        expect_attribute_name = true;
+                        continue;
+                    }
+                    TokenType::Number(_) if keyword == "package" => {
+                        if package_version_needs_component {
+                            package_version_needs_component = false;
+                        } else if !package_version_started {
+                            package_version_started = true;
+                        } else {
+                            return false;
+                        }
+                        continue;
+                    }
+                    TokenType::Version(_) if keyword == "package" && !package_version_started => {
+                        package_version_started = true;
+                        continue;
+                    }
+                    TokenType::Operator(operator)
+                        if keyword == "package"
+                            && package_version_started
+                            && operator.as_ref() == "."
+                            && !package_version_needs_component =>
+                    {
+                        package_version_needs_component = true;
+                        continue;
+                    }
+                    TokenType::LeftParen => {}
+                    TokenType::Identifier(_) | TokenType::Keyword(_) | TokenType::Version(_) => {
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
             match token.token_type {
                 TokenType::LeftBrace if expected_closers.is_empty() => {
-                    return Self::header_ends_at_own_terminator(source, token.start)
+                    return !expect_name_segment
+                        && !expect_attribute_name
+                        && !package_version_needs_component
+                        && Self::header_ends_at_own_terminator(source, token.start)
                         && Self::block_statement_terminates(&mut lexer);
                 }
                 TokenType::Semicolon if expected_closers.is_empty() => {
                     return allows_semicolon_form
+                        && !expect_name_segment
+                        && !expect_attribute_name
+                        && !package_version_needs_component
                         && Self::header_ends_at_own_terminator(source, token.start);
                 }
                 TokenType::LeftParen => expected_closers.push(TokenType::RightParen),
@@ -3483,9 +3556,10 @@ impl<'a> PerlLexer<'a> {
 
     /// The candidate statement header — from the starter keyword at the front of
     /// `source` up to (but excluding) the terminator token at `terminator_start` —
-    /// may contain a newline only when the terminator is the first non-whitespace
-    /// token on that line. This accepts valid multiline headers while preventing a
-    /// starter-shaped quote-word from borrowing a later statement's `{`/`;`.
+    /// may contain a newline when the terminator is the first non-whitespace token
+    /// on that line, or when it follows a balanced prototype line. This accepts
+    /// valid multiline headers while preventing a starter-shaped quote-word from
+    /// borrowing a later statement's `{`/`;`.
     fn header_ends_at_own_terminator(source: &str, terminator_start: usize) -> bool {
         let header = &source[..terminator_start];
         let first_line = header.lines().next().unwrap_or_default();
@@ -3497,9 +3571,35 @@ impl<'a> PerlLexer<'a> {
         {
             return false;
         }
-        header
-            .rsplit_once('\n')
-            .is_none_or(|(_, line_prefix)| line_prefix.chars().all(char::is_whitespace))
+        let Some((_, line_prefix)) = header.rsplit_once('\n') else {
+            return true;
+        };
+        if line_prefix.chars().all(char::is_whitespace) {
+            return true;
+        }
+
+        // A prototype may be placed on its own line immediately before the block:
+        // `sub run\n($) { ... }`. That line is part of the declaration header, not
+        // an unrelated statement borrowing the block opener.
+        let trimmed = line_prefix.trim();
+        if !trimmed.starts_with('(') {
+            return false;
+        }
+        let mut depth = 0usize;
+        for (index, character) in trimmed.char_indices() {
+            match character {
+                '(' => depth = depth.saturating_add(1),
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return trimmed[index + 1..].trim().is_empty()
+                            || trimmed[index + 1..].trim_start().starts_with(':');
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     /// A candidate line-start statement inside an unclosed `qw(` is a real recovery

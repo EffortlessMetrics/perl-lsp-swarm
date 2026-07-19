@@ -33,9 +33,11 @@ fn block_form_starters_end_the_qw_token() -> Result<(), String> {
         ("sub block", "my @a = qw(word\nsub run { print 1; }", "sub"),
         ("sub leading-qualified block", "my @a = qw(word\nsub ::PCDATA { 1; }", "sub"),
         ("sub multiline block", "my @a = qw(word\nsub run\n{ print 1; }", "sub"),
+        ("sub multiline prototype block", "my @a = qw(word\nsub run\n($) { print 1; }", "sub"),
         ("package block", "my @a = qw(word\npackage Foo { 1; }", "package"),
         ("package leading-qualified block", "my @a = qw(word\npackage ::My::App { 1; }", "package"),
         ("package multiline block", "my @a = qw(word\npackage Foo\n{ 1; }", "package"),
+        ("package version block", "my @a = qw(word\npackage Foo 1.23 { 1; }", "package"),
         ("package semi", "my @a = qw(word\npackage Foo;", "package"),
         ("class block", "my @a = qw(word\nclass Foo { 1; }", "class"),
         ("BEGIN block", "my @a = qw(word\nBEGIN { 1; }", "BEGIN"),
@@ -97,6 +99,20 @@ fn keyword_word_does_not_borrow_a_later_lines_delimiter() -> Result<(), String> 
         let span = qw_recovery_span(input)?;
         if span == "qw(word\n" {
             return Err(format!("[{label}] keyword word borrowed a later delimiter: {span:?}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn extra_named_header_words_are_not_boundaries() -> Result<(), String> {
+    for (label, input) in [
+        ("sub extra header", "my @a = qw(word\nsub run extra { 1; }"),
+        ("package extra header", "my @a = qw(word\npackage Foo extra { 1; }"),
+    ] {
+        let span = qw_recovery_span(input)?;
+        if span == "qw(word\n" {
+            return Err(format!("[{label}] invalid declaration header became a boundary"));
         }
     }
     Ok(())

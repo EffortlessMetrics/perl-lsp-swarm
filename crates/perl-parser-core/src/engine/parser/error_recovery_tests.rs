@@ -1051,10 +1051,22 @@ fn test_unclosed_qw_recovers_block_form_starters() -> Result<(), String> {
     for (label, code, swallowed_marker, recovered_head) in [
         ("sub block", "my @a = qw(word\nsub run { print 1; }", "\"sub\"", "(sub run"),
         ("sub multiline block", "my @a = qw(word\nsub run\n{ print 1; }", "\"sub\"", "(sub run"),
+        (
+            "sub multiline prototype block",
+            "my @a = qw(word\nsub run\n($) { print 1; }",
+            "\"sub\"",
+            "(sub run",
+        ),
         ("package block", "my @a = qw(word\npackage Foo { 1; }", "\"package\"", "(package Foo"),
         (
             "package multiline block",
             "my @a = qw(word\npackage Foo\n{ 1; }",
+            "\"package\"",
+            "(package Foo",
+        ),
+        (
+            "package version block",
+            "my @a = qw(word\npackage Foo 1.23 { 1; }",
             "\"package\"",
             "(package Foo",
         ),
@@ -1105,13 +1117,20 @@ fn test_unclosed_qw_recovers_block_form_starters() -> Result<(), String> {
 /// recovery boundaries after an unclosed `qw(`.
 #[test]
 fn test_unclosed_qw_recovers_leading_qualified_declarations() -> Result<(), String> {
-    for (label, code, name, marker) in [
-        ("sub leading-qualified", "my @a = qw(word\nsub ::PCDATA { 1; }", "PCDATA", "\"sub\""),
+    for (label, code, name, marker, expected_kind) in [
+        (
+            "sub leading-qualified",
+            "my @a = qw(word\nsub ::PCDATA { 1; }",
+            "PCDATA",
+            "\"sub\"",
+            "sub",
+        ),
         (
             "package leading-qualified",
             "my @a = qw(word\npackage ::My::App { 1; }",
             "My::App",
             "\"package\"",
+            "package",
         ),
     ] {
         let mut parser = Parser::new(code);
@@ -1120,17 +1139,39 @@ fn test_unclosed_qw_recovers_leading_qualified_declarations() -> Result<(), Stri
             return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
         };
         let sexp = ast.to_sexp();
+        let recovered_kind_matches =
+            statements.get(1).is_some_and(|statement| match expected_kind {
+                "sub" => matches!(&statement.kind, NodeKind::Subroutine { .. }),
+                "package" => matches!(&statement.kind, NodeKind::Package { .. }),
+                _ => false,
+            });
         if statements.len() != 2
             || matches!(&statements[1].kind, NodeKind::Error { .. })
-            || !matches!(
-                &statements[1].kind,
-                NodeKind::Subroutine { .. } | NodeKind::Package { .. }
-            )
+            || !recovered_kind_matches
             || sexp.contains(marker)
             || !sexp.contains(name)
             || parser.errors().is_empty()
         {
             return Err(format!("[{label}] qualified declaration was swallowed: {sexp}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unclosed_qw_rejects_extra_named_header_words() -> Result<(), String> {
+    for (label, code, marker) in [
+        ("sub extra header", "my @a = qw(word\nsub run extra { 1; }", "\"sub\""),
+        ("package extra header", "my @a = qw(word\npackage Foo extra { 1; }", "\"package\""),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] parse failed: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        if statements.len() != 1 || !sexp.contains(marker) || !sexp.contains("extra") {
+            return Err(format!("[{label}] invalid header became a recovery boundary: {sexp}"));
         }
     }
     Ok(())
