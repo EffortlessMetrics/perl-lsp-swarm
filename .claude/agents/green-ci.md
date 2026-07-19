@@ -36,8 +36,8 @@ Canonical authorities:
 
 The checked-in mirror lives at `.ci/policies/required-checks.toml`, but live
 GitHub rulesets and branch protection decide what is required at merge time.
-Policy lookup failure or set drift is `NOT_PROVEN`; do not continue to `GREEN`
-with the mirror alone.
+Policy lookup failure, pagination failure, parse failure, app-identity ambiguity,
+or set drift is `NOT_PROVEN`; do not continue to `GREEN` with the mirror alone.
 
 Advisory failures remain visible. They do not silently become required because
 an operator prefers to wait for them.
@@ -67,42 +67,110 @@ BASE_BRANCH=$(printf '%s' "$PR_STATE" | jq -r '.baseRefName')
 
 ### 2. Discover live required policy and compare the mirror
 
-Read both rulesets applying to the base branch and classic branch protection.
-The GitHub branch-rules endpoint is the preferred ruleset view because it
-returns rules that actually apply to the named branch.
+Read every page of rules applying to the base branch and the classic required
+status-check policy. A 404 from the classic endpoint is ambiguous: it may mean
+"no classic protection" or "the token cannot read protection." Unless a
+permissioned canonical collector independently proves absence, return
+`NOT_PROVEN` rather than treating 404 as an empty policy.
+
+The procedure below preserves app/integration identity instead of reducing live
+requirements to context names prematurely.
 
 ```bash
+set -euo pipefail
 POLICY_DIR=$(mktemp -d)
 trap 'rm -rf "$POLICY_DIR"' EXIT
 
-gh api "repos/:owner/:repo/rules/branches/$BASE_BRANCH" \
-  >"$POLICY_DIR/rules.json" || {
-    echo "NOT_PROVEN: cannot read live rules for $BASE_BRANCH" >&2
-    exit 2
-  }
+if ! gh api --paginate --slurp \
+  "repos/:owner/:repo/rules/branches/$BASE_BRANCH" \
+  >"$POLICY_DIR/rule-pages.json"; then
+  echo "NOT_PROVEN: cannot read every live rule page for $BASE_BRANCH" >&2
+  exit 2
+fi
 
-# A repository may use rulesets without classic protection. Treat a genuine 404
-# as an empty classic source; any other API/permission failure is NOT_PROVEN.
+if ! jq -e '[.[][]]' "$POLICY_DIR/rule-pages.json" \
+  >"$POLICY_DIR/rules.json"; then
+  echo "NOT_PROVEN: live rule pages are malformed or could not be flattened" >&2
+  exit 2
+fi
+
 if ! gh api \
   "repos/:owner/:repo/branches/$BASE_BRANCH/protection/required_status_checks" \
   >"$POLICY_DIR/classic.json" 2>"$POLICY_DIR/classic.err"; then
-  if grep -q 'HTTP 404' "$POLICY_DIR/classic.err"; then
-    printf '{}\n' >"$POLICY_DIR/classic.json"
-  else
-    cat "$POLICY_DIR/classic.err" >&2
-    echo "NOT_PROVEN: cannot read classic required checks" >&2
-    exit 2
-  fi
+  cat "$POLICY_DIR/classic.err" >&2
+  echo "NOT_PROVEN: classic required-check policy is absent or inaccessible; the API result is ambiguous" >&2
+  exit 2
 fi
 
-{
-  jq -r '.[] | select(.type == "required_status_checks") |
-    .parameters.required_status_checks[]?.context' "$POLICY_DIR/rules.json"
-  jq -r '.contexts[]?' "$POLICY_DIR/classic.json"
-  jq -r '.checks[]?.context' "$POLICY_DIR/classic.json"
-} | sed '/^$/d' | sort -u >"$POLICY_DIR/live-required.txt"
+if ! jq -e 'type == "array"' "$POLICY_DIR/rules.json" >/dev/null; then
+  echo "NOT_PROVEN: flattened rules payload is not an array" >&2
+  exit 2
+fi
+if ! jq -e 'type == "object"' "$POLICY_DIR/classic.json" >/dev/null; then
+  echo "NOT_PROVEN: classic required-check payload is not an object" >&2
+  exit 2
+fi
 
-python3 - <<'PY' >"$POLICY_DIR/mirror-required.txt"
+# Emit one JSON object per live requirement and preserve the enforcing app or
+# integration identity when GitHub supplies one.
+if ! jq -c '
+  .[]
+  | select(.type == "required_status_checks")
+  | .parameters.required_status_checks[]?
+  | {
+      name: .context,
+      app_id: (.integration_id // null),
+      source: "ruleset"
+    }
+' "$POLICY_DIR/rules.json" >"$POLICY_DIR/rules-required.jsonl"; then
+  echo "NOT_PROVEN: failed to extract ruleset required checks" >&2
+  exit 2
+fi
+
+if ! jq -c '
+  .contexts[]?
+  | {name: ., app_id: null, source: "classic-context"}
+' "$POLICY_DIR/classic.json" >"$POLICY_DIR/classic-contexts.jsonl"; then
+  echo "NOT_PROVEN: failed to extract classic required contexts" >&2
+  exit 2
+fi
+
+if ! jq -c '
+  .checks[]?
+  | {
+      name: .context,
+      app_id: (.app_id // null),
+      source: "classic-check"
+    }
+' "$POLICY_DIR/classic.json" >"$POLICY_DIR/classic-checks.jsonl"; then
+  echo "NOT_PROVEN: failed to extract classic app-bound checks" >&2
+  exit 2
+fi
+
+cat \
+  "$POLICY_DIR/rules-required.jsonl" \
+  "$POLICY_DIR/classic-contexts.jsonl" \
+  "$POLICY_DIR/classic-checks.jsonl" \
+  >"$POLICY_DIR/live-required.jsonl"
+
+# The current checked-in mirror stores only names. If live policy restricts a
+# requirement to an app/integration, accepting any producer with that context
+# would weaken policy. Fail closed until the mirror/collector can represent and
+# validate that identity.
+if jq -s -e 'any(.[]; .app_id != null)' \
+  "$POLICY_DIR/live-required.jsonl" >/dev/null; then
+  echo "NOT_PROVEN: live required-check policy includes app/integration identity not represented by the mirror" >&2
+  exit 2
+fi
+
+if ! jq -s -r 'map(.name) | map(select(type == "string" and length > 0)) | unique | .[]' \
+  "$POLICY_DIR/live-required.jsonl" \
+  >"$POLICY_DIR/live-required.txt"; then
+  echo "NOT_PROVEN: failed to canonicalize live required-check names" >&2
+  exit 2
+fi
+
+if ! python3 - <<'PY' >"$POLICY_DIR/mirror-required.txt"
 import tomllib
 from pathlib import Path
 
@@ -111,15 +179,19 @@ for check in policy.get("checks", []):
     if check.get("required") is True:
         print(check["name"])
 PY
-sort -u -o "$POLICY_DIR/mirror-required.txt" "$POLICY_DIR/mirror-required.txt"
-
-diff -u "$POLICY_DIR/mirror-required.txt" "$POLICY_DIR/live-required.txt" || {
-  echo "NOT_PROVEN: live required-check policy differs from the checked-in mirror" >&2
+then
+  echo "NOT_PROVEN: failed to parse the checked-in required-check mirror" >&2
   exit 2
-}
+fi
+sort -u -o "$POLICY_DIR/mirror-required.txt" "$POLICY_DIR/mirror-required.txt"
 
 test -s "$POLICY_DIR/live-required.txt" || {
   echo "NOT_PROVEN: live required-check set is empty or unavailable" >&2
+  exit 2
+}
+
+diff -u "$POLICY_DIR/mirror-required.txt" "$POLICY_DIR/live-required.txt" || {
+  echo "NOT_PROVEN: live required-check policy differs from the checked-in mirror" >&2
   exit 2
 }
 ```
@@ -243,8 +315,8 @@ and one bounded next action.
 ## Todo
 
 ```text
-1. Capture expected head, base branch, combined status rollup, and live policy.
-2. Compare live required checks with the checked-in mirror.
+1. Capture expected head, base branch, combined status rollup, and every live policy page.
+2. Preserve app/integration identity and compare live required checks with the mirror.
 3. Classify exact-head required and advisory evidence.
 4. Consume review convergence and mergeability.
 5. Re-read head.
