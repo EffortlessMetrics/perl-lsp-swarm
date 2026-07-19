@@ -3436,7 +3436,9 @@ impl<'a> PerlLexer<'a> {
                 continue;
             }
             match token.token_type {
-                TokenType::Operator(operator) if operator.as_ref() == ":" => expect_name = true,
+                TokenType::Operator(operator) if matches!(operator.as_ref(), ":" | "::") => {
+                    expect_name = true;
+                }
                 TokenType::LeftParen => {
                     if !Self::attribute_arguments_terminate(lexer) {
                         return false;

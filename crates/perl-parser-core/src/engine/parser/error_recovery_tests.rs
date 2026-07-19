@@ -1274,7 +1274,13 @@ fn test_unclosed_qw_recovers_phaser_attribute_block() -> Result<(), String> {
         return Err(format!("expected program root, got {}", ast.to_sexp()));
     };
     let sexp = ast.to_sexp();
-    if statements.len() != 2 {
+    if statements.len() != 2
+        || !matches!(
+            &statements[1].kind,
+            NodeKind::LabeledStatement { label, .. } if label == "BEGIN"
+        )
+        || parser.errors().is_empty()
+    {
         return Err(format!("phaser attribute was swallowed: {sexp}"));
     }
     Ok(())

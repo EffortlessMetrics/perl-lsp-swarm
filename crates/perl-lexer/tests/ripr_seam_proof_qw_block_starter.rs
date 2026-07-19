@@ -7,12 +7,16 @@
 //! text is exactly the span the recovery consumed, so that span witnesses
 //! whether a following block starter became a synchronization boundary.
 
-use perl_lexer::{PerlLexer, TokenType};
+use perl_lexer::{LexerConfig, PerlLexer, TokenType};
 
 /// Text of the first unclosed-`qw(` `Error` token — the source span the recovery
 /// boundary allowed the quote-word token to consume.
 fn qw_recovery_span(input: &str) -> Result<String, String> {
-    let mut lexer = PerlLexer::new(input);
+    qw_recovery_span_with_config(input, LexerConfig::default())
+}
+
+fn qw_recovery_span_with_config(input: &str, config: LexerConfig) -> Result<String, String> {
+    let mut lexer = PerlLexer::with_config(input, config);
     while let Some(token) = lexer.next_token() {
         if matches!(token.token_type, TokenType::Error(_)) && token.text.starts_with("qw(") {
             return Ok(token.text.to_string());
@@ -35,6 +39,7 @@ fn block_form_starters_end_the_qw_token() -> Result<(), String> {
         ("BEGIN block", "my @a = qw(word\nBEGIN { 1; }", "BEGIN"),
         ("END block", "my @a = qw(word\nEND { 1; }", "END"),
         ("BEGIN attribute block", "my @a = qw(word\nBEGIN :lvalue { 1; }", "BEGIN"),
+        ("BEGIN qualified attribute block", "my @a = qw(word\nBEGIN :Foo::bar { 1; }", "BEGIN"),
         ("INIT block", "my @a = qw(word\nINIT { 1; }", "INIT"),
         ("CHECK block", "my @a = qw(word\nCHECK { 1; }", "CHECK"),
         ("UNITCHECK block", "my @a = qw(word\nUNITCHECK { 1; }", "UNITCHECK"),
@@ -44,6 +49,17 @@ fn block_form_starters_end_the_qw_token() -> Result<(), String> {
         if span != "qw(word\n" {
             return Err(format!("[{label}] qw did not stop at `{starter}`: {span:?}"));
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn qualified_phaser_attributes_survive_zero_lookahead() -> Result<(), String> {
+    let input = "my @a = qw(word\nBEGIN :Foo::bar { 1; }";
+    let config = LexerConfig { max_lookahead: 0, ..LexerConfig::default() };
+    let span = qw_recovery_span_with_config(input, config)?;
+    if span != "qw(word\n" {
+        return Err(format!("qualified attribute did not end qw: {span:?}"));
     }
     Ok(())
 }
