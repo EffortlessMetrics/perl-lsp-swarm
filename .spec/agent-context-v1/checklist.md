@@ -5,6 +5,7 @@
 - [ ] Add capability, validation, parity, redaction, and behavior tests.
 - [ ] Update capability snapshots and add the envelope schema.
 - [ ] Update the command reference and Codex onboarding guide.
-- [ ] Run focused tests, formatting/lint proof as practical, and `git diff --check`.
+- [ ] Run focused tests, `cargo fmt`, `cargo clippy --workspace`,
+  `cargo test -p perl-lsp-rs-core`, and `git diff --check`.
 - [ ] Keep bridge support conditional because bridge forwarding is not proven by
   this repository.

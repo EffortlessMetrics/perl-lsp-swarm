@@ -26,7 +26,7 @@
       "required": ["method", "arguments_required", "arguments_shape"],
       "properties": {
         "method": {"const": "workspace/executeCommand"},
-        "arguments_required": {"const": true},
+        "arguments_required": {"const": false},
         "arguments_shape": {"type": "string"}
       }
     },
@@ -39,8 +39,7 @@
     },
     "execute_commands": {
       "type": "array",
-      "items": {"type": "string"},
-      "minItems": 1
+      "items": {"type": "string"}
     },
     "next_actions": {
       "type": "array",
@@ -48,6 +47,11 @@
       "items": {
         "type": "object",
         "required": ["id", "description"],
+        "anyOf": [
+          {"required": ["source"]},
+          {"required": ["command"]},
+          {"required": ["commands"]}
+        ],
         "properties": {
           "id": {"type": "string"},
           "source": {"type": "string"},

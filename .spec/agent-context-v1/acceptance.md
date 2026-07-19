@@ -9,6 +9,10 @@
   scan, probe, run perldoc, launch DAP, apply edits, or execute follow-ups.
 - [ ] The response accepts a caller-supplied runtime-state object while
   preserving the trust report's existing sanitization.
+- [ ] The request accepts both an omitted `arguments` property and an explicit
+  empty array, while rejecting a present non-array value.
+- [ ] Command inventory and command-backed next actions reflect whether the
+  initialized session advertised `lsp.execute_command`.
 - [ ] `schemas/agent_context.v1.schema.json` matches the implementation and
   references the existing trust-report schema.
 - [ ] Command reference and Codex onboarding docs explain the request shape,

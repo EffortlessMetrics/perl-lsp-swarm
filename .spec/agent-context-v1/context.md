@@ -35,9 +35,13 @@ commands.
 
 - The command is additive and uses the existing standard
   `workspace/executeCommand` request.
-- `arguments` is required by the existing LSP request validator; an empty array
-  is valid. An optional first object is forwarded to the existing trust report
-  as caller-supplied client runtime state.
+- `arguments` follows the standard LSP optional property contract. An omitted
+  field and an empty array are both normalized to no arguments. An optional
+  first object is forwarded to the existing trust report as caller-supplied
+  client runtime state.
+- `execute_commands` and command-backed `next_actions` reflect the current
+  initialized capability state. They are empty or omitted when the client
+  disables `lsp.execute_command`; the source-backed setup pointer remains.
 - `next_actions` are pointers, not execution instructions. They do not create
   new facts, execute commands, mutate files, or grant permission to apply edits.
 - The response claims current runtime/advertisement state only. It does not
