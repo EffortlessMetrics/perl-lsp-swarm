@@ -38,6 +38,7 @@ fn test_error(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message.into())
 }
 
+/// Keep new contract tests fallible so failures do not add panic-shaped assertions.
 fn require(condition: bool, message: impl Into<String>) -> Result<(), Box<dyn std::error::Error>> {
     if condition { Ok(()) } else { Err(test_error(message).into()) }
 }

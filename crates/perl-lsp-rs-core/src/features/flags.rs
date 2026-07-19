@@ -415,90 +415,42 @@ impl BuildFlags {
     }
 }
 
+const ADVERTISED_FEATURE_ID_FIELDS: &[(&str, fn(&AdvertisedFeatures) -> bool)] = &[
+    (LSP_COMPLETION, |features| features.completion),
+    (LSP_HOVER, |features| features.hover),
+    (LSP_DEFINITION, |features| features.definition),
+    (LSP_REFERENCES, |features| features.references),
+    (LSP_DOCUMENT_SYMBOL, |features| features.document_symbol),
+    (LSP_WORKSPACE_SYMBOL, |features| features.workspace_symbol),
+    (LSP_CODE_ACTION, |features| features.code_action),
+    (LSP_CODE_LENS, |features| features.code_lens),
+    (LSP_FORMATTING, |features| features.formatting),
+    (LSP_RANGE_FORMATTING, |features| features.range_formatting),
+    (LSP_RENAME, |features| features.rename),
+    (LSP_FOLDING_RANGE, |features| features.folding_range),
+    (LSP_SELECTION_RANGE, |features| features.selection_range),
+    (LSP_LINKED_EDITING_RANGE, |features| features.linked_editing),
+    (LSP_INLAY_HINT, |features| features.inlay_hints),
+    (LSP_SEMANTIC_TOKENS, |features| features.semantic_tokens),
+    (LSP_CALL_HIERARCHY, |features| features.call_hierarchy),
+    (LSP_TYPE_HIERARCHY, |features| features.type_hierarchy),
+    (LSP_PULL_DIAGNOSTICS, |features| features.diagnostic_provider),
+    (LSP_DOCUMENT_COLOR, |features| features.document_color),
+    (LSP_NOTEBOOK_DOCUMENT_SYNC, |features| features.notebook_document_sync),
+    (LSP_NOTEBOOK_CELL_EXECUTION, |features| features.notebook_cell_execution),
+    (LSP_SIGNATURE_HELP, |features| features.signature_help),
+    (LSP_DOCUMENT_HIGHLIGHT, |features| features.document_highlight),
+    (LSP_DECLARATION, |features| features.declaration),
+    (LSP_INLINE_COMPLETION, |features| features.inline_completion),
+];
+
 impl AdvertisedFeatures {
     /// Convert the live advertised feature projection to canonical feature IDs.
     pub fn to_feature_ids(&self) -> Vec<&'static str> {
-        let mut ids = Vec::new();
-
-        if self.completion {
-            ids.push(LSP_COMPLETION);
-        }
-        if self.hover {
-            ids.push(LSP_HOVER);
-        }
-        if self.definition {
-            ids.push(LSP_DEFINITION);
-        }
-        if self.references {
-            ids.push(LSP_REFERENCES);
-        }
-        if self.document_symbol {
-            ids.push(LSP_DOCUMENT_SYMBOL);
-        }
-        if self.workspace_symbol {
-            ids.push(LSP_WORKSPACE_SYMBOL);
-        }
-        if self.inlay_hints {
-            ids.push(LSP_INLAY_HINT);
-        }
-        if self.diagnostic_provider {
-            ids.push(LSP_PULL_DIAGNOSTICS);
-        }
-        if self.semantic_tokens {
-            ids.push(LSP_SEMANTIC_TOKENS);
-        }
-        if self.code_action {
-            ids.push(LSP_CODE_ACTION);
-        }
-        if self.rename {
-            ids.push(LSP_RENAME);
-        }
-        if self.selection_range {
-            ids.push(LSP_SELECTION_RANGE);
-        }
-        if self.code_lens {
-            ids.push(LSP_CODE_LENS);
-        }
-        if self.formatting {
-            ids.push(LSP_FORMATTING);
-        }
-        if self.range_formatting {
-            ids.push(LSP_RANGE_FORMATTING);
-        }
-        if self.folding_range {
-            ids.push(LSP_FOLDING_RANGE);
-        }
-        if self.call_hierarchy {
-            ids.push(LSP_CALL_HIERARCHY);
-        }
-        if self.type_hierarchy {
-            ids.push(LSP_TYPE_HIERARCHY);
-        }
-        if self.linked_editing {
-            ids.push(LSP_LINKED_EDITING_RANGE);
-        }
-        if self.inline_completion {
-            ids.push(LSP_INLINE_COMPLETION);
-        }
-        if self.notebook_document_sync {
-            ids.push(LSP_NOTEBOOK_DOCUMENT_SYNC);
-        }
-        if self.notebook_cell_execution {
-            ids.push(LSP_NOTEBOOK_CELL_EXECUTION);
-        }
-        if self.signature_help {
-            ids.push(LSP_SIGNATURE_HELP);
-        }
-        if self.document_highlight {
-            ids.push(LSP_DOCUMENT_HIGHLIGHT);
-        }
-        if self.document_color {
-            ids.push(LSP_DOCUMENT_COLOR);
-        }
-        if self.declaration {
-            ids.push(LSP_DECLARATION);
-        }
-
+        let mut ids = ADVERTISED_FEATURE_ID_FIELDS
+            .iter()
+            .filter_map(|(id, is_enabled)| is_enabled(self).then_some(*id))
+            .collect::<Vec<_>>();
         ids.sort_unstable();
         ids
     }
