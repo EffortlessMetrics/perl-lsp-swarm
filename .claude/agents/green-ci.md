@@ -62,8 +62,8 @@ HEAD_SHA=$(printf '%s' "$PR_STATE" | jq -r '.headRefOid')
 BASE_BRANCH=$(printf '%s' "$PR_STATE" | jq -r '.baseRefName')
 ```
 
-> **MCP alternative:** fetch the PR and retain its full `headRefOid` as the
-> expected head for every following query.
+> **Connector alternative:** fetch the PR and retain its full `headRefOid` as
+> the expected head for every following query.
 
 ### 2. Discover live required policy and compare the mirror
 
@@ -74,7 +74,9 @@ permissioned canonical collector independently proves absence, return
 `NOT_PROVEN` rather than treating 404 as an empty policy.
 
 The procedure below preserves app/integration identity instead of reducing live
-requirements to context names prematurely.
+requirements to context names prematurely. A genuinely empty required-check set
+is valid only when both live sources were read successfully and the checked-in
+mirror is also empty.
 
 ```bash
 set -euo pipefail
@@ -171,8 +173,14 @@ if ! jq -s -r 'map(.name) | map(select(type == "string" and length > 0)) | uniqu
 fi
 
 if ! python3 - <<'PY' >"$POLICY_DIR/mirror-required.txt"
-import tomllib
+import sys
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    print("NOT_PROVEN: Python 3.11+ tomllib is required to parse the policy mirror", file=sys.stderr)
+    raise SystemExit(2)
 
 policy = tomllib.loads(Path(".ci/policies/required-checks.toml").read_text())
 for check in policy.get("checks", []):
@@ -185,11 +193,9 @@ then
 fi
 sort -u -o "$POLICY_DIR/mirror-required.txt" "$POLICY_DIR/mirror-required.txt"
 
-test -s "$POLICY_DIR/live-required.txt" || {
-  echo "NOT_PROVEN: live required-check set is empty or unavailable" >&2
-  exit 2
-}
-
+# Successful reads plus exact set equality prove policy, including the valid
+# case where both sets are empty. A non-empty mirror with an empty live set (or
+# vice versa) fails this comparison.
 diff -u "$POLICY_DIR/mirror-required.txt" "$POLICY_DIR/live-required.txt" || {
   echo "NOT_PROVEN: live required-check policy differs from the checked-in mirror" >&2
   exit 2
@@ -203,12 +209,13 @@ Never silently fall back to the checked-in mirror.
 ### 3. Classify CheckRun and StatusContext entries
 
 ```bash
-printf '%s' "$PR_STATE" | jq -r '
+printf '%s' "$PR_STATE" | jq -r --arg head "$HEAD_SHA" '
   .statusCheckRollup[] |
   {
     kind: (.__typename // "unknown"),
     name: (.name // .context),
     state: (.conclusion // .state // .status),
+    head_sha: (.headSha // .sha // $head),
     started_at: .startedAt,
     completed_at: .completedAt,
     details_url: (.detailsUrl // .targetUrl)
@@ -218,7 +225,9 @@ printf '%s' "$PR_STATE" | jq -r '
 `statusCheckRollup` is the combined current-head contract. A CheckRun normally
 uses `name` and `conclusion`; a commit StatusContext uses `context` and `state`.
 Do not query only `check-runs`, because that can omit required or advisory status
-contexts published through the commit-status API.
+contexts published through the commit-status API. The `head_sha` field preserves
+an auditable binding to the pinned head; the rollup is PR-head-scoped, and the
+pinned SHA is used when an entry does not expose its own SHA.
 
 Require every name in `live-required.txt` to have an applicable successful
 current-head rollup entry. A missing required name is `MISSING`, not success.
@@ -317,7 +326,7 @@ and one bounded next action.
 ```text
 1. Capture expected head, base branch, combined status rollup, and every live policy page.
 2. Preserve app/integration identity and compare live required checks with the mirror.
-3. Classify exact-head required and advisory evidence.
+3. Classify exact-head required and advisory evidence with head-SHA traceability.
 4. Consume review convergence and mergeability.
 5. Re-read head.
 6. Emit one bounded verdict; request same-head refresh when appropriate.
