@@ -33,8 +33,8 @@ The implemented slice lives in `crates/perl-parser-core/src/pir/` and lowers a
   `PirMethod`, `PirSourceAnchor`, `PirEdge`, `PirReceipt`);
 - HIR-to-PIR lowering for the data-access, call, and dynamic-boundary operation
   families HIR can prove from source (`LexicalWrite`, `StashWrite`, `Assign`,
-  `Call`, `MethodCall`, `DynamicBoundary`), with every source-derived node
-  anchored and visible `Unknown` context where context is not provable;
+  `Call`, `MethodCall`, `Literal`, `DynamicBoundary`), with every source-derived
+  node anchored and visible `Unknown` context where context is not provable;
 - dynamic-boundary preservation, including the link from a coderef `Call` to the
   HIR-emitted boundary, plus dynamic-exit CFG edges;
 - a conservative first control-flow graph (intra-scope fallthrough edges and
@@ -132,6 +132,7 @@ pub enum PirOperation {
     LexicalWrite { name: LexicalName },
     StashRead { symbol: SymbolName },
     StashWrite { symbol: SymbolName },
+    Literal { kind: PirLiteralKind },
     Assign,
     Call { callee: PirCallee },
     MethodCall { receiver: PirReceiver, method: PirMethod },

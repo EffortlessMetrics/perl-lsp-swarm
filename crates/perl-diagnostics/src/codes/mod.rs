@@ -151,6 +151,8 @@ pub enum DiagnosticCode {
     UnusedImport,
     /// Module not found in workspace or configured include paths
     ModuleNotFound,
+    /// Module is a known source filter (rewrites source before parsing)
+    SourceFilterModule,
 
     // Heredoc anti-patterns (PL800-PL899)
     /// Heredoc used inside a format block

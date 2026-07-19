@@ -1458,6 +1458,7 @@ status-update subsystem="":
 status-check:
     @cargo run -p xtask -- update-status --check
     @cargo xtask metrics hir-coverage --check
+    @cargo run --quiet -p perl-ci-hygiene -- check-doc-drift
 
 # ============================================================================
 # Corpus Audit Commands

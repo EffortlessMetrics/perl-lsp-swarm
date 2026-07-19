@@ -944,13 +944,7 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
         if self.is_delimiter_recovery_point() {
-            let pos = self.current_position();
-            let site = Self::recovery_site_for_closer(kind);
-            self.errors.push(ParseError::Recovered {
-                site,
-                kind: RecoveryKind::InsertedCloser,
-                location: pos,
-            });
+            self.record_inserted_closer(kind);
             return Ok(());
         }
         let pos = self.current_position();
@@ -959,6 +953,16 @@ impl<'a> Parser<'a> {
             self.peek_kind().map(|k| k.display_name()).unwrap_or("end of input"),
             pos,
         ))
+    }
+
+    fn record_inserted_closer(&mut self, kind: TokenKind) {
+        let pos = self.current_position();
+        let site = Self::recovery_site_for_closer(kind);
+        self.errors.push(ParseError::Recovered {
+            site,
+            kind: RecoveryKind::InsertedCloser,
+            location: pos,
+        });
     }
 
     /// Map a closing-delimiter token to its [`RecoverySite`] for recovery annotations.
@@ -996,6 +1000,9 @@ impl<'a> Parser<'a> {
             | Some(TokenKind::State)
             | Some(TokenKind::Sub)
             | Some(TokenKind::Package)
+            | Some(TokenKind::Class)
+            | Some(TokenKind::Begin)
+            | Some(TokenKind::End)
             | Some(TokenKind::Use)
             | Some(TokenKind::If)
             | Some(TokenKind::Unless)
@@ -1019,6 +1026,7 @@ impl<'a> Parser<'a> {
             | Some(TokenKind::Local)
             | Some(TokenKind::State) => true,
             Some(TokenKind::Sub) | Some(TokenKind::Package) | Some(TokenKind::Use) => true,
+            Some(TokenKind::Class) | Some(TokenKind::Begin) | Some(TokenKind::End) => true,
             Some(TokenKind::If) | Some(TokenKind::Unless) => true,
             Some(TokenKind::Elsif) | Some(TokenKind::Else) => true,
             Some(TokenKind::While) | Some(TokenKind::Until) => true,

@@ -20,7 +20,8 @@
 //!
 //! # Stale Request Cancellation
 //!
-//! Position-sensitive reads are cancelled before execution in two ways:
+//! Position-sensitive reads are prevented from delivering stale results in two
+//! ways:
 //!
 //! 1. **Position dedupe**: if a newer request arrives for the same
 //!    `(method, uri, line, character)` key, the older request is cancelled.
@@ -28,10 +29,11 @@
 //!
 //! 2. **Generation freshness** (PR 4 of the 0.15.1 Neovim latency lane):
 //!    at ingress every position-sensitive read captures the document's
-//!    current generation. Before execution, the dispatcher compares that
-//!    snapshot to the document's current generation; if the document has
-//!    moved on (i.e. a `didChange` bumped the generation between ingress
-//!    and dispatch), the read is cancelled. This is the case that pure
+//!    current generation. The dispatcher compares that snapshot to the
+//!    document's current generation before execution and again before
+//!    delivering the handler response. If the document has moved on (i.e. a
+//!    `didChange` bumped the generation while the read was queued or while a
+//!    slow handler was running), the read is cancelled. This is the case that
 //!    position dedupe misses — normal typing moves the cursor and changes
 //!    the position key on every keystroke, so the dedup map sees only
 //!    unique entries.
@@ -52,7 +54,7 @@ use std::sync::{
 use tokio::sync::{Notify, Semaphore};
 use tokio::task::JoinSet;
 
-use super::LspServer;
+use super::{LspServer, outbound::OutboundSender};
 
 // =========================================================================
 // Request priority
@@ -152,7 +154,7 @@ pub(crate) fn extract_dedup_key(
 /// every keystroke during a typing storm produces a unique
 /// `(uri, line, character)` dedup key, so position dedupe alone cannot
 /// collapse the storm into "latest request wins."
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct ReadFreshness {
     /// Document URI captured from the request.
     pub uri: String,
@@ -160,6 +162,10 @@ pub(crate) struct ReadFreshness {
     /// document was not yet open at ingress (e.g. a hover arriving before
     /// the matching `didOpen`); in that case freshness is not enforced.
     pub document_generation: Option<u32>,
+    /// Generation counter identity captured at ingress. A close/reopen can
+    /// reuse the numeric generation, so the allocation identity is part of
+    /// the freshness contract.
+    pub document_instance: Option<Arc<std::sync::atomic::AtomicU32>>,
     /// LSP document version as observed at ingress. Retained for
     /// diagnostics / future use; the cancellation decision uses
     /// `document_generation`.
@@ -187,9 +193,12 @@ pub(crate) fn extract_freshness(
     }
     let params = params?;
     let uri = params.get("textDocument")?.get("uri")?.as_str()?.to_string();
-    let document_generation = server.document_generation(&uri);
-    let document_version = server.document_version(&uri);
-    Some(ReadFreshness { uri, document_generation, document_version })
+    let (document_generation, document_version, document_instance) = server
+        .document_freshness(&uri)
+        .map_or((None, None, None), |(generation, version, instance)| {
+            (Some(generation), Some(version), Some(instance))
+        });
+    Some(ReadFreshness { uri, document_generation, document_instance, document_version })
 }
 
 /// Decide whether a queued read is stale given the document's current
@@ -384,13 +393,15 @@ impl Ord for QueuedRead {
 /// Global read arrival counter; incremented at ingress for each read request.
 static READ_ARRIVAL_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Reason a stale read was cancelled before execution.
+/// Reason a stale read was cancelled before execution or delivery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StaleReason {
     /// A newer request with the same `(method, uri, line, character)` arrived.
     PositionSuperseded,
     /// The document generation moved on between ingress and dispatch.
     DocumentGenerationAdvanced { captured: u32, current: u32 },
+    /// The document was closed or replaced by a new instance.
+    DocumentInstanceChanged,
 }
 
 impl Scheduler {
@@ -669,6 +680,53 @@ impl Scheduler {
         Some(StaleReason::DocumentGenerationAdvanced { captured, current })
     }
 
+    fn send_response(outbound: &OutboundSender, response: JsonRpcResponse) {
+        log_response(&response);
+        let _ = outbound.send_response(response);
+    }
+
+    /// Send a handler response only while its captured document instance and
+    /// generation are still current. The freshness decision and outbound
+    /// enqueue share the document-store lock, so a concurrent mutation is
+    /// ordered either before this response or after it, never between the
+    /// check and the enqueue.
+    fn send_response_if_fresh(
+        server: &Arc<LspServer>,
+        freshness: Option<&ReadFreshness>,
+        response: JsonRpcResponse,
+    ) -> Option<StaleReason> {
+        let Some(freshness) = freshness else {
+            Self::send_response(&server.outbound, response);
+            return None;
+        };
+
+        let Some(captured) = freshness.document_generation else {
+            Self::send_response(&server.outbound, response);
+            return None;
+        };
+        let Some(instance) = freshness.document_instance.as_ref() else {
+            return Some(StaleReason::DocumentInstanceChanged);
+        };
+
+        let normalized_uri = server.normalize_uri_key(&freshness.uri);
+        let documents = server.documents.lock();
+        let Some(document) = documents.get(&normalized_uri) else {
+            return Some(StaleReason::DocumentInstanceChanged);
+        };
+
+        if !Arc::ptr_eq(&document.generation, instance) {
+            return Some(StaleReason::DocumentInstanceChanged);
+        }
+
+        let current = document.current_generation();
+        if current != captured {
+            return Some(StaleReason::DocumentGenerationAdvanced { captured, current });
+        }
+
+        Self::send_response(&server.outbound, response);
+        None
+    }
+
     /// Why a stale read was cancelled. Used only for log/error messages.
     fn send_cancellation(
         server: &Arc<LspServer>,
@@ -681,7 +739,10 @@ impl Scheduler {
                 format!("Request superseded by newer {method} request")
             }
             StaleReason::DocumentGenerationAdvanced { captured, current } => format!(
-                "Request superseded: document moved from generation {captured} to {current} while {method} was queued"
+                "Request superseded: document moved from generation {captured} to {current} while {method} was in flight"
+            ),
+            StaleReason::DocumentInstanceChanged => format!(
+                "Request superseded: document was closed or replaced while {method} was running"
             ),
         };
         let cancelled_response = JsonRpcResponse {
@@ -690,11 +751,11 @@ impl Scheduler {
             result: None,
             error: Some(JsonRpcError { code: REQUEST_CANCELLED, message, data: None }),
         };
-        log_response(&cancelled_response);
-        let _ = server.outbound.send_response(cancelled_response);
+        Self::send_response(&server.outbound, cancelled_response);
     }
 
-    /// Dispatch a single read request — either cancel it (stale) or execute it.
+    /// Dispatch a single read request, cancelling it if it becomes stale
+    /// before execution or before its response is delivered.
     async fn dispatch_one(
         queued: QueuedRead,
         latest_seq: &HashMap<RequestDedupKey, u64>,
@@ -768,12 +829,28 @@ impl Scheduler {
                 return;
             }
 
-            let result =
-                tokio::task::spawn_blocking(move || srv.handle_request(queued.request)).await;
+            let result = tokio::task::spawn_blocking({
+                let handler_server = Arc::clone(&srv);
+                move || handler_server.handle_request(queued.request)
+            })
+            .await;
 
             if let Ok(Some(response)) = result {
-                log_response(&response);
-                let _ = outbound.send_response(response);
+                // A handler may spend a long time outside the document lock
+                // (for example, waiting for an AI completion backend). A
+                // mutation can advance the document generation while that
+                // work is running, so make the final send decision against
+                // the same freshness snapshot used at dispatch ingress.
+                if response.error.as_ref().is_some_and(|error| error.code == REQUEST_CANCELLED) {
+                    // Preserve a cancellation response that the handler
+                    // already produced. The scheduler must not emit a second
+                    // response when explicit cancellation races with a edit.
+                    Self::send_response(&outbound, response);
+                } else if let Some(reason) =
+                    Self::send_response_if_fresh(&srv, freshness.as_ref(), response)
+                {
+                    Self::send_cancellation(&srv, id, &method, reason);
+                }
             }
         });
     }
@@ -1123,11 +1200,15 @@ mod tests {
     #[derive(Clone)]
     struct CapturedOutput {
         bytes: Arc<parking_lot::Mutex<Vec<u8>>>,
+        write_signal: Option<std::sync::mpsc::Sender<()>>,
     }
 
     impl std::io::Write for CapturedOutput {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             self.bytes.lock().extend_from_slice(buf);
+            if let Some(signal) = &self.write_signal {
+                let _ = signal.send(());
+            }
             Ok(buf.len())
         }
 
@@ -1138,10 +1219,21 @@ mod tests {
 
     fn server_with_captured_output() -> (Arc<crate::LspServer>, Arc<parking_lot::Mutex<Vec<u8>>>) {
         let bytes = Arc::new(parking_lot::Mutex::new(Vec::new()));
-        let writer = CapturedOutput { bytes: Arc::clone(&bytes) };
+        let writer = CapturedOutput { bytes: Arc::clone(&bytes), write_signal: None };
         let output: Arc<parking_lot::Mutex<Box<dyn std::io::Write + Send>>> =
             Arc::new(parking_lot::Mutex::new(Box::new(writer)));
         (Arc::new(crate::LspServer::with_output(output)), bytes)
+    }
+
+    fn server_with_signalled_output()
+    -> (Arc<crate::LspServer>, Arc<parking_lot::Mutex<Vec<u8>>>, std::sync::mpsc::Receiver<()>)
+    {
+        let bytes = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (write_signal, writes) = std::sync::mpsc::channel();
+        let writer = CapturedOutput { bytes: Arc::clone(&bytes), write_signal: Some(write_signal) };
+        let output: Arc<parking_lot::Mutex<Box<dyn std::io::Write + Send>>> =
+            Arc::new(parking_lot::Mutex::new(Box::new(writer)));
+        (Arc::new(crate::LspServer::with_output(output)), bytes, writes)
     }
 
     fn position_params(uri: &str) -> serde_json::Value {
@@ -1186,6 +1278,122 @@ mod tests {
         }
     }
 
+    fn queued_inline_completion_read(
+        server: &crate::LspServer,
+        uri: &str,
+        arrival_seq: u64,
+        id: i64,
+    ) -> QueuedRead {
+        let params = position_params_at(uri, 0, 4);
+        let method = "textDocument/inlineCompletion";
+        let priority = request_priority(method);
+        let dedup_key = extract_dedup_key(method, Some(&params), priority);
+        let freshness = extract_freshness(server, method, Some(&params), priority);
+        QueuedRead {
+            request: JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Integer(id)),
+                method: method.to_string(),
+                params: Some(params),
+            },
+            wait_for_seq: 0,
+            priority,
+            arrival_seq,
+            dedup_key,
+            freshness,
+        }
+    }
+
+    struct BlockingInlineCompletionBackend {
+        started: Arc<std::sync::Barrier>,
+        release: Arc<std::sync::Barrier>,
+    }
+
+    const STALE_INLINE_REQUEST_ID: i64 = 77;
+    const FRESH_INLINE_REQUEST_ID: i64 = 78;
+    const REOPENED_INLINE_REQUEST_ID: i64 = 79;
+    const STALE_INLINE_RESULT: &str = "STALE_AI_RESULT";
+
+    impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
+        for BlockingInlineCompletionBackend
+    {
+        fn stream(
+            &self,
+            _req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+            sink: &mut dyn FnMut(
+                perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+            )
+                -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+        ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
+            self.started.wait();
+            self.release.wait();
+            let _ = sink(perl_lsp_rs_core::providers::inline_completion::StreamChunk {
+                text: STALE_INLINE_RESULT.to_string(),
+                is_final: true,
+            });
+            Ok(())
+        }
+    }
+
+    fn initialize_scheduler_test_server(
+        server: &crate::LspServer,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let response = server
+            .handle_request(JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Integer(1)),
+                method: "initialize".to_string(),
+                params: Some(serde_json::json!({
+                    "processId": 1,
+                    "capabilities": {},
+                })),
+            })
+            .ok_or("initialize must produce a response")?;
+        if response.error.is_some() {
+            return Err("initialize must succeed".into());
+        }
+        Ok(())
+    }
+
+    fn wait_for_response_id(
+        output: &Arc<parking_lot::Mutex<Vec<u8>>>,
+        writes: &std::sync::mpsc::Receiver<()>,
+        id: i64,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            let bytes = output.lock().clone();
+            let mut cursor = 0;
+            while let Some(relative_header_end) =
+                bytes[cursor..].windows(4).position(|window| window == b"\r\n\r\n")
+            {
+                let header_end = cursor + relative_header_end;
+                let header = std::str::from_utf8(&bytes[cursor..header_end])?;
+                let content_length = header
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Content-Length: "))
+                    .ok_or("response is missing Content-Length")?
+                    .parse::<usize>()?;
+                let body_start = header_end + 4;
+                let body_end = body_start + content_length;
+                if bytes.len() < body_end {
+                    break;
+                }
+                let value: serde_json::Value =
+                    serde_json::from_slice(&bytes[body_start..body_end])?;
+                if value.get("id").and_then(serde_json::Value::as_i64) == Some(id) {
+                    return Ok(value);
+                }
+                cursor = body_end;
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(format!("timed out waiting for response {id}").into());
+            }
+            writes.recv_timeout(remaining)?;
+        }
+    }
+
     fn rapid_typing_source(suffix_len: usize) -> String {
         format!(
             "use strict;\nuse warnings;\n\nmy $value = 42;\nmy $other = $v{}\n",
@@ -1197,6 +1405,7 @@ mod tests {
         ReadFreshness {
             uri: uri.to_string(),
             document_generation: generation,
+            document_instance: None,
             document_version: version,
         }
     }
@@ -1479,6 +1688,167 @@ mod tests {
             "cancelled stale read must not run handle_request; output={text}"
         );
 
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stale_read_cancelled_after_handler_execution() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (server, output, writes) = server_with_signalled_output();
+        initialize_scheduler_test_server(&server)?;
+        output.lock().clear();
+
+        let uri = "file:///inline-stale-after-execution.pl";
+        server.test_apply_did_open(uri, "use ", 1)?;
+        server.test_configure_ai_completion(true, false);
+        let started = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        server.test_install_ai_backend(Some(Arc::new(BlockingInlineCompletionBackend {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        })));
+
+        let queued = queued_inline_completion_read(&server, uri, 1, STALE_INLINE_REQUEST_ID);
+        let one_permit = Arc::new(Semaphore::new(1));
+        let mut in_flight = JoinSet::new();
+        let mutation_seq_done = Arc::new(AtomicU64::new(0));
+        let mutation_notify = Arc::new(Notify::new());
+        let latest_seq = HashMap::new();
+
+        Scheduler::dispatch_one(
+            queued,
+            &latest_seq,
+            &one_permit,
+            &mut in_flight,
+            &server,
+            &mutation_seq_done,
+            &mutation_notify,
+        )
+        .await;
+
+        let started_wait = Arc::clone(&started);
+        tokio::task::spawn_blocking(move || started_wait.wait()).await?;
+        server.test_apply_did_change(uri, "use strict;\n", 2)?;
+        release.wait();
+        while in_flight.join_next().await.is_some() {}
+
+        let response = wait_for_response_id(&output, &writes, STALE_INLINE_REQUEST_ID)?;
+        if response.pointer("/error/code").and_then(serde_json::Value::as_i64)
+            != Some(i64::from(REQUEST_CANCELLED))
+        {
+            return Err(format!("stale inline completion must be cancelled: {response}").into());
+        }
+        if response.to_string().contains(STALE_INLINE_RESULT)
+            || response.get("result").is_some_and(|result| !result.is_null())
+        {
+            return Err(format!("stale inline completion must not be sent: {response}").into());
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stale_read_cancelled_after_document_reopen() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (server, output, writes) = server_with_signalled_output();
+        initialize_scheduler_test_server(&server)?;
+        output.lock().clear();
+
+        let uri = "file:///inline-reopened-after-execution.pl";
+        server.test_apply_did_open(uri, "use ", 1)?;
+        server.test_configure_ai_completion(true, false);
+        let started = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        server.test_install_ai_backend(Some(Arc::new(BlockingInlineCompletionBackend {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        })));
+
+        let queued = queued_inline_completion_read(&server, uri, 1, REOPENED_INLINE_REQUEST_ID);
+        let one_permit = Arc::new(Semaphore::new(1));
+        let mut in_flight = JoinSet::new();
+        let mutation_seq_done = Arc::new(AtomicU64::new(0));
+        let mutation_notify = Arc::new(Notify::new());
+        let latest_seq = HashMap::new();
+
+        Scheduler::dispatch_one(
+            queued,
+            &latest_seq,
+            &one_permit,
+            &mut in_flight,
+            &server,
+            &mutation_seq_done,
+            &mutation_notify,
+        )
+        .await;
+
+        let started_wait = Arc::clone(&started);
+        tokio::task::spawn_blocking(move || started_wait.wait()).await?;
+        server.test_apply_did_close(uri)?;
+        server.test_apply_did_open(uri, "new buffer", 1)?;
+        release.wait();
+        while in_flight.join_next().await.is_some() {}
+
+        let response = wait_for_response_id(&output, &writes, REOPENED_INLINE_REQUEST_ID)?;
+        if response.pointer("/error/code").and_then(serde_json::Value::as_i64)
+            != Some(i64::from(REQUEST_CANCELLED))
+        {
+            return Err(format!("reopened document result must be cancelled: {response}").into());
+        }
+        if response.to_string().contains(STALE_INLINE_RESULT) {
+            return Err(format!("reopened document must not receive old result: {response}").into());
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fresh_read_delivers_handler_result_after_execution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, output, writes) = server_with_signalled_output();
+        initialize_scheduler_test_server(&server)?;
+        output.lock().clear();
+
+        let uri = "file:///inline-fresh-after-execution.pl";
+        server.test_apply_did_open(uri, "use ", 1)?;
+        server.test_configure_ai_completion(true, false);
+        let started = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        server.test_install_ai_backend(Some(Arc::new(BlockingInlineCompletionBackend {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        })));
+
+        let queued = queued_inline_completion_read(&server, uri, 1, FRESH_INLINE_REQUEST_ID);
+        let one_permit = Arc::new(Semaphore::new(1));
+        let mut in_flight = JoinSet::new();
+        let mutation_seq_done = Arc::new(AtomicU64::new(0));
+        let mutation_notify = Arc::new(Notify::new());
+        let latest_seq = HashMap::new();
+
+        Scheduler::dispatch_one(
+            queued,
+            &latest_seq,
+            &one_permit,
+            &mut in_flight,
+            &server,
+            &mutation_seq_done,
+            &mutation_notify,
+        )
+        .await;
+
+        let started_wait = Arc::clone(&started);
+        tokio::task::spawn_blocking(move || started_wait.wait()).await?;
+        release.wait();
+        while in_flight.join_next().await.is_some() {}
+
+        let response = wait_for_response_id(&output, &writes, FRESH_INLINE_REQUEST_ID)?;
+        if !response.to_string().contains(STALE_INLINE_RESULT)
+            || response.get("result").is_none_or(serde_json::Value::is_null)
+        {
+            return Err(format!("fresh inline completion must be sent: {response}").into());
+        }
+        if response.pointer("/error/code").is_some() {
+            return Err(format!("fresh inline completion must not be cancelled: {response}").into());
+        }
         Ok(())
     }
 

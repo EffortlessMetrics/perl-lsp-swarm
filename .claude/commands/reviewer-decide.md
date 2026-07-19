@@ -31,6 +31,7 @@ gh pr checkout <number>
 git push
 gh pr comment <number> --body "Standards review complete. Docs-only fast-track used; no reviewer-deep pass required."
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` provides PR metadata. Fetch by numeric PR ref to avoid interpolating an untrusted branch name: `git fetch origin "refs/pull/<number>/head:refs/remotes/origin/pr-<number>" && git checkout --detach "refs/remotes/origin/pr-<number>"`. Push with plain `git push`. Comment via `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body)`.
 
 Then call:
 ```
@@ -48,6 +49,7 @@ gh pr checkout <number>
 # ... make improvements, commit ...
 git push
 ```
+> **MCP alternative (web/no-gh sessions):** Use `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` for metadata, then fetch by numeric PR ref: `git fetch origin "refs/pull/<number>/head:refs/remotes/origin/pr-<number>" && git checkout --detach "refs/remotes/origin/pr-<number>"`. Push with plain `git push`.
 
 After pushing improvements, set sign-off and route to deep review (verified apply for each label — see `/label-apply-verified`):
 ```
@@ -57,6 +59,7 @@ After pushing improvements, set sign-off and route to deep review (verified appl
 ```bash
 gh pr comment <number> --body "Standards review complete. Improved: <list of changes>. Deep reviewer: focus on <areas of concern>."
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body)` — full parity for posting PR comments.
 
 Then write a version-bound receipt:
 ```
@@ -87,6 +90,7 @@ Blockers:
 
 Not signing off (\`review-reviewed\` not applied) per the 2026-04-26 sign-off-as-routing rule. Will re-run after fix."
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body)` — full parity for posting PR comments.
 
 **DO NOT also apply `review-reviewed`.** Sign-off and bounce are mutually exclusive — they are the same routing decision with different outcomes. Applying both is the #6780 failure mode (let unfixed bugs ride to merge).
 

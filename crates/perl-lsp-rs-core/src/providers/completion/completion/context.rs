@@ -28,6 +28,18 @@ pub struct CompletionContext {
 }
 
 impl CompletionContext {
+    /// Return the receiver portion of an arrow-method completion prefix.
+    ///
+    /// Typed method completions keep the method token in `prefix` so the edit
+    /// range replaces only that token. Receiver classification and framework
+    /// lookup still need the expression through the arrow boundary.
+    pub(crate) fn receiver_prefix(&self) -> &str {
+        let Some(arrow) = self.prefix.rfind("->") else {
+            return &self.prefix;
+        };
+        &self.prefix[..arrow + 2]
+    }
+
     pub(crate) fn detect_current_package(symbol_table: &SymbolTable, position: usize) -> String {
         // First, check for innermost package scope containing the position
         let mut scope_start: Option<usize> = None;

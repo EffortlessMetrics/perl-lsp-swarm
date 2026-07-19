@@ -2,7 +2,8 @@
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
-    CompileEffectSourceKind, CompileEnvironmentBoundaryKind, CompilePhase, lower_ast,
+    CompileEffectSourceKind, CompileEnvironmentBoundaryKind, CompilePhase, DerefAggregateKind,
+    DerefOperandKind, HirKind, lower_ast,
 };
 
 fn lower_source(source: &str) -> perl_parser_core::hir::HirFile {
@@ -33,6 +34,23 @@ fn variable_dereferences_are_ordinary_runtime_expressions() {
             effect.source_kind == CompileEffectSourceKind::SymbolicReferenceDeref
         })
     );
+}
+
+#[test]
+fn braced_glob_dereference_is_a_runtime_hir_expression() -> Result<(), Box<dyn std::error::Error>> {
+    let file = lower_source("*{$ref};");
+    let deref = file
+        .items
+        .iter()
+        .find_map(|item| match &item.kind {
+            HirKind::DerefExpr(expr) => Some(expr),
+            _ => None,
+        })
+        .ok_or("expected a glob DerefExpr in the lowered HIR")?;
+
+    assert_eq!(deref.aggregate_kind, DerefAggregateKind::Glob);
+    assert_eq!(deref.operand_kind, DerefOperandKind::Variable);
+    Ok(())
 }
 
 #[test]

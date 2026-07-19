@@ -8,14 +8,17 @@
 //! that contains an `AnchorId`).
 
 use perl_semantic_facts::{
-    AnchorFact, AnchorId, Confidence, DefinitionCandidate, DefinitionRank, DefinitionRankReason,
-    DiagnosticFact, DiagnosticId, EdgeFact, EdgeId, EdgeKind, EntityFact, EntityId, EntityKind,
-    ExportSet, ExportTag, FileId, GeneratedMember, GeneratedMemberKind, ImportKind, ImportSpec,
-    ImportSymbols, OccurrenceFact, OccurrenceId, OccurrenceKind, PackageEdge, PackageEdgeKind,
-    PackageKind, PackageNode, PlanBlocker, PlanBlockerReason, PlanWarning, PlannedEdit,
-    PlannedEditCategory, Provenance, ProviderFactFreshness, ProviderFactSourceKind,
-    ProviderFactTrace, ProviderFallbackState, ProviderSurface, RenamePlan, SafeDeletePlan, ScopeId,
-    ValueShape, VisibleSymbol, VisibleSymbolContext, VisibleSymbolSource,
+    AnchorFact, AnchorId, BoundaryDisposition, BoundaryKind, BoundaryLink, Confidence,
+    DefinitionCandidate, DefinitionRank, DefinitionRankReason, DiagnosticFact, DiagnosticId,
+    EdgeFact, EdgeId, EdgeKind, EntityFact, EntityId, EntityKind, ExportSet, ExportTag, FactId,
+    FileId, GeneratedMember, GeneratedMemberKind, ImportKind, ImportSpec, ImportSymbols,
+    InvalidationDependency, LifecyclePhase, OccurrenceFact, OccurrenceId, OccurrenceKind,
+    PackageEdge, PackageEdgeKind, PackageKind, PackageNode, PlanBlocker, PlanBlockerReason,
+    PlanWarning, PlannedEdit, PlannedEditCategory, Provenance, ProviderFactFreshness,
+    ProviderFactSourceKind, ProviderFactTrace, ProviderFallbackState, ProviderSurface, RenamePlan,
+    SafeDeletePlan, ScopeId, SemanticConfidence, SemanticFactEnvelope, SemanticFactKind,
+    SemanticFreshness, SemanticProducer, SemanticProvenance, SemanticReasonCode, SourceAnchor,
+    SourceGeneration, ValueShape, VisibleSymbol, VisibleSymbolContext, VisibleSymbolSource,
 };
 use proptest::prelude::*;
 
@@ -164,6 +167,184 @@ fn arb_opt_file_id() -> impl Strategy<Value = Option<FileId>> {
 
 fn arb_opt_entity_id() -> impl Strategy<Value = Option<EntityId>> {
     prop::option::of(arb_entity_id())
+}
+
+fn arb_fact_id() -> impl Strategy<Value = FactId> {
+    any::<u64>().prop_map(FactId)
+}
+
+fn arb_source_generation() -> impl Strategy<Value = SourceGeneration> {
+    prop_oneof![
+        "[A-Za-z0-9_-]{1,20}".prop_map(SourceGeneration::known),
+        Just(SourceGeneration::Unknown),
+    ]
+}
+
+fn arb_semantic_fact_kind() -> impl Strategy<Value = SemanticFactKind> {
+    prop_oneof![
+        Just(SemanticFactKind::Declaration),
+        Just(SemanticFactKind::Occurrence),
+        Just(SemanticFactKind::Import),
+        Just(SemanticFactKind::Module),
+        Just(SemanticFactKind::Boundary),
+    ]
+}
+
+fn arb_lifecycle_phase() -> impl Strategy<Value = LifecyclePhase> {
+    prop_oneof![
+        Just(LifecyclePhase::Begin),
+        Just(LifecyclePhase::UnitCheck),
+        Just(LifecyclePhase::Check),
+        Just(LifecyclePhase::Init),
+        Just(LifecyclePhase::End),
+        Just(LifecyclePhase::Runtime),
+        Just(LifecyclePhase::Unknown),
+    ]
+}
+
+fn arb_semantic_producer() -> impl Strategy<Value = SemanticProducer> {
+    prop_oneof![
+        Just(SemanticProducer::Parser),
+        Just(SemanticProducer::Hir),
+        Just(SemanticProducer::PirA),
+        Just(SemanticProducer::SemanticAnalyzer),
+        Just(SemanticProducer::WorkspaceIndex),
+        Just(SemanticProducer::FrameworkAdapter),
+        Just(SemanticProducer::Unknown),
+    ]
+}
+
+fn arb_semantic_freshness() -> impl Strategy<Value = SemanticFreshness> {
+    prop_oneof![
+        Just(SemanticFreshness::Fresh),
+        Just(SemanticFreshness::Stale),
+        Just(SemanticFreshness::Unknown),
+        Just(SemanticFreshness::NotApplicable),
+    ]
+}
+
+fn arb_semantic_provenance() -> impl Strategy<Value = SemanticProvenance> {
+    prop_oneof![
+        arb_provenance().prop_map(SemanticProvenance::Known),
+        Just(SemanticProvenance::Unknown)
+    ]
+}
+
+fn arb_semantic_confidence() -> impl Strategy<Value = SemanticConfidence> {
+    prop_oneof![
+        arb_confidence().prop_map(SemanticConfidence::Known),
+        Just(SemanticConfidence::Unknown)
+    ]
+}
+
+fn arb_boundary_link() -> impl Strategy<Value = Option<BoundaryLink>> {
+    prop::option::of(
+        (
+            prop::option::of(arb_fact_id()),
+            prop_oneof![
+                Just(BoundaryKind::DynamicValue),
+                Just(BoundaryKind::DynamicRequire),
+                Just(BoundaryKind::DynamicIncludePath),
+                Just(BoundaryKind::CompileTimeExecution),
+                Just(BoundaryKind::SymbolicReference),
+                Just(BoundaryKind::Compatibility),
+                Just(BoundaryKind::ExternalEnvironment),
+                Just(BoundaryKind::Unsupported),
+            ],
+            prop_oneof![Just(BoundaryDisposition::Degrade), Just(BoundaryDisposition::Refuse)],
+            prop_oneof![
+                Just(SemanticReasonCode::ExactSource),
+                Just(SemanticReasonCode::GeneratedFromSource),
+                Just(SemanticReasonCode::DynamicValue),
+                Just(SemanticReasonCode::CompatibilityBoundary),
+                Just(SemanticReasonCode::UnsupportedEffect),
+                Just(SemanticReasonCode::MissingGeneration),
+                Just(SemanticReasonCode::UnknownProvenance),
+                Just(SemanticReasonCode::UnknownConfidence),
+                Just(SemanticReasonCode::UnknownLifecycle),
+                Just(SemanticReasonCode::StaleDependency),
+                Just(SemanticReasonCode::Unknown),
+            ],
+        )
+            .prop_map(|(boundary_id, kind, disposition, reason_code)| {
+                BoundaryLink::new(boundary_id, kind, disposition, reason_code)
+            }),
+    )
+}
+
+fn arb_source_anchor() -> impl Strategy<Value = SourceAnchor> {
+    (prop::option::of(arb_anchor_id()), arb_file_id(), 0u32..=10_000, 0u32..=100).prop_map(
+        |(anchor_id, file_id, start_byte, length)| {
+            SourceAnchor::new(anchor_id, file_id, start_byte, start_byte + length)
+        },
+    )
+}
+
+fn arb_semantic_fact_envelope() -> impl Strategy<Value = SemanticFactEnvelope> {
+    (
+        (
+            arb_fact_id(),
+            arb_opt_entity_id(),
+            arb_semantic_fact_kind(),
+            arb_source_anchor(),
+            arb_source_generation(),
+            arb_opt_scope_id(),
+            arb_opt_string(),
+        ),
+        (
+            arb_lifecycle_phase(),
+            arb_semantic_producer(),
+            arb_semantic_provenance(),
+            arb_semantic_confidence(),
+            arb_semantic_freshness(),
+            arb_boundary_link(),
+        ),
+        (
+            prop::collection::vec(
+                (arb_identifier(), arb_source_generation())
+                    .prop_map(|(key, generation)| InvalidationDependency::new(key, generation)),
+                0..=3,
+            ),
+            prop_oneof![
+                Just(SemanticReasonCode::ExactSource),
+                Just(SemanticReasonCode::GeneratedFromSource),
+                Just(SemanticReasonCode::DynamicValue),
+                Just(SemanticReasonCode::CompatibilityBoundary),
+                Just(SemanticReasonCode::UnsupportedEffect),
+                Just(SemanticReasonCode::MissingGeneration),
+                Just(SemanticReasonCode::UnknownProvenance),
+                Just(SemanticReasonCode::UnknownConfidence),
+                Just(SemanticReasonCode::UnknownLifecycle),
+                Just(SemanticReasonCode::StaleDependency),
+                Just(SemanticReasonCode::Unknown),
+            ],
+        ),
+    )
+        .prop_map(
+            |(
+                (fact_id, entity_id, kind, anchor, source_generation, scope_id, package),
+                (lifecycle, producer, provenance, confidence, freshness, boundary),
+                (dependencies, reason_code),
+            )| {
+                SemanticFactEnvelope::new(
+                    fact_id,
+                    entity_id,
+                    kind,
+                    anchor,
+                    source_generation,
+                    scope_id,
+                    package,
+                    lifecycle,
+                    producer,
+                    provenance,
+                    confidence,
+                    freshness,
+                    boundary,
+                    dependencies,
+                    reason_code,
+                )
+            },
+        )
 }
 
 // ── Strategies: primitive fact types ──────────────────────────────────────
@@ -806,6 +987,15 @@ proptest! {
         failure_persistence: None,
         ..ProptestConfig::default()
     })]
+
+    #[test]
+    fn semantic_fact_envelope_json_roundtrip(envelope in arb_semantic_fact_envelope()) {
+        let json = serde_json::to_string(&envelope)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        let decoded: SemanticFactEnvelope = serde_json::from_str(&json)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        prop_assert_eq!(&decoded, &envelope);
+    }
 
     // ── Original 4 types ──────────────────────────────────────────────────
 

@@ -13,6 +13,7 @@ Read the actual diff and check for issues.
    ```bash
    gh pr diff <number>
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_diff", owner, repo, pullNumber:<number>)` — returns the full unified diff. See [docs/reference/GH_MCP_FALLBACK.md].
 
 2. Check for **banned patterns** (instant blockers):
    - `unwrap()`, `expect()`, `panic!()` in non-test code

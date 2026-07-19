@@ -137,6 +137,9 @@ impl LexerCheckpoint {
         if self.position > start {
             if self.position >= start.saturating_add(old_len) {
                 self.position = self.position.saturating_sub(old_len).saturating_add(new_len);
+                if let CheckpointContext::Format { start_position } = &mut self.context {
+                    *start_position = self.position;
+                }
                 self.current_pos = Position::start();
                 self.eof_emitted = false;
             } else {

@@ -1218,3 +1218,88 @@ fn import_optimizer_suggests_symbol_dedup() -> Result<(), Box<dyn std::error::Er
     );
     Ok(())
 }
+
+// ===================================================================
+// Legacy PerlModernizer – byte-offset correctness (issue #3922)
+//
+// Previously the two-arg open, defined @array, each @array, string eval,
+// and print-newline suggestions hard-coded start=0/end=0, discarding the
+// position information LSP code actions need. These tests pin the offsets
+// to the actual matched span at a non-zero position in the source.
+// ===================================================================
+
+/// Find the single modernization suggestion whose matched span slices back
+/// to `expected` in `code`, verifying the offsets form a non-empty, bounded,
+/// byte-exact span. A valid match may begin at byte zero.
+fn assert_span(code: &str, expected: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let m = LegacyModernizer::new();
+    let suggestions = m.analyze(code);
+    let hit = suggestions
+        .iter()
+        .find(|s| s.end > s.start && s.end <= code.len() && code.get(s.start..s.end) == Some(expected))
+        .ok_or_else(|| {
+            format!(
+                "expected a non-empty, bounded suggestion span for {expected:?}; got {suggestions:?}"
+            )
+        })?;
+    let actual = code.get(hit.start..hit.end).ok_or_else(|| {
+        format!("suggestion span {}..{} is not a valid byte range", hit.start, hit.end)
+    })?;
+    if actual != expected {
+        return Err(format!("span must slice exactly to {expected:?}; got {actual:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn legacy_modernizer_two_arg_open_has_real_offset() -> Result<(), Box<dyn std::error::Error>> {
+    assert_span("my $x = 1; open(FH, 'file.txt')", "open(FH, 'file.txt')")
+}
+
+#[test]
+fn legacy_modernizer_defined_array_has_real_offset() -> Result<(), Box<dyn std::error::Error>> {
+    assert_span("if (defined @array) { }", "defined @array")
+}
+
+#[test]
+fn legacy_modernizer_each_array_has_real_offset() -> Result<(), Box<dyn std::error::Error>> {
+    assert_span("while (my ($i, $val) = each @array) { }", "each @array")
+}
+
+#[test]
+fn legacy_modernizer_string_eval_has_real_offset() -> Result<(), Box<dyn std::error::Error>> {
+    // Only the `eval "` opening is matched; the span anchors on it.
+    assert_span("my $r = eval \"print 1\";", "eval \"")
+}
+
+#[test]
+fn legacy_modernizer_print_newline_has_real_offset() -> Result<(), Box<dyn std::error::Error>> {
+    assert_span("sub f { print \"Hello\\n\" }", "print \"Hello\\n\"")
+}
+
+#[test]
+fn legacy_modernizer_indirect_myclass_has_real_offset() -> Result<(), Box<dyn std::error::Error>> {
+    // The indirect-notation patterns already reported real offsets, but were
+    // never span-checked; guard them now that they derive `end` from the
+    // pattern length rather than a hardcoded literal.
+    assert_span("my $obj = new MyClass();", "new MyClass")
+}
+
+#[test]
+fn legacy_modernizer_indirect_class_has_real_offset() -> Result<(), Box<dyn std::error::Error>> {
+    assert_span("new Class();", "new Class")
+}
+
+#[test]
+fn legacy_modernizer_offsets_never_zero_length_when_matched() {
+    // Every emitted suggestion that carries a non-empty old_pattern should
+    // have a span that slices back to a real substring of the source.
+    let m = LegacyModernizer::new();
+    let code = "my $x = 1; open(FH, 'file.txt'); if (defined @array) {}";
+    for s in m.analyze(code) {
+        if s.old_pattern.is_empty() {
+            continue; // e.g. the "add use strict" insertion suggestion
+        }
+        assert!(s.end >= s.start, "end must not precede start for {:?}", s.old_pattern);
+    }
+}

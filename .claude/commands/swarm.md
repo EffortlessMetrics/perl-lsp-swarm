@@ -30,14 +30,20 @@ POST-MERGE: wisdom
 ## Phase 1: Bootstrap
 
 ```bash
-git fetch origin && git pull origin master
+git fetch origin && git pull origin main
 gh pr list --state open --limit 200 --json number | jq length
 gh issue list --state open --limit 200 --json number | jq length
-gh run list --branch master --limit 1
+gh run list --branch main --limit 1
 just clean-worktrees 2>/dev/null || git worktree prune
 ```
 
-**Stop if master CI is red.** Fix it first.
+> **MCP alternative (web/no-gh sessions):**
+> - PR count: `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:100)` (page through if needed)
+> - Issue count: `mcp__github__list_issues(owner, repo, state:"OPEN", perPage:100)` (page through if needed)
+> - CI status on main: `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"}, per_page:1)`
+> - Note: the default branch is `main` (not `master`). See [docs/reference/GH_MCP_FALLBACK.md].
+
+**Stop if main CI is red.** Fix it first.
 
 ## Phase 2: Assess
 
@@ -55,6 +61,7 @@ gh issue list --label "structural-blocker" --state open # blocked work
 gh pr list --label "merge-ready"                        # ready to merge
 gh pr list --label "in-review"                          # being reviewed (check for stalls)
 ```
+> **MCP alternative (web/no-gh sessions):** Replace each `gh issue list --label "<L>" --state open` with `mcp__github__list_issues(owner, repo, labels:["<L>"], state:"OPEN")`. Replace `gh pr list --label "<L>"` with `mcp__github__search_pull_requests(query:"label:<L> is:open repo:effortlessmetrics/perl-lsp-swarm")`.
 
 **Routing rules (sequential — check in order, spawn the first missing):**
 
@@ -228,7 +235,7 @@ Labels are the authoritative state of every issue and PR. Agents write labels; t
 gh pr list --state open --limit 20 --json number,title,labels
 gh issue list --label builder-ready --state open --limit 10
 gh issue list --label in-build --state open --limit 10
-gh run list --branch master --limit 3
+gh run list --branch main --limit 3
 
 # Advanced queries
 # Issues with builder-ready but missing plan-reviewed (skipped plan-review)
@@ -238,3 +245,9 @@ gh issue list --label "builder-ready" --state open --json number,title,labels \
 # Health check
 /health-check
 ```
+> **MCP alternative (web/no-gh sessions):**
+> - Open PRs: `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:20)`
+> - builder-ready issues: `mcp__github__list_issues(owner, repo, labels:["builder-ready"], state:"OPEN", perPage:10)`
+> - in-build issues: `mcp__github__list_issues(owner, repo, labels:["in-build"], state:"OPEN", perPage:10)`
+> - CI status on main: `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"}, per_page:3)`
+> - For the advanced label-intersection query, fetch `builder-ready` issues then filter client-side for missing `plan-reviewed` label.
