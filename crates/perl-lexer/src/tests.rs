@@ -75,6 +75,31 @@ fn qw_scanner_uses_recovery_only_when_the_closer_is_missing() -> TestResult {
 }
 
 #[test]
+fn delimiter_scanner_callback_controls_recovery_boundary() -> TestResult {
+    let mut bounded = PerlLexer::new("prefix\nrest");
+    let boundary = "prefix\n".len();
+    let (body, closed) =
+        bounded.read_delimited_body_with_recovery('/', |_lexer, position| position == boundary);
+    if body != "prefix\n" || closed {
+        return Err(format!(
+            "callback-delimited scan returned ({body:?}, {closed}), expected (\"prefix\\n\", false)"
+        )
+        .into());
+    }
+
+    let mut eof = PerlLexer::new("prefix");
+    let (body, closed) = eof.read_delimited_body_with_recovery('/', |_lexer, _position| false);
+    if body != "prefix" || closed {
+        return Err(format!(
+            "unbounded delimiter scan returned ({body:?}, {closed}), expected (\"prefix\", false)"
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
 fn test_basic_tokens() -> TestResult {
     let mut lexer = PerlLexer::new("my $x = 42;");
 
