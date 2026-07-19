@@ -191,6 +191,7 @@ fn next_minor_version(version: &str) -> Result<String> {
 
 fn sync_readme(content: &str, surface: &ReleaseSurface) -> Result<String> {
     let mut release_track_seen = false;
+    let mut published_surface_seen = false;
     let mut verified_install_seen = false;
 
     let mut lines: Vec<String> = Vec::new();
@@ -203,6 +204,7 @@ fn sync_readme(content: &str, surface: &ReleaseSurface) -> Result<String> {
                 "| Published crate surface | {} crates in `[workspace.metadata.publish.allow]` |",
                 surface.published_crate_count
             ));
+            published_surface_seen = true;
         } else if line.starts_with("The verified GitHub `v") {
             lines.push(format!(
                 "The verified GitHub `v{}` release assets are public beta. Other distribution",
@@ -214,6 +216,9 @@ fn sync_readme(content: &str, surface: &ReleaseSurface) -> Result<String> {
         }
     }
 
+    if !published_surface_seen {
+        bail!("README.md: published crate surface row not found");
+    }
     if !release_track_seen && !verified_install_seen {
         bail!("README.md: release posture line not found");
     }
@@ -332,7 +337,10 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
         .iter()
         .copied()
         .find(|index| {
-            content.lines().nth(*index).is_some_and(|line| line.contains(&release_heading_marker))
+            content
+                .lines()
+                .nth(*index)
+                .is_some_and(|line| line.trim_end().ends_with(&release_heading_marker))
         })
         .or_else(|| release_heading_indices.first().copied());
 
@@ -547,12 +555,19 @@ fn sync_status_index(content: &str, surface: &ReleaseSurface) -> Result<String> 
     let active_next_index = next_heading_indices
         .iter()
         .copied()
-        .find(|index| status_lines[*index].contains(&format!("v{}", surface.next_version)))
+        .find(|index| {
+            status_lines[*index].trim_end()
+                == format!("**Next (v{} public-beta train)**", surface.next_version)
+        })
         .or_else(|| {
-            next_heading_indices
-                .iter()
-                .copied()
-                .find(|index| status_lines[*index].contains(&format!("post v{}", surface.version)))
+            next_heading_indices.iter().copied().find(|index| {
+                let line = status_lines[*index].trim_end();
+                let Some(suffix) = line.strip_prefix(&format!("**Next (post v{}", surface.version))
+                else {
+                    return false;
+                };
+                suffix.starts_with(')') || suffix.starts_with(' ')
+            })
         })
         .or_else(|| {
             let active_now_index = status_lines.iter().position(|line| {
@@ -835,9 +850,11 @@ Publication discipline: `v0.18.0` uses a normal SemVer package version for relea
 
     #[test]
     fn sync_readme_preserves_verified_install_posture_on_first_and_second_write() -> Result<()> {
-        let input = "The verified GitHub `v0.16.0` release assets are public alpha. Other distribution\n\
+        let input = "| Published crate surface | 30 crates in `[workspace.metadata.publish.allow]` |\n\
+The verified GitHub `v0.16.0` release assets are public alpha. Other distribution\n\
 channels remain independently versioned and must be verified before editor use.\n";
-        let expected = "The verified GitHub `v0.17.0` release assets are public beta. Other distribution\n\
+        let expected = "| Published crate surface | 32 crates in `[workspace.metadata.publish.allow]` |\n\
+The verified GitHub `v0.17.0` release assets are public beta. Other distribution\n\
 channels remain independently versioned and must be verified before editor use.\n";
 
         let first = sync_readme(input, &release_surface())?;
@@ -848,6 +865,17 @@ channels remain independently versioned and must be verified before editor use.\
         if second != first {
             bail!("second README sync was not idempotent");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_readme_fails_when_published_surface_row_is_missing() -> Result<()> {
+        let input = r#"| Release track | `v0.16.0` public alpha |
+The verified GitHub `v0.16.0` release assets are public alpha. Other distribution
+channels remain independently versioned and must be verified before editor use.
+"#;
+
+        assert!(sync_readme(input, &release_surface()).is_err());
         Ok(())
     }
 
@@ -939,6 +967,7 @@ channels remain independently versioned and must be verified before editor use.\
         let input = r#"- **Release posture**: `v0.17.0` shipped public beta
 **Now (active milestone: v0.17.0 shipped public beta)**
 - Verify the existing `v0.17.0` release receipt and close the remaining channel receipts
+**Next (v0.18.0-rc1)**
 **Next (post v0.12.0)**
 **Next (post v0.17.0)**
 - Keep the top-level README and status docs aligned with the 31-crate published surface
@@ -946,6 +975,7 @@ channels remain independently versioned and must be verified before editor use.\
 
         let synced = sync_status_index(input, &release_surface())?;
         assert!(synced.contains("**Next (post v0.12.0)**"));
+        assert!(synced.contains("**Next (v0.18.0-rc1)**"));
         assert!(synced.contains("**Next (v0.18.0 public-beta train)**"));
         Ok(())
     }
@@ -1017,6 +1047,7 @@ Publication discipline: `v0.14.0` uses a normal SemVer package version for relea
 - Current release train: `v0.17.0` public-alpha closeout\n\
 - Published crate surface target: 31 crates\n\
 Publication discipline: `v0.17.0` uses a normal SemVer package version while the human-facing product posture remains public alpha.\n\
+## Active: Public-Beta Release (v0.17.0-rc1)\n\
 ## Active: Public-Alpha Release Prep (v0.13.0)\n\
 ### Now (v0.13.0 release preparation)\n\
 - `v0.13.0` is in release preparation; run the release-prep checks before dispatching the train\n\
@@ -1032,6 +1063,7 @@ Publication discipline: `v0.17.0` uses a normal SemVer package version while the
 
         let synced = sync_roadmap(input, &release_surface())?;
         assert!(synced.contains("## Active: Public-Alpha Release Prep (v0.13.0)"));
+        assert!(synced.contains("## Active: Public-Beta Release (v0.17.0-rc1)"));
         assert!(synced.contains("### Now (v0.17.0 shipped public beta)"));
         assert!(synced.contains("### Now (v0.13.0 release preparation)"));
         assert!(synced.contains(

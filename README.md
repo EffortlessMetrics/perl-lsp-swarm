@@ -69,6 +69,8 @@ The README is a front door, not the metric source of truth. Current release post
 - Install: [docs/how-to/INSTALLATION.md](docs/how-to/INSTALLATION.md)
 - Editor setup: [docs/how-to/EDITOR_SETUP.md](docs/how-to/EDITOR_SETUP.md)
 
+| Published crate surface | 32 crates in `[workspace.metadata.publish.allow]` |
+
 The verified GitHub `v0.17.0` release assets are public beta. Other distribution
 channels are independently versioned and are not proven current by that receipt;
 verify `perllsp --version` and `perllsp --health` before editor or CI use.
