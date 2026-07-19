@@ -3499,7 +3499,7 @@ impl<'a> PerlLexer<'a> {
 
     /// Continue a phaser recovery boundary through its optional attribute list,
     /// such as `BEGIN :lvalue { ... }`, while rejecting malformed headers.
-    fn phaser_attribute_block_boundary(source: &str, lexer: &mut Self) -> bool {
+    fn phaser_attribute_block_boundary(source: &'a str, lexer: &mut Self) -> bool {
         let mut expect_name = true;
         while let Some(token) = lexer.next_token() {
             if expect_name {
@@ -3560,7 +3560,7 @@ impl<'a> PerlLexer<'a> {
     /// on that line, or when it follows a balanced prototype line. This accepts
     /// valid multiline headers while preventing a starter-shaped quote-word from
     /// borrowing a later statement's `{`/`;`.
-    fn header_ends_at_own_terminator(source: &str, terminator_start: usize) -> bool {
+    fn header_ends_at_own_terminator(source: &'a str, terminator_start: usize) -> bool {
         let header = &source[..terminator_start];
         let first_line = header.lines().next().unwrap_or_default();
         let first_line_before_comment =
@@ -3585,30 +3585,28 @@ impl<'a> PerlLexer<'a> {
         if !trimmed.starts_with('(') {
             return false;
         }
+        let mut lexer = Self::without_qw_recovery(trimmed, LexerConfig::default());
         let mut depth = 0usize;
-        let mut quote = None;
-        let mut escaped = false;
-        for (index, character) in trimmed.char_indices() {
-            if let Some(delimiter) = quote {
-                if escaped {
-                    escaped = false;
-                } else if character == '\\' {
-                    escaped = true;
-                } else if character == delimiter {
-                    quote = None;
-                }
-                continue;
-            }
-            match character {
-                '\'' | '"' => quote = Some(character),
-                '(' => depth = depth.saturating_add(1),
-                ')' => {
+        while let Some(token) = lexer.next_token() {
+            match token.token_type {
+                TokenType::LeftParen => depth = depth.saturating_add(1),
+                TokenType::RightParen => {
                     depth = depth.saturating_sub(1);
                     if depth == 0 {
-                        return trimmed[index + 1..].trim().is_empty()
-                            || trimmed[index + 1..].trim_start().starts_with(':');
+                        let suffix = trimmed.get(token.end..).unwrap_or_default().trim();
+                        return suffix.is_empty() || suffix.starts_with(':');
                     }
                 }
+                TokenType::Identifier(text) if depth > 0 && text.ends_with(')') => {
+                    // Compact prototypes may be tokenized as `(` followed by an
+                    // identifier ending in `)`, for example `($)`.
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let suffix = trimmed.get(token.end..).unwrap_or_default().trim();
+                        return suffix.is_empty() || suffix.starts_with(':');
+                    }
+                }
+                TokenType::Error(_) | TokenType::UnknownRest => return false,
                 _ => {}
             }
         }
