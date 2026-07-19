@@ -23,8 +23,8 @@ first when tool parity changes.
 | `gh pr checks <n>` | `mcp__github__pull_request_read(method:"get_check_runs", pullNumber:n)` | Filter check runs by `head_sha` == PR head SHA to avoid stale green |
 | `gh pr diff <n>` / `--name-only` | `mcp__github__pull_request_read(method:"get_diff"` / `"get_files", pullNumber:n)` | Full parity |
 | `gh pr merge <n> --squash` | `mcp__github__merge_pull_request(pullNumber:n, merge_method:"squash", commit_title, commit_message)` | Full parity |
-| `gh pr review <n> --approve` | `mcp__github__pull_request_review_write(method:"submit_pending", owner, repo, pullNumber:n, event:"APPROVE", body:"<review>")` | Create a pending review, then submit it |
-| `gh pr review <n> --request-changes` | `mcp__github__pull_request_review_write(method:"create", owner, repo, pullNumber:n, event:"REQUEST_CHANGES", body:"<reason>")` | Full parity for requesting changes |
+| `gh pr review <n> --approve` | `mcp__github__pull_request_review_write(method:"create", owner, repo, pullNumber:n, body:"<review>")`, then `mcp__github__pull_request_review_write(method:"submit_pending", owner, repo, pullNumber:n, event:"APPROVE", body:"<review>")` | Create the pending review, then submit it |
+| `gh pr review <n> --request-changes` | `mcp__github__pull_request_review_write(method:"create", owner, repo, pullNumber:n, body:"<reason>")`, then `mcp__github__pull_request_review_write(method:"submit_pending", owner, repo, pullNumber:n, event:"REQUEST_CHANGES", body:"<reason>")` | Create the pending review, then submit it |
 | `gh pr ready <n>` | `mcp__github__update_pull_request(pullNumber:n, draft:false)` | Full parity |
 | `gh pr update-branch <n>` | `mcp__github__update_pull_request_branch(pullNumber:n)` | Full parity |
 | `gh pr create --draft` | `mcp__github__create_pull_request(head, base:"main", title, body, draft:true)` | Full parity |
