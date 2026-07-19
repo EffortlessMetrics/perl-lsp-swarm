@@ -85,8 +85,9 @@ Run the git-history check before proceeding:
 ```bash
 # Verify the PR actually merged and closed the right issue
 gh pr view <NNNN> --json state,mergedAt,closingIssuesReferences
-# Verify the fix is present in main
-git log --oneline main | grep -i <keyword>
+# Resolve the repository's default branch before checking its history
+DEFAULT_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##')"
+git log --oneline "origin/${DEFAULT_BRANCH}" | grep -i <keyword>
 ```
 > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<NNNN>)` — the `state`, `mergedAt`, and `closingIssuesReferences` fields are all available in the response.
 
