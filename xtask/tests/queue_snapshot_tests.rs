@@ -2,7 +2,12 @@ use assert_cmd::cargo::cargo_bin_cmd;
 
 fn fixture(path: &str) -> String {
     let manifest = env!("CARGO_MANIFEST_DIR");
-    std::path::Path::new(manifest).join("tests").join("fixtures").join(path).display().to_string()
+    std::path::Path::new(manifest)
+        .join("tests")
+        .join("fixtures")
+        .join(path)
+        .display()
+        .to_string()
 }
 
 #[test]
@@ -26,7 +31,10 @@ fn queue_snapshot_from_fixture_derives_distinct_mergeability_buckets() {
     let snapshot: serde_json::Value = serde_json::from_str(&rendered).expect("parse snapshot");
     let buckets = snapshot.get("buckets").expect("buckets");
 
-    assert_eq!(snapshot.get("default_branch").and_then(serde_json::Value::as_str), Some("main"));
+    assert_eq!(
+        snapshot.get("default_branch").and_then(serde_json::Value::as_str),
+        Some("main")
+    );
     let legacy_main_sha = snapshot
         .get("master_sha")
         .and_then(serde_json::Value::as_str)
