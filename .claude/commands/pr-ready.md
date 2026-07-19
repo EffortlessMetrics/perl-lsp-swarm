@@ -32,7 +32,7 @@ If the PR is not open, report the current state and stop.
 ```bash
 gh pr view $NUMBER --json labels,files
 ```
-> **MCP alternative (web/no-gh sessions):** Labels: `mcp__github__pull_request_read(method:"get", pullNumber:$NUMBER)` → `labels` field. Changed files: `mcp__github__pull_request_read(method:"get_files", pullNumber:$NUMBER)`.
+> **MCP alternative (web/no-gh sessions):** Labels: `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:$NUMBER)` → `labels` field. Changed files: `mcp__github__pull_request_read(method:"get_files", owner, repo, pullNumber:$NUMBER)`.
 
 Policy:
 - If the PR has the `deep-reviewed` label, proceed.
@@ -104,4 +104,4 @@ Include the PR URL for convenience:
 ```bash
 gh pr view $NUMBER --json url --template '{{.url}}'
 ```
-> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:$NUMBER)` → `url` field.
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:$NUMBER)` → `url` field.

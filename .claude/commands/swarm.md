@@ -36,6 +36,7 @@ gh issue list --state open --limit 200 --json number | jq length
 gh run list --branch main --limit 1
 just clean-worktrees 2>/dev/null || git worktree prune
 ```
+
 > **MCP alternative (web/no-gh sessions):**
 > - PR count: `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:100)` (page through if needed)
 > - Issue count: `mcp__github__list_issues(owner, repo, state:"OPEN", perPage:100)` (page through if needed)
@@ -248,5 +249,5 @@ gh issue list --label "builder-ready" --state open --json number,title,labels \
 > - Open PRs: `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:20)`
 > - builder-ready issues: `mcp__github__list_issues(owner, repo, labels:["builder-ready"], state:"OPEN", perPage:10)`
 > - in-build issues: `mcp__github__list_issues(owner, repo, labels:["in-build"], state:"OPEN", perPage:10)`
-> - CI status on main: `mcp__github__actions_list(method:"list_workflow_runs", workflow_runs_filter:{branch:"main"}, per_page:3)`
+> - CI status on main: `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"}, per_page:3)`
 > - For the advanced label-intersection query, fetch `builder-ready` issues then filter client-side for missing `plan-reviewed` label.

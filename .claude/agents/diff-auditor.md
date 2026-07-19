@@ -41,7 +41,7 @@ Each agent sees its own step. Nobody has checked that:
 
    cat .spec/*/acceptance.md 2>/dev/null
    ```
-   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_files", owner, repo, pullNumber:<number>)` — authoritative PR file list with patches; no `gh repo view` needed. For `baseRefName`: `mcp__github__pull_request_read(method:"get", pullNumber:<number>)` → `baseRefName` field. See [docs/reference/GH_MCP_FALLBACK.md].
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_files", owner, repo, pullNumber:<number>)` — authoritative PR file list with patches; no `gh repo view` needed. For `baseRefName`: `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → `baseRefName` field. See [docs/reference/GH_MCP_FALLBACK.md].
    Every acceptance criterion should be addressable from the diff.
 
 2. **Scope cleanliness** — are there files in the diff that shouldn't be?
@@ -54,7 +54,7 @@ Each agent sees its own step. Nobody has checked that:
    BASE=$(gh pr view <number> --json baseRefName -q .baseRefName)
    git diff "$(git merge-base "origin/$BASE" HEAD)"..HEAD | grep -E "TODO|FIXME|HACK|XXX|dbg!|println!|eprintln!"
    ```
-   > **MCP alternative (web/no-gh sessions):** Get `baseRefName` via `mcp__github__pull_request_read(method:"get", pullNumber:<number>)`, then use the same git commands locally.
+   > **MCP alternative (web/no-gh sessions):** Get `baseRefName` via `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)`, then use the same git commands locally.
 
 4. **Commit coherence** — do the commits tell a story?
    ```bash
@@ -104,14 +104,14 @@ Detection heuristic — for every file in the diff, ask: "does this file's path/
 - If the diff adds tests for crate X but the PR title is about crate Y (and those tests aren't named in the spec): flag as CONTAMINATION
 - If the diff adds ADRs whose work-id doesn't match this PR's branch work-id: flag as CONTAMINATION
 - Tell-tale: PR title claims a small change but `--stat` shows >100 lines outside the named scope. Diff bulk shouldn't be unrelated to the title.
-- Mechanical check: use the GitHub API file list, not `gh pr diff`: `REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) && gh api repos/$REPO/pulls/<num>/files --jq '.[].filename'`. For each crate path, ask whether the PR title/body mentions it; orphan-crate paths are contamination candidates. **MCP alternative:** `mcp__github__pull_request_read(method:"get_files", pullNumber:<num>)` — same authoritative file list, no shell needed.
+- Mechanical check: use the GitHub API file list, not `gh pr diff`: `REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) && gh api repos/$REPO/pulls/<num>/files --jq '.[].filename'`. For each crate path, ask whether the PR title/body mentions it; orphan-crate paths are contamination candidates. **MCP alternative:** `mcp__github__pull_request_read(method:"get_files", owner, repo, pullNumber:<num>)` — same authoritative file list, no shell needed.
 - Self-check: before flagging any file as cross-PR contamination, confirm it appears in `pulls/N/files` as PR-authored. If it only appears in a branch-vs-base diff, it is inherited base state, not drift. This check is mandatory.
 
-When found, route to `needs-diff-fix` with a `git rm` list. Don't let a 22-of-2063-line legitimate change ride a 2043-line contaminated diff into master.
+When found, route to `needs-diff-fix` with a `git rm` list. Don't let a 22-of-2063-line legitimate change ride a 2043-line contaminated diff into main.
 
-## Master-green guard (HARD requirement before CLEAN verdict)
+## Main-green guard (HARD requirement before CLEAN verdict)
 
-Per the 2026-04-26 directive: **keep master green and require green to merge.** A PR that compiles per-crate but breaks the workspace fmt/clippy/build cascade WILL break master after merge — exactly the pattern that caused 3 fmt-cascade fixes (#6789, #6803, #6807) in one session.
+Per the 2026-04-26 directive: **keep main green and require green to merge.** A PR that compiles per-crate but breaks the workspace fmt/clippy/build cascade WILL break main after merge — exactly the pattern that caused 3 fmt-cascade fixes (#6789, #6803, #6807) in one session.
 
 Before adding `diff-audited`:
 - Verify the PR's CI includes a **workspace-wide** fmt + check, not just per-crate (look for `Compile All Targets (bit-rot guard)` SUCCESS, `PR Smoke (Fast Feedback)` SUCCESS, and ideally a workspace fmt step)
