@@ -52,6 +52,29 @@ fn shared_delimiter_scanner_preserves_nested_escaped_and_unclosed_cases() -> Tes
 }
 
 #[test]
+fn qw_scanner_uses_recovery_only_when_the_closer_is_missing() -> TestResult {
+    let mut recovering = PerlLexer::new("word\nmy $x = 1;\n");
+    let (body, closed) = recovering.read_qw_body('(');
+    if body != "word\n" || closed {
+        return Err(format!(
+            "unclosed qw recovery returned ({body:?}, {closed}), expected (\"word\\n\", false)"
+        )
+        .into());
+    }
+
+    let mut closed = PerlLexer::new("word) trailing");
+    let (body, is_closed) = closed.read_qw_body('(');
+    if body != "word" || !is_closed {
+        return Err(format!(
+            "closed qw scan returned ({body:?}, {is_closed}), expected (\"word\", true)"
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
 fn test_basic_tokens() -> TestResult {
     let mut lexer = PerlLexer::new("my $x = 42;");
 
