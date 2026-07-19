@@ -32,16 +32,19 @@ Canonical authorities:
 
 ### 0. Review orphaned `in-build` claims without age-only mutation
 
-List issues carrying `in-build`, then inspect each candidate's linked PR,
-branch/worktree ownership, and salvage state.
+List the complete bounded issue population carrying `in-build`, then inspect each
+candidate's linked PR, branch/worktree ownership, and salvage state. The explicit
+limit avoids the GitHub CLI's default 30-item truncation; if the repository can
+exceed 500 matching claims, use the paginated API instead of silently truncating.
 
 ```bash
-gh issue list --label "in-build" --state open --json number,title,updatedAt
+gh issue list --label "in-build" --state open --limit 500 \
+  --json number,title,updatedAt
 ```
 
-> **MCP alternative (web/no-gh sessions):** list issues with the `in-build`
-> label, then inspect linked PR and ownership state. `updatedAt` may select a
-> claim for review; it does not authorize label removal.
+> **MCP alternative (web/no-gh sessions):** page through all issues with the
+> `in-build` label, then inspect linked PR and ownership state. `updatedAt` may
+> select a claim for review; it does not authorize label removal.
 
 Classify:
 
@@ -70,8 +73,11 @@ Record the full head SHA before interpreting checks or reviews.
 - `UNSTABLE`: decompose required checks, advisory checks, review, and policy;
   do not treat the summary as a disposition.
 
-A behind-only, conflict-free PR remains eligible for current-head review and
-squash merge without changing its head.
+A behind-only, conflict-free PR remains eligible for current-head review. Squash
+merge without changing its head is allowed only when live rulesets/branch
+protection impose no current-integration requirement and any applicable
+integration proof is current. A real strict/up-to-date requirement is an
+`UPDATE_BASE_REQUIRED` policy reason, not a general age or distance rule.
 
 ### 3. Evaluate current-head proof
 
@@ -79,7 +85,8 @@ For each candidate:
 
 1. query `headRefOid` and `statusCheckRollup` together;
 2. pin the returned full head SHA;
-3. discover the required check set from live policy;
+3. discover the required check set from live policy using the policy procedure
+   in `.claude/agents/green-ci.md` or the canonical live collector;
 4. classify every rollup entry attributable to that current head, including
    both GitHub CheckRun entries (`name`/`conclusion`) and commit StatusContext
    entries (`context`/`state`);
