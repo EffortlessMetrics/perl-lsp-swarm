@@ -206,49 +206,68 @@ cd "$WORKTREE"
 test "$(git rev-parse HEAD)" = "$OLD_HEAD"
 ```
 
-### Authorized rebase without conflicts
+### Authorized rebase expected to be conflict-free
 
 ```bash
-git rebase "origin/$BASE_BRANCH"
+if ! git rebase "origin/$BASE_BRANCH"; then
+  git rebase --abort || {
+    echo "SALVAGE_REQUIRED: rebase could not be aborted cleanly" >&2
+    exit 2
+  }
+  test "$(git rev-parse HEAD)" = "$OLD_HEAD" || {
+    echo "NOT_PROVEN: rebase abort did not restore the pinned head" >&2
+    exit 2
+  }
+  echo "BLOCKED: unexpected conflict requires a reviewed resolution" >&2
+  exit 1
+fi
+
 NEW_HEAD=$(git rev-parse HEAD)
 EXPECTED_REMOTE_HEAD=$OLD_HEAD
 verify_expected_remote_head || {
   echo "BLOCKED: remote head moved; do not push" >&2
   exit 1
 }
-git push \
+if ! git push \
   --force-with-lease="refs/heads/$BRANCH:$EXPECTED_REMOTE_HEAD" \
-  "$HEAD_REMOTE_URL" HEAD:"refs/heads/$BRANCH"
+  "$HEAD_REMOTE_URL" HEAD:"refs/heads/$BRANCH"; then
+  echo "NOT_PROVEN: rebase push failed" >&2
+  exit 2
+fi
 ```
 
 ### Authorized rebase with a reviewed conflict plan
 
 The reviewed plan must name every expected conflicted path and the semantic
-resolution for each. Start the rebase:
+resolution for each. Use a real temporary file because `.git` is a pointer file
+inside linked worktrees.
 
 ```bash
+CONFLICT_LIST=$(mktemp)
 if git rebase "origin/$BASE_BRANCH"; then
-  : # no conflict; continue to the push procedure above
+  : # no conflict; continue to the lease/push procedure above
 else
-  git diff --name-only --diff-filter=U | sort -u >.git/reviewed-rebase-unmerged
+  git diff --name-only --diff-filter=U | sort -u >"$CONFLICT_LIST"
 fi
 ```
 
 For each rebase stop:
 
-1. compare `.git/reviewed-rebase-unmerged` with the approved conflict-path list;
+1. compare `"$CONFLICT_LIST"` with the approved conflict-path list;
 2. if any path or semantic decision is not approved, run `git rebase --abort`;
 3. require abort to restore `OLD_HEAD`; if it does not, preserve the worktree as
    `SALVAGE_REQUIRED` and publish nothing;
 4. otherwise apply only the approved resolutions, stage exactly those paths,
    require `git diff --name-only --diff-filter=U` to be empty, and run
    `GIT_EDITOR=: git rebase --continue`;
-5. repeat the comparison at every later stop;
-6. after completion, run the same expected-head lease and push procedure as the
-   conflict-free rebase.
+5. if another stop occurs, regenerate `"$CONFLICT_LIST"` and repeat the
+   comparison before editing;
+6. after completion, remove `"$CONFLICT_LIST"`, compute `NEW_HEAD`, revalidate
+   `EXPECTED_REMOTE_HEAD=$OLD_HEAD`, and use the same explicit lease/push guard
+   as the conflict-free rebase.
 
-Do not use blanket ours/theirs resolution or an undefined helper. An unexpected
-conflict returns to review rather than being guessed through.
+Do not use blanket ours/theirs resolution. An unexpected conflict returns to
+review rather than being guessed through.
 
 ### Authorized conflict-free merge-main
 
@@ -275,9 +294,12 @@ verify_expected_remote_head || {
   echo "BLOCKED: remote head moved; do not push" >&2
   exit 1
 }
-git push \
+if ! git push \
   --force-with-lease="refs/heads/$BRANCH:$EXPECTED_REMOTE_HEAD" \
-  "$HEAD_REMOTE_URL" HEAD:"refs/heads/$BRANCH"
+  "$HEAD_REMOTE_URL" HEAD:"refs/heads/$BRANCH"; then
+  echo "NOT_PROVEN: merge-main push failed" >&2
+  exit 2
+fi
 ```
 
 ### Authorized GitHub branch update
