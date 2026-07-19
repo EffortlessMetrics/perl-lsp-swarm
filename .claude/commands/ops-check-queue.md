@@ -22,7 +22,9 @@ Canonical authorities:
   branch merely because it is behind.
 - `DIRTY`/`CONFLICTING` means inspect an actual conflict. It does not mean
   automatic rebase.
-- `UNKNOWN` means `NOT_PROVEN`; retry boundedly or report it.
+- GitHub `UNKNOWN` means the mergeability claim is `NOT_PROVEN`. The queue-facing
+  result label for that same condition is `UNKNOWN_NOT_PROVEN`; it does not add
+  a second semantic state.
 - Labels locate candidates and routing work. They are not current-head proof.
 - Same-head CI refresh and base integration are separate operations.
 
@@ -63,7 +65,8 @@ Record the full head SHA before interpreting checks or reviews.
 - `MERGEABLE` / `CLEAN`: no textual conflict reported; continue.
 - `CONFLICTING` / `DIRTY`: inspect the exact conflict and route through
   `RESOLVE_CONFLICTS` or `REVIEW_SEMANTIC_INTERACTION`.
-- `UNKNOWN`: `UNKNOWN_NOT_PROVEN`; retry boundedly or report.
+- `UNKNOWN`: emit `UNKNOWN_NOT_PROVEN`; retry boundedly or report. This is the
+  serialized queue representation of a `NOT_PROVEN` mergeability claim.
 - `UNSTABLE`: decompose required checks, advisory checks, review, and policy;
   do not treat the summary as a disposition.
 
@@ -117,7 +120,8 @@ Use these queue results:
   prevents integration.
 - **CONFLICTING**: actual textual conflict requires inspection; no automatic
   resolution strategy is chosen.
-- **UNKNOWN_NOT_PROVEN**: GitHub/tool state cannot establish the answer.
+- **UNKNOWN_NOT_PROVEN**: GitHub/tool state cannot establish the answer; this is
+  the queue-facing form of `NOT_PROVEN` for mergeability.
 - **RETURN TO REVIEW**: the head moved after evidence was collected.
 - **ADVISORY**: non-required concern remains visible without becoming a merge
   requirement.
