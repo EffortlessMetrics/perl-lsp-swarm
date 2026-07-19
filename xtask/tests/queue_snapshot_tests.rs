@@ -27,6 +27,11 @@ fn queue_snapshot_from_fixture_derives_distinct_mergeability_buckets() {
     let buckets = snapshot.get("buckets").expect("buckets");
 
     assert_eq!(snapshot.get("default_branch").and_then(serde_json::Value::as_str), Some("main"));
+    let legacy_main_sha = snapshot
+        .get("master_sha")
+        .and_then(serde_json::Value::as_str)
+        .expect("legacy master_sha");
+    assert!(!legacy_main_sha.is_empty(), "legacy master_sha must remain populated");
     assert_eq!(buckets.get("merge_ready"), Some(&serde_json::json!([1])));
     assert_eq!(buckets.get("ci_green"), Some(&serde_json::json!([1])));
     assert_eq!(buckets.get("conflicting"), Some(&serde_json::json!([2])));
