@@ -6,7 +6,7 @@ fn fixture(path: &str) -> String {
 }
 
 #[test]
-fn queue_snapshot_from_fixture_derives_buckets() {
+fn queue_snapshot_from_fixture_derives_distinct_mergeability_buckets() {
     let temp = tempfile::tempdir().expect("tempdir");
     let out = temp.path().join("snapshot.json");
 
@@ -23,6 +23,15 @@ fn queue_snapshot_from_fixture_derives_buckets() {
     .success();
 
     let rendered = std::fs::read_to_string(out).expect("read snapshot");
-    assert!(rendered.contains("\"merge_ready\""));
-    assert!(rendered.contains("\"ci_green\""));
+    let snapshot: serde_json::Value = serde_json::from_str(&rendered).expect("parse snapshot");
+    let buckets = snapshot.get("buckets").expect("buckets");
+
+    assert_eq!(snapshot.get("default_branch").and_then(serde_json::Value::as_str), Some("main"));
+    assert_eq!(buckets.get("merge_ready"), Some(&serde_json::json!([1])));
+    assert_eq!(buckets.get("ci_green"), Some(&serde_json::json!([1])));
+    assert_eq!(buckets.get("conflicting"), Some(&serde_json::json!([2])));
+    assert_eq!(buckets.get("unknown_not_proven"), Some(&serde_json::json!([3])));
+    assert_eq!(buckets.get("pending_or_unclassified"), Some(&serde_json::json!([])));
+    assert!(buckets.get("stale_or_dirty").is_none());
+    assert!(buckets.get("blocked_unknown").is_none());
 }
