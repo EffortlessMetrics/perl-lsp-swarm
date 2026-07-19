@@ -1671,9 +1671,11 @@ impl Lowerer {
                 // capture text (e.g. "$name") rather than a resolvable bareword. Such an
                 // assignment is a dynamic stash mutation even when the RHS is a static
                 // alias — it must not mint an ExactAst alias slot for an unknown symbol
-                // (#4504). A *direct* glob name — a bareword, a `::`-qualified name, or a
-                // punctuation/special-variable glob such as `^X` — stays static.
-                let lhs_is_static = !is_dynamic_glob_capture(name);
+                // (#4504). Only a *directly written* glob name — a bareword, a
+                // `::`-qualified name, a caret control var (`^X`), or a punctuation glob
+                // — is a statically resolvable stash symbol; every computed `*{EXPR}`
+                // capture stays dynamic.
+                let lhs_is_static = is_direct_glob_name(name);
                 let static_alias = if lhs_is_static { static_glob_alias_target(rhs) } else { None };
                 if let Some((slot_kind, alias_target)) = static_alias {
                     self.record_slot(
@@ -2186,21 +2188,29 @@ fn is_bareword_like(value: &str) -> bool {
         && value.chars().all(|ch| ch == '_' || ch == ':' || ch.is_ascii_alphanumeric())
 }
 
-/// Whether a `NodeKind::Typeglob` name was captured from a dynamic `*{…}`
-/// dereference (`*{$name}`, `*{@x}`, `*{'Sym'}`, `*{ EXPR }`) rather than written as
-/// a direct glob. A captured name begins with a variable sigil followed by an
-/// identifier, or with a quote (a symbolic string); a direct glob name — a bareword,
-/// a `::`-qualified name, or a punctuation/special-variable glob such as `^X` or `@`
-/// — never does and remains a statically resolvable stash symbol (#4504).
-fn is_dynamic_glob_capture(name: &str) -> bool {
-    let mut chars = name.chars();
-    match chars.next() {
-        Some('$' | '@' | '%') => {
-            chars.next().is_some_and(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-        }
-        Some('\'' | '"') => true,
-        _ => false,
+/// Whether a `NodeKind::Typeglob` name is a *directly written* glob symbol rather
+/// than the normalized text of a computed `*{EXPR}` dereference. Directly written
+/// globs are the only statically resolvable stash targets: a bareword or
+/// `::`-qualified name (`foo`, `Foo::bar`), a caret control-character special
+/// variable (`^X`, `^WIDE_SYSTEM_CALLS`), or a single-character punctuation glob
+/// (`@`, `<`, …). Everything else is a computed dereference whose destination symbol
+/// is not known at lower time — `*{$name}`, `*{$^X}`, `*{$$}`, `*{foo()}`,
+/// `*{ $a . $b }`, `*{'Sym'}` — and must become a dynamic stash boundary (#4504).
+fn is_direct_glob_name(name: &str) -> bool {
+    if is_bareword_like(name) {
+        return true;
     }
+    // Caret control-character variable: `^` followed by a bareword (`^X`, `^W`).
+    if let Some(rest) = name.strip_prefix('^') {
+        return is_bareword_like(rest);
+    }
+    // Single-character punctuation glob (`@`, `<`, `!`, …). A computed `*{…}` capture
+    // is never a lone punctuation character (it carries a sigil, call, or quote).
+    let mut chars = name.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some(ch), None) if !ch.is_ascii_alphanumeric() && ch != '_'
+    )
 }
 
 fn contains_interpolation_marker(value: &str) -> bool {

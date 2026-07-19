@@ -73,6 +73,31 @@ fn split_token_dynamic_typeglob_assignment_records_boundary() {
 }
 
 #[test]
+fn computed_braced_typeglob_captures_record_boundary_not_static_alias() {
+    // Computed `*{EXPR}` captures whose normalized name is not a directly-written glob
+    // symbol — a special-var deref (`$^X`, `$$`), a call (`foo()`), or a concatenation
+    // — are not statically resolvable and must become dynamic boundaries, not aliases
+    // for symbols literally named "$^X" / "$$" / "foo()".
+    for code in [
+        "package Child;\n*{$^X} = \\&foo;\n",
+        "package Child;\n*{$$} = \\&foo;\n",
+        "package Child;\n*{foo()} = \\&foo;\n",
+        "package Child;\n*{ $a . $b } = \\&foo;\n",
+    ] {
+        let file = lower_source(code);
+        let aliases = typeglob_alias_slots(&file.stash_graph);
+        assert!(
+            aliases.is_empty(),
+            "computed braced glob capture must not create a static TypeglobAlias slot for {code:?}, got: {aliases:?}"
+        );
+        assert!(
+            has_typeglob_boundary(&file.stash_graph),
+            "computed braced glob capture must record a typeglob dynamic-stash boundary for {code:?}"
+        );
+    }
+}
+
+#[test]
 fn static_typeglob_assignment_still_records_exact_alias() {
     // Negative control: a real bareword typeglob alias must keep its ExactAst slot.
     let file = lower_source("package Child;\n*alias = \\&foo;\n");
