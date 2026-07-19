@@ -3117,6 +3117,9 @@ impl<'a> PerlLexer<'a> {
     /// `qw` additionally needs to stop before a safe statement boundary when its
     /// closer is missing. Keeping that policy as a callback makes the scanner
     /// behavior-preserving for ordinary operators without duplicating the loop.
+    /// The callback runs before the character at `position` is consumed. It must
+    /// only inspect the lexer and position; advancing or otherwise mutating the
+    /// lexer would desynchronize the scanner's escape and nesting state.
     fn read_delimited_body_with_recovery<F>(
         &mut self,
         delim: char,

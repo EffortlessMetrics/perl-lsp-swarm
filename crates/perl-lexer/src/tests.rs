@@ -82,6 +82,28 @@ fn qw_scanner_uses_recovery_only_when_the_closer_is_missing() -> TestResult {
 }
 
 #[test]
+fn qw_parser_tokenizes_closed_pair_with_escaped_delimiter() -> TestResult {
+    let input = r"my @words = qw(foo\) bar);";
+    let mut lexer = PerlLexer::new(input);
+    let quote_words = loop {
+        let token = lexer.next_token().ok_or("expected qw token")?;
+        if matches!(token.token_type, TokenType::QuoteWords) {
+            break token;
+        }
+    };
+
+    if quote_words.text.as_ref() != r"qw(foo\) bar)" {
+        return Err(format!("unexpected qw token text: {:?}", quote_words.text).into());
+    }
+    if quote_words.end != input.find(';').ok_or("expected statement terminator")? {
+        return Err(
+            format!("qw token ended at {}, expected before semicolon", quote_words.end).into()
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn delimiter_scanner_callback_controls_recovery_boundary() -> TestResult {
     let mut bounded = PerlLexer::new("prefix\nrest");
     let boundary = "prefix\n".len();
