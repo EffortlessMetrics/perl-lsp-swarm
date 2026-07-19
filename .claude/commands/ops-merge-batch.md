@@ -17,15 +17,46 @@ Canonical authorities:
 
 ## Steps
 
-### 1. Choose candidates and order only real dependencies
+### 1. Compare candidate surfaces and order only real dependencies
 
-Respect explicit stacks, same-authority overlap, generated files, public API
-collisions, and known integration dependencies. Do not order or update a PR only
-because it is older or further behind.
+Before admitting more than one PR to a batch, capture each candidate's complete
+changed-file set:
+
+```bash
+for pr in <candidate-pr-numbers>; do
+  gh api "repos/:owner/:repo/pulls/$pr/files" --paginate \
+    --jq '.[].filename' | sort -u >"/tmp/pr-$pr-files.txt"
+done
+
+# Run for every pair in the proposed batch.
+comm -12 "/tmp/pr-<a>-files.txt" "/tmp/pr-<b>-files.txt"
+```
+
+No output means file-disjoint, but semantic/public-API/generated-authority
+interaction must still be considered. Any shared file requires an explicit
+overlap decision before both PRs enter the batch:
+
+- `sequence-both`: both deltas are valuable and compatible; name the dependency
+  or tested integration order;
+- `pick-one`/`superseded-with-evidence`: compare the full semantic/test delta and
+  preserve unique value before closing anything;
+- `review-semantic-interaction`: the order or combined behavior is not yet
+  proven, so do not batch them;
+- `independent-same-file`: rare; require a reviewed explanation and applicable
+  combined-tree proof, then merge one and recollect readiness/integration state
+  for the second.
+
+Deterministic order comes from an explicit stack/dependency, authority ownership,
+generated-file order, or proved integration sequence. Do **not** choose a winner
+or order solely because a PR is older, smaller, newer, or further behind.
+
+Respect generated files, registries, schemas, workflows, release authorities,
+and public API collisions even when line-level Git conflict detection is clean.
 
 A prior merge moving `main` does not invalidate an unchanged PR-head review. It
 may invalidate a separate integration receipt when that receipt was bound to the
-old base.
+old base. Recollect that second PR's live readiness and applicable integration
+proof after the first merge; do not automatically mutate its head.
 
 ### 2. Capture one live readiness packet per PR
 
