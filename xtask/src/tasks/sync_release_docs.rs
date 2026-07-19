@@ -316,15 +316,37 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
     let mut in_now_section = false;
     let mut in_next_section = false;
 
+    let release_heading_marker = format!("(v{})", surface.version);
+    let release_heading_indices: Vec<usize> = content
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let is_release_heading = line.starts_with("## Active: Public-Alpha Release Prep (v")
+                || line.starts_with("## Active: Public-Beta Release (v")
+                || line.starts_with("## Active: Public-Beta Release Preparation (v")
+                || line.starts_with("## Active: Public-Alpha Channel Closeout (v");
+            is_release_heading.then_some(index)
+        })
+        .collect();
+    let active_heading_index = release_heading_indices
+        .iter()
+        .copied()
+        .find(|index| {
+            content.lines().nth(*index).is_some_and(|line| line.contains(&release_heading_marker))
+        })
+        .or_else(|| release_heading_indices.first().copied());
+
     let mut lines: Vec<String> = Vec::new();
-    for line in content.lines() {
+    for (line_index, line) in content.lines().enumerate() {
         if line.starts_with("## ") {
             let is_release_heading = line.starts_with("## Active: Public-Alpha Release Prep (v")
                 || line.starts_with("## Active: Public-Beta Release (v")
                 || line.starts_with("## Active: Public-Beta Release Preparation (v")
                 || line.starts_with("## Active: Public-Alpha Channel Closeout (v");
-            in_active_release =
-                (is_release_heading && !active_section_seen) || line == "## Now / Next / Later";
+            in_active_release = (is_release_heading
+                && Some(line_index) == active_heading_index
+                && !active_section_seen)
+                || line.trim() == "## Now / Next / Later";
             in_now_section = false;
             in_next_section = false;
         } else if line.starts_with("### Now (") {
@@ -365,6 +387,7 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
             publication_discipline_seen = true;
         } else if in_active_release
             && !active_section_seen
+            && Some(line_index) == active_heading_index
             && (line.starts_with("## Active: Public-Alpha Release Prep (v")
                 || line.starts_with("## Active: Public-Beta Release (v")
                 || line.starts_with("## Active: Public-Beta Release Preparation (v")
@@ -572,7 +595,9 @@ fn sync_status_index(content: &str, surface: &ReleaseSurface) -> Result<String> 
                 surface.published_crate_count
             ));
             published_surface_bullet_seen = true;
-        } else if line.starts_with("**Next (post v") || line.starts_with("**Next (v") {
+        } else if !next_section_seen
+            && (line.starts_with("**Next (post v") || line.starts_with("**Next (v"))
+        {
             lines.push(format!("**Next (v{} public-beta train)**", surface.next_version));
             next_section_seen = true;
         } else {
@@ -864,6 +889,23 @@ channels remain independently versioned and must be verified before editor use.\
     }
 
     #[test]
+    fn sync_status_index_preserves_historical_next_heading() -> Result<()> {
+        let input = "- **Release posture**: `v0.16.0` is in release preparation.\n\
+**Now (active milestone: v0.16.0 release preparation)**\n\
+- Run the `v0.16.0` release-prep checks before dispatching release orchestration\n\
+**Next (post v0.16.0 release preparation)**\n\
+**Next (post v0.12.0)**\n";
+
+        let input = format!(
+            "{input}- Keep the top-level README and status docs aligned with the 31-crate published surface\n"
+        );
+        let synced = sync_status_index(&input, &release_surface())?;
+        assert!(synced.contains("**Next (v0.18.0 public-beta train)**"));
+        assert!(synced.contains("**Next (post v0.12.0)**"));
+        Ok(())
+    }
+
+    #[test]
     fn sync_roadmap_preserves_release_posture_on_first_and_second_write() -> Result<()> {
         let input = "- Workspace version line: `v0.14.0`\n\
 - Current release train: `v0.14.0` public-alpha closeout\n\
@@ -930,14 +972,18 @@ Publication discipline: `v0.14.0` uses a normal SemVer package version for relea
 - Current release train: `v0.17.0` public-alpha closeout\n\
 - Published crate surface target: 31 crates\n\
 Publication discipline: `v0.17.0` uses a normal SemVer package version while the human-facing product posture remains public alpha.\n\
+## Active: Public-Alpha Release Prep (v0.13.0)\n\
+### Now (v0.13.0 release preparation)\n\
+- `v0.13.0` is in release preparation; run the release-prep checks before dispatching the train\n\
+### Next (post v0.13.0)\n\
 ## Active: Public-Alpha Channel Closeout (v0.17.0)\n\
 ### Now (v0.17.0 public-alpha channel closeout)\n\
 - `v0.17.0` is the current public-alpha release line; finish receipt closeout before treating the release as fully closed\n\
 ### Next (post v0.17.0 closeout)\n\
-## Active: Public-Alpha Release Prep (v0.13.0)\n\
-### Now (v0.13.0 release preparation)\n\
-- `v0.13.0` is in release preparation; run the release-prep checks before dispatching the train\n\
-### Next (post v0.13.0)\n";
+## Now / Next / Later   \n\
+### Now (v0.17.0 public-alpha channel closeout)\n\
+- `v0.17.0` is the current public-alpha release line; finish receipt closeout before treating the release as fully closed\n\
+### Next (post v0.17.0 closeout)\n";
 
         let synced = sync_roadmap(input, &release_surface())?;
         assert!(synced.contains("## Active: Public-Alpha Release Prep (v0.13.0)"));
@@ -947,6 +993,7 @@ Publication discipline: `v0.17.0` uses a normal SemVer package version while the
             "v0.13.0` is in release preparation; run the release-prep checks before dispatching the train"
         ));
         assert!(synced.contains("### Next (post v0.13.0)"));
+        assert!(synced.contains("## Active: Public-Beta Release (v0.17.0)"));
         Ok(())
     }
 }
