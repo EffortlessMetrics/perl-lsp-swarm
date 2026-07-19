@@ -97,7 +97,7 @@ fn split_token_glob_body_preserves_multiple_expressions() -> Result<(), Box<dyn 
 
 #[test]
 fn split_token_glob_assignment_preserves_typeglob_lhs() -> Result<(), Box<dyn std::error::Error>> {
-    let source = "* { $name } = \\&target;";
+    let source = "* { $name; } = \\&target;";
     let mut parser = Parser::new(source);
     let ast = must(parser.parse());
     let assignment = find_assignment(&ast).ok_or("expected dynamic typeglob assignment")?;
@@ -112,7 +112,7 @@ fn split_token_glob_assignment_preserves_typeglob_lhs() -> Result<(), Box<dyn st
 
 #[test]
 fn fused_token_glob_assignment_preserves_typeglob_name() -> Result<(), Box<dyn std::error::Error>> {
-    let source = "*{$name} = \\&target;";
+    let source = "*{$name;} = \\&target;";
     let mut parser = Parser::new(source);
     let ast = must(parser.parse());
     let assignment = find_assignment(&ast).ok_or("expected fused dynamic typeglob assignment")?;

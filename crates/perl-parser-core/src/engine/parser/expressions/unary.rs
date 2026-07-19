@@ -351,6 +351,8 @@ impl<'a> Parser<'a> {
                                             &self.src_bytes[body_start..body_end.saturating_sub(1)],
                                         )
                                         .trim()
+                                        .trim_end_matches(';')
+                                        .trim()
                                         .to_string();
                                         return Ok(Node::new(
                                             NodeKind::Typeglob { name },

@@ -1,3 +1,11 @@
+fn normalize_dynamic_typeglob_name(name: &str) -> String {
+    let inner = name
+        .strip_prefix('{')
+        .and_then(|inner| inner.strip_suffix('}'))
+        .unwrap_or(name);
+    inner.trim().trim_end_matches(';').trim().to_string()
+}
+
 impl<'a> Parser<'a> {
     /// Parse variable declaration (my, our, local, state)
     fn parse_variable_declaration(&mut self) -> ParseResult<Node> {
@@ -618,13 +626,7 @@ impl<'a> Parser<'a> {
         }
 
         if sigil == "*" {
-            let name = if let Some(inner) =
-                full_name.strip_prefix('{').and_then(|inner| inner.strip_suffix('}'))
-            {
-                inner.trim().to_string()
-            } else {
-                full_name
-            };
+            let name = normalize_dynamic_typeglob_name(&full_name);
             Ok(Node::new(
                 NodeKind::Typeglob { name },
                 SourceLocation { start: token.start, end },
@@ -1078,10 +1080,9 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
             if self.peek_kind() == Some(TokenKind::Assign) {
-                let name =
-                    String::from_utf8_lossy(&self.src_bytes[body_start..end.saturating_sub(1)])
-                        .trim()
-                        .to_string();
+                let name = normalize_dynamic_typeglob_name(&String::from_utf8_lossy(
+                    &self.src_bytes[body_start..end.saturating_sub(1)],
+                ));
                 return Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }));
             }
             let node = Node::new(
@@ -1142,13 +1143,7 @@ impl<'a> Parser<'a> {
 
             Ok(Node::new(NodeKind::FunctionCall { name, args }, SourceLocation { start, end }))
         } else if sigil == "*" {
-            let name = if let Some(inner) =
-                name.strip_prefix('{').and_then(|inner| inner.strip_suffix('}'))
-            {
-                inner.trim().to_string()
-            } else {
-                name
-            };
+            let name = normalize_dynamic_typeglob_name(&name);
             Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }))
         } else if matches!(sigil.as_str(), "$" | "@" | "%")
             && Self::is_unbraced_scalar_deref_name(&name)
