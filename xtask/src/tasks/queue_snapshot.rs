@@ -144,7 +144,10 @@ fn snapshot_from_gh_cli() -> Result<QueueSnapshot> {
     let prs = prs_json
         .into_iter()
         .map(|pr| PullRequestSnapshot {
-            number: pr.get("number").and_then(serde_json::Value::as_u64).unwrap_or_default(),
+            number: pr
+                .get("number")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default(),
             title: pr
                 .get("title")
                 .and_then(serde_json::Value::as_str)
@@ -160,7 +163,10 @@ fn snapshot_from_gh_cli() -> Result<QueueSnapshot> {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
-            is_draft: pr.get("isDraft").and_then(serde_json::Value::as_bool).unwrap_or(false),
+            is_draft: pr
+                .get("isDraft")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
             merge_state_status: pr
                 .get("mergeStateStatus")
                 .and_then(serde_json::Value::as_str)
@@ -287,7 +293,10 @@ mod tests {
     fn cancelled_check_routes_to_needs_ci_fix() {
         let prs = vec![make_pr(1, vec![], vec![("ci", "CANCELLED")])];
         let buckets = derive_buckets(&prs);
-        assert!(buckets.needs_ci_fix.contains(&1), "CANCELLED must route to needs_ci_fix");
+        assert!(
+            buckets.needs_ci_fix.contains(&1),
+            "CANCELLED must route to needs_ci_fix"
+        );
         assert!(!buckets.ci_green.contains(&1));
     }
 
@@ -295,14 +304,20 @@ mod tests {
     fn timed_out_check_routes_to_needs_ci_fix() {
         let prs = vec![make_pr(2, vec![], vec![("ci", "TIMED_OUT")])];
         let buckets = derive_buckets(&prs);
-        assert!(buckets.needs_ci_fix.contains(&2), "TIMED_OUT must route to needs_ci_fix");
+        assert!(
+            buckets.needs_ci_fix.contains(&2),
+            "TIMED_OUT must route to needs_ci_fix"
+        );
     }
 
     #[test]
     fn action_required_routes_to_needs_ci_fix() {
         let prs = vec![make_pr(3, vec![], vec![("ci", "ACTION_REQUIRED")])];
         let buckets = derive_buckets(&prs);
-        assert!(buckets.needs_ci_fix.contains(&3), "ACTION_REQUIRED must route to needs_ci_fix");
+        assert!(
+            buckets.needs_ci_fix.contains(&3),
+            "ACTION_REQUIRED must route to needs_ci_fix"
+        );
     }
 
     #[test]
@@ -322,11 +337,7 @@ mod tests {
 
     #[test]
     fn every_terminal_github_failure_routes_to_needs_ci_fix() {
-        for (number, state) in [
-            (12, "ERROR"),
-            (13, "STARTUP_FAILURE"),
-            (14, "STALE"),
-        ] {
+        for (number, state) in [(12, "ERROR"), (13, "STARTUP_FAILURE"), (14, "STALE")] {
             let buckets = derive_buckets(&[make_pr(number, vec![], vec![("ci", state)])]);
             assert!(
                 buckets.needs_ci_fix.contains(&number),
@@ -341,7 +352,12 @@ mod tests {
 
     #[test]
     fn dirty_routes_to_conflicting_not_unknown() {
-        let prs = vec![make_pr_with_state(6, "DIRTY", vec![], vec![("ci", "IN_PROGRESS")])];
+        let prs = vec![make_pr_with_state(
+            6,
+            "DIRTY",
+            vec![],
+            vec![("ci", "IN_PROGRESS")],
+        )];
         let buckets = derive_buckets(&prs);
         assert!(buckets.conflicting.contains(&6));
         assert!(!buckets.unknown_not_proven.contains(&6));
@@ -362,7 +378,12 @@ mod tests {
 
     #[test]
     fn unknown_routes_to_not_proven_not_conflicting() {
-        let prs = vec![make_pr_with_state(8, "UNKNOWN", vec![], vec![("ci", "IN_PROGRESS")])];
+        let prs = vec![make_pr_with_state(
+            8,
+            "UNKNOWN",
+            vec![],
+            vec![("ci", "IN_PROGRESS")],
+        )];
         let buckets = derive_buckets(&prs);
         assert!(buckets.unknown_not_proven.contains(&8));
         assert!(!buckets.conflicting.contains(&8));
@@ -379,7 +400,12 @@ mod tests {
 
     #[test]
     fn clean_pending_routes_to_pending_or_unclassified() {
-        let prs = vec![make_pr_with_state(10, "CLEAN", vec![], vec![("ci", "IN_PROGRESS")])];
+        let prs = vec![make_pr_with_state(
+            10,
+            "CLEAN",
+            vec![],
+            vec![("ci", "IN_PROGRESS")],
+        )];
         let buckets = derive_buckets(&prs);
         assert!(buckets.pending_or_unclassified.contains(&10));
         assert!(!buckets.conflicting.contains(&10));
@@ -388,7 +414,12 @@ mod tests {
 
     #[test]
     fn conflict_and_ci_failure_remain_visible_together() {
-        let prs = vec![make_pr_with_state(11, "DIRTY", vec![], vec![("ci", "FAILURE")])];
+        let prs = vec![make_pr_with_state(
+            11,
+            "DIRTY",
+            vec![],
+            vec![("ci", "FAILURE")],
+        )];
         let buckets = derive_buckets(&prs);
         assert!(buckets.conflicting.contains(&11));
         assert!(buckets.needs_ci_fix.contains(&11));
@@ -410,7 +441,10 @@ pub fn derive_buckets(prs: &[PullRequestSnapshot]) -> DerivedBuckets {
             });
         let labels = &pr.labels;
         let merge_state = pr.merge_state_status.as_deref().map(str::to_ascii_uppercase);
-        let is_conflicting = matches!(merge_state.as_deref(), Some("DIRTY") | Some("CONFLICTING"));
+        let is_conflicting = matches!(
+            merge_state.as_deref(),
+            Some("DIRTY") | Some("CONFLICTING")
+        );
         let is_unknown = matches!(merge_state.as_deref(), None | Some("UNKNOWN"));
 
         if pr.is_draft {
