@@ -36,7 +36,7 @@ cargo xtask swarm-summary .ops-perl-lsp --since 24h --limit 10 --format json
 > - Open PRs: `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:30)`
 > - Discovered issues: `mcp__github__list_issues(owner, repo, labels:["swarm-discovered"], state:"OPEN", perPage:20)`
 > - Architectural issues: `mcp__github__list_issues(owner, repo, labels:["swarm-architectural"], state:"OPEN")`
-> - Recent merges: `mcp__github__list_pull_requests(owner, repo, state:"closed")` then filter for non-null `mergedAt` within last 24h; exclude PRs closed without merging
+> - Recent merges: `mcp__github__list_pull_requests(owner, repo, state:"closed")` then filter for non-null `merged_at` within last 24h; exclude PRs closed without merging
 > - Queue depth (builder-ready): `mcp__github__list_issues(owner, repo, labels:["builder-ready"], state:"OPEN")`
 > - Queue depth (needs-plan-review): `mcp__github__list_issues(owner, repo, labels:["needs-plan-review"], state:"OPEN")`
 > - merge-ready PRs: `mcp__github__search_pull_requests(query:"label:merge-ready is:open repo:effortlessmetrics/perl-lsp-swarm")`

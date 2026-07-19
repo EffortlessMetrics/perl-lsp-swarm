@@ -27,6 +27,7 @@ first when tool parity changes.
 | `gh pr update-branch <n>` | `mcp__github__update_pull_request_branch(pullNumber:n)` | Full parity |
 | `gh pr create --draft` | `mcp__github__create_pull_request(head, base:"main", title, body, draft:true)` | Full parity |
 | `gh pr list --state merged --base main` | `mcp__github__list_pull_requests(state:"closed", base:"main")` then filter `merged_at != null` | Merged-state filter is client-side |
+| `gh pr list --label X --state open` | `mcp__github__search_pull_requests(query:"label:X is:open repo:<owner>/<repo>")` | Scope the search query to the repository |
 | `gh run list --branch main` | `mcp__github__actions_list(method:"list_workflow_runs", workflow_runs_filter:{branch:"main"})` | Full parity: `status`, `conclusion`, `head_sha`, workflow name per run. **Previously mis-documented as "no MCP equivalent"** — corrected 2026-07 |
 | `gh run list --workflow=<wf>` | `mcp__github__actions_list(method:"list_workflow_runs", resource_id:"<wf file name>")` | Pass workflow file name (e.g. `ci.yml`) as `resource_id` |
 | `gh run view <id>` | `mcp__github__actions_get(method:"get_workflow_run", resource_id:"<id>")` | Full parity |
