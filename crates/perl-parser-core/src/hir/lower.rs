@@ -1666,7 +1666,16 @@ impl Lowerer {
         match &lhs.kind {
             NodeKind::Typeglob { name } => {
                 let (package, symbol) = package_and_symbol(name, self.package_context.as_deref());
-                if let Some((slot_kind, alias_target)) = static_glob_alias_target(rhs) {
+                // A dynamically dereferenced glob (`*{$name} = ...`) captures its
+                // destination symbol from a runtime expression, so `name` is the raw
+                // capture text (e.g. "$name") rather than a resolvable bareword. Such an
+                // assignment is a dynamic stash mutation even when the RHS is a static
+                // alias — it must not mint an ExactAst alias slot for an unknown symbol
+                // (#4504).
+                let lhs_is_static = is_bareword_like(name);
+                if let Some((slot_kind, alias_target)) =
+                    static_glob_alias_target(rhs).filter(|_| lhs_is_static)
+                {
                     self.record_slot(
                         package,
                         stash_slot(
@@ -1681,13 +1690,18 @@ impl Lowerer {
                         ),
                     );
                 } else {
+                    let reason = if lhs_is_static {
+                        "typeglob assignment has a non-static RHS"
+                    } else {
+                        "typeglob assignment has a dynamic LHS"
+                    };
                     let boundary_item = self.push_item(
                         lhs,
                         Some(lhs.location),
                         confidence,
                         HirKind::DynamicBoundary(DynamicBoundary {
                             kind: DynamicBoundaryKind::DynamicStashMutation,
-                            reason: "typeglob assignment has a non-static RHS".to_string(),
+                            reason: reason.to_string(),
                         }),
                         self.package_context.clone(),
                         Some(self.current_scope()),
@@ -1698,7 +1712,7 @@ impl Lowerer {
                         range,
                         Some(boundary_item),
                         StashDynamicBoundaryKind::DynamicStashMutation,
-                        "typeglob assignment has a non-static RHS",
+                        reason,
                     );
                 }
             }
