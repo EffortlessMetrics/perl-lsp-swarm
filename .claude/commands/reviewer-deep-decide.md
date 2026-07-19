@@ -19,12 +19,14 @@ gh pr checkout <number>
 git push
 gh pr review <number> --approve --body "Deep review: <what you improved>. Logic verified, low regression risk."
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` provides PR metadata. Fetch by numeric PR ref to avoid interpolating an untrusted branch name: `git fetch origin "refs/pull/<number>/head:refs/remotes/origin/pr-<number>" && git checkout --detach "refs/remotes/origin/pr-<number>"`; push with `git push`. For `gh pr review --approve`, first create the pending review with `mcp__github__pull_request_review_write(method:"create", owner, repo, pullNumber:<number>, body:"Deep review: <what you improved>. Logic verified, low regression risk.")`, then submit it with `mcp__github__pull_request_review_write(method:"submit_pending", owner, repo, pullNumber:<number>, event:"APPROVE", body:"Deep review: <what you improved>. Logic verified, low regression risk.")`; or use `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:"Deep review: ...")` to post a textual approval noting deep-reviewed, since the label (`/label-apply-verified`) is the actual merge gate.
 ```
 /label-apply-verified pr <number> "deep-reviewed"
 ```
 ```bash
 gh pr edit <number> --remove-label "needs-deep-review"
 ```
+> **MCP alternative (web/no-gh sessions):** Read current labels via `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)`, then write the union minus `needs-deep-review` via `mcp__github__issue_write(method:"update", owner, repo, issue_number:<number>, labels:[...])` — **labels are replaced, not appended** (read current list first). See [docs/reference/GH_MCP_FALLBACK.md].
 
 After approval, write a version-bound receipt:
 ```
@@ -41,6 +43,7 @@ Only when the approach is wrong, wrong crate, or the codebase moved too far:
 ```bash
 gh pr review <number> --request-changes --body "<what's structurally wrong and why it can't be fixed locally>"
 ```
+> **MCP alternative (web/no-gh sessions):** First create the pending review with `mcp__github__pull_request_review_write(method:"create", owner, repo, pullNumber:<number>, body:"<reason>")`, then submit it with `mcp__github__pull_request_review_write(method:"submit_pending", owner, repo, pullNumber:<number>, event:"REQUEST_CHANGES", body:"<reason>")` — full parity for requesting changes.
 
 ## Rules
 

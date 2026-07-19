@@ -23,10 +23,13 @@ first when tool parity changes.
 | `gh pr checks <n>` | `mcp__github__pull_request_read(method:"get_check_runs", pullNumber:n)` | Filter check runs by `head_sha` == PR head SHA to avoid stale green |
 | `gh pr diff <n>` / `--name-only` | `mcp__github__pull_request_read(method:"get_diff"` / `"get_files", pullNumber:n)` | Full parity |
 | `gh pr merge <n> --squash` | `mcp__github__merge_pull_request(pullNumber:n, merge_method:"squash", commit_title, commit_message)` | Full parity |
+| `gh pr review <n> --approve` | `mcp__github__pull_request_review_write(method:"create", owner, repo, pullNumber:n, body:"<review>")`, then `mcp__github__pull_request_review_write(method:"submit_pending", owner, repo, pullNumber:n, event:"APPROVE", body:"<review>")` | Create the pending review, then submit it |
+| `gh pr review <n> --request-changes` | `mcp__github__pull_request_review_write(method:"create", owner, repo, pullNumber:n, body:"<reason>")`, then `mcp__github__pull_request_review_write(method:"submit_pending", owner, repo, pullNumber:n, event:"REQUEST_CHANGES", body:"<reason>")` | Create the pending review, then submit it |
 | `gh pr ready <n>` | `mcp__github__update_pull_request(pullNumber:n, draft:false)` | Full parity |
 | `gh pr update-branch <n>` | `mcp__github__update_pull_request_branch(pullNumber:n)` | Full parity |
 | `gh pr create --draft` | `mcp__github__create_pull_request(head, base:"main", title, body, draft:true)` | Full parity |
 | `gh pr list --state merged --base main` | `mcp__github__list_pull_requests(state:"closed", base:"main")` then filter `merged_at != null` | Merged-state filter is client-side |
+| `gh pr list --label X --state open` | `mcp__github__search_pull_requests(query:"label:X is:open repo:<owner>/<repo>")` | Scope the search query to the repository |
 | `gh run list --branch main` | `mcp__github__actions_list(method:"list_workflow_runs", workflow_runs_filter:{branch:"main"})` | Full parity: `status`, `conclusion`, `head_sha`, workflow name per run. **Previously mis-documented as "no MCP equivalent"** — corrected 2026-07 |
 | `gh run list --workflow=<wf>` | `mcp__github__actions_list(method:"list_workflow_runs", resource_id:"<wf file name>")` | Pass workflow file name (e.g. `ci.yml`) as `resource_id` |
 | `gh run view <id>` | `mcp__github__actions_get(method:"get_workflow_run", resource_id:"<id>")` | Full parity |
