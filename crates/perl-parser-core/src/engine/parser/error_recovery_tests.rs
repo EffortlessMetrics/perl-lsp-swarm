@@ -1122,6 +1122,10 @@ fn test_unclosed_qw_recovers_leading_qualified_declarations() -> Result<(), Stri
         let sexp = ast.to_sexp();
         if statements.len() != 2
             || matches!(&statements[1].kind, NodeKind::Error { .. })
+            || !matches!(
+                &statements[1].kind,
+                NodeKind::Subroutine { .. } | NodeKind::Package { .. }
+            )
             || sexp.contains(marker)
             || !sexp.contains(name)
             || parser.errors().is_empty()
