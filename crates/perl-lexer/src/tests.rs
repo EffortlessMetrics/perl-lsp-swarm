@@ -30,6 +30,28 @@ fn qw_suffix_scan_preserves_known_sub_regex_classification() -> TestResult {
 }
 
 #[test]
+fn shared_delimiter_scanner_preserves_nested_escaped_and_unclosed_cases() -> TestResult {
+    let cases = [
+        ("word (nested)) tail", '(', "word (nested)", true),
+        (r"word\/tail/after", '/', r"word\/tail", true),
+        ("word [nested", '[', "word [nested", false),
+    ];
+
+    for (input, delimiter, expected_body, expected_closed) in cases {
+        let mut lexer = PerlLexer::new(input);
+        let (body, closed) = lexer.read_delimited_body(delimiter);
+        if body != expected_body || closed != expected_closed {
+            return Err(format!(
+                "delimiter scan for {delimiter:?} returned ({body:?}, {closed}), expected ({expected_body:?}, {expected_closed})"
+            )
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
 fn test_basic_tokens() -> TestResult {
     let mut lexer = PerlLexer::new("my $x = 42;");
 
