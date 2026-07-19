@@ -30,6 +30,13 @@ fn statement_expression(node: &Node) -> &Node {
     }
 }
 
+fn typeglob_name(node: &Node) -> Option<&str> {
+    match &node.kind {
+        NodeKind::Typeglob { name } => Some(name),
+        _ => None,
+    }
+}
+
 #[test]
 fn braced_glob_deref_forms_parse_cleanly() {
     for source in ["*{$ref};", "*{$self->{key}};"] {
@@ -97,8 +104,23 @@ fn split_token_glob_assignment_preserves_typeglob_lhs() -> Result<(), Box<dyn st
     let NodeKind::Assignment { lhs, .. } = &assignment.kind else {
         return Err("find_assignment returned a non-assignment node".into());
     };
-    if !matches!(lhs.kind, NodeKind::Typeglob { .. }) {
-        return Err("expected Typeglob on the dynamic assignment LHS".into());
+    if typeglob_name(lhs) != Some("$name") {
+        return Err("expected Typeglob name $name on the dynamic assignment LHS".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn fused_token_glob_assignment_preserves_typeglob_name() -> Result<(), Box<dyn std::error::Error>> {
+    let source = "*{$name} = \\&target;";
+    let mut parser = Parser::new(source);
+    let ast = must(parser.parse());
+    let assignment = find_assignment(&ast).ok_or("expected fused dynamic typeglob assignment")?;
+    let NodeKind::Assignment { lhs, .. } = &assignment.kind else {
+        return Err("find_assignment returned a non-assignment node".into());
+    };
+    if typeglob_name(lhs) != Some("$name") {
+        return Err(format!("expected Typeglob name $name on fused LHS, got {:?}", lhs.kind).into());
     }
     Ok(())
 }

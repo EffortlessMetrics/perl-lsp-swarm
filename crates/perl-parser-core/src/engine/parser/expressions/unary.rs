@@ -342,12 +342,13 @@ impl<'a> Parser<'a> {
                                     let brace_expr = self.parse_primary()?;
                                     let direct_assignment =
                                         self.peek_kind() == Some(TokenKind::Assign);
+                                    let body_start = brace_expr.location.start.saturating_add(1);
                                     let body_end = brace_expr.location.end;
                                     let brace_expr = self.parse_postfix_chain(brace_expr)?;
                                     let end = brace_expr.location.end;
                                     if direct_assignment {
                                         let name = String::from_utf8_lossy(
-                                            &self.src_bytes[start.saturating_add(1)..body_end],
+                                            &self.src_bytes[body_start..body_end.saturating_sub(1)],
                                         )
                                         .trim()
                                         .to_string();

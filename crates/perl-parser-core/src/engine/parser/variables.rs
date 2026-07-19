@@ -618,8 +618,15 @@ impl<'a> Parser<'a> {
         }
 
         if sigil == "*" {
+            let name = if let Some(inner) =
+                full_name.strip_prefix('{').and_then(|inner| inner.strip_suffix('}'))
+            {
+                inner.trim().to_string()
+            } else {
+                full_name
+            };
             Ok(Node::new(
-                NodeKind::Typeglob { name: full_name },
+                NodeKind::Typeglob { name },
                 SourceLocation { start: token.start, end },
             ))
         } else if matches!(sigil.as_str(), "$" | "@" | "%")
@@ -1071,9 +1078,10 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
             if self.peek_kind() == Some(TokenKind::Assign) {
-                let name = String::from_utf8_lossy(&self.src_bytes[start.saturating_add(1)..end])
-                    .trim()
-                    .to_string();
+                let name =
+                    String::from_utf8_lossy(&self.src_bytes[body_start..end.saturating_sub(1)])
+                        .trim()
+                        .to_string();
                 return Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }));
             }
             let node = Node::new(
@@ -1134,6 +1142,13 @@ impl<'a> Parser<'a> {
 
             Ok(Node::new(NodeKind::FunctionCall { name, args }, SourceLocation { start, end }))
         } else if sigil == "*" {
+            let name = if let Some(inner) =
+                name.strip_prefix('{').and_then(|inner| inner.strip_suffix('}'))
+            {
+                inner.trim().to_string()
+            } else {
+                name
+            };
             Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }))
         } else if matches!(sigil.as_str(), "$" | "@" | "%")
             && Self::is_unbraced_scalar_deref_name(&name)
