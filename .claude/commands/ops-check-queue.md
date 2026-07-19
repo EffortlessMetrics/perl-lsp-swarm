@@ -42,9 +42,9 @@ gh issue list --label "in-build" --state open --limit 500 \
   --json number,title,updatedAt
 ```
 
-> **MCP alternative (web/no-gh sessions):** page through all issues with the
-> `in-build` label, then inspect linked PR and ownership state. `updatedAt` may
-> select a claim for review; it does not authorize label removal.
+> **Connector alternative:** page through all issues with the `in-build` label,
+> then inspect linked PR and ownership state. `updatedAt` may select a claim for
+> review; it does not authorize label removal.
 
 Classify:
 
@@ -98,12 +98,13 @@ For each candidate:
 ```bash
 PR_STATE=$(gh pr view <number> --json headRefOid,statusCheckRollup)
 HEAD_SHA=$(printf '%s' "$PR_STATE" | jq -r '.headRefOid')
-printf '%s' "$PR_STATE" | jq -r '
+printf '%s' "$PR_STATE" | jq -r --arg head "$HEAD_SHA" '
   .statusCheckRollup[] |
   {
     kind: (.__typename // "unknown"),
     name: (.name // .context),
     state: (.conclusion // .state // .status),
+    head_sha: (.headSha // .sha // $head),
     started_at: .startedAt,
     completed_at: .completedAt,
     details_url: (.detailsUrl // .targetUrl)
@@ -113,13 +114,15 @@ scripts/ci/check-pr-review-convergence <number>
 
 `statusCheckRollup` is the repository's combined current-head status contract;
 querying only `check-runs` would omit legacy/external commit-status contexts.
-For duplicate or failed entries, inspect the focused underlying run/status only
-as needed; do not replace the combined rollup with one status system.
+The emitted `head_sha` preserves an audit trail to the pinned head even when a
+rollup entry does not expose its own SHA. For duplicate or failed entries,
+inspect the focused underlying run/status only as needed; do not replace the
+combined rollup with one status system.
 
-> **MCP alternative (web/no-gh sessions):** fetch the PR's combined status
-> rollup or equivalent current-head check-run plus commit-status contexts,
-> together with review threads and requested reviews. Keep all evidence bound to
-> the captured head and re-read it afterward.
+> **Connector alternative:** fetch the PR's combined status rollup or equivalent
+> current-head check-run plus commit-status contexts, together with review
+> threads and requested reviews. Keep all evidence bound to the captured head
+> and re-read it afterward.
 
 Do not use `update-branch`, a merge-main commit, rebase, force-push, or an empty
 commit solely to obtain missing proof. Request a same-head rerun/dispatch when
