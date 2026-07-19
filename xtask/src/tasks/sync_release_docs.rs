@@ -536,8 +536,36 @@ fn sync_status_index(content: &str, surface: &ReleaseSurface) -> Result<String> 
     let mut published_surface_bullet_seen = false;
     let mut next_section_seen = false;
 
+    let status_lines: Vec<&str> = content.lines().collect();
+    let next_heading_indices: Vec<usize> = status_lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            (line.starts_with("**Next (post v") || line.starts_with("**Next (v")).then_some(index)
+        })
+        .collect();
+    let active_next_index = next_heading_indices
+        .iter()
+        .copied()
+        .find(|index| status_lines[*index].contains(&format!("v{}", surface.next_version)))
+        .or_else(|| {
+            next_heading_indices
+                .iter()
+                .copied()
+                .find(|index| status_lines[*index].contains(&format!("post v{}", surface.version)))
+        })
+        .or_else(|| {
+            let active_now_index = status_lines.iter().position(|line| {
+                line.starts_with(&format!("**Now (active milestone: v{}", surface.version))
+            });
+            active_now_index.and_then(|now_index| {
+                next_heading_indices.iter().copied().find(|next_index| *next_index > now_index)
+            })
+        })
+        .or_else(|| next_heading_indices.first().copied());
+
     let mut lines: Vec<String> = Vec::new();
-    for line in content.lines() {
+    for (line_index, line) in content.lines().enumerate() {
         if line.starts_with("- **Release posture**: `v") {
             let release_facts = match (
                 surface.shipped_date.as_deref(),
@@ -596,6 +624,7 @@ fn sync_status_index(content: &str, surface: &ReleaseSurface) -> Result<String> 
             ));
             published_surface_bullet_seen = true;
         } else if !next_section_seen
+            && Some(line_index) == active_next_index
             && (line.starts_with("**Next (post v") || line.starts_with("**Next (v"))
         {
             lines.push(format!("**Next (v{} public-beta train)**", surface.next_version));
@@ -902,6 +931,22 @@ channels remain independently versioned and must be verified before editor use.\
         let synced = sync_status_index(&input, &release_surface())?;
         assert!(synced.contains("**Next (v0.18.0 public-beta train)**"));
         assert!(synced.contains("**Next (post v0.12.0)**"));
+        Ok(())
+    }
+
+    #[test]
+    fn sync_status_index_selects_active_next_after_historical_heading() -> Result<()> {
+        let input = r#"- **Release posture**: `v0.17.0` shipped public beta
+**Now (active milestone: v0.17.0 shipped public beta)**
+- Verify the existing `v0.17.0` release receipt and close the remaining channel receipts
+**Next (post v0.12.0)**
+**Next (post v0.17.0)**
+- Keep the top-level README and status docs aligned with the 31-crate published surface
+"#;
+
+        let synced = sync_status_index(input, &release_surface())?;
+        assert!(synced.contains("**Next (post v0.12.0)**"));
+        assert!(synced.contains("**Next (v0.18.0 public-beta train)**"));
         Ok(())
     }
 
