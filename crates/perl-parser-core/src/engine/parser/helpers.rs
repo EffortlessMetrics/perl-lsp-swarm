@@ -1033,7 +1033,12 @@ impl<'a> Parser<'a> {
             | Some(TokenKind::Our)
             | Some(TokenKind::Local)
             | Some(TokenKind::State) => true,
-            Some(TokenKind::Sub) | Some(TokenKind::Package) | Some(TokenKind::Use) => true,
+            Some(TokenKind::Sub)
+            | Some(TokenKind::Package)
+            | Some(TokenKind::Class)
+            | Some(TokenKind::Begin)
+            | Some(TokenKind::End)
+            | Some(TokenKind::Use) => true,
             Some(TokenKind::If) | Some(TokenKind::Unless) => true,
             Some(TokenKind::Elsif) | Some(TokenKind::Else) => true,
             Some(TokenKind::While) | Some(TokenKind::Until) => true,
@@ -1234,10 +1239,7 @@ impl<'a> Parser<'a> {
         }
 
         let has_typeglob_first_arg = self.peek_kind() == Some(TokenKind::Star)
-            && matches!(
-                name,
-                "is" | "isnt" | "like" | "unlike" | "cmp_ok" | "isa_ok" | "can_ok"
-            );
+            && matches!(name, "is" | "isnt" | "like" | "unlike" | "cmp_ok" | "isa_ok" | "can_ok");
 
         // Must not already be at a statement end or followed by a binary operator.
         // Test helpers are commonly imported as list operators and may take a

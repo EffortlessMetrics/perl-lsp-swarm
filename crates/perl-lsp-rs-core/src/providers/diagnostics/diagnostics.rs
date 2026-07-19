@@ -31,6 +31,7 @@ use super::lints::pod_coverage::check_pod_coverage;
 use super::lints::printf_format::check_printf_format;
 use super::lints::role_conflicts::check_role_conflicts;
 use super::lints::security::check_security;
+use super::lints::source_filter::check_source_filter_risk;
 use super::lints::strict_warnings::check_strict_warnings;
 use super::lints::unreachable_code::check_unreachable_code;
 use super::lints::unused_imports::check_unused_imports;
@@ -370,6 +371,7 @@ impl DiagnosticsProvider {
         );
         check_goto_labels(ast, &symbol_table, &mut diagnostics);
         check_loop_control_labels(ast, &symbol_table, &mut diagnostics);
+        check_source_filter_risk(ast, &mut diagnostics);
 
         // Security anti-pattern detection (string eval, two-arg open, backtick exec)
         check_security(ast, &mut diagnostics);

@@ -100,6 +100,7 @@ impl DiagnosticCode {
             Self::SecurityReadpipe => "PL606",
             Self::UnusedImport => "PL700",
             Self::ModuleNotFound => "PL701",
+            Self::SourceFilterModule => "PL702",
             Self::HeredocInFormat => "PL800",
             Self::HeredocInBegin => "PL801",
             Self::HeredocDynamicDelimiter => "PL802",
@@ -172,6 +173,7 @@ impl DiagnosticCode {
             "PL606" => "https://docs.perl-lsp.org/errors/PL606",
             "PL700" => "https://docs.perl-lsp.org/errors/PL700",
             "PL701" => "https://docs.perl-lsp.org/errors/PL701",
+            "PL702" => "https://docs.perl-lsp.org/errors/PL702",
             "PL800" => "https://docs.perl-lsp.org/errors/PL800",
             "PL801" => "https://docs.perl-lsp.org/errors/PL801",
             "PL802" => "https://docs.perl-lsp.org/errors/PL802",
@@ -232,6 +234,7 @@ impl DiagnosticCode {
             | Self::SecurityPipeOpen
             | Self::SecurityReadpipe
             | Self::ModuleNotFound
+            | Self::SourceFilterModule
             | Self::VersionIncompatFeature
             | Self::EvalErrorFlow
             | Self::CriticSeverity1
@@ -466,6 +469,10 @@ impl DiagnosticCode {
                 "This module was not found in the workspace or configured include paths. \
                 Install it with cpanm or add it to cpanfile.",
             ),
+            Self::SourceFilterModule => Some(
+                "Source filters rewrite source code before it's parsed. Static analysis \
+                cannot reliably predict the state of the code after filtering.",
+            ),
             Self::HeredocInFormat => Some(
                 "Heredocs inside `format` blocks can cause subtle parsing issues. \
                 Extract the heredoc content into a variable before the format.",
@@ -633,6 +640,7 @@ impl DiagnosticCode {
             "PL606" => Some(Self::SecurityReadpipe),
             "PL700" => Some(Self::UnusedImport),
             "PL701" => Some(Self::ModuleNotFound),
+            "PL702" => Some(Self::SourceFilterModule),
             "PL800" => Some(Self::HeredocInFormat),
             "PL801" => Some(Self::HeredocInBegin),
             "PL802" => Some(Self::HeredocDynamicDelimiter),

@@ -937,6 +937,7 @@ fn parse_code_round_trip_all_variants_exhaustive() -> Result<(), Box<dyn std::er
         DiagnosticCode::SecurityReadpipe,
         DiagnosticCode::UnusedImport,
         DiagnosticCode::ModuleNotFound,
+        DiagnosticCode::SourceFilterModule,
         DiagnosticCode::HeredocInFormat,
         DiagnosticCode::HeredocInBegin,
         DiagnosticCode::HeredocDynamicDelimiter,
@@ -954,8 +955,8 @@ fn parse_code_round_trip_all_variants_exhaustive() -> Result<(), Box<dyn std::er
 
     assert_eq!(
         all_variants.len(),
-        60,
-        "expected exhaustive DiagnosticCode variant list to cover 60 variants"
+        61,
+        "expected exhaustive DiagnosticCode variant list to cover 61 variants"
     );
     for code in &all_variants {
         let s = code.as_str();
@@ -1093,6 +1094,7 @@ fn all_pl_codes_have_documentation_url() -> Result<(), Box<dyn std::error::Error
         DiagnosticCode::SecurityReadpipe,
         DiagnosticCode::UnusedImport,
         DiagnosticCode::ModuleNotFound,
+        DiagnosticCode::SourceFilterModule,
         DiagnosticCode::HeredocInFormat,
         DiagnosticCode::HeredocInBegin,
         DiagnosticCode::HeredocDynamicDelimiter,

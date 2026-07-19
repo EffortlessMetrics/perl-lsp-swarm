@@ -98,7 +98,7 @@ impl CodeActionsProvider {
 
         actions.extend(source_actions::get_source_actions(&self.source, range));
         actions.extend(super::refactors::get_refactoring_actions(&self.source, ast, range));
-        actions.extend(super::modernize::get_modernize_actions(&self.source));
+        actions.extend(super::modernize::get_modernize_actions(&self.source, ast));
 
         actions
     }

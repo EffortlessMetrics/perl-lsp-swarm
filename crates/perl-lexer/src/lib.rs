@@ -3336,7 +3336,8 @@ impl<'a> PerlLexer<'a> {
         };
         match (is_phaser, &second.token_type) {
             (true, TokenType::LeftBrace) => {
-                return Self::header_ends_at_own_terminator(source, second.start);
+                return Self::header_ends_at_own_terminator(source, second.start)
+                    && Self::block_statement_terminates(&mut lexer);
             }
             (true, _) => return false,
             (false, TokenType::Identifier(_)) => {}
@@ -3358,7 +3359,8 @@ impl<'a> PerlLexer<'a> {
         while let Some(token) = lexer.next_token() {
             match token.token_type {
                 TokenType::LeftBrace if depth == 0 => {
-                    return Self::header_ends_at_own_terminator(source, token.start);
+                    return Self::header_ends_at_own_terminator(source, token.start)
+                        && Self::block_statement_terminates(&mut lexer);
                 }
                 TokenType::Semicolon if depth == 0 => {
                     return allows_semicolon_form
@@ -3369,6 +3371,32 @@ impl<'a> PerlLexer<'a> {
                 }
                 TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
                     depth = depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Confirm that the already-recognized top-level block closes before the
+    /// candidate source ends. This keeps incomplete editor input inside `qw`
+    /// while allowing a later statement after a complete block to be scanned
+    /// independently (#4491).
+    fn block_statement_terminates(lexer: &mut Self) -> bool {
+        let mut depth = 1usize;
+        while let Some(token) = lexer.next_token() {
+            if matches!(token.token_type, TokenType::Error(_) | TokenType::UnknownRest) {
+                return false;
+            }
+            match token.token_type {
+                TokenType::LeftParen | TokenType::LeftBracket | TokenType::LeftBrace => {
+                    depth = depth.saturating_add(1);
+                }
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
+                    depth = depth.saturating_sub(1);
+                    if token.token_type == TokenType::RightBrace && depth == 0 {
+                        return true;
+                    }
                 }
                 _ => {}
             }

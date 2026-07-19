@@ -1258,6 +1258,62 @@ fn test_unclosed_qw_block_starter_word_does_not_borrow_later_statement() -> Resu
     Ok(())
 }
 
+/// An incomplete block remains quote-word content while the editor is still
+/// typing it; recovery should not split on a declaration that has no closer.
+#[test]
+fn test_unclosed_qw_keeps_incomplete_block_as_content() -> Result<(), String> {
+    let code = "my @items = qw(word1\nsub run { print 1;";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("incomplete block recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    if statements.len() != 1 || parser.errors().is_empty() {
+        return Err(format!("incomplete trailing block was falsely split: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
+
+/// Prefixes of supported starter keywords are ordinary qw words and must not
+/// trigger the lexer boundary classifier.
+#[test]
+fn test_unclosed_qw_ignores_block_keyword_prefixes() -> Result<(), String> {
+    for trailing in
+        ["substr($x, 0, 1)", "classify { }", "packaged Foo { }", "printf(\"x\")", "BEGINNER { }"]
+    {
+        let code = format!("my @items = qw(word1 word2\n{trailing}");
+        let mut parser = Parser::new(&code);
+        let ast =
+            parser.parse().map_err(|error| format!("`{trailing}` prefix parse failed: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("expected program root, got {}", ast.to_sexp()));
+        };
+        if statements.len() != 1 {
+            return Err(format!("`{trailing}` prefix falsely split the qw: {}", ast.to_sexp()));
+        }
+    }
+    Ok(())
+}
+
+/// Multibyte qw content must not disturb the byte offsets used when recovering
+/// the following declaration.
+#[test]
+fn test_unclosed_qw_recovers_block_after_multibyte_content() -> Result<(), String> {
+    let code = "my @items = qw(café 😀 word2\nsub run { print 1; }";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("multibyte block recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 2 || !sexp.contains("sub run") || parser.errors().is_empty() {
+        return Err(format!("multibyte block recovery lost the sub: {sexp}"));
+    }
+    Ok(())
+}
+
 #[test]
 fn test_recovery_unclosed_q_brace() {
     let code = "my $str = q{ hello world print 1;";

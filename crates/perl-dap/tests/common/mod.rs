@@ -7,7 +7,8 @@
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
-use std::sync::mpsc::{Receiver, channel};
+use std::collections::VecDeque;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
 // ─── Public surface ───────────────────────────────────────────────────────────
@@ -60,6 +61,11 @@ pub struct DapWorkflowSession {
 // Shared workflow-test helpers are consumed incrementally by DAP scenarios.
 #[allow(dead_code)]
 impl DapWorkflowSession {
+    #[cfg(test)]
+    pub fn with_receiver_for_test(rx: Receiver<DapMessage>, timeout: Duration) -> Self {
+        Self { adapter: DebugAdapter::new(), rx, timeout, seq: 0 }
+    }
+
     /// Create a new session and send `initialize`.
     ///
     /// Returns an error if initialization fails or the `initialized` event is
@@ -476,27 +482,108 @@ impl DapWorkflowSession {
     /// non-matching events (e.g. `output` events interleaved with `stopped`).
     pub fn drain_until_event(&self, event_name: &str) -> Result<DapMessage, String> {
         let deadline = Instant::now() + self.timeout;
+        let mut recent_events = VecDeque::with_capacity(RECENT_EVENT_LIMIT);
         loop {
             let now = Instant::now();
             if now >= deadline {
-                return Err(format!("timeout waiting for event `{event_name}`"));
+                return Err(wait_error("timeout", event_name, &recent_events));
             }
             let remaining = deadline.saturating_duration_since(now);
             match self.rx.recv_timeout(remaining) {
                 Ok(msg) => {
-                    if let DapMessage::Event { event, .. } = &msg
-                        && event == event_name
-                    {
-                        return Ok(msg);
+                    if let DapMessage::Event { event, body, .. } = &msg {
+                        if event == event_name {
+                            return Ok(msg);
+                        }
+
+                        push_recent_event(
+                            &mut recent_events,
+                            summarize_event(event, body.as_ref()),
+                        );
+                        if event == "terminated" {
+                            let reason = body
+                                .as_ref()
+                                .and_then(|value| value.get("reason"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("unspecified");
+                            return Err(wait_error(
+                                &format!("adapter terminated ({})", diagnostic_atom(reason)),
+                                event_name,
+                                &recent_events,
+                            ));
+                        }
                     }
-                    // Non-matching event — discard and keep waiting.
                 }
-                Err(_) => {
-                    return Err(format!("channel closed/timeout waiting for `{event_name}`"));
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(wait_error("timeout", event_name, &recent_events));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(wait_error(
+                        "event channel disconnected",
+                        event_name,
+                        &recent_events,
+                    ));
                 }
             }
         }
     }
+}
+
+const RECENT_EVENT_LIMIT: usize = 8;
+const DIAGNOSTIC_ATOM_LIMIT: usize = 64;
+
+fn push_recent_event(events: &mut VecDeque<String>, event: String) {
+    if events.len() == RECENT_EVENT_LIMIT {
+        let _ = events.pop_front();
+    }
+    events.push_back(event);
+}
+
+fn summarize_event(event: &str, body: Option<&Value>) -> String {
+    if event == "output" {
+        let category = body
+            .and_then(|value| value.get("category"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let byte_count =
+            body.and_then(|value| value.get("output")).and_then(Value::as_str).map_or(0, str::len);
+        return format!("output(category={}, bytes={byte_count})", diagnostic_atom(category));
+    }
+
+    if event == "terminated" {
+        let reason = body
+            .and_then(|value| value.get("reason"))
+            .and_then(Value::as_str)
+            .unwrap_or("unspecified");
+        return format!("terminated(reason={})", diagnostic_atom(reason));
+    }
+
+    diagnostic_atom(event)
+}
+
+fn wait_error(reason: &str, event_name: &str, recent_events: &VecDeque<String>) -> String {
+    let recent = if recent_events.is_empty() {
+        "none".to_string()
+    } else {
+        recent_events.iter().cloned().collect::<Vec<_>>().join(", ")
+    };
+    format!(
+        "{} while waiting for event `{}`; recent events: [{recent}]",
+        diagnostic_atom(reason),
+        diagnostic_atom(event_name)
+    )
+}
+
+fn diagnostic_atom(value: &str) -> String {
+    let mut atom: String = value
+        .chars()
+        .take(DIAGNOSTIC_ATOM_LIMIT)
+        .map(|character| if character.is_control() { '�' } else { character })
+        .collect();
+    if value.chars().count() > DIAGNOSTIC_ATOM_LIMIT {
+        atom.push('…');
+    }
+    atom
 }
 
 /// Returns the test timeout, inflated when running under coverage or profiling.

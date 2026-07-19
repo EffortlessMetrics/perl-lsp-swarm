@@ -80,7 +80,11 @@ fn extract_one_quoted(s: &str) -> Option<(String, bool, &str)> {
         _ => return None,
     };
 
-    let inner = &s[1..];
+    // `quote` is always a 1-byte ASCII `'` or `"` (the match rejects everything
+    // else), so byte 1 is a char boundary today. Slice by `quote.len_utf8()` rather
+    // than a hardcoded 1 so the opening-quote length stays explicit and correct by
+    // construction if a multi-byte quote arm is ever added (#2369).
+    let inner = &s[quote.len_utf8()..];
     let end = find_unescaped_quote(inner, quote)?;
     let content = &inner[..end];
     let rest = &inner[end + quote.len_utf8()..];
@@ -162,4 +166,38 @@ fn resolve_findbin_in_string(s: &str) -> (String, bool) {
     }
 
     (s.to_string(), false)
+}
+
+#[cfg(test)]
+mod extract_one_quoted_tests {
+    use super::extract_one_quoted;
+    use perl_tdd_support::must_some;
+
+    #[test]
+    fn single_and_double_quotes_parse() {
+        let (path, findbin, rest) = must_some(extract_one_quoted("'lib/path'"));
+        assert_eq!(path, "lib/path");
+        assert!(!findbin);
+        assert_eq!(rest, "");
+
+        let (path, _, _) = must_some(extract_one_quoted("\"lib\""));
+        assert_eq!(path, "lib");
+    }
+
+    #[test]
+    fn multibyte_first_char_returns_none_and_never_slices() {
+        // #2369 guard: a non-ASCII leading char is not a quote, so the function
+        // returns None before the opening-quote slice runs. This is what keeps
+        // `&s[quote.len_utf8()..]` on a char boundary; verify it holds so a future
+        // refactor cannot reintroduce a mid-codepoint slice panic.
+        assert_eq!(extract_one_quoted("«weird»"), None);
+        assert_eq!(extract_one_quoted("😀'lib'"), None);
+    }
+
+    #[test]
+    fn trailing_content_after_close_quote_is_returned() {
+        let (path, _, rest) = must_some(extract_one_quoted("'a', 'b'"));
+        assert_eq!(path, "a");
+        assert_eq!(rest, ", 'b'");
+    }
 }
