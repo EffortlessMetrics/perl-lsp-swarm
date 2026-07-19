@@ -189,21 +189,26 @@ pub fn run(config: SeamDiffConfig) -> Result<()> {
         None => crate::utils::project_root()?,
     };
     let report = seam_diff(&config.base, &config.head, &root)?;
+    println!("{}", render_report(&report, &config.format)?);
+    Ok(())
+}
 
-    match config.format.as_str() {
+fn render_report(report: &SeamDiffReport, format: &str) -> Result<String> {
+    let output = match format {
         "human" => {
-            println!("Seam diff: {} -> {}", report.base_sha, report.head_sha);
-            println!("Changed files ({}):", report.changed_files.len());
+            let mut output = format!("Seam diff: {} -> {}\n", report.base_sha, report.head_sha);
+            output.push_str(&format!("Changed files ({}):\n", report.changed_files.len()));
             for file in &report.changed_files {
-                println!("  {file}");
+                output.push_str(&format!("  {file}\n"));
             }
-            println!(
-                "Changed crates ({}): {}",
+            output.push_str(&format!(
+                "Changed crates ({}): {}\n",
                 report.changed_crates.len(),
                 report.changed_crates.join(", ")
-            );
-            println!("is_empty: {}", report.is_empty);
-            println!("is_non_substantive: {}", report.is_non_substantive);
+            ));
+            output.push_str(&format!("is_empty: {}\n", report.is_empty));
+            output.push_str(&format!("is_non_substantive: {}", report.is_non_substantive));
+            output
         }
         "json" => {
             let json = serde_json::json!({
@@ -214,9 +219,8 @@ pub fn run(config: SeamDiffConfig) -> Result<()> {
                 "is_empty": report.is_empty,
                 "is_non_substantive": report.is_non_substantive,
             });
-            let pretty = serde_json::to_string_pretty(&json)
-                .context("Failed to serialize seam diff report to JSON")?;
-            println!("{pretty}");
+            serde_json::to_string_pretty(&json)
+                .context("Failed to serialize seam diff report to JSON")?
         }
         other => {
             return Err(eyre!(
@@ -225,9 +229,9 @@ pub fn run(config: SeamDiffConfig) -> Result<()> {
                  reject unsupported --format values rather than treating them as text/default)."
             ));
         }
-    }
+    };
 
-    Ok(())
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -521,6 +525,35 @@ mod tests {
             message.contains("Unknown --format"),
             "expected an explicit unknown-format error, got: {message}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_render_success_formats_include_resolved_identity_and_shape() -> Result<()> {
+        let report = SeamDiffReport {
+            base_sha: "base-resolved".to_string(),
+            head_sha: "head-resolved".to_string(),
+            changed_files: vec!["crates/perl-lsp/src/lib.rs".to_string()],
+            changed_crates: vec!["perl-lsp".to_string()],
+            is_empty: false,
+            is_non_substantive: false,
+        };
+
+        let human = render_report(&report, "human")?;
+        ensure!(human.contains("Seam diff: base-resolved -> head-resolved"));
+        ensure!(human.contains("  crates/perl-lsp/src/lib.rs"));
+        ensure!(human.contains("Changed crates (1): perl-lsp"));
+        ensure!(human.contains("is_non_substantive: false"));
+
+        let json = render_report(&report, "json")?;
+        let value: serde_json::Value =
+            serde_json::from_str(&json).context("rendered JSON should parse")?;
+        ensure!(value["base"] == "base-resolved");
+        ensure!(value["head"] == "head-resolved");
+        ensure!(value["changed_files"][0] == "crates/perl-lsp/src/lib.rs");
+        ensure!(value["changed_crates"][0] == "perl-lsp");
+        ensure!(value["is_empty"] == false);
+        ensure!(value["is_non_substantive"] == false);
         Ok(())
     }
 }
