@@ -967,7 +967,8 @@ enum Commands {
     /// Report which "seams" (changed files, plus a coarse changed-crate
     /// set) a push changed between a recorded review-epoch marker SHA and
     /// current HEAD — advisory, read-only slice 1 of issue #3986. Composes
-    /// `change_set::resolve_change_set` (see `cargo xtask change-set`
+    /// `change_set::resolve_change_set_with_mode` with
+    /// `DiffMode::DirectTwoDot` (see `cargo xtask change-set`
     /// above); does not reimplement git diff or base resolution.
     ///
     /// This is a reporter, not a gate: it changes no bot trigger, no

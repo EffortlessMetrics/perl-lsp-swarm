@@ -24,10 +24,11 @@
 //!   prefixes only (see [`derive_changed_crates`]'s doc comment for why
 //!   this is a lightweight derivation, not `ci_scope`'s cargo-metadata-aware
 //!   dependency-closure crate detection).
-//! - **`is_non_substantive`** reuses `ci_scope::classify_diff` directly
-//!   (that function *is* reachable as a library — `pub fn classify_diff(files:
-//!   &[String]) -> String` — so this module composes it rather than
-//!   duplicating the prose/docs-as-code/ci_config/code heuristic).
+//! - **`is_non_substantive`** reuses `ci_scope::classify_diff` directly for
+//!   ordinary paths (that function *is* reachable as a library — `pub fn
+//!   classify_diff(files: &[String]) -> String`). Cargo manifests are kept
+//!   substantive here because dependency, feature, and package metadata
+//!   changes must not be treated as documentation-only re-review work.
 //!
 //! # Diff mode: `DirectTwoDot`, not the default `MergeBaseThreeDot`
 //!
@@ -70,8 +71,9 @@ pub struct SeamDiffReport {
     /// `true` when `changed_files` is empty (base and head produced no
     /// diff).
     pub is_empty: bool,
-    /// `true` when the delta is empty, or `ci_scope::classify_diff` (reused,
-    /// not duplicated) classifies it as `prose_only` or `docs_as_code`.
+    /// `true` when the delta is empty, or the reused
+    /// `ci_scope::classify_diff` classifies it as `prose_only` or
+    /// `docs_as_code` without any Cargo manifest.
     pub is_non_substantive: bool,
 }
 
@@ -135,10 +137,14 @@ pub fn seam_diff(base_sha: &str, head_sha: &str, root: &Path) -> Result<SeamDiff
     let changed_files = resolved.changed_paths;
     let changed_crates = derive_changed_crates(&changed_files);
     let is_empty = changed_files.is_empty();
-    let is_non_substantive = is_empty || {
-        let diff_class = ci_scope::classify_diff(&changed_files);
-        diff_class == "prose_only" || diff_class == "docs_as_code"
-    };
+    let has_cargo_manifest = changed_files
+        .iter()
+        .any(|file| file.ends_with("Cargo.toml") || file.ends_with("Cargo.lock"));
+    let is_non_substantive = is_empty
+        || (!has_cargo_manifest && {
+            let diff_class = ci_scope::classify_diff(&changed_files);
+            diff_class == "prose_only" || diff_class == "docs_as_code"
+        });
 
     Ok(SeamDiffReport {
         base_sha,
@@ -358,6 +364,30 @@ mod tests {
         ensure!(
             report.is_non_substantive,
             "a docs-only change must classify as non-substantive via the reused ci_scope classifier"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_seam_diff_cargo_manifest_change_is_substantive() -> Result<()> {
+        let tmp = tempfile::tempdir().context("failed to create tempdir")?;
+        let repo = tmp.path().join("repo");
+        init_repo(&repo, "main")?;
+        commit_file(&repo, "README.md", "init\n", "init")?;
+        let epoch = head_sha(&repo)?;
+
+        commit_file(
+            &repo,
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\n",
+            "build: add package metadata",
+        )?;
+
+        let report = seam_diff(&epoch, "HEAD", &repo)?;
+        ensure!(!report.is_empty, "expected a non-empty manifest diff");
+        ensure!(
+            !report.is_non_substantive,
+            "Cargo manifest changes must remain substantive even when ci_scope classifies TOML as docs-as-code"
         );
         Ok(())
     }
