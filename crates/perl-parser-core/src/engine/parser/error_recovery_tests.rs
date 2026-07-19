@@ -1239,6 +1239,8 @@ fn test_unclosed_qw_block_starter_word_does_not_borrow_later_statement() -> Resu
             "my @a = qw(word\nclass->new(1)->run({ x => 1 });",
             "class->new",
         ),
+        ("sub name on later line", "my @a = qw(word\nsub\nrun\n{ 1 }", "sub"),
+        ("package name on later line", "my @a = qw(alpha\npackage\nbeta\n{ 1 }", "package"),
     ] {
         let mut parser = Parser::new(code);
         let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;

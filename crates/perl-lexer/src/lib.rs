@@ -3411,6 +3411,13 @@ impl<'a> PerlLexer<'a> {
     /// starter-shaped quote-word from borrowing a later statement's `{`/`;`.
     fn header_ends_at_own_terminator(source: &str, terminator_start: usize) -> bool {
         let header = &source[..terminator_start];
+        let first_line = header.lines().next().unwrap_or_default();
+        let first_word = first_line.split_whitespace().next();
+        if matches!(first_word, Some("sub" | "package" | "class"))
+            && first_line.split_whitespace().nth(1).is_none()
+        {
+            return false;
+        }
         header
             .rsplit_once('\n')
             .is_none_or(|(_, line_prefix)| line_prefix.chars().all(char::is_whitespace))
