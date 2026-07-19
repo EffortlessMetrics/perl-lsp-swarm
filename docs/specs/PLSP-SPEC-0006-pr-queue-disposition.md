@@ -1,233 +1,335 @@
-# PLSP-SPEC-0006: PR queue disposition
+# PLSP-SPEC-0006: PR semantic incorporation and disposition
 
-Status: accepted
+Status: accepted (amended 2026-07-19)
 Owner: perl-lsp maintainers
 Linked proposal: [PLSP-PROP-0001](../proposals/PLSP-PROP-0001-real-perl-editor-trust.md)
-Linked ADRs: none yet
-Linked plan: [0.14.0 Readiness Queue](../releases/0.14.0-readiness.md)
-Status impact: PR review comments, duplicate-cluster cleanup, merge and close
-recommendations
+Linked program: [#4552](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4552)
+Implementation issues: [#4553](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4553), [#4554](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4554), [#4556](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4556), [#4560](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4560)
+Status impact: PR review, repair, conflict resolution, stack handling, squash merge, supersession, and close recommendations
 
-## Current implementation status
+## Amendment from the original contract
 
-This spec is accepted as the queue-disposition contract for maintainer and
-agent work. The current implementation path is manual: reviewers use the
-classification, disposition, and comment-template fields below when reviewing,
-merging, or closing PRs and duplicate clusters.
+The original accepted text required every retained PR to rebase onto the current
+base before proof and squash merge. That requirement is superseded by this
+amendment.
 
-The intended enforcement surface is an `xtask pr-disposition` command family:
+The repository squash-merges PRs. The PR branch's age, commit count, merge-base
+age, and history linearity are therefore not integration goals. A branch update
+is a repair tool selected for a concrete conflict, semantic interaction, stack,
+policy, or proof reason. It is not a ceremonial freshness step.
 
-```bash
-cargo xtask pr-disposition template
-cargo xtask pr-disposition check --pr-body <file>
-```
+The original contract's valuable requirements remain in force:
 
-Until that checker exists, PR comments and close rationales must still follow
-this spec manually. A future implementation PR may add the checker without
-changing this contract.
+- open PRs are evidence, not a blind ordered queue;
+- old, large, agent-authored, behind, CI-stale, or conflict-prone work is not
+  closed without semantic review;
+- sibling and duplicate overlap is inspected before choosing a winner;
+- unique tests, implementation ideas, and failure evidence are preserved;
+- merge and close decisions carry exact rationale;
+- product failures, test failures, policy failures, and instrument failures are
+  classified separately.
 
 ## Contract
 
-Open PRs are backlog evidence, not an ordered merge queue. A maintainer or
-agent must review each PR or duplicate cluster against current `master`, choose
-an explicit disposition, and leave enough rationale that a later reviewer can
-understand why the PR was merged, retained, stacked, or closed.
+A maintainer or agent reviews each PR or duplicate cluster against current
+repository reality, then chooses an explicit semantic disposition.
 
-Queue work must preserve the Real Perl Editor Trust lane rule: review, improve,
-merge, or close with exact rationale. Do not close a branch just because it is
-old, behind `master`, large, agent-generated, CI-stale, or conflict-prone when
-the work is still rebaseable and aligned with an active spec or product goal.
+The governing rules are:
 
-The required maintenance loop is:
+1. **Age is metadata, not a disposition.** Inactivity may select a PR for
+   current review. It cannot select close, rebase, cherry-pick, or replacement.
+2. **Review the existing branch first.** Repair it in place when it remains a
+   usable owner of the change.
+3. **Fetch current `main` for comparison; do not automatically merge it into the
+   PR.** Record whether `main` changed the same semantic seam.
+4. **Preserve exact-head evidence.** Unnecessary pushes invalidate current-head
+   checks, review convergence, and review continuity.
+5. **Separate PR-head proof from integration proof.** A changed integration
+   basis may require new combined-tree proof without changing or re-reviewing an
+   unchanged PR head.
+6. **Supersession is proven, not inferred.** Similar titles, shared files,
+   shared base commits, diff size, age, or broad theme are insufficient.
+7. **The irreversible merge is a squash merge of the expected full head SHA.**
+   If the head moved, authorization is stale.
 
-1. Inspect current `master`.
-2. Compare duplicates and sibling PRs that touch the same crates, files, or
-   behavior.
-3. Select the retained branch or stack order.
-4. Rebase onto current `master`.
-5. Fix conflicts only inside the PR's intended scope.
-6. Run proof appropriate to the touched surface.
-7. Squash merge when the retained PR is clean and still valuable.
-8. Close superseded PRs with a specific rationale and retained PR reference.
-9. Checkpoint after merge bursts.
-10. Pause the merge train for control-plane failures.
+## Evidence identities
 
-Old PR descriptions, stale green checks, and prior agent claims are review
-inputs. They are not proof after rebase.
+Three identities are distinct and must not substitute for one another:
 
-## Classifications
+| Identity | Owns | Invalidated by |
+| --- | --- | --- |
+| PR head SHA | implementation diff, focused proof, current-head checks, review convergence, substantive-thread dispositions | any PR-head change |
+| integration base plus merge-group or synthetic integration SHA | applicability to current `main`, combined-tree compile/test behavior, interaction with queued work | integration-base or candidate-set change |
+| post-merge `main` SHA | landed result, issue/spec closeout, source-truth and cleanup reconciliation | a later mainline change only for claims that depend on it |
 
-Every PR or cluster review must first assign one classification:
+A reviewer may inspect both the exact PR head and current `main`. Each conclusion
+must say which object it describes.
 
-| Classification | Meaning |
-| --- | --- |
-| `merge-candidate` | In-scope, valuable, and likely mergeable after fresh proof |
-| `needs-rebase` | Valuable but not yet reviewed against current `master` |
-| `needs-fix` | Valuable but requires in-scope code, test, docs, or proof repair |
-| `superseded` | Current `master` or another retained PR already covers the value |
-| `draft-hold` | Investigation, proposal, or unstable work that should not merge yet |
-| `risky-refactor` | Refactor with enough blast radius to need behavior proof first |
-| `stack-member` | Valuable only as part of an explicit stack order |
+## Invalidation matrix
 
-Classification is not final disposition. For example, a PR may be classified
-`needs-rebase` and later disposed as `merged`, or classified `superseded` and
-disposed as `superseded-by:<PR>`.
+| Event | PR-head proof | Review convergence | Integration proof | Required response |
+| --- | --- | --- | --- | --- |
+| PR head changes | stale | stale for the resulting changed seams | stale | return to current-head review and proof |
+| `main` advances in unrelated areas | current | current | stale only when tied to the older integration basis | refresh integration decision when applicable; leave the PR head unchanged |
+| `main` changes the same semantic seam | remains evidence for the reviewed head, but interaction is unresolved | re-review changed/interacting seams as needed | stale or newly required | `REVIEW_SEMANTIC_INTERACTION` |
+| textual conflict appears | current but not integrable | current unless repair changes the head | blocked | `RESOLVE_CONFLICTS` |
+| a stacked prerequisite lands in a materially different shape | current for the old stack basis | current only for unchanged child seams | stale | compare the child-only delta and select a bounded stack repair |
+| live policy or required-check set changes | remains evidence | reevaluate applicability | stale or `NOT_PROVEN` | recompute readiness from live policy |
 
-## Valid Dispositions
+## Required review packet
 
-A PR may be closed or considered complete only with one of these dispositions:
+Each PR selected for convergence should produce one bounded current packet:
 
-| Disposition | Required rationale |
-| --- | --- |
-| `merged` | Squash merge completed after fresh proof on current `master` |
-| `superseded-by:<PR>` | Retained PR or merged PR includes the behavior, tests, or docs |
-| `duplicate-of:<PR>` | Another open PR owns the same scope and should be reviewed instead |
-| `misaligned-with:<spec-or-proposal>` | The work contradicts an active spec, proposal, ADR, or claim boundary |
-| `unsafe-without-redesign` | The approach has reviewed safety or correctness problems that cannot be fixed in scope |
-| `stale-investigation-artifact` | The PR was a discovery artifact and should not become product code |
-| `blocked-by-missing-contract` | The work needs a spec, policy ledger, or acceptance contract before implementation can proceed |
+```yaml
+schema: pr-incorporation-v1
+repository: EffortlessMetrics/perl-lsp-swarm
+pr: 1234
+verified_at: 2026-07-19T00:00:00Z
 
-If current `master` already contains the useful behavior, use
-`superseded-by:<PR>` when the covering PR is known. If the covering change is
-not tied to an obvious PR, cite the commit, file, or test evidence in the close
-rationale.
+identity:
+  head_sha: <full sha>
+  base_sha: <full sha>
+  current_main_sha: <full sha>
+  source_basis: PROVEN
 
-## Invalid Closure Reasons
+mergeability:
+  mergeable: true
+  actual_conflicts: false
 
-These are not valid close rationales by themselves:
+issue:
+  still_valid: true
+  acceptance_criteria:
+    - ...
 
-- old
-- behind `master`
-- large
-- agent-generated
-- CI-stale
-- conflict-prone but rebaseable
-- old checks are red
-- old checks are green
-- another PR title sounds similar but overlap was not checked
+current_main_interaction:
+  same_semantic_seam_changes: []
+  material_interaction: false
+  equivalent_implementation_landed: false
+  stacked_prerequisite_changed: false
 
-Any of those facts may affect priority or proof needs. None of them disposes of
-the work without overlap review and a valid disposition.
+implementation:
+  unique_value:
+    - ...
+  concrete_defects: []
+  contamination: []
 
-## Acceptance
+proof:
+  red_green_present: true
+  focused_tests: green
+  required_checks: green
+  not_proven: []
 
-A PR or cluster disposition satisfies this spec when the maintainer comment or
-PR body includes:
+review:
+  unresolved_substantive: 0
+  current_head_reviewed: true
 
-```text
-classification:
-overlap checked:
-current master already contains:
-retained branch:
-proof run:
-close/merge rationale:
-follow-up:
+disposition: MERGE_EXISTING_HEAD
+reason: ...
 ```
 
-The comment must be concrete enough to answer:
+The packet is a review index, not a replacement for GitHub, the diff, test
+artifacts, or current-head merge readiness.
 
-- Which sibling PRs, merged commits, or touched files were checked?
-- Which branch is retained, if any?
-- What proof ran after rebase?
-- What exact behavior, test, docs, or policy value is being merged or retired?
-- What follow-up remains, if any?
+## Canonical dispositions
 
-When reviewing a duplicate cluster, the retained PR must be identified before
-closing sibling PRs. If two PRs are both valuable, the comment must name the
-stack order instead of closing one as a vague duplicate.
+| Disposition | Meaning |
+| --- | --- |
+| `MERGE_EXISTING_HEAD` | The existing head is useful, correct, conflict-free, reviewed, and needs no mutation before squash merge |
+| `REPAIR_EXISTING_BRANCH` | The branch remains the best owner; fix concrete implementation, proof, or review defects there |
+| `RESOLVE_CONFLICTS` | An actual textual conflict exists; inspect it and select the smallest correct repair |
+| `REVIEW_SEMANTIC_INTERACTION` | Current `main` changed the same contract or model; compare before editing |
+| `UPDATE_BASE_REQUIRED` | Base mutation is required for one recorded concrete reason |
+| `SALVAGE_UNIQUE_DELTA` | Branch topology or contamination makes the branch unusable; preserve bounded unique work elsewhere |
+| `SUPERSEDED_WITH_EVIDENCE` | A better implementation landed or owns the complete acceptance boundary; unique value has been harvested |
+| `NOT_PROVEN` | Required source, policy, tool, or proof evidence could not be established |
+| `BLOCKED` | A product, architecture, ownership, policy, or external-authority decision is required |
 
-When a broad gate fails because a gate wrapper times out but the underlying
-command passes directly, classify it as a control-plane timeout rather than a
-product-code failure. Capture the direct reproduction and decide whether a
-small control-plane PR should land before more merges.
+There is no `RETIRE_BECAUSE_OLD` disposition. `needs-rebase` is not a semantic
+classification.
 
-## Comment Template
+## Valid reasons to update a PR branch
 
-Maintainers and agents may paste this template into PR review, merge, or close
-comments:
+`UPDATE_BASE_REQUIRED` must name at least one concrete reason:
+
+- an actual textual merge conflict;
+- current `main` changed the same semantic contract and the implementation must
+  adapt;
+- a stacked prerequisite changed so the child cannot be reviewed or tested
+  independently;
+- live branch protection or merge-queue policy requires a current integration
+  basis;
+- meaningful proof cannot be interpreted without incorporating a prerequisite
+  or current contract.
+
+These facts are insufficient by themselves:
+
+- the PR is old or inactive;
+- the branch is many commits behind;
+- unrelated files changed on `main`;
+- the branch contains a merge commit or non-linear history;
+- a cleaner graph would look nicer;
+- a reviewer feels more comfortable after a refresh without naming a semantic,
+  conflict, policy, stack, or proof reason.
+
+When a base update is required, record branch ownership, expected old head,
+force-push authorization when applicable, evidence invalidated by the mutation,
+and the proof/review that must rerun.
+
+## Conflict and unknown-state semantics
+
+Queue observations must distinguish:
+
+| State | Meaning | Default action |
+| --- | --- | --- |
+| `MERGEABLE` | GitHub reports no textual conflict | Continue normal semantic review and exact-head proof regardless of age |
+| `CONFLICTING` | GitHub reports an actual textual conflict | Inspect mechanical versus semantic conflict; do not assume rebase |
+| `UNKNOWN_NOT_PROVEN` | GitHub cannot establish mergeability or required state | Retry boundedly or report `NOT_PROVEN`; do not mutate or close |
+| `IDLE_REVIEW_NEEDED` | No qualifying activity during the observation window | Run current semantic review; do not infer abandonment or obsolescence |
+| `SUPERSEDED_CANDIDATE` | A sibling or landed change may cover the same acceptance boundary | Compare full deltas and harvest unique value before closure |
+
+`UNSTABLE` and other GitHub summaries must be decomposed into required proof,
+advisory proof, review, policy, or platform state before deciding what blocks.
+
+## Stacked PRs under squash merge
+
+For a stack:
+
+1. record parent PR/head and child head;
+2. inspect the child-only delta and cumulative stack behavior separately;
+3. after the parent squash-merges, compare the child's unique delta with landed
+   `main`;
+4. treat duplicated parent commits as topology to reconcile, not evidence that
+   the child is obsolete;
+5. retarget, merge-main, rebase, cherry-pick, or reconstruct only when needed to
+   preserve and make the child delta reviewable;
+6. bind new proof to the resulting child head;
+7. preserve prior review evidence for unchanged seams.
+
+## Duplicate and supersession handling
+
+Never classify a PR as duplicate or superseded from:
+
+- shared base commit;
+- shared helper or test file;
+- similar diffstat;
+- same broad issue theme;
+- title similarity;
+- age, inactivity, or branch divergence;
+- automated clustering alone.
+
+Compare changed files, semantic behavior, helpers/APIs, assertions, negative
+controls, and acceptance criteria.
+
+A `SUPERSEDED_WITH_EVIDENCE` or duplicate closure records:
 
 ```text
+winning PR/commit/current-main evidence:
+acceptance criteria compared:
+unique tests preserved:
+unique implementation ideas preserved:
+review/failure evidence preserved:
+why the original branch is no longer the best owner:
+follow-up owner, if any:
+```
+
+If two PRs are independently valuable, sequence both or define a stack instead
+of discarding one as a vague duplicate.
+
+## Proof and merge authorization
+
+Proof is selected by the touched behavior and risk, not by branch age.
+
+Before merge:
+
+- required checks apply to the exact current head;
+- current-head review convergence is satisfied;
+- substantive conversations are resolved with evidence where required;
+- live policy permits integration;
+- applicable integration proof is current for its base/group;
+- the PR remains mergeable;
+- the merge call uses squash semantics and the expected full head SHA.
+
+A local command may preflight or compute evidence, but a merge-relevant gate must
+be visible through the normal GitHub-integrated review, CI, queue, or readiness
+surface. Missing or broken instrumentation is `NOT_PROVEN`, not success and not
+permission to change unrelated production code.
+
+Same-head proof refresh and base integration are separate operations. Missing,
+cancelled, or stale workflow evidence on an unchanged head should be rerun or
+dispatched against that head when supported. It does not by itself authorize an
+`update-branch`, empty commit, rebase, or force-push.
+
+## Comment template
+
+```text
+source basis:
+head/base/current-main identity:
 classification:
 disposition:
+acceptance criteria checked:
 overlap checked:
-current master already contains:
-retained branch:
-proof run:
-result:
+current main already contains:
+material same-seam interaction:
+unique value:
+concrete defects:
+proof run / required proof:
+review convergence:
+base update reason, if any:
 close/merge rationale:
 follow-up:
 ```
 
-Use `none` only when the field is truly not applicable. For duplicate clusters,
-`overlap checked` should name the PR numbers or files compared.
+Use `none` only when a field is genuinely not applicable.
 
-## Automation Hooks
+## Automation boundary
 
-`cargo xtask pr-disposition template` must print the comment-template fields in
-this spec without adding PR-specific values.
+A structural checker may validate identity fields, allowed dispositions,
+concrete base-update reasons, and supersession-harvest fields. It must not decide
+whether an implementation is correct, valuable, semantically superseded, or
+merge-authorized.
 
-`cargo xtask pr-disposition check --pr-body <file>` must fail when a queue
-disposition body omits required fields, uses an invalid closure reason as the
-only rationale, or closes a PR without one of the valid dispositions above.
+New enforcement starts advisory when existing repository state would produce
+false blocks. Historical and archived documents remain evidence, not current
+instruction.
 
-The checker must not decide whether a PR is correct, mergeable, or valuable.
-Its job is structural: make sure the maintainer left the classification,
-overlap, proof, and rationale evidence that this spec requires.
+## Invalid closure reasons
 
-## Proof Commands
+None of these is a valid close rationale by itself:
 
-All PR dispositions must run at least the proof required by the touched surface
-after rebase. For ordinary code PRs, start with:
-
-```bash
-git diff --check
-./scripts/storage-doctor
-MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe xtask fmt
-```
-
-For touched Rust crates, run the targeted crate gates:
-
-```bash
-MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe check --all-targets -p <crate> --profile agent --locked
-MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe test -p <crate> --profile agent --locked
-MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe clippy -p <crate> --profile agent --locked -- -D warnings -A missing_docs
-```
-
-Parser production changes must also include the relevant parser or corpus
-receipt. LSP stdio or end-to-end changes must include the relevant serialized
-smoke or test binary when applicable. Refactors must follow the refactor
-acceptance contract when that spec exists.
-
-Docs-only disposition specs may use:
-
-```bash
-git diff --check
-MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe xtask ci-hygiene check-doc-paths docs
-```
-
-Additional docs checks should run when the changed doc surface has a registered
-checker.
+- old or inactive;
+- behind `main`;
+- large;
+- agent-generated;
+- CI-stale;
+- conflict-prone but repairable;
+- old checks are red or green;
+- another PR title sounds similar;
+- a current-main rewrite exists but the acceptance boundary was not compared.
 
 ## Non-goals
 
-- Do not replace code review, security review, or maintainer judgment.
 - Do not require every open PR to merge.
-- Do not create a numeric merge order.
-- Do not define release readiness or publish approval.
-- Do not authorize broad refactors without behavior proof.
-- Do not define branch deletion policy.
-- Do not hand-edit generated status.
+- Do not prohibit a necessary rebase, merge-main, update-branch, retarget,
+  cherry-pick, or reconstruction.
+- Do not weaken code review, security review, required checks, review
+  convergence, or protected integration.
+- Do not define release readiness or publication approval.
+- Do not define branch/worktree deletion safety; the worktree and reconciliation
+  authorities own cleanup.
+- Do not create a lifecycle database, fixed agent topology, or numeric global
+  merge order.
 
-## Claim Boundaries
+## Claim boundaries
 
-A disposition comment proves only that the named PR or cluster was reviewed
-against the stated current `master` and proof surface. It does not prove broad
-product correctness, release readiness, support-tier promotion, parser bucket
-movement, or provider cutover.
+A disposition packet proves only that the named PR/head and comparison basis
+were reviewed through the stated evidence boundary. It does not prove broad
+product correctness, release readiness, support-tier promotion, or unrelated
+provider behavior.
 
-Closing a PR as superseded means the retained branch or current `master`
-contains the specific reviewed value. It does not mean every idea in the closed
-PR was globally rejected.
+Closing a PR as superseded means the cited replacement contains the specific
+reviewed value and that unique value was preserved. It does not reject every idea
+in the closed PR.
 
-Merging a PR means the stated scope passed fresh proof. It does not validate old
-green checks, unrelated claims in the PR body, or sibling PRs in the same area.
+Merging a PR means the expected head passed the required review and proof at the
+stated boundary. It does not validate stale checks, unrelated PR-body claims, or
+sibling branches.
