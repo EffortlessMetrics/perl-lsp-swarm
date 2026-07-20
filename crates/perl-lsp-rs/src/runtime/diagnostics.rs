@@ -561,21 +561,52 @@ impl LspServer {
             // Wire semantic queries when workspace data is available for this URI.
             // Falls back to NullSemanticQueries (legacy behavior) when the URI is
             // not yet indexed or the workspace feature is disabled.
+            //
+            // When the file consumes roles via `with` clauses, a scoped
+            // PackageGraphIndex carrying ComposesRole edges is built on demand so
+            // that transitive_role_methods can traverse cross-file role composition
+            // for PL303.  Files with no `with` clauses skip the graph build entirely
+            // (fast path).
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             let mut diagnostics = {
                 let semantic_diags = self.workspace_index().and_then(|workspace_index| {
-                    workspace_index.with_semantic_queries_for_uri(uri, |file_id, queries| {
-                        provider.get_diagnostics_with_search_context_and_semantics(
-                            ast,
-                            &parse_errors,
-                            &text,
-                            Some(&resolver),
-                            &search_context,
-                            source_path.as_deref(),
-                            file_id,
-                            &queries,
+                    let seed_roles = perl_lsp_rs_core::providers::diagnostics::role_graph_scope::consumed_role_names(ast);
+                    if seed_roles.is_empty() {
+                        workspace_index.with_semantic_queries_for_uri(uri, |file_id, queries| {
+                            provider.get_diagnostics_with_search_context_and_semantics(
+                                ast,
+                                &parse_errors,
+                                &text,
+                                Some(&resolver),
+                                &search_context,
+                                source_path.as_deref(),
+                                file_id,
+                                &queries,
+                            )
+                        })
+                    } else {
+                        let scoped_graph =
+                            perl_lsp_rs_core::providers::diagnostics::role_graph_scope::build_role_scoped_package_graph(
+                                &workspace_index,
+                                &seed_roles,
+                            );
+                        workspace_index.with_semantic_queries_for_uri_and_graph(
+                            uri,
+                            &scoped_graph,
+                            |file_id, queries| {
+                                provider.get_diagnostics_with_search_context_and_semantics(
+                                    ast,
+                                    &parse_errors,
+                                    &text,
+                                    Some(&resolver),
+                                    &search_context,
+                                    source_path.as_deref(),
+                                    file_id,
+                                    &queries,
+                                )
+                            },
                         )
-                    })
+                    }
                 });
                 semantic_diags.unwrap_or_else(|| {
                     provider.get_diagnostics_with_search_context(
@@ -1480,24 +1511,51 @@ impl LspServer {
                 let source_path = source_path_from_uri(uri_str);
 
                 // Wire semantic queries when workspace data is available for this URI.
+                // See the push-diagnostics path above for the role_graph_scope
+                // rationale; this pull path applies the same scoped-graph wiring.
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
                 let mut diagnostics = {
                     let semantic_diags = self.workspace_index().and_then(|workspace_index| {
-                        workspace_index.with_semantic_queries_for_uri(
-                            uri_str,
-                            |file_id, queries| {
-                                provider.get_diagnostics_with_search_context_and_semantics(
-                                    ast,
-                                    parse_errors,
-                                    &doc.text,
-                                    Some(&resolver),
-                                    &search_context,
-                                    source_path.as_deref(),
-                                    file_id,
-                                    &queries,
-                                )
-                            },
-                        )
+                        let seed_roles = perl_lsp_rs_core::providers::diagnostics::role_graph_scope::consumed_role_names(ast);
+                        if seed_roles.is_empty() {
+                            workspace_index.with_semantic_queries_for_uri(
+                                uri_str,
+                                |file_id, queries| {
+                                    provider.get_diagnostics_with_search_context_and_semantics(
+                                        ast,
+                                        parse_errors,
+                                        &doc.text,
+                                        Some(&resolver),
+                                        &search_context,
+                                        source_path.as_deref(),
+                                        file_id,
+                                        &queries,
+                                    )
+                                },
+                            )
+                        } else {
+                            let scoped_graph =
+                                perl_lsp_rs_core::providers::diagnostics::role_graph_scope::build_role_scoped_package_graph(
+                                    &workspace_index,
+                                    &seed_roles,
+                                );
+                            workspace_index.with_semantic_queries_for_uri_and_graph(
+                                uri_str,
+                                &scoped_graph,
+                                |file_id, queries| {
+                                    provider.get_diagnostics_with_search_context_and_semantics(
+                                        ast,
+                                        parse_errors,
+                                        &doc.text,
+                                        Some(&resolver),
+                                        &search_context,
+                                        source_path.as_deref(),
+                                        file_id,
+                                        &queries,
+                                    )
+                                },
+                            )
+                        }
                     });
                     semantic_diags.unwrap_or_else(|| {
                         provider.get_diagnostics_with_search_context(

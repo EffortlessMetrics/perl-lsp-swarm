@@ -59,6 +59,9 @@ pub use lints::deprecated;
 pub use lints::missing_module;
 pub use lints::package_subroutine;
 pub(crate) use lints::printf_format::{count_format_specifiers, unquote_string};
+/// Scoped role-composition graph builder for PL303 cross-file diagnostics.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod role_graph_scope;
 /// Same-file Moo/Moose role conflict detection.
 pub use lints::role_conflicts;
 pub use lints::security;
