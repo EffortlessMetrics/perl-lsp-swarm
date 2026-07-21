@@ -4,17 +4,17 @@
 //! method names. Roles defined in the same file are resolved from the local
 //! [`ClassModel`]; roles defined in other files — and roles reached through
 //! transitive composition — are resolved via the `resolve_role_methods`
-//! callback. That callback is backed by the workspace semantic index *only
-//! when the caller supplies a graph-backed `SemanticQueries`*
-//! (`transitive_role_methods`). The current production diagnostics path
-//! constructs its queries without a `PackageGraphIndex`, so the resolver
-//! returns empty there and the lint degrades to same-file analysis until that
-//! wiring lands; cross-file/transitive detection is exercised by tests and
-//! ready for it.
+//! callback. In the live server the production diagnostics path supplies a
+//! `PackageGraphIndex`-backed [`WorkspaceSemanticQueries`] through
+//! `WorkspaceIndex::with_semantic_queries_for_uri`, so
+//! `transitive_role_methods` traverses the live workspace package graph and
+//! cross-file / transitive role conflicts are detected end-to-end.
 //!
 //! An unresolved role (external, dynamically composed, or simply not indexed)
 //! contributes no methods and therefore cannot create a conflict: the lint
 //! stays conservative and never guesses.
+//!
+//! [`WorkspaceSemanticQueries`]: perl_workspace::semantic::queries::WorkspaceSemanticQueries
 
 use std::collections::{HashMap, HashSet};
 
