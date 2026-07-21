@@ -4,13 +4,13 @@
 //! method names. Roles defined in the same file are resolved from the local
 //! [`ClassModel`]; roles defined in other files — and roles reached through
 //! transitive composition — are resolved via the `resolve_role_methods`
-//! callback. That callback is backed by the workspace semantic index *only
-//! when the caller supplies a graph-backed `SemanticQueries`*
-//! (`transitive_role_methods`). The current production diagnostics path
-//! constructs its queries without a `PackageGraphIndex`, so the resolver
-//! returns empty there and the lint degrades to same-file analysis until that
-//! wiring lands; cross-file/transitive detection is exercised by tests and
-//! ready for it.
+//! callback. That callback is backed by
+//! `SemanticQueries::transitive_role_methods`, which walks `ComposesRole`
+//! edges in the `PackageGraphIndex`. The production diagnostics path builds a
+//! bounded per-request `PackageGraphIndex` for files that consume roles (via
+//! `role_graph_scope::build_role_scoped_package_graph`) and supplies it
+//! through `WorkspaceIndex::with_semantic_queries_for_uri_and_graph`, so
+//! cross-file and transitive detection are live in the running server.
 //!
 //! An unresolved role (external, dynamically composed, or simply not indexed)
 //! contributes no methods and therefore cannot create a conflict: the lint

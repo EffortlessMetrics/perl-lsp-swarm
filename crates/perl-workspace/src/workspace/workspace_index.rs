@@ -3324,6 +3324,44 @@ impl WorkspaceIndex {
         Some(f(file_id, queries))
     }
 
+    /// Invoke a scoped callback with [`WorkspaceSemanticQueries`] built from
+    /// the current semantic indexes for the given URI, using a caller-supplied
+    /// `PackageGraphIndex` instead of the index-internal one.
+    ///
+    /// Use this when the caller has built a request-scoped graph (e.g. a
+    /// bounded `ComposesRole` subgraph for role-conflict diagnostics) that
+    /// enriches cross-file resolution beyond what the persistent index holds.
+    /// Lock order is identical to [`Self::with_semantic_queries_for_uri`]:
+    /// shards → reference_index → import_export_index (no package-graph lock
+    /// — the caller owns the graph).
+    ///
+    /// Returns `Some(result)` if the URI is indexed and semantic data is
+    /// available, `None` if the URI has not been indexed or its fact shard is
+    /// absent.
+    pub fn with_semantic_queries_for_uri_and_graph<R>(
+        &self,
+        uri: &str,
+        package_graph: &PackageGraphIndex,
+        f: impl FnOnce(FileId, crate::semantic::queries::WorkspaceSemanticQueries<'_>) -> R,
+    ) -> Option<R> {
+        let key = DocumentStore::uri_key(&Self::normalize_uri(uri));
+
+        let shards_guard = self.fact_shards.read();
+        let ref_guard = self.semantic_reference_index.read();
+        let ie_guard = self.semantic_import_export_index.read();
+
+        let file_id = shards_guard.get(&key)?.file_id;
+
+        let queries = crate::semantic::queries::WorkspaceSemanticQueries::with_package_graph(
+            &ref_guard,
+            &ie_guard,
+            &shards_guard,
+            package_graph,
+        );
+
+        Some(f(file_id, queries))
+    }
+
     /// Return the number of indexed files in the workspace
     pub fn file_count(&self) -> usize {
         let files = self.files.read();
