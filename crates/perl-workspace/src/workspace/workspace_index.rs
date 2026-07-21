@@ -3324,6 +3324,41 @@ impl WorkspaceIndex {
         Some(f(file_id, queries))
     }
 
+    /// Like [`with_semantic_queries_for_uri`] but uses a caller-supplied
+    /// [`PackageGraphIndex`] instead of the workspace-resident persistent graph.
+    ///
+    /// The persistent graph holds only `Inherits` edges (populated from HIR);
+    /// `ComposesRole` edges are never emitted by the HIR lowerer and must be
+    /// built on demand by the caller (e.g. from `SemanticModel::package_edges()`).
+    /// This variant lets the diagnostics path pass in a request-scoped graph
+    /// that contains those edges for cross-file PL303 role-conflict detection.
+    ///
+    /// Lock order: shards → reference_index → import_export_index.
+    /// The package-graph lock is not acquired — the caller supplies the graph.
+    pub fn with_semantic_queries_for_uri_and_graph<R>(
+        &self,
+        uri: &str,
+        package_graph: &crate::semantic::package_graph::PackageGraphIndex,
+        f: impl FnOnce(FileId, crate::semantic::queries::WorkspaceSemanticQueries<'_>) -> R,
+    ) -> Option<R> {
+        let key = DocumentStore::uri_key(&Self::normalize_uri(uri));
+
+        let shards_guard = self.fact_shards.read();
+        let ref_guard = self.semantic_reference_index.read();
+        let ie_guard = self.semantic_import_export_index.read();
+
+        let file_id = shards_guard.get(&key)?.file_id;
+
+        let queries = crate::semantic::queries::WorkspaceSemanticQueries::with_package_graph(
+            &ref_guard,
+            &ie_guard,
+            &shards_guard,
+            package_graph,
+        );
+
+        Some(f(file_id, queries))
+    }
+
     /// Return the number of indexed files in the workspace
     pub fn file_count(&self) -> usize {
         let files = self.files.read();

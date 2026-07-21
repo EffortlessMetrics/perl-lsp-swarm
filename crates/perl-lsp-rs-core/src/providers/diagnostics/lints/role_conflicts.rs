@@ -4,13 +4,16 @@
 //! method names. Roles defined in the same file are resolved from the local
 //! [`ClassModel`]; roles defined in other files — and roles reached through
 //! transitive composition — are resolved via the `resolve_role_methods`
-//! callback. That callback is backed by the workspace semantic index *only
-//! when the caller supplies a graph-backed `SemanticQueries`*
-//! (`transitive_role_methods`). The current production diagnostics path
-//! constructs its queries without a `PackageGraphIndex`, so the resolver
-//! returns empty there and the lint degrades to same-file analysis until that
-//! wiring lands; cross-file/transitive detection is exercised by tests and
-//! ready for it.
+//! callback. That callback is backed by the workspace semantic index when the
+//! caller supplies a graph-backed `SemanticQueries` (`transitive_role_methods`).
+//!
+//! The production diagnostics path (see `perl-lsp-rs/src/runtime/diagnostics.rs`)
+//! calls [`crate::providers::diagnostics::role_graph_scope::build_role_scoped_package_graph`]
+//! for files that consume roles, constructing a request-scoped `PackageGraphIndex`
+//! populated with `ComposesRole` edges from the relevant source files. This graph
+//! is passed to `with_semantic_queries_for_uri_and_graph` so that
+//! `transitive_role_methods` can resolve cross-file and transitive role providers.
+//! Files with no `with` clauses take a fast path through the persistent graph.
 //!
 //! An unresolved role (external, dynamically composed, or simply not indexed)
 //! contributes no methods and therefore cannot create a conflict: the lint

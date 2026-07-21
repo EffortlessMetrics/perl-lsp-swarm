@@ -61,6 +61,8 @@ pub use lints::package_subroutine;
 pub(crate) use lints::printf_format::{count_format_specifiers, unquote_string};
 /// Same-file Moo/Moose role conflict detection.
 pub use lints::role_conflicts;
+/// Request-scoped package graph builder for cross-file PL303 role-conflict detection.
+pub mod role_graph_scope;
 pub use lints::security;
 pub use lints::strict_warnings;
 pub use lints::unreachable_code;
