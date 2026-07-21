@@ -4337,7 +4337,8 @@ impl FileExtractionBundle {
 
 fn package_graph_edges_from_hir(ast: &Node) -> Vec<PackageEdge> {
     let hir = perl_parser_core::hir::lower_ast(ast);
-    hir.stash_graph
+    let mut edges: Vec<PackageEdge> = hir
+        .stash_graph
         .inheritance_edges
         .iter()
         .filter_map(|edge| {
@@ -4372,7 +4373,113 @@ fn package_graph_edges_from_hir(ast: &Node) -> Vec<PackageEdge> {
                 confidence,
             ))
         })
-        .collect()
+        .collect();
+
+    // The HIR stash graph records only inheritance edges; role-composition
+    // edges (`with 'Role'`) are not part of the HIR's StashGraph because
+    // `with` is a function call, not a `use` statement.  Walk the raw AST
+    // to extract ComposesRole edges so that cross-file PL303 role-conflict
+    // detection can traverse the full role hierarchy.
+    edges.extend(role_composition_edges_from_ast(ast));
+    edges
+}
+
+/// Walk the AST for `with 'Role'` / `with qw(Role1 Role2)` patterns and
+/// emit one [`PackageEdge`] with kind [`PackageEdgeKind::ComposesRole`] per
+/// resolved role name.
+///
+/// This mirrors the ComposesRole extraction done by
+/// `perl_semantic_analyzer::PackageGraphExtractor` but operates directly on
+/// the `perl_parser_core` AST so that `perl-workspace` does not need to
+/// depend on `perl-semantic-analyzer` (which itself depends on
+/// `perl-workspace`, creating a cycle).
+fn role_composition_edges_from_ast(ast: &Node) -> Vec<PackageEdge> {
+    let mut extractor =
+        RoleEdgeExtractor { current_package: "main".to_string(), edges: Vec::new() };
+    extractor.walk(ast);
+    extractor.edges
+}
+
+struct RoleEdgeExtractor {
+    current_package: String,
+    edges: Vec<PackageEdge>,
+}
+
+impl RoleEdgeExtractor {
+    fn walk(&mut self, node: &Node) {
+        match &node.kind {
+            NodeKind::Program { statements } => {
+                for stmt in statements {
+                    self.walk(stmt);
+                }
+                return;
+            }
+            NodeKind::Block { statements } => {
+                let saved = self.current_package.clone();
+                for stmt in statements {
+                    self.walk(stmt);
+                }
+                self.current_package = saved;
+                return;
+            }
+            // `package Foo { ... }` — block form
+            NodeKind::Package { name, block: Some(block), .. } => {
+                let saved = self.current_package.clone();
+                self.current_package = name.clone();
+                self.walk(block);
+                self.current_package = saved;
+                return;
+            }
+            // `package Foo;` — semicolon form
+            NodeKind::Package { name, block: None, .. } => {
+                self.current_package = name.clone();
+                return;
+            }
+            // `with 'Role'` / `with qw(Role1 Role2)` appear as
+            // ExpressionStatement(FunctionCall { name: "with", args })
+            NodeKind::ExpressionStatement { expression } => {
+                if let NodeKind::FunctionCall { name, args, .. } = &expression.kind {
+                    if name == "with" {
+                        for role_name in collect_role_names_from_args(args) {
+                            self.edges.push(PackageEdge::new(
+                                self.current_package.clone(),
+                                role_name,
+                                PackageEdgeKind::ComposesRole,
+                                None,
+                                Provenance::ExactAst,
+                                Confidence::High,
+                            ));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        for child in node.children() {
+            self.walk(child);
+        }
+    }
+}
+
+fn collect_role_names_from_args(args: &[Node]) -> Vec<String> {
+    args.iter().flat_map(role_names_from_node).collect()
+}
+
+fn role_names_from_node(node: &Node) -> Vec<String> {
+    match &node.kind {
+        NodeKind::String { value, .. } => {
+            let name = value.trim_matches('\'').trim_matches('"').trim();
+            if name.is_empty() { Vec::new() } else { vec![name.to_string()] }
+        }
+        // qw(...) stored as an Identifier whose text starts with "qw"
+        NodeKind::Identifier { name } if name.starts_with("qw") => {
+            perl_parser_core::parse_qw_words(name).unwrap_or_default()
+        }
+        NodeKind::ArrayLiteral { elements } => {
+            elements.iter().flat_map(role_names_from_node).collect()
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// AST visitor for extracting symbols and references
