@@ -299,6 +299,9 @@ pub struct LspServer {
     /// exit paths including panics).
     #[cfg(feature = "workspace")]
     indexing_in_progress: Arc<AtomicBool>,
+    /// Set when a workspace-folder change arrives during an active scan.
+    #[cfg(feature = "workspace")]
+    indexing_rescan_pending: Arc<AtomicBool>,
     /// One-time guard for the `window/showMessage` permission-denied warning.
     ///
     /// Set to `true` after the first permission-denied file is encountered during

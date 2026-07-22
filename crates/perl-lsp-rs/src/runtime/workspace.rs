@@ -104,12 +104,57 @@ fn read_watched_file_content(uri: &str, purpose: &str) -> Option<String> {
 ///
 /// Ensures the flag is always cleared, even if the indexing thread panics.
 #[cfg(feature = "workspace")]
-struct IndexingGuard(Arc<AtomicBool>);
+struct IndexingGuard {
+    indexing_in_progress: Arc<AtomicBool>,
+    indexing_rescan_pending: Arc<AtomicBool>,
+    restart: Option<Box<dyn FnOnce() + Send>>,
+}
 
 #[cfg(feature = "workspace")]
 impl Drop for IndexingGuard {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        self.indexing_in_progress.store(false, Ordering::Release);
+        if self.indexing_rescan_pending.swap(false, Ordering::AcqRel) {
+            if let Some(restart) = self.restart.take() {
+                restart();
+            }
+        }
+    }
+}
+
+#[cfg(feature = "workspace")]
+#[derive(Clone)]
+struct IndexingResources {
+    coordinator: Arc<IndexCoordinator>,
+    workspace_folders: Arc<Mutex<Vec<WorkspaceFolderState>>>,
+    indexing_in_progress: Arc<AtomicBool>,
+    indexing_rescan_pending: Arc<AtomicBool>,
+    invocation_count: Arc<std::sync::atomic::AtomicUsize>,
+    outbound: outbound::OutboundSender,
+    work_done_progress: bool,
+    next_request_id: Arc<AtomicI32>,
+    permission_denied_shown: Arc<AtomicBool>,
+    readiness_receipt: Arc<Mutex<crate::runtime::readiness::WorkspaceReadinessReceipt>>,
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    readiness_start_gate:
+        Arc<std::sync::Mutex<Option<crate::runtime::readiness::WorkspaceIndexingStartGate>>>,
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    readiness_observer_id: u64,
+}
+
+#[cfg(feature = "workspace")]
+fn next_indexing_progress_request_id(next_request_id: &AtomicI32) -> ServerRequestId {
+    loop {
+        let current = next_request_id.load(Ordering::Relaxed);
+        let next = if current == i32::MAX { 1 } else { current + 1 };
+        if next_request_id
+            .compare_exchange(current, next, Ordering::SeqCst, Ordering::Relaxed)
+            .is_ok()
+        {
+            if let Some(id) = ServerRequestId::new(current.max(1)) {
+                return id;
+            }
+        }
     }
 }
 
@@ -1878,53 +1923,82 @@ impl LspServer {
     ///
     /// Uses a compare-exchange guard on `indexing_in_progress` to ensure only
     /// one scan runs at a time.  If a scan is already running the call is
-    /// silently skipped (logged via `eprintln!`).
+    /// coalesced into one follow-up scan.
     #[cfg(feature = "workspace")]
     pub(super) fn start_workspace_indexing(&self) {
-        // Bump the invocation counter before any guards so tests can observe
-        // the call regardless of whether the body short-circuits (e2e gate,
-        // already-indexing, empty workspace folders, etc.).
-        self.workspace_indexing_invocation_count.fetch_add(1, Ordering::SeqCst);
+        let Some(coordinator) = self.coordinator().map(Arc::clone) else {
+            self.workspace_indexing_invocation_count.fetch_add(1, Ordering::SeqCst);
+            return;
+        };
 
-        // Guard: if already indexing, skip.  compare_exchange ensures only one
-        // thread wins the race.
-        if self
+        Self::start_workspace_indexing_with_resources(IndexingResources {
+            coordinator,
+            workspace_folders: Arc::clone(&self.workspace_folders),
+            indexing_in_progress: Arc::clone(&self.indexing_in_progress),
+            indexing_rescan_pending: Arc::clone(&self.indexing_rescan_pending),
+            invocation_count: Arc::clone(&self.workspace_indexing_invocation_count),
+            outbound: self.outbound.clone(),
+            work_done_progress: self.client_capabilities.lock().work_done_progress_support,
+            next_request_id: Arc::clone(&self.next_request_id),
+            permission_denied_shown: Arc::clone(&self.permission_denied_shown),
+            readiness_receipt: Arc::clone(&self.workspace_readiness_receipt),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            readiness_start_gate: Arc::clone(&self.workspace_indexing_start_gate),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            readiness_observer_id: self
+                .readiness_receipt_observer_id
+                .load(std::sync::atomic::Ordering::Relaxed),
+        });
+    }
+
+    #[cfg(feature = "workspace")]
+    fn start_workspace_indexing_with_resources(resources: IndexingResources) {
+        resources.invocation_count.fetch_add(1, Ordering::SeqCst);
+
+        if resources
             .indexing_in_progress
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            tracing::debug!("Workspace indexing already in progress, skipping concurrent scan");
+            resources.indexing_rescan_pending.store(true, Ordering::Release);
+            tracing::debug!("Workspace indexing already in progress, queued a follow-up scan");
             return;
         }
-        let indexing_guard = IndexingGuard(Arc::clone(&self.indexing_in_progress));
 
-        let Some(coordinator) = self.coordinator().map(Arc::clone) else {
-            return;
+        let restart_resources = resources.clone();
+        let indexing_guard = IndexingGuard {
+            indexing_in_progress: Arc::clone(&resources.indexing_in_progress),
+            indexing_rescan_pending: Arc::clone(&resources.indexing_rescan_pending),
+            restart: Some(Box::new(move || {
+                Self::start_workspace_indexing_with_resources(restart_resources);
+            })),
         };
 
-        // Ensure workspace folders are set in the index before indexing starts
-        let workspace_folder_uris = self.workspace_folder_uris();
-        coordinator.index().set_workspace_folders(workspace_folder_uris.clone());
+        let coordinator = resources.coordinator;
 
-        let workspace_folders = self.workspace_folders.lock().clone();
+        // Ensure workspace folders are set in the index before indexing starts
+        let workspace_folders = resources.workspace_folders.lock().clone();
+        let workspace_folder_uris =
+            workspace_folders.iter().map(|folder| folder.uri.clone()).collect();
+        coordinator.index().set_workspace_folders(workspace_folder_uris);
+
         if workspace_folders.is_empty() {
             return;
         }
 
-        let outbound = self.outbound.clone();
         let limits = coordinator.limits().clone();
         let caps = coordinator.performance_caps().clone();
-        let work_done_progress = self.client_capabilities.lock().work_done_progress_support;
         // Generate a request ID for the workDoneProgress/create call. Atomically
         // increment so it doesn't collide with IDs from other server-to-client requests.
-        let progress_create_id = self.next_server_request_id();
-        let permission_denied_shown = Arc::clone(&self.permission_denied_shown);
-        let readiness_receipt = Arc::clone(&self.workspace_readiness_receipt);
+        let progress_create_id = next_indexing_progress_request_id(&resources.next_request_id);
+        let outbound = resources.outbound;
+        let work_done_progress = resources.work_done_progress;
+        let permission_denied_shown = resources.permission_denied_shown;
+        let readiness_receipt = resources.readiness_receipt;
         #[cfg(any(test, feature = "expose_lsp_test_api"))]
-        let readiness_start_gate = Arc::clone(&self.workspace_indexing_start_gate);
+        let readiness_start_gate = resources.readiness_start_gate;
         #[cfg(any(test, feature = "expose_lsp_test_api"))]
-        let readiness_observer_id =
-            self.readiness_receipt_observer_id.load(std::sync::atomic::Ordering::Relaxed);
+        let readiness_observer_id = resources.readiness_observer_id;
 
         std::thread::spawn(move || {
             let _guard = indexing_guard; // moved into closure, drops when closure exits
@@ -3094,6 +3168,67 @@ mod tests {
         assert_eq!(peak_queued_work, 1);
         let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
         assert_eq!(coordinator.index().file_count(), 1);
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn workspace_folder_change_during_indexing_triggers_rescan()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let old_dir = tempfile::tempdir()?;
+        let new_dir = tempfile::tempdir()?;
+        let old_path = old_dir.path().join("Old.pm");
+        let new_path = new_dir.path().join("New.pm");
+        std::fs::write(&old_path, "package OldFolder;\nsub old_symbol { 1 }\n1;\n")?;
+        std::fs::write(&new_path, "package NewFolder;\nsub new_symbol { 1 }\n1;\n")?;
+        let old_uri = url::Url::from_directory_path(old_dir.path())
+            .map_err(|_| "invalid old workspace folder path")?
+            .to_string();
+        let new_uri = url::Url::from_directory_path(new_dir.path())
+            .map_err(|_| "invalid new workspace folder path")?
+            .to_string();
+
+        let mut server = LspServer::new();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps { initial_scan_budget_ms: 30_000, ..Default::default() },
+            )));
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(old_uri.clone())
+                .with_path(old_dir.path().to_path_buf()),
+        );
+
+        let (receipt_tx, receipt_rx) = std::sync::mpsc::channel();
+        let receipt_observer_guard =
+            crate::runtime::readiness::set_workspace_readiness_receipt_observer(receipt_tx);
+        server
+            .readiness_receipt_observer_id
+            .store(receipt_observer_guard.id(), std::sync::atomic::Ordering::Relaxed);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        server.test_gate_workspace_indexing_start(started_tx, release_rx);
+
+        server.start_workspace_indexing();
+        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+
+        server.handle_did_change_workspace_folders(Some(json!({
+            "event": {
+                "added": [{ "uri": new_uri, "name": "new" }],
+                "removed": [{ "uri": old_uri, "name": "old" }]
+            }
+        })))?;
+        release_tx.send(())?;
+
+        let _first_receipt = receipt_rx.recv_timeout(std::time::Duration::from_secs(30))?;
+        let _second_receipt = receipt_rx.recv_timeout(std::time::Duration::from_secs(30))?;
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("NewFolder::new_symbol").is_none() {
+            return Err("pending folder change did not index the new workspace".into());
+        }
+        if server.workspace_indexing_invocation_count() < 3 {
+            return Err("expected initial scan, pending request, and follow-up scan".into());
+        }
         Ok(())
     }
 
