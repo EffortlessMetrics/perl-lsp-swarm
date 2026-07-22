@@ -987,6 +987,7 @@ jobs:
       matrix:
         target: [
           builtin_functions,
+          config_surfaces,
           dap_eval_validator,
           dap_stack_parser,
           declaration_parsing,
@@ -997,7 +998,9 @@ jobs:
           lsp_navigation,
           module_surface,
           parser_integration,
+          pod_extraction,
           quote_operators,
+          regex_validation,
           semantic_model,
           structured_perl_programs,
           substitution_parsing,
