@@ -8152,6 +8152,58 @@ fn test_indirect_unindexed_class_offers_no_methods() -> Result<(), Box<dyn std::
 }
 
 #[test]
+fn test_indirect_infile_class_not_in_workspace_index_offers_methods()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Regression for the asymmetry between arrow and indirect completion:
+    // `package MyClass; sub baz {} ... new MyClass` must offer `baz` via
+    // indirect syntax even when the workspace index is empty (i.e. MyClass has
+    // not been indexed yet).  Previously the probe checked only the workspace
+    // index, so in-file-only classes returned nothing and fell through.
+    let code = "package MyClass;\nsub baz { }\n\nnew MyClass";
+    let pos = code.rfind("new").ok_or("new not found")? + "new".len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, pos);
+    let labels: Vec<&String> = completions.iter().map(|c| &c.label).collect();
+
+    assert!(
+        completions.iter().any(|c| c.label == "baz"),
+        "indirect `new MyClass` with an in-file `package MyClass` must offer `baz` even \
+         when the workspace index is empty; got {labels:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_indirect_truly_unknown_class_no_infile_package_offers_no_methods()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Regression guard: `new SomeTrulyUnknownClass` where there is neither an
+    // in-file `package` declaration nor a workspace-index entry for that class
+    // must NOT offer bare UNIVERSAL object defaults (`isa`, `can`, `DOES`, …).
+    let code = "new SomeTrulyUnknownClass";
+    let pos = "new".len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, pos);
+
+    const OBJECT_DEFAULTS: &[&str] = &["isa", "can", "DOES", "VERSION", "DESTROY", "AUTOLOAD"];
+    let leaked: Vec<&str> = completions
+        .iter()
+        .filter(|c| OBJECT_DEFAULTS.contains(&c.label.as_str()))
+        .map(|c| c.label.as_str())
+        .collect();
+
+    assert!(
+        leaked.is_empty(),
+        "indirect receiver with no in-file package and no workspace entry must not \
+         offer bare UNIVERSAL defaults; leaked: {leaked:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_indirect_after_arrow_segment_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
     // A method token immediately preceded by `->` is an arrow-call segment, not
     // a statement-level indirect call, and must not re-trigger indirect routing
