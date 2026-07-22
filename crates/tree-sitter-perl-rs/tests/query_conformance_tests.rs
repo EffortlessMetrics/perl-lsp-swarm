@@ -37,11 +37,15 @@ fn executes_a_supported_fragment_from_the_upstream_highlights_query() -> TestRes
 }
 
 #[test]
-fn executes_the_complete_upstream_injections_query() -> TestResult {
+fn parses_and_exercises_upstream_injections_compatibility_probe() -> TestResult {
     let upstream = include_str!("../../../tree-sitter-perl/queries/injections.scm");
     let query = Query::new(upstream)?;
     assert_eq!(query.pattern_count(), 5);
 
+    // QueryCursor execution is part of the compatibility probe. The native AST
+    // does not expose the fixture's comment, pod, substitution_regexp, or
+    // heredoc_token/heredoc_content node vocabulary, so this test intentionally
+    // does not claim semantic matches for those patterns.
     let tree = parse("my $value = 42;\n");
     let mut cursor = QueryCursor::new();
     let _matches = cursor.matches(&query, tree.root_node()).count();
@@ -49,7 +53,7 @@ fn executes_the_complete_upstream_injections_query() -> TestResult {
 }
 
 #[test]
-fn injection_fixture_predicate_forms_have_typed_support_boundaries() -> TestResult {
+fn injection_compatibility_probe_preserves_typed_unsupported_boundaries() -> TestResult {
     let upstream = include_str!("../../../tree-sitter-perl/queries/injections.scm");
     for predicate in ["#eq?", "#match?", "#not-match?", "#set!"] {
         if !upstream.contains(predicate) {

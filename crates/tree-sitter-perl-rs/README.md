@@ -95,9 +95,11 @@ tree-sitter-perl-rs = { version = "...", features = ["queries"] }
 The supported subset includes node kinds, wildcards, nested children, named fields,
 captures, `#eq?`, `#not-eq?`, `#match?`, `#not-match?`, `#set!` match settings, multiple
 top-level patterns, and byte-range restriction. Other unsupported tree-sitter query
-syntax returns a typed `QueryError`; it is not silently ignored. The complete repository
-`injections.scm` fixture is covered by executable conformance tests, while predicates
-that depend on unsupported anonymous grammar nodes remain outside this facade's contract.
+syntax returns a typed `QueryError`; it is not silently ignored. The repository's
+`injections.scm` fixture is parsed and exercised through `QueryCursor` as a compatibility
+probe, not as a claim of semantic coverage. The current native AST does not expose the
+fixture's `comment`, `pod`, `substitution_regexp`, `heredoc_token`, or `heredoc_content`
+node kinds, so semantic matches for those patterns remain out of scope.
 
 ### Incremental proof
 
