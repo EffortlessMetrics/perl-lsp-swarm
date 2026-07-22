@@ -6,17 +6,29 @@ use tempfile::TempDir;
 use url::Url;
 
 fn setup_server(root_path: Option<String>) -> LspServer {
+    setup_server_with_initialization_options(root_path, None)
+}
+
+fn setup_server_with_initialization_options(
+    root_path: Option<String>,
+    initialization_options: Option<Value>,
+) -> LspServer {
     let server = LspServer::new();
+
+    let mut init_params = json!({
+        "processId": null,
+        "rootPath": root_path,
+        "capabilities": {}
+    });
+    if let Some(options) = initialization_options {
+        init_params["initializationOptions"] = options;
+    }
 
     // Initialize the server
     let init_request = JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
         method: "initialize".to_string(),
-        params: Some(json!({
-            "processId": null,
-            "rootPath": root_path,
-            "capabilities": {}
-        })),
+        params: Some(init_params),
         id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
     };
 
@@ -72,6 +84,21 @@ fn workspace_trust_report_schema() -> Result<Value, Box<dyn std::error::Error>> 
     Ok(serde_json::from_str(&schema_text)?)
 }
 
+fn agent_context_schema() -> Result<Value, Box<dyn std::error::Error>> {
+    let schema_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("schemas")
+        .join("agent_context.v1.schema.json");
+    let schema_text = std::fs::read_to_string(&schema_path).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("failed to read {}: {error}", schema_path.display()),
+        )
+    })?;
+    Ok(serde_json::from_str(&schema_text)?)
+}
+
 fn schema_required_fields(
     schema: &Value,
     pointer: &str,
@@ -112,6 +139,140 @@ fn assert_schema_required_fields_present(
         }
     }
     Ok(())
+}
+
+fn schema_type_matches(value: &Value, type_name: &str) -> bool {
+    match type_name {
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string" => value.is_string(),
+        "boolean" => value.is_boolean(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "number" => value.is_number(),
+        "null" => value.is_null(),
+        _ => false,
+    }
+}
+
+fn validate_json_schema(
+    value: &Value,
+    schema: &Value,
+    root_schema: &Value,
+    trust_report_schema: &Value,
+    path: &str,
+) -> Result<(), String> {
+    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+        if let Some(pointer) = reference.strip_prefix('#') {
+            let target = root_schema
+                .pointer(pointer)
+                .ok_or_else(|| format!("schema reference {reference} not found at {path}"))?;
+            return validate_json_schema(value, target, root_schema, trust_report_schema, path);
+        }
+        if reference == "workspace_trust_report.v1.schema.json" {
+            return validate_json_schema(
+                value,
+                trust_report_schema,
+                trust_report_schema,
+                trust_report_schema,
+                path,
+            );
+        }
+        return Err(format!("unsupported schema reference {reference} at {path}"));
+    }
+
+    if let Some(expected) = schema.get("const")
+        && value != expected
+    {
+        return Err(format!("{path} expected constant {expected}, got {value}"));
+    }
+
+    if let Some(type_declaration) = schema.get("type") {
+        let matches = match type_declaration {
+            Value::String(type_name) => schema_type_matches(value, type_name),
+            Value::Array(type_names) => type_names
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|type_name| schema_type_matches(value, type_name)),
+            _ => false,
+        };
+        if !matches {
+            return Err(format!("{path} has the wrong JSON type: {value}"));
+        }
+    }
+
+    if let Some(enum_values) = schema.get("enum").and_then(Value::as_array)
+        && !enum_values.iter().any(|candidate| candidate == value)
+    {
+        return Err(format!("{path} has value outside schema enum: {value}"));
+    }
+
+    if let Some(minimum) = schema.get("minimum").and_then(Value::as_f64)
+        && value.as_f64().is_some_and(|number| number < minimum)
+    {
+        return Err(format!("{path} is below schema minimum {minimum}: {value}"));
+    }
+
+    if let Some(object) = value.as_object() {
+        if let Some(required) = schema.get("required").and_then(Value::as_array) {
+            for field in required.iter().filter_map(Value::as_str) {
+                if !object.contains_key(field) {
+                    return Err(format!("{path} is missing required field {field}"));
+                }
+            }
+        }
+        if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+            for (field, field_schema) in properties {
+                if let Some(field_value) = object.get(field) {
+                    validate_json_schema(
+                        field_value,
+                        field_schema,
+                        root_schema,
+                        trust_report_schema,
+                        &format!("{path}/{field}"),
+                    )?;
+                }
+            }
+        }
+    }
+
+    if let Some(items) = schema.get("items") {
+        if let Some(values) = value.as_array() {
+            for (index, item) in values.iter().enumerate() {
+                validate_json_schema(
+                    item,
+                    items,
+                    root_schema,
+                    trust_report_schema,
+                    &format!("{path}/{index}"),
+                )?;
+            }
+        }
+    }
+
+    if let Some(min_items) = schema.get("minItems").and_then(Value::as_u64)
+        && value.as_array().is_some_and(|items| items.len() < min_items as usize)
+    {
+        return Err(format!("{path} has fewer than {min_items} items"));
+    }
+
+    if let Some(any_of) = schema.get("anyOf").and_then(Value::as_array)
+        && !any_of.iter().any(|candidate| {
+            validate_json_schema(value, candidate, root_schema, trust_report_schema, path).is_ok()
+        })
+    {
+        return Err(format!("{path} matches none of the schema alternatives"));
+    }
+
+    Ok(())
+}
+
+fn assert_agent_context_schema(
+    value: &Value,
+    schema: &Value,
+    trust_report_schema: &Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    validate_json_schema(value, schema, schema, trust_report_schema, "$")
+        .map_err(|error| -> Box<dyn std::error::Error> { test_error(error).into() })
 }
 
 #[test]
@@ -308,11 +469,162 @@ fn test_execute_command_capabilities() -> Result<(), Box<dyn std::error::Error>>
     assert!(command_strs.contains(&"perl.runCritic"));
     assert!(command_strs.contains(&"perl.explainProviderDecision"));
     assert!(command_strs.contains(&"perl.workspaceTrustReport"));
+    assert!(command_strs.contains(&"perl.agentContext"));
     assert!(command_strs.contains(&"perl.previewSafeDelete"));
     assert!(command_strs.contains(&"perl.safeDeleteSymbol"));
     assert!(command_strs.contains(&"perl.previewPackageRename"));
     assert!(command_strs.contains(&"perl.explainMissingModuleLookup"));
 
+    Ok(())
+}
+
+#[test]
+fn test_execute_command_agent_context_is_read_only_and_actionable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let root_path = temp_dir.path().to_string_lossy().to_string();
+    let server = setup_server(Some(root_path));
+
+    let execute_request = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "workspace/executeCommand".to_string(),
+        params: Some(json!({
+            "command": "perl.agentContext",
+            "arguments": [{
+                "client_runtime_state": {
+                    "source": "agent-test",
+                    "raw_secret": "must-not-copy"
+                }
+            }]
+        })),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(3_i64)),
+    };
+
+    let response =
+        server.handle_request(execute_request).ok_or("No response from agent-context command")?;
+    let result = response.result.ok_or("No result in agent-context response")?;
+    let schema = agent_context_schema()?;
+    let trust_report_schema = workspace_trust_report_schema()?;
+    assert_agent_context_schema(&result, &schema, &trust_report_schema)?;
+
+    assert_eq!(result.get("schema_version").and_then(Value::as_str), Some("agent_context.v1"));
+    assert_eq!(result.get("command").and_then(Value::as_str), Some("perl.agentContext"));
+    assert_eq!(
+        result.pointer("/request/method").and_then(Value::as_str),
+        Some("workspace/executeCommand")
+    );
+    assert_eq!(
+        result.pointer("/workspace_trust_report/schema_version").and_then(Value::as_str),
+        Some("workspace_trust_report.v1")
+    );
+    assert!(result.get("advertised_feature_ids").and_then(Value::as_array).is_some_and(
+        |features| { features.iter().any(|feature| feature.as_str() == Some("lsp.completion")) }
+    ));
+    assert!(result.get("execute_commands").and_then(Value::as_array).is_some_and(|commands| {
+        commands.iter().any(|command| command.as_str() == Some("perl.agentContext"))
+    }));
+    assert_eq!(
+        result.pointer("/next_actions/0/source").and_then(Value::as_str),
+        Some("workspace_trust_report.setup_hints.hints")
+    );
+    assert!(result.get("claim_boundary").and_then(Value::as_str).is_some_and(|claim| {
+        claim.contains("does not scan files") && claim.contains("apply edits")
+    }));
+
+    let rendered = serde_json::to_string(&result)?;
+    assert!(!rendered.contains("must-not-copy"));
+    Ok(())
+}
+
+#[test]
+fn test_execute_command_agent_context_accepts_empty_arguments()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let root_path = temp_dir.path().to_string_lossy().to_string();
+    let server = setup_server(Some(root_path));
+
+    let execute_request = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "workspace/executeCommand".to_string(),
+        params: Some(json!({
+            "command": "perl.agentContext",
+            "arguments": []
+        })),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(4_i64)),
+    };
+
+    let response =
+        server.handle_request(execute_request).ok_or("No response from agent-context command")?;
+    let result = response.result.ok_or("No result in agent-context response")?;
+    let schema = agent_context_schema()?;
+    let trust_report_schema = workspace_trust_report_schema()?;
+    assert_agent_context_schema(&result, &schema, &trust_report_schema)?;
+
+    assert_eq!(result.get("schema_version").and_then(Value::as_str), Some("agent_context.v1"));
+    assert_eq!(result.get("command").and_then(Value::as_str), Some("perl.agentContext"));
+    assert!(result.get("workspace_trust_report").is_some());
+    assert!(result.get("advertised_feature_ids").and_then(Value::as_array).is_some());
+    assert!(result.get("execute_commands").and_then(Value::as_array).is_some());
+    Ok(())
+}
+
+#[test]
+fn test_execute_command_agent_context_accepts_omitted_arguments()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let root_path = temp_dir.path().to_string_lossy().to_string();
+    let server = setup_server(Some(root_path));
+
+    let execute_request = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "workspace/executeCommand".to_string(),
+        params: Some(json!({"command": "perl.agentContext"})),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(5_i64)),
+    };
+
+    let response =
+        server.handle_request(execute_request).ok_or("No response from agent-context command")?;
+    let result = response.result.ok_or("No result in agent-context response")?;
+    let schema = agent_context_schema()?;
+    let trust_report_schema = workspace_trust_report_schema()?;
+    assert_agent_context_schema(&result, &schema, &trust_report_schema)?;
+
+    assert_eq!(result.pointer("/request/arguments_required").and_then(Value::as_bool), Some(false));
+    Ok(())
+}
+
+#[test]
+fn test_execute_command_agent_context_honors_disabled_execute_command_feature()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let root_path = temp_dir.path().to_string_lossy().to_string();
+    let server = setup_server_with_initialization_options(
+        Some(root_path),
+        Some(json!({"disabledFeatures": ["lsp.execute_command"]})),
+    );
+
+    let execute_request = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "workspace/executeCommand".to_string(),
+        params: Some(json!({"command": "perl.agentContext"})),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(6_i64)),
+    };
+
+    let response =
+        server.handle_request(execute_request).ok_or("No response from agent-context command")?;
+    let result = response.result.ok_or("No result in agent-context response")?;
+    let schema = agent_context_schema()?;
+    let trust_report_schema = workspace_trust_report_schema()?;
+    assert_agent_context_schema(&result, &schema, &trust_report_schema)?;
+
+    assert!(!result.get("advertised_feature_ids").and_then(Value::as_array).is_some_and(
+        |features| {
+            features.iter().any(|feature| feature.as_str() == Some("lsp.execute_command"))
+        }
+    ));
+    assert!(result.get("execute_commands").and_then(Value::as_array).is_some_and(Vec::is_empty));
+    assert_eq!(result.get("next_actions").and_then(Value::as_array).map(Vec::len), Some(1));
+    assert!(result.pointer("/next_actions/0/source").is_some());
     Ok(())
 }
 

@@ -115,7 +115,7 @@
           "type": "string"
         },
         "name": {
-          "type": "string"
+          "$ref": "#/$defs/string_or_null"
         },
         "path": {
           "$ref": "#/$defs/string_or_null"
