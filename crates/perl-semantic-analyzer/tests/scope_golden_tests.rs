@@ -546,3 +546,97 @@ say $a, $b, $c;
     );
     Ok(())
 }
+
+// ===========================================================================
+// Pattern 11: strict 'vars' with imported/exported barewords (#1737)
+//
+// `strict 'vars'` constrains sigiled package variables, not barewords. Constants
+// and imported subroutines are barewords, so they must never be reported as
+// `UndeclaredVariable`. These golden tests lock that in for the common import
+// shapes: `use constant`, an explicit `qw()` import list, an import tag, and an
+// Exporter `@EXPORT`/`@EXPORT_OK` declaration.
+// ===========================================================================
+
+#[test]
+fn golden_strict_vars_use_constant_bareword() -> Result<(), Box<dyn std::error::Error>> {
+    // `PI` is a bareword constant, not a variable — it must not be flagged.
+    let code = r#"
+use strict;
+use constant PI => 3.14159;
+my $radius = 2;
+my $area = PI * $radius * $radius;
+print $area;
+"#;
+    let issues = scope_issues_strict(code);
+    let fp = false_positive_issues(&issues);
+    assert!(
+        fp.is_empty(),
+        "bareword constant from `use constant` must not be an undeclared variable; got: {:?}",
+        fp.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn golden_strict_vars_explicit_qw_import() -> Result<(), Box<dyn std::error::Error>> {
+    // `first`/`sum` are imported subroutine barewords, not variables.
+    let code = r#"
+use strict;
+use List::Util qw(first sum);
+my @nums = (1, 2, 3);
+my $total = sum(@nums);
+my $found = first { $_ > 1 } @nums;
+print "$total $found";
+"#;
+    let issues = scope_issues_strict(code);
+    let fp = false_positive_issues(&issues);
+    assert!(
+        fp.is_empty(),
+        "subs imported via `qw()` must not be undeclared variables; got: {:?}",
+        fp.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn golden_strict_vars_import_tag_barewords() -> Result<(), Box<dyn std::error::Error>> {
+    // `LOCK_EX`/`LOCK_SH` come from the `:flock` export tag — barewords, not vars.
+    let code = r#"
+use strict;
+use Fcntl ':flock';
+my $flags = LOCK_EX | LOCK_SH;
+print $flags;
+"#;
+    let issues = scope_issues_strict(code);
+    let fp = false_positive_issues(&issues);
+    assert!(
+        fp.is_empty(),
+        "barewords expanded from an import tag must not be undeclared variables; got: {:?}",
+        fp.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn golden_strict_vars_exporter_export_symbols() -> Result<(), Box<dyn std::error::Error>> {
+    // `our @EXPORT`/`@EXPORT_OK` are declared package arrays, and the exported
+    // subs are barewords — none should be reported as undeclared variables.
+    let code = r#"
+use strict;
+package My::Module;
+our @EXPORT = qw(greet);
+our @EXPORT_OK = qw(farewell);
+sub greet { return "hi"; }
+sub farewell { return "bye"; }
+my $message = greet();
+print $message;
+"#;
+    let issues = scope_issues_strict(code);
+    let fp = false_positive_issues(&issues);
+    assert!(
+        fp.is_empty(),
+        "Exporter @EXPORT arrays and exported subs must not be undeclared variables; got: {:?}",
+        fp.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+    Ok(())
+}

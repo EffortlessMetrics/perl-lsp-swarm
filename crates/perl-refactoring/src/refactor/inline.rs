@@ -593,10 +593,62 @@ fn body_calls_self(body: &str, sub_name: &str) -> bool {
 // Argument extraction
 // ---------------------------------------------------------------------------
 
+/// Characters that continue a Perl identifier: ASCII word characters, the `::`
+/// and `'` package separators, and — conservatively — any non-ASCII character.
+///
+/// A bare sub name must not boundary-match inside a larger identifier:
+/// `add'count` / `add::count` call `add::count`; `Foo::add` / `Foo'add` name a
+/// *different* sub than a bare `add`; and under `use utf8` a Perl identifier can
+/// continue with Unicode letters, digits, combining marks, or connector
+/// punctuation (`addé`, `add‿count`). Rather than depend on a full XID_Continue
+/// table for a text-heuristic matcher, treat every non-ASCII char as
+/// continuation: for this matcher the safe direction is to reject an ambiguous
+/// match, never to silently inline the wrong sub. Genuine unqualified calls end
+/// in an ASCII boundary (`(`, space, `&`, …), so they are unaffected.
+fn continues_perl_identifier(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == ':' || c == '\'' || !c.is_ascii()
+}
+
+/// Find `needle` in `haystack` at an identifier word boundary — i.e. not as a
+/// substring of a larger (possibly package-qualified) identifier. Returns the
+/// byte offset of the first such occurrence, or `None` if `needle` only appears
+/// embedded in another identifier (`add` inside `add_count`, `add::count`,
+/// `Foo::add`, …). Prevents such names from being misread as a call to `add`.
+fn find_identifier_boundary(haystack: &str, needle: &str) -> Option<usize> {
+    // An empty needle has zero length, so advancing the scan cursor by the
+    // match length below would never make progress — guard it explicitly. An
+    // empty sub name is never a real call target.
+    if needle.is_empty() {
+        return None;
+    }
+    let mut start = 0;
+    while let Some(rel) = haystack[start..].find(needle) {
+        let pos = start + rel;
+        let before_ok =
+            haystack[..pos].chars().next_back().is_none_or(|c| !continues_perl_identifier(c));
+        let after = pos + needle.len();
+        let after_ok =
+            haystack[after..].chars().next().is_none_or(|c| !continues_perl_identifier(c));
+        if before_ok && after_ok {
+            return Some(pos);
+        }
+        // Advance past this (embedded) match and keep scanning. `after` is a
+        // valid UTF-8 boundary; any overlapping match would also be embedded
+        // (its preceding char is an identifier char), so none is skipped.
+        start = after;
+    }
+    None
+}
+
 /// Extract the argument list from a call expression like `foo(1, 2, "bar")`.
 fn extract_call_args(call_expr: &str, sub_name: &str) -> Result<Vec<String>, InlineError> {
-    let sub_pos = call_expr.find(sub_name).ok_or_else(|| InlineError::CallSiteParseFailed {
-        message: format!("call expression does not contain sub name '{}'", sub_name),
+    // Match the sub name only at an identifier boundary: `add` must not match
+    // the `add` inside `add_count` (#3914), which previously caused a silent
+    // empty-argument extraction and a wrong inlining.
+    let sub_pos = find_identifier_boundary(call_expr, sub_name).ok_or_else(|| {
+        InlineError::CallSiteParseFailed {
+            message: format!("call expression does not contain a call to sub name '{}'", sub_name),
+        }
     })?;
 
     let after_name_pos = sub_pos + sub_name.len();
@@ -795,6 +847,75 @@ mod tests {
         assert!(
             !result.contains("$$bar"),
             "replacement must not produce unbraced $$bar dereference; got: {result}"
+        );
+    }
+
+    #[test]
+    fn extract_call_args_rejects_substring_name_collision() {
+        use super::{InlineError, extract_call_args};
+        // #3914: `add` embedded in `add_count` must not be treated as a call to
+        // `add` — before the word-boundary fix this silently returned an empty
+        // argument list instead of erroring.
+        assert!(matches!(
+            extract_call_args("add_count(1, 2)", "add"),
+            Err(InlineError::CallSiteParseFailed { .. })
+        ));
+        // A boundary-aligned call still extracts its arguments.
+        assert_eq!(
+            extract_call_args("add(1, 2)", "add").ok(),
+            Some(vec!["1".to_string(), "2".to_string()])
+        );
+    }
+
+    #[test]
+    fn extract_call_args_rejects_empty_sub_name() {
+        use super::{InlineError, extract_call_args};
+        // #3914 follow-up: an empty sub name must not hang the boundary scan
+        // (`find("")` matches at a zero-length step forever); it is never a
+        // real call target.
+        assert!(matches!(
+            extract_call_args("foo(1, 2)", ""),
+            Err(InlineError::CallSiteParseFailed { .. })
+        ));
+    }
+
+    #[test]
+    fn extract_call_args_rejects_package_qualified_names() {
+        use super::{InlineError, extract_call_args};
+        // `::` and `'` are Perl package separators, so a bare `add` must not
+        // match inside a qualified identifier: `Foo::add` / `Foo'add` name a
+        // *different* sub, and `add::count` / `add'count` are calls to
+        // `add::count`. None is a call to bare `add`.
+        for expr in ["Foo::add(1, 2)", "Foo'add(1, 2)", "add::count(1, 2)", "add'count(1, 2)"] {
+            assert!(
+                matches!(
+                    extract_call_args(expr, "add"),
+                    Err(InlineError::CallSiteParseFailed { .. })
+                ),
+                "package-qualified `{expr}` must not match bare `add`"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_call_args_rejects_unicode_identifier_continuation() {
+        use super::{InlineError, extract_call_args};
+        // Under `use utf8`, a Perl identifier can continue with combining marks
+        // or connector punctuation. A bare `add` must not match a distinct sub
+        // like `add\u{0301}` (add + combining acute) or `add\u{203F}count`.
+        for expr in ["add\u{0301}(1, 2)", "add\u{203F}count(1, 2)"] {
+            assert!(
+                matches!(
+                    extract_call_args(expr, "add"),
+                    Err(InlineError::CallSiteParseFailed { .. })
+                ),
+                "Unicode-continued `{expr}` must not match bare `add`"
+            );
+        }
+        // A genuine UTF-8 sub name still resolves normally (ends at an ASCII `(`).
+        assert_eq!(
+            extract_call_args("café(1, 2)", "café").ok(),
+            Some(vec!["1".to_string(), "2".to_string()])
         );
     }
 }
