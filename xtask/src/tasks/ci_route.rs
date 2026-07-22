@@ -164,6 +164,14 @@ const XTASK_GATES_PACK: ProofPack = ProofPack {
     commands: &["cargo test -p xtask --bin xtask --profile agent --locked gates -- --nocapture"],
 };
 
+const XTASK_CI_EXPLAIN_PACK: ProofPack = ProofPack {
+    id: "xtask-ci-explain",
+    commands: &[
+        "cargo test -p xtask --bin xtask --profile agent --locked ci_explain -- --nocapture",
+        "cargo test -p xtask --test ci_explain_cli --profile agent --locked -- --nocapture",
+    ],
+};
+
 const XTASK_FILE_POLICY_PACK: ProofPack = ProofPack {
     id: "xtask-file-policy",
     commands: &[
@@ -665,6 +673,12 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         route.add_surface("xtask-gates");
         route.add_pack(XTASK_GATES_PACK);
         return route.add_coverage_pack("patch-coverage-xtask-gates");
+    }
+
+    if file == "xtask/src/tasks/ci_explain.rs" || file == "xtask/tests/ci_explain_cli.rs" {
+        route.add_surface("xtask-ci-explain");
+        route.add_pack(XTASK_CI_EXPLAIN_PACK);
+        return route.add_coverage_pack("patch-coverage-xtask-ci-explain");
     }
 
     if file == "xtask/src/tasks/file_policy.rs" {
@@ -3250,6 +3264,7 @@ mod tests {
                 "patch-coverage-xtask-inline-quality",
                 "patch-coverage-xtask-native-tooling",
                 "patch-coverage-xtask-gates",
+                "patch-coverage-xtask-ci-explain",
                 "patch-coverage-xtask-file-policy",
                 "patch-coverage-completion-core",
                 "patch-coverage-ux-scenario",
@@ -3318,6 +3333,7 @@ mod tests {
             "patch-coverage-xtask-inline-quality",
             "patch-coverage-xtask-native-tooling",
             "patch-coverage-xtask-gates",
+            "patch-coverage-xtask-ci-explain",
             "patch-coverage-xtask-file-policy",
             "patch-coverage-completion-core",
             "patch-coverage-ux-scenario",
