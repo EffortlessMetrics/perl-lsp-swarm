@@ -9,7 +9,7 @@
 
 The perl-lsp pipeline is organized into **7 lifecycle moments** (coarse stages, called "gates" throughout this document as organizational shorthand) with **multiple agents working within each**. Each is a boundary that blocks work at the earliest reliable point: unsettled context before mutation (Gates 1-2), structural defects before commit (Gates 3-4), missing proof before publication (Gate 5), stale review/integration defects before merge (Gate 6).
 
-Authority for these boundaries is **live evidence and the branch ruleset** — durable verdict comments and, where one exists, a SHA-bound review receipt (Gates 1-4); live CI (`statusCheckRollup`) on the current HEAD SHA plus the two required checks and 0 unresolved conversation threads (Gates 5-6) — not runtime role/label machinery. That machinery (the SubagentStop plan-reviewer label gate, the mechanical needs-label-gate, the M4b role gate) was retired in the #4005 subtraction. Labels remain useful **navigation**: they record which agents have already run their pass, but confer no authority on their own. See [Labels as Navigation, Not Authority](#labels-as-navigation-not-authority) below.
+Authority for these boundaries is **live evidence and the branch ruleset** — durable verdict comments and, where one exists, a review receipt (Gates 1-4); live PR CI (`statusCheckRollup`) plus the two required checks and 0 unresolved conversation threads (Gates 5-6) — not runtime role/label machinery. That machinery (the SubagentStop plan-reviewer label gate, the mechanical needs-label-gate, the M4b role gate) was retired in the #4005 subtraction. Labels remain useful **navigation**: they record which agents have already run their pass, but confer no authority on their own. See [Labels as Navigation, Not Authority](#labels-as-navigation-not-authority) below.
 
 The key shift from a linear sequence to a gate model:
 
@@ -45,7 +45,7 @@ Agents produce learning artifacts as they work:
 | **2** | Spec | Scoped, project-aligned approach ready for build | plan-reviewer, oppositional-planner, advocatus-diaboli, architecture-reviewer, maintainer-issue, spec-planner |
 | **3** | Build | Well-tested, implemented PR created | red-tdd, builder, green-tdd |
 | **4** | Review/improve | PR passes three-axis review | reviewer, maintainer-pr, refactor-planner, green-refactor, reviewer-deep, diff-auditor |
-| **5** | CI green | Live CI actually green on current HEAD SHA | green-ci, pr-responder |
+| **5** | CI green | Live required PR checks actually green | green-ci, pr-responder |
 | **6** | Merge | Changes land on master | ops |
 | **7** | Learn | Captured learning consolidated into durable artifacts | wisdom, memory-recalibrator, orchestrator-level filing |
 
@@ -173,9 +173,9 @@ Gate 4 triangulates three axes. A PR that clears only one axis does not pass Gat
 
 ## Gate 5 — CI Green
 
-**Purpose**: Verify live CI is actually green on the current HEAD SHA. Not a label from an earlier push — the real thing.
+**Purpose**: Verify the live required PR checks are green. Not a label from an earlier push — the real branch-protection state.
 
-**Exit condition**: Live CI (`statusCheckRollup`) is green on the current HEAD SHA for both required checks. The `ci-green` label records that green-ci confirmed this, but the live signal is authoritative, not the label — see [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md).
+**Exit condition**: Live CI (`statusCheckRollup`) reports both required checks green for the PR's current revision, and the branch rules allow the merge. This keeps the merge decision tied to the live PR revision without making a branch-SHA comparison a separate merge gate. The `ci-green` label records that green-ci confirmed this, but the live signal is authoritative, not the label — see [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md).
 
 The advisory M4b agent-capability gate is a front-door hygiene check, not one
 of the two required merge contexts. Its router keeps untrusted fork and bot
@@ -189,7 +189,7 @@ runner-selection infrastructure may fall back.
 
 | Agent | Model | Role |
 |-------|-------|------|
-| **green-ci** | haiku | Verify all checks pass on current HEAD SHA — no stale green |
+| **green-ci** | haiku | Verify the live required PR checks — no cached green |
 | **pr-responder** | haiku | Fix CI failures, validate-title issues, linter warnings — iterate until green |
 
 **Within-gate ordering**: green-ci first. If it finds failures, pr-responder fixes them, then green-ci re-verifies.
@@ -279,7 +279,7 @@ When to strictly sequence agents within a gate versus running them in parallel:
 
 Labels record what happened within each lifecycle moment. They are navigation aids for humans and agents — never the authority that decides whether a PR may proceed or merge.
 
-**Authority is live evidence and the branch's merge rules**: for Gates 1-4, the durable verdict *comment* (and, where one exists, a SHA-bound review receipt — see [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md)) is the record of what actually happened; for Gates 5-6, live CI (`statusCheckRollup` on the current HEAD SHA) plus the two required checks green and 0 unresolved conversation threads (this repo's conversation-resolution convention — enforced by the `main` branch ruleset's `required_review_thread_resolution` rule) decide whether GitHub will allow a merge. No GitHub-enforced merge check depends on `needs-*`/`merge-ready` label state — the SubagentStop plan-reviewer label gate and the mechanical needs-label-gate that once blocked a GitHub merge on label presence were retired (#4005: #4095, #4096). That doesn't make `needs-*` inert: the `queue_reconciler` cron still strips the `merge-ready` navigation label when a non-CI `needs-*` label is present or live CI is red (`xtask/src/tasks/queue_reconciler.rs`), and the ops merge checklist still treats an active `needs-*` label as a hard stop — an unaddressed bounce label still blocks a PR from merging in practice, as navigation-label reconciliation and operator process, not as a branch-ruleset gate.
+**Authority is live evidence and the branch's merge rules**: for Gates 1-4, the durable verdict *comment* (and, where one exists, a review receipt — see [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md)) is the record of what actually happened; for Gates 5-6, live PR CI (`statusCheckRollup`) plus the two required checks green and 0 unresolved conversation threads (this repo's conversation-resolution convention — enforced by the `main` branch ruleset's `required_review_thread_resolution` rule) decide whether GitHub will allow a squash merge. The post-merge squash commit is a new revision and is verified by its own post-merge automation where configured. No GitHub-enforced merge check depends on `needs-*`/`merge-ready` label state — the SubagentStop plan-reviewer label gate and the mechanical needs-label-gate that once blocked a GitHub merge on label presence were retired (#4005: #4095, #4096). That doesn't make `needs-*` inert: the `queue_reconciler` cron still strips the `merge-ready` navigation label when a non-CI `needs-*` label is present or live CI is red (`xtask/src/tasks/queue_reconciler.rs`), and the ops merge checklist still treats an active `needs-*` label as a hard stop — an unaddressed bounce label still blocks a PR from merging in practice, as navigation-label reconciliation and operator process, not as a branch-ruleset gate.
 
 **Labels answer a narrower, useful question**: "which agents within this stage have already completed their pass?" — routing and status bookkeeping, not a gate.
 

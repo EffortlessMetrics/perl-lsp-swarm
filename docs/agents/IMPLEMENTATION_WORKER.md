@@ -107,7 +107,7 @@ the packet requires preserving partial work.
 
 Run the cheapest proof that establishes the packet's claim, then report:
 
-- changed files and the exact head;
+- changed files and the PR/branch revision;
 - commands and pass/fail/not-run results;
 - what the proof establishes and does not establish;
 - findings, uncertainty, and unresolved contradictions;
@@ -116,7 +116,7 @@ Run the cheapest proof that establishes the packet's claim, then report:
 
 For parser, path, string, numeric, or external-contract changes, include the edge or
 oracle case that makes the seam trustworthy. A green wrapper command without selected
-case or exact-head evidence is insufficient.
+case or evidence tied to the declared PR/branch revision is insufficient.
 
 ## Platform notes
 
