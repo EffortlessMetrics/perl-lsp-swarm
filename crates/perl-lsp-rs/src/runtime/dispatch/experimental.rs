@@ -21,8 +21,8 @@ impl LspServer {
 
     /// Handle slow operation test request
     ///
-    /// Test-only: gated behind `cfg(test)` / `expose_lsp_test_api` so production
-    /// builds do not compile the handler or route it (issue #4632).
+    /// Available only in test builds or when `expose_lsp_test_api` is enabled;
+    /// builds with neither configuration do not compile or route it (issue #4632).
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(super) fn handle_slow_operation_dispatch(
         &self,

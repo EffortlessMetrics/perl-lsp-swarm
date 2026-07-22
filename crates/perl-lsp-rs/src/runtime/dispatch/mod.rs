@@ -136,11 +136,11 @@ mod tests {
         );
     }
 
-    /// Verify that the `$/test/slowOperation` test endpoint is cfg-gated out of
-    /// production builds (issue #4632).  The routing arm and the handler must
-    /// both carry `#[cfg(any(test, feature = "expose_lsp_test_api"))]` so that a
-    /// non-test, non-feature production build neither routes nor compiles the
-    /// endpoint — any client call falls through to `METHOD_NOT_FOUND`.
+    /// Verify that the `$/test/slowOperation` endpoint is cfg-gated when neither
+    /// test mode nor `expose_lsp_test_api` is enabled (issue #4632). The routing
+    /// arm and handler must both carry the gate so a non-test, non-feature build
+    /// falls through to `METHOD_NOT_FOUND`, while feature-enabled builds retain
+    /// the endpoint for cancellation tests.
     #[test]
     fn test_slow_operation_endpoint_is_cfg_gated_from_production() {
         let routing = include_str!("routing.rs");
