@@ -476,6 +476,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().code_action {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         let params = match params {
             Some(p) => p,
             None => return Ok(Some(json!([]))),

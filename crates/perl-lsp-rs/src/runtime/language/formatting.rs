@@ -112,6 +112,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().formatting {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         if !self.is_formatting_enabled() {
             return Ok(Some(json!([])));
         }
@@ -178,6 +183,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().range_formatting {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         if !self.is_formatting_enabled() {
             return Ok(Some(json!([])));
         }

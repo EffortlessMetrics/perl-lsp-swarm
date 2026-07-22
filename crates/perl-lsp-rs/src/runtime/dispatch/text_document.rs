@@ -154,6 +154,10 @@ impl LspServer {
         params: Option<Value>,
         id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().definition {
+            return Err(crate::protocol::method_not_advertised());
+        }
         // Use test fallback in test mode, production handler otherwise
         let use_fallback = std::env::var("LSP_TEST_FALLBACKS").is_ok();
         if use_fallback {
@@ -180,6 +184,10 @@ impl LspServer {
         params: Option<Value>,
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().references {
+            return Err(crate::protocol::method_not_advertised());
+        }
         // Use test fallback in test mode, production handler otherwise
         let use_fallback = std::env::var("LSP_TEST_FALLBACKS").is_ok();
         if use_fallback {
@@ -434,6 +442,10 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().folding_range {
+            return Err(crate::protocol::method_not_advertised());
+        }
         // Use test fallback in test mode, production handler otherwise
         let use_fallback = std::env::var("LSP_TEST_FALLBACKS").is_ok();
         if use_fallback {

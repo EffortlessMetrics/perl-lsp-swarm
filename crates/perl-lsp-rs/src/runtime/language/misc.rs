@@ -372,6 +372,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().inlay_hints {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         use crate::protocol::req_range;
 
         // Return empty if client does not support inlay hints.
@@ -653,6 +658,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().selection_range {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         if let Some(p) = params {
             let uri = req_uri(&p)?;
             let positions = p["positions"]
