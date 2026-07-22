@@ -502,8 +502,11 @@ impl DiagnosticCode {
                 The tie interface may not handle multi-line heredoc output correctly.",
             ),
             Self::VersionIncompatFeature => Some(
-                "This Perl feature requires a newer Perl version than declared. \
-                Update 'use vN.NN' or 'use feature' to enable it.",
+                "This Perl feature is not available under the declared Perl version. \
+                The required behavior is version-dependent: some features need a newer \
+                `use vN.NN`, others need an explicit `use feature 'name';`. \
+                In Perl 5.42+, given/when/default and smartmatch are feature-gated \
+                (not removed) — add `use feature 'switch';` or `use feature 'smartmatch';`.",
             ),
             // Perl::Critic codes carry per-policy descriptions; no generic hint needed.
             Self::CriticSeverity1
