@@ -218,7 +218,10 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].size_bytes, raw.len());
         assert!(files[0].content.contains('\u{fffd}'));
-        assert!(files[0].content.len() > raw.len(), "fixture must discriminate decoded vs raw size");
+        assert!(
+            files[0].content.len() > raw.len(),
+            "fixture must discriminate decoded vs raw size"
+        );
 
         let inventory = generate_inventory(&files);
         assert_eq!(inventory.total_size_bytes, raw.len());
