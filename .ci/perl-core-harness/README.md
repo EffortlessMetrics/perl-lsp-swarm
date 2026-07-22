@@ -103,10 +103,10 @@ deferred_lifecycle
 governed_compile_time_dynamic
 source_locked_compatibility
 unsupported
-unknown
 ```
 
-`unsupported` and `unknown` are compile-blocking. `source_locked_compatibility`
+`unsupported` is compile-blocking. Unknown classification is rejected and is
+not an admissible receipt disposition. `source_locked_compatibility`
 must retain a `path_and_source` lock scope so upstream drift forces review;
 those records are compatibility debt, not a claim of general Perl semantics.
 Smoke and baseline validation also reject malformed boundary records (missing
