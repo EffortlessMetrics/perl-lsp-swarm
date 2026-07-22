@@ -496,7 +496,6 @@ and documentation URLs.
 | PL200-PL299 | Package/module |
 | PL300-PL399 | Subroutine |
 | PL400-PL499 | Best practices |
-| PC001-PC005 | Perl::Critic violations |
 
 ### Rich metadata per code
 

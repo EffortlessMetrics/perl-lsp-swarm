@@ -61,18 +61,6 @@ fn two_arg_open_meta_has_hint() {
 }
 
 #[test]
-fn critic_codes_have_no_hint_in_meta() {
-    // Critic codes intentionally have no generic hint — the policy description is the hint
-    let meta = catalog::critic_severity_1();
-    assert!(
-        meta.hint.is_none(),
-        "critic_severity_1 DiagnosticMeta must NOT expose a generic context hint"
-    );
-    let meta = catalog::critic_severity_5();
-    assert!(meta.hint.is_none(), "critic_severity_5 must also have no hint");
-}
-
-#[test]
 fn hint_content_is_non_empty_string_when_present() {
     let meta = catalog::parse_error();
     if let Some(hint) = meta.hint {
