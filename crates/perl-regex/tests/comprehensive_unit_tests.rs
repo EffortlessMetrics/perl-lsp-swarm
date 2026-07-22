@@ -371,6 +371,17 @@ fn finder_presence_matches_compatibility_wrappers() -> Result<(), Box<dyn std::e
     Ok(())
 }
 
+#[test]
+fn code_execution_ignores_embedded_code_in_regex_comments() -> Result<(), Box<dyn std::error::Error>>
+{
+    let v = RegexValidator::new();
+
+    assert!(!v.detects_code_execution(r"(?#comment with (?{ $x }) inside)"));
+    assert!(v.detects_code_execution(r"(?#escaped \)(?{ $x = 1 })"));
+    assert!(v.detects_code_execution(r"(?#benign comment)(?{ $x })"));
+
+    Ok(())
+}
 // ── detect_nested_quantifiers() direct tests ────────────────────────────
 
 #[test]
