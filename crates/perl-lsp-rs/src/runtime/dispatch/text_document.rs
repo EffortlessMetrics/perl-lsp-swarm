@@ -253,19 +253,21 @@ impl LspServer {
         self.handle_prepare_rename(params)
     }
 
-    pub(super) fn handle_rename_workspace_dispatch(
+    pub(super) fn handle_rename_workspace_cancellable_dispatch(
         &self,
         params: Option<Value>,
+        request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_rename_workspace(params)
+        self.handle_rename_workspace_cancellable(params, request_id)
     }
 
     // Code actions
-    pub(super) fn handle_code_action_dispatch(
+    pub(super) fn handle_code_action_cancellable_dispatch(
         &self,
         params: Option<Value>,
+        request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_code_action(params)
+        self.handle_code_action_cancellable(params, request_id)
     }
 
     pub(super) fn handle_code_action_resolve_dispatch(
@@ -276,11 +278,12 @@ impl LspServer {
     }
 
     // Semantic tokens
-    pub(super) fn handle_semantic_tokens_dispatch(
+    pub(super) fn handle_semantic_tokens_cancellable_dispatch(
         &self,
         params: Option<Value>,
+        request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_semantic_tokens(params)
+        self.handle_semantic_tokens_cancellable(params, request_id)
     }
 
     pub(super) fn handle_semantic_tokens_range_dispatch(
@@ -449,11 +452,12 @@ impl LspServer {
     }
 
     // Formatting
-    pub(super) fn handle_formatting_dispatch(
+    pub(super) fn handle_formatting_cancellable_dispatch(
         &self,
         params: Option<Value>,
+        request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_formatting(params)
+        self.handle_formatting_cancellable(params, request_id)
     }
 
     pub(super) fn handle_range_formatting_dispatch(
@@ -493,14 +497,12 @@ impl LspServer {
     }
 
     // Document symbol
-    pub(super) fn handle_document_symbol_dispatch(
+    pub(super) fn handle_document_symbol_cancellable_dispatch(
         &self,
         params: Option<Value>,
+        request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        tracing::debug!("Processing documentSymbol request");
-        let result = self.handle_document_symbol(params);
-        tracing::debug!(ok = result.is_ok(), "DocumentSymbol result");
-        result
+        self.handle_document_symbol_cancellable(params, request_id)
     }
 
     // Execute command
