@@ -729,6 +729,19 @@ impl ScopeAnalyzer {
                     strict_vars_mode,
                 );
             }
+            NodeKind::AmperCall { name, args } => {
+                calls_and_exprs::handle_amper_call(
+                    self,
+                    node,
+                    name,
+                    args,
+                    scope,
+                    ancestors,
+                    issues,
+                    context,
+                    strict_vars_mode,
+                );
+            }
             NodeKind::MethodCall { object, method, args } => {
                 calls_and_exprs::handle_method_call(
                     self,

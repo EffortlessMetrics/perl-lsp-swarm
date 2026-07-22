@@ -351,12 +351,12 @@ impl<'a> DeclarationProvider<'a> {
                     GotoTargetForm::Sub => {
                         // goto &sub — navigate to the subroutine declaration.
                         // Skip dynamic coderefs (e.g. `goto &$var`, where the parser
-                        // produces `FunctionCall { name: "$var", .. }`) so we don't
+                        // produces `AmperCall { name: "$var", .. }`) so we don't
                         // issue a wasted lookup for a non-existent subroutine. This
                         // mirrors the sigil guard in symbol.rs so both consumers of
                         // the `form` field agree on what the `Sub` arm means.
                         match &target.kind {
-                            NodeKind::FunctionCall { name, .. }
+                            NodeKind::AmperCall { name, .. }
                                 if !name.is_empty() && !name.starts_with(['$', '@', '%']) =>
                             {
                                 self.find_subroutine_declaration(node, name)
@@ -2285,7 +2285,7 @@ mod tests {
     // =========================================================================
 
     /// `goto &target` (named subroutine) resolves to the sub declaration —
-    /// exercises the guarded `FunctionCall { name, .. }` arm of GotoTargetForm::Sub.
+    /// exercises the guarded `AmperCall { name, .. }` arm of GotoTargetForm::Sub.
     ///
     /// Covered changed lines: ~351-360 (Sub arm, named-subroutine branch).
     #[test]

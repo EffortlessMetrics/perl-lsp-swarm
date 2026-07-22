@@ -113,6 +113,7 @@ const SAFE_FOR_BREAKPOINT_TRUE: &[&str] = &[
     "Goto",
     "MethodCall",
     "FunctionCall",
+    "AmperCall",
     "IndirectCall",
     "Match",
     "Substitution",
@@ -188,9 +189,9 @@ fn safe_for_breakpoint_exact_false_set() {
 }
 
 #[test]
-fn safe_for_breakpoint_covers_all_73_variants() {
+fn safe_for_breakpoint_covers_all_74_variants() {
     // Every variant must appear in exactly one of the two lists.
-    // After #1713: 44 in TRUE, 29 in FALSE = 73 total variants
+    // After #1713 + AmperCall: 45 in TRUE, 29 in FALSE = 74 total variants
     for kind in all_variants() {
         let name = kind.kind_name();
         let in_true = SAFE_FOR_BREAKPOINT_TRUE.contains(&name);

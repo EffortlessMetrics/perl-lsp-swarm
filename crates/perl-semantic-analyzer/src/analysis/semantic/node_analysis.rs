@@ -230,6 +230,19 @@ impl SemanticAnalyzer {
                 self.analyze_node(body, sub_scope);
             }
 
+            NodeKind::AmperCall { name, args } => {
+                // &name(...) — ampersand-sigil call, treated as a user function call
+                self.semantic_tokens.push(SemanticToken {
+                    location: node.location,
+                    token_type: SemanticTokenType::Function,
+                    modifiers: vec![],
+                });
+                for arg in args {
+                    self.analyze_node(arg, scope_id);
+                }
+                let _ = name;
+            }
+
             NodeKind::FunctionCall { name, args } => {
                 // Check if this is a built-in function
                 {

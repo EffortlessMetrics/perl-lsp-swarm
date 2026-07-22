@@ -143,6 +143,7 @@ pub fn all_nodekind_instances() -> Vec<Node> {
         ),
         Node::new(NodeKind::Return { value: Some(Box::new(num("1"))) }, loc()),
         Node::new(NodeKind::FunctionCall { name: "print".to_string(), args: vec![] }, loc()),
+        Node::new(NodeKind::AmperCall { name: "custom".to_string(), args: vec![] }, loc()),
         Node::new(
             NodeKind::MethodCall {
                 object: Box::new(var("$", "obj")),

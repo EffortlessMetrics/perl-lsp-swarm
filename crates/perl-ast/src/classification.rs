@@ -233,6 +233,7 @@ impl NodeKind {
             | NodeKind::Untie { .. }
             | NodeKind::MethodCall { .. }
             | NodeKind::FunctionCall { .. }
+            | NodeKind::AmperCall { .. }
             | NodeKind::IndirectCall { .. }
             | NodeKind::Match { .. }
             | NodeKind::Substitution { .. }
@@ -753,7 +754,7 @@ impl NodeKind {
                 recovery = false,
                 bp = true
             ),
-            NodeKind::FunctionCall { .. } => flags!(
+            NodeKind::FunctionCall { .. } | NodeKind::AmperCall { .. } => flags!(
                 exec = true,
                 scope = false,
                 decl = false,

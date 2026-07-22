@@ -86,6 +86,41 @@ pub(super) fn handle_function_call<'a>(
     ancestors.pop();
 }
 
+/// Handle `NodeKind::AmperCall`.
+///
+/// `&foo(@args)` bypasses prototypes and passes a specific argument list; `&foo`
+/// (no parens) forwards the caller's `@_` verbatim.  We analyse args normally
+/// and record a variable use when `name` looks like a variable (e.g. `$coderef`).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn handle_amper_call<'a>(
+    analyzer: &ScopeAnalyzer,
+    node: &'a Node,
+    name: &str,
+    args: &'a [Node],
+    scope: &Rc<Scope>,
+    ancestors: &mut Vec<&'a Node>,
+    issues: &mut Vec<ScopeIssue>,
+    context: &AnalysisContext<'a>,
+    strict_vars_mode: bool,
+) {
+    if let Some((sigil, var_name)) = analyzer.extract_name_like_variable(name) {
+        analyzer.record_variable_use(
+            scope,
+            strict_vars_mode,
+            context,
+            issues,
+            node,
+            sigil,
+            var_name,
+        );
+    }
+    ancestors.push(node);
+    for arg in args {
+        analyzer.analyze_node(arg, scope, ancestors, issues, context);
+    }
+    ancestors.pop();
+}
+
 /// Handle `NodeKind::MethodCall`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_method_call<'a>(
