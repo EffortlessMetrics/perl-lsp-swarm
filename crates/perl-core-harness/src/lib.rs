@@ -9,10 +9,11 @@ use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness_types::{
     BaselineComparison, BaselineViolation, BaselineViolationKind, COMPILE_BASELINE_SCHEMA_VERSION,
     CompileBaseline, DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport,
-    GAP_MAP_SCHEMA_VERSION, GapMap, PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus,
-    RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunSummary, RunnerRecord,
-    RunnerStatus, SMOKE_SCHEMA_VERSION, SmokeFailureKind, SmokeReport, SmokeStatus,
-    SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
+    GAP_MAP_SCHEMA_VERSION, GapMap, ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION,
+    PrepareReceipt, PrepareStatus, RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport,
+    RunSummary, RunnerRecord, RunnerStatus, SMOKE_SCHEMA_VERSION, SemanticBoundaryConfidence,
+    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SmokeFailureKind, SmokeReport,
+    SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
 };
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1036,9 +1037,11 @@ fn baseline_from_report(report: &RunReport) -> Result<CompileBaseline> {
         buckets: report.buckets.clone(),
         expected_failures: report.failures.clone(),
         file_results: report.file_results.clone(),
+        semantic_boundaries: Some(report.semantic_boundaries.clone()),
     };
     sort_baseline(&mut baseline);
-    let validation = validate_report_bucket_shape(report);
+    let mut validation = validate_report_bucket_shape(report);
+    validation.extend(validate_semantic_boundary_shape(report));
     if !validation.is_empty() {
         let details = validation
             .iter()
@@ -1048,7 +1051,7 @@ fn baseline_from_report(report: &RunReport) -> Result<CompileBaseline> {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        bail!("cannot accept baseline with invalid failure buckets:\n{details}");
+        bail!("cannot accept baseline with invalid receipt shape:\n{details}");
     }
     Ok(baseline)
 }
@@ -1061,6 +1064,9 @@ fn sort_baseline(baseline: &mut CompileBaseline) {
             .then_with(|| left.bucket.cmp(&right.bucket))
             .then_with(|| left.phase.cmp(&right.phase))
     });
+    if let Some(boundaries) = &mut baseline.semantic_boundaries {
+        boundaries.sort_by_key(semantic_boundary_key);
+    }
 }
 
 fn compare_baseline(baseline: &CompileBaseline, report: &RunReport) -> BaselineComparison {
@@ -1115,11 +1121,89 @@ fn compare_baseline(baseline: &CompileBaseline, report: &RunReport) -> BaselineC
     }
 
     violations.extend(validate_report_bucket_shape(report));
+    violations.extend(validate_semantic_boundary_shape(report));
     violations.extend(compare_file_results(baseline, report));
     violations.extend(compare_failure_buckets(baseline, report));
     violations.extend(compare_summary_assertions(baseline, report));
+    violations.extend(compare_semantic_boundaries(baseline, report));
 
     BaselineComparison { violations }
+}
+
+fn compare_semantic_boundaries(
+    baseline: &CompileBaseline,
+    report: &RunReport,
+) -> Vec<BaselineViolation> {
+    let Some(accepted_boundaries) = &baseline.semantic_boundaries else {
+        return Vec::new();
+    };
+    let mut baseline_by_key = BTreeMap::new();
+    let mut current_by_key = BTreeMap::new();
+    let mut violations = Vec::new();
+
+    for boundary in accepted_boundaries {
+        let key = semantic_boundary_key(boundary);
+        if baseline_by_key.insert(key.clone(), boundary).is_some() {
+            violations.push(violation(
+                BaselineViolationKind::SemanticBoundary,
+                Some(boundary.path.clone()),
+                format!("baseline contains duplicate semantic boundary key: {}", boundary.id),
+            ));
+        }
+    }
+    for boundary in &report.semantic_boundaries {
+        let key = semantic_boundary_key(boundary);
+        if current_by_key.insert(key, boundary).is_some() {
+            violations.push(violation(
+                BaselineViolationKind::SemanticBoundary,
+                Some(boundary.path.clone()),
+                format!("current report contains duplicate semantic boundary key: {}", boundary.id),
+            ));
+        }
+    }
+
+    for (key, current) in &current_by_key {
+        let Some(accepted) = baseline_by_key.get(key) else {
+            violations.push(violation(
+                BaselineViolationKind::SemanticBoundary,
+                Some(current.path.clone()),
+                format!(
+                    "current semantic boundary is not accepted by the baseline: {}",
+                    current.id
+                ),
+            ));
+            continue;
+        };
+        if accepted != current {
+            violations.push(violation(
+                BaselineViolationKind::SemanticBoundary,
+                Some(current.path.clone()),
+                format!(
+                    "current semantic boundary changed from the accepted baseline: {}",
+                    current.id
+                ),
+            ));
+        }
+    }
+
+    violations
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct SemanticBoundaryKey {
+    path: String,
+    id: String,
+    source_start: usize,
+    source_end: usize,
+}
+
+fn semantic_boundary_key(boundary: &ObservedSemanticBoundary) -> SemanticBoundaryKey {
+    SemanticBoundaryKey {
+        path: boundary.path.clone(),
+        id: boundary.id.clone(),
+        source_start: boundary.source_span.start,
+        source_end: boundary.source_span.end,
+    }
 }
 
 fn compare_file_results(baseline: &CompileBaseline, report: &RunReport) -> Vec<BaselineViolation> {
@@ -1483,6 +1567,97 @@ fn collect_smoke_report_failures(
             message: violation.message,
         });
     }
+    for violation in validate_semantic_boundary_shape(report) {
+        failures.push(SmokeStructuralFailure {
+            mode: Some(expected_mode),
+            path: violation.path,
+            kind: SmokeFailureKind::SemanticBoundary,
+            message: violation.message,
+        });
+    }
+}
+
+fn validate_semantic_boundary_shape(report: &RunReport) -> Vec<BaselineViolation> {
+    let mut violations = Vec::new();
+    let mut keys = BTreeSet::new();
+    for boundary in &report.semantic_boundaries {
+        let path = Some(boundary.path.clone());
+        let mut add = |message: &str| {
+            violations.push(violation(
+                BaselineViolationKind::SemanticBoundary,
+                path.clone(),
+                message,
+            ));
+        };
+
+        if !keys.insert(semantic_boundary_key(boundary)) {
+            add("semantic boundary inventory contains a duplicate key");
+        }
+
+        if boundary.path.trim().is_empty() {
+            add("semantic boundary has an empty path");
+        }
+        if boundary.id.trim().is_empty() {
+            add("semantic boundary has an empty stable id");
+        }
+        if boundary.reason.trim().is_empty() {
+            add("semantic boundary has an empty reason");
+        }
+        if boundary.source_kind.trim().is_empty() {
+            add("semantic boundary has an empty source kind");
+        }
+        if boundary.owner_workstream.trim().is_empty() {
+            add("semantic boundary has no owning workstream");
+        }
+        if boundary.supporting_test.trim().is_empty() {
+            add("semantic boundary has no supporting test");
+        }
+        if boundary.source_span.start > boundary.source_span.end {
+            add("semantic boundary source span is reversed");
+        }
+
+        match boundary.disposition {
+            SemanticBoundaryDisposition::SourceLockedCompatibility => {
+                if boundary.lock_scope != SemanticBoundaryLockScope::PathAndSource {
+                    add("source-locked compatibility boundary must use a path_and_source lock");
+                }
+                if boundary.confidence != SemanticBoundaryConfidence::Exact {
+                    add("source-locked compatibility boundary must have exact confidence");
+                }
+                if boundary.blocks_compilation {
+                    add("source-locked compatibility boundary must not block compilation");
+                }
+            }
+            SemanticBoundaryDisposition::Unknown => {
+                add("unknown semantic boundary disposition is not admissible");
+                if boundary.confidence != SemanticBoundaryConfidence::Unresolved {
+                    add("unknown semantic boundary must have unresolved confidence");
+                }
+                if !boundary.blocks_compilation {
+                    add("unknown semantic boundary must block compilation");
+                }
+            }
+            SemanticBoundaryDisposition::Unsupported => {
+                if boundary.confidence != SemanticBoundaryConfidence::Unresolved {
+                    add("unsupported semantic boundary must have unresolved confidence");
+                }
+                if !boundary.blocks_compilation {
+                    add("unsupported semantic boundary must block compilation");
+                }
+            }
+            SemanticBoundaryDisposition::ImplementedStatic
+            | SemanticBoundaryDisposition::StaticallyClassified
+            | SemanticBoundaryDisposition::OrdinaryRuntime
+            | SemanticBoundaryDisposition::DeferredRuntime
+            | SemanticBoundaryDisposition::DeferredLifecycle => {
+                if boundary.blocks_compilation {
+                    add("non-blocking semantic boundary disposition cannot block compilation");
+                }
+            }
+            SemanticBoundaryDisposition::GovernedCompileTimeDynamic => {}
+        }
+    }
+    violations
 }
 
 fn path_to_string(path: &Path) -> String {
@@ -1707,6 +1882,31 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
         file_results.iter().filter(|result| result.status == RunnerStatus::Fail).count();
     let files_total = file_results.len();
     let files_passed = files_total.saturating_sub(files_failed);
+    let semantic_boundaries = input
+        .discovered
+        .iter()
+        .filter_map(|test| {
+            let path = normalize_test_path(&test.path)?;
+            let record = records_by_path.get(&path)?;
+            Some((path, *record))
+        })
+        .flat_map(|(path, record)| {
+            record.semantic_boundaries.iter().map(move |boundary| ObservedSemanticBoundary {
+                path: path.clone(),
+                id: boundary.id.clone(),
+                disposition: boundary.disposition,
+                reason: boundary.reason.clone(),
+                source_span: boundary.source_span,
+                source_kind: boundary.source_kind.clone(),
+                confidence: boundary.confidence,
+                blocks_compilation: boundary.blocks_compilation,
+                blocks_downstream_static_facts: boundary.blocks_downstream_static_facts,
+                lock_scope: boundary.lock_scope,
+                owner_workstream: boundary.owner_workstream.clone(),
+                supporting_test: boundary.supporting_test.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
 
     RunReport {
         schema_version: RUN_REPORT_SCHEMA_VERSION.to_string(),
@@ -1730,6 +1930,7 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
         buckets,
         file_results,
         failures,
+        semantic_boundaries,
     }
 }
 
@@ -1801,6 +2002,10 @@ fn perl_tree_ref(perl_tree: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_core_harness_types::{
+        SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
+        SemanticBoundaryRecord, SemanticBoundarySourceSpan,
+    };
 
     type TestResult<T = ()> = Result<T>;
 
@@ -1995,6 +2200,19 @@ mod tests {
                 assertions_total: 1,
                 bucket: None,
                 first_diagnostic: None,
+                semantic_boundaries: vec![SemanticBoundaryRecord {
+                    id: "runtime_symbolic_reference".into(),
+                    disposition: SemanticBoundaryDisposition::DeferredRuntime,
+                    reason: "symbolic reference dereference is deferred to runtime".into(),
+                    source_span: SemanticBoundarySourceSpan { start: 12, end: 28 },
+                    source_kind: "SymbolicReferenceDeref".into(),
+                    confidence: SemanticBoundaryConfidence::Conservative,
+                    blocks_compilation: false,
+                    blocks_downstream_static_facts: true,
+                    lock_scope: SemanticBoundaryLockScope::None,
+                    owner_workstream: "symbolic_reference_semantics".into(),
+                    supporting_test: "base/ok.t".into(),
+                }],
             },
             RunnerRecord {
                 schema_version: "perl_core_harness.runner_record.v1".into(),
@@ -2005,6 +2223,7 @@ mod tests {
                 assertions_total: 1,
                 bucket: Some("parse_recovery".into()),
                 first_diagnostic: Some("expected expression".into()),
+                semantic_boundaries: Vec::new(),
             },
         ];
         let run_tree = temp.path().join("run");
@@ -2026,6 +2245,68 @@ mod tests {
         assert_eq!(report.failures.len(), 2);
         assert!(report.failures.iter().any(|failure| failure.path == "base/bad.t"));
         assert!(report.failures.iter().any(|failure| failure.path == "base/missing.t"));
+        assert_eq!(report.semantic_boundaries.len(), 1);
+        assert_eq!(report.semantic_boundaries[0].path, "base/ok.t");
+        assert_eq!(
+            report.semantic_boundaries[0].disposition,
+            SemanticBoundaryDisposition::DeferredRuntime
+        );
+        assert_eq!(report.semantic_boundaries[0].source_span.start, 12);
+        assert_eq!(report.semantic_boundaries[0].owner_workstream, "symbolic_reference_semantics");
+        Ok(())
+    }
+
+    #[test]
+    fn run_report_scopes_and_deduplicates_semantic_boundaries() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let config = RunConfig {
+            perl_tree: temp.path().join("perl"),
+            host_perl: PathBuf::from("perl"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Compile,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: None,
+            runner_binary: Some(PathBuf::from("runner")),
+        };
+        let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
+        let boundary = SemanticBoundaryRecord {
+            id: "runtime_symbolic_reference".into(),
+            disposition: SemanticBoundaryDisposition::DeferredRuntime,
+            reason: "symbolic reference dereference is deferred to runtime".into(),
+            source_span: SemanticBoundarySourceSpan { start: 12, end: 28 },
+            source_kind: "SymbolicReferenceDeref".into(),
+            confidence: SemanticBoundaryConfidence::Conservative,
+            blocks_compilation: false,
+            blocks_downstream_static_facts: true,
+            lock_scope: SemanticBoundaryLockScope::None,
+            owner_workstream: "symbolic_reference_semantics".into(),
+            supporting_test: "base/ok.t".into(),
+        };
+        let record = |path: &str| RunnerRecord {
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "compile".into(),
+            path: path.into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 1,
+            assertions_total: 1,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: vec![boundary.clone()],
+        };
+        let records = vec![record("base/ok.t"), record("base/ok.t"), record("stale.t")];
+
+        let report = build_run_report(BuildRunReportInput {
+            config: &config,
+            perl_tree: temp.path(),
+            run_tree: &temp.path().join("run"),
+            discovered: &discovered,
+            records: &records,
+            harness_status: Some(0),
+        });
+
+        assert_eq!(report.semantic_boundaries.len(), 1);
+        assert_eq!(report.semantic_boundaries[0].path, "base/ok.t");
         Ok(())
     }
 
@@ -2079,6 +2360,7 @@ mod tests {
                 assertions_total: 1,
             }],
             failures: Vec::new(),
+            semantic_boundaries: Vec::new(),
         };
 
         let json = serde_json::to_string(&report)?;
@@ -2201,6 +2483,46 @@ mod tests {
     }
 
     #[test]
+    fn smoke_summary_fails_on_invalid_semantic_boundary_shape() -> TestResult {
+        let discovery = sample_discovery_report();
+        let mut compile = sample_compile_report();
+        compile.semantic_boundaries.push(ObservedSemanticBoundary {
+            path: "base/ok.t".into(),
+            id: "source_locked:base/ok.t:PhaseBlock".into(),
+            disposition: SemanticBoundaryDisposition::SourceLockedCompatibility,
+            reason: "guarded phase probe".into(),
+            source_span: SemanticBoundarySourceSpan { start: 8, end: 4 },
+            source_kind: "PhaseBlock".into(),
+            confidence: SemanticBoundaryConfidence::Conservative,
+            blocks_compilation: true,
+            blocks_downstream_static_facts: true,
+            lock_scope: SemanticBoundaryLockScope::None,
+            owner_workstream: "source_locked_compatibility".into(),
+            supporting_test: "base/ok.t".into(),
+        });
+
+        let smoke = build_smoke_report(BuildSmokeReportInput {
+            config: &sample_smoke_config(vec![HarnessMode::Compile]),
+            discovery: &discovery,
+            modes: &[HarnessMode::Compile],
+            discovery_path: Path::new("discovery.json"),
+            parse_path: None,
+            parse_report: None,
+            compile_path: Some(Path::new("compile.json")),
+            compile_report: Some(&compile),
+            gap_map_path: Path::new("gap-map.json"),
+        });
+
+        assert_eq!(smoke.status, SmokeStatus::Fail);
+        assert!(smoke.structural_failures.iter().any(|failure| {
+            failure.kind == SmokeFailureKind::SemanticBoundary
+                && failure.path.as_deref() == Some("base/ok.t")
+                && failure.message.contains("path_and_source")
+        }));
+        Ok(())
+    }
+
+    #[test]
     fn smoke_summary_fails_on_unbucketed_failure() -> TestResult {
         let discovery = sample_discovery_report();
         let mut compile = sample_compile_report();
@@ -2266,6 +2588,140 @@ mod tests {
         let back: CompileBaseline = serde_json::from_str(&json)?;
 
         assert_eq!(back, baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_comparison_rejects_unknown_semantic_boundary() -> TestResult {
+        let baseline = baseline_from_report(&sample_compile_report())?;
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(ObservedSemanticBoundary {
+            path: "base/ok.t".into(),
+            id: "unknown".into(),
+            disposition: SemanticBoundaryDisposition::Unknown,
+            reason: "classifier did not resolve boundary".into(),
+            source_span: SemanticBoundarySourceSpan { start: 0, end: 1 },
+            source_kind: "PhaseBlock".into(),
+            confidence: SemanticBoundaryConfidence::Unresolved,
+            blocks_compilation: true,
+            blocks_downstream_static_facts: true,
+            lock_scope: SemanticBoundaryLockScope::None,
+            owner_workstream: "compile_time_effects".into(),
+            supporting_test: "base/ok.t".into(),
+        });
+
+        let comparison = compare_baseline(&baseline, &report);
+        assert!(
+            comparison
+                .violations
+                .iter()
+                .any(|violation| violation.kind == BaselineViolationKind::SemanticBoundary)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_comparison_rejects_added_classified_semantic_boundary() -> TestResult {
+        let baseline = baseline_from_report(&sample_compile_report())?;
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+
+        let comparison = compare_baseline(&baseline, &report);
+        assert!(comparison.violations.iter().any(|violation| {
+            violation.kind == BaselineViolationKind::SemanticBoundary
+                && violation.message.contains("not accepted")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_acceptance_persists_semantic_boundary_inventory() -> TestResult {
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+
+        let baseline = baseline_from_report(&report)?;
+
+        assert_eq!(baseline.semantic_boundaries, Some(report.semantic_boundaries));
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_comparison_rejects_changed_semantic_boundary_payload() -> TestResult {
+        let mut baseline_report = sample_compile_report();
+        baseline_report.semantic_boundaries.push(sample_semantic_boundary());
+        let baseline = baseline_from_report(&baseline_report)?;
+        let mut report = baseline_report;
+        report.semantic_boundaries[0].reason = "changed explanation".into();
+
+        let comparison = compare_baseline(&baseline, &report);
+        assert!(comparison.violations.iter().any(|violation| {
+            violation.kind == BaselineViolationKind::SemanticBoundary
+                && violation.message.contains("changed")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_comparison_allows_removed_semantic_boundary() -> TestResult {
+        let mut baseline_report = sample_compile_report();
+        baseline_report.semantic_boundaries.push(sample_semantic_boundary());
+        let baseline = baseline_from_report(&baseline_report)?;
+
+        let comparison = compare_baseline(&baseline, &sample_compile_report());
+
+        assert!(comparison.is_clean(), "removing a boundary should be an improvement");
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_comparison_rejects_duplicate_semantic_boundary_keys() -> TestResult {
+        let boundary = sample_semantic_boundary();
+        let baseline = baseline_from_report(&sample_compile_report())?;
+        let mut report = sample_compile_report();
+        report.semantic_boundaries = vec![boundary.clone(), boundary];
+
+        let comparison = compare_baseline(&baseline, &report);
+
+        assert!(comparison.violations.iter().any(|violation| {
+            violation.kind == BaselineViolationKind::SemanticBoundary
+                && violation.message.contains("duplicate")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_acceptance_rejects_duplicate_semantic_boundary_keys() -> TestResult {
+        let boundary = sample_semantic_boundary();
+        let mut report = sample_compile_report();
+        report.semantic_boundaries = vec![boundary.clone(), boundary];
+
+        assert!(baseline_from_report(&report).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_acceptance_rejects_empty_semantic_boundary_path() -> TestResult {
+        let mut report = sample_compile_report();
+        let mut boundary = sample_semantic_boundary();
+        boundary.path.clear();
+        report.semantic_boundaries.push(boundary);
+
+        assert!(baseline_from_report(&report).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_compile_baseline_without_boundary_inventory_remains_readable() -> TestResult {
+        let baseline = baseline_from_report(&sample_compile_report())?;
+        let mut value = serde_json::to_value(&baseline)?;
+        let object = value.as_object_mut().ok_or_else(|| {
+            color_eyre::eyre::eyre!("compile baseline should serialize as an object")
+        })?;
+        object.remove("semantic_boundaries");
+
+        let decoded: CompileBaseline = serde_json::from_value(value)?;
+
+        assert!(decoded.semantic_boundaries.is_none());
         Ok(())
     }
 
@@ -2701,6 +3157,7 @@ mod tests {
             assertions_total: 1,
             bucket: None,
             first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
         }];
         let run_tree = temp.path().join("run");
         let report = build_run_report(BuildRunReportInput {
@@ -2752,6 +3209,24 @@ mod tests {
                 },
             ],
             failures: Vec::new(),
+            semantic_boundaries: Vec::new(),
+        }
+    }
+
+    fn sample_semantic_boundary() -> ObservedSemanticBoundary {
+        ObservedSemanticBoundary {
+            path: "base/ok.t".into(),
+            id: "runtime_symbolic_reference".into(),
+            disposition: SemanticBoundaryDisposition::DeferredRuntime,
+            reason: "runtime value remains dynamic".into(),
+            source_span: SemanticBoundarySourceSpan { start: 4, end: 12 },
+            source_kind: "SymbolicReferenceDeref".into(),
+            confidence: SemanticBoundaryConfidence::Conservative,
+            blocks_compilation: false,
+            blocks_downstream_static_facts: true,
+            lock_scope: SemanticBoundaryLockScope::None,
+            owner_workstream: "symbolic_reference_semantics".into(),
+            supporting_test: "base/ok.t".into(),
         }
     }
 
@@ -2821,6 +3296,7 @@ mod tests {
                 },
             ],
             failures: Vec::new(),
+            semantic_boundaries: Vec::new(),
         }
     }
 

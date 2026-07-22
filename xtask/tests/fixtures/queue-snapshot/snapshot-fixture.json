@@ -1,8 +1,8 @@
 {
-  "snapshot_id": "gh-snapshot-2026-04-26T18:40:00Z",
-  "captured_at": "2026-04-26T18:40:00Z",
-  "repository": "EffortlessMetrics/perl-lsp",
-  "default_branch": "master",
+  "snapshot_id": "gh-snapshot-2026-07-19T00:00:00Z",
+  "captured_at": "2026-07-19T00:00:00Z",
+  "repository": "EffortlessMetrics/perl-lsp-swarm",
+  "default_branch": "main",
   "master_sha": "deadbeef",
   "ruleset_summary": {},
   "prs": [
@@ -15,9 +15,35 @@
       "merge_state_status": "CLEAN",
       "labels": ["merge-ready"],
       "status_check_rollup": [{"name": "ci", "state": "SUCCESS"}],
-      "updated_at": "2026-04-26T18:38:00Z",
+      "updated_at": "2026-07-19T00:00:00Z",
       "author": "agent",
       "review_decision": "APPROVED"
+    },
+    {
+      "number": 2,
+      "title": "Conflicting PR",
+      "head_sha": "ccc",
+      "base_sha": "ddd",
+      "is_draft": false,
+      "merge_state_status": "DIRTY",
+      "labels": [],
+      "status_check_rollup": [{"name": "ci", "state": "IN_PROGRESS"}],
+      "updated_at": "2026-07-18T00:00:00Z",
+      "author": "agent",
+      "review_decision": null
+    },
+    {
+      "number": 3,
+      "title": "Unknown mergeability PR",
+      "head_sha": "eee",
+      "base_sha": "fff",
+      "is_draft": false,
+      "merge_state_status": "UNKNOWN",
+      "labels": [],
+      "status_check_rollup": [{"name": "ci", "state": "IN_PROGRESS"}],
+      "updated_at": "2026-07-17T00:00:00Z",
+      "author": "agent",
+      "review_decision": null
     }
   ],
   "buckets": {},

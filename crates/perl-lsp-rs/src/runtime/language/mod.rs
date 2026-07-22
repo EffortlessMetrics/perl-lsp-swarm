@@ -16,6 +16,7 @@
 //! - misc: Inlay hints, document links, code lens, and other features
 //! - moniker: Symbol identity and import/export provenance
 
+mod agent_context;
 mod code_actions;
 mod colors;
 mod completion;

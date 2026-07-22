@@ -23,7 +23,7 @@
 # needed (PR 2 scope).
 #
 # Action pin:
-#   EffortlessMetrics/ub-review@2939f3565adbabb2c58a03767f879a2eff217978 # pre-release
+#   EffortlessMetrics/ub-review@a1e64c65e39aadf341f4e5cb14094b9a87f592ad # pre-release
 #   Immutable current-main snapshot; action inputs are checked against its
 #   unchanged action.yml. Keep source fallback until an exact-head downstream
 #   packet and verifier receipt prove the consumer path.
@@ -266,7 +266,7 @@ jobs:
           fi
       - name: Build UB review packet
         id: ub-review
-        uses: EffortlessMetrics/ub-review@2939f3565adbabb2c58a03767f879a2eff217978 # pre-release
+        uses: EffortlessMetrics/ub-review@a1e64c65e39aadf341f4e5cb14094b9a87f592ad # pre-release
         with:
           config: policy/ub-review.toml
           profile: gh-runner
@@ -368,7 +368,7 @@ jobs:
           fi
       - name: Build UB review packet
         id: ub-review
-        uses: EffortlessMetrics/ub-review@2939f3565adbabb2c58a03767f879a2eff217978 # pre-release
+        uses: EffortlessMetrics/ub-review@a1e64c65e39aadf341f4e5cb14094b9a87f592ad # pre-release
         with:
           config: policy/ub-review.toml
           profile: gh-runner
@@ -455,7 +455,7 @@ jobs:
           fi
       - name: Build UB review packet
         id: ub-review
-        uses: EffortlessMetrics/ub-review@2939f3565adbabb2c58a03767f879a2eff217978 # pre-release
+        uses: EffortlessMetrics/ub-review@a1e64c65e39aadf341f4e5cb14094b9a87f592ad # pre-release
         with:
           config: policy/ub-review.toml
           profile: gh-runner
