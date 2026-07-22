@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Diagnostics now carry one of two coherent `source` strings (`perl-lsp` for all built-in diagnostics, `perl-lsp-critic` for external Perl::Critic findings) instead of the four divergent values (`perl-lsp`, `perl-lsp-critic`, `perlcritic`, `perl-parser`) that previously broke editor-side source filtering."
+time: 2026-07-22T00:00:00Z
+custom:
+  PR: "4627"
+  Slug: diagnostic-source-strings
+  Breaking: "no"

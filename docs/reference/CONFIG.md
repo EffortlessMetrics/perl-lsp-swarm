@@ -96,6 +96,22 @@ your-project/
 | `perlcritic` | `boolean` | (unset) | Enable critic diagnostics. When unset, the server default (`true`) applies. The default native engine does not require `perlcritic`; `legacy`, `perlcritic`, and `external` modes use the Perl::Critic-compatible shell-out path. |
 | `perlcritic_severity` | `integer` (1–5) | (unset) | Minimum critic severity to report. Perl::Critic uses `1 = least severe` and `5 = most severe`, so `1` reports everything while `5` reports only the most severe violations. Must be in the range 1–5; values outside this range are a parse error. |
 
+##### Diagnostic `source` strings
+
+Every diagnostic the server publishes carries a `source` field that editors use
+for filtering and grouping in the Problems panel. The server uses exactly two
+source strings (see [#4627](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4627)):
+
+| `source` | Covers | Example codes |
+|----------|--------|---------------|
+| `perl-lsp` | All built-in diagnostics: parse errors, built-in lints, and native critic findings. | `PL001`, `PL102`, `native.testing.require_use_strict` |
+| `perl-lsp-critic` | Findings from the external `perlcritic` binary (legacy/external engine). | `TestingAndDebugging::RequireUseStrict`, `Variables::ProhibitUnusedVariables` |
+
+The same logical finding carries the same `source` regardless of whether it
+traveled the push or pull transport. Filter the Problems panel with
+`[perl-lsp]` to see all server-produced diagnostics, or `[perl-lsp-critic]` to
+see only external Perl::Critic findings.
+
 #### `[critic]` — Critic Engine Selection
 
 | Key | Type | Default | Description |

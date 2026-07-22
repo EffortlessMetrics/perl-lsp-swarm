@@ -26,7 +26,7 @@ fn has_code(diag: &lsp_types::Diagnostic, code: &str) -> bool {
 fn has_deterministic_source(diag: &lsp_types::Diagnostic) -> bool {
     matches!(
         diag.source.as_deref(),
-        Some("perl-lsp") | Some("perl-lsp-critic") | Some("perlcritic")
+        Some("perl-lsp") | Some("perl-lsp-critic")
     )
 }
 

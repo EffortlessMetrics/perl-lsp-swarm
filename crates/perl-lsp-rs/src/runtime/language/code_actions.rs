@@ -5,7 +5,7 @@
 
 use super::super::*;
 use super::misc::{
-    DIAGNOSTIC_EXPLANATION_SCHEMA_VERSION, diagnostic_explanation_payload_from_diagnostics,
+    diagnostic_explanation_payload_from_diagnostics, DIAGNOSTIC_EXPLANATION_SCHEMA_VERSION,
 };
 use crate::protocol::{req_range, req_uri};
 use std::sync::LazyLock;
@@ -248,7 +248,11 @@ fn quickfix_text_edits_for_uri<'a>(action: &'a Value, uri: &str) -> Option<Vec<&
         collected.extend(edits.iter());
     }
 
-    if collected.is_empty() { None } else { Some(collected) }
+    if collected.is_empty() {
+        None
+    } else {
+        Some(collected)
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -425,7 +429,11 @@ fn snippet_text_edits_from_changes(action: &Value, uri: &str) -> Option<Vec<Valu
         }));
     }
 
-    if snippet_edits.is_empty() { None } else { Some(snippet_edits) }
+    if snippet_edits.is_empty() {
+        None
+    } else {
+        Some(snippet_edits)
+    }
 }
 
 fn convert_pragma_quickfix_edits_to_snippet_text_edits(
@@ -532,9 +540,10 @@ impl LspServer {
             // action's embedded diagnostic must line up (source + code) with the
             // diagnostic the publish path emits, so a client associates the fix
             // with the problem it resolves. The default native engine publishes
-            // `native.*` codes under source "perl-lsp-critic"; the opt-in legacy
-            // engine keeps the `Perl::Critic` policy names it shares with the
-            // external tool it emulates. Running the legacy analyzer
+            // `native.*` codes under source "perl-lsp" (built-in diagnostics);
+            // the opt-in legacy engine keeps the `Perl::Critic` policy names it
+            // shares with the external tool it emulates. Running the legacy
+            // analyzer
             // unconditionally (as before) leaked the `Perl::Critic` brand onto
             // the native product surface and produced quick-fixes whose source +
             // code never matched the published native diagnostic.
@@ -629,7 +638,7 @@ impl LspServer {
                                     crate::perl_critic::Severity::Brutal => 4, // Hint
                                 },
                                 "code": finding.rule_id.clone(),
-                                "source": "perl-lsp-critic",
+                                "source": "perl-lsp",
                                 "message": finding.message.clone(),
                             }],
                             "edit": {
@@ -1291,8 +1300,8 @@ mod tests {
     }
 
     #[test]
-    fn code_action_tag_gate_keeps_only_supported_llm_generated_tag()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn code_action_tag_gate_keeps_only_supported_llm_generated_tag(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let mut actions = vec![
             json!({
                 "title": "generated",
@@ -1344,8 +1353,8 @@ mod tests {
     }
 
     #[test]
-    fn code_action_runtime_offers_explain_diagnostic_for_pl701_and_pl109()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn code_action_runtime_offers_explain_diagnostic_for_pl701_and_pl109(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let uri = "file:///explain-diagnostic.pl";
         let text = "use Missing::Payload;\nprint bareword;\n";
@@ -1465,8 +1474,8 @@ mod tests {
     }
 
     #[test]
-    fn code_action_runtime_emits_snippet_text_edits_when_supported()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn code_action_runtime_emits_snippet_text_edits_when_supported(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         {
             let mut caps = server.client_capabilities.lock();
@@ -1513,8 +1522,8 @@ mod tests {
     }
 
     #[test]
-    fn code_action_runtime_emits_snippet_text_edits_without_ast_when_supported()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn code_action_runtime_emits_snippet_text_edits_without_ast_when_supported(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         {
             let mut caps = server.client_capabilities.lock();
@@ -1663,8 +1672,8 @@ mod tests {
     }
 
     #[test]
-    fn snippet_text_edit_conversion_rewrites_pragma_quickfixes()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn snippet_text_edit_conversion_rewrites_pragma_quickfixes(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let uri = "file:///snippet_conversion.pl";
         let mut actions = vec![
             make_quickfix(uri, 0, 0, 0, "use strict;\n", "Add use strict;", Some("PL201")),

@@ -690,7 +690,7 @@ impl LspServer {
                         },
                         "severity": if e.blocks_clean_parse() { 1 } else { 2 },
                         "code": DiagnosticCode::ParseError.as_str(),
-                        "source": "perl-parser",
+                        "source": "perl-lsp",
                         "message": message,
                     })
                 })
@@ -791,7 +791,7 @@ impl LspServer {
                     },
                     "severity": if e.blocks_clean_parse() { 1 } else { 2 },
                     "code": DiagnosticCode::ParseError.as_str(),
-                    "source": "perl-parser",
+                    "source": "perl-lsp",
                     "message": Self::diagnostic_message_value(
                         &message,
                         None,
@@ -959,7 +959,7 @@ impl LspServer {
                         },
                         "severity": if e.blocks_clean_parse() { 1 } else { 2 },
                         "code": DiagnosticCode::ParseError.as_str(),
-                        "source": "perl-parser",
+                        "source": "perl-lsp",
                         "message": message,
                     })
                 })
@@ -1264,15 +1264,14 @@ impl LspServer {
         });
 
         if let Some(ref tags) = d.tags {
-            diag["tags"] = json!(
-                tags.iter()
-                    .map(|t| match *t {
-                        lsp_types::DiagnosticTag::UNNECESSARY => 1,
-                        lsp_types::DiagnosticTag::DEPRECATED => 2,
-                        _ => 0,
-                    })
-                    .collect::<Vec<_>>()
-            );
+            diag["tags"] = json!(tags
+                .iter()
+                .map(|t| match *t {
+                    lsp_types::DiagnosticTag::UNNECESSARY => 1,
+                    lsp_types::DiagnosticTag::DEPRECATED => 2,
+                    _ => 0,
+                })
+                .collect::<Vec<_>>());
         }
 
         if let Some(ref data) = d.data {
@@ -1329,27 +1328,25 @@ impl LspServer {
         }
 
         if !d.related_information.is_empty() {
-            diag["relatedInformation"] = json!(
-                d.related_information
-                    .iter()
-                    .map(|ri| {
-                        let ri_start =
-                            doc.line_starts.offset_to_position_rope(&doc.rope, ri.location.0);
-                        let ri_end =
-                            doc.line_starts.offset_to_position_rope(&doc.rope, ri.location.1);
-                        json!({
-                            "location": {
-                                "uri": uri,
-                                "range": {
-                                    "start": {"line": ri_start.0, "character": ri_start.1},
-                                    "end":   {"line": ri_end.0,   "character": ri_end.1},
-                                }
-                            },
-                            "message": ri.message
-                        })
+            diag["relatedInformation"] = json!(d
+                .related_information
+                .iter()
+                .map(|ri| {
+                    let ri_start =
+                        doc.line_starts.offset_to_position_rope(&doc.rope, ri.location.0);
+                    let ri_end = doc.line_starts.offset_to_position_rope(&doc.rope, ri.location.1);
+                    json!({
+                        "location": {
+                            "uri": uri,
+                            "range": {
+                                "start": {"line": ri_start.0, "character": ri_start.1},
+                                "end":   {"line": ri_end.0,   "character": ri_end.1},
+                            }
+                        },
+                        "message": ri.message
                     })
-                    .collect::<Vec<_>>()
-            );
+                })
+                .collect::<Vec<_>>());
         }
 
         if let Some(ref code_str) = d.code {
@@ -2103,20 +2100,34 @@ fn is_fixable_perlcritic_policy(code: &str) -> bool {
     )
 }
 
+/// Determine the diagnostic source based on the code.
+///
+/// Source taxonomy (see issue #4627):
+/// - `perl-lsp` — all built-in diagnostics: parse errors, built-in lints, and
+///   native critic findings (`native.*` codes).
+/// - `perl-lsp-critic` — findings from the external `perlcritic` binary, whose
+///   codes are fully-qualified Perl::Critic policy names (`Policy::Name`).
 fn diagnostic_source(code: Option<&str>) -> &'static str {
     match code {
-        Some(code) if code.starts_with("native.") => "perl-lsp-critic",
         Some(code) if code.contains("::") && DiagnosticCode::parse_code(code).is_none() => {
-            "perlcritic"
+            "perl-lsp-critic"
         }
         _ => "perl-lsp",
     }
 }
 
+/// Determine the push-path diagnostic source based on the code.
+///
+/// Mirrors [`diagnostic_source`] so the same logical finding carries the same
+/// source regardless of whether it traveled the push or pull transport. Parse
+/// errors previously used the divergent `perl-parser` string here; they now use
+/// `perl-lsp` to match the pull path (see issue #4627).
 fn push_diagnostic_source(code: Option<&str>) -> &'static str {
     match code {
-        Some(code) if code.starts_with("native.") => "perl-lsp-critic",
-        _ => "perl-parser",
+        Some(code) if code.contains("::") && DiagnosticCode::parse_code(code).is_none() => {
+            "perl-lsp-critic"
+        }
+        _ => "perl-lsp",
     }
 }
 
@@ -2411,8 +2422,8 @@ mod tests {
     }
 
     #[test]
-    fn publish_diagnostics_boundary_discriminator_syntax_only_mode()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn publish_diagnostics_boundary_discriminator_syntax_only_mode(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let (server, buf) = make_server_with_capture_and_tuning(
             perl_lsp_rs_core::runtime::tuning::RuntimeTuning::e2e_defaults(),
         );
@@ -2433,15 +2444,15 @@ mod tests {
         let bytes = buf.lock().clone();
         let text = String::from_utf8(bytes)?;
         assert!(
-            text.contains("publishDiagnostics") && text.contains("perl-parser"),
+            text.contains("publishDiagnostics") && text.contains("\"source\":\"perl-lsp\""),
             "input that hits the boundary: self.runtime_tuning.diagnostic_mode\n            == perl_lsp_rs_core::runtime::tuning::DiagnosticMode::SyntaxOnly; got: {text:?}"
         );
         Ok(())
     }
 
     #[test]
-    fn publish_diagnostics_boundary_discriminator_generation_changed_after_snapshot()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn publish_diagnostics_boundary_discriminator_generation_changed_after_snapshot(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let (server, buf) = make_server_with_capture();
         let uri = "file:///stale_publish_boundary.pl";
         server.test_handle_did_open(Some(json!({
@@ -2659,8 +2670,8 @@ mod tests {
             "native shadowed lexical finding should preserve rule message; got: {text:?}"
         );
         assert!(
-            text.contains("\"source\":\"perl-lsp-critic\""),
-            "native critic diagnostics should use perl-lsp-critic source; got: {text:?}"
+            text.contains("\"source\":\"perl-lsp\""),
+            "native critic diagnostics should use perl-lsp source; got: {text:?}"
         );
         assert!(
             !text.contains("TestingAndDebugging::RequireUseStrict"),
@@ -2831,8 +2842,8 @@ mod tests {
     }
 
     #[test]
-    fn native_critic_engine_adds_native_workspace_diagnostics()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn native_critic_engine_adds_native_workspace_diagnostics(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let (server, _buf) = make_server_with_capture();
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("strict");
@@ -2863,21 +2874,21 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.testing.require_use_strict")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
             }),
             "native critic engine should add native strict finding to workspace diagnostics: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.testing.require_use_warnings")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
             }),
             "native critic engine should add native warnings finding to workspace diagnostics: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.common.assignment_in_condition")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str()
                         == Some("Assignment in condition - did you mean '=='?")
             }),
@@ -2886,7 +2897,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.common.undef_comparison")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str()
                         == Some("Using '==' with undef -- use defined() to check first")
             }),
@@ -2895,7 +2906,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.common.stale_dollar_at")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str()
                         == Some("Checking $@ after eval can observe a stale error")
             }),
@@ -2904,7 +2915,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.common.unreachable_code")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str()
                         == Some("Unreachable code: this statement cannot be executed")
             }),
@@ -2913,7 +2924,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.io.bareword_filehandle")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str()
                         == Some("Bareword filehandle 'FH' should be lexical")
             }),
@@ -2922,7 +2933,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.io.two_arg_open")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str()
                         == Some("Two-argument open should use an explicit mode")
             }),
@@ -2931,7 +2942,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.io.pipe_open")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str() == Some("Pipe-open executes a shell command")
             }),
             "native critic engine should add native pipe-open finding to workspace diagnostics: {report}"
@@ -2939,7 +2950,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.io.unchecked_open_close")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str() == Some("open() return value should be checked")
             }),
             "native critic engine should add native unchecked open/close finding to workspace diagnostics: {report}"
@@ -2947,7 +2958,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.security.backtick_exec")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str() == Some("Command execution detected")
             }),
             "native critic engine should add native backtick execution finding to workspace diagnostics: {report}"
@@ -2955,7 +2966,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.security.qx_readpipe")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str() == Some("qx/readpipe command execution detected")
             }),
             "native critic engine should add native qx/readpipe finding to workspace diagnostics: {report}"
@@ -2963,7 +2974,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.security.string_eval")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str() == Some("String eval is a security risk")
             }),
             "native critic engine should add native string eval finding to workspace diagnostics: {report}"
@@ -2971,7 +2982,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.security.system_exec")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str() == Some("system() executes a shell command")
             }),
             "native critic engine should add native system/exec finding to workspace diagnostics: {report}"
@@ -2979,7 +2990,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.variables.unused_lexical")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str()
                         == Some("Lexical variable '$unused' is declared but never used")
             }),
@@ -2988,7 +2999,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.variables.unused_parameter")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str() == Some("Parameter '$unused_param' is never used")
             }),
             "native critic engine should add native unused parameter finding to workspace diagnostics: {report}"
@@ -2996,7 +3007,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.variables.duplicate_parameter")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str()
                         == Some("Parameter '$dup_param' appears more than once in this signature")
             }),
@@ -3005,7 +3016,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.variables.parameter_shadows_global")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str()
                         == Some("Parameter '$outer_param' shadows an outer declaration")
             }),
@@ -3014,7 +3025,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.variables.duplicate_lexical")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str()
                         == Some(
                             "Lexical variable '$x' is declared more than once in the same scope",
@@ -3025,7 +3036,7 @@ mod tests {
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.variables.shadowed_lexical")
-                    && diag["source"].as_str() == Some("perl-lsp-critic")
+                    && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str()
                         == Some("Lexical variable '$shadow' shadows an outer declaration")
             }),
@@ -3210,8 +3221,8 @@ mod tests {
     /// When no workspace folder contains the document, build_context must fall back
     /// to the global root_path.
     #[test]
-    fn build_context_falls_back_to_root_path_when_no_folder_matches()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn build_context_falls_back_to_root_path_when_no_folder_matches(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().join("workspace");
         let outside = temp.path().join("outside");
@@ -3257,8 +3268,8 @@ mod tests {
     /// This test uses the DEFAULT WorkspaceConfig (include_paths = ["lib", ".", ...])
     /// to match the UX harness scenario where no explicit includePaths are configured.
     #[test]
-    fn push_pl701_fires_after_no_lib_cancels_default_include_path()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn push_pl701_fires_after_no_lib_cancels_default_include_path(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().join("workspace");
         std::fs::create_dir_all(workspace.join("lib"))?;
@@ -3404,8 +3415,8 @@ print \"unreachable\\n\";\n";
     }
 
     #[test]
-    fn pull_diagnostic_boundary_discriminator_syntax_only_mode()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn pull_diagnostic_boundary_discriminator_syntax_only_mode(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new_with_tuning(
             perl_lsp_rs_core::runtime::tuning::RuntimeTuning::e2e_defaults(),
         );
@@ -3444,8 +3455,8 @@ print \"unreachable\\n\";\n";
     }
 
     #[test]
-    fn pull_syntax_only_diagnostic_boundary_discriminator_current_gen_ne_gen_at_snapshot()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn pull_syntax_only_diagnostic_boundary_discriminator_current_gen_ne_gen_at_snapshot(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = StdArc::new(LspServer::new_with_tuning(
             perl_lsp_rs_core::runtime::tuning::RuntimeTuning::e2e_defaults(),
         ));
@@ -3495,8 +3506,8 @@ print \"unreachable\\n\";\n";
     }
 
     #[test]
-    fn pull_diagnostic_boundary_discriminator_current_gen_ne_gen_at_snapshot()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn pull_diagnostic_boundary_discriminator_current_gen_ne_gen_at_snapshot(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = StdArc::new(LspServer::new());
         let uri = "file:///stale_pull_boundary.pl";
         server.test_handle_did_open(Some(json!({
@@ -3556,8 +3567,8 @@ print \"unreachable\\n\";\n";
     /// return `Ok({"kind":"full","items":[]})` — genuinely-no-diagnostics is
     /// correct and must NOT be conflated with the error cases above.
     #[test]
-    fn pull_diagnostic_valid_uri_unopened_returns_empty_full_report()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn pull_diagnostic_valid_uri_unopened_returns_empty_full_report(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let result = server.test_handle_document_diagnostic(Some(
             json!({ "textDocument": { "uri": "file:///never_opened.pl" } }),
@@ -3592,7 +3603,7 @@ print \"unreachable\\n\";\n";
     #[test]
     fn native_critic_code_actions_use_native_source_not_perl_critic() {
         // On the default native engine, critic quick-fixes must carry the
-        // native diagnostic identity (`source: perl-lsp-critic`, `native.*`
+        // native diagnostic identity (`source: perl-lsp`, `native.*`
         // code) that the publish path emits — never the external tool's
         // `Perl::Critic` brand. This is the #3276 native-product-surface leak:
         // the code-action handler previously ran the legacy analyzer
@@ -3635,13 +3646,13 @@ print \"unreachable\\n\";\n";
             a["diagnostics"].as_array().is_some_and(|diags| {
                 diags.iter().any(|d| {
                     d["code"].as_str() == Some("native.testing.require_use_strict")
-                        && d["source"].as_str() == Some("perl-lsp-critic")
+                        && d["source"].as_str() == Some("perl-lsp")
                 })
             })
         });
         assert!(
             has_native_diag,
-            "a native code action must carry code `native.testing.require_use_strict` AND source `perl-lsp-critic` on the SAME diagnostic; got: {text}"
+            "a native code action must carry code `native.testing.require_use_strict` AND source `perl-lsp` on the SAME diagnostic; got: {text}"
         );
     }
 
