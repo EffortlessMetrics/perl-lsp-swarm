@@ -193,6 +193,28 @@ fn release_indexing_slot(
     indexing_rescan_pending.swap(false, Ordering::AcqRel)
 }
 
+#[cfg(feature = "workspace")]
+fn path_is_in_current_workspace(path: &Path, workspace_folders: &[WorkspaceFolderState]) -> bool {
+    workspace_folders.iter().any(|folder| {
+        let Some(root) = folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri)) else {
+            return false;
+        };
+        if path.starts_with(&root) {
+            return true;
+        }
+
+        folder.effective_workspace_config.include_paths.iter().any(|include_path| {
+            let include_root = Path::new(include_path);
+            let resolved = if include_root.is_absolute() {
+                include_root.to_path_buf()
+            } else {
+                root.join(include_root)
+            };
+            path.starts_with(resolved)
+        })
+    })
+}
+
 fn parse_configuration_response_id(value: &Value) -> Option<ServerRequestId> {
     if let Some(id) = value.as_i64() {
         return i32::try_from(id).ok().and_then(ServerRequestId::new);
@@ -1891,6 +1913,9 @@ impl LspServer {
                     return Ok(());
                 }
 
+                #[cfg(feature = "workspace")]
+                let _indexing_transition = self.indexing_transition_lock.lock();
+
                 if !change.added.is_empty() {
                     let mut workspace_folders = self.workspace_folders.lock();
                     for uri in &change.added {
@@ -1939,6 +1964,9 @@ impl LspServer {
                         // membership was updated.
                     }
                 }
+
+                #[cfg(feature = "workspace")]
+                drop(_indexing_transition);
 
                 // Trigger client refresh after workspace folder changes
                 if let Err(e) = self.refresh_controller.refresh_all(self) {
@@ -2010,6 +2038,8 @@ impl LspServer {
             })),
         };
 
+        let current_workspace_folders = Arc::clone(&resources.workspace_folders);
+        let indexing_transition_lock = Arc::clone(&resources.indexing_transition_lock);
         let coordinator = resources.coordinator;
 
         // Ensure workspace folders are set in the index before indexing starts
@@ -2192,7 +2222,22 @@ impl LspServer {
                 let read_elapsed = read_started.elapsed();
                 let index_started = Instant::now();
                 let indexed_uri = url.to_string();
-                let index_result = coordinator.index().index_file(url, content);
+                let index_result = {
+                    let _transition = indexing_transition_lock.lock();
+                    let current_folders = current_workspace_folders.lock();
+                    if path_is_in_current_workspace(&path, &current_folders) {
+                        Some(coordinator.index().index_file(url, content))
+                    } else {
+                        tracing::debug!(
+                            path = %path.display(),
+                            "Skipping file from workspace folder removed during indexing"
+                        );
+                        None
+                    }
+                };
+                let Some(index_result) = index_result else {
+                    continue;
+                };
                 let index_elapsed = index_started.elapsed();
                 indexing_receipt.record_phase(IndexingPhase::IndexFileOperation, index_elapsed);
                 if index_result.is_ok() {
@@ -3261,6 +3306,9 @@ mod tests {
         let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
         if coordinator.index().find_definition("NewFolder::new_symbol").is_none() {
             return Err("pending folder change did not index the new workspace".into());
+        }
+        if coordinator.index().find_definition("OldFolder::old_symbol").is_some() {
+            return Err("superseded scan reintroduced the removed workspace".into());
         }
         if server.workspace_indexing_invocation_count() < 3 {
             return Err("expected initial scan, pending request, and follow-up scan".into());
