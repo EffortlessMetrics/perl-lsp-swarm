@@ -268,6 +268,9 @@ fn is_unconditional_exit(node: &Node) -> bool {
         // `last`, `next`, `redo` — exit the current loop iteration/block
         NodeKind::LoopControl { op, .. } => matches!(op.as_str(), "last" | "next" | "redo"),
 
+        // All goto forms transfer control without returning to the next sibling.
+        NodeKind::Goto { .. } => true,
+
         // `return if $cond` is CONDITIONAL — StatementModifier is never an unconditional exit
         NodeKind::StatementModifier { .. } => false,
 
@@ -343,6 +346,7 @@ fn is_unconditional_exit_in_continue(node: &Node) -> bool {
         // Only `last` exits the loop from a continue block; `next` and `redo`
         // do NOT terminate continue-block execution.
         NodeKind::LoopControl { op, .. } => op.as_str() == "last",
+        NodeKind::Goto { .. } => true,
         NodeKind::StatementModifier { .. } => false,
         _ => false,
     }
