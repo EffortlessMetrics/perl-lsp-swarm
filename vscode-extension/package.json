@@ -39,7 +39,7 @@
   "capabilities": {
     "virtualWorkspaces": true,
     "untrustedWorkspaces": {
-      "supported": true
+      "supported": false
     }
   },
   "icon": "icon.png",

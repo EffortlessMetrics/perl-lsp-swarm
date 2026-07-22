@@ -11,10 +11,6 @@ name = "CI Gate"
 workflow = ".github/workflows/ci.yml"
 required = true
 
-[[check]]
-name = "Parser Ratchet"
-workflow = ".github/workflows/parser-ratchet.yml"
-required = false
 
 [[check]]
 name = "Methodology Gate"

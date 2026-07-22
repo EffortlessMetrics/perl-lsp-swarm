@@ -1189,7 +1189,7 @@ describe('package.json metadata', () => {
     expect(pkg.extensionKind).toContain('workspace');
   });
 
-  test('supports untrusted workspaces', () => {
-    expect(pkg.capabilities.untrustedWorkspaces.supported).toBe(true);
+  test('does not support untrusted workspaces', () => {
+    expect(pkg.capabilities.untrustedWorkspaces.supported).toBe(false);
   });
 });

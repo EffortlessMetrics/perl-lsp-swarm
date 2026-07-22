@@ -13,7 +13,7 @@ describe('workspace topology capability contract', () => {
   test('keeps manifest capability claims tied to the tested contract', () => {
     expect(packageJson.extensionKind).toEqual(['workspace']);
     expect(packageJson.capabilities?.virtualWorkspaces).toBe(true);
-    expect(packageJson.capabilities?.untrustedWorkspaces).toEqual({ supported: true });
+    expect(packageJson.capabilities?.untrustedWorkspaces).toEqual({ supported: false });
   });
 
   test('classifies trusted single-root and multi-root file workspaces', () => {
