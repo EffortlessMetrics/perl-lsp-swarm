@@ -1,0 +1,83 @@
+name: Dist Shadow
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'dist-workspace.toml'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/dist-shadow.yml'
+      - 'scripts/check_dist_shadow.py'
+      - 'scripts/tests/test_dist_shadow.py'
+      - 'docs/release/DIST_SHADOW_EVALUATION.md'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing or candidate release tag/version understood by dist (for example v0.17.0)'
+        required: true
+        type: string
+
+concurrency:
+  group: dist-shadow-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Validate shadow contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Validate declared and live release matrices
+        run: |
+          set -euo pipefail
+          python3 scripts/tests/test_dist_shadow.py
+          python3 scripts/check_dist_shadow.py
+
+  plan:
+    name: Generate non-publishing dist plan
+    if: github.event_name == 'workflow_dispatch'
+    needs: contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
+        with:
+          toolchain: stable
+
+      - name: Install pinned dist
+        run: cargo install cargo-dist --version 0.29.0 --locked
+
+      - name: Generate JSON shadow plan
+        env:
+          DIST_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          dist plan --output-format=json --tag "$DIST_TAG" > dist-plan.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          plan = json.loads(Path('dist-plan.json').read_text(encoding='utf-8'))
+          releases = plan.get('releases') or []
+          names = sorted({item.get('app_name') for item in releases if item.get('app_name')})
+          print(f'dist shadow plan releases={names}')
+          if set(names) != {'perllsp', 'perl-dap'}:
+              raise SystemExit(f'unexpected dist applications: {names}')
+          PY
+
+      - name: Upload plan receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: dist-shadow-${{ inputs.tag }}
+          path: dist-plan.json
+          retention-days: 30
+          if-no-files-found: error
