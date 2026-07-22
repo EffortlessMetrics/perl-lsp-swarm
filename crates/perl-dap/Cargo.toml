@@ -89,7 +89,7 @@ toml = "1.1.2"
 nix = { version = "0.31.3", features = ["signal"] }  # For SIGINT handling (AC9)
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3.9", features = ["processthreadsapi", "wincon"] }  # For Ctrl+C and GenerateConsoleCtrlEvent (AC9, #3028)
+winapi = { version = "0.3.9", features = ["processthreadsapi", "wincon", "winnt", "handleapi"] }  # For Ctrl+C and GenerateConsoleCtrlEvent (AC9, #3028)
 
 [features]
 default = ["dap-phase1", "dap-phase2", "dap-phase3"]
@@ -222,6 +222,11 @@ path = "tests/dap_stdio_transport_e2e.rs"
 name = "dap_scorecard_harness"
 path = "tests/dap_scorecard_harness.rs"
 # AC:4069 DAP launch-success scorecard: 5 fixtures, ≥80% pass rate, p50/p95 latency
+
+[[test]]
+name = "dap_security_path_bypass_4638"
+path = "tests/dap_security_path_bypass_4638.rs"
+# #4638: validate_source_path bypass regression tests
 
 [[test]]
 name = "wave_h_collapse_integration"

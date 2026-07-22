@@ -1017,6 +1017,58 @@ impl DebugAdapter {
         });
     }
 
+    /// Verify that a target process exists and is accessible before attaching.
+    ///
+    /// Returns `Ok(true)` if the process is verified to exist and is signalable,
+    /// `Ok(false)` if the process exists but is owned by a different user (warned
+    /// but allowed to proceed), or `Err(msg)` if the process does not exist or
+    /// cannot be queried.
+    fn verify_attach_target(pid: u32) -> Result<bool, String> {
+        #[cfg(unix)]
+        {
+            use nix::errno::Errno;
+            let nix_pid = Pid::from_raw(pid as i32);
+            // Signal 0 (None) checks process existence without actually sending a signal.
+            match signal::kill(nix_pid, None) {
+                Ok(()) => Ok(true),
+                Err(Errno::EPERM) => {
+                    tracing::warn!(
+                        pid,
+                        "Attach target exists but is owned by a different user (EPERM); \
+                         proceeding with limited capabilities"
+                    );
+                    Ok(false)
+                }
+                Err(Errno::ESRCH) => Err(format!("Process {pid} does not exist (no such process)")),
+                Err(e) => Err(format!("Cannot verify process {pid}: {e}")),
+            }
+        }
+        #[cfg(windows)]
+        {
+            use winapi::um::handleapi::CloseHandle;
+            use winapi::um::processthreadsapi::OpenProcess;
+            use winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION;
+
+            // SAFETY: OpenProcess is a standard Win32 API.  We request only
+            // query-limited information, which is a read-only access right.
+            // The handle is closed immediately after the existence check.
+            let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+            if handle.is_null() {
+                return Err(format!(
+                    "Process {pid} does not exist or is not accessible (OpenProcess failed)"
+                ));
+            }
+            // SAFETY: CloseHandle on a valid process handle is always safe.
+            unsafe { CloseHandle(handle) };
+            Ok(true)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = pid;
+            Err("Process verification not supported on this platform".to_string())
+        }
+    }
+
     /// Handle attach request
     ///
     /// Attaches to a running Perl process. Supports two modes:
@@ -1055,6 +1107,18 @@ impl DebugAdapter {
                         command: "attach".to_string(),
                         body: None,
                         message: Some("processId must be greater than zero".to_string()),
+                    };
+                }
+
+                // Verify the target process exists before attaching (#4638).
+                if let Err(msg) = Self::verify_attach_target(pid) {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(msg),
                     };
                 }
 
@@ -2202,10 +2266,18 @@ mod tests {
         assert!(is_valid_perl_interpreter("/usr/bin/perl"));
         assert!(is_valid_perl_interpreter("C:/Strawberry/perl/bin/perl.exe"));
         assert!(is_valid_perl_interpreter("perl5.38.2"));
+        assert!(is_valid_perl_interpreter("perl5"));
+        assert!(is_valid_perl_interpreter("perl5.38"));
 
         assert!(!is_valid_perl_interpreter("/bin/sh"));
         assert!(!is_valid_perl_interpreter("python3"));
         assert!(!is_valid_perl_interpreter("   "));
+        // #4638: strict regex must reject look-alike names that start with "perl"
+        assert!(!is_valid_perl_interpreter("perlevil"));
+        assert!(!is_valid_perl_interpreter("perlscript"));
+        assert!(!is_valid_perl_interpreter("perl_backdoor"));
+        assert!(!is_valid_perl_interpreter("perl-exec"));
+        assert!(!is_valid_perl_interpreter("perlsh"));
     }
     #[test]
     fn format_perl_spawn_error_includes_custom_interpreter_name() {

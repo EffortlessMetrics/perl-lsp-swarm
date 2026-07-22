@@ -464,8 +464,10 @@ fn test_dap_attach_process_id_mode() -> TestResult {
     let mut adapter = DebugAdapter::new();
 
     // PID attach should succeed in signal-control mode.
+    // #4638: use current process PID so verify_attach_target succeeds.
+    let pid = std::process::id();
     let attach_args = json!({
-        "processId": 12345
+        "processId": pid
     });
 
     let response = adapter.handle_request(1, "attach", Some(attach_args));
@@ -474,7 +476,7 @@ fn test_dap_attach_process_id_mode() -> TestResult {
             assert_eq!(command, "attach");
             assert!(success, "PID attach should succeed");
             let body = body.ok_or("Expected attach body")?;
-            assert_eq!(body.get("processId").and_then(|v| v.as_u64()), Some(12345));
+            assert_eq!(body.get("processId").and_then(|v| v.as_u64()), Some(pid as u64));
             let msg = message.ok_or("Expected attach message")?;
             assert!(msg.contains("signal-control mode"));
         }
