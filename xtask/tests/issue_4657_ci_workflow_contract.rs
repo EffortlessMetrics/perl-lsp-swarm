@@ -29,6 +29,11 @@ fn ci_workflows_keep_issue_4657_hardening() -> Result<(), Box<dyn std::error::Er
         "Rust Small routing must skip draft pull requests while allowing ready_for_review"
     );
     assert!(
+        routed_rust.contains("if [ \"$ROUTE_RESULT\" = \"skipped\" ]; then")
+            && routed_rust.contains("required check is neutral/pass"),
+        "Rust Small result aggregation must treat an intentionally skipped draft route as neutral"
+    );
+    assert!(
         title_check
             .contains("uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9")
             && !title_check.contains("actions/github-script@v9"),
