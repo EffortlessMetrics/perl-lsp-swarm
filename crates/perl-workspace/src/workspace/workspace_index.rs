@@ -2789,7 +2789,52 @@ impl WorkspaceIndex {
         candidate.rsplit_once("::").is_some_and(|(_, candidate_bare)| candidate_bare == bare_symbol)
     }
 
-    /// Find the definition of a symbol
+    /// Find all definitions of a symbol, including duplicates across files.
+    ///
+    /// Returns every indexed candidate location for `symbol_name`, preserving
+    /// insertion order. Falls back to a single file-scan result when no indexed
+    /// candidates are found (same fallback logic as `find_definition`).
+    ///
+    /// # Arguments
+    ///
+    /// * `symbol_name` - Symbol name or qualified name to resolve
+    ///
+    /// # Returns
+    ///
+    /// All matching definition locations, or an empty Vec if not found.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use perl_workspace::workspace::workspace_index::WorkspaceIndex;
+    ///
+    /// let index = WorkspaceIndex::new();
+    /// let all = index.find_definitions("MyPackage::example");
+    /// ```
+    pub fn find_definitions(&self, symbol_name: &str) -> Vec<Location> {
+        let candidates = self.definition_candidates(symbol_name);
+        if !candidates.is_empty() {
+            return candidates;
+        }
+        // Fall back to a full files scan for this query. The result is intentionally
+        // NOT written back to `self.symbols`: every indexed symbol is already
+        // inserted under both qualified and bare names by `incremental_add_symbols`,
+        // so any cache miss here is for a key that does not correspond to an
+        // indexed symbol (e.g. a typo or alias). Caching such queries is unsound
+        // (entries become stale on file edits and were never tracked for cleanup
+        // in `remove_file`/`incremental_remove_symbols`) and lets the cache grow
+        // unboundedly across long sessions. Returning the resolved location
+        // directly preserves correctness without retaining state.
+        let files = self.files.read();
+        Self::find_definition_in_files(&files, symbol_name, None)
+            .map(|(location, _uri)| vec![location])
+            .unwrap_or_default()
+    }
+
+    /// Find the definition of a symbol.
+    ///
+    /// Returns the first match from `find_definitions()`. When multiple files
+    /// define the same symbol, use `find_definitions()` to retrieve all candidates.
     ///
     /// # Arguments
     ///
@@ -2802,27 +2847,13 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _def = index.find_definition("MyPackage::example");
     /// ```
     pub fn find_definition(&self, symbol_name: &str) -> Option<Location> {
-        if let Some(location) = self.definition_candidates(symbol_name).into_iter().next() {
-            return Some(location);
-        }
-
-        // Fall back to a full files scan for this query. The result is intentionally
-        // NOT written back to `self.symbols`: every indexed symbol is already
-        // inserted under both qualified and bare names by `incremental_add_symbols`,
-        // so any cache miss here is for a key that does not correspond to an
-        // indexed symbol (e.g. a typo or alias). Caching such queries is unsound
-        // (entries become stale on file edits and were never tracked for cleanup
-        // in `remove_file`/`incremental_remove_symbols`) and lets the cache grow
-        // unboundedly across long sessions. Returning the resolved location
-        // directly preserves correctness without retaining state.
-        let files = self.files.read();
-        Self::find_definition_in_files(&files, symbol_name, None).map(|(location, _uri)| location)
+        self.find_definitions(symbol_name).into_iter().next()
     }
 
     pub(crate) fn definition_candidates(&self, symbol_name: &str) -> Vec<Location> {
@@ -4098,7 +4129,11 @@ impl WorkspaceIndex {
         symbol.container_name.as_ref().is_some_and(|container| package_name.eq(container.as_str()))
     }
 
-    /// Find the definition location for a symbol key during Index/Navigate stages.
+    /// Find all definitions for a symbol key, including duplicates across files.
+    ///
+    /// Returns every indexed candidate location for the symbol described by `key`,
+    /// preserving insertion order. Mirrors `find_def` routing logic but collects
+    /// all candidates instead of the first match.
     ///
     /// # Arguments
     ///
@@ -4106,12 +4141,51 @@ impl WorkspaceIndex {
     ///
     /// # Returns
     ///
-    /// The definition location for the symbol, if found.
+    /// All matching definition locations, or an empty Vec if not found.
     ///
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
+    /// use perl_workspace::workspace::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
+    /// use std::sync::Arc;
+    ///
+    /// let index = WorkspaceIndex::new();
+    /// let key = SymbolKey { pkg: Arc::from("My::Package"), name: Arc::from("example"), sigil: None, kind: SymKind::Sub };
+    /// let all = index.find_defs(&key);
+    /// ```
+    pub fn find_defs(&self, key: &SymbolKey) -> Vec<Location> {
+        if let Some(sigil) = key.sigil {
+            let var_name = format!("{}{}", sigil, key.name);
+            self.find_definitions(&var_name)
+        } else if key.kind == SymKind::Pack {
+            let mut results = self.find_definitions(key.pkg.as_ref());
+            if results.is_empty() {
+                results = self.find_definitions(key.name.as_ref());
+            }
+            results
+        } else {
+            let qualified_name = format!("{}::{}", key.pkg, key.name);
+            self.find_definitions(&qualified_name)
+        }
+    }
+
+    /// Find the definition location for a symbol key during Index/Navigate stages.
+    ///
+    /// Returns the first match from `find_defs()`. When multiple files define the
+    /// same symbol, use `find_defs()` to retrieve all candidates.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - Normalized symbol key to resolve.
+    ///
+    /// # Returns
+    ///
+    /// The first definition location for the symbol, if found.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use perl_workspace::workspace::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
     /// use std::sync::Arc;
     ///
     /// let index = WorkspaceIndex::new();
@@ -4119,20 +4193,7 @@ impl WorkspaceIndex {
     /// let _def = index.find_def(&key);
     /// ```
     pub fn find_def(&self, key: &SymbolKey) -> Option<Location> {
-        if let Some(sigil) = key.sigil {
-            // It's a variable
-            let var_name = format!("{}{}", sigil, key.name);
-            self.find_definition(&var_name)
-        } else if key.kind == SymKind::Pack {
-            // It's a package lookup (e.g., from `use Module::Name`)
-            // Search for the package declaration by name
-            self.find_definition(key.pkg.as_ref())
-                .or_else(|| self.find_definition(key.name.as_ref()))
-        } else {
-            // It's a subroutine or package
-            let qualified_name = format!("{}::{}", key.pkg, key.name);
-            self.find_definition(&qualified_name)
-        }
+        self.find_defs(key).into_iter().next()
     }
 
     /// Find reference locations for a symbol key using dual indexing.

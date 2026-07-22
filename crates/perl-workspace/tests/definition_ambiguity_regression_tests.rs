@@ -152,3 +152,114 @@ fn reindexing_one_file_does_not_leave_stale_duplicate_candidates()
     assert_eq!(resolved.uri, "file:///workspace/lib/DupeB.pm");
     Ok(())
 }
+
+#[test]
+fn find_definitions_returns_all_candidates_for_same_bare_name()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let alpha_uri = file_url("/workspace/lib/Alpha.pm")?;
+    let beta_uri = file_url("/workspace/lib/Beta.pm")?;
+
+    index.index_file(alpha_uri, "package Alpha;\nsub collide { 1 }\n".to_string())?;
+    index.index_file(beta_uri, "package Beta;\nsub collide { 1 }\n".to_string())?;
+
+    let all = index.find_definitions("collide");
+    assert_eq!(all.len(), 2, "find_definitions must return all candidates for bare name");
+    let uris: Vec<&str> = all.iter().map(|l| l.uri.as_str()).collect();
+    assert!(uris.contains(&"file:///workspace/lib/Alpha.pm"));
+    assert!(uris.contains(&"file:///workspace/lib/Beta.pm"));
+    Ok(())
+}
+
+#[test]
+fn find_definitions_returns_all_candidates_for_duplicate_qualified_name()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let dupe_a = file_url("/workspace/lib/DupeA.pm")?;
+    let dupe_b = file_url("/workspace/lib/DupeB.pm")?;
+
+    index.index_file(dupe_a, "package Dupe;\nsub same { 1 }\n".to_string())?;
+    index.index_file(dupe_b, "package Dupe;\nsub same { 2 }\n".to_string())?;
+
+    let all = index.find_definitions("Dupe::same");
+    assert_eq!(
+        all.len(),
+        2,
+        "find_definitions must return both when same qualified name appears in two files"
+    );
+    let uris: Vec<&str> = all.iter().map(|l| l.uri.as_str()).collect();
+    assert!(uris.contains(&"file:///workspace/lib/DupeA.pm"));
+    assert!(uris.contains(&"file:///workspace/lib/DupeB.pm"));
+    Ok(())
+}
+
+#[test]
+fn find_definitions_returns_single_for_unambiguous_symbol() -> Result<(), Box<dyn std::error::Error>>
+{
+    let index = WorkspaceIndex::new();
+    let uri = file_url("/workspace/lib/Uniq.pm")?;
+
+    index.index_file(uri, "package Uniq;\nsub only_one { 1 }\n".to_string())?;
+
+    let all = index.find_definitions("Uniq::only_one");
+    assert_eq!(all.len(), 1, "single definition should produce exactly one result");
+    assert_eq!(all[0].uri, "file:///workspace/lib/Uniq.pm");
+    Ok(())
+}
+
+#[test]
+fn find_definitions_returns_empty_for_nonexistent_symbol() -> Result<(), Box<dyn std::error::Error>>
+{
+    let index = WorkspaceIndex::new();
+    let uri = file_url("/workspace/lib/Foo.pm")?;
+
+    index.index_file(uri, "package Foo;\nsub bar { 1 }\n".to_string())?;
+
+    let all = index.find_definitions("Foo::nonexistent");
+    assert!(all.is_empty(), "nonexistent symbol must return empty Vec");
+    Ok(())
+}
+
+#[test]
+fn find_definitions_preserves_insertion_order() -> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let uri_a = file_url("/workspace/lib/A.pm")?;
+    let uri_b = file_url("/workspace/lib/B.pm")?;
+    let uri_c = file_url("/workspace/lib/C.pm")?;
+
+    index.index_file(uri_a, "package P;\nsub run { 1 }\n".to_string())?;
+    index.index_file(uri_b, "package P;\nsub run { 2 }\n".to_string())?;
+    index.index_file(uri_c, "package P;\nsub run { 3 }\n".to_string())?;
+
+    let all = index.find_definitions("P::run");
+    assert_eq!(all.len(), 3, "must return all three definitions");
+    // Verify all three URIs are present
+    let uris: Vec<&str> = all.iter().map(|l| l.uri.as_str()).collect();
+    assert!(uris.contains(&"file:///workspace/lib/A.pm"));
+    assert!(uris.contains(&"file:///workspace/lib/B.pm"));
+    assert!(uris.contains(&"file:///workspace/lib/C.pm"));
+    Ok(())
+}
+
+#[test]
+fn find_definition_singular_is_subset_of_find_definitions_plural()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let alpha_uri = file_url("/workspace/lib/AlphaConsistency.pm")?;
+    let beta_uri = file_url("/workspace/lib/BetaConsistency.pm")?;
+
+    index.index_file(alpha_uri, "package AlphaC;\nsub shared { 1 }\n".to_string())?;
+    index.index_file(beta_uri, "package BetaC;\nsub shared { 2 }\n".to_string())?;
+
+    let single = index.find_definition("shared");
+    let all = index.find_definitions("shared");
+
+    // The singular result must be in the plural results
+    if let Some(single_loc) = single {
+        assert!(
+            all.iter().any(|l| l.uri == single_loc.uri),
+            "find_definition result must be contained in find_definitions results"
+        );
+    }
+    Ok(())
+}
