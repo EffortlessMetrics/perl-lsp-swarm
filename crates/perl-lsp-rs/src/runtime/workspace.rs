@@ -2043,6 +2043,7 @@ impl LspServer {
         let coordinator = resources.coordinator;
 
         // Ensure workspace folders are set in the index before indexing starts
+        let _transition = indexing_transition_lock.lock();
         let workspace_folders = resources.workspace_folders.lock().clone();
         let workspace_folder_uris =
             workspace_folders.iter().map(|folder| folder.uri.clone()).collect();
