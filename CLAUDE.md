@@ -101,7 +101,7 @@ discipline, not a ruleset gate. **Main must stay green; merge requires green**
 (2026-04-26 directive) — verify workspace-wide CI, not just per-crate, before merging.
 
 Squash merge is the normal integration operation. Do not require the eventual squash
-commit SHA to exist before merging or treat a branch SHA comparison as a separate
+commit SHA to exist before merging, or treat a branch SHA comparison as a separate
 merge gate; GitHub creates the squash commit and post-merge checks may run on that
 new commit afterward.
 

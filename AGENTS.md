@@ -49,7 +49,8 @@ Preserve these repository-wide invariants:
 - issue-first work with explicit scope, non-goals, proof, and return conditions;
 - one accountable writer per branch and worktree;
 - read-only investigation and review unless a packet grants one bounded write;
-- fresh proof and review for the PR revision before merge; GitHub's branch rules decide whether the PR may squash-merge;
+- fresh proof and review for the PR revision before merge;
+- GitHub's branch rules decide whether the PR may squash-merge;
 - no weakened or removed tests to obtain green status;
 - `NOT_PROVEN` when evidence is missing, stale, contradictory, or instrument-failed;
 - narrow work may remain single-agent; delegation is optional and bounded;
