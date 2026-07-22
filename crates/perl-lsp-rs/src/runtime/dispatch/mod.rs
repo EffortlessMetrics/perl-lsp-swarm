@@ -135,4 +135,36 @@ mod tests {
             "normal and cancellable dispatch paths must record shared request latency"
         );
     }
+
+    /// Verify that the `$/test/slowOperation` endpoint is cfg-gated when neither
+    /// test mode nor `expose_lsp_test_api` is enabled (issue #4632). The routing
+    /// arm and handler must both carry the gate so a non-test, non-feature build
+    /// falls through to `METHOD_NOT_FOUND`, while feature-enabled builds retain
+    /// the endpoint for cancellation tests.
+    #[test]
+    fn test_slow_operation_endpoint_is_cfg_gated_from_production() {
+        let routing = include_str!("routing.rs");
+        let experimental = include_str!("experimental.rs");
+
+        let cfg_gate = "#[cfg(any(test, feature = \"expose_lsp_test_api\"))]";
+
+        // The routing arm for "$/test/slowOperation" must be immediately preceded
+        // by the cfg gate attribute on its own line.
+        let routing_gated_arm = format!(
+            "{cfg_gate}\n            \"$/test/slowOperation\" => \
+             self.handle_slow_operation_dispatch(&id, request.params),"
+        );
+        assert!(
+            routing.contains(&routing_gated_arm),
+            "the $/test/slowOperation routing arm must be gated by {cfg_gate}"
+        );
+
+        // The handler method must also be cfg-gated.
+        let handler_gated =
+            format!("{cfg_gate}\n    pub(super) fn handle_slow_operation_dispatch(");
+        assert!(
+            experimental.contains(&handler_gated),
+            "handle_slow_operation_dispatch must be gated by {cfg_gate}"
+        );
+    }
 }
