@@ -18,7 +18,6 @@
 //! | PL700-PL799 | Import                    |
 //! | PL800-PL899 | Heredoc anti-patterns     |
 //! | PL900-PL999 | Version compatibility     |
-//! | PC001-PC005 | Perl::Critic violations   |
 
 use std::fmt;
 
@@ -173,18 +172,6 @@ pub enum DiagnosticCode {
     // Version compatibility (PL900-PL999)
     /// Use of a Perl feature not available in the declared version
     VersionIncompatFeature,
-
-    // Perl::Critic violations (PC001-PC005)
-    /// Perl::Critic brutal (severity 1) violation
-    CriticSeverity1,
-    /// Perl::Critic cruel (severity 2) violation
-    CriticSeverity2,
-    /// Perl::Critic harsh (severity 3) violation
-    CriticSeverity3,
-    /// Perl::Critic stern (severity 4) violation
-    CriticSeverity4,
-    /// Perl::Critic gentle (severity 5) violation
-    CriticSeverity5,
 }
 
 impl fmt::Display for DiagnosticCode {

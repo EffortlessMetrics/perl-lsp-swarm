@@ -91,7 +91,6 @@ fn edge_case_diagnostic_category_all_variants_accessible() {
     let _security = DiagnosticCategory::Security;
     let _import = DiagnosticCategory::Import;
     let _heredoc = DiagnosticCategory::Heredoc;
-    let _critic = DiagnosticCategory::PerlCritic;
 
     // Verify they can be compared for equality
     assert_eq!(DiagnosticCategory::Parser, DiagnosticCategory::Parser);
