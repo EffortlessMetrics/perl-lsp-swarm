@@ -3,9 +3,14 @@
 use std::error::Error;
 
 use perl_tdd_support::must_some;
-use tree_sitter_perl_rs::{Parser, Query, QueryCursor};
+use tree_sitter_perl_rs::{Parser, Query, QueryCursor, QueryError};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
+fn parse(source: &str) -> tree_sitter_perl_rs::Tree {
+    let mut parser = Parser::new();
+    must_some(parser.parse(source))
+}
 
 #[test]
 fn executes_a_supported_fragment_from_the_upstream_highlights_query() -> TestResult {
@@ -28,5 +33,35 @@ fn executes_a_supported_fragment_from_the_upstream_highlights_query() -> TestRes
     assert_eq!(capture.name(), "number");
     assert_eq!(capture.node().kind(), "number");
     assert_eq!(capture.node().utf8_text(source.as_bytes())?, "42");
+    Ok(())
+}
+
+#[test]
+fn parses_and_exercises_upstream_injections_compatibility_probe() -> TestResult {
+    let upstream = include_str!("../../../tree-sitter-perl/queries/injections.scm");
+    let query = Query::new(upstream)?;
+    assert_eq!(query.pattern_count(), 5);
+
+    // QueryCursor execution is part of the compatibility probe. The native AST
+    // does not expose the fixture's comment, pod, substitution_regexp, or
+    // heredoc_token/heredoc_content node vocabulary, so this test intentionally
+    // does not claim semantic matches for those patterns.
+    let tree = parse("my $value = 42;\n");
+    let mut cursor = QueryCursor::new();
+    let _matches = cursor.matches(&query, tree.root_node()).count();
+    Ok(())
+}
+
+#[test]
+fn injection_compatibility_probe_preserves_typed_unsupported_boundaries() -> TestResult {
+    let upstream = include_str!("../../../tree-sitter-perl/queries/injections.scm");
+    for predicate in ["#eq?", "#match?", "#not-match?", "#set!"] {
+        if !upstream.contains(predicate) {
+            return Err(format!("injections.scm no longer contains {predicate}").into());
+        }
+    }
+
+    let unsupported = Query::new("(number) @content (#lua-match? @content \"^#!\")");
+    assert!(matches!(unsupported, Err(QueryError::UnsupportedSyntax { .. })));
     Ok(())
 }
