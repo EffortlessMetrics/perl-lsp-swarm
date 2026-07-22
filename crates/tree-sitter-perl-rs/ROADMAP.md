@@ -33,7 +33,9 @@ top-level patterns, and byte-range restriction. Unsupported syntax returns a typ
 ### Query predicates (shipped)
 
 The initial predicate set compares captured source text, applies a regular expression, or
-emits match metadata. The repository's `injections.scm` file is parsed and exercised
+emits match metadata. It intentionally accepts string-literal predicate operands only;
+capture-vs-capture operands and `any-*` variants remain unsupported. The repository's
+`injections.scm` file is parsed and exercised
 through `QueryCursor` as a compatibility probe. Semantic matches for its `comment`, `pod`,
 `substitution_regexp`, `heredoc_token`, and `heredoc_content` patterns remain out of scope
 because those node kinds are not exposed by the current native AST.

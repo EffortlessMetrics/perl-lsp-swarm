@@ -101,6 +101,10 @@ probe, not as a claim of semantic coverage. The current native AST does not expo
 fixture's `comment`, `pod`, `substitution_regexp`, `heredoc_token`, or `heredoc_content`
 node kinds, so semantic matches for those patterns remain out of scope.
 
+The predicate subset accepts a capture as its first operand and a string literal as its
+second operand. Capture-vs-capture operands and `any-*` predicate variants are not
+supported and return a typed `QueryError`.
+
 ### Incremental proof
 
 The repository-native proof command measures the one-edit token-replay contract against
