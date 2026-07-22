@@ -749,66 +749,101 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    fn parse_relational_with(&mut self, mut expr: Node) -> ParseResult<Node> {
-        while let Some(kind) = self.peek_kind() {
-            match kind {
+    /// Returns true when the next token is one of the symbolic relational
+    /// comparison operators (`<`, `>`, `<=`, `>=`, `<=>`, `cmp`).
+    fn peek_is_relational_op(&mut self) -> bool {
+        matches!(
+            self.peek_kind(),
+            Some(
                 TokenKind::Less
-                | TokenKind::Greater
-                | TokenKind::LessEqual
-                | TokenKind::GreaterEqual
-                | TokenKind::Spaceship
-                | TokenKind::StringCompare => {
-                    let op_token = self.tokens.next()?;
-                    let right = if let Some(missing) =
-                        self.recover_missing_infix_rhs(op_token.start)
-                    {
-                        missing
-                    } else {
-                        self.parse_shift()?
-                    };
-                    let start = expr.location.start;
-                    let end = right.location.end;
+                    | TokenKind::Greater
+                    | TokenKind::LessEqual
+                    | TokenKind::GreaterEqual
+                    | TokenKind::Spaceship
+                    | TokenKind::StringCompare
+            )
+        )
+    }
 
-                    expr = Node::new(
-                        NodeKind::Binary {
-                            op: op_token.text.to_string(),
-                            left: Box::new(expr),
-                            right: Box::new(right),
-                        },
-                        SourceLocation { start, end },
-                    );
-                }
-                TokenKind::Identifier => {
-                    let peek_text = self.tokens.peek()?.text.as_ref().to_string();
-                    if peek_text == "ISA" || peek_text == "isa" {
-                        let op_token = self.tokens.next()?;
-                        let right = if let Some(missing) =
-                            self.recover_missing_infix_rhs(op_token.start)
-                        {
-                            missing
-                        } else {
-                            self.parse_shift()?
-                        };
-                        let start = expr.location.start;
-                        let end = right.location.end;
-
-                        expr = Node::new(
-                            NodeKind::Binary {
-                                op: op_token.text.to_string(),
-                                left: Box::new(expr),
-                                right: Box::new(right),
-                            },
-                            SourceLocation { start, end },
-                        );
-                    } else {
-                        break;
-                    }
-                }
-                _ => break,
+    fn parse_relational_with(&mut self, lhs: Node) -> ParseResult<Node> {
+        // `isa`/`ISA` is a relational-level operator but cannot be part of a
+        // chained comparison — handle it first as a plain binary node.
+        if matches!(self.peek_kind(), Some(TokenKind::Identifier)) {
+            let peek_text = self.tokens.peek()?.text.as_ref().to_string();
+            if peek_text == "ISA" || peek_text == "isa" {
+                let op_token = self.tokens.next()?;
+                let right = if let Some(missing) =
+                    self.recover_missing_infix_rhs(op_token.start)
+                {
+                    missing
+                } else {
+                    self.parse_shift()?
+                };
+                let start = lhs.location.start;
+                let end = right.location.end;
+                return Ok(Node::new(
+                    NodeKind::Binary {
+                        op: op_token.text.to_string(),
+                        left: Box::new(lhs),
+                        right: Box::new(right),
+                    },
+                    SourceLocation { start, end },
+                ));
             }
+            return Ok(lhs);
         }
 
-        Ok(expr)
+        // If there is no symbolic relational operator next, nothing to do.
+        if !self.peek_is_relational_op() {
+            return Ok(lhs);
+        }
+
+        // Parse the first operator and its right-hand operand.
+        let op1 = self.tokens.next()?;
+        let rhs1 = if let Some(missing) = self.recover_missing_infix_rhs(op1.start) {
+            missing
+        } else {
+            self.parse_shift()?
+        };
+
+        // If no second relational op follows, emit a plain Binary node.
+        if !self.peek_is_relational_op() {
+            let start = lhs.location.start;
+            let end = rhs1.location.end;
+            return Ok(Node::new(
+                NodeKind::Binary {
+                    op: op1.text.to_string(),
+                    left: Box::new(lhs),
+                    right: Box::new(rhs1),
+                },
+                SourceLocation { start, end },
+            ));
+        }
+
+        // Chain mode: two or more consecutive relational comparisons.
+        // Perl 5.32+ semantics: `1 < $x < 10` ≡ `(1 < $x) && ($x < 10)`.
+        let start = lhs.location.start;
+        let mut operands = vec![lhs, rhs1];
+        let mut ops = vec![op1.text.to_string()];
+
+        while self.peek_is_relational_op() {
+            let op_token = self.tokens.next()?;
+            let operand = if let Some(missing) =
+                self.recover_missing_infix_rhs(op_token.start)
+            {
+                missing
+            } else {
+                self.parse_shift()?
+            };
+            ops.push(op_token.text.to_string());
+            operands.push(operand);
+        }
+
+        let end = operands.last().map_or(start, |n| n.location.end);
+        Ok(Node::new(
+            NodeKind::ChainedComparison { operands, ops },
+            SourceLocation { start, end },
+        ))
     }
 
     /// Parse shift expression
