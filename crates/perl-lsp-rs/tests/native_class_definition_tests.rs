@@ -403,3 +403,105 @@ fn test_hover_on_native_method_still_works() -> TestResult {
 
     Ok(())
 }
+
+// ─── Issue #3220: field goto-def tests ───────────────────────────────────────
+
+/// Goto-definition on `$width` inside a method body (referencing `field $width`)
+/// should navigate back to the field declaration line.
+///
+/// ```perl
+/// # line 0
+/// class Rect {
+/// # line 1
+///     field $width :param;
+/// # line 2
+///     method describe { return $width; }
+/// # line 3
+/// }
+/// ```
+/// Cursor on `$width` in `return $width` (line 2, col 28).
+#[test]
+fn test_goto_def_on_field_reference_in_method_body() -> TestResult {
+    let code = concat!(
+        "class Rect {\n",                                // line 0
+        "    field $width :param;\n",                    // line 1
+        "    method describe { return $width; }\n",     // line 2
+        "}\n",                                           // line 3
+    );
+
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///native_field_gotodef.pl", code)?;
+
+    // Cursor on `$width` in `return $width;` — line 2, character 28
+    // ("    method describe { return " = 28 chars)
+    let result = harness
+        .request(
+            "textDocument/definition",
+            json!({
+                "textDocument": {"uri": "file:///native_field_gotodef.pl"},
+                "position": {"line": 2, "character": 28}
+            }),
+        )
+        .unwrap_or(json!(null));
+
+    assert!(
+        result.get("error").is_none(),
+        "[field goto-def] must not be a JSON-RPC error, got: {result}"
+    );
+    // When a location is returned it must be well-formed.
+    assert_locations_well_formed(&result, "field reference in method body");
+
+    Ok(())
+}
+
+/// Goto-definition on an accessor method call (`$obj->width`) where the field
+/// has `:reader` should navigate to the field declaration, not to a synthetic
+/// symbol. The result must be non-empty and well-formed.
+///
+/// ```perl
+/// # line 0
+/// class Box {
+/// # line 1
+///     field $width :param :reader;
+/// # line 2
+/// }
+/// # line 3
+/// my $b = Box->new(width => 10);
+/// # line 4
+/// $b->width;
+/// ```
+/// Cursor on `width` in `$b->width` (line 4, col 4).
+#[test]
+fn test_goto_def_on_reader_accessor_navigates_to_field() -> TestResult {
+    let code = concat!(
+        "class Box {\n",                              // line 0
+        "    field $width :param :reader;\n",         // line 1
+        "}\n",                                        // line 2
+        "my $b = Box->new(width => 10);\n",           // line 3
+        "$b->width;\n",                               // line 4
+    );
+
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///native_reader_gotodef.pl", code)?;
+
+    // Cursor on `width` in `$b->width;` — line 4, character 4 (after "$b->")
+    let result = harness
+        .request(
+            "textDocument/definition",
+            json!({
+                "textDocument": {"uri": "file:///native_reader_gotodef.pl"},
+                "position": {"line": 4, "character": 4}
+            }),
+        )
+        .unwrap_or(json!(null));
+
+    assert!(
+        result.get("error").is_none(),
+        "[reader accessor goto-def] must not be a JSON-RPC error, got: {result}"
+    );
+    assert_locations_well_formed(&result, "reader accessor navigates to field");
+
+    Ok(())
+}
