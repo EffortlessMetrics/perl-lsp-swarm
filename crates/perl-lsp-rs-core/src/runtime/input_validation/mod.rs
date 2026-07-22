@@ -249,6 +249,39 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_execute_command_allows_agent_context() {
+        let method = "workspace/executeCommand";
+        let params = serde_json::json!({
+            "command": "perl.agentContext",
+            "arguments": []
+        });
+
+        let result = validate_lsp_request(method, &params);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_execute_command_allows_omitted_arguments() {
+        let method = "workspace/executeCommand";
+        let params = serde_json::json!({"command": "perl.agentContext"});
+
+        let result = validate_lsp_request(method, &params);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_execute_command_rejects_non_array_arguments() {
+        let method = "workspace/executeCommand";
+        let params = serde_json::json!({
+            "command": "perl.agentContext",
+            "arguments": {}
+        });
+
+        let result = validate_lsp_request(method, &params);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_validate_execute_command_allows_safe_delete_symbol() {
         let method = "workspace/executeCommand";
         let params = serde_json::json!({

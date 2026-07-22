@@ -766,6 +766,83 @@ point->new(na"#;
 }
 
 #[test]
+fn test_native_class_constructor_param_completion() {
+    let code = r#"
+use feature 'class';
+
+class Point {
+field $x :param = 0;
+field $y :param = 0;
+field $cache = 1;
+}
+
+Point->new(
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        completions.iter().any(|item| item.label == "x"),
+        "expected `x` constructor completion for native class Point->new(...)"
+    );
+    assert!(
+        completions.iter().any(|item| item.label == "y"),
+        "expected `y` constructor completion for native class Point->new(...)"
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "cache"),
+        "non-:param fields should not appear in native class constructor completion"
+    );
+
+    let x_item = must_some(completions.iter().find(|item| item.label == "x"));
+    assert_eq!(x_item.insert_text.as_deref(), Some("x => "));
+    assert_eq!(
+        x_item.detail.as_deref(),
+        Some("native class constructor parameter"),
+        "detail should identify this as a native class parameter"
+    );
+}
+
+#[test]
+fn test_native_class_constructor_param_completion_honors_prefix() {
+    let code = r#"
+use feature 'class';
+
+class Person {
+field $name :param;
+field $native_id :param;
+field $age :param;
+}
+
+Person->new(na"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len());
+    let constructor_labels: Vec<&str> = completions
+        .iter()
+        .filter(|item| item.detail.as_deref() == Some("native class constructor parameter"))
+        .map(|item| item.label.as_str())
+        .collect();
+
+    assert!(constructor_labels.contains(&"name"), "expected `name` to match prefix `na`");
+    assert!(
+        constructor_labels.contains(&"native_id"),
+        "expected `native_id` to remain available when matching prefix"
+    );
+    assert!(
+        !constructor_labels.contains(&"age"),
+        "non-matching constructor params should be filtered by prefix"
+    );
+}
+
+#[test]
 fn test_moo_isa_type_completion_includes_builtins_and_imports() {
     let code = concat!(
         "\n",
@@ -8070,6 +8147,58 @@ fn test_indirect_unindexed_class_offers_no_methods() -> Result<(), Box<dyn std::
     assert!(
         !completions.iter().any(|c| c.label == "run" || c.label == "speak"),
         "unindexed indirect receiver must not offer Child/Parent methods"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_indirect_infile_class_not_in_workspace_index_offers_methods()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Regression for the asymmetry between arrow and indirect completion:
+    // `package MyClass; sub baz {} ... new MyClass` must offer `baz` via
+    // indirect syntax even when the workspace index is empty (i.e. MyClass has
+    // not been indexed yet).  Previously the probe checked only the workspace
+    // index, so in-file-only classes returned nothing and fell through.
+    let code = "package MyClass;\nsub baz { }\n\nnew MyClass";
+    let pos = code.rfind("new").ok_or("new not found")? + "new".len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, pos);
+    let labels: Vec<&String> = completions.iter().map(|c| &c.label).collect();
+
+    assert!(
+        completions.iter().any(|c| c.label == "baz"),
+        "indirect `new MyClass` with an in-file `package MyClass` must offer `baz` even \
+         when the workspace index is empty; got {labels:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_indirect_truly_unknown_class_no_infile_package_offers_no_methods()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Regression guard: `new SomeTrulyUnknownClass` where there is neither an
+    // in-file `package` declaration nor a workspace-index entry for that class
+    // must NOT offer bare UNIVERSAL object defaults (`isa`, `can`, `DOES`, …).
+    let code = "new SomeTrulyUnknownClass";
+    let pos = "new".len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, pos);
+
+    const OBJECT_DEFAULTS: &[&str] = &["isa", "can", "DOES", "VERSION", "DESTROY", "AUTOLOAD"];
+    let leaked: Vec<&str> = completions
+        .iter()
+        .filter(|c| OBJECT_DEFAULTS.contains(&c.label.as_str()))
+        .map(|c| c.label.as_str())
+        .collect();
+
+    assert!(
+        leaked.is_empty(),
+        "indirect receiver with no in-file package and no workspace entry must not \
+         offer bare UNIVERSAL defaults; leaked: {leaked:?}"
     );
     Ok(())
 }

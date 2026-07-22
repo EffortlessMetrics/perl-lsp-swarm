@@ -151,6 +151,9 @@ pub struct RunReport {
     pub buckets: BTreeMap<String, usize>,
     pub file_results: Vec<RunFileResult>,
     pub failures: Vec<RunFailure>,
+    /// Boundary facts observed while compiling the profile.
+    #[serde(default)]
+    pub semantic_boundaries: Vec<ObservedSemanticBoundary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -195,6 +198,12 @@ pub struct CompileBaseline {
     pub buckets: BTreeMap<String, usize>,
     pub expected_failures: Vec<RunFailure>,
     pub file_results: Vec<RunFileResult>,
+    /// Semantic boundaries accepted by this compile receipt.
+    ///
+    /// `None` preserves compatibility with baselines written before boundary
+    /// inventory ratcheting existed; `Some([])` is an explicit empty inventory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_boundaries: Option<Vec<ObservedSemanticBoundary>>,
 }
 
 /// Preparation receipt for an upstream Perl source tree.
@@ -293,6 +302,7 @@ pub enum SmokeFailureKind {
     ProfileMismatch,
     UnbucketedFailure,
     UnknownBucket,
+    SemanticBoundary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -326,6 +336,7 @@ pub enum BaselineViolationKind {
     BucketCountIncreased,
     MissingExpectedFile,
     AssertionRegression,
+    SemanticBoundary,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -333,6 +344,92 @@ pub enum BaselineViolationKind {
 pub enum RunnerStatus {
     Pass,
     Fail,
+}
+
+/// How a compiler receipt classified a non-static semantic boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticBoundaryDisposition {
+    /// The compiler modeled the behavior as an ordinary static fact.
+    ImplementedStatic,
+    /// The compiler retained a static fact without executing its behavior.
+    StaticallyClassified,
+    /// The behavior is an ordinary runtime expression and is not a boundary.
+    OrdinaryRuntime,
+    /// The behavior is an ordinary runtime expression and does not block compilation.
+    DeferredRuntime,
+    /// The behavior is registered for a later lifecycle phase such as `END`.
+    DeferredLifecycle,
+    /// The behavior may affect compilation but is governed by an explicit classifier.
+    GovernedCompileTimeDynamic,
+    /// The pinned source shape is accepted by an exact compatibility guard.
+    SourceLockedCompatibility,
+    /// The behavior is not currently safe to accept in a compile receipt.
+    Unsupported,
+    /// The classifier could not determine a disposition.
+    Unknown,
+}
+
+/// Confidence retained with a semantic-boundary classification.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticBoundaryConfidence {
+    /// The classification follows an exact structural or source contract.
+    Exact,
+    /// The classification is safe but deliberately preserves dynamic uncertainty.
+    Conservative,
+    /// The compiler could not establish a safe classification.
+    Unresolved,
+}
+
+/// Whether a semantic boundary depends on a pinned path or source contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticBoundaryLockScope {
+    /// The classification is general and has no pinned compatibility guard.
+    None,
+    /// The classification is restricted to a pinned test path.
+    Path,
+    /// The classification is restricted to an exact source shape.
+    Source,
+    /// The classification requires both the pinned path and exact source shape.
+    PathAndSource,
+}
+
+/// Byte range in the source that emitted a semantic boundary.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SemanticBoundarySourceSpan {
+    /// Inclusive byte offset where the boundary starts.
+    pub start: usize,
+    /// Exclusive byte offset where the boundary ends.
+    pub end: usize,
+}
+
+/// A semantic boundary observed while producing a harness runner record.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SemanticBoundaryRecord {
+    /// Stable identifier for the classifier or exact guarded boundary.
+    pub id: String,
+    /// Classification used by the receipt lane.
+    pub disposition: SemanticBoundaryDisposition,
+    /// Compiler-provided explanation for the boundary.
+    pub reason: String,
+    /// Byte range of the source expression or phase that emitted the boundary.
+    pub source_span: SemanticBoundarySourceSpan,
+    /// Compiler source kind that produced the boundary.
+    pub source_kind: String,
+    /// Confidence in the retained classification.
+    pub confidence: SemanticBoundaryConfidence,
+    /// Whether the boundary makes the compile receipt fail.
+    pub blocks_compilation: bool,
+    /// Whether downstream static facts must be withheld or qualified.
+    pub blocks_downstream_static_facts: bool,
+    /// Whether the classification is guarded by a pinned path or source contract.
+    pub lock_scope: SemanticBoundaryLockScope,
+    /// Workstream responsible for deepening or replacing this classification.
+    pub owner_workstream: String,
+    /// Focused test or receipt path that supports this classification.
+    pub supporting_test: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -345,6 +442,38 @@ pub struct RunnerRecord {
     pub assertions_total: usize,
     pub bucket: Option<String>,
     pub first_diagnostic: Option<String>,
+    /// Non-static semantic boundaries observed for this invocation.
+    #[serde(default)]
+    pub semantic_boundaries: Vec<SemanticBoundaryRecord>,
+}
+
+/// A semantic boundary attributed to one file in a harness run report.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObservedSemanticBoundary {
+    /// Normalized test path that emitted the boundary.
+    pub path: String,
+    /// Stable boundary identifier from the runner.
+    pub id: String,
+    /// Classification used by the receipt lane.
+    pub disposition: SemanticBoundaryDisposition,
+    /// Compiler-provided explanation for the boundary.
+    pub reason: String,
+    /// Byte range of the source expression or phase that emitted the boundary.
+    pub source_span: SemanticBoundarySourceSpan,
+    /// Compiler source kind that produced the boundary.
+    pub source_kind: String,
+    /// Confidence in the retained classification.
+    pub confidence: SemanticBoundaryConfidence,
+    /// Whether the boundary makes the compile receipt fail.
+    pub blocks_compilation: bool,
+    /// Whether downstream static facts must be withheld or qualified.
+    pub blocks_downstream_static_facts: bool,
+    /// Whether the classification is guarded by a pinned path or source contract.
+    pub lock_scope: SemanticBoundaryLockScope,
+    /// Workstream responsible for deepening or replacing this classification.
+    pub owner_workstream: String,
+    /// Focused test or receipt path that supports this classification.
+    pub supporting_test: String,
 }
 
 pub fn workstream_for_bucket(bucket: &str) -> &'static str {
@@ -471,11 +600,23 @@ mod tests {
             assertions_total: 1,
             bucket: None,
             first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
         };
 
         let encoded = serde_json::to_string(&record)?;
         let decoded: RunnerRecord = serde_json::from_str(&encoded)?;
         assert_eq!(decoded, record);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_runner_record_defaults_semantic_boundaries() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let decoded: RunnerRecord = serde_json::from_str(
+            r#"{"schema_version":"perl_core_harness.runner_record.v1","mode":"compile","path":"base/ok.t","status":"pass","assertions_passed":1,"assertions_total":1,"bucket":null,"first_diagnostic":null}"#,
+        )?;
+
+        assert!(decoded.semantic_boundaries.is_empty());
         Ok(())
     }
 }
