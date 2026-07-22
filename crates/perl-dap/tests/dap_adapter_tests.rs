@@ -207,15 +207,23 @@ mod dap_phase2_tests {
     }
 
     /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac8-lazy-variable-expansion
+    ///
+    /// Uses variablesReference=13 (Globals scope, frame_id=1) which always returns at
+    /// least one variable in fallback mode (`$_`).  Locals scope (ref=11) now returns
+    /// empty in fallback mode when the B module is unavailable (issue #1006 — honest
+    /// empty rather than fake `$self`/`@_` placeholders), so this test uses Globals to
+    /// verify the expansion round-trip shape.
     #[tokio::test]
     // AC:8
     async fn test_lazy_variable_expansion() -> Result<()> {
         let mut adapter = DebugAdapter::new();
+        // ref=13: frame_id=1, Globals scope (frame_id*10+3 = 13).
+        // Globals fallback returns `$_` = "undef" with variables_reference=0.
         let root = adapter.handle_request(
             1,
             "variables",
             Some(json!({
-                "variablesReference": 11,
+                "variablesReference": 13,
                 "start": 0,
                 "count": 20
             })),
@@ -226,7 +234,11 @@ mod dap_phase2_tests {
             .get("variables")
             .and_then(Value::as_array)
             .ok_or_else(|| anyhow::anyhow!("variables array missing"))?;
-        assert!(!vars.is_empty());
+        // Globals fallback always returns at least `$_`.
+        assert!(
+            !vars.is_empty(),
+            "Globals scope fallback must return at least one variable ($_ = undef)"
+        );
 
         let child_ref = vars
             .iter()
