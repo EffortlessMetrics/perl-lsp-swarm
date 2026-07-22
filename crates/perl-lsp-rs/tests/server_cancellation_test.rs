@@ -1,3 +1,13 @@
+//! Server-side cancellation test for the `$/test/slowOperation` endpoint.
+//!
+//! Requires the `expose_lsp_test_api` feature because the test endpoint is
+//! cfg-gated out of production builds (issue #4632).
+//!
+//! ```text
+//! cargo test -p perl-lsp-rs --features expose_lsp_test_api --test server_cancellation_test
+//! ```
+#![cfg(feature = "expose_lsp_test_api")]
+
 use perl_lsp::{JsonRpcRequest, LspServer};
 use serde_json::json;
 

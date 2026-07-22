@@ -194,6 +194,10 @@ impl LspServer {
                 self.handle_text_document_content_dispatch(request.params)
             }
             "$/setTrace" => self.handle_set_trace_dispatch(request.params),
+            // Test-only endpoint: gated so production builds do not expose it.
+            // Without this gate any client can invoke $/test/slowOperation and
+            // consume a worker thread for ~1 second per call (issue #4632).
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
             "$/test/slowOperation" => self.handle_slow_operation_dispatch(&id, request.params),
             _ => {
                 tracing::debug!(method = %method, "Method not implemented");

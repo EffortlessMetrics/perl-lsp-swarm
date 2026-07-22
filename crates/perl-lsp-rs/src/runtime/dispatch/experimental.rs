@@ -3,8 +3,11 @@
 //! Wraps experimental and test-only LSP requests.
 
 use super::super::*;
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
 use crate::protocol::{request_cancelled_error, server_cancelled_error};
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
 use serde_json::json;
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
 use std::time::{Duration, Instant};
 
 impl LspServer {
@@ -17,6 +20,10 @@ impl LspServer {
     }
 
     /// Handle slow operation test request
+    ///
+    /// Test-only: gated behind `cfg(test)` / `expose_lsp_test_api` so production
+    /// builds do not compile the handler or route it (issue #4632).
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(super) fn handle_slow_operation_dispatch(
         &self,
         id: &Option<Value>,
