@@ -63,26 +63,29 @@ skip = [
     # bitflags 1.x pulled by fluent-uri (via lsp-types); 2.x used everywhere else
     { crate = "bitflags@1.3.2", reason = "fluent-uri (lsp-types transitive) pins bitflags 1.x" },
 
-    # windows-sys ecosystem: three-way split across 0.59/0.60/0.61.
-    # 0.59: console, stacker; 0.60: notify, shared_child; 0.61: clap/anstyle.
-    # Platform-specific, only affects Windows. Upstream convergence happens naturally.
-    { crate = "windows-sys@0.59.0", reason = "console/stacker transitives pin 0.59" },
+    # windows-sys ecosystem: three-way split across 0.52/0.60/0.61.
+    # 0.52: ring/rustix/tempfile and older platform crates; 0.60: notify,
+    # shared_child, stacker; 0.61: console, mio, tokio.
+    { crate = "windows-sys@0.52.0", reason = "ring/rustix/tempfile and older platform transitives pin 0.52" },
     { crate = "windows-sys@0.60.2", reason = "notify/shared_child transitives pin 0.60" },
-    { crate = "windows-targets@0.52.6", reason = "older windows-sys 0.59 transitive" },
+    { crate = "windows-targets@0.52.6", reason = "older windows-sys 0.52 transitive platform tree" },
 
     # rand ecosystem: 0.9 vs 0.10 split during major version transition
-    { crate = "rand@0.9.2", reason = "transitive dep version split during rand 0.9 -> 0.10 migration" },
+    { crate = "rand@0.9.4", reason = "proptest transitives remain on rand 0.9 during rand 0.9 -> 0.10 migration" },
     { crate = "rand_core@0.9.5", reason = "transitive dep version split during rand_core 0.9 -> 0.10 migration" },
+    { crate = "getrandom@0.2.17", reason = "ring/rustls transitives remain on getrandom 0.2" },
     { crate = "getrandom@0.3.4", reason = "older getrandom pulled by rand 0.9 transitives" },
-
-    # cpufeatures: 0.2 vs 0.3 split
-    { crate = "cpufeatures@0.2.17", reason = "transitive dep version split during cpufeatures 0.2 -> 0.3 migration" },
 
     # r-efi: 5.x vs 6.x split (platform-specific, UEFI target only)
     { crate = "r-efi@5.3.0", reason = "transitive dep version split, UEFI platform crate" },
+
+    # Build and proc-macro toolchains retain older transitive versions.
+    { crate = "shlex@1.3.0", reason = "bindgen 0.72 transitively pins shlex 1.x while cc uses 2.x" },
+    { crate = "syn@3.0.2", reason = "thiserror 2 transitively pins syn 3 while workspace proc macros use syn 2" },
+    { crate = "wit-bindgen@0.51.0", reason = "wasip3 transitively pins the older WIT bindings release" },
 ]
 
-# Windows platform crate duplicates: windows-sys has a 0.59/0.60/0.61 three-way
+# Windows platform crate duplicates: windows-sys has a 0.52/0.60/0.61 three-way
 # split across transitive deps (console, stacker, notify, shared_child, clap).
 # Skip the older windows-targets tree to suppress all associated windows_*
 # platform crate duplicates (0.52.x).
