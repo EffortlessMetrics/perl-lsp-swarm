@@ -136,8 +136,8 @@ mod native_class_hover_tests {
     /// Hovering on `$x` used inside a method body (referencing `field $x`)
     /// should return hover content — the symbol is found through the symbol table.
     #[test]
-    fn test_hover_on_field_reference_inside_method_body()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn test_hover_on_field_reference_inside_method_body() -> Result<(), Box<dyn std::error::Error>>
+    {
         // line 0: class Rect {
         // line 1:     field $width :param;
         // line 2:     method describe { return $width; }

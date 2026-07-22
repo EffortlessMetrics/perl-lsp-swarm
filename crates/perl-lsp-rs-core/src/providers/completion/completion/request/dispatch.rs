@@ -323,7 +323,13 @@ fn complete_indirect_method_context(
         &provider.workspace_index,
         &provider.used_modules,
     );
-    methods::add_method_completions(&mut probe, &synth, source, &provider.symbol_table, &provider.used_modules);
+    methods::add_method_completions(
+        &mut probe,
+        &synth,
+        source,
+        &provider.symbol_table,
+        &provider.used_modules,
+    );
     if !probe.iter().any(|c| !OBJECT_DEFAULTS.contains(&c.label.as_str())) {
         return false;
     }

@@ -27,10 +27,10 @@ use perl_module::resolution::use_lib::{
     no_lib_cancelled_paths_at_offset, resolve_use_lib_paths_from_source,
     resolve_use_lib_paths_from_source_at_offset,
 };
+use perl_parser::Parser;
 use perl_parser::error::ParseError;
 use perl_parser::position::offset_to_utf16_line_col;
 use perl_parser::util::code_slice;
-use perl_parser::Parser;
 
 // Import core diagnostics types from perl-lsp-providers (via parent module re-export)
 use super::{
@@ -1410,8 +1410,8 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_data_fixable_true_for_variable_redeclaration(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn diagnostic_data_fixable_true_for_variable_redeclaration()
+    -> Result<(), Box<dyn std::error::Error>> {
         // PL105 (VariableRedeclaration) offers a quick-fix that removes the duplicate `my`,
         // so the enriched diagnostic data must advertise it as fixable.
         let provider = PullDiagnosticsProvider::new();
@@ -1457,8 +1457,8 @@ mod tests {
     }
 
     #[test]
-    fn invalid_prototype_syntax_error_maps_to_pl302_warning(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn invalid_prototype_syntax_error_maps_to_pl302_warning()
+    -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
         let uri: Uri = "file:///test.pl".parse()?;
         let diagnostic = provider.parse_error_to_diagnostic(
@@ -1935,8 +1935,8 @@ mod tests {
     }
 
     #[test]
-    fn native_critic_recommended_profile_filters_pull_diagnostics(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn native_critic_recommended_profile_filters_pull_diagnostics()
+    -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
         let uri: Uri = "file:///test.pl".parse()?;
         let mut context = PullDiagnosticsContext::new();
@@ -1980,8 +1980,8 @@ mod tests {
     }
 
     #[test]
-    fn native_critic_runtime_context_honors_include_and_exclude_filters(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn native_critic_runtime_context_honors_include_and_exclude_filters()
+    -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
         let uri: Uri = "file:///test.pl".parse()?;
         let mut context = PullDiagnosticsContext::new();
@@ -2027,8 +2027,8 @@ mod tests {
     }
 
     #[test]
-    fn native_critic_engine_is_default_for_pull_diagnostics(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn native_critic_engine_is_default_for_pull_diagnostics()
+    -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
         let uri: Uri = "file:///test.pl".parse()?;
         let items =
@@ -2048,8 +2048,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_subroutine_attribute_syntax_error_stays_warning(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn unknown_subroutine_attribute_syntax_error_stays_warning()
+    -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
         let uri: Uri = "file:///test.pl".parse()?;
         let diagnostic = provider.parse_error_to_diagnostic(
@@ -2082,8 +2082,8 @@ mod tests {
     // is `None` by construction -- exactly the gap state.
 
     #[test]
-    fn workspace_diagnostics_reports_unchanged_for_gapped_doc_with_known_result_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn workspace_diagnostics_reports_unchanged_for_gapped_doc_with_known_result_id()
+    -> Result<(), Box<dyn std::error::Error>> {
         let doc = DocumentState::new("my $x = 1;\n", 1);
         assert!(doc.current_parsed().is_none(), "fresh DocumentState must have no snapshot yet");
 
@@ -2112,8 +2112,8 @@ mod tests {
     }
 
     #[test]
-    fn workspace_diagnostics_falls_through_for_gapped_doc_without_known_result_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn workspace_diagnostics_falls_through_for_gapped_doc_without_known_result_id()
+    -> Result<(), Box<dyn std::error::Error>> {
         let doc = DocumentState::new("my $x = 1;\n", 1);
         assert!(doc.current_parsed().is_none(), "fresh DocumentState must have no snapshot yet");
 
