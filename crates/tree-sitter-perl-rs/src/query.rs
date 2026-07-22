@@ -791,11 +791,12 @@ fn predicate_capture_matches(
     negated: bool,
     matcher: impl Fn(&str) -> bool,
 ) -> bool {
-    let matching = captures.iter().filter(|capture| capture.name == capture_name).map(|capture| {
-        let Ok(text) = capture.node.utf8_text(capture.node.tree_source().as_bytes()) else {
-            return false;
-        };
-        matcher(text)
-    });
+    let mut matching =
+        captures.iter().filter(|capture| capture.name == capture_name).map(|capture| {
+            let Ok(text) = capture.node.utf8_text(capture.node.tree_source().as_bytes()) else {
+                return false;
+            };
+            matcher(text)
+        });
     if negated { matching.all(|matches| !matches) } else { matching.all(|matches| matches) }
 }
