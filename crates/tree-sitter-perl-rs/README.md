@@ -93,9 +93,11 @@ tree-sitter-perl-rs = { version = "...", features = ["queries"] }
 ```
 
 The supported subset includes node kinds, wildcards, nested children, named fields,
-captures, multiple top-level patterns, and byte-range restriction. Query predicates and
-other unsupported tree-sitter query syntax return a typed `QueryError`; they are not
-silently ignored.
+captures, `#eq?`, `#not-eq?`, `#match?`, `#not-match?`, `#set!` match settings, multiple
+top-level patterns, and byte-range restriction. Other unsupported tree-sitter query
+syntax returns a typed `QueryError`; it is not silently ignored. The complete repository
+`injections.scm` fixture is covered by executable conformance tests, while predicates
+that depend on unsupported anonymous grammar nodes remain outside this facade's contract.
 
 ### Incremental proof
 
