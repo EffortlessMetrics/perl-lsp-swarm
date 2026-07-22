@@ -111,6 +111,16 @@ fn matches_positive_and_negative_regex_predicates() -> TestResult {
 }
 
 #[test]
+fn preserves_regex_backslashes_in_predicate_strings() -> TestResult {
+    let tree = parse("42;\n");
+    let query = Query::new(r#"(number) @value (#match? @value "\d+")"#)?;
+    let mut cursor = QueryCursor::new();
+
+    assert_eq!(cursor.matches(&query, tree.root_node()).count(), 1);
+    Ok(())
+}
+
+#[test]
 fn repeated_captures_are_evaluated_per_match() -> TestResult {
     let tree = parse("foo; bar; foo;\n");
     let query = Query::new("(identifier) @name (#eq? @name \"foo\")")?;

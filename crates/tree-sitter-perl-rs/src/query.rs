@@ -370,12 +370,15 @@ fn lex(source: &str) -> Result<Vec<Token>, QueryError> {
                             let Some(escaped) = chars.next() else {
                                 return Err(QueryError::UnexpectedEnd);
                             };
-                            value.push(match escaped {
-                                'n' => '\n',
-                                'r' => '\r',
-                                't' => '\t',
-                                other => other,
-                            });
+                            match escaped {
+                                'n' => value.push('\n'),
+                                'r' => value.push('\r'),
+                                't' => value.push('\t'),
+                                other => {
+                                    value.push('\\');
+                                    value.push(other);
+                                }
+                            }
                         }
                         other => value.push(other),
                     }
