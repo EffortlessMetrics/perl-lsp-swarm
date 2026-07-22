@@ -100,11 +100,21 @@ impl LspServer {
             "workspace/symbol/resolve" => {
                 self.handle_workspace_symbol_resolve_dispatch(request.params)
             }
-            "textDocument/rename" => self.handle_rename_workspace_dispatch(request.params),
-            "textDocument/codeAction" => self.handle_code_action_dispatch(request.params),
+            "textDocument/rename" => {
+                return self.route_cancellable(id, method, should_respond, |request_id| {
+                    self.handle_rename_workspace_cancellable_dispatch(request.params, request_id)
+                });
+            }
+            "textDocument/codeAction" => {
+                return self.route_cancellable(id, method, should_respond, |request_id| {
+                    self.handle_code_action_cancellable_dispatch(request.params, request_id)
+                });
+            }
             "codeAction/resolve" => self.handle_code_action_resolve_dispatch(request.params),
             "textDocument/semanticTokens/full" => {
-                self.handle_semantic_tokens_dispatch(request.params)
+                return self.route_cancellable(id, method, should_respond, |request_id| {
+                    self.handle_semantic_tokens_cancellable_dispatch(request.params, request_id)
+                });
             }
             "textDocument/inlayHint" => {
                 return self.route_cancellable(id, method, should_respond, |_| {
@@ -144,9 +154,17 @@ impl LspServer {
             "workspace/executeCommand" => self.handle_execute_command_dispatch(request.params),
             "textDocument/typeDefinition" => self.handle_type_definition_dispatch(request.params),
             "textDocument/implementation" => self.handle_implementation_dispatch(request.params),
-            "textDocument/documentSymbol" => self.handle_document_symbol_dispatch(request.params),
+            "textDocument/documentSymbol" => {
+                return self.route_cancellable(id, method, should_respond, |request_id| {
+                    self.handle_document_symbol_cancellable_dispatch(request.params, request_id)
+                });
+            }
             "textDocument/foldingRange" => self.handle_folding_range_dispatch(request.params),
-            "textDocument/formatting" => self.handle_formatting_dispatch(request.params),
+            "textDocument/formatting" => {
+                return self.route_cancellable(id, method, should_respond, |request_id| {
+                    self.handle_formatting_cancellable_dispatch(request.params, request_id)
+                });
+            }
             "textDocument/rangeFormatting" => self.handle_range_formatting_dispatch(request.params),
             "textDocument/rangesFormatting" => {
                 self.handle_ranges_formatting_dispatch(request.params)
@@ -541,5 +559,69 @@ mod tests {
             "{method} returned names {names:?}, expected {expected:?}"
         ))
         .into())
+    }
+
+    /// Verify that the providers newly gated by `route_cancellable` (#4644)
+    /// return an immediate `REQUEST_CANCELLED` response when the request has
+    /// been pre-cancelled via `cancel_mark`, proving they now poll the
+    /// cancellation token at the dispatch boundary instead of running to
+    /// completion.
+    #[test]
+    fn cancelled_ungated_providers_return_request_cancelled() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let methods = [
+            "textDocument/formatting",
+            "textDocument/codeAction",
+            "textDocument/semanticTokens/full",
+            "textDocument/documentSymbol",
+            "textDocument/rename",
+        ];
+
+        for (offset, method) in methods.iter().enumerate() {
+            let server = LspServer::new();
+            server.initialize_requested.store(true, Ordering::Release);
+            let request_id = JsonRpcId::Integer(4600 + offset as i64);
+            server.cancel_mark(&request_id);
+
+            let routed = server.route_request(
+                JsonRpcRequest {
+                    _jsonrpc: "2.0".to_string(),
+                    id: Some(request_id.clone()),
+                    method: method.to_string(),
+                    params: Some(json!({
+                        "textDocument": { "uri": "file:///cancel-test.pl" },
+                        "position": { "line": 0, "character": 0 },
+                        "options": { "tabSize": 4, "insertSpaces": true },
+                        "newName": "renamed",
+                    })),
+                },
+                Some(request_id.to_value()),
+                true,
+            );
+
+            if server.is_cancelled(&request_id) {
+                return Err(std::io::Error::other(format!(
+                    "{method} must clear the local cancellation marker"
+                ))
+                .into());
+            }
+
+            let RoutedResponse::Immediate(response) = routed else {
+                return Err(std::io::Error::other(format!(
+                    "{method} must return an immediate cancellation response"
+                ))
+                .into());
+            };
+
+            let error_code = response.error.map(|error| error.code);
+            if error_code != Some(REQUEST_CANCELLED) {
+                return Err(std::io::Error::other(format!(
+                    "{method} must return RequestCancelled, got {error_code:?}"
+                ))
+                .into());
+            }
+        }
+
+        Ok(())
     }
 }
