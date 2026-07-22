@@ -102,6 +102,8 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
+            indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
             #[cfg(not(target_arch = "wasm32"))]
@@ -275,6 +277,8 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
+            indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
             #[cfg(not(target_arch = "wasm32"))]
@@ -388,6 +392,8 @@ impl LspServer {
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "workspace")]
+            indexing_transition_lock: Arc::new(Mutex::new(())),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),

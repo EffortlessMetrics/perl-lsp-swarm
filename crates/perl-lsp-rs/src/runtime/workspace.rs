@@ -107,14 +107,19 @@ fn read_watched_file_content(uri: &str, purpose: &str) -> Option<String> {
 struct IndexingGuard {
     indexing_in_progress: Arc<AtomicBool>,
     indexing_rescan_pending: Arc<AtomicBool>,
+    indexing_transition_lock: Arc<Mutex<()>>,
     restart: Option<Box<dyn FnOnce() + Send>>,
 }
 
 #[cfg(feature = "workspace")]
 impl Drop for IndexingGuard {
     fn drop(&mut self) {
-        self.indexing_in_progress.store(false, Ordering::Release);
-        if self.indexing_rescan_pending.swap(false, Ordering::AcqRel) {
+        let should_restart = release_indexing_slot(
+            &self.indexing_in_progress,
+            &self.indexing_rescan_pending,
+            &self.indexing_transition_lock,
+        );
+        if should_restart {
             if let Some(restart) = self.restart.take() {
                 restart();
             }
@@ -129,6 +134,7 @@ struct IndexingResources {
     workspace_folders: Arc<Mutex<Vec<WorkspaceFolderState>>>,
     indexing_in_progress: Arc<AtomicBool>,
     indexing_rescan_pending: Arc<AtomicBool>,
+    indexing_transition_lock: Arc<Mutex<()>>,
     invocation_count: Arc<std::sync::atomic::AtomicUsize>,
     outbound: outbound::OutboundSender,
     work_done_progress: bool,
@@ -156,6 +162,35 @@ fn next_indexing_progress_request_id(next_request_id: &AtomicI32) -> ServerReque
             }
         }
     }
+}
+
+#[cfg(feature = "workspace")]
+fn claim_indexing_slot(
+    indexing_in_progress: &AtomicBool,
+    indexing_rescan_pending: &AtomicBool,
+    indexing_transition_lock: &Mutex<()>,
+) -> bool {
+    let _transition = indexing_transition_lock.lock();
+    if indexing_in_progress
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        indexing_rescan_pending.store(true, Ordering::Release);
+        false
+    } else {
+        true
+    }
+}
+
+#[cfg(feature = "workspace")]
+fn release_indexing_slot(
+    indexing_in_progress: &AtomicBool,
+    indexing_rescan_pending: &AtomicBool,
+    indexing_transition_lock: &Mutex<()>,
+) -> bool {
+    let _transition = indexing_transition_lock.lock();
+    indexing_in_progress.store(false, Ordering::Release);
+    indexing_rescan_pending.swap(false, Ordering::AcqRel)
 }
 
 fn parse_configuration_response_id(value: &Value) -> Option<ServerRequestId> {
@@ -1936,6 +1971,7 @@ impl LspServer {
             workspace_folders: Arc::clone(&self.workspace_folders),
             indexing_in_progress: Arc::clone(&self.indexing_in_progress),
             indexing_rescan_pending: Arc::clone(&self.indexing_rescan_pending),
+            indexing_transition_lock: Arc::clone(&self.indexing_transition_lock),
             invocation_count: Arc::clone(&self.workspace_indexing_invocation_count),
             outbound: self.outbound.clone(),
             work_done_progress: self.client_capabilities.lock().work_done_progress_support,
@@ -1955,12 +1991,11 @@ impl LspServer {
     fn start_workspace_indexing_with_resources(resources: IndexingResources) {
         resources.invocation_count.fetch_add(1, Ordering::SeqCst);
 
-        if resources
-            .indexing_in_progress
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            resources.indexing_rescan_pending.store(true, Ordering::Release);
+        if !claim_indexing_slot(
+            &resources.indexing_in_progress,
+            &resources.indexing_rescan_pending,
+            &resources.indexing_transition_lock,
+        ) {
             tracing::debug!("Workspace indexing already in progress, queued a follow-up scan");
             return;
         }
@@ -1969,6 +2004,7 @@ impl LspServer {
         let indexing_guard = IndexingGuard {
             indexing_in_progress: Arc::clone(&resources.indexing_in_progress),
             indexing_rescan_pending: Arc::clone(&resources.indexing_rescan_pending),
+            indexing_transition_lock: Arc::clone(&resources.indexing_transition_lock),
             restart: Some(Box::new(move || {
                 Self::start_workspace_indexing_with_resources(restart_resources);
             })),
@@ -3228,6 +3264,44 @@ mod tests {
         }
         if server.workspace_indexing_invocation_count() < 3 {
             return Err("expected initial scan, pending request, and follow-up scan".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn indexing_slot_handoff_keeps_pending_request_visible_to_completion()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let indexing_in_progress = std::sync::atomic::AtomicBool::new(true);
+        let indexing_rescan_pending = std::sync::atomic::AtomicBool::new(false);
+        let indexing_transition_lock = parking_lot::Mutex::new(());
+
+        if super::claim_indexing_slot(
+            &indexing_in_progress,
+            &indexing_rescan_pending,
+            &indexing_transition_lock,
+        ) {
+            return Err("an active scan unexpectedly accepted a second slot".into());
+        }
+        if !indexing_rescan_pending.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("the concurrent request did not remain pending".into());
+        }
+        if !super::release_indexing_slot(
+            &indexing_in_progress,
+            &indexing_rescan_pending,
+            &indexing_transition_lock,
+        ) {
+            return Err("scan completion did not observe the pending request".into());
+        }
+        if indexing_rescan_pending.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("scan completion left the pending request set".into());
+        }
+        if !super::claim_indexing_slot(
+            &indexing_in_progress,
+            &indexing_rescan_pending,
+            &indexing_transition_lock,
+        ) {
+            return Err("follow-up scan could not claim the released slot".into());
         }
         Ok(())
     }

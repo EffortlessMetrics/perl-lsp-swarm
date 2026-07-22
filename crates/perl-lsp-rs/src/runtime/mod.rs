@@ -302,6 +302,9 @@ pub struct LspServer {
     /// Set when a workspace-folder change arrives during an active scan.
     #[cfg(feature = "workspace")]
     indexing_rescan_pending: Arc<AtomicBool>,
+    /// Serializes the active/pending indexing handoff at scan completion.
+    #[cfg(feature = "workspace")]
+    indexing_transition_lock: Arc<Mutex<()>>,
     /// One-time guard for the `window/showMessage` permission-denied warning.
     ///
     /// Set to `true` after the first permission-denied file is encountered during
