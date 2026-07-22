@@ -1,9 +1,9 @@
 #[cfg(feature = "lsp-compat")]
+use super::perlcritic_quick_fix;
+#[cfg(feature = "lsp-compat")]
 use super::QuickFix;
 #[cfg(not(feature = "lsp-compat"))]
 use super::ViolationSummary;
-#[cfg(feature = "lsp-compat")]
-use super::perlcritic_quick_fix;
 use super::{CriticConfig, Severity, Violation};
 use crate::critic_parser::parse_perlcritic_output;
 use perl_parser_core::position::{Position, Range};
@@ -187,7 +187,7 @@ impl CriticAnalyzer {
                     range: lsp_range,
                     severity: Some(v.severity.to_diagnostic_severity()),
                     code: Some(lsp_types::NumberOrString::String(v.policy.clone())),
-                    source: Some("perlcritic".to_string()),
+                    source: Some("perl-lsp-critic".to_string()),
                     message: v.description.clone(),
                     related_information: None,
                     tags: None,

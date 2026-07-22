@@ -154,10 +154,7 @@ impl DiagnosticProvider {
     /// assert!(provider.severity_config.syntax_errors);
     /// ```
     pub fn new() -> Self {
-        Self {
-            severity_config: DiagnosticConfig::default(),
-            cached_diagnostics: VecDeque::new(),
-        }
+        Self { severity_config: DiagnosticConfig::default(), cached_diagnostics: VecDeque::new() }
     }
 
     /// Creates a diagnostic provider with custom configuration
@@ -189,10 +186,7 @@ impl DiagnosticProvider {
     /// Arguments: `config` overrides default diagnostic behavior.
     /// Returns: a configured [`DiagnosticProvider`].
     pub fn with_config(config: DiagnosticConfig) -> Self {
-        Self {
-            severity_config: config,
-            cached_diagnostics: VecDeque::new(),
-        }
+        Self { severity_config: config, cached_diagnostics: VecDeque::new() }
     }
 
     /// Generates diagnostics from parse results
@@ -229,11 +223,7 @@ impl DiagnosticProvider {
     ///
     /// Arguments: `result` contains parser output; `uri` identifies the source file.
     /// Returns: diagnostics sorted by source position.
-    pub fn generate_diagnostics(
-        &self,
-        result: &crate::ParseResult,
-        uri: Url,
-    ) -> Vec<Diagnostic> {
+    pub fn generate_diagnostics(&self, result: &crate::ParseResult, uri: Url) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
 
         // Process parse errors
@@ -271,7 +261,7 @@ impl DiagnosticProvider {
             severity: Some(lsp_types::DiagnosticSeverity::ERROR),
             code: Some(NumberOrString::String("syntax-error".to_string())),
             code_description: None,
-            source: Some("perl-parser".to_string()),
+            source: Some("perl-lsp".to_string()),
             message: error.message.clone(),
             related_information: None,
             tags: None,
@@ -303,12 +293,7 @@ impl DiagnosticProvider {
     /// * `node` - Current AST node
     /// * `uri` - Document URI
     /// * `diagnostics` - Vector to append diagnostics to
-    fn walk_ast_for_diagnostics(
-        &self,
-        node: &Node,
-        uri: &Url,
-        diagnostics: &mut Vec<Diagnostic>,
-    ) {
+    fn walk_ast_for_diagnostics(&self, node: &Node, uri: &Url, diagnostics: &mut Vec<Diagnostic>) {
         match &node.kind {
             NodeKind::Variable { sigil, name } => {
                 self.check_variable_usage(sigil, name, node, uri, diagnostics);
@@ -351,8 +336,11 @@ impl DiagnosticProvider {
                 range: self.convert_node_range(node),
                 severity: Some(lsp_types::DiagnosticSeverity::HINT),
                 code: Some(NumberOrString::String("style".to_string())),
-                source: Some("perl-parser".to_string()),
-                message: format!("Variable '{}' starts with underscore, consider using 'my' to declare it", name),
+                source: Some("perl-lsp".to_string()),
+                message: format!(
+                    "Variable '{}' starts with underscore, consider using 'my' to declare it",
+                    name
+                ),
                 tags: Some(vec![DiagnosticTag::UNNECESSARY]),
                 ..Default::default()
             });
@@ -384,7 +372,7 @@ impl DiagnosticProvider {
                     range: self.convert_node_range(node),
                     severity: Some(lsp_types::DiagnosticSeverity::WARNING),
                     code: Some(NumberOrString::String("security".to_string())),
-                    source: Some("perl-parser".to_string()),
+                    source: Some("perl-lsp".to_string()),
                     message: format!("Potentially dangerous function '{}' detected", name),
                     tags: None,
                     ..Default::default()
@@ -414,7 +402,7 @@ impl DiagnosticProvider {
                 range: self.convert_node_range(node),
                 severity: Some(lsp_types::DiagnosticSeverity::HINT),
                 code: Some(NumberOrString::String("style".to_string())),
-                source: Some("perl-parser".to_string()),
+                source: Some("perl-lsp".to_string()),
                 message: "Consider using '==' instead of 'eq' for numeric comparison".to_string(),
                 tags: None,
                 ..Default::default()
@@ -433,10 +421,7 @@ impl DiagnosticProvider {
     /// LSP range equivalent
     fn convert_range(&self, location: &crate::position::Location) -> Range {
         Range {
-            start: Position {
-                line: location.line,
-                character: location.column,
-            },
+            start: Position { line: location.line, character: location.column },
             end: Position {
                 line: location.line,
                 character: location.column + 1, // Simple conversion
@@ -455,16 +440,7 @@ impl DiagnosticProvider {
     /// LSP range for the node
     fn convert_node_range(&self, node: &Node) -> Range {
         // Simple conversion - in practice would use node's span information
-        Range {
-            start: Position {
-                line: 0,
-                character: 0,
-            },
-            end: Position {
-                line: 0,
-                character: 1,
-            },
-        }
+        Range { start: Position { line: 0, character: 0 }, end: Position { line: 0, character: 1 } }
     }
 }
 
@@ -505,22 +481,13 @@ mod tests {
 
     #[test]
     fn test_severity_conversion() {
-        assert_eq!(
-            lsp_types::DiagnosticSeverity::ERROR,
-            DiagnosticSeverity::Error.into()
-        );
-        assert_eq!(
-            lsp_types::DiagnosticSeverity::WARNING,
-            DiagnosticSeverity::Warning.into()
-        );
+        assert_eq!(lsp_types::DiagnosticSeverity::ERROR, DiagnosticSeverity::Error.into());
+        assert_eq!(lsp_types::DiagnosticSeverity::WARNING, DiagnosticSeverity::Warning.into());
         assert_eq!(
             lsp_types::DiagnosticSeverity::INFORMATION,
             DiagnosticSeverity::Information.into()
         );
-        assert_eq!(
-            lsp_types::DiagnosticSeverity::HINT,
-            DiagnosticSeverity::Hint.into()
-        );
+        assert_eq!(lsp_types::DiagnosticSeverity::HINT, DiagnosticSeverity::Hint.into());
     }
 
     #[test]

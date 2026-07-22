@@ -168,7 +168,7 @@ sub broken {
     let broken_diagnostics =
         wait_for_diagnostics_matching(&server, &uri, diagnostics_timeout, |diagnostics| {
             diagnostics.iter().any(|diagnostic| {
-                diagnostic.get("source").and_then(Value::as_str) == Some("perl-parser")
+                diagnostic.get("source").and_then(Value::as_str) == Some("perl-lsp")
                     && diagnostic.get("severity").and_then(Value::as_i64) == Some(1)
             })
         })?;
@@ -315,7 +315,7 @@ sub close_me {
     let broken_diagnostics =
         wait_for_diagnostics_matching(&server, &uri, diagnostics_timeout, |diagnostics| {
             diagnostics.iter().any(|diagnostic| {
-                diagnostic.get("source").and_then(Value::as_str) == Some("perl-parser")
+                diagnostic.get("source").and_then(Value::as_str) == Some("perl-lsp")
                     && diagnostic.get("severity").and_then(Value::as_i64) == Some(1)
             })
         })?;

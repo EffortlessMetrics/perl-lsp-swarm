@@ -74,7 +74,7 @@ fn syntax_only_reports_parse_errors() -> TestResult {
     for item in &items {
         let source = item.get("source").and_then(|v| v.as_str()).unwrap_or("");
         assert_eq!(
-            source, "perl-parser",
+            source, "perl-lsp",
             "syntax-only must only emit parse errors; saw source={source}"
         );
         let code = item.get("code").and_then(|v| v.as_str()).unwrap_or("");

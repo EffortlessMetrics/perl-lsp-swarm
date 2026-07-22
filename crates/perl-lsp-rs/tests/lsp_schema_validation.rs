@@ -1008,7 +1008,7 @@ fn test_publish_diagnostics_schema() -> TestResult {
             },
             "severity": 1,
             "code": "undefined-variable",
-            "source": "perl-parser",
+            "source": "perl-lsp",
             "message": "Variable '$undefined' is not declared",
             "tags": [1],  // Unnecessary
             "relatedInformation": [{
