@@ -227,8 +227,12 @@ impl ProductionIndexCoordinator {
         Self {
             state_machine: IndexStateMachine::new(),
             // Pre-allocate for a typical Perl project: 1000 files × 20 symbols/file.
-            // This is a conservative default; the actual ceiling is `max_files: 10_000`.
-            index: Arc::new(WorkspaceIndex::with_capacity(1000, 20)),
+            // The configured resource limits remain the admission ceiling.
+            index: Arc::new(WorkspaceIndex::with_capacity_and_resource_limits(
+                1000,
+                20,
+                config.resource_limits.clone(),
+            )),
             cache,
             slo_tracker,
             config,
@@ -599,6 +603,33 @@ mod tests {
         let uri = Url::parse("file:///example.pl").map_err(|e| e.to_string())?;
         let code = "sub hello { return 42; }";
         coordinator.index_file(uri, code.to_string())?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_configured_resource_limits_reach_workspace_index() -> Result<(), String> {
+        let config = ProductionCoordinatorConfig {
+            resource_limits: IndexResourceLimits { max_files: 1, ..Default::default() },
+            ..Default::default()
+        };
+        let coordinator = ProductionIndexCoordinator::with_config(config);
+        coordinator.initialize()?;
+
+        coordinator.index_file(
+            Url::parse("file:///bounded-production-0.pl").map_err(|e| e.to_string())?,
+            "sub first {}".to_string(),
+        )?;
+        let rejected = coordinator.index_file(
+            Url::parse("file:///bounded-production-1.pl").map_err(|e| e.to_string())?,
+            "sub second {}".to_string(),
+        );
+
+        if rejected.is_ok() {
+            return Err("production coordinator must reject files beyond max_files".to_string());
+        }
+        if coordinator.index().file_count() != 1 {
+            return Err("rejected production admission must not grow the file map".to_string());
+        }
         Ok(())
     }
 

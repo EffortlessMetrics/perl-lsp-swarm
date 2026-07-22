@@ -1765,6 +1765,20 @@ impl WorkspaceIndex {
     /// assert!(!index.has_symbols());
     /// ```
     pub fn with_capacity(estimated_files: usize, avg_symbols_per_file: usize) -> Self {
+        Self::with_capacity_and_resource_limits(
+            estimated_files,
+            avg_symbols_per_file,
+            IndexResourceLimits::default(),
+        )
+    }
+
+    /// Create a workspace index with pre-allocated capacity and explicit
+    /// resource-admission limits.
+    pub fn with_capacity_and_resource_limits(
+        estimated_files: usize,
+        avg_symbols_per_file: usize,
+        limits: IndexResourceLimits,
+    ) -> Self {
         // Each symbol is stored twice (qualified + bare name) due to dual indexing.
         let sym_cap =
             estimated_files.saturating_mul(avg_symbols_per_file).saturating_mul(2).min(1_000_000);
@@ -1780,7 +1794,7 @@ impl WorkspaceIndex {
             semantic_package_graph_index: Arc::new(RwLock::new(PackageGraphIndex::new())),
             document_store: DocumentStore::new(),
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
-            limits: IndexResourceLimits::default(),
+            limits,
             resource_limit_rejection: Mutex::new(None),
         }
     }
@@ -7632,6 +7646,40 @@ use Data::Dumper;
         assert!(result.is_err(), "indexing beyond max_total_symbols must be rejected");
         assert_eq!(coordinator.index().files.read().len(), 2);
         assert!(!coordinator.index().document_store.is_open(uri.as_str()));
+        assert!(matches!(
+            coordinator.state(),
+            IndexState::Degraded {
+                reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxSymbols },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_index_file_restores_existing_document_after_symbol_rejection() {
+        let limits = IndexResourceLimits {
+            max_files: 10,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 1,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+        let uri = must(url::Url::parse("file:///symbols-existing.pl"));
+        let original = "sub retained { }".to_string();
+
+        must(coordinator.index().index_file(uri.clone(), original.clone()));
+        let result = coordinator
+            .index()
+            .index_file(uri.clone(), "sub retained { }\nsub rejected { }".to_string());
+
+        assert!(result.is_err(), "an update beyond max_total_symbols must be rejected");
+        assert_eq!(coordinator.index().files.read().len(), 1);
+        assert_eq!(coordinator.index().document_store.get_text(uri.as_str()), Some(original));
+        let symbols = coordinator.index().file_symbols(uri.as_str());
+        assert!(symbols.iter().any(|symbol| symbol.name == "retained"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "rejected"));
         assert!(matches!(
             coordinator.state(),
             IndexState::Degraded {
