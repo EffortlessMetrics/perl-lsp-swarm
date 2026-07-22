@@ -11,14 +11,14 @@ typecheck -> TS7, lint -> oxlint, format -> oxfmt, bundle -> Rolldown, test
 
 ```
 $ npm view rolldown dist-tags
-{ nightly: '1.0.0-beta.13-...', canary: '1.0.0-beta.31-...', latest: '1.1.5' }
+{ nightly: '1.0.0-beta.13-...', canary: '1.0.0-beta.31-...', latest: '1.2.0' }
 
-$ npm install --save-dev --save-exact rolldown@1.1.5
+$ npm install --save-dev --save-exact rolldown@1.2.0
 added 8 packages, and audited 696 packages in 2s
 ```
 
 No `--force`, no `--legacy-peer-deps` (Rolldown declares no
-`peerDependencies`). `rolldown` is `1.1.5` in both `package.json` and the
+`peerDependencies`). `rolldown` is `1.2.0` in both `package.json` and the
 regenerated `package-lock.json`, exactly pinned (no `^`/`~`, same discipline
 as the Oxlint/Oxfmt/typescript pins from earlier PREPs).
 
