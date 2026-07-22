@@ -599,7 +599,7 @@ impl DebugAdapter {
     }
 }
 
-fn contains_unquoted_statement_separator(value: &str) -> bool {
+pub(super) fn contains_unquoted_statement_separator(value: &str) -> bool {
     let mut in_single_quote = false;
     let mut in_double_quote = false;
     let mut escaped = false;

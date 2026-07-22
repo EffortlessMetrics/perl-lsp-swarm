@@ -1130,6 +1130,120 @@ fn test_set_expression_newline_in_value_is_rejected() -> TestResult {
 }
 
 // ---------------------------------------------------------------------------
+// AC: setExpression LHS (expression) validation — Issue #4637
+//
+// The LHS `expression` is interpolated into the debugger command
+// `p {expression} = {value}`.  A hostile LHS like `$x; system('id')` would
+// inject an arbitrary debugger command.  The LHS must be validated before the
+// value is ever sent.
+// ---------------------------------------------------------------------------
+
+/// Assert a setExpression response is a failure whose message contains `needle`.
+fn assert_set_expression_blocked(
+    response: DapMessage,
+    needle: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match response {
+        DapMessage::Response { success, command, message, .. } => {
+            assert_eq!(command, "setExpression");
+            assert!(!success, "expected setExpression to be blocked");
+            let msg = message.ok_or("expected error message")?;
+            assert!(msg.contains(needle), "error message {msg:?} does not contain {needle:?}");
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_set_expression_rejects_injection_lhs() -> TestResult {
+    let mut adapter = new_adapter();
+    let response = adapter.handle_request(
+        1,
+        "setExpression",
+        Some(json!({ "expression": "$x; system('id')", "value": "42" })),
+    );
+    assert_set_expression_blocked(response, "statement separators")?;
+    Ok(())
+}
+
+#[test]
+fn test_set_expression_rejects_bare_semicolon_lhs() -> TestResult {
+    let mut adapter = new_adapter();
+    let response = adapter.handle_request(
+        1,
+        "setExpression",
+        Some(json!({ "expression": "$x; $y", "value": "42" })),
+    );
+    assert_set_expression_blocked(response, "statement separators")?;
+    Ok(())
+}
+
+#[test]
+fn test_set_expression_rejects_unsafe_call_lhs() -> TestResult {
+    let mut adapter = new_adapter();
+    let response = adapter.handle_request(
+        1,
+        "setExpression",
+        Some(json!({ "expression": "system('id')", "value": "42" })),
+    );
+    // No statement separator, but the SafeEvaluator must reject the dangerous call.
+    assert_set_expression_blocked(response, "Unsafe expression")?;
+    Ok(())
+}
+
+#[test]
+fn test_set_expression_rejects_backtick_lhs() -> TestResult {
+    let mut adapter = new_adapter();
+    let response = adapter.handle_request(
+        1,
+        "setExpression",
+        Some(json!({ "expression": "`rm -rf /`", "value": "42" })),
+    );
+    assert_set_expression_blocked(response, "Unsafe expression")?;
+    Ok(())
+}
+
+#[test]
+fn test_set_expression_rejects_newline_in_lhs() -> TestResult {
+    let mut adapter = new_adapter();
+    let response = adapter.handle_request(
+        1,
+        "setExpression",
+        Some(json!({ "expression": "$x\ndie('inject')", "value": "42" })),
+    );
+    // Regression guard: the existing newline check fires first.
+    assert_set_expression_blocked(response, "newline")?;
+    Ok(())
+}
+
+#[test]
+fn test_set_expression_legitimate_lhs_passes_validation() -> TestResult {
+    let mut adapter = new_adapter();
+    // A legitimate l-value must pass LHS validation; the only failure should be
+    // a session-related error (no active debugger), not a validation rejection.
+    let response = adapter.handle_request(
+        1,
+        "setExpression",
+        Some(json!({ "expression": "$hash{key}", "value": "42" })),
+    );
+    match response {
+        DapMessage::Response { success, command, message, .. } => {
+            assert_eq!(command, "setExpression");
+            assert!(!success, "expected failure due to no session, not success");
+            let msg = message.unwrap_or_default();
+            assert!(
+                !msg.contains("statement separators")
+                    && !msg.contains("Unsafe expression for setExpression"),
+                "legitimate l-value should not be validation-rejected, got: {msg:?}"
+            );
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // AC: variablesReference — structured results must get a non-zero ref (#1002)
 // ---------------------------------------------------------------------------
 
