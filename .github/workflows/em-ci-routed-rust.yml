@@ -37,6 +37,7 @@ jobs:
     name: Route Perl LSP Rust Small
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    if: github.event.pull_request.draft != true || github.event_name != 'pull_request'
     outputs:
       target: ${{ steps.route.outputs.target }}
       reason: ${{ steps.route.outputs.reason }}
@@ -664,6 +665,15 @@ jobs:
             echo "- github_result: \`${GITHUB_RESULT:-}\`"
             echo "- fallback_result: \`${FALLBACK_RESULT:-}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+          # Draft PRs intentionally skip route-rust-small via the job-level
+          # guard above. A skipped router is not a gate failure: the Rust lane
+          # will run when the PR becomes ready for review.
+          if [ "$ROUTE_RESULT" = "skipped" ]; then
+            echo "::notice::Rust Small router was skipped (draft PR or non-applicable event) — required check is neutral/pass."
+            echo "Perl LSP Rust Small Result: neutral (router skipped — draft PR or non-applicable event)"
+            exit 0
+          fi
 
           if [ "$ROUTE_RESULT" != "success" ]; then
             echo "::error::Router did not complete successfully: $ROUTE_RESULT"
