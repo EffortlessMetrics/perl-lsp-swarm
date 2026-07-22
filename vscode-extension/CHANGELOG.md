@@ -52,6 +52,15 @@ All notable changes to the Perl Language Server extension will be documented in 
   activation (and every command that depends on it) behind a slow server
   start on large workspaces. (#3162)
 
+### Security
+
+- **Workspace Trust is now required for binary download and server spawn.**
+  The extension manifest now declares `untrustedWorkspaces.supported: false`,
+  and the activation path defers language server startup, auto-download,
+  background update checks, and reinstall commands until workspace trust is
+  granted. This prevents untrusted workspace content from triggering binary
+  downloads or spawning server processes. (#4631)
+
 ## [0.12.4] - 2026-04-12
 
 ### Added
