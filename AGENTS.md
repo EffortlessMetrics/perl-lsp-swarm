@@ -39,7 +39,7 @@ rewrite portfolio priority, or recursively delegate.
 | Linked spec and `.spec/` view | settled builder contract |
 | Root Codex thread | decision register and synthesizer |
 | Branch and worktree | mechanical writer ownership |
-| Checks, reviews, rulesets | exact-head integration authority |
+| Checks, reviews, rulesets | live branch-protection and required-check authority |
 
 Use current `origin/main`, live GitHub state, accepted specs, receipts, worktrees,
 and rulesets as evidence. Conversation and remembered state are handoff aids only.
@@ -49,7 +49,7 @@ Preserve these repository-wide invariants:
 - issue-first work with explicit scope, non-goals, proof, and return conditions;
 - one accountable writer per branch and worktree;
 - read-only investigation and review unless a packet grants one bounded write;
-- fresh exact-head proof and review after every substantive mutation;
+- fresh proof and review for the PR revision before merge; GitHub's branch rules decide whether the PR may squash-merge;
 - no weakened or removed tests to obtain green status;
 - `NOT_PROVEN` when evidence is missing, stale, contradictory, or instrument-failed;
 - narrow work may remain single-agent; delegation is optional and bounded;
