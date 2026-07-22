@@ -41,8 +41,13 @@
 
 use super::cache::{BoundedLruCache, CombinedWorkspaceCacheConfig};
 use super::slo::{OperationResult, OperationType, SloConfig, SloTracker};
-use super::state_machine::{IndexState, IndexStateMachine, InvalidationReason, TransitionResult};
-use super::workspace_index::{IndexResourceLimits, WorkspaceIndex};
+use super::state_machine::{
+    DegradationReason, IndexState, IndexStateMachine, InvalidationReason, ResourceKind,
+    TransitionResult,
+};
+use super::workspace_index::{
+    IndexResourceLimits, ResourceKind as WorkspaceResourceKind, WorkspaceIndex,
+};
 use crate::position::{Position, Range};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -337,8 +342,21 @@ impl ProductionIndexCoordinator {
             return Ok(());
         }
 
-        // Index the file
-        self.index.index_file(uri, text)?;
+        // Index the file and mirror resource-limit admission failures into the
+        // production coordinator's independent lifecycle state machine.
+        if let Err(error) = self.index.index_file(uri, text) {
+            if let Some(kind) = self.index.take_resource_limit_rejection() {
+                let kind = match kind {
+                    WorkspaceResourceKind::MaxFiles => ResourceKind::MaxFiles,
+                    WorkspaceResourceKind::MaxSymbols => ResourceKind::MaxSymbols,
+                    WorkspaceResourceKind::MaxCacheBytes => ResourceKind::MaxCacheBytes,
+                };
+                let _ = self
+                    .state_machine
+                    .transition_to_degraded(DegradationReason::ResourceLimit { kind });
+            }
+            return Err(error);
+        }
 
         // Cache the content fingerprint for repeated identical indexing.
         self.cache.insert_ast(cache_key, content_fingerprint);
@@ -629,6 +647,15 @@ mod tests {
         }
         if coordinator.index().file_count() != 1 {
             return Err("rejected production admission must not grow the file map".to_string());
+        }
+        if !matches!(
+            coordinator.state(),
+            IndexState::Degraded {
+                reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxFiles },
+                ..
+            }
+        ) {
+            return Err("resource-limit rejection must degrade production coordinator".to_string());
         }
         Ok(())
     }

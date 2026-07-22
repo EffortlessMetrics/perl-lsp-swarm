@@ -1803,7 +1803,7 @@ impl WorkspaceIndex {
         *self.resource_limit_rejection.lock() = Some(kind);
     }
 
-    fn take_resource_limit_rejection(&self) -> Option<ResourceKind> {
+    pub(crate) fn take_resource_limit_rejection(&self) -> Option<ResourceKind> {
         self.resource_limit_rejection.lock().take()
     }
 
@@ -1823,17 +1823,8 @@ impl WorkspaceIndex {
         }
     }
 
-    fn restore_document(&self, uri: &str, previous: Option<&Document>) {
-        match previous {
-            Some(document) => self.document_store.open(
-                document.uri.clone(),
-                document.version,
-                document.text().to_string(),
-            ),
-            None => {
-                self.document_store.close(uri);
-            }
-        }
+    fn restore_document(&self, uri: &str, rejected_text: &str, previous: Option<&Document>) {
+        self.document_store.restore_if_current(uri, 1, rejected_text, previous);
     }
 
     fn admission_limit_for(
@@ -2097,6 +2088,7 @@ impl WorkspaceIndex {
                 // `pending_generation` back to the last genuinely committed
                 // generation -- this task never reaches the late guard's
                 // commit below.
+                self.restore_document(&uri_str, &text, previous_document.as_ref());
                 return Err(format!("Parse error: {}", e));
             }
         };
@@ -2108,7 +2100,13 @@ impl WorkspaceIndex {
         // return left `self.files[key].generation`'s reservation
         // permanently claimed with nothing that would ever commit it
         // (#3618 review-3660 finding 3(c)).
-        let mut doc = self.document_store.get(&uri_str).ok_or("Document not found")?;
+        let mut doc = match self.document_store.get(&uri_str) {
+            Some(document) => document,
+            None => {
+                self.restore_document(&uri_str, &text, previous_document.as_ref());
+                return Err("Document not found".to_string());
+            }
+        };
 
         // Determine workspace folder URI from the file URI
         let folder_uri = self.determine_folder_uri(&uri_str);
@@ -2231,8 +2229,8 @@ impl WorkspaceIndex {
             }
 
             if let Some(kind) = self.admission_limit_for(&files, &key, &file_index) {
+                self.restore_document(&uri_str, &text, previous_document.as_ref());
                 drop(files);
-                self.restore_document(&uri_str, previous_document.as_ref());
                 self.record_resource_limit_rejection(kind.clone());
                 return Err(Self::resource_limit_error(kind, &self.limits));
             }
@@ -2593,8 +2591,14 @@ impl WorkspaceIndex {
         let mut errors = Vec::new();
 
         // Phase 1: Parse all files without locks
-        let mut parsed: Vec<(String, String, FileIndex, Vec<PackageEdge>)> =
-            Vec::with_capacity(files_to_index.len());
+        let mut parsed: Vec<(
+            String,
+            String,
+            String,
+            FileIndex,
+            Vec<PackageEdge>,
+            Option<Document>,
+        )> = Vec::with_capacity(files_to_index.len());
         for (uri, text) in &files_to_index {
             let uri_str = uri.to_string();
 
@@ -2604,6 +2608,7 @@ impl WorkspaceIndex {
             let content_hash = hasher.finish();
 
             let key = DocumentStore::uri_key(&uri_str);
+            let previous_document = self.document_store.get(&uri_str);
 
             // Check if content unchanged
             {
@@ -2627,6 +2632,7 @@ impl WorkspaceIndex {
             let ast = match parser.parse() {
                 Ok(ast) => ast,
                 Err(e) => {
+                    self.restore_document(&uri_str, text, previous_document.as_ref());
                     errors.push(format!("Parse error in {}: {}", uri_str, e));
                     continue;
                 }
@@ -2635,6 +2641,7 @@ impl WorkspaceIndex {
             let mut doc = match self.document_store.get(&uri_str) {
                 Some(d) => d,
                 None => {
+                    self.restore_document(&uri_str, text, previous_document.as_ref());
                     errors.push(format!("Document not found: {}", uri_str));
                     continue;
                 }
@@ -2653,7 +2660,7 @@ impl WorkspaceIndex {
             visitor.visit(&ast, &mut file_index);
 
             let package_edges = package_graph_edges_from_hir(&ast);
-            parsed.push((key, uri_str, file_index, package_edges));
+            parsed.push((key, uri_str, text.clone(), file_index, package_edges, previous_document));
         }
 
         // Phase 2: Bulk insert with single cache rebuild
@@ -2668,7 +2675,14 @@ impl WorkspaceIndex {
             files.reserve(parsed.len());
             symbols.reserve(parsed.len().saturating_mul(20).saturating_mul(2));
 
-            for (key, uri_str, file_index, package_edges) in parsed {
+            for (key, uri_str, text, file_index, package_edges, previous_document) in parsed {
+                if let Some(kind) = self.admission_limit_for(&files, &key, &file_index) {
+                    self.restore_document(&uri_str, &text, previous_document.as_ref());
+                    self.record_resource_limit_rejection(kind.clone());
+                    errors.push(Self::resource_limit_error(kind, &self.limits));
+                    continue;
+                }
+
                 // Remove stale global references
                 if let Some(old_index) = files.get(&key) {
                     Self::remove_file_global_refs(&mut global_refs, old_index, &uri_str);
@@ -7680,6 +7694,84 @@ use Data::Dumper;
         let symbols = coordinator.index().file_symbols(uri.as_str());
         assert!(symbols.iter().any(|symbol| symbol.name == "retained"));
         assert!(!symbols.iter().any(|symbol| symbol.name == "rejected"));
+        assert!(matches!(
+            coordinator.state(),
+            IndexState::Degraded {
+                reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxSymbols },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_rejected_document_restore_does_not_overwrite_newer_document() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///restore-race.pl";
+        index.document_store.open(uri.to_string(), 1, "original".to_string());
+        let previous = index.document_store.get(uri);
+
+        index.document_store.open(uri.to_string(), 1, "rejected".to_string());
+        index.document_store.open(uri.to_string(), 1, "newer accepted".to_string());
+        index.restore_document(uri, "rejected", previous.as_ref());
+
+        assert_eq!(index.document_store.get_text(uri), Some("newer accepted".to_string()));
+    }
+
+    #[test]
+    fn test_batch_indexing_rejects_new_files_at_max_files() {
+        let limits = IndexResourceLimits {
+            max_files: 1,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 50_000,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+        let first = must(url::Url::parse("file:///batch-first.pl"));
+        let second = must(url::Url::parse("file:///batch-second.pl"));
+
+        let errors = coordinator.index().index_files_batch(vec![
+            (first, "sub first { }".to_string()),
+            (second.clone(), "sub second { }".to_string()),
+        ]);
+
+        assert_eq!(errors.len(), 1, "the second batch entry must be rejected");
+        assert_eq!(coordinator.index().file_count(), 1);
+        assert_eq!(coordinator.index().document_store.count(), 1);
+        assert!(!coordinator.index().document_store.is_open(second.as_str()));
+        assert!(matches!(
+            coordinator.state(),
+            IndexState::Degraded {
+                reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxFiles },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_batch_indexing_rejects_new_symbols_at_max_total_symbols() {
+        let limits = IndexResourceLimits {
+            max_files: 10,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 1,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+        let first = must(url::Url::parse("file:///batch-symbol-first.pl"));
+        let second = must(url::Url::parse("file:///batch-symbol-second.pl"));
+
+        let errors = coordinator.index().index_files_batch(vec![
+            (first, "sub first { }".to_string()),
+            (second.clone(), "sub second { }".to_string()),
+        ]);
+
+        assert_eq!(errors.len(), 1, "the second batch entry must be rejected");
+        assert_eq!(coordinator.index().file_count(), 1);
+        assert_eq!(coordinator.index().symbol_count(), 1);
+        assert!(!coordinator.index().document_store.is_open(second.as_str()));
         assert!(matches!(
             coordinator.state(),
             IndexState::Degraded {

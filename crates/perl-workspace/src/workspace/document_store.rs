@@ -96,6 +96,37 @@ impl DocumentStore {
         docs.remove(&key).is_some()
     }
 
+    /// Restore a previous document only when the current entry still matches
+    /// the rejected update that produced it.
+    pub fn restore_if_current(
+        &self,
+        uri: &str,
+        expected_version: i32,
+        expected_text: &str,
+        previous: Option<&Document>,
+    ) -> bool {
+        let key = Self::uri_key(uri);
+        let Ok(mut docs) = self.documents.write() else {
+            return false;
+        };
+        let Some(current) = docs.get(&key) else {
+            return false;
+        };
+        if current.version != expected_version || current.text() != expected_text {
+            return false;
+        }
+
+        match previous {
+            Some(document) => {
+                docs.insert(key, document.clone());
+            }
+            None => {
+                docs.remove(&key);
+            }
+        }
+        true
+    }
+
     /// Get a document by URI
     pub fn get(&self, uri: &str) -> Option<Document> {
         let key = Self::uri_key(uri);
