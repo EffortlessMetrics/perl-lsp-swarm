@@ -46,7 +46,7 @@
 use super::super::internal_types::{Diagnostic, DiagnosticTag};
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_diagnostics::codes::DiagnosticSeverity;
-use perl_parser_core::ast::{Node, NodeKind};
+use perl_parser_core::ast::{GotoTargetForm, Node, NodeKind};
 
 /// Entry point for unreachable code detection.
 ///
@@ -220,28 +220,38 @@ fn visit_expr(expr: &Node, diagnostics: &mut Vec<Diagnostic>) {
 /// poisoning the outer statement list.
 fn check_statement_list(stmts: &[Node], diagnostics: &mut Vec<Diagnostic>) {
     let mut found_exit = false;
+    let mut pending_goto_label = None;
 
     for stmt in stmts {
         if found_exit {
-            // Emit PL406 for this unreachable statement
-            diagnostics.push(Diagnostic {
-                range: (stmt.location.start, stmt.location.end),
-                severity: DiagnosticSeverity::Hint,
-                code: Some(DiagnosticCode::UnreachableCode.as_str().to_string()),
-                message: "Unreachable code: this statement cannot be executed".to_string(),
-                related_information: vec![],
-                tags: vec![DiagnosticTag::Unnecessary],
-                suggestion: Some("Remove unreachable code".to_string()),
-            });
-            // Still recurse into the unreachable node: nested subs deserve
-            // independent analysis even if their containing block is dead.
-            visit_node(stmt, diagnostics);
-        } else {
-            // Recurse first (to handle nested subs), then check for exit
-            visit_node(stmt, diagnostics);
-            if is_unconditional_exit(stmt) {
-                found_exit = true;
+            if pending_goto_label.is_some_and(|label| labeled_statement_name(stmt) == Some(label)) {
+                // `goto LABEL` can resume at a later label in this same list.
+                // That label and its following statements are reachable again.
+                found_exit = false;
+                pending_goto_label = None;
+            } else {
+                // Emit PL406 for this unreachable statement
+                diagnostics.push(Diagnostic {
+                    range: (stmt.location.start, stmt.location.end),
+                    severity: DiagnosticSeverity::Hint,
+                    code: Some(DiagnosticCode::UnreachableCode.as_str().to_string()),
+                    message: "Unreachable code: this statement cannot be executed".to_string(),
+                    related_information: vec![],
+                    tags: vec![DiagnosticTag::Unnecessary],
+                    suggestion: Some("Remove unreachable code".to_string()),
+                });
+                // Still recurse into the unreachable node: nested subs deserve
+                // independent analysis even if their containing block is dead.
+                visit_node(stmt, diagnostics);
+                continue;
             }
+        }
+
+        // Recurse first (to handle nested subs), then check for exit.
+        visit_node(stmt, diagnostics);
+        if is_unconditional_exit(stmt) {
+            found_exit = true;
+            pending_goto_label = goto_label_target(stmt);
         }
     }
 }
@@ -269,6 +279,8 @@ fn is_unconditional_exit(node: &Node) -> bool {
         NodeKind::LoopControl { op, .. } => matches!(op.as_str(), "last" | "next" | "redo"),
 
         // All goto forms transfer control without returning to the next sibling.
+        // `goto LABEL` may resume at a later labeled statement in this same
+        // list; check_statement_list handles that target separately.
         NodeKind::Goto { .. } => true,
 
         // `return if $cond` is CONDITIONAL — StatementModifier is never an unconditional exit
@@ -309,26 +321,52 @@ fn visit_continue_block(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
 /// treated as unconditional exits inside a continue block.
 fn check_continue_block_statement_list(stmts: &[Node], diagnostics: &mut Vec<Diagnostic>) {
     let mut found_exit = false;
+    let mut pending_goto_label = None;
 
     for stmt in stmts {
         if found_exit {
-            diagnostics.push(Diagnostic {
-                range: (stmt.location.start, stmt.location.end),
-                severity: DiagnosticSeverity::Hint,
-                code: Some(DiagnosticCode::UnreachableCode.as_str().to_string()),
-                message: "Unreachable code: this statement cannot be executed".to_string(),
-                related_information: vec![],
-                tags: vec![DiagnosticTag::Unnecessary],
-                suggestion: Some("Remove unreachable code".to_string()),
-            });
-            visit_node(stmt, diagnostics);
-        } else {
-            visit_node(stmt, diagnostics);
-            if is_unconditional_exit_in_continue(stmt) {
-                found_exit = true;
+            if pending_goto_label.is_some_and(|label| labeled_statement_name(stmt) == Some(label)) {
+                found_exit = false;
+                pending_goto_label = None;
+            } else {
+                diagnostics.push(Diagnostic {
+                    range: (stmt.location.start, stmt.location.end),
+                    severity: DiagnosticSeverity::Hint,
+                    code: Some(DiagnosticCode::UnreachableCode.as_str().to_string()),
+                    message: "Unreachable code: this statement cannot be executed".to_string(),
+                    related_information: vec![],
+                    tags: vec![DiagnosticTag::Unnecessary],
+                    suggestion: Some("Remove unreachable code".to_string()),
+                });
+                visit_node(stmt, diagnostics);
+                continue;
             }
         }
+
+        visit_node(stmt, diagnostics);
+        if is_unconditional_exit_in_continue(stmt) {
+            found_exit = true;
+            pending_goto_label = goto_label_target(stmt);
+        }
     }
+}
+
+fn goto_label_target(node: &Node) -> Option<&str> {
+    let NodeKind::Goto { target, form: GotoTargetForm::Label } = &node.kind else {
+        return None;
+    };
+
+    let NodeKind::Identifier { name } = &target.kind else {
+        return None;
+    };
+    Some(name.as_str())
+}
+
+fn labeled_statement_name(node: &Node) -> Option<&str> {
+    let NodeKind::LabeledStatement { label, .. } = &node.kind else {
+        return None;
+    };
+    Some(label.as_str())
 }
 
 /// Returns true if this node is an unconditional exit **within a continue block**.
