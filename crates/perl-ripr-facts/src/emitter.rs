@@ -506,7 +506,7 @@ pub(crate) fn emit_relations_and_discriminators(
         .iter()
         .map(|(_, relative_path, content)| {
             let facts = match Parser::new(content).parse() {
-                Ok(ast) => TestCallFacts::from_ast(&ast),
+                Ok(ast) => TestCallFacts::from_ast(&ast, content),
                 Err(_) => TestCallFacts::unparsed(),
             };
             (relative_path.as_str(), facts)
@@ -583,8 +583,11 @@ pub(crate) fn emit_relations_and_discriminators(
 
     // Extract concrete discriminators + observed-sink facts from `is(...)` assertions.
     // Reuses the `t_files` collected above — no second directory walk.
-    for (_file_path, relative_path, content) in &t_files {
-        for args in extract_is_args(content) {
+    for (_file_path, relative_path, _content) in &t_files {
+        let Some(facts) = t_call_facts.get(relative_path.as_str()) else {
+            continue;
+        };
+        for args in &facts.is_args {
             // `is($got, $expected, $name)` → discriminator "$got == $expected"
             let discriminator = format!("{} == {}", args.0, args.1);
             let observable_id = format!("observable:{relative_path}:{}", args.0);
@@ -699,16 +702,22 @@ struct TestCallFacts {
     calls: Vec<perl_symbol::surface::SymbolRef>,
     /// Modules imported by parsed `use` statements in the test file.
     used_modules: std::collections::HashSet<String>,
+    /// First two arguments from parser-backed `is(...)` assertions.
+    is_args: Vec<(String, String)>,
 }
 
 impl TestCallFacts {
     /// Conservative fallback for a test file that failed to parse: proves
     /// nothing, so [`test_calls_declared_sub`] always degrades for it.
     fn unparsed() -> Self {
-        Self { calls: Vec::new(), used_modules: std::collections::HashSet::new() }
+        Self {
+            calls: Vec::new(),
+            used_modules: std::collections::HashSet::new(),
+            is_args: Vec::new(),
+        }
     }
 
-    fn from_ast(ast: &Node) -> Self {
+    fn from_ast(ast: &Node, content: &str) -> Self {
         let mut used_modules = std::collections::HashSet::new();
         collect_used_modules(ast, &mut used_modules);
         let calls = extract_symbol_refs(ast)
@@ -722,7 +731,9 @@ impl TestCallFacts {
                 )
             })
             .collect();
-        Self { calls, used_modules }
+        let mut is_args = Vec::new();
+        collect_is_args(ast, content, &mut is_args);
+        Self { calls, used_modules, is_args }
     }
 }
 
@@ -849,21 +860,6 @@ fn test_calls_declared_sub(
             && call.package_qualifier.as_deref() == Some(package_name)
             && declared_subs.contains(&call.name)
     })
-}
-
-/// Extract the first two arguments from every parser-backed `is(...)` call.
-///
-/// The AST owns call and argument spans, so this handles indentation, line
-/// breaks, comments, and trailing whitespace without scanning source lines.
-/// Parse failures return no hits; the caller's parser-backed test emission
-/// records the corresponding limitation rather than falling back to text.
-fn extract_is_args(content: &str) -> Vec<(String, String)> {
-    let Ok(ast) = Parser::new(content).parse() else {
-        return Vec::new();
-    };
-    let mut args = Vec::new();
-    collect_is_args(&ast, content, &mut args);
-    args
 }
 
 fn collect_is_args(node: &Node, content: &str, output: &mut Vec<(String, String)>) {
@@ -1890,8 +1886,8 @@ mod tests {
     }
 
     #[test]
-    fn extract_is_args_parses_simple_is_call() {
-        let calls = extract_is_args("is(discount(100), 50, 'half price');");
+    fn test_call_facts_collects_simple_is_call() {
+        let calls = facts_from_src("is(discount(100), 50, 'half price');").is_args;
         let [(got, expected)] = calls.as_slice() else {
             panic!("must parse exactly one is call");
         };
@@ -1900,15 +1896,16 @@ mod tests {
     }
 
     #[test]
-    fn extract_is_args_returns_none_for_non_is() {
-        assert!(extract_is_args("ok(1, 'truthy');").is_empty());
+    fn test_call_facts_ignores_non_is_calls() {
+        assert!(facts_from_src("ok(1, 'truthy');").is_args.is_empty());
     }
 
     #[test]
-    fn extract_is_args_handles_indented_multiline_and_commented_calls() {
-        let calls = extract_is_args(
+    fn test_call_facts_collects_indented_multiline_is_call() {
+        let calls = facts_from_src(
             "subtest 'nested' => sub {\n    is(\n        $x,\n        1,\n    ); # trailing comment\n};\n",
-        );
+        )
+        .is_args;
         assert_eq!(calls, vec![("$x".to_string(), "1".to_string())]);
     }
 
@@ -2613,7 +2610,7 @@ mod tests {
     /// Build `TestCallFacts` directly from source, mirroring what
     /// `emit_relations_and_discriminators` does per `.t` file.
     fn facts_from_src(src: &str) -> TestCallFacts {
-        TestCallFacts::from_ast(&parse_src(src))
+        TestCallFacts::from_ast(&parse_src(src), src)
     }
 
     fn one_sub(name: &str) -> std::collections::HashSet<String> {
