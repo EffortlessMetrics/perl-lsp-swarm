@@ -127,6 +127,7 @@ pub fn get_supported_commands() -> Vec<String> {
         "perl.goToImplementation".to_string(),
         "perl.explainProviderDecision".to_string(),
         "perl.workspaceTrustReport".to_string(),
+        "perl.agentContext".to_string(),
         "perl.previewSafeDelete".to_string(),
         "perl.safeDeleteSymbol".to_string(),
         "perl.previewPackageRename".to_string(),
@@ -328,6 +329,16 @@ mod tests {
         assert!(
             cmds.iter().any(|c| c == "perl.workspaceTrustReport"),
             "perl.workspaceTrustReport must be in get_supported_commands"
+        );
+    }
+
+    /// Verify that `perl.agentContext` is included in the supported commands list.
+    #[test]
+    fn agent_context_command_id_is_registered() {
+        let cmds = get_supported_commands();
+        assert!(
+            cmds.iter().any(|c| c == "perl.agentContext"),
+            "perl.agentContext must be in get_supported_commands"
         );
     }
 

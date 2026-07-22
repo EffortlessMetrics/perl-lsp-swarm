@@ -206,26 +206,8 @@ impl DebugAdapter {
                         // returns an empty string, so the framed output will be empty and
                         // the adapter falls through to `parse_scope_variables_from_output`.
                         if let Some(stdin) = session.process.stdin.as_mut() {
-                            let cmd = concat!(
-                                "p eval { require B; ",
-                                "my $cv=$DB::sub?B::svref_2object(\\&{$DB::sub}):B::main_cv(); ",
-                                "my $pl=$cv->PADLIST; ",
-                                "my @nm=$pl->NAMES->ARRAY; ",
-                                "my @va=$pl->ARRAY; ",
-                                "my @pds=(@va>1)?$va[-1]->ARRAY:(); ",
-                                "my $o=''; ",
-                                "for my $i (0..$#nm) { ",
-                                "  my $n=$nm[$i]; ",
-                                "  next if ref($n) eq 'B::SPECIAL'; ",
-                                "  my $pv=eval{$n->PVX}//''; ",
-                                "  next unless $pv=~/^[\\$\\@%]/; ",
-                                "  my $s=$i<@pds?$pds[$i]:undef; ",
-                                "  next unless defined $s; ",
-                                "  my $v=eval{$s->SV->PV}//eval{$s->SV->IV}//eval{$s->IV}//eval{$s->PV}//'undef'; ",
-                                "  $o.=\"$pv = $v\\n\" ",
-                                "} $o }",
-                            );
-                            let commands = vec![cmd.to_string()];
+                            let cmd = Self::build_locals_b_eval_cmd(scope_frame_id);
+                            let commands = vec![cmd];
                             match self.send_framed_debugger_commands(stdin, &commands) {
                                 Ok((begin, end)) => {
                                     framed_scope_lines = self.capture_framed_debugger_output(
@@ -366,6 +348,47 @@ impl DebugAdapter {
             body: Some(body),
             message: None,
         }
+    }
+
+    /// Build the Perl eval command used to introspect lexical (`my`) variables
+    /// via the B module.
+    ///
+    /// `frame_id` selects which PADLIST slot to inspect: 0 = innermost frame
+    /// (`$va[-1]`), N = N pads back (`$va[-(1+N)]`).  For recursive calls of the
+    /// same sub each invocation has its own pad slot; for non-recursive frames from
+    /// different subs, frame_id=0 is the only meaningful choice.
+    ///
+    /// Arrays (`@foo`) and hashes (`%foo`) are emitted as `ARRAY(0x0)` / `HASH(0x0)`
+    /// so that `VariableParser::parse_assignment` recognises them as expandable
+    /// collections — the same format used by the `V` command for package variables.
+    pub(super) fn build_locals_b_eval_cmd(frame_id: i32) -> String {
+        format!(
+            concat!(
+                "p eval {{ require B; ",
+                "my $cv=$DB::sub?B::svref_2object(\\&{{$DB::sub}}):B::main_cv(); ",
+                "my $pl=$cv->PADLIST; ",
+                "my @nm=$pl->NAMES->ARRAY; ",
+                "my @va=$pl->ARRAY; ",
+                "my $fi={frame}; ",
+                "my @pds=(@va>1+$fi)?$va[-(1+$fi)]->ARRAY:(@va>1)?$va[-1]->ARRAY:(); ",
+                "my $o=''; ",
+                "for my $i (0..$#nm) {{ ",
+                "  my $n=$nm[$i]; ",
+                "  next if ref($n) eq 'B::SPECIAL'; ",
+                "  my $pv=eval{{$n->PVX}}//''; ",
+                "  next unless $pv=~/^[\\$\\@%]/; ",
+                "  my $s=$i<@pds?$pds[$i]:undef; ",
+                "  next unless defined $s; ",
+                "  my $rt=ref($s); ",
+                "  my $v; ",
+                "  if ($rt eq 'B::AV') {{ $v='ARRAY(0x0)' }} ",
+                "  elsif ($rt eq 'B::HV') {{ $v='HASH(0x0)' }} ",
+                "  else {{ $v=eval{{$s->SV->PV}}//eval{{$s->SV->IV}}//eval{{$s->IV}}//eval{{$s->PV}}//'undef' }} ",
+                "  $o.=\"$pv = $v\\n\" ",
+                "}} $o }}",
+            ),
+            frame = frame_id,
+        )
     }
 
     /// Handle setVariable request
@@ -907,5 +930,60 @@ mod hazard_invariant_tests {
             }
             other => panic!("expected Response, got: {other:?}"),
         }
+    }
+
+    // --- build_locals_b_eval_cmd: Perl command template tests ---
+    //
+    // These tests verify that the B-module eval command embeds the frame_id correctly
+    // and includes B::AV / B::HV type detection for array and hash variables.
+    // No live Perl or debugger session is needed — these are pure string tests.
+
+    #[test]
+    fn build_locals_b_eval_cmd_frame0_uses_innermost_pad() {
+        let cmd = DebugAdapter::build_locals_b_eval_cmd(0);
+        // The Perl code uses a $fi variable and falls back to $va[-1] when the PADLIST
+        // has no slot N pads back.  For frame_id=0, $fi=0 and the primary index is
+        // $va[-(1+0)] = $va[-1], which is the innermost pad.
+        assert!(cmd.contains("my $fi=0;"), "frame_id=0 must embed $fi=0 in Perl code: {cmd}");
+        assert!(
+            cmd.contains("$va[-(1+$fi)]"),
+            "Perl code must use $va[-(1+$fi)] for frame-offset indexing: {cmd}"
+        );
+    }
+
+    #[test]
+    fn build_locals_b_eval_cmd_nonzero_frame_embeds_offset() {
+        let cmd = DebugAdapter::build_locals_b_eval_cmd(3);
+        assert!(cmd.contains("my $fi=3;"), "frame_id=3 must embed $fi=3 in Perl code: {cmd}");
+    }
+
+    #[test]
+    fn build_locals_b_eval_cmd_contains_av_hv_detection() {
+        let cmd = DebugAdapter::build_locals_b_eval_cmd(0);
+        // B::AV detection for array variables (@foo).
+        assert!(cmd.contains("'B::AV'"), "Perl code must check for B::AV (array variables): {cmd}");
+        // B::HV detection for hash variables (%foo).
+        assert!(cmd.contains("'B::HV'"), "Perl code must check for B::HV (hash variables): {cmd}");
+        // Arrays must produce an ARRAY(0x0) value parseable by VariableParser.
+        assert!(
+            cmd.contains("ARRAY(0x0)"),
+            "Perl code must format array vars as ARRAY(0x0): {cmd}"
+        );
+        // Hashes must produce a HASH(0x0) value parseable by VariableParser.
+        assert!(cmd.contains("HASH(0x0)"), "Perl code must format hash vars as HASH(0x0): {cmd}");
+    }
+
+    #[test]
+    fn build_locals_b_eval_cmd_output_format_matches_variable_parser() {
+        // The Perl code emits "$name = value\n" lines.  Verify the template
+        // contains both the "= $v" assignment format and the double-quote for Perl
+        // variable interpolation (both are required for parse_assignment to succeed).
+        let cmd = DebugAdapter::build_locals_b_eval_cmd(0);
+        assert!(cmd.contains("$o.="), "Perl code must append to $o for each variable: {cmd}");
+        // The variable/value format string uses double-quote interpolation.
+        assert!(
+            cmd.contains("= $v"),
+            "Perl emit format must contain '= $v' for parse_assignment compatibility: {cmd}"
+        );
     }
 }

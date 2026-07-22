@@ -169,11 +169,16 @@ fn test_dap_variables_complex_scopes() -> TestResult {
                         .get("variables")
                         .and_then(|v| v.as_array())
                         .ok_or("Expected variables array")?;
-                    // Should return placeholders for valid refs even without session
+                    // Locals scope (ref=11) returns empty in fallback mode (issue #1006):
+                    // no fake $self/@_ placeholders when B module is unavailable.
                     if var_ref == 11 {
                         assert!(
-                            !variables.is_empty(),
-                            "Local scope should have placeholder variables"
+                            variables.is_empty(),
+                            "#1006 regression: Locals fallback must be empty; got: {:?}",
+                            variables
+                                .iter()
+                                .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+                                .collect::<Vec<_>>()
                         );
                     }
                 } else {
