@@ -142,15 +142,21 @@ fn parse_corpus_layer(layer_path: &Path, layer: CorpusLayer) -> Result<Vec<Corpu
             continue;
         }
 
-        // Read file content
-        let content = std::fs::read_to_string(path)
+        // Read file content — use lossy UTF-8 so Latin-1 encoded fixtures
+        // (e.g. test_corpus/legacy_encoding.pl, tracked in #1387) don't abort
+        // the entire corpus scan. Non-UTF-8 bytes become U+FFFD replacement chars.
+        // Keep raw byte length as the inventory authority: lossy decoding may
+        // expand one invalid source byte into the three-byte UTF-8 replacement.
+        let bytes = std::fs::read(path)
             .with_context(|| format!("Failed to read corpus file: {}", path.display()))?;
+        let size_bytes = bytes.len();
+        let content = String::from_utf8_lossy(&bytes).into_owned();
 
         // Create corpus file entry
         files.push(CorpusFile {
             path: path.to_path_buf(),
             layer,
-            size_bytes: content.len(),
+            size_bytes,
             line_count: content.lines().count(),
             content,
         });
@@ -181,6 +187,7 @@ pub fn generate_inventory(files: &[CorpusFile]) -> CorpusInventory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn test_corpus_layer_directory() {
@@ -196,5 +203,25 @@ mod tests {
         assert_eq!(CorpusLayer::Highlight.extension(), "txt");
         assert_eq!(CorpusLayer::TestCorpus.extension(), "pl");
         assert_eq!(CorpusLayer::PerlCorpus.extension(), "rs");
+    }
+
+    #[test]
+    fn lossy_decode_preserves_raw_byte_size_in_file_and_inventory() -> Result<()> {
+        let temp = TempDir::new()?;
+        let layer_dir = temp.path().join(CorpusLayer::TestCorpus.directory());
+        std::fs::create_dir_all(&layer_dir)?;
+        let raw = b"foo\x80bar\n";
+        std::fs::write(layer_dir.join("legacy.pl"), raw)?;
+
+        let files = parse_corpus_files(temp.path())?;
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].size_bytes, raw.len());
+        assert!(files[0].content.contains('\u{fffd}'));
+        assert!(files[0].content.len() > raw.len(), "fixture must discriminate decoded vs raw size");
+
+        let inventory = generate_inventory(&files);
+        assert_eq!(inventory.total_size_bytes, raw.len());
+        Ok(())
     }
 }
