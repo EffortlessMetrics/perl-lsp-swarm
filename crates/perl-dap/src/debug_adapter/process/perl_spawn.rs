@@ -1,6 +1,18 @@
 //! Perl executable validation and spawn-error formatting for process launch.
 
+use regex::Regex;
 use std::path::Path;
+use std::sync::LazyLock;
+
+/// Strict regex for valid Perl interpreter base names.
+///
+/// Admits `perl`, `perl5`, `perl5.38`, `perl5.38.2` while rejecting
+/// `perlevil`, `perlscript`, `perl_backdoor`, etc.
+///
+/// This is a `LazyLock` regex initializer — an allowed exception per
+/// the project coding standards.
+static PERL_NAME_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"^perl(\d+(\.\d+)*)?$"));
 
 pub(super) fn is_valid_perl_interpreter(perl_interpreter: &str) -> bool {
     let trimmed = perl_interpreter.trim();
@@ -15,7 +27,15 @@ pub(super) fn is_valid_perl_interpreter(perl_interpreter: &str) -> bool {
         .to_ascii_lowercase();
 
     let candidate = candidate.strip_suffix(".exe").unwrap_or(&candidate);
-    candidate == "perl" || candidate.starts_with("perl")
+
+    match &*PERL_NAME_RE {
+        Ok(re) => re.is_match(candidate),
+        Err(_) => {
+            // Regex compilation failure — fall back to exact "perl" match only
+            // (deny-by-default for versioned names when the validator is broken).
+            candidate == "perl"
+        }
+    }
 }
 
 pub(super) fn format_perl_spawn_error(perl_interpreter: &str, error: &std::io::Error) -> String {

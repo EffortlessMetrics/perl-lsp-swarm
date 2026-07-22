@@ -108,9 +108,10 @@ fn test_breakpoint_locations_sequence_numbers() -> Result<(), Box<dyn std::error
 fn test_breakpoint_locations_path_traversal_does_not_panic()
 -> Result<(), Box<dyn std::error::Error>> {
     // AC:2783 — path traversal paths must not panic.
-    // Without a workspace root set (pre-launch), validate_source_path allows any path
-    // through with a warning — defense-in-depth only blocks when a workspace boundary
-    // is known.  The security contract here is: no panic, no crash, structured response.
+    // #4638: Without a workspace root set (pre-launch), validate_source_path now
+    // rejects parent-directory traversal components.  The path `/../../../etc/passwd`
+    // contains ParentDir components and is rejected.  The security contract:
+    // no panic, no crash, structured response.
     let mut adapter = DebugAdapter::new();
     let args = json!({
         "source": { "path": "/../../../etc/passwd" },
