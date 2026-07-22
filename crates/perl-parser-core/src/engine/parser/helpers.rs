@@ -1000,9 +1000,17 @@ impl<'a> Parser<'a> {
             | Some(TokenKind::State)
             | Some(TokenKind::Sub)
             | Some(TokenKind::Package)
+            // `class` (Perl 5.38+) and compile-time phaser blocks (`BEGIN`/`END`/
+            // `INIT`/`CHECK`/`UNITCHECK`) are statement starters, like `sub`/
+            // `package`; none can appear inside a well-formed delimiter pair, so
+            // they are strong followers at which a missing closer can be inferred
+            // (#4491 unclosed-qw block-starter recovery).
             | Some(TokenKind::Class)
             | Some(TokenKind::Begin)
             | Some(TokenKind::End)
+            | Some(TokenKind::Init)
+            | Some(TokenKind::Check)
+            | Some(TokenKind::Unitcheck)
             | Some(TokenKind::Use)
             | Some(TokenKind::If)
             | Some(TokenKind::Unless)
@@ -1025,8 +1033,15 @@ impl<'a> Parser<'a> {
             | Some(TokenKind::Our)
             | Some(TokenKind::Local)
             | Some(TokenKind::State) => true,
-            Some(TokenKind::Sub) | Some(TokenKind::Package) | Some(TokenKind::Use) => true,
-            Some(TokenKind::Class) | Some(TokenKind::Begin) | Some(TokenKind::End) => true,
+            Some(TokenKind::Sub)
+            | Some(TokenKind::Package)
+            | Some(TokenKind::Class)
+            | Some(TokenKind::Begin)
+            | Some(TokenKind::End)
+            | Some(TokenKind::Init)
+            | Some(TokenKind::Check)
+            | Some(TokenKind::Unitcheck)
+            | Some(TokenKind::Use) => true,
             Some(TokenKind::If) | Some(TokenKind::Unless) => true,
             Some(TokenKind::Elsif) | Some(TokenKind::Else) => true,
             Some(TokenKind::While) | Some(TokenKind::Until) => true,
@@ -1227,10 +1242,7 @@ impl<'a> Parser<'a> {
         }
 
         let has_typeglob_first_arg = self.peek_kind() == Some(TokenKind::Star)
-            && matches!(
-                name,
-                "is" | "isnt" | "like" | "unlike" | "cmp_ok" | "isa_ok" | "can_ok"
-            );
+            && matches!(name, "is" | "isnt" | "like" | "unlike" | "cmp_ok" | "isa_ok" | "can_ok");
 
         // Must not already be at a statement end or followed by a binary operator.
         // Test helpers are commonly imported as list operators and may take a
