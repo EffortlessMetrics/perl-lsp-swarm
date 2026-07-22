@@ -1,27 +1,29 @@
 [workspace]
 members = ["cargo:."]
 
-# Config for 'dist'
+# Shadow-only config for dist 0.29.0.
+#
+# `.github/workflows/release.yml` remains the artifact-building authority. This
+# file may generate and compare a release plan, but it must not publish, create a
+# GitHub Release, or silently diverge from the live binary/target matrix.
 [dist]
-# The binaries to include
-include = ["perl-lsp", "perl-parse"]
-# Target platforms to build apps for (Rust target-triple syntax)
-targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
-# CI backends to support
+include = ["perllsp", "perl-dap"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
 ci = "github"
-# The installers to generate for each app
-installers = ["shell", "powershell", "homebrew"]
-# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+installers = []
 cargo-dist-version = "0.29.0"
-# Unix path: /home/user/.local/bin
-# Windows path: C:\Users\user\AppData\Local\Programs\project\bin
 install-path = "CARGO_HOME"
 pr-run-mode = "skip"
-# Generate checksums for all artifacts
 checksum = "sha256"
-# Allow dirty for CI regeneration
 allow-dirty = ["ci"]
 
-# Create GitHub releases
 [dist.github-releases]
-create = true
+create = false

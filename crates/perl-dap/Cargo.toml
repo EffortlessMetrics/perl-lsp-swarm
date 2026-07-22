@@ -51,6 +51,7 @@ tracing.workspace = true
 clap = { workspace = true }
 
 # Inlined satellite dependencies (Wave H collapse)
+perl-ast = { workspace = true }
 perl-parser = { workspace = true }
 perl-parser-core = { workspace = true }
 thiserror.workspace = true
@@ -233,6 +234,10 @@ path = "tests/wave_h_collapse_integration.rs"
 # Integration tests for Wave H collapse: module accessibility, use-path updates, external consumers
 
 # Wave H collapsed satellite test files (28 tests from 11 satellites)
+[[test]]
+name = "breakpoint_classification_alignment_tests"
+path = "tests/breakpoint_classification_alignment_tests.rs"
+
 [[test]]
 name = "breakpoint_breakpoint_tests"
 path = "tests/breakpoint_breakpoint_tests.rs"

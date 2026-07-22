@@ -2789,7 +2789,52 @@ impl WorkspaceIndex {
         candidate.rsplit_once("::").is_some_and(|(_, candidate_bare)| candidate_bare == bare_symbol)
     }
 
-    /// Find the definition of a symbol
+    /// Find all definitions of a symbol, including duplicates across files.
+    ///
+    /// Returns every indexed candidate location for `symbol_name`, preserving
+    /// insertion order. Falls back to a single file-scan result when no indexed
+    /// candidates are found (same fallback logic as `find_definition`).
+    ///
+    /// # Arguments
+    ///
+    /// * `symbol_name` - Symbol name or qualified name to resolve
+    ///
+    /// # Returns
+    ///
+    /// All matching definition locations, or an empty Vec if not found.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use perl_workspace::workspace::workspace_index::WorkspaceIndex;
+    ///
+    /// let index = WorkspaceIndex::new();
+    /// let all = index.find_definitions("MyPackage::example");
+    /// ```
+    pub fn find_definitions(&self, symbol_name: &str) -> Vec<Location> {
+        let candidates = self.definition_candidates(symbol_name);
+        if !candidates.is_empty() {
+            return candidates;
+        }
+        // Fall back to a full files scan for this query. The result is intentionally
+        // NOT written back to `self.symbols`: every indexed symbol is already
+        // inserted under both qualified and bare names by `incremental_add_symbols`,
+        // so any cache miss here is for a key that does not correspond to an
+        // indexed symbol (e.g. a typo or alias). Caching such queries is unsound
+        // (entries become stale on file edits and were never tracked for cleanup
+        // in `remove_file`/`incremental_remove_symbols`) and lets the cache grow
+        // unboundedly across long sessions. Returning the resolved location
+        // directly preserves correctness without retaining state.
+        let files = self.files.read();
+        Self::find_definition_in_files(&files, symbol_name, None)
+            .map(|(location, _uri)| vec![location])
+            .unwrap_or_default()
+    }
+
+    /// Find the definition of a symbol.
+    ///
+    /// Returns the first match from `find_definitions()`. When multiple files
+    /// define the same symbol, use `find_definitions()` to retrieve all candidates.
     ///
     /// # Arguments
     ///
@@ -2802,27 +2847,13 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _def = index.find_definition("MyPackage::example");
     /// ```
     pub fn find_definition(&self, symbol_name: &str) -> Option<Location> {
-        if let Some(location) = self.definition_candidates(symbol_name).into_iter().next() {
-            return Some(location);
-        }
-
-        // Fall back to a full files scan for this query. The result is intentionally
-        // NOT written back to `self.symbols`: every indexed symbol is already
-        // inserted under both qualified and bare names by `incremental_add_symbols`,
-        // so any cache miss here is for a key that does not correspond to an
-        // indexed symbol (e.g. a typo or alias). Caching such queries is unsound
-        // (entries become stale on file edits and were never tracked for cleanup
-        // in `remove_file`/`incremental_remove_symbols`) and lets the cache grow
-        // unboundedly across long sessions. Returning the resolved location
-        // directly preserves correctness without retaining state.
-        let files = self.files.read();
-        Self::find_definition_in_files(&files, symbol_name, None).map(|(location, _uri)| location)
+        self.find_definitions(symbol_name).into_iter().next()
     }
 
     pub(crate) fn definition_candidates(&self, symbol_name: &str) -> Vec<Location> {
@@ -3319,6 +3350,44 @@ impl WorkspaceIndex {
             &ie_guard,
             &shards_guard,
             &package_graph_guard,
+        );
+
+        Some(f(file_id, queries))
+    }
+
+    /// Invoke a scoped callback with [`WorkspaceSemanticQueries`] built from
+    /// the current semantic indexes for the given URI, using a caller-supplied
+    /// `PackageGraphIndex` instead of the index-internal one.
+    ///
+    /// Use this when the caller has built a request-scoped graph (e.g. a
+    /// bounded `ComposesRole` subgraph for role-conflict diagnostics) that
+    /// enriches cross-file resolution beyond what the persistent index holds.
+    /// Lock order is identical to [`Self::with_semantic_queries_for_uri`]:
+    /// shards → reference_index → import_export_index (no package-graph lock
+    /// — the caller owns the graph).
+    ///
+    /// Returns `Some(result)` if the URI is indexed and semantic data is
+    /// available, `None` if the URI has not been indexed or its fact shard is
+    /// absent.
+    pub fn with_semantic_queries_for_uri_and_graph<R>(
+        &self,
+        uri: &str,
+        package_graph: &PackageGraphIndex,
+        f: impl FnOnce(FileId, crate::semantic::queries::WorkspaceSemanticQueries<'_>) -> R,
+    ) -> Option<R> {
+        let key = DocumentStore::uri_key(&Self::normalize_uri(uri));
+
+        let shards_guard = self.fact_shards.read();
+        let ref_guard = self.semantic_reference_index.read();
+        let ie_guard = self.semantic_import_export_index.read();
+
+        let file_id = shards_guard.get(&key)?.file_id;
+
+        let queries = crate::semantic::queries::WorkspaceSemanticQueries::with_package_graph(
+            &ref_guard,
+            &ie_guard,
+            &shards_guard,
+            package_graph,
         );
 
         Some(f(file_id, queries))
@@ -4060,7 +4129,11 @@ impl WorkspaceIndex {
         symbol.container_name.as_ref().is_some_and(|container| package_name.eq(container.as_str()))
     }
 
-    /// Find the definition location for a symbol key during Index/Navigate stages.
+    /// Find all definitions for a symbol key, including duplicates across files.
+    ///
+    /// Returns every indexed candidate location for the symbol described by `key`,
+    /// preserving insertion order. Mirrors `find_def` routing logic but collects
+    /// all candidates instead of the first match.
     ///
     /// # Arguments
     ///
@@ -4068,12 +4141,51 @@ impl WorkspaceIndex {
     ///
     /// # Returns
     ///
-    /// The definition location for the symbol, if found.
+    /// All matching definition locations, or an empty Vec if not found.
     ///
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
+    /// use perl_workspace::workspace::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
+    /// use std::sync::Arc;
+    ///
+    /// let index = WorkspaceIndex::new();
+    /// let key = SymbolKey { pkg: Arc::from("My::Package"), name: Arc::from("example"), sigil: None, kind: SymKind::Sub };
+    /// let all = index.find_defs(&key);
+    /// ```
+    pub fn find_defs(&self, key: &SymbolKey) -> Vec<Location> {
+        if let Some(sigil) = key.sigil {
+            let var_name = format!("{}{}", sigil, key.name);
+            self.find_definitions(&var_name)
+        } else if key.kind == SymKind::Pack {
+            let mut results = self.find_definitions(key.pkg.as_ref());
+            if results.is_empty() {
+                results = self.find_definitions(key.name.as_ref());
+            }
+            results
+        } else {
+            let qualified_name = format!("{}::{}", key.pkg, key.name);
+            self.find_definitions(&qualified_name)
+        }
+    }
+
+    /// Find the definition location for a symbol key during Index/Navigate stages.
+    ///
+    /// Returns the first match from `find_defs()`. When multiple files define the
+    /// same symbol, use `find_defs()` to retrieve all candidates.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - Normalized symbol key to resolve.
+    ///
+    /// # Returns
+    ///
+    /// The first definition location for the symbol, if found.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use perl_workspace::workspace::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
     /// use std::sync::Arc;
     ///
     /// let index = WorkspaceIndex::new();
@@ -4081,20 +4193,7 @@ impl WorkspaceIndex {
     /// let _def = index.find_def(&key);
     /// ```
     pub fn find_def(&self, key: &SymbolKey) -> Option<Location> {
-        if let Some(sigil) = key.sigil {
-            // It's a variable
-            let var_name = format!("{}{}", sigil, key.name);
-            self.find_definition(&var_name)
-        } else if key.kind == SymKind::Pack {
-            // It's a package lookup (e.g., from `use Module::Name`)
-            // Search for the package declaration by name
-            self.find_definition(key.pkg.as_ref())
-                .or_else(|| self.find_definition(key.name.as_ref()))
-        } else {
-            // It's a subroutine or package
-            let qualified_name = format!("{}::{}", key.pkg, key.name);
-            self.find_definition(&qualified_name)
-        }
+        self.find_defs(key).into_iter().next()
     }
 
     /// Find reference locations for a symbol key using dual indexing.
@@ -4569,7 +4668,21 @@ impl IndexVisitor {
                 self.visit_node(body, file_index);
             }
 
-            NodeKind::VariableDeclaration { initializer, .. } => {
+            NodeKind::VariableDeclaration { variable, initializer, .. } => {
+                // `our @ISA = qw(Base1 Base2)` — register inheritance dependencies.
+                if let (NodeKind::Variable { sigil, name }, Some(init)) =
+                    (&variable.kind, initializer.as_deref())
+                {
+                    if sigil == "@" && name == "ISA" {
+                        for module_name in
+                            extract_module_names_from_call_args(std::slice::from_ref(init))
+                        {
+                            file_index
+                                .dependencies
+                                .insert(normalize_dependency_module_name(&module_name));
+                        }
+                    }
+                }
                 // Visit initializer
                 if let Some(init) = initializer {
                     self.visit_node(init, file_index);
@@ -4635,6 +4748,18 @@ impl IndexVisitor {
                             .dependencies
                             .insert(normalize_dependency_module_name(&module_name));
                     }
+                } else if name == "push" {
+                    // `push @ISA, 'Base'` — register inheritance dependencies.
+                    if let Some(first) = args.first() {
+                        if matches!(&first.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
+                        {
+                            for module_name in extract_module_names_from_call_args(&args[1..]) {
+                                file_index
+                                    .dependencies
+                                    .insert(normalize_dependency_module_name(&module_name));
+                            }
+                        }
+                    }
                 }
 
                 // Visit arguments
@@ -4670,6 +4795,17 @@ impl IndexVisitor {
                 let is_compound = op != "=";
 
                 if let NodeKind::Variable { sigil, name } = &lhs.kind {
+                    // `@ISA = (...)` — bare assignment registers inheritance dependencies.
+                    if !is_compound && sigil == "@" && name == "ISA" {
+                        for module_name in
+                            extract_module_names_from_call_args(std::slice::from_ref(rhs))
+                        {
+                            file_index
+                                .dependencies
+                                .insert(normalize_dependency_module_name(&module_name));
+                        }
+                    }
+
                     let var_name = format!("{}{}", sigil, name);
 
                     // For compound assignments, it's a read first
@@ -5126,8 +5262,26 @@ impl IndexVisitor {
                 self.walk_unified(default_value, file_index, symbol_refs);
             }
 
-            NodeKind::VariableDeclaration { initializer, .. }
-            | NodeKind::VariableListDeclaration { initializer, .. } => {
+            NodeKind::VariableDeclaration { variable, initializer, .. } => {
+                // `our @ISA = qw(Base1 Base2)` — register inheritance dependencies.
+                if let (NodeKind::Variable { sigil, name }, Some(init)) =
+                    (&variable.kind, initializer.as_deref())
+                {
+                    if sigil == "@" && name == "ISA" {
+                        for module_name in
+                            extract_module_names_from_call_args(std::slice::from_ref(init))
+                        {
+                            file_index
+                                .dependencies
+                                .insert(normalize_dependency_module_name(&module_name));
+                        }
+                    }
+                }
+                if let Some(init) = initializer {
+                    self.walk_unified(init, file_index, symbol_refs);
+                }
+            }
+            NodeKind::VariableListDeclaration { initializer, .. } => {
                 if let Some(init) = initializer {
                     self.walk_unified(init, file_index, symbol_refs);
                 }
@@ -5198,6 +5352,18 @@ impl IndexVisitor {
                     && let Some(module_name) = extract_module_name_from_require_args(args)
                 {
                     file_index.dependencies.insert(normalize_dependency_module_name(&module_name));
+                } else if name == "push" {
+                    // `push @ISA, 'Base'` — register inheritance dependencies.
+                    if let Some(first) = args.first() {
+                        if matches!(&first.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
+                        {
+                            for module_name in extract_module_names_from_call_args(&args[1..]) {
+                                file_index
+                                    .dependencies
+                                    .insert(normalize_dependency_module_name(&module_name));
+                            }
+                        }
+                    }
                 }
 
                 Self::emit_canonical_ref(node, symbol_refs);
@@ -5228,6 +5394,17 @@ impl IndexVisitor {
             NodeKind::Assignment { lhs, rhs, op } => {
                 let is_compound = op != "=";
                 if let NodeKind::Variable { sigil, name } = &lhs.kind {
+                    // `@ISA = (...)` — bare assignment registers inheritance dependencies.
+                    if !is_compound && sigil == "@" && name == "ISA" {
+                        for module_name in
+                            extract_module_names_from_call_args(std::slice::from_ref(rhs))
+                        {
+                            file_index
+                                .dependencies
+                                .insert(normalize_dependency_module_name(&module_name));
+                        }
+                    }
+
                     let var_name = format!("{sigil}{name}");
                     if is_compound {
                         file_index.references.entry(var_name.clone()).or_default().push(

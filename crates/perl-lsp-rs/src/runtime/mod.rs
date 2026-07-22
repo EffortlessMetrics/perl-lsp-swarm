@@ -192,6 +192,8 @@ pub struct LspServer {
     discovered_perltidy_profile: Arc<Mutex<Option<String>>>,
     /// Advertised server capabilities
     advertised_features: Mutex<crate::protocol::capabilities::AdvertisedFeatures>,
+    /// Canonical feature IDs emitted by the most recent initialize response.
+    advertised_feature_ids: Mutex<Vec<&'static str>>,
     /// Client supports pull diagnostics
     client_supports_pull_diags: Arc<AtomicBool>,
     /// Workspace configuration for module resolution
