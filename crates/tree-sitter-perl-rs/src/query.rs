@@ -771,28 +771,31 @@ fn predicate_matches(
     captures: &[QueryCapture<'_>],
     settings: &mut Vec<QuerySetting>,
 ) -> bool {
-    if let PredicatePattern::Set { key, value } = predicate {
-        settings.push(QuerySetting { key: key.clone(), value: value.clone() });
-        return true;
+    match predicate {
+        PredicatePattern::Set { key, value } => {
+            settings.push(QuerySetting { key: key.clone(), value: value.clone() });
+            true
+        }
+        PredicatePattern::Eq { capture, value, negated } => {
+            predicate_capture_matches(captures, capture, *negated, |text| text == value)
+        }
+        PredicatePattern::Match { capture, regex, negated, .. } => {
+            predicate_capture_matches(captures, capture, *negated, |text| regex.is_match(text))
+        }
     }
+}
 
-    let (capture_name, negated) = match predicate {
-        PredicatePattern::Eq { capture, negated, .. }
-        | PredicatePattern::Match { capture, negated, .. } => (capture, *negated),
-        PredicatePattern::Set { .. } => return true,
-    };
-
-    let matches_capture = |capture: &QueryCapture<'_>| {
+fn predicate_capture_matches(
+    captures: &[QueryCapture<'_>],
+    capture_name: &str,
+    negated: bool,
+    matcher: impl Fn(&str) -> bool,
+) -> bool {
+    let matching = captures.iter().filter(|capture| capture.name == capture_name).map(|capture| {
         let Ok(text) = capture.node.utf8_text(capture.node.tree_source().as_bytes()) else {
             return false;
         };
-        match predicate {
-            PredicatePattern::Eq { value, .. } => text == value,
-            PredicatePattern::Match { regex, .. } => regex.is_match(text),
-            PredicatePattern::Set { .. } => true,
-        }
-    };
-    let mut matching =
-        captures.iter().filter(|capture| capture.name == *capture_name).map(matches_capture);
-    if negated { matching.all(|matches| !matches) } else { matching.any(|matches| matches) }
+        matcher(text)
+    });
+    if negated { matching.all(|matches| !matches) } else { matching.all(|matches| matches) }
 }

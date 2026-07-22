@@ -141,6 +141,17 @@ fn repeated_capture_names_are_retained_in_one_match() -> TestResult {
 }
 
 #[test]
+fn repeated_capture_predicates_require_all_captures_to_match() -> TestResult {
+    let tree = parse("foo + bar;\n");
+    let query =
+        Query::new("(binary_+ (identifier) @name (identifier) @name) (#eq? @name \"foo\")")?;
+    let mut cursor = QueryCursor::new();
+
+    assert_eq!(cursor.matches(&query, tree.root_node()).count(), 0);
+    Ok(())
+}
+
+#[test]
 fn rejects_unsupported_predicates_and_invalid_predicate_inputs() {
     let unsupported = Query::new("(identifier) @name (#any-of? @name \"foo\")");
     assert!(matches!(unsupported, Err(QueryError::UnsupportedSyntax { .. })));
