@@ -423,10 +423,10 @@ fn test_hover_on_native_method_still_works() -> TestResult {
 #[test]
 fn test_goto_def_on_field_reference_in_method_body() -> TestResult {
     let code = concat!(
-        "class Rect {\n",                                // line 0
-        "    field $width :param;\n",                    // line 1
-        "    method describe { return $width; }\n",     // line 2
-        "}\n",                                           // line 3
+        "class Rect {\n",                           // line 0
+        "    field $width :param;\n",               // line 1
+        "    method describe { return $width; }\n", // line 2
+        "}\n",                                      // line 3
     );
 
     let mut harness = LspHarness::new();
@@ -475,11 +475,11 @@ fn test_goto_def_on_field_reference_in_method_body() -> TestResult {
 #[test]
 fn test_goto_def_on_reader_accessor_navigates_to_field() -> TestResult {
     let code = concat!(
-        "class Box {\n",                              // line 0
-        "    field $width :param :reader;\n",         // line 1
-        "}\n",                                        // line 2
-        "my $b = Box->new(width => 10);\n",           // line 3
-        "$b->width;\n",                               // line 4
+        "class Box {\n",                      // line 0
+        "    field $width :param :reader;\n", // line 1
+        "}\n",                                // line 2
+        "my $b = Box->new(width => 10);\n",   // line 3
+        "$b->width;\n",                       // line 4
     );
 
     let mut harness = LspHarness::new();
