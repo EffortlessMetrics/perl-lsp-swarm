@@ -25,6 +25,8 @@
 
 use crate::SourceLocation;
 
+use super::model::{BranchKeyword, ControlTransferKind, LoopKind, StatementModifierKind};
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Typed arena indices
 // ──────────────────────────────────────────────────────────────────────────────
@@ -332,6 +334,57 @@ pub enum HirExpr {
         op: String,
     },
 
+    /// Structured `if`/`unless` control flow.
+    Branch {
+        /// Condition expression.
+        condition: HirExprId,
+        /// Then-arm block.
+        then_block: HirBlockId,
+        /// Zero or more `elsif` condition/block pairs in source order.
+        elsif_arms: Vec<(HirExprId, HirBlockId)>,
+        /// Optional `else` block.
+        else_block: Option<HirBlockId>,
+        /// Surface branch keyword (`if`, `unless`).
+        keyword: BranchKeyword,
+    },
+
+    /// Structured loop control flow.
+    Loop {
+        /// Loop family.
+        kind: LoopKind,
+        /// Optional C-style loop initializer block.
+        ///
+        /// The block preserves every initializer statement, including
+        /// comma-separated declarations in the C-style header.
+        init: Option<HirBlockId>,
+        /// Loop condition or iterable expression, when present.
+        condition: Option<HirExprId>,
+        /// Optional C-style loop update expression.
+        update: Option<HirExprId>,
+        /// Loop body block.
+        body: HirBlockId,
+        /// Optional `continue` block.
+        continue_block: Option<HirBlockId>,
+        /// Optional foreach iterator binding.
+        iterator_binding: Option<HirExprId>,
+    },
+
+    /// Ternary conditional expression.
+    Ternary {
+        /// Condition expression.
+        condition: HirExprId,
+        /// Expression selected for a true condition.
+        then_expr: HirExprId,
+        /// Expression selected for a false condition.
+        else_expr: HirExprId,
+    },
+
+    /// Return from the enclosing subroutine.
+    Return {
+        /// Optional returned value.
+        value: Option<HirExprId>,
+    },
+
     /// Function/method call expression (first-pass model).
     ///
     /// Arguments that are individually lowerable carry explicit IDs; everything
@@ -400,7 +453,28 @@ pub enum HirStmt {
         /// Optional initializer expression ID.
         init: Option<HirExprId>,
     },
+
+    /// Loop-control transfer (`next`, `last`, or `redo`).
+    LoopControl {
+        /// Transfer verb.
+        verb: LoopControlVerb,
+        /// Optional target loop label.
+        target_label: Option<String>,
+    },
+
+    /// Statement followed by a postfix condition (`expr if condition`).
+    PostfixCondition {
+        /// Structured statement being conditionally executed.
+        statement: HirStmtId,
+        /// Postfix condition expression.
+        condition: HirExprId,
+        /// Postfix modifier verb.
+        verb: StatementModifierKind,
+    },
 }
+
+/// Loop-control verb stored in a structured body statement.
+pub type LoopControlVerb = ControlTransferKind;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Block node
