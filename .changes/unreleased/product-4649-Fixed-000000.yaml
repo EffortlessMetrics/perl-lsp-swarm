@@ -1,0 +1,9 @@
+project: product
+component: CI/xtask
+kind: Fixed
+body: "Stopped three xtask validators from emitting false-green output. `merge-ready emit` now derives its verdict from a live fan-in snapshot (`--snapshot`) and stamps an honest `not_proven` (never `valid`) when no evidence is evaluated; `verify` refuses to collapse a `not_proven` receipt to `valid`. `doc-claims` and `install-surface-check` OK messages now explicitly state they only check a fixed set of hardcoded literals and do not catch new staleness/drift. The `required-checks.toml` parser (merge-ready and queue-reconciler) now unions required `[[check]]` entries with `[[checks]]` and logs the schema-split note instead of silently dropping them."
+time: 2026-07-23T00:00:00Z
+custom:
+  PR: "4649"
+  Slug: xtask-false-confidence
+  Breaking: "no"
