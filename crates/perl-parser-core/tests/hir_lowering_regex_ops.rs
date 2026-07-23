@@ -213,6 +213,45 @@ fn match_traverses_bound_expr_operand() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn substitution_traverses_bound_expr_operand() -> TestResult {
+    // Guard the `visit_children` traversal in the Substitution arm: the bound
+    // `expr` operand (`foo()`) must still lower to its own CallExpr item.
+    let file = lower_source("foo() =~ s/a/b/;\n");
+
+    let has_subst =
+        file.items.iter().any(|item| matches!(&item.kind, HirKind::SubstitutionExpr(_)));
+    assert!(has_subst, "expected a SubstitutionExpr HIR item");
+
+    let has_call_expr = file.items.iter().any(|item| matches!(&item.kind, HirKind::CallExpr(_)));
+    assert!(
+        has_call_expr,
+        "expected the bound expr operand `foo()` to lower to its own CallExpr item.\n\
+         HIR item count: {}",
+        file.items.len()
+    );
+    Ok(())
+}
+
+#[test]
+fn transliteration_traverses_bound_expr_operand() -> TestResult {
+    // Guard the `visit_children` traversal in the Transliteration arm.
+    let file = lower_source("foo() =~ tr/a/b/;\n");
+
+    let has_translit =
+        file.items.iter().any(|item| matches!(&item.kind, HirKind::TransliterationExpr(_)));
+    assert!(has_translit, "expected a TransliterationExpr HIR item");
+
+    let has_call_expr = file.items.iter().any(|item| matches!(&item.kind, HirKind::CallExpr(_)));
+    assert!(
+        has_call_expr,
+        "expected the bound expr operand `foo()` to lower to its own CallExpr item.\n\
+         HIR item count: {}",
+        file.items.len()
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Source range validity
 // ---------------------------------------------------------------------------

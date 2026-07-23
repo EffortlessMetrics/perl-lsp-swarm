@@ -2960,8 +2960,10 @@ pub struct BarewordExpr {
 pub struct RegexExpr {
     /// Regular expression pattern as parsed (including delimiters).
     pub pattern: String,
-    /// Replacement string, present when the parser attached one to a bare
-    /// regex literal (e.g. `s///` parsed via the regex path).
+    /// Replacement string. Reserved for forward compatibility and currently
+    /// always `None`: the parser builds bare regex literals (`/.../`, `qr/.../`)
+    /// with no replacement, and `s///` is parsed as `NodeKind::Substitution`
+    /// (lowered to [`SubstitutionExpr`]), not as a `Regex` node.
     pub replacement: Option<String>,
     /// Regex modifiers (`i`, `m`, `s`, `x`, `g`, etc.).
     pub modifiers: String,
