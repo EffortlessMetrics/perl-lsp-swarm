@@ -1186,27 +1186,27 @@ describe('extension UX warnings', () => {
     await showWorkspaceTrustReportCommand(
       { sendRequest } as unknown as RequestClient,
       () => ({
-      schema_version: 'workspace_trust_client_runtime.v1',
-      source: 'vscode-extension',
-      perldoc: {
-        status: 'client_surface_registered',
-      },
-      dap: {
-        status: 'client_state_reported',
-        managed_adapter_exists: true,
-        active_perl_debug_session: false,
-        launch_json_workspace_count: 1,
-        launch_configuration: {
-          status: 'client_launch_config_reported',
-          configuration_count: 2,
-          perl_configuration_count: 1,
-          include_paths_configured_count: 1,
-          include_path_entry_count: 2,
-          perl_path_configured_count: 1,
-          claim_boundary: 'Launch configuration state reports counts and path classes only.',
+        schema_version: 'workspace_trust_client_runtime.v1',
+        source: 'vscode-extension',
+        perldoc: {
+          status: 'client_surface_registered',
         },
-      },
-    }),
+        dap: {
+          status: 'client_state_reported',
+          managed_adapter_exists: true,
+          active_perl_debug_session: false,
+          launch_json_workspace_count: 1,
+          launch_configuration: {
+            status: 'client_launch_config_reported',
+            configuration_count: 2,
+            perl_configuration_count: 1,
+            include_paths_configured_count: 1,
+            include_path_entry_count: 2,
+            perl_path_configured_count: 1,
+            claim_boundary: 'Launch configuration state reports counts and path classes only.',
+          },
+        },
+      }),
       { outputChannel: outputChannel as unknown as vscode.OutputChannel },
     );
 
