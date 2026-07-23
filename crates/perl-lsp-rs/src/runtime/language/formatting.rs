@@ -4,11 +4,12 @@
 //! and textDocument/onTypeFormatting requests.
 
 use super::super::*;
+use crate::cancellation::RequestCleanupGuard;
 use crate::convert::{WirePosition, WireRange};
 use crate::features::formatting::{
     CodeFormatter, FormattingError, FormattingOptions, PerlTidyConfig,
 };
-use crate::protocol::{invalid_params, req_position, req_range, req_uri};
+use crate::protocol::{invalid_params, req_position, req_range, req_uri, REQUEST_CANCELLED};
 use perl_lsp_rs_core::config::FormatterMode;
 
 /// Build a `JsonRpcError` from a `FormattingError`, populating the `data` field
@@ -112,6 +113,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().formatting {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         if !self.is_formatting_enabled() {
             return Ok(Some(json!([])));
         }
@@ -173,11 +179,49 @@ impl LspServer {
         Ok(Some(json!([])))
     }
 
+    /// Cancellation-aware wrapper for `textDocument/formatting`.
+    ///
+    /// Polls the cancellation token before invoking perltidy so that a
+    /// `$/cancelRequest` issued while the handler is waiting on the documents
+    /// lock is observed promptly, returning `REQUEST_CANCELLED` (code -32800)
+    /// instead of running the formatter to completion.
+    pub(crate) fn handle_formatting_cancellable(
+        &self,
+        params: Option<Value>,
+        request_id: Option<&Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        let typed_id = request_id.and_then(JsonRpcId::try_from_value);
+        let _cleanup_guard = RequestCleanupGuard::from_ref(typed_id.as_ref());
+
+        if let Some(ref tid) = typed_id {
+            let token = GLOBAL_CANCELLATION_REGISTRY.get_token(tid).unwrap_or_else(|| {
+                let token =
+                    PerlLspCancellationToken::new(tid.clone(), "textDocument/formatting".into());
+                let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
+                token
+            });
+            if token.is_cancelled_relaxed() {
+                return Err(JsonRpcError {
+                    code: REQUEST_CANCELLED,
+                    message: "Request cancelled - formatting provider".to_string(),
+                    data: None,
+                });
+            }
+        }
+
+        self.handle_formatting(params)
+    }
+
     /// Handle textDocument/rangeFormatting request
     pub(crate) fn handle_range_formatting(
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().range_formatting {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         if !self.is_formatting_enabled() {
             return Ok(Some(json!([])));
         }

@@ -664,8 +664,10 @@ fn test_terminate_preserves_breakpoints_but_replace_still_clears() -> TestResult
 fn test_attach_then_terminate_cleanup() -> TestResult {
     let (mut adapter, rx) = make_adapter_with_rx();
 
-    // Attach in PID-signal-control mode (no real process needed).
-    let attach_response = adapter.handle_request(1, "attach", Some(json!({ "processId": 12345 })));
+    // Attach in PID-signal-control mode.  #4638: use current process PID so
+    // verify_attach_target succeeds.
+    let attach_response =
+        adapter.handle_request(1, "attach", Some(json!({ "processId": std::process::id() })));
     assert_cleanup_success(&attach_response, "attach")?;
 
     // Drain the "stopped" event emitted by attach.

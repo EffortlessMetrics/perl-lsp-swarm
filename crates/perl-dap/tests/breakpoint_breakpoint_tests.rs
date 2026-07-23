@@ -360,12 +360,14 @@ fn for_loop_lines_executable() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn use_strict_is_executable() -> Result<(), Box<dyn std::error::Error>> {
+fn use_strict_not_executable_compile_time_pragma() -> Result<(), Box<dyn std::error::Error>> {
+    // use/no are compile-time BEGIN pragmas (safe_for_breakpoint == false).
+    // The validator must reject them; only the runtime statement on line 3 is valid.
     let source = "use strict;\nuse warnings;\nmy $x = 1;\n";
     let v = must(AstBreakpointValidator::new(source));
-    assert!(v.is_executable_line(1));
-    assert!(v.is_executable_line(2));
-    assert!(v.is_executable_line(3));
+    assert!(!v.is_executable_line(1), "use strict; must not be a valid breakpoint location");
+    assert!(!v.is_executable_line(2), "use warnings; must not be a valid breakpoint location");
+    assert!(v.is_executable_line(3), "my $x = 1; must be a valid breakpoint location");
     Ok(())
 }
 

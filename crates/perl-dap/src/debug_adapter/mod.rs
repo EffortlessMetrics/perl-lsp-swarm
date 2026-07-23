@@ -256,7 +256,55 @@ impl DebugAdapter {
             Some(root) => security::validate_path(Path::new(path), root)
                 .map_err(|e| format!("Path validation failed: {e}")),
             None => {
-                // No workspace set (pre-launch) — allow reads but accept the risk
+                // No workspace set (pre-launch).  Defense-in-depth: reject paths
+                // that contain parent-directory traversal components.  Absolute
+                // paths outside the current working directory are allowed with an
+                // elevated warning (no workspace boundary is known, so we cannot
+                // definitively reject them — temp files and explicit user paths
+                // are legitimate pre-launch use cases).
+                let p = Path::new(path);
+
+                // Best-effort canonicalize for logging; fall back to raw path.
+                let resolved = std::fs::canonicalize(p)
+                    .map(|c| c.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| path.to_string());
+
+                // Reject any path containing a ParentDir component — these can
+                // escape the (unknown) workspace boundary.
+                if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                    return Err(format!(
+                        "Path validation failed: parent-directory traversal not allowed \
+                         without a workspace boundary: {resolved}"
+                    ));
+                }
+
+                // For absolute paths outside the current working directory, emit
+                // an elevated warning.  We cannot hard-reject because no workspace
+                // boundary is known and temp files / explicit user paths are
+                // legitimate pre-launch use cases.
+                if p.is_absolute() {
+                    if let Ok(cwd) = std::env::current_dir() {
+                        let canonical_p =
+                            std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+                        let canonical_cwd =
+                            std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+                        if !canonical_p.starts_with(&canonical_cwd) {
+                            tracing::warn!(
+                                target = "debug_adapter.security",
+                                path = %resolved,
+                                "Pre-launch absolute path outside current working directory \
+                                 accepted without workspace boundary check"
+                            );
+                            return Ok(PathBuf::from(path));
+                        }
+                    }
+                }
+
+                tracing::warn!(
+                    target = "debug_adapter.security",
+                    path = %resolved,
+                    "Pre-launch path accepted without workspace boundary check"
+                );
                 Ok(PathBuf::from(path))
             }
         }
@@ -1154,8 +1202,10 @@ print "result: $final\n";
     #[test]
     fn test_attach_process_id_mode() -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
+        // #4638: use current process PID so verify_attach_target succeeds.
+        let pid = std::process::id();
         let args = json!({
-            "processId": 12345
+            "processId": pid
         });
         let response = adapter.handle_request(1, "attach", Some(args));
 
@@ -1165,7 +1215,7 @@ print "result: $final\n";
                 assert_eq!(command, "attach");
                 assert!(body.is_some());
                 let body = body.ok_or("Expected body")?;
-                assert_eq!(body.get("processId").and_then(|v| v.as_u64()), Some(12345));
+                assert_eq!(body.get("processId").and_then(|v| v.as_u64()), Some(pid as u64));
                 assert!(message.is_some());
                 let msg = message.ok_or("Expected message")?;
                 assert!(msg.contains("signal-control mode"));

@@ -1356,9 +1356,14 @@ print "hello";
 heredoc content
 EOF
 "#;
-        // Line 1: use strict; (Valid)
+        // Line 1: use strict; (Invalid — compile-time pragma)
         let (v1, _) = validate_breakpoint_line(source, 1);
-        assert!(v1, "Line 1 should be valid");
+        assert!(!v1, "Line 1 should be invalid");
+
+        // Line 3: my $x = 1; (Valid runtime statement)
+        let (v3, m3) = validate_breakpoint_line(source, 3);
+        assert!(v3, "Line 3 should be valid");
+        assert!(m3.is_none(), "Valid line should not have a message");
 
         // Line 2: # comment (Invalid)
         let (v2, m2) = validate_breakpoint_line(source, 2);

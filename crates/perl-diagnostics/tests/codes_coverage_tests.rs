@@ -687,17 +687,6 @@ fn context_hint_phase_scoped_warnings_pragma_is_some() -> Result<(), Box<dyn std
     Ok(())
 }
 
-#[test]
-fn context_hint_critic_codes_return_none() -> Result<(), Box<dyn std::error::Error>> {
-    // Lines 691-695 in codes/mod.rs — already covered by other tests but verify all 5
-    assert_eq!(DiagnosticCode::CriticSeverity1.context_hint(), None);
-    assert_eq!(DiagnosticCode::CriticSeverity2.context_hint(), None);
-    assert_eq!(DiagnosticCode::CriticSeverity3.context_hint(), None);
-    assert_eq!(DiagnosticCode::CriticSeverity4.context_hint(), None);
-    assert_eq!(DiagnosticCode::CriticSeverity5.context_hint(), None);
-    Ok(())
-}
-
 // ===========================================================================
 // from_message() — InvalidPrototype arm
 // ===========================================================================
@@ -875,13 +864,6 @@ fn category_display_heredoc() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[test]
-fn category_display_perl_critic() -> Result<(), Box<dyn std::error::Error>> {
-    // Line 919 in codes/mod.rs
-    assert_eq!(format!("{}", DiagnosticCategory::PerlCritic), "Perl::Critic");
-    Ok(())
-}
-
 // ===========================================================================
 // parse_code() — full round-trip for all variants to cover remaining as_str
 //               and parse_code arms not hit by the partial ALL_CODES list
@@ -946,17 +928,12 @@ fn parse_code_round_trip_all_variants_exhaustive() -> Result<(), Box<dyn std::er
         DiagnosticCode::HeredocInEval,
         DiagnosticCode::HeredocTiedHandle,
         DiagnosticCode::VersionIncompatFeature,
-        DiagnosticCode::CriticSeverity1,
-        DiagnosticCode::CriticSeverity2,
-        DiagnosticCode::CriticSeverity3,
-        DiagnosticCode::CriticSeverity4,
-        DiagnosticCode::CriticSeverity5,
     ];
 
     assert_eq!(
         all_variants.len(),
-        61,
-        "expected exhaustive DiagnosticCode variant list to cover 61 variants"
+        56,
+        "expected exhaustive DiagnosticCode variant list to cover 56 variants"
     );
     for code in &all_variants {
         let s = code.as_str();

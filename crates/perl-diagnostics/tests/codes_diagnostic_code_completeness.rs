@@ -407,11 +407,6 @@ fn all_codes_have_valid_prefix() -> Result<(), Box<dyn std::error::Error>> {
         DiagnosticCode::BarewordFilehandle,
         DiagnosticCode::TwoArgOpen,
         DiagnosticCode::ImplicitReturn,
-        DiagnosticCode::CriticSeverity1,
-        DiagnosticCode::CriticSeverity2,
-        DiagnosticCode::CriticSeverity3,
-        DiagnosticCode::CriticSeverity4,
-        DiagnosticCode::CriticSeverity5,
     ];
 
     for code in &existing_codes {
@@ -427,12 +422,8 @@ fn all_codes_have_valid_prefix() -> Result<(), Box<dyn std::error::Error>> {
 /// parse_code round-trip: as_str() output must be parseable back.
 #[test]
 fn existing_codes_round_trip_through_parse_code() -> Result<(), Box<dyn std::error::Error>> {
-    let codes = [
-        DiagnosticCode::ParseError,
-        DiagnosticCode::MissingStrict,
-        DiagnosticCode::TwoArgOpen,
-        DiagnosticCode::CriticSeverity3,
-    ];
+    let codes =
+        [DiagnosticCode::ParseError, DiagnosticCode::MissingStrict, DiagnosticCode::TwoArgOpen];
     for code in codes {
         let s = code.as_str();
         let parsed = DiagnosticCode::parse_code(s);

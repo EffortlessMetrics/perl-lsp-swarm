@@ -24,8 +24,6 @@ pub enum DiagnosticCategory {
     Import,
     /// Heredoc anti-patterns (PL800-PL899)
     Heredoc,
-    /// Perl::Critic violations (PC001-PC005)
-    PerlCritic,
 }
 
 impl fmt::Display for DiagnosticCategory {
@@ -40,7 +38,6 @@ impl fmt::Display for DiagnosticCategory {
             Self::Security => write!(f, "Security"),
             Self::Import => write!(f, "Import"),
             Self::Heredoc => write!(f, "Heredoc"),
-            Self::PerlCritic => write!(f, "Perl::Critic"),
         }
     }
 }
@@ -113,12 +110,6 @@ impl DiagnosticCode {
             | Self::HeredocInRegexCode
             | Self::HeredocInEval
             | Self::HeredocTiedHandle => DiagnosticCategory::Heredoc,
-
-            Self::CriticSeverity1
-            | Self::CriticSeverity2
-            | Self::CriticSeverity3
-            | Self::CriticSeverity4
-            | Self::CriticSeverity5 => DiagnosticCategory::PerlCritic,
         }
     }
 }

@@ -28,14 +28,6 @@ const DOCUMENTED_CATALOG_ENTRIES: &[(&str, CatalogFn, &str)] = &[
     ("eval_error_flow", catalog::eval_error_flow, "PL407"),
 ];
 
-const UNDOCUMENTED_CATALOG_ENTRIES: &[(&str, CatalogFn, &str)] = &[
-    ("critic_severity_5", catalog::critic_severity_5, "PC005"),
-    ("critic_severity_4", catalog::critic_severity_4, "PC004"),
-    ("critic_severity_3", catalog::critic_severity_3, "PC003"),
-    ("critic_severity_2", catalog::critic_severity_2, "PC002"),
-    ("critic_severity_1", catalog::critic_severity_1, "PC001"),
-];
-
 fn assert_catalog_entry(
     name: &str,
     build_meta: CatalogFn,
@@ -59,15 +51,6 @@ fn assert_catalog_entry(
 fn documented_catalog_helpers_return_expected_pl_codes_with_docs_urls() -> TestResult {
     for &(name, build_meta, expected_code) in DOCUMENTED_CATALOG_ENTRIES {
         assert_catalog_entry(name, build_meta, expected_code, true);
-    }
-
-    Ok(())
-}
-
-#[test]
-fn critic_catalog_helpers_return_expected_pc_codes_without_docs_urls() -> TestResult {
-    for &(name, build_meta, expected_code) in UNDOCUMENTED_CATALOG_ENTRIES {
-        assert_catalog_entry(name, build_meta, expected_code, false);
     }
 
     Ok(())
@@ -164,16 +147,13 @@ fn from_message_matches_real_perl_messages_with_punctuation_boundaries() -> Test
 }
 
 #[test]
-fn diagnostic_meta_exposes_context_hint_for_pl_codes_but_not_critic_codes() -> TestResult {
+fn diagnostic_meta_exposes_context_hint_for_pl_codes() -> TestResult {
     let parse_meta = catalog::diagnostic_meta(DiagnosticCode::ParseError);
     let parse_hint = parse_meta.hint.ok_or("PL001 should expose a context hint")?;
     assert!(
         parse_hint.contains("could not parse") || parse_hint.contains("syntax"),
         "parse hint should explain parser context: {parse_hint}"
     );
-
-    let critic_meta = catalog::diagnostic_meta(DiagnosticCode::CriticSeverity3);
-    assert!(critic_meta.hint.is_none(), "Perl::Critic metadata should not add generic hints");
 
     Ok(())
 }
@@ -191,7 +171,7 @@ fn diagnostic_meta_directly_wraps_provided_code() -> TestResult {
 }
 
 #[test]
-fn all_pl_codes_have_docs_url_all_pc_codes_do_not() -> TestResult {
+fn all_pl_codes_have_docs_url() -> TestResult {
     let documented_codes = [
         DiagnosticCode::ParseError,
         DiagnosticCode::SyntaxError,
@@ -202,18 +182,6 @@ fn all_pl_codes_have_docs_url_all_pc_codes_do_not() -> TestResult {
     for code in documented_codes {
         let meta = catalog::diagnostic_meta(code);
         assert!(meta.desc.is_some(), "PL code {:?} should have a docs URL", meta.code);
-    }
-
-    let undocumented_codes = [
-        DiagnosticCode::CriticSeverity5,
-        DiagnosticCode::CriticSeverity4,
-        DiagnosticCode::CriticSeverity3,
-        DiagnosticCode::CriticSeverity2,
-        DiagnosticCode::CriticSeverity1,
-    ];
-    for code in undocumented_codes {
-        let meta = catalog::diagnostic_meta(code);
-        assert!(meta.desc.is_none(), "PC code {:?} should NOT have a docs URL", meta.code);
     }
 
     Ok(())

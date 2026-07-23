@@ -1551,10 +1551,11 @@ fn test_multiple_sessions_sequential() {
 fn test_attach_pid_mode_stop_on_entry_true_emits_stopped_event() {
     // When stopOnEntry is true and attaching by PID, a stopped event with reason "entry"
     // must be emitted after the initial "attach" stopped event.
+    // #4638: Use the current process PID so verify_attach_target succeeds.
     let (mut adapter, rx) = create_test_adapter();
 
     let args = json!({
-        "processId": 9999,
+        "processId": std::process::id(),
         "stopOnEntry": true
     });
 
@@ -1589,10 +1590,11 @@ fn test_attach_pid_mode_stop_on_entry_true_emits_stopped_event() {
 // AC:5.5
 fn test_attach_pid_mode_stop_on_entry_false_no_entry_event() {
     // When stopOnEntry is false, PID attach should emit reason "attach" but NOT "entry".
+    // #4638: Use the current process PID so verify_attach_target succeeds.
     let (mut adapter, rx) = create_test_adapter();
 
     let args = json!({
-        "processId": 8888,
+        "processId": std::process::id(),
         "stopOnEntry": false
     });
 
@@ -1632,9 +1634,10 @@ fn test_attach_pid_mode_stop_on_entry_false_no_entry_event() {
 // AC:5.5
 fn test_attach_pid_mode_default_stop_on_entry_is_false() {
     // When stopOnEntry is omitted it defaults to false — no entry-stop event emitted.
+    // #4638: Use the current process PID so verify_attach_target succeeds.
     let (mut adapter, rx) = create_test_adapter();
 
-    let args = json!({ "processId": 7777 });
+    let args = json!({ "processId": std::process::id() });
     let response = adapter.handle_request(1, "attach", Some(args));
 
     match response {
@@ -1658,6 +1661,91 @@ fn test_attach_pid_mode_default_stop_on_entry_is_false() {
         }
     }
     assert!(!found_entry_stop, "Default stopOnEntry must not emit entry-stop event");
+}
+
+// ============================================================================
+// #4638 — DAP Attach: PID verification regression tests
+// ============================================================================
+
+#[test]
+fn test_attach_nonexistent_pid_rejected_4638() {
+    // #4638: Attaching to a non-existent PID must be rejected before storing
+    // the PID or emitting a stopped event.  Use a PID that is extremely
+    // unlikely to correspond to a real process.
+    let (mut adapter, rx) = create_test_adapter();
+    let args = json!({ "processId": 999999 });
+    let response = adapter.handle_request(1, "attach", Some(args));
+    match response {
+        DapMessage::Response { success, command, message, .. } => {
+            assert!(!success, "Attach to non-existent PID must fail");
+            assert_eq!(command, "attach");
+            let msg = message.unwrap_or_default();
+            assert!(
+                msg.contains("999999") || msg.to_lowercase().contains("process"),
+                "Error message should mention the PID or process: {msg}"
+            );
+        }
+        _ => must(Err::<(), _>("Expected Response message".to_string())),
+    }
+    // No stopped event should have been emitted for a rejected attach.
+    let event = wait_for_event(&rx, 100);
+    assert!(event.is_none(), "No stopped event should be emitted for a rejected PID attach");
+}
+
+#[test]
+fn test_attach_current_process_pid_accepted_4638() {
+    // #4638: Attaching to the current process PID should succeed — the process
+    // obviously exists (it's us).
+    let (mut adapter, _rx) = create_test_adapter();
+    let current_pid = std::process::id();
+    let args = json!({ "processId": current_pid });
+    let response = adapter.handle_request(1, "attach", Some(args));
+    match response {
+        DapMessage::Response { success, command, .. } => {
+            assert!(success, "Attach to current process PID should succeed");
+            assert_eq!(command, "attach");
+        }
+        _ => must(Err::<(), _>("Expected Response message".to_string())),
+    }
+}
+
+#[test]
+fn test_attach_nonexistent_pid_then_valid_pid_succeeds_4638() {
+    // #4638: A rejected attach must not prevent a subsequent valid attach.
+    let (mut adapter, _rx) = create_test_adapter();
+    let args = json!({ "processId": 999999 });
+    let _ = adapter.handle_request(1, "attach", Some(args));
+
+    let current_pid = std::process::id();
+    let args = json!({ "processId": current_pid });
+    let response = adapter.handle_request(2, "attach", Some(args));
+    match response {
+        DapMessage::Response { success, .. } => {
+            assert!(success, "Subsequent attach to valid PID should succeed");
+        }
+        _ => must(Err::<(), _>("Expected Response message".to_string())),
+    }
+}
+
+#[test]
+fn test_attach_pid_zero_still_rejected_after_verification_add_4638() {
+    // #4638: The existing pid==0 rejection must still work alongside the new
+    // verify_attach_target check.
+    let (mut adapter, _rx) = create_test_adapter();
+    let args = json!({ "processId": 0 });
+    let response = adapter.handle_request(1, "attach", Some(args));
+    match response {
+        DapMessage::Response { success, command, message, .. } => {
+            assert!(!success, "processId 0 should still be rejected");
+            assert_eq!(command, "attach");
+            let msg = must_some(message);
+            assert!(
+                msg.contains("greater than zero") || msg.contains("processId"),
+                "Error should mention processId constraint: {msg}"
+            );
+        }
+        _ => must(Err::<(), _>("Expected Response message".to_string())),
+    }
 }
 
 #[test]

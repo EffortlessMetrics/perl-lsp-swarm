@@ -523,6 +523,12 @@ export async function activate(context: vscode.ExtensionContext) {
       );
     },
     checkForUpdate: async () => {
+      if (!vscode.workspace.isTrusted) {
+        vscode.window.showWarningMessage(
+          'Cannot check for binary updates in an untrusted workspace. Grant workspace trust first.',
+        );
+        return;
+      }
       const downloader = new BinaryDownloader(context, outputChannel);
       await context.globalState.update('perl-lsp.lastUpdateCheck', 0);
       await downloader.checkForUpdateSilent();
@@ -688,6 +694,26 @@ export async function activate(context: vscode.ExtensionContext) {
     };
   }
 
+  // Workspace Trust gate: do not download binaries or spawn the language
+  // server in an untrusted workspace. Defer startup until trust is granted.
+  if (!vscode.workspace.isTrusted) {
+    outputChannel.appendLine(
+      '[startup] Workspace is not trusted — deferring language server startup until trust is granted.',
+    );
+    const trustDisposable = vscode.workspace.onDidGrantWorkspaceTrust(() => {
+      outputChannel.appendLine('[startup] Workspace trust granted — starting language server.');
+      startLanguageClientAfterActivation(context, whatsNewManager);
+    });
+    context.subscriptions.push(trustDisposable);
+    languageClientStartupMetrics.markMilestone('activate_returned');
+    return {
+      getLanguageClientStartupMetrics,
+      getFeatureActivationMetrics,
+      markLanguageClientStartupMilestone,
+      stop: deactivate,
+    };
+  }
+
   startLanguageClientAfterActivation(context, whatsNewManager);
   languageClientStartupMetrics.markMilestone('activate_returned');
   return {
@@ -732,11 +758,18 @@ async function finishStartupAfterActivation(
   // Background update check — fire-and-forget after startup completes.
   // Runs at most once per updateCheckInterval hours; no-ops when serverPath
   // is user-managed, channel='tag', or updateCheckInterval=0.
-  const updateDownloader = new BinaryDownloader(context, outputChannel);
-  updateDownloader.checkForUpdateSilent().catch((err: unknown) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    outputChannel.appendLine(`[update-check] Error: ${msg}`);
-  });
+  // Skipped in untrusted workspaces as a defense-in-depth measure.
+  if (vscode.workspace.isTrusted) {
+    const updateDownloader = new BinaryDownloader(context, outputChannel);
+    updateDownloader.checkForUpdateSilent().catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      outputChannel.appendLine(`[update-check] Error: ${msg}`);
+    });
+  } else {
+    outputChannel.appendLine(
+      '[update-check] Skipped background update check in untrusted workspace.',
+    );
+  }
 
   // First-run onboarding: show welcome notification once per installation.
   const onboarding = featureActivationMetrics.measure(
@@ -886,6 +919,16 @@ async function getServerPath(
 
   // Check if auto-download is enabled
   const autoDownload = config.get<boolean>('autoDownload', true);
+
+  if (autoDownload && !vscode.workspace.isTrusted) {
+    // Defense-in-depth: the activate() trust gate already prevents server
+    // startup in untrusted workspaces, but getServerPath can also be reached
+    // via reinstall/restart paths. Block binary download here too.
+    outputChannel.appendLine(
+      'Perl LSP binary not found, but auto-download is skipped in untrusted workspaces.',
+    );
+    return { path: null, source: 'unavailable' };
+  }
 
   if (autoDownload) {
     outputChannel.appendLine('Perl LSP binary not found, attempting to download...');
@@ -1452,6 +1495,19 @@ async function readInstalledServerVersion(serverPath: string): Promise<string | 
 async function reinstallServerBinary(
   context: vscode.ExtensionContext,
 ): Promise<ReinstallCommandResult> {
+  if (!vscode.workspace.isTrusted) {
+    vscode.window.showErrorMessage(
+      'Cannot reinstall the perl-lsp binary in an untrusted workspace. Grant workspace trust first.',
+    );
+    return {
+      ok: false,
+      serverPath: currentServerPath ?? '',
+      target: '',
+      source: getManagedBinarySource(),
+      error: 'workspace is not trusted',
+    };
+  }
+
   outputChannel.show(true);
   outputChannel.appendLine('Reinstalling perllsp binary...');
 

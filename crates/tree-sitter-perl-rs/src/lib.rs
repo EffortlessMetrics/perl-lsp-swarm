@@ -71,7 +71,9 @@ mod query;
 /// Mirrors `tree_sitter::InputEdit` field layout for drop-in compatibility.
 pub use perl_parser_core::edit::Edit as InputEdit;
 #[cfg(feature = "queries")]
-pub use query::{Query, QueryCapture, QueryCursor, QueryError, QueryMatch, QueryMatches};
+pub use query::{
+    Query, QueryCapture, QueryCursor, QueryError, QueryMatch, QueryMatches, QuerySetting,
+};
 
 /// A tree-sitter-compatible source position.
 ///

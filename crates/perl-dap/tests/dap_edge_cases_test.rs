@@ -169,11 +169,16 @@ fn test_dap_variables_complex_scopes() -> TestResult {
                         .get("variables")
                         .and_then(|v| v.as_array())
                         .ok_or("Expected variables array")?;
-                    // Should return placeholders for valid refs even without session
+                    // Locals scope (ref=11) returns empty in fallback mode (issue #1006):
+                    // no fake $self/@_ placeholders when B module is unavailable.
                     if var_ref == 11 {
                         assert!(
-                            !variables.is_empty(),
-                            "Local scope should have placeholder variables"
+                            variables.is_empty(),
+                            "#1006 regression: Locals fallback must be empty; got: {:?}",
+                            variables
+                                .iter()
+                                .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+                                .collect::<Vec<_>>()
                         );
                     }
                 } else {
@@ -459,8 +464,10 @@ fn test_dap_attach_process_id_mode() -> TestResult {
     let mut adapter = DebugAdapter::new();
 
     // PID attach should succeed in signal-control mode.
+    // #4638: use current process PID so verify_attach_target succeeds.
+    let pid = std::process::id();
     let attach_args = json!({
-        "processId": 12345
+        "processId": pid
     });
 
     let response = adapter.handle_request(1, "attach", Some(attach_args));
@@ -469,7 +476,7 @@ fn test_dap_attach_process_id_mode() -> TestResult {
             assert_eq!(command, "attach");
             assert!(success, "PID attach should succeed");
             let body = body.ok_or("Expected attach body")?;
-            assert_eq!(body.get("processId").and_then(|v| v.as_u64()), Some(12345));
+            assert_eq!(body.get("processId").and_then(|v| v.as_u64()), Some(pid as u64));
             let msg = message.ok_or("Expected attach message")?;
             assert!(msg.contains("signal-control mode"));
         }
