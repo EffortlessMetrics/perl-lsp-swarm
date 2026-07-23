@@ -251,30 +251,26 @@ impl LspServer {
             ));
         }
 
-        // Detect early when the cursor is on a `->method` call: if find_definition
-        // returns the ENCLOSING subroutine (not the callee) because the semantic
-        // analyzer registers subs with their full body span, skip the in-file hover
-        // and let the inherited-method path below handle it.  The guard is conservative:
-        // it only fires when the token at the cursor does NOT match the returned
-        // symbol name AND an arrow receiver exists at the cursor position.
+        // Detect early when the cursor is on a `->method` call: defer to the
+        // inherited-method path so class-model metadata (including modifiers)
+        // is surfaced at call sites instead of the generic subroutine card.
         let symbol_at_cursor = analyzer.find_definition(offset).filter(|sym| {
             let token = Self::get_token_at_position_static(text, offset);
-            // If the token matches the symbol name this IS a direct hover on that
-            // symbol (e.g. hovering on `sub run` where cursor is on `run`).
-            // If the token differs AND an arrow receiver exists, the cursor is on a
-            // method call inside the sub body — defer to the inherited-method path.
-            if token == sym.name || token.is_empty() {
-                return true; // keep — cursor is directly on the symbol
-            }
             #[cfg(feature = "workspace")]
             {
                 if matches!(
                     sym.kind,
                     crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
                 ) && Self::extract_arrow_receiver(text, offset).is_some()
+                    && sym.declaration.as_deref() != Some("has")
                 {
-                    return false; // discard — cursor is on a method call inside a sub body
+                    return false;
                 }
+            }
+            // If the token matches the symbol name this IS a direct hover on that
+            // symbol (e.g. hovering on `sub run` where cursor is on `run`).
+            if token == sym.name || token.is_empty() {
+                return true; // keep — cursor is directly on the symbol
             }
             true
         });
