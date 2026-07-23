@@ -756,23 +756,8 @@ pub fn run(config: SweepConfig) -> Result<()> {
     }
     print_summary(&report);
 
-    // Write output if requested
-    if let Some(ref output_path) = config.output_path {
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent).context("Failed to create output directory")?;
-        }
-        let json = serde_json::to_string_pretty(&report).context("Failed to serialize report")?;
-        fs::write(output_path, json).context("Failed to write report file")?;
-        println!("\nReport written to: {}", output_path.display());
-    }
-
-    // Write receipt if requested
-    if config.receipt {
-        let receipt_path = write_sweep_receipt(&report)?;
-        eprintln!("Receipt written to: {}", receipt_path.display());
-    }
-
-    // Enforcement: strict clean for manifest mode, ratchet for system mode
+    // Enforcement for manifest mode must run before writing the committed
+    // baseline/receipt so a dirty sweep cannot overwrite a zero-error gate.
     if use_manifest && config.enforce {
         let violations = enforce_strict_clean(&report);
         if !violations.is_empty() {
@@ -789,6 +774,22 @@ pub fn run(config: SweepConfig) -> Result<()> {
             ));
         }
         println!("Strict clean: all {} files parse without errors", report.total_files);
+    }
+
+    // Write output if requested
+    if let Some(ref output_path) = config.output_path {
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent).context("Failed to create output directory")?;
+        }
+        let json = serde_json::to_string_pretty(&report).context("Failed to serialize report")?;
+        fs::write(output_path, json).context("Failed to write report file")?;
+        println!("\nReport written to: {}", output_path.display());
+    }
+
+    // Write receipt if requested
+    if config.receipt {
+        let receipt_path = write_sweep_receipt(&report)?;
+        eprintln!("Receipt written to: {}", receipt_path.display());
     }
 
     // Baseline comparison and ratchet enforcement (system mode)
