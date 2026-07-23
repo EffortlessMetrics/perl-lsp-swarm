@@ -1078,17 +1078,88 @@ impl BodyLowerer {
             }
 
             HirExpr::Ternary { condition, then_expr, else_expr } => {
-                *self.unsupported.entry("Ternary").or_insert(0) += 1;
+                // Canonical PIR-A ternary lowering (#4859): emit a first-class
+                // Branch node with a condition link and per-arm Branch edges,
+                // mirroring the statement `if`/`unless` body path (#4795), rather
+                // than counting the construct as unsupported.
+                //
+                // Context: unlike a statement branch (Void — it yields no value),
+                // a ternary is a value-producing rvalue. Its result context is
+                // inherited from the enclosing expression's position, which this
+                // slice does not model, so the node is `Unknown` (fail-closed):
+                // Void would falsely claim the ternary yields nothing, and
+                // Scalar/List would over-claim a context that cannot be proven
+                // statically here.
+                //
+                // Condition link (v0 approximation): the last PIR node lowered
+                // from the condition expression, when it lowered to at least one
+                // node (`$c ? ...`). A constant/opaque condition emits no node,
+                // so the link stays None (fail-closed). `next_id == nodes.len()`
+                // holds because `push_body_node` is the only node-emitting path.
+                //
+                // Known v0 imprecision (tracked follow-up): when a ternary is
+                // *itself* the condition of an enclosing `if`/`while`/`unless`
+                // (`if ($p ? 1 : 2) { ... }`), that enclosing construct's own
+                // `next_id - 1` condition link resolves to this Branch node rather
+                // than a value node — the same "last lowered node" heuristic the
+                // compound-condition (`$a && $b`) case already accepts, extended to
+                // a control node. Making the enclosing link skip control nodes is a
+                // separate condition-link-precision slice, not this one.
+                let id_before_condition = self.next_id;
                 self.lower_expr(body, *condition, file);
-                // The selected arms are mutually exclusive. Do not connect the
-                // final node of the true arm to the first node of the false arm,
-                // or either arm to a later sibling through the shared synthetic
-                // body scope.
-                self.last_in_scope.remove(&None);
-                self.lower_expr(body, *then_expr, file);
-                self.last_in_scope.remove(&None);
-                self.lower_expr(body, *else_expr, file);
-                self.last_in_scope.remove(&None);
+                let condition = (self.next_id > id_before_condition)
+                    .then(|| PirId::from_index(self.next_id - 1));
+
+                // Emit the Branch node. It keeps the condition -> Branch
+                // fallthrough that `push_body_node` adds from the last condition
+                // node (control evaluates the condition, then branches).
+                let anchor = self.make_body_anchor(range);
+                let branch_id = self.push_body_node(
+                    anchor,
+                    PirOperation::Branch { condition },
+                    PirContext::Unknown,
+                    None,
+                    file,
+                );
+
+                // Each arm is a mutually exclusive rvalue region reached from the
+                // Branch node by an explicit `Branch` edge, never by fallthrough.
+                // A ternary arm is a single expression (not a block), so lower it
+                // via the expr-arm helper rather than `lower_branch_arm`.
+                let then_falls_through =
+                    self.lower_branch_expr_arm(body, *then_expr, branch_id, file);
+                let else_falls_through =
+                    self.lower_branch_expr_arm(body, *else_expr, branch_id, file);
+
+                // Reachable consumer — but only if control can actually reach it.
+                // A ternary is a value-producing rvalue: its consumer (the
+                // assignment, call argument, `return` operand, etc. the caller
+                // pushes *next*) is reached once a *non-terminal* arm has run.
+                //
+                // If at least one arm falls through, point `last_in_scope[None]`
+                // at the Branch node so the consumer inherits a `Fallthrough` edge
+                // and stays reachable. Severing unconditionally (as the statement
+                // `if`/`unless` path does, since a statement's successor is a
+                // *separate* statement) would orphan the consumer — `return $c ?
+                // $a : $b;` would leave the `Return` node with no incoming edge,
+                // contradicting the operand-reachability guarantee the simple
+                // paths uphold (`pir_a_return_value_read_is_reachable`).
+                //
+                // But if *both* arms are terminal (`$c ? return 1 : return 2`),
+                // control never reaches the consumer; the arms already severed
+                // their live tails, so leave `last_in_scope[None]` empty and the
+                // consumer (e.g. a following `my $dead = ...`) correctly stays
+                // unreachable rather than spuriously fallthrough-linked.
+                //
+                // Anchoring the fallthrough at the Branch node conservatively
+                // over-approximates (the edge does not pass through an arm node);
+                // precise per-arm value-merge edges are the deferred value-join
+                // follow-up (#4859 non-goals).
+                if then_falls_through || else_falls_through {
+                    self.last_in_scope.insert(None, branch_id);
+                } else {
+                    self.last_in_scope.remove(&None);
+                }
             }
 
             HirExpr::Return { value } => {
@@ -1308,6 +1379,51 @@ impl BodyLowerer {
                 kind: PirEdgeKind::Branch,
             });
         }
+    }
+
+    /// Lower one ternary arm expression, connect it to its `Branch` node, and
+    /// report whether the arm can fall through to the ternary's consumer.
+    ///
+    /// Mirrors [`lower_branch_arm`](Self::lower_branch_arm) but for a single
+    /// expression arm: a ternary `COND ? THEN : ELSE` arm is an `HirExprId`, not
+    /// a block. Arms are mutually exclusive rvalue regions reached from the
+    /// `Branch` node only by an explicit `Branch` edge; severing `last_in_scope`
+    /// first drops the fallthrough predecessor (the `Branch` node itself, or the
+    /// previous arm's last node) so the arm's first node is not linked by a
+    /// spurious `Fallthrough`. An arm that emits no node (e.g. a constant `1`)
+    /// contributes no edge.
+    ///
+    /// Returns `true` when control can leave the arm and reach whatever consumes
+    /// the ternary, and `false` when the arm is terminal (e.g. `return`). The
+    /// only non-falling-through shape is an arm that emitted node(s) and then
+    /// severed its own `last_in_scope[None]` (a terminal control transfer such as
+    /// `$c ? return 1 : ...`); an empty arm (constant, no node) and a live-tailed
+    /// arm both fall through. The caller uses this to reconnect the ternary's
+    /// consumer only when at least one arm can actually reach it, so
+    /// `$c ? return 1 : return 2; my $dead = ...;` correctly leaves `$dead`
+    /// unreachable instead of spuriously fallthrough-linked.
+    fn lower_branch_expr_arm(
+        &mut self,
+        body: &HirBody,
+        expr: HirExprId,
+        branch_id: PirId,
+        file: &HirFile,
+    ) -> bool {
+        self.last_in_scope.remove(&None);
+        let arm_first = self.next_id;
+        self.lower_expr(body, expr, file);
+        let emitted = self.next_id > arm_first;
+        if emitted {
+            self.edges.push(PirEdge {
+                from: branch_id,
+                to: Some(PirId::from_index(arm_first)),
+                kind: PirEdgeKind::Branch,
+            });
+        }
+        // Falls through unless it emitted node(s) and then severed its live tail
+        // (a terminal transfer). An empty arm emits nothing but still falls
+        // through with its constant value.
+        !emitted || self.last_in_scope.contains_key(&None)
     }
 
     fn finish(self) -> PirGraph {
