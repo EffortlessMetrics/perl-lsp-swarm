@@ -9,7 +9,9 @@ checkout containing both live repositories, and does not authorize an ancestry
 merge, release sync, version change, tag, or publication.
 
 The authoritative JSON ledger and receipt must be generated after Gate 0 below
-runs against fetched refs in one Git object database.
+runs against immutable fetched SHAs in one Git object database. Patch-ID signs
+are deliberately treated as unknown until that command runs: semantic
+supersession does not imply `git cherry` patch equivalence.
 
 ## Observation
 
@@ -19,7 +21,7 @@ runs against fetched refs in one Git object database.
 | Swarm repository | `EffortlessMetrics/perl-lsp-swarm` |
 | Observed swarm `main` | `a86f254d64f968c308302a9a75d2459832124261` |
 | Release repository | `EffortlessMetrics/perl-lsp` |
-| Observed release `master` | `646c34bb8b7c9ff846c31e7732172696e4a8d646` |
+| Audited release `master` | `646c34bb8b7c9ff846c31e7732172696e4a8d646` |
 | Last delivered sync PR merge | `2c5ca9a8d922b03c43a884a909bf00d6deef8051` (`perl-lsp#10005`) |
 | Pinned swarm cut in that sync | `f6b7b2c6626fbefbf01c9c9934cac5789186f8b2` |
 | Disposition authority | `perl-lsp-swarm#3161` |
@@ -45,27 +47,30 @@ After `perl-lsp#10005`, shared-tree changes continued landing directly on
 sync protocol's hard invariant. Some of those changes were later implemented in
 swarm under different commit IDs; others remain absent from the live swarm tree.
 
-Exact commit ancestry and content equivalence are therefore separate questions:
+Exact commit ancestry, semantic equivalence, and patch-ID equivalence are
+separate questions:
 
-- a patch-equivalent swarm commit can make a source patch unnecessary while the
-  original source SHA remains absent from ancestry;
+- a broader swarm implementation can make a source patch unnecessary while
+  still appearing as a target-unique `+` row under `git cherry`;
+- an exact patch-equivalent `-` row needs no target-unique ledger entry, but its
+  source-to-swarm mapping still belongs in the audit evidence;
 - a final `-s ours` ancestry merge can preserve exact source history without
   importing the older release tree, but only after every useful source-only
   change has been ported or explicitly dispositioned.
 
 ## Post-`#10005` incident inventory
 
-The classifications below are evidence-backed working dispositions. Gate 0 must
-confirm the patch-ID set before they become the authoritative reconciliation
-ledger.
+The classifications below are evidence-backed **semantic working
+dispositions**. Gate 0 determines which commits are target-unique `+` rows and
+therefore require authoritative JSON ledger entries.
 
 | `perl-lsp` commit | Subject | Working disposition | Recovery slice / evidence |
 |---|---|---|---|
-| `6f27b566a54487a585b3285b4692db11098fb389` | `fix(completion): preserve receiver in method edits (#10006)` | `superseded_by_newer_architecture` for implementation; `port_to_swarm` for the end-to-end regression | Slice C. Current swarm already keeps the receiver while replacing the typed token after `->`; salvage the `$object->register` LSP `textEdit` proof. |
+| `6f27b566a54487a585b3285b4692db11098fb389` | `fix(completion): preserve receiver in method edits (#10006)` | `port_to_swarm` | Slice C. Port only the missing `$object->register` end-to-end LSP `textEdit` regression. The source implementation is superseded by swarm's newer completion architecture and must not be replayed. |
 | `8eafc633fa575ae56500aaba8f3a7eb01d6db075` | `feat(workspace): detect Carton and Carmel roots (#3553)` | `port_to_swarm` | Slice C. Add current-tree dependency-root detection and request-level proof. |
-| `92d416cc7ce5f4d03fce90088dc0c0a97992fb6f` | `fix(format): match leading closers to opener stack (#9992)` | `already_equivalent_in_swarm` | Swarm `e1cb1ee7a42209172ced68c20f11707927c8e845`. Do not replay. |
-| `11f19d86ad1a52de9e900be1b8586f734be35054` | `fix(critic): route printf fixes through structured metadata (#9984)` | `already_equivalent_in_swarm` | Swarm `ae0c9fcc2a6439a4e53396fdcba5ea3f56f66f10`. Do not replay. |
-| `ddb8461bf527f21d49ced8f26471e1a3f3733eea` | `test(critic): isolate legacy engine diagnostic fixtures (#9994)` | `already_equivalent_in_swarm` | Swarm `6cb24158fe582c7ce01ea2348dfe55681e0f730e`. Do not replay. |
+| `92d416cc7ce5f4d03fce90088dc0c0a97992fb6f` | `fix(format): match leading closers to opener stack (#9992)` | `already_equivalent_in_swarm` | Swarm `e1cb1ee7a42209172ced68c20f11707927c8e845` is a broader semantic superset. Do not replay. If Gate 0 emits `+`, retain this classification in the ledger. |
+| `11f19d86ad1a52de9e900be1b8586f734be35054` | `fix(critic): route printf fixes through structured metadata (#9984)` | `already_equivalent_in_swarm` | Swarm `ae0c9fcc2a6439a4e53396fdcba5ea3f56f66f10` is a broader semantic superset. Do not replay. If Gate 0 emits `+`, retain this classification in the ledger. |
+| `ddb8461bf527f21d49ced8f26471e1a3f3733eea` | `test(critic): isolate legacy engine diagnostic fixtures (#9994)` | `already_equivalent_in_swarm` | Swarm `6cb24158fe582c7ce01ea2348dfe55681e0f730e` is a broader semantic superset. Do not replay. If Gate 0 emits `+`, retain this classification in the ledger. |
 | `8de3ad7ed92b31bf1e11df4b586210e2b5814121` | `fix(release): publish GHCR images as multi-arch manifests (#9971)` | `port_to_swarm` | Slice B. Reimplement against current workflow pins and verify both manifest platforms. |
 | `76568184716ba9939fbe5d9664c4aba23196f993` | `test(workspace): exercise duplicate anchor fail-closed guard (#10014)` | `port_to_swarm` | Slice C. Adapt the test-only injection seam to the current workspace index. |
 | `8752a75a2f44bf0271193f4494322d4e0749169a` | `fix(quality): require issue references on ignored tests (#4912)` | `port_to_swarm` | Slice B. Add the shared parser, gate, CI wiring, and current ignored-test references. |
@@ -84,44 +89,59 @@ ledger.
 | `42de2c1f5a64da4b27fdbb2f4a4a855ae7dd2595` | `docs(vscode): remove stale setting references (#10031)` | `port_to_swarm` | Slice D. Extend manifest-derived parity over every maintained documentation surface. |
 | `646c34bb8b7c9ff846c31e7732172696e4a8d646` | `docs(vscode): remove stale schema setting (#10033)` | `port_to_swarm` | Slice D. Include `CONFIGURATION_SCHEMA.md` in parity coverage. |
 
-Working totals for this incident interval:
+Working semantic totals for this incident interval:
 
 ```text
-18  port_to_swarm content changes
- 3  already_equivalent_in_swarm
- 1  superseded implementation with one regression proof to salvage
-22  source commits accounted for
+19  port_to_swarm dispositions (including one test-only salvage)
+ 3  already_equivalent_in_swarm dispositions
+22  source commits semantically accounted for
+ ?  patch-equivalent `-` versus target-unique `+` signs until Gate 0 runs
 ```
+
+The authoritative JSON ledger contains only target-unique `+` rows, with exactly
+one classification per row.
 
 ## Gate 0: authoritative patch-ID reconciliation
 
 Run in a full-history swarm checkout that contains both remote refs:
 
 ```bash
-git fetch origin main
-git fetch release master
+git fetch --prune origin main
+git fetch --prune release master
 
-SWARM_SHA="$(git rev-parse origin/main)"
-RELEASE_SHA="$(git rev-parse release/master)"
+AUDITED_RELEASE_SHA=646c34bb8b7c9ff846c31e7732172696e4a8d646
 INCIDENT_BASE=2c5ca9a8d922b03c43a884a909bf00d6deef8051
+SWARM_SHA="$(git rev-parse 'origin/main^{commit}')"
+RELEASE_SHA="$(git rev-parse 'release/master^{commit}')"
+
+# Fail closed if the release branch moved beyond the audited incident set.
+test "${RELEASE_SHA}" = "${AUDITED_RELEASE_SHA}" || {
+  echo "release/master advanced to ${RELEASE_SHA}; extend and regenerate the audit" >&2
+  exit 1
+}
+
+# Resolve every immutable input before comparison.
+git cat-file -e "${INCIDENT_BASE}^{commit}"
+git cat-file -e "${SWARM_SHA}^{commit}"
+git cat-file -e "${RELEASE_SHA}^{commit}"
 
 # Exact incident list.
 git rev-list --reverse --no-merges \
   "${INCIDENT_BASE}..${RELEASE_SHA}"
 
-# Patch equivalence bounded to the incident interval.
-git cherry -v origin/main release/master "${INCIDENT_BASE}"
+# Patch equivalence bounded to the incident interval and immutable observation.
+git cherry -v "${SWARM_SHA}" "${RELEASE_SHA}" "${INCIDENT_BASE}"
 ```
 
-Expected from the evidence above, but not yet claimed as executed:
+Do not predict the `-`/`+` distribution. For every observed `+` result, create
+one ledger row with one allowed classification and concrete evidence. A broader
+swarm implementation can still yield `+` and should then be classified
+`already_equivalent_in_swarm`. Record any observed `-` mapping in this audit or
+the receipt evidence, but do not create a false target-unique ledger row for it.
 
-```text
-3 patch-equivalent `-` results
-19 target-unique `+` results
-```
-
-If the output differs, update this audit before creating the authoritative JSON
-ledger. Never force the observed output to fit these working classifications.
+The exact `SWARM_SHA`, `RELEASE_SHA`, command output, and exit status must be
+recorded in the generated receipt. If `release/master` advances, extend the
+incident inventory before generating either artifact.
 
 Then generate and validate:
 
@@ -129,10 +149,6 @@ Then generate and validate:
 docs/swarm/source-syncs/2026-07-23-recover-perl-lsp-646c34b.json
 docs/swarm/source-syncs/2026-07-23-recover-perl-lsp-646c34b-receipt.json
 ```
-
-Every `+` row must have one allowed classification and concrete evidence. The
-three `-` rows belong in this audit/equivalence record rather than as false
-target-unique ledger entries.
 
 ## Recovery slices
 
@@ -153,8 +169,9 @@ blindly.
 ### Slice C — product and regression repairs
 
 Port Carton/Carmel roots, qualified subroutine resolution, and duplicate-anchor
-coverage. Salvage only the end-to-end completion regression from `6f27b566`; do
-not replace swarm's newer completion architecture with the source implementation.
+coverage. For `6f27b566`, port only the missing end-to-end completion regression;
+do not replace swarm's newer completion architecture with the source
+implementation.
 
 ### Slice D — VS Code documentation parity
 
@@ -177,26 +194,44 @@ decision says otherwise.
 ## Final ancestry step
 
 Only after all old and new target-unique work has a final disposition and every
-selected content port is merged, open a dedicated ancestry-only PR:
+selected content port is merged, open a dedicated ancestry-only PR from an
+immutable swarm parent and merge the exact audited release SHA:
 
 ```bash
-git switch -c sync/record-perl-lsp-646c34b origin/main
-git merge --no-ff -s ours release/master \
+git fetch --prune origin main
+git fetch --prune release master
+
+AUDITED_RELEASE_SHA=646c34bb8b7c9ff846c31e7732172696e4a8d646
+SWARM_PARENT_SHA="$(git rev-parse 'origin/main^{commit}')"
+CURRENT_RELEASE_SHA="$(git rev-parse 'release/master^{commit}')"
+
+test "${CURRENT_RELEASE_SHA}" = "${AUDITED_RELEASE_SHA}" || {
+  echo "release/master advanced to ${CURRENT_RELEASE_SHA}; audit new commits first" >&2
+  exit 1
+}
+
+git switch -C sync/record-perl-lsp-646c34b "${SWARM_PARENT_SHA}"
+git merge --no-ff -s ours "${AUDITED_RELEASE_SHA}" \
   -m "sync: record perl-lsp/master ancestry through 646c34bb"
 ```
 
 Required proof:
 
 ```bash
-# Exactly two parents.
-test "$(git show -s --format='%P' HEAD | wc -w)" -eq 2
+PARENTS="$(git show -s --format='%P' HEAD)"
+FIRST_PARENT="$(printf '%s\n' "${PARENTS}" | awk '{print $1}')"
+SECOND_PARENT="$(printf '%s\n' "${PARENTS}" | awk '{print $2}')"
 
-# The merge changes no swarm tree content.
-git diff --exit-code HEAD^1 HEAD
+# Exactly two parents, in the intended order.
+test "$(printf '%s\n' "${PARENTS}" | wc -w)" -eq 2
+test "${FIRST_PARENT}" = "${SWARM_PARENT_SHA}"
+test "${SECOND_PARENT}" = "${AUDITED_RELEASE_SHA}"
 
-# Exact release head is now an ancestor.
-git merge-base --is-ancestor \
-  646c34bb8b7c9ff846c31e7732172696e4a8d646 HEAD
+# The ancestry merge changes no swarm tree content.
+git diff --exit-code "${FIRST_PARENT}" HEAD
+
+# The exact audited release head is now reachable.
+git merge-base --is-ancestor "${AUDITED_RELEASE_SHA}" HEAD
 
 git diff --check
 cargo check --workspace --locked
@@ -210,6 +245,8 @@ or rebase delivery destroys the second-parent proof.
 - Do not perform the next swarm-to-release complete-tree promotion while a
   useful source-only product/test change remains unported or unclassified.
 - Do not land additional shared-tree development directly on `perl-lsp/master`.
+- If `release/master` advances beyond the audited SHA, extend the inventory and
+  regenerate the disposition packet before Gate 0 or the ancestry merge.
 - Do not produce a receipt claiming commands that were not executed.
 - Do not combine the product ports, release-truth train, and ancestry merge into
   one unreviewable megabranch.
