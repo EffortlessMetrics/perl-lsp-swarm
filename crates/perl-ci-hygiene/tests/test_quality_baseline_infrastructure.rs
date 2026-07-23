@@ -39,8 +39,10 @@ fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) -> TestResult<()> {
 
 fn cargo_toml_has_dev_dep(crate_name: &str, dep: &str) -> TestResult<bool> {
     let manifest = workspace_root().join("crates").join(crate_name).join("Cargo.toml");
-    let content = fs::read_to_string(manifest)?;
-    Ok(content.contains("[dev-dependencies]") && content.contains(dep))
+    let content = fs::read_to_string(&manifest)?;
+    let value: toml::Value =
+        toml::from_str(&content).map_err(|err| format!("parsing {}: {err}", manifest.display()))?;
+    Ok(value.get("dev-dependencies").and_then(|table| table.get(dep)).is_some())
 }
 
 fn rust_files_under(path: &Path) -> TestResult<Vec<PathBuf>> {
