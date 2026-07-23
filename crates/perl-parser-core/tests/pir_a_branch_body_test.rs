@@ -210,3 +210,142 @@ fn pir_a_branch_preserves_operation_count_invariant() -> TestResult {
     assert_eq!(graph.receipt.node_count, graph.nodes.len());
     Ok(())
 }
+
+/// Compound condition ($a && $b) is not modeled as one value node, so the
+/// condition link points at the LAST lowered operand ($b), not $a and not
+/// a synthetic node for && itself. Locks down the v0 approximation
+/// documented at the HirExpr::Branch call site in lower.rs so a future
+/// change that accidentally links the FIRST operand (or drops the link
+/// entirely) is caught.
+#[test]
+fn pir_a_branch_compound_condition_links_to_last_operand() -> TestResult {
+    let graph = parse_and_lower("if ($a && $b) { my $y = 1; }");
+    let branch = single_branch(&graph)?;
+    let cond_id = branch_condition(branch)?.ok_or("compound condition must still link")?;
+    let cond_node = graph.node(cond_id).ok_or("condition link must resolve to a real node")?;
+    assert!(
+        is_read_of(cond_node, "b"),
+        "condition link for a-and-b must point at the last operand b, got {:?}",
+        cond_node.operation
+    );
+    assert!(!is_read_of(cond_node, "a"), "condition link must not point at the first operand a");
+    Ok(())
+}
+
+/// When an arm first statement is a declaration with a multi-node
+/// initializer, the Branch edge must land on the declaration Write node --
+/// the first node push_body_node emits for that statement -- not on a Read
+/// produced while lowering the right-hand side. HirStmt::Let emits the
+/// Write before lowering the initializer RHS, so arm_first (captured before
+/// lower_block) is the Write id.
+#[test]
+fn pir_a_branch_edge_targets_arm_write_not_rhs_read() -> TestResult {
+    let graph = parse_and_lower("if ($x) { my $y = $a + $b; }");
+    let branch = single_branch(&graph)?;
+    let y_write = write_node(&graph, "y")?;
+    assert!(
+        graph.edges.iter().any(|e| {
+            e.from == branch.id && e.to == Some(y_write.id) && e.kind == PirEdgeKind::Branch
+        }),
+        "Branch edge must target the arm Write node y, not an operand Read"
+    );
+    for ident in ["a", "b"] {
+        let operand = graph
+            .nodes
+            .iter()
+            .find(|n| is_read_of(n, ident))
+            .ok_or_else(|| format!("read of {ident} was not lowered"))?;
+        assert!(
+            !graph.edges.iter().any(|e| e.from == branch.id
+                && e.to == Some(operand.id)
+                && e.kind == PirEdgeKind::Branch),
+            "Branch edge must not target the {ident} operand read"
+        );
+    }
+    Ok(())
+}
+
+/// Nested if produces two independent Branch structures: the outer Branch
+/// edge lands on the inner branch condition read (the inner if first
+/// lowered node, per the same arm-entry convention as any other statement),
+/// and the inner Branch own condition link and Branch edge are scoped to
+/// itself. This guards against the outer and inner branch edges being
+/// swapped, merged, or cross-wired.
+#[test]
+fn pir_a_nested_branch_edges_are_independent() -> TestResult {
+    let graph = parse_and_lower("if ($x) { if ($y) { my $z = 1; } }");
+    let branches = branch_nodes(&graph);
+    if branches.len() != 2 {
+        return Err(format!("expected exactly two Branch nodes, got {}", branches.len()).into());
+    }
+    let outer = branches[0];
+    let inner = branches[1];
+
+    let outer_cond = graph
+        .node(branch_condition(outer)?.ok_or("outer condition must link")?)
+        .ok_or("outer condition link must resolve")?;
+    assert!(is_read_of(outer_cond, "x"), "outer Branch condition must read x");
+    let inner_cond_id = branch_condition(inner)?.ok_or("inner condition must link")?;
+    let inner_cond = graph.node(inner_cond_id).ok_or("inner condition link must resolve")?;
+    assert!(is_read_of(inner_cond, "y"), "inner Branch condition must read y");
+
+    assert!(
+        graph.edges.iter().any(|e| {
+            e.from == outer.id && e.to == Some(inner_cond_id) && e.kind == PirEdgeKind::Branch
+        }),
+        "outer Branch edge must target the inner branch condition read"
+    );
+    assert!(
+        !graph.edges.iter().any(|e| {
+            e.from == outer.id && e.to == Some(inner.id) && e.kind == PirEdgeKind::Branch
+        }),
+        "outer Branch edge must not target the inner Branch node directly"
+    );
+
+    let z_write = write_node(&graph, "z")?;
+    assert!(
+        graph.edges.iter().any(|e| {
+            e.from == inner.id && e.to == Some(z_write.id) && e.kind == PirEdgeKind::Branch
+        }),
+        "inner Branch edge must target the z write"
+    );
+    Ok(())
+}
+
+/// An arm that lowers zero nodes (empty block) must not emit a Branch edge
+/// at all -- there is no node for it to point at. This also guards the
+/// next_id greater-than arm_first guard from ever producing a dangling edge
+/// to an unrelated LATER statement first node.
+#[test]
+fn pir_a_branch_empty_then_arm_emits_no_branch_edge() -> TestResult {
+    let graph = parse_and_lower("if ($x) { } my $after = 1;");
+    let branch = single_branch(&graph)?;
+    assert!(
+        !graph.edges.iter().any(|e| e.from == branch.id && e.kind == PirEdgeKind::Branch),
+        "an empty arm must not emit any Branch edge"
+    );
+    let after_write = write_node(&graph, "after")?;
+    assert!(
+        !graph.edges.iter().any(|e| e.to == Some(after_write.id)),
+        "the statement after an empty-armed branch must have no incoming edge"
+    );
+    Ok(())
+}
+
+/// The statement following a full if/elsif/else chain must not inherit a
+/// Branch or Fallthrough edge from ANY arm -- complements
+/// pir_a_branch_no_cross_arm_fallthrough, which only checks the left/right
+/// pair, by checking the post-chain statement against all arms and all edge
+/// kinds.
+#[test]
+fn pir_a_branch_no_fallthrough_past_if_elsif_else_chain() -> TestResult {
+    let graph = parse_and_lower(
+        "if ($x) { my $left = 1; } elsif ($y) { my $mid = 2; } else { my $right = 3; } my $after = 9;",
+    );
+    let after_write = write_node(&graph, "after")?;
+    assert!(
+        !graph.edges.iter().any(|e| e.to == Some(after_write.id)),
+        "no arm may leave an edge into the statement after the if/elsif/else chain"
+    );
+    Ok(())
+}
