@@ -299,17 +299,19 @@ fn looks_like_perl_version(segment: &str) -> bool {
     }
     parts.next().is_some_and(|minor| {
         !minor.is_empty() && minor.chars().all(|c| c.is_ascii_digit() || c == '_')
-    })
+    }) && parts.all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit() || c == '_'))
 }
 
 fn portable_slowest_file_path(path: &str) -> String {
     let normalized = path.replace('\\', "/");
 
     const ANCHORS: &[&str] = &["/lib/", "/perl5/", "/site_perl/", "/vendor_perl/"];
-    for anchor in ANCHORS {
-        if let Some((_, after)) = normalized.rsplit_once(anchor) {
-            return after.to_string();
-        }
+    if let Some((index, anchor_len)) = ANCHORS
+        .iter()
+        .filter_map(|anchor| normalized.rfind(anchor).map(|index| (index, anchor.len())))
+        .max_by_key(|(index, _)| *index)
+    {
+        return normalized[index + anchor_len..].to_string();
     }
 
     // Versioned core installs: .../perl/<version>/Module/Foo.pm
@@ -557,7 +559,6 @@ pub fn resolve_manifest_modules(
     }
 
     resolved.sort();
-    resolved.dedup();
 
     if resolved.len() != modules.len() {
         return Err(color_eyre::eyre::eyre!(
@@ -570,7 +571,7 @@ pub fn resolve_manifest_modules(
         ));
     }
 
-    resolved.sort();
+    resolved.dedup();
     Ok(resolved)
 }
 
@@ -2298,7 +2299,11 @@ mod tests {
         );
         assert_eq!(
             portable_slowest_file_path("/opt/perl/lib/perl5/Digest/MD5.pm"),
-            "perl5/Digest/MD5.pm"
+            "Digest/MD5.pm"
+        );
+        assert_eq!(
+            portable_slowest_file_path("/usr/share/perl/5.38.invalid/Module/CoreList.pm"),
+            "5.38.invalid/Module/CoreList.pm"
         );
         assert_eq!(
             portable_slowest_file_path("/usr/share/perl/Module/CoreList.pm"),
