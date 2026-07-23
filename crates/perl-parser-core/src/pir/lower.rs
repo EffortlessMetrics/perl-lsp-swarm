@@ -907,26 +907,77 @@ impl BodyLowerer {
             }
 
             HirExpr::Branch { condition, then_block, elsif_arms, else_block, .. } => {
-                *self.unsupported.entry("Branch").or_insert(0) += 1;
+                // Canonical PIR-A branch lowering (#4795): emit a first-class
+                // Branch node with a condition link and per-arm Branch edges,
+                // rather than counting the construct as unsupported. `if`/`unless`
+                // are control-flow forks that yield no value at statement level,
+                // so the node is Void and anchored at the whole branch expression
+                // range (mirroring the flat `lower_branch` path).
+                //
+                // Condition link (v0 approximation): the last PIR node lowered
+                // from the condition expression, when the condition lowered to at
+                // least one node. A constant or otherwise opaque condition
+                // (`if (1)`) emits no PIR node, so the link stays None
+                // (fail-closed). Compound conditions (`$a && $b`) are not modeled
+                // as a single value node; the link points at the last lowered
+                // operand. `next_id == nodes.len()` holds in this lowerer because
+                // `push_body_node` is the only node-emitting path, so `next_id - 1`
+                // is the id of the last-pushed node.
+                let id_before_condition = self.next_id;
                 self.lower_expr(body, *condition, file);
-                // Body nodes currently share one synthetic scope. A branch arm
-                // is a mutually exclusive region, so do not let its final node
-                // become the fallthrough predecessor of the next arm or of the
-                // statement after the branch.
-                self.last_in_scope.remove(&None);
-                self.lower_block(body, *then_block, file);
-                for (condition, block) in elsif_arms {
+                let condition = (self.next_id > id_before_condition)
+                    .then(|| PirId::from_index(self.next_id - 1));
+
+                // Emit the Branch node. It keeps the condition -> Branch
+                // fallthrough that `push_body_node` adds from the last condition
+                // node (control evaluates the condition, then branches).
+                let anchor = self.make_body_anchor(range);
+                let branch_id = self.push_body_node(
+                    anchor,
+                    PirOperation::Branch { condition },
+                    PirContext::Void,
+                    None,
+                    file,
+                );
+
+                // Each arm is a mutually exclusive region reached from the Branch
+                // node by an explicit `Branch` edge, never by fallthrough. The
+                // then arm is emitted first.
+                self.lower_branch_arm(body, *then_block, branch_id, file);
+
+                // Each `elsif` contributes its own region. Its condition is
+                // evaluated on the else-path, so it must stay reachable rather
+                // than orphaned: fan a `Branch` edge from the Branch node to the
+                // first node of the elsif condition, then a second `Branch` edge
+                // (via `lower_branch_arm`) to the elsif arm body. PIR v0 models
+                // the whole if/elsif/else as a single Branch node, so the nested
+                // decision structure is conservatively flattened into per-region
+                // edges from that node.
+                for (elsif_condition, block) in elsif_arms {
                     self.last_in_scope.remove(&None);
-                    self.lower_expr(body, *condition, file);
-                    // An elsif condition only selects its arm; it is not an
-                    // unconditional predecessor of the arm body.
-                    self.last_in_scope.remove(&None);
-                    self.lower_block(body, *block, file);
+                    let condition_first = self.next_id;
+                    self.lower_expr(body, *elsif_condition, file);
+                    if self.next_id > condition_first {
+                        self.edges.push(PirEdge {
+                            from: branch_id,
+                            to: Some(PirId::from_index(condition_first)),
+                            kind: PirEdgeKind::Branch,
+                        });
+                    }
+                    // The elsif condition only selects its arm; it is not an
+                    // unconditional predecessor of the arm body, so
+                    // `lower_branch_arm` severs the fallthrough and connects the
+                    // body to the Branch node directly.
+                    self.lower_branch_arm(body, *block, branch_id, file);
                 }
+
                 if let Some(block) = else_block {
-                    self.last_in_scope.remove(&None);
-                    self.lower_block(body, *block, file);
+                    self.lower_branch_arm(body, *block, branch_id, file);
                 }
+
+                // The branch has no unconditional successor: a statement after
+                // the branch must not inherit a fallthrough predecessor from any
+                // arm (conservative, matches pre-#4795 behavior).
                 self.last_in_scope.remove(&None);
             }
 
@@ -1151,6 +1202,34 @@ impl BodyLowerer {
             package_context: None, // deferred: body arenas don't carry package_context yet
         });
         id
+    }
+
+    /// Lower one branch arm block and connect it to its `Branch` node.
+    ///
+    /// Arms are mutually exclusive regions: the arm is reached from the `Branch`
+    /// node only by an explicit `Branch` edge, never by fallthrough. Severing
+    /// `last_in_scope` first drops any fallthrough predecessor (the `Branch` node
+    /// itself for the then arm, the elsif condition for an elsif arm), so the
+    /// arm's first node is not linked by a spurious `Fallthrough` that would
+    /// duplicate the `Branch` edge or imply unconditional entry. An empty arm
+    /// (no lowered nodes) contributes no edge.
+    fn lower_branch_arm(
+        &mut self,
+        body: &HirBody,
+        block: crate::hir::HirBlockId,
+        branch_id: PirId,
+        file: &HirFile,
+    ) {
+        self.last_in_scope.remove(&None);
+        let arm_first = self.next_id;
+        self.lower_block(body, block, file);
+        if self.next_id > arm_first {
+            self.edges.push(PirEdge {
+                from: branch_id,
+                to: Some(PirId::from_index(arm_first)),
+                kind: PirEdgeKind::Branch,
+            });
+        }
     }
 
     fn finish(self) -> PirGraph {
