@@ -693,8 +693,19 @@ impl TypeInferenceEngine {
                         return Ok(Object(name.clone()));
                     }
                 }
-                Ok(Any)
+                // Consult the same accessor/method return-fact tables used by
+                // `infer_expr_fact_in_env` so that type inference for method calls
+                // is consistent regardless of which entry point the caller uses.
+                let fact = self.method_call_expr_fact(object, method, env);
+                Ok(fact.ty)
             }
+
+            // Class and Method are declarations, not value-producing expressions.
+            // Return Void so callers don't receive a spurious Any that could be
+            // confused with a real inferred type.  The return-type facts for
+            // methods are gathered separately by `collect_method_return_facts`
+            // and consumed via `method_call_expr_fact` above.
+            NodeKind::Class { .. } | NodeKind::Method { .. } => Ok(Void),
 
             _ => Ok(Any), // Default for unhandled nodes
         }

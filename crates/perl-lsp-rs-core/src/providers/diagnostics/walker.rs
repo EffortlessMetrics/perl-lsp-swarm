@@ -137,7 +137,7 @@ mod tests {
                 NodeKind::Try {
                     body: Box::new(Node::new(NodeKind::Block { statements: vec![] }, loc(24))),
                     catch_blocks: vec![(
-                        Some("$e".to_string()),
+                        Some(("$e".to_string(), loc(24))),
                         Box::new(Node::new(NodeKind::Block { statements: vec![] }, loc(25))),
                     )],
                     finally_block: Some(Box::new(Node::new(

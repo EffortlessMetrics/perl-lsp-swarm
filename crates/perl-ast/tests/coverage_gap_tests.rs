@@ -235,7 +235,10 @@ mod for_each_child_mut {
             NodeKind::Try {
                 body: Box::new(block_of(vec![])),
                 catch_blocks: vec![
-                    (Some("$e".to_string()), Box::new(block_of(vec![]))),
+                    (
+                        Some(("$e".to_string(), SourceLocation { start: 0, end: 0 })),
+                        Box::new(block_of(vec![])),
+                    ),
                     (None, Box::new(block_of(vec![]))),
                 ],
                 finally_block: Some(Box::new(block_of(vec![]))),

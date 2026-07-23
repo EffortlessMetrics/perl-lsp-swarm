@@ -46,7 +46,7 @@ fn try_catch_finally_preserves_handler_shapes() -> Result<(), String> {
         NodeKind::Try { body, catch_blocks, finally_block } => {
             assert_eq!(block_statements(body)?.len(), 1);
             assert_eq!(catch_blocks.len(), 2);
-            assert_eq!(catch_blocks[0].0.as_deref(), Some("$err"));
+            assert_eq!(catch_blocks[0].0.as_ref().map(|(name, _)| name.as_str()), Some("$err"));
             assert_eq!(block_statements(&catch_blocks[0].1)?.len(), 1);
             assert_eq!(catch_blocks[1].0, None);
             assert_eq!(block_statements(&catch_blocks[1].1)?.len(), 1);
