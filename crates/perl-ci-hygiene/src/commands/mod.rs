@@ -4,4 +4,5 @@ pub(crate) mod doc_paths;
 pub(crate) mod fatal_constructs;
 pub(crate) mod panic_test;
 pub(crate) mod print_in_lib;
+pub(crate) mod regex_static;
 pub(crate) mod todos;
