@@ -1,3 +1,4 @@
+#![allow(clippy::panic)]
 //! Behavior-driven tests for `perl-dead-code`.
 //!
 //! These tests focus on user-visible outcomes with a Given/When/Then structure.

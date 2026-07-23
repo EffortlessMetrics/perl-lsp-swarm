@@ -1075,6 +1075,12 @@ ci-unwrap-panic-ratchet:
     @cargo xtask ci-hygiene check-unwraps-prod
     @echo "✅ Unwrap/panic-family ratchet passed"
 
+# Test-code panic! ratchet (integration tests and #[cfg(test)] modules)
+ci-panic-test-ratchet:
+    @echo "🛡️  Checking test-code panic! ratchet..."
+    @cargo xtask ci-hygiene check-panic-test
+    @echo "✅ Test-code panic! ratchet passed"
+
 # Unsafe syntax ratchet (production source only)
 ci-unsafe-ratchet:
     @echo "🛡️  Checking unsafe syntax ratchet..."
