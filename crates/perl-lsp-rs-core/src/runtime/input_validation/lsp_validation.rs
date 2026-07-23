@@ -71,5 +71,11 @@ fn validate_execute_command_params(params: &serde_json::Value) -> Result<()> {
         return Err(anyhow!("Command not allowed: {}", command));
     }
 
+    if let Some(arguments) = params.get("arguments")
+        && !arguments.is_array()
+    {
+        return Err(anyhow!("Execute command arguments must be an array when present"));
+    }
+
     Ok(())
 }

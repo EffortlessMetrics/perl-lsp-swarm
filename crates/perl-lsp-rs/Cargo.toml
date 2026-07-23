@@ -99,6 +99,7 @@ default = ["workspace", "incremental"]  # Enable workspace indexing and incremen
 workspace = []  # Workspace-wide indexing for cross-file features
 incremental = ["perl-parser/incremental"]  # Incremental parsing support (perl-incremental-parsing absorbed into perl-parser)
 test-performance = []  # Performance optimizations for test environments
+test-fallbacks = []  # Gate LSP_TEST_FALLBACKS env var read behind this feature (issue #4628)
 # When enabled, advertise *only* the conservative GA set (for emergency point releases).
 lsp-ga-lock = [
   # perl-lsp-protocol/lsp-ga-lock removed — absorbed into perl-lsp-rs-core::protocol (Wave G3 step 2)

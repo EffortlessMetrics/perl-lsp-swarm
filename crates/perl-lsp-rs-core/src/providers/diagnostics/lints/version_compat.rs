@@ -13,6 +13,21 @@
 //!
 //! When no version is declared at all, the check emits nothing — undeclared
 //! version is ambiguous (the file may be targeting the system Perl).
+//!
+//! # Perl 5.42 feature-gating
+//!
+//! In Perl 5.42 the `given`/`when`/`default` constructs and the smartmatch
+//! operator `~~` were **not removed** — their removal was indefinitely
+//! postponed and they became feature-gated instead. The deprecation warning
+//! was removed in 5.42. These constructs now require an explicit
+//! `use feature 'switch';` (for given/when/default) or
+//! `use feature 'smartmatch';` (for `~~`) because they are no longer part of
+//! the default `:5.42` feature bundle. This lint emits a `PL900` **Warning**
+//! (never Error) when the feature is not enabled.
+//!
+//! Reference: <https://perldoc.perl.org/5.42.0/perldelta> — "After extensive
+//! discussion their removal has been indefinitely postponed. Using them no
+//! longer produces a deprecation warning."
 
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::ast::{Node, NodeKind};
@@ -31,6 +46,10 @@ const FEATURE_VERSIONS: &[(&str, u32, u32)] = &[
     ("state", 5, 10),
     // switch: the feature bundle name for given/when/default constructs (Perl 5.10+)
     ("switch", 5, 10),
+    // smartmatch: the feature name for the `~~` operator (Perl 5.10+).
+    // In Perl 5.42 smartmatch was removed from the default feature bundle but
+    // remains available via `use feature 'smartmatch';`.
+    ("smartmatch", 5, 10),
     ("postfix_deref", 5, 20),
     ("try", 5, 34),
     // signatures: experimental since v5.20 but only stable-bundled at v5.36.
@@ -81,9 +100,13 @@ const BUILTIN_FUNCTION_VERSIONS: &[(&str, u32, u32)] = &[
 ];
 
 const GIVEN_WHEN_DEPRECATION_VERSION: PerlVersion = PerlVersion::new(5, 38);
-const GIVEN_WHEN_REMOVAL_VERSION: PerlVersion = PerlVersion::new(5, 42);
+/// Perl 5.42: given/when/default became feature-gated (not removed).
+/// The `switch` feature is no longer in the `:5.42` bundle.
+const GIVEN_WHEN_FEATURE_GATE_VERSION: PerlVersion = PerlVersion::new(5, 42);
 const SMARTMATCH_DEPRECATION_VERSION: PerlVersion = PerlVersion::new(5, 38);
-const SMARTMATCH_REMOVAL_VERSION: PerlVersion = PerlVersion::new(5, 42);
+/// Perl 5.42: smartmatch became feature-gated (not removed).
+/// The `smartmatch` feature is no longer in the `:5.42` bundle.
+const SMARTMATCH_FEATURE_GATE_VERSION: PerlVersion = PerlVersion::new(5, 42);
 
 /// Check for Perl version compatibility issues.
 ///
@@ -159,7 +182,7 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             }
 
             // `given` / `when` / `default` need the `switch` feature (v5.10+),
-            // are deprecated in v5.38, and removed in v5.42.
+            // are deprecated in v5.38, and became feature-gated (not removed) in v5.42.
             NodeKind::Given { .. } | NodeKind::When { .. } | NodeKind::Default { .. } => {
                 let construct = if matches!(&n.kind, NodeKind::Given { .. }) {
                     "given"
@@ -169,18 +192,14 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                     "default"
                 };
 
-                if declared_version >= GIVEN_WHEN_REMOVAL_VERSION {
-                    diagnostics.push(make_given_when_default_diagnostic(
-                        n,
-                        declared_version,
-                        DiagnosticSeverity::Error,
-                    ));
+                if declared_version >= GIVEN_WHEN_FEATURE_GATE_VERSION {
+                    // Perl 5.42+: switch is no longer in the default bundle.
+                    // Emit a Warning (never Error) when the feature is not enabled.
+                    if !pragma_state.has_feature("switch") {
+                        diagnostics.push(make_given_when_feature_diagnostic(n, declared_version));
+                    }
                 } else if declared_version >= GIVEN_WHEN_DEPRECATION_VERSION {
-                    diagnostics.push(make_given_when_default_diagnostic(
-                        n,
-                        declared_version,
-                        DiagnosticSeverity::Warning,
-                    ));
+                    diagnostics.push(make_given_when_default_diagnostic(n, declared_version));
                 } else if !pragma_state.has_feature("switch") {
                     let min = feature_min_version("switch");
                     diagnostics.push(make_diagnostic(n, construct, declared_version, min));
@@ -295,20 +314,18 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             }
 
             // Smartmatch operator `~~` — enabled by `use feature 'switch'` in v5.10+,
-            // deprecated in v5.38, and removed in v5.42.
+            // deprecated in v5.38, and became feature-gated (not removed) in v5.42.
+            // In 5.42+ the `smartmatch` feature (not `switch`) gates the operator.
             NodeKind::Binary { op, .. } if op == "~~" => {
-                if declared_version >= SMARTMATCH_REMOVAL_VERSION {
-                    diagnostics.push(make_smartmatch_diagnostic(
-                        n,
-                        declared_version,
-                        DiagnosticSeverity::Error,
-                    ));
+                if declared_version >= SMARTMATCH_FEATURE_GATE_VERSION {
+                    // Perl 5.42+: smartmatch is no longer in the default bundle.
+                    // Emit a Warning (never Error) when the feature is not enabled.
+                    if !pragma_state.has_feature("smartmatch") {
+                        diagnostics
+                            .push(make_smartmatch_feature_gate_diagnostic(n, declared_version));
+                    }
                 } else if declared_version >= SMARTMATCH_DEPRECATION_VERSION {
-                    diagnostics.push(make_smartmatch_diagnostic(
-                        n,
-                        declared_version,
-                        DiagnosticSeverity::Warning,
-                    ));
+                    diagnostics.push(make_smartmatch_diagnostic(n, declared_version));
                 } else if !pragma_state.has_feature("switch") {
                     diagnostics.push(make_smartmatch_feature_diagnostic(n, declared_version));
                 }
@@ -379,79 +396,106 @@ fn make_diagnostic(
     )
 }
 
-fn make_given_when_default_diagnostic(
-    node: &Node,
-    declared_version: PerlVersion,
-    severity: DiagnosticSeverity,
-) -> Diagnostic {
-    let (message, min_version) = match severity {
-        DiagnosticSeverity::Error => (
-            format!(
-                "'given/when/default' was removed in Perl v5.42; declared version is v{}.{}",
-                declared_version.major, declared_version.minor
-            ),
-            (5, 42),
-        ),
-        _ => (
-            format!(
-                "'given/when/default' is deprecated starting in Perl v5.38; declared version is v{}.{}",
-                declared_version.major, declared_version.minor
-            ),
-            (5, 38),
-        ),
-    };
+/// Build a PL900 deprecation Warning for given/when/default (v5.38–v5.41).
+///
+/// In Perl 5.42+ these constructs are feature-gated, not deprecated — use
+/// [`make_given_when_feature_diagnostic`] for that case.
+fn make_given_when_default_diagnostic(node: &Node, declared_version: PerlVersion) -> Diagnostic {
+    let message = format!(
+        "'given/when/default' is deprecated starting in Perl v5.38; declared version is v{}.{}",
+        declared_version.major, declared_version.minor
+    );
 
     Diagnostic {
         range: (node.location.start, node.location.end),
-        severity,
+        severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
         message,
         related_information: vec![],
         tags: vec![],
-        suggestion: Some(format!(
-            "Refactor `given` / `when` / `default` to `if` / `elsif` or another supported control-flow form; this feature is {} in v{}.{}.",
-            if severity == DiagnosticSeverity::Error { "removed" } else { "deprecated" },
-            min_version.0,
-            min_version.1
-        )),
+        suggestion: Some(
+            "Refactor `given` / `when` / `default` to `if` / `elsif` or another supported control-flow form; this feature is deprecated in v5.38."
+                .to_string(),
+        ),
     }
 }
 
-fn make_smartmatch_diagnostic(
-    node: &Node,
-    declared_version: PerlVersion,
-    severity: DiagnosticSeverity,
-) -> Diagnostic {
-    let (message, min_version) = match severity {
-        DiagnosticSeverity::Error => (
-            format!(
-                "smartmatch operator `~~` was removed in Perl v5.42; declared version is v{}.{}",
-                declared_version.major, declared_version.minor
-            ),
-            (5, 42),
-        ),
-        _ => (
-            format!(
-                "smartmatch operator `~~` is deprecated starting in Perl v5.38; declared version is v{}.{}",
-                declared_version.major, declared_version.minor
-            ),
-            (5, 38),
-        ),
-    };
+/// Build a PL900 feature-gating Warning for given/when/default (v5.42+).
+///
+/// Perl 5.42 did not remove these constructs — it made them feature-gated.
+/// The `switch` feature is no longer in the `:5.42` bundle, so an explicit
+/// `use feature 'switch';` is required.
+fn make_given_when_feature_diagnostic(node: &Node, declared_version: PerlVersion) -> Diagnostic {
+    let message = format!(
+        "'given/when/default' requires the 'switch' feature, which is not enabled by the v{}.{} bundle; declared version is v{}.{}",
+        declared_version.major,
+        declared_version.minor,
+        declared_version.major,
+        declared_version.minor,
+    );
 
     Diagnostic {
         range: (node.location.start, node.location.end),
-        severity,
+        severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
         message,
         related_information: vec![],
         tags: vec![],
-        suggestion: Some(format!(
-            "Replace smartmatch `~~` with `if` / `elsif`, `grep`, or `any` from List::Util; this operator is {} in v{}.{}.",
-            if severity == DiagnosticSeverity::Error { "removed" } else { "deprecated" },
-            min_version.0,
-            min_version.1
-        )),
+        suggestion: Some("Add `use feature 'switch';` to enable given/when/default.".to_string()),
+    }
+}
+
+/// Build a PL900 deprecation Warning for smartmatch `~~` (v5.38–v5.41).
+///
+/// In Perl 5.42+ the operator is feature-gated, not deprecated — use
+/// [`make_smartmatch_feature_gate_diagnostic`] for that case.
+fn make_smartmatch_diagnostic(node: &Node, declared_version: PerlVersion) -> Diagnostic {
+    let message = format!(
+        "smartmatch operator `~~` is deprecated starting in Perl v5.38; declared version is v{}.{}",
+        declared_version.major, declared_version.minor
+    );
+
+    Diagnostic {
+        range: (node.location.start, node.location.end),
+        severity: DiagnosticSeverity::Warning,
+        code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
+        message,
+        related_information: vec![],
+        tags: vec![],
+        suggestion: Some(
+            "Replace smartmatch `~~` with `if` / `elsif`, `grep`, or `any` from List::Util; this operator is deprecated in v5.38."
+                .to_string(),
+        ),
+    }
+}
+
+/// Build a PL900 feature-gating Warning for smartmatch `~~` (v5.42+).
+///
+/// Perl 5.42 did not remove smartmatch — it made it feature-gated.
+/// The `smartmatch` feature is no longer in the `:5.42` bundle, so an
+/// explicit `use feature 'smartmatch';` is required.
+fn make_smartmatch_feature_gate_diagnostic(
+    node: &Node,
+    declared_version: PerlVersion,
+) -> Diagnostic {
+    let message = format!(
+        "smartmatch operator `~~` requires the 'smartmatch' feature, which is not enabled by the v{}.{} bundle; declared version is v{}.{}",
+        declared_version.major,
+        declared_version.minor,
+        declared_version.major,
+        declared_version.minor,
+    );
+
+    Diagnostic {
+        range: (node.location.start, node.location.end),
+        severity: DiagnosticSeverity::Warning,
+        code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
+        message,
+        related_information: vec![],
+        tags: vec![],
+        suggestion: Some(
+            "Add `use feature 'smartmatch';` to enable the smartmatch operator.".to_string(),
+        ),
     }
 }
 
@@ -584,5 +628,187 @@ mod tests {
             diags.iter().all(|d| !d.message.contains("builtin::inf")),
             "declaring the builtin bundle should suppress separate builtin::inf call diagnostics"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // PL900 / Perl 5.42 feature-gating tests (issue #4635)
+    //
+    // Perl 5.42 did NOT remove given/when/default or smartmatch. Their removal
+    // was "indefinitely postponed" and they became feature-gated instead.
+    // The deprecation warning was removed in 5.42. The emitter must never
+    // produce an Error for these constructs — only Warning.
+    //
+    // Reference: https://perldoc.perl.org/5.42.0/perldelta — "After extensive
+    // discussion their removal has been indefinitely postponed. Using them no
+    // longer produces a deprecation warning."
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn given_when_default_v5_42_emits_warning_not_error() {
+        let diags =
+            version_compat_diags("use v5.42;\ngiven ($x) { when (1) { 1 } default { 0 } }\n");
+
+        // Must emit at least one PL900 diagnostic.
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("PL900")),
+            "v5.42 given/when/default without switch feature should emit PL900"
+        );
+
+        for d in &diags {
+            if d.code.as_deref() == Some("PL900") {
+                assert_ne!(
+                    d.severity,
+                    DiagnosticSeverity::Error,
+                    "PL900 for given/when/default on v5.42 must NOT be Error (feature-gated, not removed)"
+                );
+                assert!(
+                    !d.message.contains("removed"),
+                    "PL900 message for given/when/default on v5.42 must not say 'removed': {}",
+                    d.message
+                );
+                assert!(
+                    d.message.contains("switch"),
+                    "PL900 message for given/when/default on v5.42 should mention the 'switch' feature: {}",
+                    d.message
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn given_when_default_v5_42_with_switch_feature_suppressed() {
+        let diags = version_compat_diags(
+            "use v5.42;\nuse feature 'switch';\ngiven ($x) { when (1) { 1 } default { 0 } }\n",
+        );
+        assert!(
+            diags.iter().all(|d| d.code.as_deref() != Some("PL900")),
+            "v5.42 with explicit 'use feature switch' should suppress PL900 for given/when/default"
+        );
+    }
+
+    #[test]
+    fn smartmatch_v5_42_emits_warning_not_error() {
+        let diags = version_compat_diags("use v5.42;\nmy $x = 1;\nmy $y = 2;\n$x ~~ $y;\n");
+
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("PL900")),
+            "v5.42 smartmatch without smartmatch feature should emit PL900"
+        );
+
+        for d in &diags {
+            if d.code.as_deref() == Some("PL900") {
+                assert_ne!(
+                    d.severity,
+                    DiagnosticSeverity::Error,
+                    "PL900 for smartmatch on v5.42 must NOT be Error (feature-gated, not removed)"
+                );
+                assert!(
+                    !d.message.contains("removed"),
+                    "PL900 message for smartmatch on v5.42 must not say 'removed': {}",
+                    d.message
+                );
+                assert!(
+                    d.message.contains("smartmatch"),
+                    "PL900 message for smartmatch on v5.42 should mention the 'smartmatch' feature: {}",
+                    d.message
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn smartmatch_v5_42_with_smartmatch_feature_suppressed() {
+        let diags = version_compat_diags(
+            "use v5.42;\nuse feature 'smartmatch';\nmy $x = 1;\nmy $y = 2;\n$x ~~ $y;\n",
+        );
+        assert!(
+            diags.iter().all(|d| d.code.as_deref() != Some("PL900")),
+            "v5.42 with explicit 'use feature smartmatch' should suppress PL900 for ~~"
+        );
+    }
+
+    #[test]
+    fn given_when_default_v5_38_emits_deprecation_warning() {
+        let diags =
+            version_compat_diags("use v5.38;\ngiven ($x) { when (1) { 1 } default { 0 } }\n");
+        let pl900: Vec<_> = diags.iter().filter(|d| d.code.as_deref() == Some("PL900")).collect();
+        assert!(
+            !pl900.is_empty(),
+            "v5.38 given/when/default should emit PL900 deprecation warning"
+        );
+        for d in &pl900 {
+            assert_eq!(
+                d.severity,
+                DiagnosticSeverity::Warning,
+                "PL900 for given/when/default on v5.38 must be Warning"
+            );
+            assert!(
+                d.message.contains("deprecated"),
+                "PL900 message for given/when/default on v5.38 should say 'deprecated': {}",
+                d.message
+            );
+        }
+    }
+
+    #[test]
+    fn no_pl900_at_error_severity_for_any_declared_version() {
+        // Regression: PL900 must never be emitted at Error severity.
+        // Test across the full range of declared versions.
+        let sources = [
+            "use v5.10;\ngiven ($x) { when (1) { 1 } }\n",
+            "use v5.36;\ngiven ($x) { when (1) { 1 } }\n",
+            "use v5.38;\ngiven ($x) { when (1) { 1 } }\n",
+            "use v5.40;\ngiven ($x) { when (1) { 1 } }\n",
+            "use v5.42;\ngiven ($x) { when (1) { 1 } }\n",
+            "use v5.10;\nmy $x = 1;\nmy $y = 2;\n$x ~~ $y;\n",
+            "use v5.36;\nmy $x = 1;\nmy $y = 2;\n$x ~~ $y;\n",
+            "use v5.38;\nmy $x = 1;\nmy $y = 2;\n$x ~~ $y;\n",
+            "use v5.40;\nmy $x = 1;\nmy $y = 2;\n$x ~~ $y;\n",
+            "use v5.42;\nmy $x = 1;\nmy $y = 2;\n$x ~~ $y;\n",
+        ];
+
+        for source in &sources {
+            let diags = version_compat_diags(source);
+            for d in &diags {
+                if d.code.as_deref() == Some("PL900") {
+                    assert_ne!(
+                        d.severity,
+                        DiagnosticSeverity::Error,
+                        "PL900 must never be Error (source: {:?}, message: {})",
+                        source,
+                        d.message
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pl900_emitted_severity_matches_catalog_severity() {
+        // Cross-check: the severity emitted by the version_compat lint must
+        // match DiagnosticCode::VersionIncompatFeature.severity() from the
+        // catalog. This guards against the emitter and catalog disagreeing.
+        let catalog_severity = DiagnosticCode::VersionIncompatFeature.severity();
+
+        let sources = [
+            "use v5.42;\ngiven ($x) { when (1) { 1 } default { 0 } }\n",
+            "use v5.42;\nmy $x = 1;\nmy $y = 2;\n$x ~~ $y;\n",
+            "use v5.38;\ngiven ($x) { when (1) { 1 } default { 0 } }\n",
+            "use v5.38;\nmy $x = 1;\nmy $y = 2;\n$x ~~ $y;\n",
+            "use v5.10;\ngiven ($x) { when (1) { 1 } }\n",
+        ];
+
+        for source in &sources {
+            let diags = version_compat_diags(source);
+            for d in &diags {
+                if d.code.as_deref() == Some("PL900") {
+                    assert_eq!(
+                        d.severity, catalog_severity,
+                        "emitted PL900 severity must match catalog severity (source: {:?})",
+                        source
+                    );
+                }
+            }
+        }
     }
 }

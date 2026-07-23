@@ -1,8 +1,27 @@
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_tdd_support::must;
 use serde_json::json;
+use std::sync::LazyLock;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+/// Mirror of the production `is_valid_set_variable_name` validator so tests can
+/// predict the expected `verified` flag for an arbitrary data_id without
+/// depending on a private crate item.  Matches the production regex:
+/// `^[\$\@\%](?:[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*|\d+|_)$`
+/// with a 512-char length cap, plus the newline defense-in-depth check.
+static VALID_NAME_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    must(regex::Regex::new(
+        r"^[\$\@\%](?:[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*|\d+|_)$",
+    ))
+});
+
+fn is_valid_set_variable_name_helper(data_id: &str) -> bool {
+    if data_id.contains('\n') || data_id.contains('\r') {
+        return false;
+    }
+    data_id.trim().len() <= 512 && VALID_NAME_RE.is_match(data_id.trim())
+}
 
 /// Helper: send a dataBreakpointInfo request and return the response body.
 fn data_breakpoint_info_request(
@@ -266,6 +285,118 @@ fn test_set_data_breakpoints_missing_arguments() {
     }
 }
 
+// === setDataBreakpoints data_id validation (Issue #4637) ===
+//
+// A hostile dataId is interpolated raw into the Perl debugger `w {dataId}`
+// command.  Invalid or injection-laden dataIds must be reported as
+// verified:false rather than passed through to the debugger.
+
+/// Helper: extract the verified flag and message for the n-th breakpoint.
+fn breakpoint_verified_at(
+    body: &serde_json::Value,
+    index: usize,
+) -> Result<(bool, Option<String>), Box<dyn std::error::Error>> {
+    let bps = body.get("breakpoints").and_then(|v| v.as_array()).ok_or("missing breakpoints")?;
+    let bp = bps.get(index).ok_or("breakpoint index out of range")?;
+    let verified = bp.get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
+    let message = bp.get("message").and_then(|v| v.as_str()).map(ToString::to_string);
+    Ok((verified, message))
+}
+
+#[test]
+fn test_set_data_breakpoints_rejects_injection_data_id() -> TestResult {
+    let mut adapter = DebugAdapter::new();
+    adapter.handle_request(1, "initialize", None);
+
+    let body = set_data_breakpoints_request(
+        &mut adapter,
+        json!([{ "dataId": "$x; system('id')", "accessType": "write" }]),
+    )?;
+
+    let (verified, message) = breakpoint_verified_at(&body, 0)?;
+    assert!(!verified, "injection dataId must be verified:false");
+    assert!(message.is_some(), "rejected breakpoint should carry an explanatory message");
+    Ok(())
+}
+
+#[test]
+fn test_set_data_breakpoints_rejects_newline_data_id() -> TestResult {
+    let mut adapter = DebugAdapter::new();
+    adapter.handle_request(1, "initialize", None);
+
+    let body = set_data_breakpoints_request(
+        &mut adapter,
+        json!([{ "dataId": "$x\ndie('inject')", "accessType": "write" }]),
+    )?;
+
+    let (verified, message) = breakpoint_verified_at(&body, 0)?;
+    assert!(!verified, "newline dataId must be verified:false");
+    let msg = message.unwrap_or_default();
+    assert!(
+        msg.contains("newline"),
+        "newline rejection message should mention newlines, got: {msg:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_set_data_breakpoints_rejects_data_id_without_sigil() -> TestResult {
+    let mut adapter = DebugAdapter::new();
+    adapter.handle_request(1, "initialize", None);
+
+    let body = set_data_breakpoints_request(
+        &mut adapter,
+        json!([{ "dataId": "system('id')", "accessType": "write" }]),
+    )?;
+
+    let (verified, _message) = breakpoint_verified_at(&body, 0)?;
+    assert!(!verified, "dataId without a sigil must be verified:false");
+    Ok(())
+}
+
+#[test]
+fn test_set_data_breakpoints_mixed_batch_partial_verification() -> TestResult {
+    let mut adapter = DebugAdapter::new();
+    adapter.handle_request(1, "initialize", None);
+
+    let body = set_data_breakpoints_request(
+        &mut adapter,
+        json!([
+            { "dataId": "$x", "accessType": "write" },
+            { "dataId": "$y; system('id')", "accessType": "write" }
+        ]),
+    )?;
+
+    let (verified_first, _) = breakpoint_verified_at(&body, 0)?;
+    assert!(verified_first, "legitimate first breakpoint must be verified:true");
+
+    let (verified_second, _) = breakpoint_verified_at(&body, 1)?;
+    assert!(!verified_second, "injection second breakpoint must be verified:false");
+    Ok(())
+}
+
+#[test]
+fn test_set_data_breakpoints_legitimate_batch_all_verified() -> TestResult {
+    let mut adapter = DebugAdapter::new();
+    adapter.handle_request(1, "initialize", None);
+
+    let body = set_data_breakpoints_request(
+        &mut adapter,
+        json!([
+            { "dataId": "$x", "accessType": "write" },
+            { "dataId": "%ENV", "accessType": "write" },
+            { "dataId": "@ARGV", "accessType": "write" }
+        ]),
+    )?;
+
+    for i in 0..3 {
+        let (verified, message) = breakpoint_verified_at(&body, i)?;
+        assert!(verified, "legitimate breakpoint {i} must be verified:true");
+        assert!(message.is_none(), "verified breakpoint {i} should not carry a rejection message");
+    }
+    Ok(())
+}
+
 #[test]
 fn test_data_breakpoint_info_response_is_success() {
     let mut adapter = DebugAdapter::new();
@@ -356,9 +487,16 @@ mod proptest_watchpoints {
                     breakpoint.get("id").and_then(|value| value.as_i64()),
                     Some((index as i64) + 1)
                 );
+                // Verification is per-breakpoint: valid Perl variable names are
+                // verified:true, anything else (including arbitrary strings that
+                // may contain injection payloads) is verified:false.
+                let data_id = &breakpoints[index].0;
+                let expected_verified = is_valid_set_variable_name_helper(data_id);
                 prop_assert_eq!(
                     breakpoint.get("verified").and_then(|value| value.as_bool()),
-                    Some(true)
+                    Some(expected_verified),
+                    "verified flag mismatch for dataId {:?}",
+                    data_id
                 );
             }
         }

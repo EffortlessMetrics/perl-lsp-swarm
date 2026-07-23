@@ -302,32 +302,51 @@ This applies to timeouts supplied by the client (e.g. the TCP attach
 `timeout`/`timeoutMs` field, validated in `AttachConfiguration::validate` and
 capped at 5 minutes).
 
-### 3.2 What is NOT enforced — the debuggee exemption (#4640)
+### 3.3 Debuggee Wall-Clock Timeout (#4640)
 
-**The long-running `perl -d` debuggee process has no wall-clock timeout.** The
-launch path in `crates/perl-dap/src/debug_adapter/process.rs` spawns the
-debugger and communicates over its stdin/stdout/stderr; there is no deadline on
-the process lifetime, no `continueTimeout`, and no `stepTimeout`. A debuggee
-that blocks indefinitely (infinite loop, network wait, deadlock) will hold the
-session open until the client disconnects or the process is killed externally.
+The `perl -d` debuggee process is a long-running subprocess that, unlike the
+short-lived probes (version check, syntax check), has no built-in timeout. A
+debuggee that hits an infinite loop, blocks on `<STDIN>`, deadlocks, or waits
+on a network call stays alive forever, holding the adapter session open
+indefinitely.
 
-This is a **known gap**, tracked in #4640. Until it is closed:
+**Configuration**: The `debuggeeTimeoutSeconds` field in the launch
+configuration controls the wall-clock timeout:
 
-- Do **not** rely on the DAP server to kill a hung debuggee.
-- Deployers who need a wall-clock bound must enforce it externally (e.g. a
-  wrapper process with `timeout(1)` or a container deadline).
-- Earlier drafts of this spec listed `perl.dap.stepTimeout` /
-  `perl.dap.continueTimeout` VS Code settings and a `DapConfig` struct carrying
-  those fields. **Those settings and that struct do not exist in the
-  implementation** and have been removed from this document to avoid implying a
-  guarantee the code does not provide.
+```json
+// launch.json
+{
+  "type": "perl",
+  "request": "launch",
+  "program": "${workspaceFolder}/script.pl",
+  "debuggeeTimeoutSeconds": 60
+}
+```
 
-### 3.3 Configuration that does exist
+- **Default**: `0` (disabled). This preserves compatibility with legitimate
+  long-running debug sessions (e.g. a server process paused at a breakpoint
+  for minutes). Users who want timeout enforcement set a positive value.
+- **When the timeout fires**: The adapter sends a `terminated` event with
+  `reason: "debuggee_timeout"` to the client, then kills the debuggee process.
+  The `TerminationState.emitted` flag ensures only one `terminated` event
+  reaches the client even if the output reader concurrently observes EOF.
+- **Generation-aware**: The watchdog checks the session generation before
+  acting, so a replaced session (restart / relaunch) is not killed by a
+  stale watchdog from the prior session.
+
+**Implementation**: `DebugAdapter::start_debuggee_watchdog` spawns a watchdog
+thread that sleeps for the configured duration, then checks whether the
+debuggee process is still alive. If alive, it emits the `terminated` event and
+calls `terminate_child_process` to kill the debuggee. The output reader
+thread's subsequent EOF handling performs session-state cleanup.
+
+### 3.4 Configuration that does exist
 
 Launch/attach configuration types live in `crates/perl-dap/src/config/mod.rs`:
 
 - `LaunchConfiguration` — `program`, `args`, `cwd`, `env`, `perl_path`,
-  `include_paths`. No timeout field (the debuggee is unbounded — see §3.2).
+  `include_paths`, `debuggeeTimeoutSeconds` (wall-clock timeout, default 0 =
+  disabled — see §3.3).
 - `AttachConfiguration` — `host`, `port`, `timeout_ms` (connection timeout,
   capped at 5 minutes), `stop_on_entry`.
 

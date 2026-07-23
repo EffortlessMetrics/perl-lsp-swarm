@@ -243,6 +243,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().workspace_symbol {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         let query = params
             .as_ref()
             .and_then(|p| p.get("query"))
@@ -763,6 +768,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().workspace_symbol {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         let query = params
             .as_ref()
             .and_then(|p| p.get("query"))

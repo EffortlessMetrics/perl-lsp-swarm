@@ -38,11 +38,6 @@ const ALL_CODES: &[DiagnosticCode] = &[
     DiagnosticCode::ImplicitReturn,
     DiagnosticCode::PrintfFormatMismatch,
     DiagnosticCode::SecuritySignalHandler,
-    DiagnosticCode::CriticSeverity1,
-    DiagnosticCode::CriticSeverity2,
-    DiagnosticCode::CriticSeverity3,
-    DiagnosticCode::CriticSeverity4,
-    DiagnosticCode::CriticSeverity5,
 ];
 
 // ===========================================================================
@@ -218,16 +213,6 @@ fn code_as_str_best_practices_range() -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-#[test]
-fn code_as_str_critic_range() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(DiagnosticCode::CriticSeverity1.as_str(), "PC001");
-    assert_eq!(DiagnosticCode::CriticSeverity2.as_str(), "PC002");
-    assert_eq!(DiagnosticCode::CriticSeverity3.as_str(), "PC003");
-    assert_eq!(DiagnosticCode::CriticSeverity4.as_str(), "PC004");
-    assert_eq!(DiagnosticCode::CriticSeverity5.as_str(), "PC005");
-    Ok(())
-}
-
 // ===========================================================================
 // DiagnosticCode::Display
 // ===========================================================================
@@ -301,8 +286,6 @@ fn severity_warning_codes() -> Result<(), Box<dyn std::error::Error>> {
         DiagnosticCode::BarewordFilehandle,
         DiagnosticCode::TwoArgOpen,
         DiagnosticCode::ImplicitReturn,
-        DiagnosticCode::CriticSeverity1,
-        DiagnosticCode::CriticSeverity2,
     ];
     for code in &warning_codes {
         assert_eq!(
@@ -323,24 +306,6 @@ fn severity_information_codes() -> Result<(), Box<dyn std::error::Error>> {
             code.severity(),
             DiagnosticSeverity::Information,
             "{} should be Information severity",
-            code.as_str()
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn severity_hint_codes() -> Result<(), Box<dyn std::error::Error>> {
-    let hint_codes = [
-        DiagnosticCode::CriticSeverity3,
-        DiagnosticCode::CriticSeverity4,
-        DiagnosticCode::CriticSeverity5,
-    ];
-    for code in &hint_codes {
-        assert_eq!(
-            code.severity(),
-            DiagnosticSeverity::Hint,
-            "{} should be Hint severity",
             code.as_str()
         );
     }
@@ -388,26 +353,6 @@ fn documentation_url_pl_codes_have_urls() -> Result<(), Box<dyn std::error::Erro
             "URL for {} should start with base URL, got {}",
             code.as_str(),
             url_str,
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn documentation_url_critic_codes_return_none() -> Result<(), Box<dyn std::error::Error>> {
-    let critic_codes = [
-        DiagnosticCode::CriticSeverity1,
-        DiagnosticCode::CriticSeverity2,
-        DiagnosticCode::CriticSeverity3,
-        DiagnosticCode::CriticSeverity4,
-        DiagnosticCode::CriticSeverity5,
-    ];
-    for code in &critic_codes {
-        assert_eq!(
-            code.documentation_url(),
-            None,
-            "{} should not have a documentation URL",
-            code.as_str()
         );
     }
     Ok(())
@@ -532,26 +477,6 @@ fn category_best_practices() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[test]
-fn category_perl_critic() -> Result<(), Box<dyn std::error::Error>> {
-    let critic_codes = [
-        DiagnosticCode::CriticSeverity1,
-        DiagnosticCode::CriticSeverity2,
-        DiagnosticCode::CriticSeverity3,
-        DiagnosticCode::CriticSeverity4,
-        DiagnosticCode::CriticSeverity5,
-    ];
-    for code in &critic_codes {
-        assert_eq!(
-            code.category(),
-            DiagnosticCategory::PerlCritic,
-            "{} should be PerlCritic category",
-            code.as_str()
-        );
-    }
-    Ok(())
-}
-
 // ===========================================================================
 // DiagnosticCode::from_message — positive and negative cases
 // ===========================================================================
@@ -666,7 +591,7 @@ fn code_clone_and_copy() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn code_debug_contains_variant_name() -> Result<(), Box<dyn std::error::Error>> {
     assert!(format!("{:?}", DiagnosticCode::ParseError).contains("ParseError"));
-    assert!(format!("{:?}", DiagnosticCode::CriticSeverity5).contains("CriticSeverity5"));
+    assert!(format!("{:?}", DiagnosticCode::SyntaxError).contains("SyntaxError"));
     Ok(())
 }
 
@@ -710,7 +635,7 @@ fn category_clone_and_copy() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn category_debug_contains_variant_name() -> Result<(), Box<dyn std::error::Error>> {
     assert!(format!("{:?}", DiagnosticCategory::Parser).contains("Parser"));
-    assert!(format!("{:?}", DiagnosticCategory::PerlCritic).contains("PerlCritic"));
+    assert!(format!("{:?}", DiagnosticCategory::Security).contains("Security"));
     Ok(())
 }
 
@@ -725,8 +650,7 @@ fn category_hash_consistency() -> Result<(), Box<dyn std::error::Error>> {
     set.insert(DiagnosticCategory::PackageModule);
     set.insert(DiagnosticCategory::Subroutine);
     set.insert(DiagnosticCategory::BestPractices);
-    set.insert(DiagnosticCategory::PerlCritic);
-    assert_eq!(set.len(), 6);
+    assert_eq!(set.len(), 5);
     Ok(())
 }
 
@@ -933,24 +857,6 @@ fn best_practices_codes_are_in_400_499_range() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-#[test]
-fn critic_codes_start_with_pc_prefix() {
-    let critic_codes = [
-        DiagnosticCode::CriticSeverity1,
-        DiagnosticCode::CriticSeverity2,
-        DiagnosticCode::CriticSeverity3,
-        DiagnosticCode::CriticSeverity4,
-        DiagnosticCode::CriticSeverity5,
-    ];
-    for code in &critic_codes {
-        assert!(
-            code.as_str().starts_with("PC"),
-            "critic code should start with PC: {}",
-            code.as_str()
-        );
-    }
-}
-
 // --- DiagnosticCode: parse_code edge cases ---
 
 #[test]
@@ -961,7 +867,6 @@ fn parse_code_empty_string_returns_none() {
 #[test]
 fn parse_code_lowercase_returns_none() {
     assert!(DiagnosticCode::parse_code("pl001").is_none());
-    assert!(DiagnosticCode::parse_code("pc001").is_none());
 }
 
 #[test]
@@ -1323,19 +1228,6 @@ fn documentation_url_all_pl_codes_have_urls() {
     }
 }
 
-#[test]
-fn documentation_url_all_pc_codes_have_no_urls() {
-    for code in ALL_CODES {
-        if code.as_str().starts_with("PC") {
-            assert!(
-                code.documentation_url().is_none(),
-                "PC code {} should not have a documentation URL",
-                code.as_str()
-            );
-        }
-    }
-}
-
 // --- DiagnosticCode: category-severity cross-checks ---
 
 #[test]
@@ -1359,16 +1251,6 @@ fn information_severity_codes_are_explicitly_tracked() {
         .filter(|code| code.severity() == DiagnosticSeverity::Information)
         .collect();
     assert_eq!(info_codes, vec![&DiagnosticCode::CaptureVarWithoutRegexMatch]);
-}
-
-#[test]
-fn hint_codes_are_only_critic_3_4_5() {
-    let hint_codes: Vec<&DiagnosticCode> =
-        ALL_CODES.iter().filter(|c| c.severity() == DiagnosticSeverity::Hint).collect();
-    assert_eq!(hint_codes.len(), 3);
-    for code in &hint_codes {
-        assert_eq!(code.category(), DiagnosticCategory::PerlCritic);
-    }
 }
 
 // --- DiagnosticCode: Display trait ---
@@ -1396,20 +1278,19 @@ fn category_equality() {
     assert_eq!(DiagnosticCategory::PackageModule, DiagnosticCategory::PackageModule);
     assert_eq!(DiagnosticCategory::Subroutine, DiagnosticCategory::Subroutine);
     assert_eq!(DiagnosticCategory::BestPractices, DiagnosticCategory::BestPractices);
-    assert_eq!(DiagnosticCategory::PerlCritic, DiagnosticCategory::PerlCritic);
 }
 
 #[test]
 fn category_inequality_across_variants() {
     assert_ne!(DiagnosticCategory::Parser, DiagnosticCategory::StrictWarnings);
     assert_ne!(DiagnosticCategory::PackageModule, DiagnosticCategory::Subroutine);
-    assert_ne!(DiagnosticCategory::BestPractices, DiagnosticCategory::PerlCritic);
+    assert_ne!(DiagnosticCategory::BestPractices, DiagnosticCategory::Deprecated);
 }
 
 // --- DiagnosticCategory: coverage of all codes ---
 
 #[test]
-fn all_seven_categories_are_represented() {
+fn all_six_categories_are_represented() {
     use std::collections::HashSet;
     let categories: HashSet<DiagnosticCategory> = ALL_CODES.iter().map(|c| c.category()).collect();
     assert!(categories.contains(&DiagnosticCategory::Parser));
@@ -1418,8 +1299,7 @@ fn all_seven_categories_are_represented() {
     assert!(categories.contains(&DiagnosticCategory::Subroutine));
     assert!(categories.contains(&DiagnosticCategory::BestPractices));
     assert!(categories.contains(&DiagnosticCategory::Security));
-    assert!(categories.contains(&DiagnosticCategory::PerlCritic));
-    assert_eq!(categories.len(), 7);
+    assert_eq!(categories.len(), 6);
 }
 
 // --- DiagnosticCode: tags exhaustive check ---
@@ -1442,8 +1322,8 @@ fn unused_variable_tag_is_exactly_unnecessary() {
 // --- Cross-cutting: ALL_CODES count ---
 
 #[test]
-fn all_codes_count_is_24() {
-    assert_eq!(ALL_CODES.len(), 26, "expected 26 diagnostic codes total");
+fn all_codes_count_is_21() {
+    assert_eq!(ALL_CODES.len(), 21, "expected 21 diagnostic codes total");
 }
 
 // --- DiagnosticCode: parse_code boundary values ---
@@ -1455,14 +1335,6 @@ fn parse_code_all_valid_pl_codes() {
         "PL301", "PL302", "PL303", "PL400", "PL401", "PL402", "PL602", "PL502", "PL503",
     ];
     for s in &valid_pl {
-        assert!(DiagnosticCode::parse_code(s).is_some(), "expected valid parse for {}", s);
-    }
-}
-
-#[test]
-fn parse_code_all_valid_pc_codes() {
-    let valid_pc = ["PC001", "PC002", "PC003", "PC004", "PC005"];
-    for s in &valid_pc {
         assert!(DiagnosticCode::parse_code(s).is_some(), "expected valid parse for {}", s);
     }
 }

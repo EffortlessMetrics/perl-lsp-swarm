@@ -101,7 +101,7 @@ fn test_a_violations_appear_in_pull_diagnostics_when_enabled() {
     let found = diags.iter().any(|d| {
         d["code"].as_str() == Some("TestingAndDebugging::RequireUseStrict")
             && d["severity"].as_u64() == Some(2)
-            && d["source"].as_str() == Some("perlcritic")
+            && d["source"].as_str() == Some("perl-lsp-critic")
             && d["data"]["fixable"].as_bool() == Some(true)
     });
 
@@ -138,7 +138,7 @@ fn test_a1_severity_five_maps_to_error() {
         diags.iter().any(|d| {
             d["code"].as_str() == Some("InputOutput::RequireThreeArgOpen")
                 && d["severity"].as_u64() == Some(1)
-                && d["source"].as_str() == Some("perlcritic")
+                && d["source"].as_str() == Some("perl-lsp-critic")
         }),
         "expected severity-5 external diagnostic; got: {result}"
     );
@@ -210,7 +210,7 @@ fn test_a2_severity_one_maps_to_hint() {
         diags.iter().any(|d| {
             d["code"].as_str() == Some("InputOutput::ProhibitBarewordFileHandles")
                 && d["severity"].as_u64() == Some(4)
-                && d["source"].as_str() == Some("perlcritic")
+                && d["source"].as_str() == Some("perl-lsp-critic")
         }),
         "expected severity-1 external diagnostic; got: {result}"
     );

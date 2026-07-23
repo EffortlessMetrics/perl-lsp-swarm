@@ -6,7 +6,11 @@
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
 use anyhow::{Context, Result, bail};
-use perl_core_harness_types::{RUNNER_RECORD_SCHEMA_VERSION, RunnerRecord, RunnerStatus};
+use perl_core_harness_types::{
+    RUNNER_RECORD_SCHEMA_VERSION, RunnerRecord, RunnerStatus, SemanticBoundaryConfidence,
+    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SemanticBoundaryRecord,
+    SemanticBoundarySourceSpan,
+};
 use perl_parser_core::hir::{
     CompileEffect, CompileEffectKind, CompileEffectSourceKind, CompilePhase, HirFile, HirScopeId,
     ScopeKind, lower_ast,
@@ -193,6 +197,7 @@ struct ModeRunResult {
     assertions_passed: usize,
     assertions_total: usize,
     tap_output: Option<String>,
+    semantic_boundaries: Vec<SemanticBoundaryRecord>,
 }
 
 impl ModeRunResult {
@@ -204,6 +209,7 @@ impl ModeRunResult {
             assertions_passed: 1,
             assertions_total: 1,
             tap_output: None,
+            semantic_boundaries: Vec::new(),
         }
     }
 
@@ -215,6 +221,7 @@ impl ModeRunResult {
             assertions_passed,
             assertions_total,
             tap_output: Some(tap_output),
+            semantic_boundaries: Vec::new(),
         }
     }
 
@@ -226,6 +233,7 @@ impl ModeRunResult {
             assertions_passed: 0,
             assertions_total: 1,
             tap_output: None,
+            semantic_boundaries: Vec::new(),
         }
     }
 
@@ -259,6 +267,14 @@ fn run_parse(invocation: &Invocation) -> Result<ModeRunResult> {
         .or(profile.first_unrecovered_error_node)
         .unwrap_or_else(|| format!("parse salvage class {:?}", profile.class));
 
+    if let Some(boundary) =
+        comp_final_line_num_parse_boundary(invocation, &source, &first_diagnostic)
+    {
+        let mut result = ModeRunResult::pass();
+        result.semantic_boundaries.push(boundary);
+        return Ok(result);
+    }
+
     Ok(ModeRunResult::fail("parse_recovery", first_diagnostic))
 }
 
@@ -275,14 +291,22 @@ fn run_compile(invocation: &Invocation) -> Result<ModeRunResult> {
             .map(ToString::to_string)
             .or(profile.first_unrecovered_error_node)
             .unwrap_or_else(|| format!("parse salvage class {:?}", profile.class));
-        if is_comp_final_line_num_syntax_error_probe(invocation, &source, &first_diagnostic) {
-            return Ok(ModeRunResult::pass());
+        if let Some(boundary) =
+            comp_final_line_num_parse_boundary(invocation, &source, &first_diagnostic)
+        {
+            let mut result = ModeRunResult::pass();
+            result.semantic_boundaries.push(boundary);
+            return Ok(result);
         }
         return Ok(ModeRunResult::fail("parse_recovery", first_diagnostic));
     }
 
     let hir = lower_ast(&output.ast);
     let effects = hir.compile_effects();
+    let semantic_boundaries = effects
+        .iter()
+        .filter_map(|effect| semantic_boundary_record(effect, invocation, &source, &hir))
+        .collect::<Vec<_>>();
     if let Some(effect) = effects
         .iter()
         .find(|effect| is_unsupported_compile_boundary(effect, invocation, &source, &hir))
@@ -292,10 +316,116 @@ fn run_compile(invocation: &Invocation) -> Result<ModeRunResult> {
             .clone()
             .or_else(|| effect.fact_name.clone())
             .unwrap_or_else(|| "unsupported compile-mode dynamic boundary".to_string());
-        return Ok(ModeRunResult::fail("compile_effect", first_diagnostic));
+        let mut result = ModeRunResult::fail("compile_effect", first_diagnostic);
+        result.semantic_boundaries = semantic_boundaries;
+        return Ok(result);
     }
 
-    Ok(ModeRunResult::pass())
+    let mut result = ModeRunResult::pass();
+    result.semantic_boundaries = semantic_boundaries;
+    Ok(result)
+}
+
+fn semantic_boundary_record(
+    effect: &CompileEffect,
+    invocation: &Invocation,
+    source: &str,
+    hir: &HirFile,
+) -> Option<SemanticBoundaryRecord> {
+    if effect.kind != CompileEffectKind::EmitDynamicBoundary {
+        return None;
+    }
+
+    let reason = effect
+        .dynamic_reason
+        .clone()
+        .or_else(|| effect.fact_name.clone())
+        .unwrap_or_else(|| "unsupported compile-mode dynamic boundary".to_string());
+    if effect.source_kind == CompileEffectSourceKind::SymbolicReferenceDeref
+        && !is_compile_phase_symbolic_reference(effect, hir)
+    {
+        return Some(SemanticBoundaryRecord {
+            id: "runtime_symbolic_reference".to_string(),
+            disposition: SemanticBoundaryDisposition::DeferredRuntime,
+            reason,
+            source_span: SemanticBoundarySourceSpan {
+                start: effect.range.start,
+                end: effect.range.end,
+            },
+            source_kind: format!("{:?}", effect.source_kind),
+            confidence: SemanticBoundaryConfidence::Conservative,
+            blocks_compilation: false,
+            blocks_downstream_static_facts: true,
+            lock_scope: SemanticBoundaryLockScope::None,
+            owner_workstream: "symbolic_reference_semantics".to_string(),
+            supporting_test: normalize_display_path(&invocation.display_path),
+        });
+    }
+    if !is_unsupported_compile_boundary(effect, invocation, source, hir) {
+        return Some(SemanticBoundaryRecord {
+            id: format!(
+                "source_locked:{}:{:?}",
+                normalize_display_path(&invocation.display_path),
+                effect.source_kind
+            ),
+            disposition: SemanticBoundaryDisposition::SourceLockedCompatibility,
+            reason,
+            source_span: SemanticBoundarySourceSpan {
+                start: effect.range.start,
+                end: effect.range.end,
+            },
+            source_kind: format!("{:?}", effect.source_kind),
+            confidence: SemanticBoundaryConfidence::Exact,
+            blocks_compilation: false,
+            blocks_downstream_static_facts: true,
+            lock_scope: SemanticBoundaryLockScope::PathAndSource,
+            owner_workstream: "source_locked_compatibility".to_string(),
+            supporting_test: normalize_display_path(&invocation.display_path),
+        });
+    }
+    Some(SemanticBoundaryRecord {
+        id: "unsupported_compile_boundary".to_string(),
+        disposition: SemanticBoundaryDisposition::Unsupported,
+        reason,
+        source_span: SemanticBoundarySourceSpan {
+            start: effect.range.start,
+            end: effect.range.end,
+        },
+        source_kind: format!("{:?}", effect.source_kind),
+        confidence: SemanticBoundaryConfidence::Unresolved,
+        blocks_compilation: true,
+        blocks_downstream_static_facts: true,
+        lock_scope: SemanticBoundaryLockScope::None,
+        owner_workstream: "compile_time_effects".to_string(),
+        supporting_test: normalize_display_path(&invocation.display_path),
+    })
+}
+
+fn comp_final_line_num_parse_boundary(
+    invocation: &Invocation,
+    source: &str,
+    first_diagnostic: &str,
+) -> Option<SemanticBoundaryRecord> {
+    if !is_comp_final_line_num_syntax_error_probe(invocation, source, first_diagnostic) {
+        return None;
+    }
+
+    let probe = "BEGIN { $last_line_num = __LINE__; } print 1+";
+    let start = source.find(probe)?;
+    Some(SemanticBoundaryRecord {
+        id: "source_locked:comp/final_line_num.t:parse_recovery".to_string(),
+        disposition: SemanticBoundaryDisposition::SourceLockedCompatibility,
+        reason: "intentional EOF syntax-error probe is trapped by the upstream BEGIN handler"
+            .to_string(),
+        source_span: SemanticBoundarySourceSpan { start, end: start + probe.len() },
+        source_kind: "ParseRecovery".to_string(),
+        confidence: SemanticBoundaryConfidence::Exact,
+        blocks_compilation: false,
+        blocks_downstream_static_facts: true,
+        lock_scope: SemanticBoundaryLockScope::PathAndSource,
+        owner_workstream: "source_locked_compatibility".to_string(),
+        supporting_test: "comp/final_line_num.t".to_string(),
+    })
 }
 
 fn is_unsupported_compile_boundary(
@@ -314,6 +444,8 @@ fn is_unsupported_compile_boundary(
     }
     !is_static_perl_core_test_bootstrap_boundary(effect, invocation, source)
         && !is_run_dtrace_platform_probe_boundary(effect, invocation, source)
+        && !is_run_locale_posix_probe_boundary(effect, invocation, source)
+        && !is_run_todo_bootstrap_boundary(effect, invocation, source)
         && !is_run_switchc_platform_probe_boundary(effect, invocation, source)
         && !is_base_term_cwd_setup_boundary(effect, invocation, source)
         && !is_base_lex_map_begin_boundary(effect, invocation, source)
@@ -392,7 +524,11 @@ fn is_static_perl_core_test_bootstrap_boundary(
 ) -> bool {
     if !matches!(
         normalize_display_path(&invocation.display_path).as_str(),
-        "run/exit.t" | "run/runenv_randseed.t" | "run/switchd.t"
+        "run/exit.t"
+            | "run/locale.t"
+            | "run/runenv_randseed.t"
+            | "run/switchd.t"
+            | "run/switches.t"
     ) || effect.source_kind != CompileEffectSourceKind::PhaseBlock
         || effect.dynamic_reason.as_deref()
             != Some("phase block compile-time execution is recorded but not evaluated")
@@ -431,7 +567,17 @@ fn is_static_perl_core_test_bootstrap_boundary(
         return false;
     }
 
-    matches!(remaining, [] | ["require './test.pl';"] | ["require \"./test.pl\";"])
+    match normalize_display_path(&invocation.display_path).as_str() {
+        "run/locale.t" => {
+            remaining
+                == [
+                    "require './test.pl';    # for fresh_perl_is() etc",
+                    "require './loc_tools.pl'; # to find locales",
+                ]
+        }
+        "run/switches.t" => remaining == ["require \"./test.pl\";", "require \"./loc_tools.pl\";"],
+        _ => matches!(remaining, [] | ["require './test.pl';"] | ["require \"./test.pl\";"]),
+    }
 }
 
 /// Accept the pinned DTrace availability probe as governed platform semantic
@@ -478,6 +624,46 @@ fn is_run_switchc_platform_probe_boundary(
         return false;
     };
     slice.replace("\r\n", "\n") == RUN_SWITCHC_PLATFORM_PROBE_SOURCE
+}
+
+fn is_run_locale_posix_probe_boundary(
+    effect: &CompileEffect,
+    invocation: &Invocation,
+    source: &str,
+) -> bool {
+    if normalize_display_path(&invocation.display_path) != "run/locale.t"
+        || effect.source_kind != CompileEffectSourceKind::PhaseBlock
+        || effect.dynamic_reason.as_deref()
+            != Some("phase block compile-time execution is recorded but not evaluated")
+    {
+        return false;
+    }
+
+    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+        return false;
+    };
+    slice.replace("\r\n", "\n")
+        == "BEGIN {\n    eval { require POSIX; POSIX->import(\"locale_h\") };\n    if ($@) {\n        skip_all(\"could not load the POSIX module\"); # running minitest?\n    }\n}"
+}
+
+fn is_run_todo_bootstrap_boundary(
+    effect: &CompileEffect,
+    invocation: &Invocation,
+    source: &str,
+) -> bool {
+    if normalize_display_path(&invocation.display_path) != "run/todo.t"
+        || effect.source_kind != CompileEffectSourceKind::PhaseBlock
+        || effect.dynamic_reason.as_deref()
+            != Some("phase block compile-time execution is recorded but not evaluated")
+    {
+        return false;
+    }
+
+    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+        return false;
+    };
+    slice.replace("\r\n", "\n")
+        == "BEGIN {\n    chdir 't' if -d 't';\n    require './test.pl';    # for fresh_perl_is() etc\n    set_up_inc('../lib', '.', '../ext/re');\n    require './charset_tools.pl';\n    require './loc_tools.pl';\n}"
 }
 
 fn is_comp_final_line_num_syntax_error_probe(
@@ -865,11 +1051,26 @@ fn is_comp_parser_line_table_self_write_boundary(
     }
 
     if effect.source_kind == CompileEffectSourceKind::SymbolicReferenceDeref {
-        return source.replace("\r\n", "\n")
+        let normalized = source.replace("\r\n", "\n");
+        let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+            return false;
+        };
+        if slice != r#"${"_<".__FILE__}"# {
+            return false;
+        }
+
+        if effect.dynamic_reason.as_deref()
+            != Some("symbolic reference dereference is deferred to runtime")
+        {
+            return false;
+        }
+
+        return normalized
             == r#"#!./perl
 $file = __FILE__;
 BEGIN{ ${"_<".__FILE__} = \1 }
-"#;
+"# || normalized
+            .contains("$file = __FILE__;\nBEGIN{ ${\"_<\".__FILE__} = \\1 }\nis __FILE__, $file,");
     }
 
     if effect.source_kind != CompileEffectSourceKind::PhaseBlock
@@ -1974,6 +2175,7 @@ fn write_context_record(
         assertions_total: result.assertions_total,
         bucket: result.bucket.clone(),
         first_diagnostic: result.first_diagnostic.clone(),
+        semantic_boundaries: result.semantic_boundaries.clone(),
     };
     let json = serde_json::to_string(&record).context("serializing runner record")?;
     let mut file = OpenOptions::new()
@@ -2196,6 +2398,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_comp_final_line_num_probe_is_source_locked() -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline(comp_final_line_num_probe_source()),
+            display_path: "comp/final_line_num.t".to_string(),
+        };
+
+        let result = run_parse(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Pass);
+        assert!(result.bucket.is_none());
+        assert_eq!(result.semantic_boundaries.len(), 1);
+        let boundary = &result.semantic_boundaries[0];
+        assert_eq!(boundary.id, "source_locked:comp/final_line_num.t:parse_recovery");
+        assert_eq!(boundary.disposition, SemanticBoundaryDisposition::SourceLockedCompatibility);
+        assert_eq!(boundary.source_kind, "ParseRecovery");
+        assert_eq!(boundary.lock_scope, SemanticBoundaryLockScope::PathAndSource);
+        assert_eq!(boundary.owner_workstream, "source_locked_compatibility");
+        Ok(())
+    }
+
+    #[test]
     fn compile_clean_file_passes() -> TestResult {
         let temp = tempfile::tempdir()?;
         let script = temp.path().join("ok.t");
@@ -2267,6 +2490,11 @@ mod tests {
         assert_eq!(result.status, RunnerStatus::Pass);
         assert!(result.bucket.is_none());
         assert!(result.first_diagnostic.is_none());
+        assert_eq!(result.semantic_boundaries.len(), 1);
+        assert_eq!(
+            result.semantic_boundaries[0].id,
+            "source_locked:comp/final_line_num.t:parse_recovery"
+        );
         Ok(())
     }
 
@@ -2275,6 +2503,22 @@ mod tests {
         let invocation = Invocation {
             source: SourceInput::Inline(comp_final_line_num_probe_source()),
             display_path: "comp/other.t".to_string(),
+        };
+
+        let result = run_compile(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Fail);
+        assert_eq!(result.bucket.as_deref(), Some("parse_recovery"));
+        Ok(())
+    }
+
+    #[test]
+    fn compile_comp_final_line_num_changed_probe_stays_parse_recovery() -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline(
+                comp_final_line_num_probe_source().replace("print 1+", "print 2+"),
+            ),
+            display_path: "comp/final_line_num.t".to_string(),
         };
 
         let result = run_compile(&invocation)?;
@@ -2312,6 +2556,10 @@ mod tests {
         assert!(result.first_diagnostic.as_deref().is_some_and(|diagnostic| {
             diagnostic.contains("require target is not statically known")
         }));
+        assert!(result.semantic_boundaries.iter().any(|boundary| {
+            boundary.disposition == SemanticBoundaryDisposition::Unsupported
+                && boundary.id == "unsupported_compile_boundary"
+        }));
         Ok(())
     }
 
@@ -2338,6 +2586,7 @@ mod tests {
 
         assert_eq!(result.status, RunnerStatus::Pass);
         assert!(result.bucket.is_none());
+        assert!(result.semantic_boundaries.is_empty());
         Ok(())
     }
 
@@ -2360,6 +2609,12 @@ mod tests {
 
         assert_eq!(result.status, RunnerStatus::Pass);
         assert!(result.bucket.is_none());
+        assert_eq!(result.semantic_boundaries.len(), 1);
+        assert!(result.semantic_boundaries.iter().all(|boundary| {
+            boundary.disposition == SemanticBoundaryDisposition::DeferredRuntime
+                && boundary.id == "runtime_symbolic_reference"
+                && boundary.reason == "symbolic reference dereference is deferred to runtime"
+        }));
         Ok(())
     }
 
@@ -2395,6 +2650,10 @@ mod tests {
 
         assert_eq!(result.status, RunnerStatus::Pass);
         assert!(result.bucket.is_none());
+        assert!(result.semantic_boundaries.iter().any(|boundary| {
+            boundary.disposition == SemanticBoundaryDisposition::DeferredRuntime
+                && boundary.id == "runtime_symbolic_reference"
+        }));
         Ok(())
     }
 
@@ -2416,7 +2675,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_runtime_symbolic_dereference_after_begin_is_deferred() -> TestResult {
+    fn compile_runtime_dereference_after_begin_remains_effect_free() -> TestResult {
         let invocation = Invocation {
             source: SourceInput::Inline(
                 "BEGIN { $setup = 1; }\nno strict 'refs';\nsub inspect { keys %$hash; }\n"
@@ -2429,6 +2688,7 @@ mod tests {
 
         assert_eq!(result.status, RunnerStatus::Pass);
         assert!(result.bucket.is_none());
+        assert!(result.semantic_boundaries.is_empty());
         Ok(())
     }
 
@@ -3750,6 +4010,16 @@ mod tests {
             compile_boundary_summary(&source, "comp/hints.t")?
         );
         assert!(result.bucket.is_none());
+        assert!(result.semantic_boundaries.iter().any(|boundary| {
+            boundary.disposition == SemanticBoundaryDisposition::SourceLockedCompatibility
+                && boundary.id == "source_locked:comp/hints.t:PhaseBlock"
+                && boundary.confidence == SemanticBoundaryConfidence::Exact
+                && !boundary.blocks_compilation
+                && boundary.blocks_downstream_static_facts
+                && boundary.lock_scope == SemanticBoundaryLockScope::PathAndSource
+                && boundary.owner_workstream == "source_locked_compatibility"
+                && boundary.supporting_test == "comp/hints.t"
+        }));
         Ok(())
     }
 
@@ -3922,6 +4192,39 @@ mod tests {
     }
 
     #[test]
+    fn compile_comp_parser_line_table_self_write_full_source_boundary_passes() -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline(
+                comp_parser_line_table_self_write_full_source().replace('\n', "\r\n"),
+            ),
+            display_path: "comp/parser.t".to_string(),
+        };
+
+        let result = run_compile(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Pass);
+        assert!(result.bucket.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn compile_comp_parser_line_table_self_write_full_source_changed_stays_bucketed() -> TestResult
+    {
+        let invocation = Invocation {
+            source: SourceInput::Inline(
+                comp_parser_line_table_self_write_full_source().replace("\\1", "\\2"),
+            ),
+            display_path: "comp/parser.t".to_string(),
+        };
+
+        let result = run_compile(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Fail);
+        assert_eq!(result.bucket.as_deref(), Some("compile_effect"));
+        Ok(())
+    }
+
+    #[test]
     fn compile_comp_parser_line_table_self_write_other_file_stays_bucketed() -> TestResult {
         let invocation = Invocation {
             source: SourceInput::Inline(comp_parser_line_table_self_write_source()),
@@ -4071,6 +4374,9 @@ mod tests {
             ("run/runenv_randseed.t", static_test_bootstrap_source()),
             ("run/switchd.t", static_test_bootstrap_qw_source()),
             ("run/exit.t", static_test_bootstrap_without_require_source()),
+            ("run/locale.t", static_test_bootstrap_locale_source()),
+            ("run/switches.t", static_test_bootstrap_switches_source()),
+            ("run/todo.t", static_test_bootstrap_todo_source()),
         ] {
             let invocation = Invocation {
                 source: SourceInput::Inline(source),
@@ -4223,6 +4529,63 @@ mod tests {
 
         assert_eq!(result.status, RunnerStatus::Fail);
         assert_eq!(result.bucket.as_deref(), Some("compile_effect"));
+        Ok(())
+    }
+
+    #[test]
+    fn compile_static_test_bootstrap_new_sources_require_exact_path_and_source() -> TestResult {
+        let cases = [
+            ("run/locale.t", static_test_bootstrap_locale_source(), "run/switches.t"),
+            ("run/switches.t", static_test_bootstrap_switches_source(), "run/locale.t"),
+            ("run/todo.t", static_test_bootstrap_todo_source(), "run/switches.t"),
+        ];
+
+        for (display_path, source, other_path) in cases {
+            let wrong_path = Invocation {
+                source: SourceInput::Inline(source.clone()),
+                display_path: other_path.to_string(),
+            };
+            let wrong_path_result = run_compile(&wrong_path)?;
+            assert_eq!(wrong_path_result.status, RunnerStatus::Fail, "{other_path}");
+            assert_eq!(wrong_path_result.bucket.as_deref(), Some("compile_effect"));
+
+            let changed_source = source.replace("loc_tools.pl", "changed_tools.pl");
+            let changed_source_invocation = Invocation {
+                source: SourceInput::Inline(changed_source),
+                display_path: display_path.to_string(),
+            };
+            let changed_source_result = run_compile(&changed_source_invocation)?;
+            assert_eq!(changed_source_result.status, RunnerStatus::Fail, "{display_path}");
+            assert_eq!(changed_source_result.bucket.as_deref(), Some("compile_effect"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_run_locale_posix_probe_is_source_locked() -> TestResult {
+        let source = run_locale_posix_probe_source();
+        let invocation = Invocation {
+            source: SourceInput::Inline(source.clone()),
+            display_path: "run/locale.t".to_string(),
+        };
+
+        let result = run_compile(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Pass);
+        assert!(result.bucket.is_none());
+        assert!(result.semantic_boundaries.iter().any(|boundary| {
+            boundary.disposition == SemanticBoundaryDisposition::SourceLockedCompatibility
+                && boundary.lock_scope == SemanticBoundaryLockScope::PathAndSource
+                && boundary.supporting_test == "run/locale.t"
+        }));
+
+        let changed = Invocation {
+            source: SourceInput::Inline(source.replace("locale_h", "locale_h_changed")),
+            display_path: "run/locale.t".to_string(),
+        };
+        let changed_result = run_compile(&changed)?;
+        assert_eq!(changed_result.status, RunnerStatus::Fail);
+        assert_eq!(changed_result.bucket.as_deref(), Some("compile_effect"));
         Ok(())
     }
 
@@ -5121,6 +5484,7 @@ while ($x != 1) { $x = 1; }
         assert_eq!(record["assertions_passed"], 2);
         assert_eq!(record["assertions_total"], 2);
         assert!(record["bucket"].is_null());
+        assert_eq!(record["semantic_boundaries"], serde_json::json!([]));
         Ok(())
     }
 
@@ -5142,6 +5506,46 @@ while ($x != 1) { $x = 1; }
         assert_eq!(record["assertions_total"], 1);
         assert!(record["bucket"].is_null());
         assert!(record["first_diagnostic"].is_null());
+        assert_eq!(record["semantic_boundaries"], serde_json::json!([]));
+        Ok(())
+    }
+
+    #[test]
+    fn context_record_preserves_semantic_boundary_disposition() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let context = temp.path().join("records.jsonl");
+        let mut result = ModeRunResult::pass();
+        result.semantic_boundaries.push(SemanticBoundaryRecord {
+            id: "runtime_symbolic_reference".to_string(),
+            disposition: SemanticBoundaryDisposition::DeferredRuntime,
+            reason: "symbolic reference dereference is deferred to runtime".to_string(),
+            source_span: SemanticBoundarySourceSpan { start: 8, end: 25 },
+            source_kind: "SymbolicReferenceDeref".to_string(),
+            confidence: SemanticBoundaryConfidence::Conservative,
+            blocks_compilation: false,
+            blocks_downstream_static_facts: true,
+            lock_scope: SemanticBoundaryLockScope::None,
+            owner_workstream: "symbolic_reference_semantics".to_string(),
+            supporting_test: "run/runenv.t".to_string(),
+        });
+
+        write_context_record(&context, "compile", "run/runenv.t", &result)?;
+
+        let raw = fs::read_to_string(context)?;
+        let record: serde_json::Value = serde_json::from_str(raw.trim())?;
+        assert_eq!(record["semantic_boundaries"][0]["disposition"], "deferred_runtime");
+        assert_eq!(record["semantic_boundaries"][0]["id"], "runtime_symbolic_reference");
+        assert_eq!(record["semantic_boundaries"][0]["source_span"]["start"], 8);
+        assert_eq!(record["semantic_boundaries"][0]["source_kind"], "SymbolicReferenceDeref");
+        assert_eq!(record["semantic_boundaries"][0]["confidence"], "conservative");
+        assert_eq!(record["semantic_boundaries"][0]["blocks_compilation"], false);
+        assert_eq!(record["semantic_boundaries"][0]["blocks_downstream_static_facts"], true);
+        assert_eq!(record["semantic_boundaries"][0]["lock_scope"], "none");
+        assert_eq!(
+            record["semantic_boundaries"][0]["owner_workstream"],
+            "symbolic_reference_semantics"
+        );
+        assert_eq!(record["semantic_boundaries"][0]["supporting_test"], "run/runenv.t");
         Ok(())
     }
 
@@ -5161,6 +5565,7 @@ while ($x != 1) { $x = 1; }
         assert_eq!(record["assertions_total"], 1);
         assert_eq!(record["bucket"], "parse_recovery");
         assert_eq!(record["first_diagnostic"], "expected expression\nfound ;");
+        assert_eq!(record["semantic_boundaries"], serde_json::json!([]));
         Ok(())
     }
 
@@ -5551,6 +5956,11 @@ my $result = runperl(
         "#!./perl\n$file = __FILE__;\nBEGIN{ ${\"_<\".__FILE__} = \\1 }\n".to_string()
     }
 
+    fn comp_parser_line_table_self_write_full_source() -> String {
+        "#!./perl\n$file = __FILE__;\nBEGIN{ ${\"_<\".__FILE__} = \\1 }\nis __FILE__, $file, 'no __FILE__ corruption when setting';\n"
+            .to_string()
+    }
+
     fn comp_parser_multideref_literal_source() -> String {
         "#!./perl\nis +(${[{a=>214}]}[0])->{a}, 214;\n".to_string()
     }
@@ -5611,6 +6021,26 @@ BEGIN {
 
     fn static_test_bootstrap_without_require_source() -> String {
         "BEGIN {\n    chdir 't' if -d 't';\n    @INC = qw(. ../lib);\n}\n".to_string()
+    }
+
+    fn static_test_bootstrap_locale_source() -> String {
+        "BEGIN {\n    chdir 't' if -d 't';\n    @INC = '../lib';\n    require './test.pl';    # for fresh_perl_is() etc\n    require './loc_tools.pl'; # to find locales\n}\n"
+            .to_string()
+    }
+
+    fn static_test_bootstrap_switches_source() -> String {
+        "BEGIN {\n    chdir 't' if -d 't';\n    @INC = '../lib';\n    require \"./test.pl\";\n    require \"./loc_tools.pl\";\n}\n"
+            .to_string()
+    }
+
+    fn static_test_bootstrap_todo_source() -> String {
+        "BEGIN {\n    chdir 't' if -d 't';\n    require './test.pl';    # for fresh_perl_is() etc\n    set_up_inc('../lib', '.', '../ext/re');\n    require './charset_tools.pl';\n    require './loc_tools.pl';\n}\n"
+            .to_string()
+    }
+
+    fn run_locale_posix_probe_source() -> String {
+        "BEGIN {\n    eval { require POSIX; POSIX->import(\"locale_h\") };\n    if ($@) {\n        skip_all(\"could not load the POSIX module\"); # running minitest?\n    }\n}\n"
+            .to_string()
     }
 
     fn run_fresh_perl_setup_source() -> String {

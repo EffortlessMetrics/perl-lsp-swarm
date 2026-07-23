@@ -302,9 +302,10 @@ fn test_terminate_threads_always_fails_with_message() -> Result<(), Box<dyn std:
 // AC:16 (Security: path traversal in gotoTargets)
 fn test_goto_targets_path_traversal_blocked_when_workspace_set()
 -> Result<(), Box<dyn std::error::Error>> {
-    // Without a workspace root set, validate_source_path allows any path.
-    // This test verifies that the path traversal path doesn't panic and
-    // returns a safe/empty response rather than reading arbitrary files.
+    // #4638: Without a workspace root set (pre-launch), validate_source_path now
+    // rejects parent-directory traversal components.  Absolute paths outside the
+    // CWD are warned but allowed (no workspace boundary is known).
+    // Previously all paths were allowed through with no validation.
     let mut adapter = make_adapter();
     let malicious_paths =
         vec!["../../../etc/passwd", "/etc/passwd", "../../../../../../tmp/sensitive"];
@@ -315,7 +316,7 @@ fn test_goto_targets_path_traversal_blocked_when_workspace_set()
             "line": 1
         });
         let response = adapter.handle_request(1, "gotoTargets", Some(args));
-        // Should succeed OR fail with an error — but must not panic
+        // Must not panic and must return a Response with the right command name.
         match response {
             DapMessage::Response { command, .. } => {
                 assert_eq!(command, "gotoTargets");
@@ -332,6 +333,8 @@ fn test_goto_targets_path_traversal_blocked_when_workspace_set()
 // AC:16 (Security: path traversal in breakpointLocations)
 fn test_breakpoint_locations_path_traversal_does_not_panic()
 -> Result<(), Box<dyn std::error::Error>> {
+    // #4638: Parent-directory traversal paths are now rejected even without a
+    // workspace root.  The security contract: no panic, structured response.
     let mut adapter = make_adapter();
     let args = json!({
         "source": { "path": "../../../../etc/shadow" },

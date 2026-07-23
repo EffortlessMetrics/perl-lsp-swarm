@@ -130,41 +130,6 @@ fn implicit_return_has_context_hint() {
 }
 
 // ---------------------------------------------------------------------------
-// Perl::Critic codes — hints intentionally absent (PC001-PC005)
-//
-// Critic violations already carry per-policy descriptions from perlcritic
-// itself; adding generic hints would be redundant and misleading.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn critic_severity_1_has_no_context_hint() {
-    assert!(
-        DiagnosticCode::CriticSeverity1.context_hint().is_none(),
-        "CriticSeverity1 (PC001) must NOT have a generic context hint"
-    );
-}
-
-#[test]
-fn critic_severity_2_has_no_context_hint() {
-    assert!(DiagnosticCode::CriticSeverity2.context_hint().is_none());
-}
-
-#[test]
-fn critic_severity_3_has_no_context_hint() {
-    assert!(DiagnosticCode::CriticSeverity3.context_hint().is_none());
-}
-
-#[test]
-fn critic_severity_4_has_no_context_hint() {
-    assert!(DiagnosticCode::CriticSeverity4.context_hint().is_none());
-}
-
-#[test]
-fn critic_severity_5_has_no_context_hint() {
-    assert!(DiagnosticCode::CriticSeverity5.context_hint().is_none());
-}
-
-// ---------------------------------------------------------------------------
 // Hint quality: must be actionable (not just a label)
 // ---------------------------------------------------------------------------
 

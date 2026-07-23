@@ -111,19 +111,25 @@ pub(super) fn handle_foreach<'a>(
     analyzer.collect_unused_variables(&loop_scope, issues, context);
 }
 
-/// Handle `NodeKind::Subroutine`.
-pub(super) fn handle_subroutine<'a>(
+/// Inner body shared by `handle_subroutine` and `handle_method`.
+///
+/// Registers explicit signature parameters, analyzes the body in the provided scope, then
+/// checks for unused parameters and collects unused variable warnings.
+///
+/// `outer_scope` is the lexical scope that encloses the callable — used only for shadowing
+/// checks (parameter shadows a variable from the outer scope).
+#[allow(clippy::too_many_arguments)]
+fn process_callable_scope<'a>(
     analyzer: &ScopeAnalyzer,
     node: &'a Node,
     signature: Option<&'a Node>,
     body: &'a Node,
-    scope: &Rc<Scope>,
+    sub_scope: &Rc<Scope>,
+    outer_scope: &Rc<Scope>,
     ancestors: &mut Vec<&'a Node>,
     issues: &mut Vec<ScopeIssue>,
     context: &AnalysisContext<'a>,
 ) {
-    let sub_scope = Rc::new(Scope::with_parent(scope.clone()));
-
     // Check for duplicate parameters and shadowing
     let mut param_names = HashSet::new();
 
@@ -159,7 +165,7 @@ pub(super) fn handle_subroutine<'a>(
             }
 
             // Check if parameter shadows a global or parent scope variable
-            if analyzer.has_variable_parts_in_context(scope, sigil, name, context) {
+            if analyzer.has_variable_parts_in_context(outer_scope, sigil, name, context) {
                 issues.push(ScopeIssue {
                     kind: IssueKind::ParameterShadowsGlobal,
                     variable_name: full_name.clone(),
@@ -174,7 +180,7 @@ pub(super) fn handle_subroutine<'a>(
 
             // Declare the parameter in subroutine scope
             analyzer.declare_variable_parts_in_context(
-                &sub_scope,
+                sub_scope,
                 sigil,
                 name,
                 param.location.start,
@@ -187,7 +193,7 @@ pub(super) fn handle_subroutine<'a>(
     }
 
     ancestors.push(node);
-    analyzer.analyze_node(body, &sub_scope, ancestors, issues, context);
+    analyzer.analyze_node(body, sub_scope, ancestors, issues, context);
     ancestors.pop();
 
     // Check for unused parameters
@@ -230,7 +236,64 @@ pub(super) fn handle_subroutine<'a>(
         }
     }
 
-    analyzer.collect_unused_variables(&sub_scope, issues, context);
+    analyzer.collect_unused_variables(sub_scope, issues, context);
+}
+
+/// Handle `NodeKind::Subroutine`.
+pub(super) fn handle_subroutine<'a>(
+    analyzer: &ScopeAnalyzer,
+    node: &'a Node,
+    signature: Option<&'a Node>,
+    body: &'a Node,
+    scope: &Rc<Scope>,
+    ancestors: &mut Vec<&'a Node>,
+    issues: &mut Vec<ScopeIssue>,
+    context: &AnalysisContext<'a>,
+) {
+    let sub_scope = Rc::new(Scope::with_parent(scope.clone()));
+    process_callable_scope(
+        analyzer, node, signature, body, &sub_scope, scope, ancestors, issues, context,
+    );
+}
+
+/// Handle `NodeKind::Method` (Perl 5.38+ `use feature 'class'`).
+///
+/// Mirrors `handle_subroutine` but pre-declares the implicit `$self` invocant before
+/// processing explicit signature parameters.  In the Perl 5.38+ class model every method
+/// automatically receives the object instance as `$self`; callers never pass it, and the
+/// parser does not inject it into the `Signature` node, so the scope analyzer must
+/// declare it explicitly to prevent false `UndeclaredVariable` diagnostics.
+pub(super) fn handle_method<'a>(
+    analyzer: &ScopeAnalyzer,
+    node: &'a Node,
+    signature: Option<&'a Node>,
+    body: &'a Node,
+    scope: &Rc<Scope>,
+    ancestors: &mut Vec<&'a Node>,
+    issues: &mut Vec<ScopeIssue>,
+    context: &AnalysisContext<'a>,
+) {
+    let sub_scope = Rc::new(Scope::with_parent(scope.clone()));
+
+    // Pre-declare `$self` as an initialised, already-used variable so that:
+    //   1. uses of `$self` inside the body resolve without UndeclaredVariable, and
+    //   2. `$self` is never reported as UnusedParameter (the runtime supplies it).
+    analyzer.declare_variable_parts_in_context(
+        &sub_scope,
+        "$",
+        "self",
+        node.location.start,
+        false,
+        true,
+        context,
+    );
+    // Mark as used immediately — the invocant is always "consumed" by the runtime,
+    // and emitting UnusedParameter for it would be a false positive.
+    analyzer.use_variable_parts_in_context(&sub_scope, "$", "self", context);
+
+    process_callable_scope(
+        analyzer, node, signature, body, &sub_scope, scope, ancestors, issues, context,
+    );
 }
 
 /// Handle `NodeKind::Try`.

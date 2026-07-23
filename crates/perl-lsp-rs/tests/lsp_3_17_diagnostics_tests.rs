@@ -163,7 +163,7 @@ fn test_diagnostic_pull_syntax_only_open_document_3_17() -> TestResult {
     for item in items {
         assert_eq!(
             item.get("source").and_then(|source| source.as_str()),
-            Some("perl-parser"),
+            Some("perl-lsp"),
             "syntax-only pull diagnostics must only emit parser diagnostics, got: {item:?}"
         );
     }

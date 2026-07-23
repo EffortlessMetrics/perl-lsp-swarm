@@ -1618,6 +1618,11 @@ Not found in workspace or configured include paths.
         params: Option<Value>,
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().hover {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         // Convert raw Value ID to typed ID at the boundary.
         let typed_id = request_id.and_then(JsonRpcId::try_from_value);
         // RAII guard ensures cleanup on all exit paths (early returns, errors, panics)

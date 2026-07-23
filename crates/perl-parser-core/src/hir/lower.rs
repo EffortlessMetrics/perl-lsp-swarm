@@ -858,11 +858,7 @@ impl Lowerer {
                 self.visit_children(node, confidence);
             }
             NodeKind::LoopControl { op, label } => {
-                let kind = match op.as_str() {
-                    "last" => ControlTransferKind::Last,
-                    "redo" => ControlTransferKind::Redo,
-                    _ => ControlTransferKind::Next,
-                };
+                let kind = loop_control_kind(op);
                 self.push_item(
                     node,
                     None,
@@ -2806,6 +2802,25 @@ impl<'a> BodyBuilder2<'a> {
             // Peel through the expression-statement wrapper.
             NodeKind::ExpressionStatement { expression } => self.lower_statement(expression),
 
+            NodeKind::LoopControl { op, label } => {
+                let verb = loop_control_kind(op);
+                self.alloc_stmt(HirStmt::LoopControl { verb, target_label: label.clone() }, range)
+            }
+
+            NodeKind::StatementModifier { statement, modifier, condition } => {
+                let verb = statement_modifier_kind(modifier);
+                let statement_id = self.lower_statement(statement);
+                let condition_id = self.lower_expr(condition);
+                self.alloc_stmt(
+                    HirStmt::PostfixCondition {
+                        statement: statement_id,
+                        condition: condition_id,
+                        verb,
+                    },
+                    range,
+                )
+            }
+
             NodeKind::VariableDeclaration { declarator, variable, initializer, .. } => {
                 let (sigil_str, var_name) = match &variable.kind {
                     NodeKind::Variable { sigil, name } => (sigil.as_str(), name.clone()),
@@ -2917,6 +2932,116 @@ impl<'a> BodyBuilder2<'a> {
                 )
             }
 
+            NodeKind::Ternary { condition, then_expr, else_expr } => {
+                let condition_id = self.lower_expr(condition);
+                let then_id = self.lower_expr(then_expr);
+                let else_id = self.lower_expr(else_expr);
+                self.alloc_expr(
+                    HirExpr::Ternary {
+                        condition: condition_id,
+                        then_expr: then_id,
+                        else_expr: else_id,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch, keyword } => {
+                let keyword = match keyword.as_deref() {
+                    Some("unless") => BranchKeyword::Unless,
+                    _ => BranchKeyword::If,
+                };
+                let condition_id = self.lower_expr(condition);
+                let then_block = self.lower_nested_block(then_branch);
+                let elsif_arms = elsif_branches
+                    .iter()
+                    .map(|(condition, block)| {
+                        (self.lower_expr(condition), self.lower_nested_block(block))
+                    })
+                    .collect();
+                let else_block = else_branch.as_deref().map(|block| self.lower_nested_block(block));
+                self.alloc_expr(
+                    HirExpr::Branch {
+                        condition: condition_id,
+                        then_block,
+                        elsif_arms,
+                        else_block,
+                        keyword,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::While { condition, body, continue_block, keyword } => {
+                let kind = match keyword.as_deref() {
+                    Some("until") => LoopKind::Until,
+                    _ => LoopKind::While,
+                };
+                let condition_id = Some(self.lower_expr(condition));
+                let body_id = self.lower_nested_block(body);
+                let continue_id =
+                    continue_block.as_deref().map(|block| self.lower_nested_block(block));
+                self.alloc_expr(
+                    HirExpr::Loop {
+                        kind,
+                        init: None,
+                        condition: condition_id,
+                        update: None,
+                        body: body_id,
+                        continue_block: continue_id,
+                        iterator_binding: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::For { init, condition, update, body, continue_block } => {
+                let init_id =
+                    init.as_deref().map(|initializer| self.lower_for_init_block(initializer));
+                let condition_id = condition.as_deref().map(|expr| self.lower_expr(expr));
+                let body_id = self.lower_nested_block(body);
+                let continue_id =
+                    continue_block.as_deref().map(|block| self.lower_nested_block(block));
+                let update_id = update.as_deref().map(|expr| self.lower_expr(expr));
+                self.alloc_expr(
+                    HirExpr::Loop {
+                        kind: LoopKind::CStyleFor,
+                        init: init_id,
+                        condition: condition_id,
+                        update: update_id,
+                        body: body_id,
+                        continue_block: continue_id,
+                        iterator_binding: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Foreach { variable, list, body, continue_block } => {
+                let iterator_binding = Some(self.lower_iterator_binding(variable));
+                let condition_id = Some(self.lower_expr(list));
+                let body_id = self.lower_nested_block(body);
+                let continue_id =
+                    continue_block.as_deref().map(|block| self.lower_nested_block(block));
+                self.alloc_expr(
+                    HirExpr::Loop {
+                        kind: LoopKind::Foreach,
+                        init: None,
+                        condition: condition_id,
+                        update: None,
+                        body: body_id,
+                        continue_block: continue_id,
+                        iterator_binding,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Return { value } => {
+                let value_id = value.as_deref().map(|expr| self.lower_expr(expr));
+                self.alloc_expr(HirExpr::Return { value: value_id }, range)
+            }
+
             NodeKind::FunctionCall { args, .. } => {
                 // Lower each argument as a read expression so variable references
                 // in call-arg positions produce correct LexicalRead PIR nodes.
@@ -2925,17 +3050,6 @@ impl<'a> BodyBuilder2<'a> {
                 let arg_ids: Vec<HirExprId> = args.iter().map(|a| self.lower_expr(a)).collect();
                 self.alloc_expr(
                     HirExpr::Call { args: arg_ids, ast_kind: "FunctionCall".to_string() },
-                    range,
-                )
-            }
-
-            NodeKind::Return { value } => {
-                // Lower the return value as a read expression when present.
-                // This surfaces variable reads in `return $x` positions.
-                let arg_ids: Vec<HirExprId> =
-                    if let Some(v) = value { vec![self.lower_expr(v)] } else { vec![] };
-                self.alloc_expr(
-                    HirExpr::Call { args: arg_ids, ast_kind: "Return".to_string() },
                     range,
                 )
             }
@@ -2964,6 +3078,101 @@ impl<'a> BodyBuilder2<'a> {
             }
             _ => self.lower_expr(node),
         }
+    }
+
+    /// Lower a nested block and retain its statement sequence in the block arena.
+    fn lower_nested_block(&mut self, node: &Node) -> HirBlockId {
+        let previous_scope = self.start_scope;
+        self.start_scope = find_body_scope(self.scope_graph, node.location);
+        let statements = match &node.kind {
+            NodeKind::Block { statements } => statements.as_slice(),
+            _ => std::slice::from_ref(node),
+        };
+        let mut block = HirBlock::default();
+        for statement in statements {
+            block.stmts.push(self.lower_statement(statement));
+        }
+        self.start_scope = previous_scope;
+        self.alloc_block(block, node.location)
+    }
+
+    /// Lower all statements in a C-style `for` initializer into one block.
+    ///
+    /// The parser represents comma-separated initializers as an array literal;
+    /// keeping that wrapper as one opaque statement would lose declaration and
+    /// assignment facts from every element after the first.
+    fn lower_for_init_block(&mut self, node: &Node) -> HirBlockId {
+        let previous_scope = self.start_scope;
+        self.start_scope = find_body_scope(self.scope_graph, node.location);
+        let mut block = HirBlock::default();
+        self.append_for_init_statements(node, &mut block);
+        self.start_scope = previous_scope;
+        self.alloc_block(block, node.location)
+    }
+
+    fn append_for_init_statements(&mut self, node: &Node, block: &mut HirBlock) {
+        match &node.kind {
+            NodeKind::ArrayLiteral { elements } => {
+                for element in elements {
+                    self.append_for_init_statements(element, block);
+                }
+            }
+            NodeKind::ExpressionStatement { expression } => {
+                self.append_for_init_statements(expression, block);
+            }
+            _ => block.stmts.push(self.lower_statement(node)),
+        }
+    }
+
+    /// Lower a foreach iterator as a write-place expression.
+    fn lower_iterator_binding(&mut self, node: &Node) -> HirExprId {
+        match &node.kind {
+            NodeKind::Variable { .. } => self.lower_expr_as_place(node, AccessMode::Write),
+            NodeKind::VariableDeclaration { declarator, variable, .. } => {
+                let (sigil, name) = variable_name(variable);
+                let kind = match declarator.as_str() {
+                    "our" => VariableKind::Package,
+                    _ => VariableKind::Lexical,
+                };
+                self.alloc_expr(
+                    HirExpr::Variable(HirVariable {
+                        sigil: sigil_from_str(sigil),
+                        name: name.to_string(),
+                        kind,
+                        access: AccessMode::Write,
+                    }),
+                    node.location,
+                )
+            }
+            _ => self.lower_expr(node),
+        }
+    }
+}
+
+fn variable_name(node: &Node) -> (&str, String) {
+    match &node.kind {
+        NodeKind::Variable { sigil, name } => (sigil.as_str(), name.clone()),
+        NodeKind::VariableWithAttributes { variable, .. } => variable_name(variable),
+        _ => ("$", String::from("<unknown>")),
+    }
+}
+
+fn statement_modifier_kind(modifier: &str) -> StatementModifierKind {
+    match modifier {
+        "if" => StatementModifierKind::If,
+        "unless" => StatementModifierKind::Unless,
+        "while" => StatementModifierKind::While,
+        "until" => StatementModifierKind::Until,
+        "for" | "foreach" => StatementModifierKind::Foreach,
+        _ => StatementModifierKind::Other,
+    }
+}
+
+fn loop_control_kind(op: &str) -> ControlTransferKind {
+    match op {
+        "last" => ControlTransferKind::Last,
+        "redo" => ControlTransferKind::Redo,
+        _ => ControlTransferKind::Next,
     }
 }
 

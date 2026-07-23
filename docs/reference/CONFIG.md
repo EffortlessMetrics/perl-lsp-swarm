@@ -70,6 +70,25 @@ The server silently skips the file if it does not exist. If the file exists but 
 
 Unknown keys and sections are silently ignored for forward compatibility.
 
+### Discovery strategy
+
+The server searches for `.perl-lsp.toml` by walking **parent directories**
+upward from each workspace folder root to the filesystem root, returning the
+first file found. This matches the parent-walk behavior used for
+`.perlcriticrc` discovery, so that a monorepo opened at a subdirectory (e.g.
+`monorepo/services/web/`) still discovers a root-level `.perl-lsp.toml` at the
+monorepo root. When multiple `.perl-lsp.toml` files exist along the path, the
+nearest one to the workspace folder wins.
+
+```
+monorepo/
+  .perl-lsp.toml        ← found from any subdirectory
+  .perlcriticrc         ← also discovered via parent walk
+  services/
+    web/                ← opened as the workspace folder
+      lib/App.pm
+```
+
 ### File Location
 
 ```
@@ -94,13 +113,29 @@ your-project/
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `perlcritic` | `boolean` | (unset) | Enable critic diagnostics. When unset, the server default (`true`) applies. The default native engine does not require `perlcritic`; `legacy`, `perlcritic`, and `external` modes use the Perl::Critic-compatible shell-out path. |
-| `perlcritic_severity` | `integer` (1–5) | (unset) | Minimum critic severity to report. Perl::Critic uses `1 = least severe` and `5 = most severe`, so `1` reports everything while `5` reports only the most severe violations. Must be in the range 1–5; values outside this range are a parse error. |
+| `perlcritic_severity` | `integer` (1–5) | (unset) | Minimum critic severity to report. Perl::Critic uses `1 = least severe` and `5 = most severe`, so `1` reports everything while `5` reports only the most severe violations. Must be in the range 1–5; values outside this range are clamped to the nearest bound and a warning is logged. |
+
+##### Diagnostic `source` strings
+
+Every diagnostic the server publishes carries a `source` field that editors use
+for filtering and grouping in the Problems panel. The server uses exactly two
+source strings (see [#4627](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4627)):
+
+| `source` | Covers | Example codes |
+|----------|--------|---------------|
+| `perl-lsp` | All built-in diagnostics: parse errors, built-in lints, and native critic findings. | `PL001`, `PL102`, `native.testing.require_use_strict` |
+| `perl-lsp-critic` | Findings from the external `perlcritic` binary (legacy/external engine). | `TestingAndDebugging::RequireUseStrict`, `Variables::ProhibitUnusedVariables` |
+
+The same logical finding carries the same `source` regardless of whether it
+traveled the push or pull transport. Filter the Problems panel with
+`[perl-lsp]` to see all server-produced diagnostics, or `[perl-lsp-critic]` to
+see only external Perl::Critic findings.
 
 #### `[critic]` — Critic Engine Selection
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `engine` | `"legacy"`, `"perlcritic"`, `"external"`, or `"native"` | `"native"` | Selects the critic engine. `native` uses the Rust-native rule registry; `legacy`, `perlcritic`, and `external` use the Perl::Critic-compatible shell-out path. |
+| `engine` | `"legacy"`, `"perlcritic"`, `"external"`, or `"native"` | `"native"` | Selects the critic engine. `native` uses the Rust-native rule registry; `legacy`, `perlcritic`, and `external` use the Perl::Critic-compatible shell-out path. Unrecognized values are ignored and a warning is logged. |
 
 For the native engine, see the [Native Critic Rule Matrix](NATIVE_CRITIC_RULE_MATRIX.md)
 for every shipped rule (ID, category, severity, and which of the `recommended` /
@@ -118,7 +153,7 @@ for every shipped rule (ID, category, severity, and which of the `recommended` /
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | `boolean` | (unset) | Enable or disable LSP formatting. When unset, the server default (`true`) applies. |
-| `engine` | `"native"`, `"compat"`, `"perltidy-compat"`, `"external-legacy"`, `"external-perltidy"`, `"perltidy"`, `"off"`, `"disabled"`, or `"none"` | `"native"` | Selects the formatter engine. `native` runs the Rust-native formatter, `compat` / `perltidy-compat` run native formatting with compatibility defaults, `external-*` / `perltidy` use the external perltidy adapter, and `off` / `disabled` / `none` disable formatting. |
+| `engine` | `"native"`, `"compat"`, `"perltidy-compat"`, `"external-legacy"`, `"external-perltidy"`, `"perltidy"`, `"off"`, `"disabled"`, or `"none"` | `"native"` | Selects the formatter engine. `native` runs the Rust-native formatter, `compat` / `perltidy-compat` run native formatting with compatibility defaults, `external-*` / `perltidy` use the external perltidy adapter, and `off` / `disabled` / `none` disable formatting. Unrecognized values are ignored and a warning is logged. |
 | `perltidy_profile` | `string` | (unset) | Path to a `.perltidyrc` profile. Used by the external perltidy adapter and by compatibility reporting. |
 | `perltidy_maximum_line_length` | `integer` | (unset) | Maximum line length for formatting compatibility options. |
 | `perltidy_indent_columns` | `integer` | (unset) | Indent width in spaces. |
@@ -633,7 +668,8 @@ shell-out path.
 
 Native-critic rule bundle used when `perl.critic.engine = "native"`.
 `recommended` selects the lower-noise security/common-mistake/testing profile.
-`strict` enables the full native rule surface.
+`strict` enables the full native rule surface. Unrecognized values are ignored
+and a warning is logged.
 
 #### `perl.critic.include`
 

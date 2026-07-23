@@ -239,10 +239,10 @@ fn test_candidate_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn should_ignore_candidate(path: &Path) -> bool {
-    let path_str = path.to_string_lossy();
-
-    path.components().any(|component| component.as_os_str() == "fixtures")
-        || path_str.contains("/src/gen/")
+    path.components().any(|c| {
+        let name = c.as_os_str();
+        name == "fixtures" || name == "gen"
+    })
 }
 
 fn reachable_files(roots: &[PathBuf]) -> Result<HashSet<PathBuf>> {
