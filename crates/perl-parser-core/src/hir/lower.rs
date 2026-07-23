@@ -2547,6 +2547,10 @@ fn is_element_subscript(op: &str, container: &Node) -> bool {
         "[]" | "{}" => match &container.kind {
             NodeKind::Variable { sigil, .. } => sigil == "$",
             NodeKind::Binary { op: inner_op, .. } => is_subscript_op(inner_op),
+            // Scalar-deref element containers: `$$self{f}` / `${$self}{f}` parse
+            // with a `${}` unary-deref container and access a single element. The
+            // `@{}` / `%{}` deref forms are SLICES and stay generic `Binary`.
+            NodeKind::Unary { op: deref_op, .. } => deref_op == "${}",
             _ => false,
         },
         _ => false,

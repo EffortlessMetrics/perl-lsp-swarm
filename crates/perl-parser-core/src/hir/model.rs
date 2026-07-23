@@ -100,7 +100,8 @@ pub enum RecoveryConfidence {
 /// Body model version for the canonical body representation in [`HirFile`].
 ///
 /// Increment when the body arena layout changes in a backward-incompatible way.
-pub const HIR_BODY_MODEL_VERSION: u32 = 2;
+/// v3 adds the [`HirExpr::Subscript`] element-place variant to the body arena.
+pub const HIR_BODY_MODEL_VERSION: u32 = 3;
 
 /// HIR for one parsed file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

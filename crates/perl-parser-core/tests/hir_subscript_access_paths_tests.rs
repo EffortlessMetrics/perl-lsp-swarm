@@ -218,6 +218,35 @@ fn slice_assignment_is_not_an_element_write_place() {
 }
 
 #[test]
+fn scalar_deref_element_reads_element() {
+    // `$$self{field}` / `${$self}{field}` — scalar-deref element access (a `${}`
+    // unary-deref container) must lower to a singular Hash element Subscript.
+    let file = lower("my $self; my $x = $$self{field};");
+    let subs = subscripts(&file);
+    assert_eq!(subs.len(), 1, "expected exactly one subscript, got {subs:?}");
+    assert_eq!(subs[0].kind, SubscriptKind::Hash);
+    assert_eq!(subs[0].access, AccessMode::Read);
+    assert_eq!(subs[0].subscript, "opaque:Identifier");
+}
+
+#[test]
+fn scalar_deref_element_write_place() {
+    let file = lower("my $self; $$self{f} = 1;");
+    let subs = subscripts(&file);
+    assert_eq!(subs.len(), 1, "expected exactly one subscript, got {subs:?}");
+    assert_eq!(subs[0].kind, SubscriptKind::Hash);
+    assert_eq!(subs[0].access, AccessMode::Write, "deref-element assignment LHS is a write place");
+}
+
+#[test]
+fn deref_slice_is_not_an_element_subscript() {
+    // `@$self{'a','b'}` is a deref SLICE (`@{}` container), not a singular element
+    // place — it must NOT lower to a `HirSubscript`.
+    let file = lower("my $self; my @s = @$self{'a', 'b'};");
+    assert_eq!(subscripts(&file), vec![], "deref slice must not be an element subscript");
+}
+
+#[test]
 fn subscript_is_not_a_generic_binary() {
     // Regression guard: a subscript must not fall through to `HirExpr::Binary`.
     let file = lower("my @arr; my $x = $arr[0];");
