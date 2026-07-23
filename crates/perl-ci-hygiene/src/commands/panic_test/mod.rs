@@ -103,7 +103,7 @@ pub(crate) fn check_panic_test(repo_root: &Path) -> Result<i32> {
     if current > baseline {
         println!("FAIL: test panic! count ({current}) exceeds baseline ({baseline})");
         println!(
-            "If you removed panic! calls in test code, lower ci/panic_test_baseline.txt to the new count."
+            "If you added panic! calls in test code, remove them or raise ci/panic_test_baseline.txt to the new count ({current})."
         );
         return Ok(1);
     }
