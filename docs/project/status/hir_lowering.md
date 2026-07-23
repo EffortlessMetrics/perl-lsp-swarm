@@ -9,12 +9,12 @@ This status tracks parser AST construct coverage for the crate-local HIR baselin
 
 | Status | Count | Meaning |
 | --- | ---: | --- |
-| `lowered` | 30 | Emits one or more HIR items today. |
+| `lowered` | 33 | Emits one or more HIR items today. |
 | `dynamic_boundary` | 3 | Emits an explicit dynamic-boundary HIR item for unsupported static truth. |
 | `intentionally_skipped` | 20 | Traversal, metadata, or recovery placeholder; no standalone HIR item expected. |
-| `not_yet_modeled` | 18 | Parser AST construct exists, but HIR has no shell yet. |
+| `not_yet_modeled` | 15 | Parser AST construct exists, but HIR has no shell yet. |
 
-AST kinds tracked: `71`. HIR construct kinds tracked: `22`.
+AST kinds tracked: `71`. HIR construct kinds tracked: `25`.
 
 ## Inventory
 
@@ -46,8 +46,8 @@ AST kinds tracked: `71`. HIR construct kinds tracked: `22`.
 | `Block` | `lowered` | `BlockShell` | Lowered as block shell and contributes a ScopeGraph block frame. |
 | `Eval` | `dynamic_boundary` | `DynamicBoundary` | Expression `eval` emits `DynamicBoundary`; block bodies traverse. |
 | `Do` | `dynamic_boundary` | `DynamicBoundary` | Non-block `do` forms emit `DynamicBoundary`; block bodies traverse. |
-| `Defer` | `not_yet_modeled` | - | Deferred cleanup needs scope/control-flow modeling before a HIR shell. |
-| `Try` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
+| `Defer` | `lowered` | `DeferExpr` | Lowered as defer-block marker shell; deferred block is traversed. |
+| `Try` | `lowered` | `TryExpr` | Lowered as try/catch/finally shell; body, catch handlers, and finally are traversed. |
 | `If` | `lowered` | `BranchShell` | `if`/`unless` block form lowered as a branch shell with condition anchor and arm counts. |
 | `LabeledStatement` | `intentionally_skipped` | - | Label metadata is threaded into the loop it wraps; no standalone HIR item. |
 | `While` | `lowered` | `LoopShell` | `while`/`until` lowered as a loop shell with condition and continue-block facts. |
@@ -82,7 +82,7 @@ AST kinds tracked: `71`. HIR construct kinds tracked: `22`.
 | `No` | `intentionally_skipped` | - | `no` directives record CompileEnvironment facts; no standalone HIR item yet. |
 | `PhaseBlock` | `intentionally_skipped` | - | Phase blocks record CompileEnvironment phase facts and contribute a ScopeGraph phase frame. |
 | `DataSection` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
-| `Class` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
+| `Class` | `lowered` | `ClassDecl` | Lowered as class-declaration shell; class body is traversed. No dedicated scope frame or stash slot yet. |
 | `Format` | `intentionally_skipped` | - | Explicitly handled: records a ScopeGraph format frame and stash slot; no HIR item yet. |
 | `Identifier` | `lowered` | `BarewordExpr` | Lowered as bareword expression shell; records bareword fact. |
 | `Error` | `intentionally_skipped` | - | Recovered partials are traversed; raw error nodes emit no HIR. |

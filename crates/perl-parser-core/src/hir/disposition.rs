@@ -179,6 +179,9 @@ pub fn hir_kinds_for(ast_kind: &str) -> &'static [&'static str] {
         "Match" => &["MatchExpr", "DynamicBoundary"],
         "Substitution" => &["SubstitutionExpr", "DynamicBoundary"],
         "Transliteration" => &["TransliterationExpr"],
+        "Try" => &["TryExpr"],
+        "Class" => &["ClassDecl"],
+        "Defer" => &["DeferExpr"],
         _ => &[],
     }
 }
@@ -426,6 +429,38 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
             true,
             "Lowered as transliteration shell; bound expression is traversed."
         ),
+        // Try: emits a TryExpr shell recording catch/finally shape; the try
+        // body, each catch handler body, and the finally body are traversed.
+        "Try" => disp!(
+            true,
+            false,
+            true,
+            false,
+            true,
+            "Lowered as try/catch/finally shell; body, catch handlers, and finally are traversed."
+        ),
+        // Class: emits a ClassDecl shell recording name/parents; the class
+        // body is traversed. First slice only: no dedicated Class scope frame
+        // or package-stash slot is recorded yet (unlike Package).
+        "Class" => disp!(
+            true,
+            false,
+            true,
+            false,
+            true,
+            "Lowered as class-declaration shell; class body is traversed. No dedicated scope \
+             frame or stash slot yet."
+        ),
+        // Defer: emits a DeferExpr marker shell; the deferred block is
+        // traversed (and earns its own BlockShell/scope frame).
+        "Defer" => disp!(
+            true,
+            false,
+            true,
+            false,
+            true,
+            "Lowered as defer-block marker shell; deferred block is traversed."
+        ),
 
         // ── Conditional dynamic-boundary only (no non-boundary HIR item emitted) ──
         //
@@ -668,18 +703,8 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
         "Given" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "When" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "Default" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
-        "Try" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
-        "Defer" => disp!(
-            false,
-            false,
-            true,
-            false,
-            false,
-            "Deferred cleanup needs scope/control-flow modeling before a HIR shell."
-        ),
         "Tie" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "Untie" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
-        "Class" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "DataSection" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "VString" => disp!(
             false,
@@ -806,7 +831,7 @@ mod tests {
             ("Variable", LegacyCategory::IntentionallySkipped),
             ("Error", LegacyCategory::IntentionallySkipped),
             ("Binary", LegacyCategory::NotYetModeled),
-            ("Defer", LegacyCategory::NotYetModeled),
+            ("Given", LegacyCategory::NotYetModeled),
         ];
         for &(kind, expected) in checks {
             let got = disposition_for(kind)
@@ -1030,11 +1055,8 @@ mod tests {
             "Given",
             "When",
             "Default",
-            "Try",
-            "Defer",
             "Tie",
             "Untie",
-            "Class",
             "DataSection",
             "VString",
         ] {

@@ -614,6 +614,12 @@ fn hir_kind_name(kind: &HirKind) -> &'static str {
         HirKind::MatchExpr(_) => "MatchExpr",
         HirKind::SubstitutionExpr(_) => "SubstitutionExpr",
         HirKind::TransliterationExpr(_) => "TransliterationExpr",
+        // Try/Class/Defer shells are not yet lowered by PIR v0; they fall
+        // through to the `other =>` unsupported-count fallback in
+        // `lower_item`, keyed by these names.
+        HirKind::TryExpr(_) => "TryExpr",
+        HirKind::ClassDecl(_) => "ClassDecl",
+        HirKind::DeferExpr(_) => "DeferExpr",
     }
 }
 
