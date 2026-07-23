@@ -1715,10 +1715,7 @@ export function handleClientStateChange(event: StateChangeEvent): void {
   // If the prior run was stable long enough, treat this crash as a new
   // episode and reset the auto-restart budget so transient crashes don't
   // permanently exhaust it.
-  if (
-    stableRunningSince !== undefined &&
-    Date.now() - stableRunningSince >= STABLE_RUN_GRACE_MS
-  ) {
+  if (stableRunningSince !== undefined && Date.now() - stableRunningSince >= STABLE_RUN_GRACE_MS) {
     autoRestartAttempts = 0;
   }
   stableRunningSince = undefined;
