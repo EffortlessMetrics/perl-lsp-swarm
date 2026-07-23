@@ -107,6 +107,24 @@ fn pir_a_branch_constant_condition_is_none() -> TestResult {
     Ok(())
 }
 
+/// The primary condition evaluation fallthroughs into the Branch node (control
+/// evaluates the condition, then branches). Issue #4795 explicitly retains this
+/// edge while suppressing cross-arm and branch→after fallthrough.
+#[test]
+fn pir_a_branch_condition_fallthrough_to_branch_node() -> TestResult {
+    let graph = parse_and_lower("if ($x) { my $y = 1; }");
+    let branch = single_branch(&graph)?;
+    let cond_id =
+        branch_condition(branch)?.ok_or("condition `$x` lowers to a read, so link must be Some")?;
+    assert!(
+        graph.edges.iter().any(|e| {
+            e.kind == PirEdgeKind::Fallthrough && e.from == cond_id && e.to == Some(branch.id)
+        }),
+        "condition read must fall through to the Branch node before arm edges fan out"
+    );
+    Ok(())
+}
+
 /// The then-arm's first node is reachable from the Branch node via a Branch edge.
 #[test]
 fn pir_a_branch_edge_to_then_arm() -> TestResult {
@@ -171,6 +189,27 @@ fn pir_a_branch_edges_to_all_three_arms() -> TestResult {
 fn pir_a_unless_emits_branch_node() -> TestResult {
     let graph = parse_and_lower("unless ($x) { my $y = 1; }");
     single_branch(&graph)?;
+    Ok(())
+}
+
+/// Two `elsif` arms add one condition edge and one body edge each on top of the
+/// then-body edge (then + 2×(elsif cond + elsif body) + else = 6).
+#[test]
+fn pir_a_branch_two_elsif_arms_six_edges() -> TestResult {
+    let graph = parse_and_lower(
+        "if ($a) { my $t = 1; } elsif ($b) { my $m1 = 2; } elsif ($c) { my $m2 = 3; } else { my $e = 4; }",
+    );
+    let branch_id = single_branch(&graph)?.id;
+    let branch_edges: Vec<_> = graph
+        .edges
+        .iter()
+        .filter(|e| e.from == branch_id && e.kind == PirEdgeKind::Branch)
+        .collect();
+    assert_eq!(
+        branch_edges.len(),
+        6,
+        "two elsif arms must emit six Branch edges (then + 2×(cond+body) + else)"
+    );
     Ok(())
 }
 
