@@ -37,6 +37,7 @@ pub enum VerifyStatus {
     StaleBase,
     StaleGateGraph,
     Blocked,
+    NotProven,
     Missing,
 }
 
@@ -122,6 +123,26 @@ pub enum MergeReadinessStatus {
     NotApplicable,
 }
 
+impl MergeReadinessStatus {
+    /// Lowercase verdict string written into the merge-readiness receipt.
+    ///
+    /// `Ready` maps to `"valid"`; every other status maps to its
+    /// snake_case name so a non-ready fan-in never produces a `valid`
+    /// receipt (the #4649 false-confidence defect).
+    fn as_verdict(self) -> String {
+        match self {
+            Self::Ready => "valid".to_string(),
+            Self::Blocked => "blocked".to_string(),
+            Self::Pending => "pending".to_string(),
+            Self::NotProven => "not_proven".to_string(),
+            Self::Stale => "stale".to_string(),
+            Self::DraftSkip => "draft_skip".to_string(),
+            Self::Cancelled => "cancelled".to_string(),
+            Self::NotApplicable => "not_applicable".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MergeReadinessFinding {
     pub source: String,
@@ -151,6 +172,7 @@ impl VerifyStatus {
             Self::StaleBase => "stale_base",
             Self::StaleGateGraph => "stale_gate_graph",
             Self::Blocked => "blocked",
+            Self::NotProven => "not_proven",
             Self::Missing => "missing",
         }
     }
@@ -501,15 +523,68 @@ fn status_from_findings(findings: &[MergeReadinessFinding]) -> MergeReadinessSta
     MergeReadinessStatus::Ready
 }
 
-pub fn emit(pr: u64, receipt_path: Option<PathBuf>) -> Result<()> {
+/// Emit a merge-readiness receipt for a PR.
+///
+/// Without `--snapshot` this command cannot evaluate fan-in evidence (CI,
+/// review convergence, changelog, branch protection) — it only collects
+/// locally-derivable facts (head/base SHA, gate-graph version, required-check
+/// inventory). To avoid the #4649 false-confidence defect it stamps
+/// `verdict: "not_proven"` and `blocker_labels_absent: false` in that case,
+/// which `verify` refuses to collapse to `valid`.
+///
+/// Pass `--snapshot <path>` to supply a live current-head fan-in snapshot; the
+/// verdict is then derived from the real `evaluate_snapshot` fan-in so the
+/// receipt only says `valid` when every required check, review, changelog, and
+/// protection input has exact-head success evidence.
+pub fn emit(pr: u64, receipt_path: Option<PathBuf>, snapshot_path: Option<PathBuf>) -> Result<()> {
     let root = project_root()?;
     let required_checks = load_required_checks(&root)?;
     let head_sha = git_output(&root, &["rev-parse", "HEAD"])?;
     let base_sha = resolve_base_sha(&root)?;
     let gate_graph_version = compute_gate_graph_version(&root, &required_checks)?;
 
-    let verdict = if required_checks.is_empty() { "blocked" } else { "valid" }.to_string();
-    let blocker_labels_absent = true;
+    let (verdict, blocker_labels_absent, review_evidence) = match snapshot_path.as_deref() {
+        Some(snapshot) => {
+            let raw = fs::read_to_string(snapshot)
+                .with_context(|| format!("failed to read snapshot: {}", snapshot.display()))?;
+            let snap: MergeReadinessSnapshot = serde_json::from_str(&raw)
+                .with_context(|| format!("failed to parse snapshot: {}", snapshot.display()))?;
+            let evaluation = evaluate_snapshot(&snap)?;
+            let blocking = evaluation
+                .findings
+                .iter()
+                .filter(|finding| finding.blocking)
+                .map(|finding| finding.detail.clone())
+                .collect::<Vec<_>>();
+            let is_ready = evaluation.status == MergeReadinessStatus::Ready;
+            let verdict = if required_checks.is_empty() {
+                "blocked".to_string()
+            } else if is_ready {
+                "valid".to_string()
+            } else {
+                evaluation.status.as_verdict()
+            };
+            let blocker_labels_absent = blocking.is_empty() && is_ready;
+            let review_evidence = if is_ready {
+                vec!["reviewed-deep".to_string(), "ci-green".to_string()]
+            } else if blocking.is_empty() {
+                vec![format!("fan-in status: {}", evaluation.status.as_verdict())]
+            } else {
+                blocking
+            };
+            (verdict, blocker_labels_absent, review_evidence)
+        }
+        None => {
+            // No fan-in evidence was evaluated. Stamp an honest not-proven
+            // verdict so `verify` cannot fabricate a green from this receipt.
+            eprintln!(
+                "merge-ready emit: no --snapshot supplied; fan-in evidence was NOT evaluated. \
+                 Receipt stamped 'not_proven' — run `merge-ready evaluate` with a live snapshot \
+                 to produce a 'valid' receipt."
+            );
+            ("not_proven".to_string(), false, vec!["no fan-in evidence evaluated".to_string()])
+        }
+    };
 
     let receipt = MergeReadinessReceipt {
         check: CHECK_NAME.to_string(),
@@ -520,7 +595,7 @@ pub fn emit(pr: u64, receipt_path: Option<PathBuf>) -> Result<()> {
         base_sha,
         gate_graph_version,
         required_checks,
-        review_evidence: vec!["reviewed-deep".to_string(), "ci-green".to_string()],
+        review_evidence,
         blocker_labels_absent,
         verdict,
         expires_when: "on_new_commit_or_base_or_policy_change".to_string(),
@@ -599,6 +674,14 @@ fn evaluate_receipt(
         return VerifyStatus::Blocked;
     }
 
+    // A receipt stamped `not_proven` was emitted without evaluating fan-in
+    // evidence (see `emit`). It must never collapse to `valid` even when the
+    // head/base/gate-graph SHAs happen to match — that is the false-confidence
+    // defect from #4649. Treat it as not-proven regardless of staleness.
+    if receipt.verdict == "not_proven" {
+        return VerifyStatus::NotProven;
+    }
+
     let receipt_head =
         resolve_runtime_token(&receipt.head_sha, current_head, current_base, current_gate_graph);
     let receipt_base =
@@ -669,6 +752,8 @@ fn load_required_checks(root: &Path) -> Result<Vec<String>> {
 fn required_check_names_from_policy(value: &toml::Value) -> Vec<String> {
     let mut checks = Vec::new();
 
+    // `[[checks]]` is the merge-ready / branch-protection status-context
+    // inventory — the primary source for required check names.
     if let Some(array) = value.get("checks").and_then(toml::Value::as_array) {
         for item in array {
             if item.get("required").and_then(toml::Value::as_bool) == Some(true)
@@ -677,6 +762,32 @@ fn required_check_names_from_policy(value: &toml::Value) -> Vec<String> {
                 checks.push(name.to_string());
             }
         }
+    }
+
+    // `[[check]]` (singular) is consumed by workflow-trigger-lint for required-
+    // style workflow shape. Per #4649 the previous parser silently dropped
+    // these, so a maintainer moving a required check from `[[checks]]` to
+    // `[[check]]` would silently lose merge-ready coverage. We now union any
+    // `required = true` `[[check]]` entries and log a note about the schema
+    // split so the inclusion is visible rather than silent.
+    let singular_required: Vec<String> = value
+        .get("check")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("required").and_then(toml::Value::as_bool) == Some(true))
+        .filter_map(|item| item.get("name").and_then(toml::Value::as_str).map(String::from))
+        .collect();
+
+    if !singular_required.is_empty() {
+        eprintln!(
+            "merge-ready: unioning {} required [[check]] entry/ies into the status-context \
+             inventory (schema split: [[check]] = workflow-trigger-lint shape, [[checks]] = \
+             branch-protection contexts): {}",
+            singular_required.len(),
+            singular_required.join(", ")
+        );
+        checks.extend(singular_required);
     }
 
     checks.sort_unstable();
@@ -890,7 +1001,26 @@ mod tests {
         assert_eq!(VerifyStatus::StaleBase.as_str(), "stale_base");
         assert_eq!(VerifyStatus::StaleGateGraph.as_str(), "stale_gate_graph");
         assert_eq!(VerifyStatus::Blocked.as_str(), "blocked");
+        assert_eq!(VerifyStatus::NotProven.as_str(), "not_proven");
         assert_eq!(VerifyStatus::Missing.as_str(), "missing");
+    }
+
+    #[test]
+    fn test_verify_returns_not_proven_for_not_proven_verdict_even_when_shas_match() {
+        // The #4649 defect: a receipt stamped "not_proven" (emit without a
+        // snapshot) must never collapse to "valid" even if head/base/gate all
+        // match. verify() should report not_proven.
+        let receipt = make_receipt(SHA_A, SHA_B, GATE_V1, "not_proven", true);
+        let status = evaluate_receipt(&receipt, SHA_A, SHA_B, GATE_V1);
+        assert_eq!(status, VerifyStatus::NotProven);
+    }
+
+    #[test]
+    fn test_verify_returns_not_proven_even_when_blocker_labels_claimed_absent() {
+        // blocker_labels_absent = true must not rescue a not_proven verdict.
+        let receipt = make_receipt(SHA_A, SHA_B, GATE_V1, "not_proven", true);
+        let status = evaluate_receipt(&receipt, SHA_A, SHA_B, GATE_V1);
+        assert_eq!(status, VerifyStatus::NotProven);
     }
 
     #[test]
@@ -988,8 +1118,17 @@ mod tests {
             ),
         ));
 
+        // #4649: required `[[check]]` entries are now unioned with `[[checks]]`
+        // (with a logged note) instead of being silently dropped.
         let checks = must(load_required_checks(tmp_dir.path()));
-        assert_eq!(checks, vec!["Codecov / Patch 95", "ripr+ New Gap Gate"]);
+        assert_eq!(
+            checks,
+            vec![
+                "Codecov / Patch 95".to_string(),
+                "Workflow-shape lint only".to_string(),
+                "ripr+ New Gap Gate".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -1007,12 +1146,18 @@ mod tests {
             "name = \"Missing required flag\"\n",
         )));
 
+        // #4649: the singular `[[check]]` required entry is now unioned in.
         let checks = required_check_names_from_policy(&policy);
-        assert_eq!(checks, vec!["Proof required"]);
+        assert_eq!(
+            checks,
+            vec!["Proof required".to_string(), "Workflow-shape lint only".to_string()]
+        );
     }
 
     #[test]
-    fn test_required_check_names_deduplicate_sorted_names() {
+    fn test_required_check_names_union_deduplicates_singular_and_plural_entries() {
+        // When a name appears required in both `[[check]]` and `[[checks]]`,
+        // the union must deduplicate rather than emit it twice.
         let policy: toml::Value = must(toml::from_str(concat!(
             "[[check]]\n",
             "name = \"ripr+ New Gap Gate\"\n",
@@ -1029,6 +1174,23 @@ mod tests {
 
         let checks = required_check_names_from_policy(&policy);
         assert_eq!(checks, vec!["Codecov / Patch 95", "ripr+ New Gap Gate"]);
+    }
+
+    #[test]
+    fn test_required_check_names_ignores_non_required_singular_entries() {
+        // `[[check]]` entries without `required = true` must not be unioned.
+        let policy: toml::Value = must(toml::from_str(concat!(
+            "[[check]]\n",
+            "name = \"Advisory shape lint\"\n",
+            "required = false\n",
+            "\n",
+            "[[checks]]\n",
+            "name = \"Proof required\"\n",
+            "required = true\n",
+        )));
+
+        let checks = required_check_names_from_policy(&policy);
+        assert_eq!(checks, vec!["Proof required"]);
     }
 
     #[test]
@@ -1433,6 +1595,75 @@ mod tests {
         let raw = fs::read_to_string(output.path())?;
         let evaluation: MergeReadinessEvaluation = serde_json::from_str(&raw)?;
         color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Stale);
+        Ok(())
+    }
+
+    #[test]
+    fn merge_readiness_status_as_verdict_maps_ready_to_valid() {
+        assert_eq!(MergeReadinessStatus::Ready.as_verdict(), "valid");
+    }
+
+    #[test]
+    fn merge_readiness_status_as_verdict_never_returns_valid_for_non_ready() {
+        // The #4649 invariant: only Ready maps to "valid". Every other status
+        // must map to a distinct non-"valid" verdict string.
+        for status in [
+            MergeReadinessStatus::Blocked,
+            MergeReadinessStatus::Pending,
+            MergeReadinessStatus::NotProven,
+            MergeReadinessStatus::Stale,
+            MergeReadinessStatus::DraftSkip,
+            MergeReadinessStatus::Cancelled,
+            MergeReadinessStatus::NotApplicable,
+        ] {
+            let verdict = status.as_verdict();
+            assert_ne!(verdict, "valid", "non-ready status {status:?} must not map to valid");
+            assert!(!verdict.is_empty());
+        }
+    }
+
+    #[test]
+    fn emit_without_snapshot_stamps_not_proven_and_verify_rejects_it()
+    -> color_eyre::eyre::Result<()> {
+        // The #4649 core invariant: a receipt stamped "not_proven" must never
+        // collapse to Valid, even when blocker labels are claimed absent and
+        // head/base/gate SHAs all match. verify() must report not_proven.
+        let receipt = make_receipt(SHA_A, SHA_B, GATE_V1, "not_proven", true);
+        let status = evaluate_receipt(&receipt, SHA_A, SHA_B, GATE_V1);
+        assert_eq!(status, VerifyStatus::NotProven);
+        Ok(())
+    }
+
+    #[test]
+    fn emit_without_snapshot_blocker_labels_unknown_is_blocked() {
+        // The real emit-without-snapshot path sets blocker_labels_absent = false
+        // (label state is unverified), which verify reports as Blocked — also
+        // never Valid.
+        let receipt = make_receipt(SHA_A, SHA_B, GATE_V1, "not_proven", false);
+        let status = evaluate_receipt(&receipt, SHA_A, SHA_B, GATE_V1);
+        assert_eq!(status, VerifyStatus::Blocked);
+    }
+
+    #[test]
+    fn emit_with_ready_snapshot_stamps_valid() -> color_eyre::eyre::Result<()> {
+        // A ready fan-in snapshot must produce a "valid" verdict through the
+        // emit path. We exercise the verdict-derivation logic directly by
+        // evaluating the ready snapshot and mapping status -> verdict.
+        let evaluation = evaluate_snapshot(&fan_in_snapshot())?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Ready);
+        let verdict = evaluation.status.as_verdict();
+        color_eyre::eyre::ensure!(verdict == "valid");
+        Ok(())
+    }
+
+    #[test]
+    fn emit_with_stale_snapshot_does_not_stamp_valid() -> color_eyre::eyre::Result<()> {
+        // A stale fan-in must never produce a "valid" verdict through emit.
+        let mut snapshot = fan_in_snapshot();
+        snapshot.checks[0].evaluated_sha = SHA_C.to_string();
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status != MergeReadinessStatus::Ready);
+        color_eyre::eyre::ensure!(evaluation.status.as_verdict() != "valid");
         Ok(())
     }
 }

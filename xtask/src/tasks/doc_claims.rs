@@ -72,10 +72,16 @@ pub fn run() -> Result<()> {
 
     if hits.is_empty() {
         check_forbidden_workspace_crate_name(&root)?;
-        println!(
-            "Doc claims OK: {} articles scanned, {} stale patterns checked, 0 violations found",
-            files.len(),
-            STALE_PATTERNS.len()
+        // #4649: this validator only checks a fixed list of hardcoded stale
+        // literals. It cannot detect new staleness patterns (e.g. a crate count
+        // drifting past the last hand-edited value); it only catches
+        // regressions of the literals listed below. State that scope explicitly
+        // so "0 violations" is not mistaken for a clean bill of health.
+        println!("{}", success_message(files.len()));
+        eprintln!(
+            "doc-claims scope (#4649): checked {} hardcoded stale literals: {}",
+            STALE_PATTERNS.len(),
+            STALE_PATTERNS.iter().map(|(stale, _, _)| *stale).collect::<Vec<_>>().join(", ")
         );
         return Ok(());
     }
@@ -107,4 +113,44 @@ fn check_forbidden_workspace_crate_name(root: &std::path::Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Build the success message reported when no stale-literal regressions are
+/// found. Extracted so the #4649 scope caveat ("only N hardcoded literals are
+/// checked; new staleness patterns are NOT caught") can be unit-tested.
+fn success_message(files_count: usize) -> String {
+    format!(
+        "Doc claims OK: {files_count} articles scanned, {n} hardcoded stale literals checked, \
+         0 regressions found. Scope: only the {n} hardcoded literals below are checked; \
+         new staleness patterns are NOT caught.",
+        n = STALE_PATTERNS.len()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn success_message_states_hardcoded_literal_scope() {
+        let msg = success_message(7);
+        // #4649 acceptance: the OK message must explicitly state that only
+        // hardcoded literals are checked and new staleness is NOT caught.
+        assert!(msg.contains("hardcoded stale literals checked"), "msg: {msg}");
+        assert!(msg.contains("new staleness patterns are NOT caught"), "msg: {msg}");
+        assert!(msg.contains("0 regressions found"), "msg: {msg}");
+        assert!(msg.contains("7 articles scanned"), "msg: {msg}");
+    }
+
+    #[test]
+    fn stale_patterns_table_is_non_empty() {
+        // A non-empty table is what makes the scope count meaningful; if it
+        // ever empties the message would be misleading.
+        assert!(!STALE_PATTERNS.is_empty());
+        for (stale, replacement, _desc) in STALE_PATTERNS {
+            assert!(!stale.is_empty(), "stale literal must not be empty");
+            assert!(!replacement.is_empty(), "replacement literal must not be empty");
+            assert_ne!(stale, replacement, "stale and replacement must differ");
+        }
+    }
 }

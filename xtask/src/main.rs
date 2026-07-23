@@ -2706,6 +2706,12 @@ enum MergeReadyCommand {
         output: Option<PathBuf>,
     },
     /// Emit a merge-readiness receipt for a PR.
+    ///
+    /// Without `--snapshot` the receipt is stamped `not_proven` because no
+    /// fan-in evidence (CI, review, changelog, protection) is evaluated — this
+    /// is the honest default and `verify` will not collapse it to `valid`.
+    /// Pass `--snapshot <path>` to derive the verdict from a live fan-in
+    /// snapshot so the receipt can be stamped `valid`.
     Emit {
         /// Pull request number.
         #[arg(long)]
@@ -2713,6 +2719,10 @@ enum MergeReadyCommand {
         /// Output path for receipt JSON.
         #[arg(long)]
         receipt: Option<PathBuf>,
+        /// Optional live current-head fan-in snapshot to derive the verdict
+        /// from. When omitted the receipt is stamped `not_proven`.
+        #[arg(long)]
+        snapshot: Option<PathBuf>,
     },
     /// Verify receipt freshness and verdict.
     Verify {
@@ -4285,7 +4295,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             MergeReadyCommand::Evaluate { snapshot, output } => {
                 merge_ready::evaluate_snapshot_file(&snapshot, output.as_deref())
             }
-            MergeReadyCommand::Emit { pr, receipt } => merge_ready::emit(pr, receipt),
+            MergeReadyCommand::Emit { pr, receipt, snapshot } => {
+                merge_ready::emit(pr, receipt, snapshot)
+            }
             MergeReadyCommand::Verify { pr, fixture } => merge_ready::verify(pr, fixture),
             MergeReadyCommand::Reconcile { apply, dry_run } => {
                 let run_dry = !apply || dry_run;
