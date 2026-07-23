@@ -58,10 +58,7 @@ fn pir_a_bare_return_emits_one_return_node_void() -> TestResult {
 }
 
 /// The Return node is anchored to explicit source, spanning exactly the
-/// `return $x` expression — not the enclosing block or subroutine. The value
-/// form is used because it carries a well-formed range (a bare valueless
-/// `return;` currently gets a degenerate upstream AST range, shared by the flat
-/// path; that oddity is out of scope for this PIR slice).
+/// `return $x` expression — not the enclosing block or subroutine.
 #[test]
 fn pir_a_return_has_explicit_source_anchor() -> TestResult {
     let src = "sub f { return $x; }";
@@ -76,6 +73,32 @@ fn pir_a_return_has_explicit_source_anchor() -> TestResult {
         (r.start, r.end),
         (expected_start, expected_end),
         "Return anchor must span exactly the `return $x` expression, got {:?}",
+        src.get(r.start..r.end)
+    );
+    Ok(())
+}
+
+/// A bare valueless `return;` now carries a well-formed anchor spanning exactly
+/// the `return` keyword. Before #4861 the upstream AST produced a degenerate,
+/// inverted range for the valueless form, so this was only checked for `return $x`.
+#[test]
+fn pir_a_bare_return_has_wellformed_source_anchor() -> TestResult {
+    let src = "sub f { return; }";
+    let graph = parse_and_lower(src);
+    let node = single_return(&graph)?;
+    assert_eq!(node.source_anchor.kind, PirAnchorKind::ExplicitSource);
+    let r = node.source_anchor.range.ok_or("Return must preserve a source range")?;
+    assert!(
+        r.end >= r.start,
+        "bare return anchor must not be inverted, got {}..{}",
+        r.start,
+        r.end
+    );
+    let expected_start = src.find("return").ok_or("source contains `return`")?;
+    assert_eq!(
+        (r.start, r.end),
+        (expected_start, expected_start + "return".len()),
+        "bare Return anchor must span exactly `return`, got {:?}",
         src.get(r.start..r.end)
     );
     Ok(())

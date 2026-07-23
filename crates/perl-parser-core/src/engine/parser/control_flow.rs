@@ -524,7 +524,9 @@ impl<'a> Parser<'a> {
     /// Parse return statement
     fn parse_return(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'return'
+        // Consume 'return' via consume_token so `last_end_position` advances past
+        // the keyword; capture its end for the valueless fallback span (#4861).
+        let return_end = self.consume_token()?.end;
 
         // Check if we have a value to return - only stop at clear ends or statement modifiers.
         // Word operators (or, and, xor) belong to the enclosing statement, not the return value.
@@ -542,7 +544,7 @@ impl<'a> Parser<'a> {
             Some(Box::new(self.parse_expression()?))
         };
 
-        let end = value.as_ref().map(|v| v.location.end).unwrap_or(self.previous_position());
+        let end = value.as_ref().map(|v| v.location.end).unwrap_or(return_end);
         Ok(Node::new(NodeKind::Return { value }, SourceLocation { start, end }))
     }
 
@@ -554,7 +556,9 @@ impl<'a> Parser<'a> {
     /// expression.
     fn parse_return_expr(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'return'
+        // Consume 'return' via consume_token so `last_end_position` advances past
+        // the keyword; capture its end for the valueless fallback span (#4861).
+        let return_end = self.consume_token()?.end;
 
         // Determine whether there is a return value.
         // Stop at all expression-level boundaries as well as statement-level ones.
@@ -576,7 +580,7 @@ impl<'a> Parser<'a> {
             Some(Box::new(self.parse_assignment()?))
         };
 
-        let end = value.as_ref().map(|v| v.location.end).unwrap_or(self.previous_position());
+        let end = value.as_ref().map(|v| v.location.end).unwrap_or(return_end);
         Ok(Node::new(NodeKind::Return { value }, SourceLocation { start, end }))
     }
 
