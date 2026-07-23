@@ -467,7 +467,10 @@ pub fn discover_system_perl(base_roots: &[PathBuf]) -> Vec<PathBuf> {
 
 /// Resolve module names to file paths via a single `perl` invocation.
 ///
-/// Returns an error if fewer than `min_resolved` modules resolve successfully.
+/// Returns an error unless every manifest module resolves successfully.
+///
+/// `min_resolved` is retained for error context and must match the manifest
+/// line count (as set by [`discover_manifest`]).
 pub fn resolve_manifest_modules(
     manifest_path: &Path,
     perl5lib_paths: &[PathBuf],
