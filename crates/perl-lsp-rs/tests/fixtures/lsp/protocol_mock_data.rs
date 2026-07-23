@@ -160,7 +160,7 @@ pub fn perl_run_critic_external_success_fixture() -> LspProtocolFixture {
                     "message": "Code before strictures are enabled",
                     "line": 3,
                     "column": 1,
-                    "source": "perlcritic"
+                    "source": "perl-lsp-critic"
                 },
                 {
                     "policy": "Perl::Critic::Policy::TestingAndDebugging::RequireUseWarnings",
@@ -168,7 +168,7 @@ pub fn perl_run_critic_external_success_fixture() -> LspProtocolFixture {
                     "message": "Code before warnings are enabled",
                     "line": 3,
                     "column": 1,
-                    "source": "perlcritic"
+                    "source": "perl-lsp-critic"
                 },
                 {
                     "policy": "Perl::Critic::Policy::InputOutput::RequireBriefOpen",
@@ -176,7 +176,7 @@ pub fn perl_run_critic_external_success_fixture() -> LspProtocolFixture {
                     "message": "Close filehandles as soon as possible after opening them",
                     "line": 12,
                     "column": 1,
-                    "source": "perlcritic"
+                    "source": "perl-lsp-critic"
                 },
                 {
                     "policy": "Perl::Critic::Policy::InputOutput::RequireThreeArgOpen",
@@ -184,7 +184,7 @@ pub fn perl_run_critic_external_success_fixture() -> LspProtocolFixture {
                     "message": "Always use the three-argument form of open",
                     "line": 12,
                     "column": 1,
-                    "source": "perlcritic"
+                    "source": "perl-lsp-critic"
                 }
             ],
             "summary": {

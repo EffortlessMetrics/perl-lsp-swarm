@@ -4,7 +4,7 @@
 //! keep parse, URL, hint, and tag metadata internally consistent.
 
 use perl_diagnostics::catalog::diagnostic_meta;
-use perl_diagnostics::codes::{DiagnosticCategory, DiagnosticCode, DiagnosticTag};
+use perl_diagnostics::codes::{DiagnosticCode, DiagnosticTag};
 
 const DIAGNOSTIC_CODES: &[DiagnosticCode] = &[
     DiagnosticCode::ParseError,
@@ -63,11 +63,6 @@ const DIAGNOSTIC_CODES: &[DiagnosticCode] = &[
     DiagnosticCode::HeredocInEval,
     DiagnosticCode::HeredocTiedHandle,
     DiagnosticCode::VersionIncompatFeature,
-    DiagnosticCode::CriticSeverity1,
-    DiagnosticCode::CriticSeverity2,
-    DiagnosticCode::CriticSeverity3,
-    DiagnosticCode::CriticSeverity4,
-    DiagnosticCode::CriticSeverity5,
 ];
 
 fn known_code_string(code: &str) -> bool {
@@ -81,25 +76,15 @@ fn diagnostic_code_registry_round_trips() -> Result<(), Box<dyn std::error::Erro
 
         assert_eq!(DiagnosticCode::parse_code(code_string), Some(*code));
         assert!(code_string.len() == 5);
-        assert!(code_string.starts_with("PL") || code_string.starts_with("PC"));
-        assert_eq!(
-            code_string.starts_with("PC"),
-            code.category() == DiagnosticCategory::PerlCritic
-        );
+        assert!(code_string.starts_with("PL"));
 
         let meta = diagnostic_meta(*code);
         assert_eq!(meta.code, serde_json::json!(code_string));
 
-        if code_string.starts_with("PL") {
-            let expected_url = format!("https://docs.perl-lsp.org/errors/{code_string}");
-            assert_eq!(code.documentation_url(), Some(expected_url.as_str()));
-            assert_eq!(meta.desc, Some(serde_json::json!({ "href": expected_url })));
-            assert!(meta.hint.is_some());
-        } else {
-            assert_eq!(code.documentation_url(), None);
-            assert_eq!(meta.desc, None);
-            assert_eq!(meta.hint, None);
-        }
+        let expected_url = format!("https://docs.perl-lsp.org/errors/{code_string}");
+        assert_eq!(code.documentation_url(), Some(expected_url.as_str()));
+        assert_eq!(meta.desc, Some(serde_json::json!({ "href": expected_url })));
+        assert!(meta.hint.is_some());
     }
 
     Ok(())

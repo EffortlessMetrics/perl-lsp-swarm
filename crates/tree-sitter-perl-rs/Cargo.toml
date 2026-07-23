@@ -32,7 +32,7 @@ doctest = true
 
 [features]
 default = []
-queries = []
+queries = ["dep:regex"]
 
 [[bin]]
 name = "bench_facade"
@@ -44,6 +44,7 @@ perl-ast = { workspace = true }
 perl-module = { workspace = true }
 perl-pragma = { workspace = true }
 perl-semantic-analyzer = { workspace = true }
+regex = { workspace = true, optional = true }
 
 [dev-dependencies]
 perl-tdd-support = { workspace = true }

@@ -493,15 +493,19 @@ fn test_dap_variables_default_scope() {
             let body = must_some(body);
             let variables = must_some(body.get("variables").and_then(|v| v.as_array()));
 
-            // Should return placeholder variables (@_, $self)
-            assert_eq!(variables.len(), 2);
-
-            let var_names: Vec<&str> = variables
-                .iter()
-                .map(|v| must_some(v.get("name").and_then(|n| n.as_str())))
-                .collect();
-            assert!(var_names.contains(&"@_"));
-            assert!(var_names.contains(&"$self"));
+            // Locals scope (variablesReference=11) returns empty in fallback mode.
+            // When the B module is unavailable we have no reliable way to enumerate
+            // `my` variables, so we return an honest empty list rather than fake
+            // `$self`/`@_` placeholders (issue #1006).
+            assert_eq!(
+                variables.len(),
+                0,
+                "#1006 regression: Locals fallback must be empty; got: {:?}",
+                variables
+                    .iter()
+                    .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+                    .collect::<Vec<_>>()
+            );
         }
         _ => must(Err::<(), _>("Expected response message")),
     }

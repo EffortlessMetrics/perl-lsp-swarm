@@ -573,6 +573,7 @@ impl LspServer {
         // Persist advertised features for gating
         let features = build_flags.to_advertised_features();
         *self.advertised_features.lock() = features.clone();
+        *self.advertised_feature_ids.lock() = build_flags.to_feature_ids();
 
         // Generate capabilities from build flags
         //

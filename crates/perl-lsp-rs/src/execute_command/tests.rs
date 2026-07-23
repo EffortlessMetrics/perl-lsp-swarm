@@ -192,6 +192,10 @@ fn test_supported_commands_includes_go_to_test() {
         "perl.workspaceTrustReport should be in supported commands list"
     );
     assert!(
+        commands.contains(&"perl.agentContext".to_string()),
+        "perl.agentContext should be in supported commands list"
+    );
+    assert!(
         commands.contains(&"perl.previewSafeDelete".to_string()),
         "perl.previewSafeDelete should be in supported commands list"
     );

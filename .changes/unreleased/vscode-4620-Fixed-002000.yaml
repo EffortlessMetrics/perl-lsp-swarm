@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Fixed
+body: "Status bar now shows workspace file and error counts in the running state; HealthWidget.setFileCount/setErrorCount are wired to client-side diagnostics and workspace file-scan telemetry instead of being dead code."
+time: 2026-07-23T00:20:00Z
+custom:
+  PR: "4620"
+  Slug: healthwidget-counts-wired
+  Breaking: "no"

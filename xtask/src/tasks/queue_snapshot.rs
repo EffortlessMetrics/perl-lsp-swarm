@@ -11,6 +11,8 @@ pub struct QueueSnapshot {
     pub captured_at: String,
     pub repository: String,
     pub default_branch: String,
+    /// Historical field name retained for schema compatibility. The value is
+    /// the captured SHA of the repository's current default integration branch.
     pub master_sha: String,
     #[serde(default)]
     pub ruleset_summary: serde_json::Value,
@@ -42,6 +44,11 @@ pub struct StatusCheck {
     pub state: String,
 }
 
+/// Derived observations for queue navigation.
+///
+/// These buckets are intentionally not mutually exclusive: CI state,
+/// mergeability, draft state, and routing labels are independent observations.
+/// They are navigation/projected state, not merge authorization.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct DerivedBuckets {
@@ -51,9 +58,14 @@ pub struct DerivedBuckets {
     pub needs_builder_fix: Vec<u64>,
     pub needs_diff_fix: Vec<u64>,
     pub diff_audited_waiting_ci: Vec<u64>,
-    pub stale_or_dirty: Vec<u64>,
+    /// GitHub reports an actual textual conflict (`DIRTY`/`CONFLICTING`).
+    pub conflicting: Vec<u64>,
+    /// GitHub did not establish mergeability (`UNKNOWN` or missing state).
+    pub unknown_not_proven: Vec<u64>,
+    /// Checks are neither terminal-failing nor all non-blocking, while
+    /// mergeability is known and non-conflicting (for example `UNSTABLE`).
+    pub pending_or_unclassified: Vec<u64>,
     pub draft: Vec<u64>,
-    pub blocked_unknown: Vec<u64>,
 }
 
 pub fn run_snapshot(out: PathBuf, fixture: Option<PathBuf>) -> Result<()> {
@@ -95,7 +107,8 @@ fn snapshot_from_gh_cli() -> Result<QueueSnapshot> {
         "unknown".to_string()
     };
 
-    // Fetch current main SHA via git.
+    // Fetch current main SHA via git. The serialized `master_sha` field name is
+    // retained for backward compatibility with existing snapshot consumers.
     let sha_output = Command::new("git")
         .current_dir(&root)
         .args(["rev-parse", "origin/main"])
@@ -213,7 +226,7 @@ fn snapshot_from_gh_cli() -> Result<QueueSnapshot> {
         snapshot_id,
         captured_at: now.to_rfc3339(),
         repository,
-        default_branch: "master".to_string(),
+        default_branch: "main".to_string(),
         master_sha,
         ruleset_summary: serde_json::json!({"source":"gh-cli"}),
         buckets: derive_buckets(&prs),
@@ -222,18 +235,40 @@ fn snapshot_from_gh_cli() -> Result<QueueSnapshot> {
     })
 }
 
+fn is_terminal_check_failure(state: &str) -> bool {
+    matches!(
+        state.to_ascii_uppercase().as_str(),
+        "ACTION_REQUIRED"
+            | "CANCELLED"
+            | "ERROR"
+            | "FAILURE"
+            | "STALE"
+            | "STARTUP_FAILURE"
+            | "TIMED_OUT"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn make_pr(number: u64, labels: Vec<&str>, checks: Vec<(&str, &str)>) -> PullRequestSnapshot {
+        make_pr_with_state(number, "CLEAN", labels, checks)
+    }
+
+    fn make_pr_with_state(
+        number: u64,
+        merge_state: &str,
+        labels: Vec<&str>,
+        checks: Vec<(&str, &str)>,
+    ) -> PullRequestSnapshot {
         PullRequestSnapshot {
             number,
             title: format!("PR {number}"),
             head_sha: "abc".to_string(),
             base_sha: "def".to_string(),
             is_draft: false,
-            merge_state_status: Some("CLEAN".to_string()),
+            merge_state_status: Some(merge_state.to_string()),
             labels: labels.into_iter().map(ToString::to_string).collect(),
             status_check_rollup: checks
                 .into_iter()
@@ -284,15 +319,75 @@ mod tests {
         let buckets = derive_buckets(&prs);
         assert!(buckets.needs_ci_fix.contains(&5));
     }
+
+    #[test]
+    fn every_terminal_github_failure_routes_to_needs_ci_fix() {
+        for (number, state) in [(12, "ERROR"), (13, "STARTUP_FAILURE"), (14, "STALE")] {
+            let buckets = derive_buckets(&[make_pr(number, vec![], vec![("ci", state)])]);
+            assert!(buckets.needs_ci_fix.contains(&number), "{state} must route to needs_ci_fix");
+            assert!(
+                !buckets.pending_or_unclassified.contains(&number),
+                "{state} must not look pending"
+            );
+        }
+    }
+
+    #[test]
+    fn dirty_routes_to_conflicting_not_unknown() {
+        let prs = vec![make_pr_with_state(6, "DIRTY", vec![], vec![("ci", "IN_PROGRESS")])];
+        let buckets = derive_buckets(&prs);
+        assert!(buckets.conflicting.contains(&6));
+        assert!(!buckets.unknown_not_proven.contains(&6));
+        assert!(!buckets.pending_or_unclassified.contains(&6));
+    }
+
+    #[test]
+    fn conflicting_alias_routes_to_conflicting() {
+        let prs = vec![make_pr_with_state(7, "CONFLICTING", vec![], vec![("ci", "IN_PROGRESS")])];
+        let buckets = derive_buckets(&prs);
+        assert!(buckets.conflicting.contains(&7));
+    }
+
+    #[test]
+    fn unknown_routes_to_not_proven_not_conflicting() {
+        let prs = vec![make_pr_with_state(8, "UNKNOWN", vec![], vec![("ci", "IN_PROGRESS")])];
+        let buckets = derive_buckets(&prs);
+        assert!(buckets.unknown_not_proven.contains(&8));
+        assert!(!buckets.conflicting.contains(&8));
+        assert!(!buckets.pending_or_unclassified.contains(&8));
+    }
+
+    #[test]
+    fn missing_merge_state_routes_to_unknown_not_proven() {
+        let mut pr = make_pr(9, vec![], vec![("ci", "IN_PROGRESS")]);
+        pr.merge_state_status = None;
+        let buckets = derive_buckets(&[pr]);
+        assert!(buckets.unknown_not_proven.contains(&9));
+    }
+
+    #[test]
+    fn clean_pending_routes_to_pending_or_unclassified() {
+        let prs = vec![make_pr_with_state(10, "CLEAN", vec![], vec![("ci", "IN_PROGRESS")])];
+        let buckets = derive_buckets(&prs);
+        assert!(buckets.pending_or_unclassified.contains(&10));
+        assert!(!buckets.conflicting.contains(&10));
+        assert!(!buckets.unknown_not_proven.contains(&10));
+    }
+
+    #[test]
+    fn conflict_and_ci_failure_remain_visible_together() {
+        let prs = vec![make_pr_with_state(11, "DIRTY", vec![], vec![("ci", "FAILURE")])];
+        let buckets = derive_buckets(&prs);
+        assert!(buckets.conflicting.contains(&11));
+        assert!(buckets.needs_ci_fix.contains(&11));
+    }
 }
 
 pub fn derive_buckets(prs: &[PullRequestSnapshot]) -> DerivedBuckets {
     let mut buckets = DerivedBuckets::default();
     for pr in prs {
-        let has_failing = pr.status_check_rollup.iter().any(|check| {
-            let s = check.state.to_ascii_uppercase();
-            s == "FAILURE" || s == "CANCELLED" || s == "TIMED_OUT" || s == "ACTION_REQUIRED"
-        });
+        let has_failing =
+            pr.status_check_rollup.iter().any(|check| is_terminal_check_failure(&check.state));
         let all_green = !pr.status_check_rollup.is_empty()
             && pr.status_check_rollup.iter().all(|check| {
                 check.state.eq_ignore_ascii_case("success")
@@ -300,6 +395,9 @@ pub fn derive_buckets(prs: &[PullRequestSnapshot]) -> DerivedBuckets {
                     || check.state.eq_ignore_ascii_case("skipped")
             });
         let labels = &pr.labels;
+        let merge_state = pr.merge_state_status.as_deref().map(str::to_ascii_uppercase);
+        let is_conflicting = matches!(merge_state.as_deref(), Some("DIRTY") | Some("CONFLICTING"));
+        let is_unknown = matches!(merge_state.as_deref(), None | Some("UNKNOWN"));
 
         if pr.is_draft {
             buckets.draft.push(pr.number);
@@ -317,16 +415,19 @@ pub fn derive_buckets(prs: &[PullRequestSnapshot]) -> DerivedBuckets {
             buckets.diff_audited_waiting_ci.push(pr.number);
         }
 
+        if is_conflicting {
+            buckets.conflicting.push(pr.number);
+        }
+        if is_unknown {
+            buckets.unknown_not_proven.push(pr.number);
+        }
+
         if has_failing {
             buckets.needs_ci_fix.push(pr.number);
         } else if all_green {
             buckets.ci_green.push(pr.number);
-        } else if pr.merge_state_status.as_deref() == Some("DIRTY")
-            || pr.merge_state_status.as_deref() == Some("UNKNOWN")
-        {
-            buckets.stale_or_dirty.push(pr.number);
-        } else {
-            buckets.blocked_unknown.push(pr.number);
+        } else if !is_conflicting && !is_unknown {
+            buckets.pending_or_unclassified.push(pr.number);
         }
     }
     buckets

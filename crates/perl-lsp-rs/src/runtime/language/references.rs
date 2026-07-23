@@ -1864,6 +1864,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().document_highlight {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         if let Some(params) = params {
             let uri = req_uri(&params)?;
             let (line, character) = req_position(&params)?;

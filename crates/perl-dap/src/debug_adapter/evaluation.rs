@@ -314,6 +314,35 @@ impl DebugAdapter {
             };
         }
 
+        // Validate the EXPRESSION (LHS) — it is interpolated into a debugger
+        // `p {expression} = {value}` command, so a hostile LHS such as
+        // `$x; system('id')` would inject an arbitrary debugger command.
+        // Reject statement separators first, then run the shared SafeEvaluator.
+        if super::variables::contains_unquoted_statement_separator(expression) {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "setExpression".to_string(),
+                body: None,
+                message: Some(
+                    "Unsafe expression for setExpression: statement separators are not allowed"
+                        .to_string(),
+                ),
+            };
+        }
+
+        if let Err(error) = SAFE_EVALUATOR.validate(expression) {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "setExpression".to_string(),
+                body: None,
+                message: Some(format!("Unsafe expression for setExpression: {error}")),
+            };
+        }
+
         // Validate the VALUE with SafeEvaluator (the value is what gets evaluated)
         let evaluator = SafeEvaluator::new();
         if let Err(error) = evaluator.validate(value) {

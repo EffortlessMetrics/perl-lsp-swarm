@@ -334,13 +334,13 @@ fn add_visible_symbol_trust_boundary_related_info(
     let message = match trust {
         VisibleSymbolDiagnosticTrust::NoEvidence | VisibleSymbolDiagnosticTrust::Proven => return,
         VisibleSymbolDiagnosticTrust::LowConfidence => {
-            "Trust boundary: only low-confidence symbol evidence exists, so perl-lsp keeps this diagnostic instead of suppressing it."
+            "This diagnostic is kept because symbol evidence is low-confidence."
         }
         VisibleSymbolDiagnosticTrust::DynamicBoundary => {
-            "Trust boundary: dynamic Perl evidence exists for this name, so perl-lsp does not treat it as an exact static fact."
+            "This name has dynamic evidence, so it is not treated as a static fact."
         }
         VisibleSymbolDiagnosticTrust::Ambiguous => {
-            "Trust boundary: multiple possible symbol facts matched, so perl-lsp keeps this diagnostic instead of guessing."
+            "Multiple possible symbol matches were found, so this diagnostic is kept."
         }
     };
 
@@ -1112,8 +1112,8 @@ mod tests {
             "low-confidence import/export fact should not silently suppress diagnostics"
         );
         assert!(
-            has_related_info_containing(&diagnostics[0], "low-confidence symbol evidence"),
-            "low-confidence diagnostic should carry an explicit trust-boundary label: {diagnostics:?}"
+            has_related_info_containing(&diagnostics[0], "low-confidence"),
+            "low-confidence diagnostic should carry an explicit related-information label: {diagnostics:?}"
         );
         Ok(())
     }
@@ -1145,8 +1145,8 @@ mod tests {
             "dynamic-boundary candidate should block imported/generated fact suppression"
         );
         assert!(
-            has_related_info_containing(&diagnostics[0], "dynamic Perl evidence"),
-            "dynamic-boundary diagnostic should carry an explicit trust-boundary label: {diagnostics:?}"
+            has_related_info_containing(&diagnostics[0], "dynamic evidence"),
+            "dynamic-boundary diagnostic should carry an explicit related-information label: {diagnostics:?}"
         );
         Ok(())
     }
@@ -1178,8 +1178,8 @@ mod tests {
             "ambiguous imported/generated visibility should not silently suppress diagnostics"
         );
         assert!(
-            has_related_info_containing(&diagnostics[0], "multiple possible symbol facts"),
-            "ambiguous diagnostic should carry an explicit trust-boundary label: {diagnostics:?}"
+            has_related_info_containing(&diagnostics[0], "Multiple possible symbol matches"),
+            "ambiguous diagnostic should carry an explicit related-information label: {diagnostics:?}"
         );
         Ok(())
     }

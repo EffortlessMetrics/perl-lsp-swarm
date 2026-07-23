@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/aquaproj/aqua/v2.57.0/json-schema/aqua-yaml.json
+
+# Portable non-language repository tools.
+#
+# Authority boundary:
+# - Nix remains the complete development environment.
+# - rust-toolchain.toml, Cargo.lock, and npm lockfiles own language toolchains.
+# - just and xtask own commands and repository policy.
+# - Aqua owns exact portable CLI acquisition for non-Nix environments.
+
+registries:
+  - type: standard
+    # Immutable aqua-registry commit. Update with the package versions below.
+    ref: bf9bb8d01aaff6a3cabbac6a5642deb33e66df7e
+
+packages:
+  - name: miniscruff/changie@v1.25.0
+  - name: rhysd/actionlint@v1.7.12
+  - name: zizmorcore/zizmor@v1.26.1

@@ -732,7 +732,7 @@ fn test_code_actions_have_no_exact_duplicates() -> Result<(), Box<dyn std::error
                         },
                         "severity": 2,
                         "code": "TestingAndDebugging::RequireUseStrict",
-                        "source": "perlcritic",
+                        "source": "perl-lsp-critic",
                         "message": "Code before strictures are enabled"
                     }]
                 }

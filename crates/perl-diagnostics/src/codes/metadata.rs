@@ -109,21 +109,12 @@ impl DiagnosticCode {
             Self::HeredocInEval => "PL805",
             Self::HeredocTiedHandle => "PL806",
             Self::VersionIncompatFeature => "PL900",
-            Self::CriticSeverity1 => "PC001",
-            Self::CriticSeverity2 => "PC002",
-            Self::CriticSeverity3 => "PC003",
-            Self::CriticSeverity4 => "PC004",
-            Self::CriticSeverity5 => "PC005",
         }
     }
 
     /// Get the documentation URL for this code, if available.
     pub fn documentation_url(&self) -> Option<&'static str> {
         let code = self.as_str();
-        // Perl::Critic codes don't have centralized documentation
-        if code.starts_with("PC") {
-            return None;
-        }
         // Build URL from stable code string for all PL codes
         Some(match code {
             "PL001" => "https://docs.perl-lsp.org/errors/PL001",
@@ -236,9 +227,7 @@ impl DiagnosticCode {
             | Self::ModuleNotFound
             | Self::SourceFilterModule
             | Self::VersionIncompatFeature
-            | Self::EvalErrorFlow
-            | Self::CriticSeverity1
-            | Self::CriticSeverity2 => DiagnosticSeverity::Warning,
+            | Self::EvalErrorFlow => DiagnosticSeverity::Warning,
 
             // Information
             Self::CaptureVarWithoutRegexMatch
@@ -251,12 +240,9 @@ impl DiagnosticCode {
             | Self::HeredocTiedHandle => DiagnosticSeverity::Information,
 
             // Hints
-            Self::MissingPodCoverage
-            | Self::UnusedImport
-            | Self::UnreachableCode
-            | Self::CriticSeverity3
-            | Self::CriticSeverity4
-            | Self::CriticSeverity5 => DiagnosticSeverity::Hint,
+            Self::MissingPodCoverage | Self::UnusedImport | Self::UnreachableCode => {
+                DiagnosticSeverity::Hint
+            }
         }
     }
 
@@ -275,9 +261,7 @@ impl DiagnosticCode {
     /// Return a human-readable context hint for this diagnostic code.
     ///
     /// Hints are short, actionable explanations that help users understand
-    /// what the diagnostic means and how to resolve it.  Perl::Critic codes
-    /// return `None` because their per-policy descriptions already serve this
-    /// purpose.
+    /// what the diagnostic means and how to resolve it.
     pub fn context_hint(&self) -> Option<&'static str> {
         match self {
             Self::ParseError => Some(
@@ -502,15 +486,12 @@ impl DiagnosticCode {
                 The tie interface may not handle multi-line heredoc output correctly.",
             ),
             Self::VersionIncompatFeature => Some(
-                "This Perl feature requires a newer Perl version than declared. \
-                Update 'use vN.NN' or 'use feature' to enable it.",
+                "This Perl feature is not available under the declared Perl version. \
+                The required behavior is version-dependent: some features need a newer \
+                `use vN.NN`, others need an explicit `use feature 'name';`. \
+                In Perl 5.42+, given/when/default and smartmatch are feature-gated \
+                (not removed) — add `use feature 'switch';` or `use feature 'smartmatch';`.",
             ),
-            // Perl::Critic codes carry per-policy descriptions; no generic hint needed.
-            Self::CriticSeverity1
-            | Self::CriticSeverity2
-            | Self::CriticSeverity3
-            | Self::CriticSeverity4
-            | Self::CriticSeverity5 => None,
         }
     }
 
@@ -649,11 +630,6 @@ impl DiagnosticCode {
             "PL805" => Some(Self::HeredocInEval),
             "PL806" => Some(Self::HeredocTiedHandle),
             "PL900" => Some(Self::VersionIncompatFeature),
-            "PC001" => Some(Self::CriticSeverity1),
-            "PC002" => Some(Self::CriticSeverity2),
-            "PC003" => Some(Self::CriticSeverity3),
-            "PC004" => Some(Self::CriticSeverity4),
-            "PC005" => Some(Self::CriticSeverity5),
             _ => None,
         }
     }

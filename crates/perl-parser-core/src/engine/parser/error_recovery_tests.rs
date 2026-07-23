@@ -1039,91 +1039,445 @@ fn test_unclosed_qw_semicolonless_recovers_regex_match_statement() -> Result<(),
     Ok(())
 }
 
-// ---- #4491: block-form statement starters at an unclosed qw( boundary ----
+// -- #4491: block-form and parenthesized statement starters after unclosed qw( --
 
-/// Assert an unclosed `qw(` followed by `trailing` recovers into two statements,
-/// preserves the qw words, contains `marker`, and records an InsertedCloser diagnostic.
-fn assert_qw_block_recovers(trailing: &str, marker: &str) -> Result<(), String> {
-    let code = format!("my @items = qw(word1 word2\n{trailing}");
-    let mut parser = Parser::new(&code);
-    let ast = parser.parse().map_err(|error| format!("`{trailing}` recovery failed: {error}"))?;
-    let NodeKind::Program { statements } = &ast.kind else {
-        return Err(format!("expected program root, got {}", ast.to_sexp()));
-    };
-    let sexp = ast.to_sexp();
-    let errors = format!("{:?}", parser.errors());
-    if statements.len() != 2 {
-        return Err(format!("`{trailing}` did not split into two statements: {sexp}"));
+/// Every supported block/parenthesized starter must synchronize out of the
+/// unclosed qw into its own statement instead of being swallowed as words.
+#[test]
+fn test_unclosed_qw_recovers_block_form_starters() -> Result<(), String> {
+    // Each row also names the recovered node's sexp head so the assertion proves the
+    // starter parsed into its *own* declaration/phase/expression node, not merely that
+    // the statement count rose (a fallback Error node would also lift the count).
+    for (label, code, swallowed_marker, recovered_head) in [
+        ("sub block", "my @a = qw(word\nsub run { print 1; }", "\"sub\"", "(sub run"),
+        ("sub multiline block", "my @a = qw(word\nsub run\n{ print 1; }", "\"sub\"", "(sub run"),
+        (
+            "sub multiline prototype block",
+            "my @a = qw(word\nsub run\n($) { print 1; }",
+            "\"sub\"",
+            "(sub run",
+        ),
+        (
+            "sub multiline prototype string block",
+            "my @a = qw(word\nsub run\n($x = \")\") { print 1; }",
+            "\"sub\"",
+            "(sub run",
+        ),
+        (
+            "sub multiline prototype regex block",
+            "my @a = qw(word\nsub run\n($x = m/'foo/) { print 1; }",
+            "\"sub\"",
+            "(sub run",
+        ),
+        ("package block", "my @a = qw(word\npackage Foo { 1; }", "\"package\"", "(package Foo"),
+        (
+            "package multiline block",
+            "my @a = qw(word\npackage Foo\n{ 1; }",
+            "\"package\"",
+            "(package Foo",
+        ),
+        (
+            "package version block",
+            "my @a = qw(word\npackage Foo 1.23 { 1; }",
+            "\"package\"",
+            "(package Foo",
+        ),
+        ("package semi", "my @a = qw(word\npackage Foo;", "\"package\"", "(package Foo"),
+        ("class block", "my @a = qw(word\nclass Foo { 1; }", "\"class\"", "(class Foo"),
+        ("BEGIN block", "my @a = qw(word\nBEGIN { 1; }", "\"BEGIN\"", "(BEGIN"),
+        ("END block", "my @a = qw(word\nEND { 1; }", "\"END\"", "(END"),
+        ("INIT block", "my @a = qw(word\nINIT { 1; }", "\"INIT\"", "(INIT"),
+        ("CHECK block", "my @a = qw(word\nCHECK { 1; }", "\"CHECK\"", "(CHECK"),
+        ("UNITCHECK block", "my @a = qw(word\nUNITCHECK { 1; }", "\"UNITCHECK\"", "(UNITCHECK"),
+        ("print paren", "my @a = qw(word\nprint(\"hi\");", "\"print(\\\"hi\\\");\"", "print"),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        // Recovered as a second statement, and the starter is no longer a qw word.
+        if statements.len() != 2 || sexp.contains(swallowed_marker) {
+            return Err(format!("[{label}] starter was swallowed by unclosed qw: {sexp}"));
+        }
+        // The recovered node is the real construct (not an Error fallback) and carries
+        // its declared name / phase.
+        let recovered = &statements[1];
+        if matches!(recovered.kind, NodeKind::Error { .. }) {
+            return Err(format!(
+                "[{label}] recovered into an Error node, not a declaration: {sexp}"
+            ));
+        }
+        if !recovered.to_sexp().contains(recovered_head) {
+            return Err(format!(
+                "[{label}] recovered node is not the expected starter (want {recovered_head:?}): {}",
+                recovered.to_sexp()
+            ));
+        }
+        if !sexp.contains("\"word\"") {
+            return Err(format!("[{label}] lost the recovered qw content: {sexp}"));
+        }
+        if parser.errors().is_empty() {
+            return Err(format!("[{label}] unclosed qw recorded no error"));
+        }
     }
-    if !sexp.contains("\"word1\"") || !sexp.contains("\"word2\"") {
-        return Err(format!("`{trailing}` recovery lost qw words: {sexp}"));
-    }
-    if !sexp.contains(marker) {
-        return Err(format!("`{trailing}` recovery lost trailing statement `{marker}`: {sexp}"));
-    }
-    if !errors.contains("InsertedCloser") {
-        return Err(format!("`{trailing}` recovery did not record InsertedCloser: {errors}"));
+    Ok(())
+}
+
+/// Leading-qualified declaration names are valid parser forms and must remain
+/// recovery boundaries after an unclosed `qw(`.
+#[test]
+fn test_unclosed_qw_recovers_leading_qualified_declarations() -> Result<(), String> {
+    for (label, code, name, marker, expected_kind) in [
+        (
+            "sub leading-qualified",
+            "my @a = qw(word\nsub ::PCDATA { 1; }",
+            "PCDATA",
+            "\"sub\"",
+            "sub",
+        ),
+        (
+            "package leading-qualified",
+            "my @a = qw(word\npackage ::My::App { 1; }",
+            "My::App",
+            "\"package\"",
+            "package",
+        ),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] parse failed: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        let recovered_kind_matches =
+            statements.get(1).is_some_and(|statement| match expected_kind {
+                "sub" => matches!(&statement.kind, NodeKind::Subroutine { .. }),
+                "package" => matches!(&statement.kind, NodeKind::Package { .. }),
+                _ => false,
+            });
+        if statements.len() != 2
+            || matches!(&statements[1].kind, NodeKind::Error { .. })
+            || !recovered_kind_matches
+            || sexp.contains(marker)
+            || !sexp.contains(name)
+            || parser.errors().is_empty()
+        {
+            return Err(format!("[{label}] qualified declaration was swallowed: {sexp}"));
+        }
     }
     Ok(())
 }
 
 #[test]
-fn test_unclosed_qw_recovers_block_sub() -> Result<(), String> {
-    assert_qw_block_recovers("sub run { print 1; }", "sub run")
+fn test_unclosed_qw_rejects_extra_named_header_words() -> Result<(), String> {
+    for (label, code, marker) in [
+        ("sub extra header", "my @a = qw(word\nsub run extra { 1; }", "\"sub\""),
+        ("package extra header", "my @a = qw(word\npackage Foo extra { 1; }", "\"package\""),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] parse failed: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        if statements.len() != 1 || !sexp.contains(marker) || !sexp.contains("extra") {
+            return Err(format!("[{label}] invalid header became a recovery boundary: {sexp}"));
+        }
+    }
+    Ok(())
 }
 
+/// #4491 review (codex P2): a strong block starter must recover even when another
+/// line-start statement follows it — the block shape is self-contained, so the
+/// declaration is not swallowed into the qw just because more code trails it.
 #[test]
-fn test_unclosed_qw_recovers_block_class() -> Result<(), String> {
-    assert_qw_block_recovers("class Foo { }", "class Foo")
+fn test_unclosed_qw_block_starter_recovers_before_trailing_statement() -> Result<(), String> {
+    for (label, code, recovered_head, trailing_is_decl) in [
+        ("sub then my", "my @a = qw(word\nsub run { print 1; }\nmy $x = 1;", "(sub run", true),
+        (
+            "package then print",
+            "my @a = qw(word\npackage Foo { 1; }\nprint 2;",
+            "(package Foo",
+            false,
+        ),
+        ("BEGIN then my", "my @a = qw(word\nBEGIN { 1; }\nmy $y = 2;", "(BEGIN", true),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        // decl (qw) · recovered starter · trailing statement == three separate nodes.
+        if statements.len() != 3 {
+            return Err(format!(
+                "[{label}] block starter did not split from trailing code: {sexp}"
+            ));
+        }
+        if !statements[1].to_sexp().contains(recovered_head) {
+            return Err(format!("[{label}] middle node is not the recovered starter: {sexp}"));
+        }
+        // The trailing statement is the real parsed construct, not an Error fallback —
+        // otherwise a boundary that mis-parses the tail would still satisfy the count.
+        let trailing = &statements[2];
+        let trailing_ok = if trailing_is_decl {
+            matches!(trailing.kind, NodeKind::VariableDeclaration { .. })
+        } else {
+            matches!(trailing.kind, NodeKind::ExpressionStatement { .. })
+        };
+        if !trailing_ok {
+            return Err(format!(
+                "[{label}] trailing statement did not parse cleanly, got {:?}: {sexp}",
+                trailing.kind
+            ));
+        }
+        if !sexp.contains("\"word\"") {
+            return Err(format!("[{label}] lost the recovered qw content: {sexp}"));
+        }
+    }
+    Ok(())
 }
 
+/// A `sub`/`package`-shaped word with no block or terminating `;` is ordinary qw
+/// content and must not create a false boundary at EOF.
 #[test]
-fn test_unclosed_qw_recovers_block_package() -> Result<(), String> {
-    assert_qw_block_recovers("package Foo { }", "package Foo")
+fn test_unclosed_qw_block_starter_word_without_shape_stays_word() -> Result<(), String> {
+    for (label, code) in [
+        ("bare sub words", "my @a = qw(word\nsub run more"),
+        ("bare package words", "my @a = qw(word\npackage more words"),
+        ("bare class words", "my @a = qw(word\nclass more words"),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        if statements.len() != 1 || !sexp.contains("\"more\"") {
+            return Err(format!("[{label}] keyword-like word triggered a false boundary: {sexp}"));
+        }
+        if parser.errors().is_empty() {
+            return Err(format!("[{label}] unclosed qw recorded no error"));
+        }
+    }
+    Ok(())
 }
 
+/// Comments after a named block starter do not satisfy its required name. The
+/// following-line identifier and block opener belong to qw content instead of a
+/// declaration borrowed from later source.
 #[test]
-fn test_unclosed_qw_recovers_block_begin() -> Result<(), String> {
-    assert_qw_block_recovers("BEGIN { print 1; }", "BEGIN")
+fn test_unclosed_qw_block_starter_comment_does_not_fake_name() -> Result<(), String> {
+    for (label, code, retained_word) in [
+        ("sub comment", "my @a = qw(word\nsub # still qw content\nrun\n{ 1; }", "run"),
+        ("package comment", "my @a = qw(word\npackage # still qw content\nFoo\n{ 1; }", "Foo"),
+        ("class comment", "my @a = qw(word\nclass # still qw content\nFoo\n{ 1; }", "Foo"),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        if statements.len() != 1 || !sexp.contains(&format!("\"{retained_word}\"")) {
+            return Err(format!("[{label}] comment faked a block-starter name: {sexp}"));
+        }
+        if parser.errors().is_empty() {
+            return Err(format!("[{label}] unclosed qw recorded no error"));
+        }
+    }
+    Ok(())
 }
 
+/// General parser synchronization must preserve phaser blocks just like the
+/// delimiter-recovery path does after a malformed preceding statement.
 #[test]
-fn test_unclosed_qw_recovers_block_end() -> Result<(), String> {
-    assert_qw_block_recovers("END { print 1; }", "END")
+fn test_synchronize_preserves_phaser_blocks() -> Result<(), String> {
+    for (label, phaser) in [
+        ("BEGIN", "BEGIN"),
+        ("END", "END"),
+        ("INIT", "INIT"),
+        ("CHECK", "CHECK"),
+        ("UNITCHECK", "UNITCHECK"),
+    ] {
+        let code = format!("my $x = 1; ???\n{phaser} {{ do_thing() }}\nprint 2;");
+        let mut parser = Parser::new(&code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
+        let sexp = ast.to_sexp();
+        if !sexp.contains(&format!("({label}")) || !sexp.contains("print") {
+            return Err(format!("[{label}] phaser was consumed during synchronization: {sexp}"));
+        }
+    }
+    Ok(())
 }
 
+/// Keyword and v-string names accepted by the parser must also be recognized
+/// as `sub` recovery boundaries by the lexer.
 #[test]
-fn test_unclosed_qw_recovers_parenthesized_print() -> Result<(), String> {
-    assert_qw_block_recovers("print(\"hi\");", "print")
+fn test_unclosed_qw_recovers_keyword_and_vstring_sub_names() -> Result<(), String> {
+    for (label, code, recovered) in [
+        ("keyword name", "my @a = qw(word\nsub return { 1; }", "(sub return"),
+        ("v-string name", "my @a = qw(word\nsub v5 { 1; }", "(sub v5"),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        if statements.len() != 2 || !sexp.contains(recovered) {
+            return Err(format!("[{label}] sub name was swallowed: {sexp}"));
+        }
+    }
+    Ok(())
 }
 
+/// Dotted v-strings are not valid named subroutine declarations; they remain
+/// quote-word content instead of creating a false recovery boundary.
 #[test]
-fn test_closed_qw_keeps_block_starter_words() -> Result<(), String> {
-    // #4491 negative control: a closed qw whose content contains bareword block-starter
-    // keywords (no real block) must stay a single statement with all words preserved.
-    let code = "my @items = qw(word1\nsub package class\nBEGIN word2);";
+fn test_unclosed_qw_rejects_dotted_vstring_sub_name() -> Result<(), String> {
+    let code = "my @a = qw(word\nsub v1.2 { 1; }";
     let mut parser = Parser::new(code);
-    let ast = parser.parse().map_err(|error| format!("closed block-word qw failed: {error}"))?;
+    let ast = parser.parse().map_err(|error| format!("dotted v-string parse failed: {error}"))?;
     let NodeKind::Program { statements } = &ast.kind else {
         return Err(format!("expected program root, got {}", ast.to_sexp()));
     };
     let sexp = ast.to_sexp();
-    if statements.len() != 1
-        || !parser.errors().is_empty()
-        || !sexp.contains("\"sub\"")
-        || !sexp.contains("\"class\"")
-        || !sexp.contains("\"BEGIN\"")
-        || !sexp.contains("\"word2\"")
-    {
-        return Err(format!("closed block-word qw changed behavior: {sexp}"));
+    if statements.len() != 1 || !sexp.contains("v1.2") || parser.errors().is_empty() {
+        return Err(format!("dotted v-string became a false boundary: {sexp}"));
     }
     Ok(())
 }
 
+/// Phaser attributes still split a recovered unclosed `qw(` at their block,
+/// preserving the labeled statement for the parser rather than swallowing it.
+#[test]
+fn test_unclosed_qw_recovers_phaser_attribute_block() -> Result<(), String> {
+    let code = "my @a = qw(word\nBEGIN :lvalue { 1; }";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("phaser attribute parse failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 2
+        || !matches!(
+            &statements[1].kind,
+            NodeKind::LabeledStatement { label, .. } if label == "BEGIN"
+        )
+        || parser.errors().is_empty()
+    {
+        return Err(format!("phaser attribute was swallowed: {sexp}"));
+    }
+    Ok(())
+}
+
+/// A mismatched nested delimiter is not a complete subroutine body and must
+/// not become a recovery boundary for an unclosed `qw(`.
+#[test]
+fn test_unclosed_qw_rejects_mismatched_block_delimiters() -> Result<(), String> {
+    let code = "my @a = qw(word\nsub run { ( ] }";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("mismatched block parse failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 1 || !sexp.contains("\"sub\"") || parser.errors().is_empty() {
+        return Err(format!("mismatched block became a false boundary: {sexp}"));
+    }
+    Ok(())
+}
+
+/// Closed multiline qw content containing block-starter-shaped words (including a
+/// balanced `{ }` group) must keep its existing single-declaration behavior.
+#[test]
+fn test_closed_multiline_qw_keeps_block_starter_words() -> Result<(), String> {
+    for (label, code) in [
+        ("closed sub words", "my @a = qw(word\nsub run more);"),
+        ("closed package words", "my @a = qw(alpha\npackage beta\ngamma);"),
+        ("closed brace group", "my @a = qw(word\nsub run { 1 } more);"),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] did not parse: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        if statements.len() != 1 || !parser.errors().is_empty() {
+            return Err(format!("[{label}] closed qw changed behavior: {}", ast.to_sexp()));
+        }
+    }
+    Ok(())
+}
+
+/// Parenthesized `print(...)` recovers, but the whitespace form `print ...` keeps
+/// its existing behavior (both should recover, via different paths).
+#[test]
+fn test_unclosed_qw_parenthesized_print_recovers() -> Result<(), String> {
+    let code = "my @a = qw(word\nprint(join q{,}, 1, 2);";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("parenthesized print did not recover: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 2
+        || !matches!(
+            statements.get(1).map(|node| &node.kind),
+            Some(NodeKind::ExpressionStatement { .. })
+        )
+        || !sexp.contains("print")
+    {
+        return Err(format!("parenthesized print was swallowed: {sexp}"));
+    }
+    if parser.errors().is_empty() {
+        return Err("unclosed qw before parenthesized print recorded no error".to_string());
+    }
+    Ok(())
+}
+
+/// #4491 review (blocker): a starter-shaped word that is bare quote-word content
+/// must not borrow the block `{`/`;` of an unrelated statement on a *later* line.
+/// Before the header-on-one-line guard these silently dropped the word and
+/// mis-parsed the following real statement as a bogus declaration.
+#[test]
+fn test_unclosed_qw_block_starter_word_does_not_borrow_later_statement() -> Result<(), String> {
+    for (label, code, keyword_word) in [
+        ("sub then return-hashref", "my @a = qw(word\nsub\nreturn { a => 1 };", "\"sub\""),
+        ("package then return", "my @a = qw(word\npackage\nreturn 5;", "\"package\""),
+        (
+            "class then method call",
+            "my @a = qw(word\nclass->new(1)->run({ x => 1 });",
+            "class->new",
+        ),
+        ("sub name on later line", "my @a = qw(word\nsub\nrun\n{ 1 }", "sub"),
+        ("package name on later line", "my @a = qw(alpha\npackage\nbeta\n{ 1 }", "package"),
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
+        };
+        let sexp = ast.to_sexp();
+        // The keyword-shaped word stays inside the qw list; it is not consumed as a
+        // declaration, and the following statement is not mis-parsed.
+        if !sexp.contains(keyword_word) {
+            return Err(format!("[{label}] keyword word was wrongly consumed: {sexp}"));
+        }
+        if statements.len() != 1 {
+            return Err(format!("[{label}] borrowed a later statement's boundary: {sexp}"));
+        }
+    }
+    Ok(())
+}
+
+/// An incomplete block remains quote-word content while the editor is still
+/// typing it; recovery should not split on a declaration that has no closer.
 #[test]
 fn test_unclosed_qw_keeps_incomplete_block_as_content() -> Result<(), String> {
-    // #4491 negative control: a trailing block starter whose block never closes at EOF is
-    // not a complete statement and must stay swallowed rather than split the qw list.
     let code = "my @items = qw(word1\nsub run { print 1;";
     let mut parser = Parser::new(code);
     let ast =
@@ -1137,11 +1491,10 @@ fn test_unclosed_qw_keeps_incomplete_block_as_content() -> Result<(), String> {
     Ok(())
 }
 
+/// Prefixes of supported starter keywords are ordinary qw words and must not
+/// trigger the lexer boundary classifier.
 #[test]
 fn test_unclosed_qw_ignores_block_keyword_prefixes() -> Result<(), String> {
-    // #4491 negative control: identifiers that merely start with a block keyword
-    // (`substr`, `classify`, `packaged`, `printf(`, `BEGINNER`) are not block starters and
-    // must not split the qw list into a recovered block statement.
     for trailing in
         ["substr($x, 0, 1)", "classify { }", "packaged Foo { }", "printf(\"x\")", "BEGINNER { }"]
     {
@@ -1159,10 +1512,10 @@ fn test_unclosed_qw_ignores_block_keyword_prefixes() -> Result<(), String> {
     Ok(())
 }
 
+/// Multibyte qw content must not disturb the byte offsets used when recovering
+/// the following declaration.
 #[test]
 fn test_unclosed_qw_recovers_block_after_multibyte_content() -> Result<(), String> {
-    // #4491: multibyte qw content before the boundary must not break byte-offset handling
-    // when a trailing block statement recovers.
     let code = "my @items = qw(café 😀 word2\nsub run { print 1; }";
     let mut parser = Parser::new(code);
     let ast =
@@ -1172,7 +1525,7 @@ fn test_unclosed_qw_recovers_block_after_multibyte_content() -> Result<(), Strin
     };
     let sexp = ast.to_sexp();
     if statements.len() != 2
-        || !matches!(statements.get(1).map(|node| &node.kind), Some(NodeKind::Subroutine { .. }))
+        || !matches!(&statements[1].kind, NodeKind::Subroutine { .. })
         || !sexp.contains("sub run")
         || parser.errors().is_empty()
     {

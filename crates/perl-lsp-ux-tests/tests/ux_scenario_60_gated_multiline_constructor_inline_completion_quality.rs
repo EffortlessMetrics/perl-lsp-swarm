@@ -306,7 +306,7 @@ fn parser_diagnostics(diagnostics: &[Value]) -> Vec<Value> {
         .iter()
         .filter(|diagnostic| {
             let is_error = diagnostic.get("severity").and_then(Value::as_u64) == Some(1);
-            (diagnostic.get("source").and_then(Value::as_str) == Some("perl-parser") && is_error)
+            (diagnostic.get("source").and_then(Value::as_str) == Some("perl-lsp") && is_error)
                 || diagnostic
                     .get("code")
                     .and_then(Value::as_str)

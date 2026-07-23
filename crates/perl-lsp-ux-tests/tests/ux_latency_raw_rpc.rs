@@ -214,7 +214,7 @@ fn ux_latency_edit_publishes_parse_error_diagnostic() -> Result<()> {
     // The diagnostic must be parser-sourced; syntax-only mode strips
     // critic / dead-code / module-resolution noise.
     let saw_parser =
-        diags.iter().any(|d| d.get("source").and_then(|v| v.as_str()) == Some("perl-parser"));
+        diags.iter().any(|d| d.get("source").and_then(|v| v.as_str()) == Some("perl-lsp"));
     assert!(
         saw_parser,
         "expected at least one perl-parser diagnostic under syntax-only mode; got {diags:?}"

@@ -3,8 +3,9 @@
 //! Handles textDocument/documentSymbol and textDocument/foldingRange requests.
 
 use super::super::{byte_to_utf16_col, *};
+use crate::cancellation::RequestCleanupGuard;
 use crate::fallback::text::folding_ranges_from_text;
-use crate::protocol::req_uri;
+use crate::protocol::{req_uri, REQUEST_CANCELLED};
 use crate::state::document_symbol_cap;
 use std::sync::OnceLock;
 
@@ -64,11 +65,52 @@ fn pod_section_symbols(source: &str) -> Vec<Value> {
 }
 
 impl LspServer {
+    /// Cancellation-aware wrapper for `textDocument/documentSymbol`.
+    ///
+    /// Polls the cancellation token before the symbol-extraction pipeline
+    /// (AST-backed source symbols, subtest discovery, POD section scan) so a
+    /// `$/cancelRequest` issued while the handler is waiting on the documents
+    /// lock is observed promptly. Returns `REQUEST_CANCELLED` (code -32800)
+    /// when cancelled.
+    pub(crate) fn handle_document_symbol_cancellable(
+        &self,
+        params: Option<Value>,
+        request_id: Option<&Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        let typed_id = request_id.and_then(JsonRpcId::try_from_value);
+        let _cleanup_guard = RequestCleanupGuard::from_ref(typed_id.as_ref());
+
+        if let Some(ref tid) = typed_id {
+            let token = GLOBAL_CANCELLATION_REGISTRY.get_token(tid).unwrap_or_else(|| {
+                let token = PerlLspCancellationToken::new(
+                    tid.clone(),
+                    "textDocument/documentSymbol".into(),
+                );
+                let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
+                token
+            });
+            if token.is_cancelled_relaxed() {
+                return Err(JsonRpcError {
+                    code: REQUEST_CANCELLED,
+                    message: "Request cancelled - document symbol provider".to_string(),
+                    data: None,
+                });
+            }
+        }
+
+        self.handle_document_symbol(params)
+    }
+
     /// Handle textDocument/documentSymbol request
     pub(crate) fn handle_document_symbol(
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().document_symbol {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         let cap = document_symbol_cap();
 
         if let Some(params) = params {
@@ -145,6 +187,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().folding_range {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         if let Some(params) = params {
             let uri = req_uri(&params)?;
 
@@ -456,8 +503,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn push_multiline_folding_range_boundary_discriminator_end_line_gt_start_line_rejects_equal_input()
-     {
+    fn push_multiline_folding_range_boundary_discriminator_end_line_gt_start_line_rejects_equal_input(
+    ) {
         let mut ranges = Vec::new();
 
         push_multiline_folding_range(&mut ranges, 4, 4, "region");
@@ -466,8 +513,8 @@ mod tests {
     }
 
     #[test]
-    fn push_multiline_folding_range_boundary_discriminator_input_that_hits_the_boundary_end_line_gt_start_line_accepts_multiline_input()
-     {
+    fn push_multiline_folding_range_boundary_discriminator_input_that_hits_the_boundary_end_line_gt_start_line_accepts_multiline_input(
+    ) {
         let mut ranges = Vec::new();
 
         push_multiline_folding_range(&mut ranges, 4, 6, "comment");
@@ -479,15 +526,15 @@ mod tests {
     }
 
     #[test]
-    fn lsp_inclusive_multiline_end_line_boundary_discriminator_lsp_end_line_gt_start_line_rejects_short_span()
-     {
+    fn lsp_inclusive_multiline_end_line_boundary_discriminator_lsp_end_line_gt_start_line_rejects_short_span(
+    ) {
         assert_eq!(lsp_inclusive_multiline_end_line(4, 5), None);
         assert_eq!(lsp_inclusive_multiline_end_line(4, 0), None);
     }
 
     #[test]
-    fn lsp_inclusive_multiline_end_line_boundary_discriminator_input_that_hits_the_boundary_lsp_end_line_gt_start_line_accepts_multiline_span()
-     {
+    fn lsp_inclusive_multiline_end_line_boundary_discriminator_input_that_hits_the_boundary_lsp_end_line_gt_start_line_accepts_multiline_span(
+    ) {
         assert_eq!(
             lsp_inclusive_multiline_end_line(4, 6),
             Some(5),
@@ -515,8 +562,8 @@ mod tests {
     }
 
     #[test]
-    fn handle_folding_range_call_presence_observer_push_multiline_folding_range_data_section_comment()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_folding_range_call_presence_observer_push_multiline_folding_range_data_section_comment(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let ranges = folding_ranges_for_source("print \"ok\\n\";\n__DATA__\nalpha\nbeta\n")?;
 
         assert!(
@@ -532,8 +579,8 @@ mod tests {
     }
 
     #[test]
-    fn handle_folding_range_call_presence_observer_push_multiline_folding_range_heredoc_region()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_folding_range_call_presence_observer_push_multiline_folding_range_heredoc_region(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let ranges = folding_ranges_for_source("my $text = <<'TXT';\nalpha\nbeta\nTXT\n")?;
 
         assert!(
@@ -549,8 +596,8 @@ mod tests {
     }
 
     #[test]
-    fn handle_folding_range_call_presence_observer_ast_lsp_end_line_gt_start_line()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_folding_range_call_presence_observer_ast_lsp_end_line_gt_start_line(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let ranges = folding_ranges_for_source("sub full {\n    my $value = 1;\n}\n")?;
 
         assert!(ranges.iter().any(|range| {

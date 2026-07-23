@@ -309,9 +309,8 @@ fn test_perl_diagnostics_no_perl_lsp_dependencies() {
 fn test_catalog_function_reexports() {
     // All catalog functions must be available at crate root
     use perl_diagnostics::{
-        bareword_filehandle, critic_severity_1, critic_severity_2, critic_severity_3,
-        critic_severity_4, critic_severity_5, duplicate_package, duplicate_sub, eval_error_flow,
-        from_message, implicit_return, missing_package_declaration, missing_return, missing_strict,
+        bareword_filehandle, duplicate_package, duplicate_sub, eval_error_flow, from_message,
+        implicit_return, missing_package_declaration, missing_return, missing_strict,
         missing_warnings, parse_error, syntax_error, two_arg_open, undefined_var, unexpected_eof,
         unused_var,
     };
@@ -333,11 +332,6 @@ fn test_catalog_function_reexports() {
         two_arg_open,
         implicit_return,
         eval_error_flow,
-        critic_severity_5,
-        critic_severity_4,
-        critic_severity_3,
-        critic_severity_2,
-        critic_severity_1,
         from_message,
     );
 }
