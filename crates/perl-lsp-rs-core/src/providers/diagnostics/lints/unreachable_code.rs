@@ -2,7 +2,7 @@
 //!
 //! Identifies statements that cannot execute because they follow an unconditional
 //! control-flow exit (`return`, `die`, `exit`, `croak`, `confess`, `last`,
-//! `next`, `redo`).
+//! `next`, `redo`, `goto`).
 //!
 //! # Algorithm
 //!
