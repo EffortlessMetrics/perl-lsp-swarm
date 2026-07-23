@@ -224,3 +224,159 @@ fn pir_a_loop_preserves_operation_count_invariant() -> TestResult {
     assert_eq!(graph.receipt.node_count, graph.nodes.len());
     Ok(())
 }
+
+/// An empty `while` body lowers zero iteration nodes: the guard
+/// `next_id > iteration_first` must suppress the entry/back edges rather
+/// than emit a dangling edge into whatever (unrelated) node happens to
+/// lower next.
+#[test]
+fn pir_a_while_empty_body_emits_no_loop_edges() -> TestResult {
+    let graph = parse_and_lower("while ($c) { }");
+    assert!(
+        !graph.edges.iter().any(|e| e.kind == PirEdgeKind::Loop),
+        "an empty loop body must not emit any Loop entry/back edge, got: {:?}",
+        graph.edges
+    );
+    assert!(loop_condition(single_loop(&graph)?)?.is_some());
+    Ok(())
+}
+
+/// A C-style `for` with an empty `{ }` body but a non-empty update still
+/// iterates (the update runs every pass), so the entry/back edges must
+/// still be emitted, targeting the update node.
+#[test]
+fn pir_a_c_style_for_empty_body_with_update_still_links_update() -> TestResult {
+    let graph = parse_and_lower("for (my $i=0; $i<10; $i++) { }");
+    let loop_id = single_loop(&graph)?.id;
+    let entry = graph
+        .edges
+        .iter()
+        .find(|e| e.from == loop_id && e.kind == PirEdgeKind::Loop)
+        .ok_or("expected a Loop entry edge even for an empty body with a C-style update")?;
+    let back = graph
+        .edges
+        .iter()
+        .find(|e| e.to == Some(loop_id) && e.kind == PirEdgeKind::Loop)
+        .ok_or("expected a Loop back-edge even for an empty body with a C-style update")?;
+    assert_eq!(
+        entry.to,
+        Some(back.from),
+        "entry target and back-edge source must be the same node"
+    );
+    let update_node =
+        graph.node(entry.to.ok_or("entry edge must have a concrete target")?).ok_or("missing")?;
+    assert!(
+        matches!(&update_node.operation, PirOperation::Modify { name, .. } if name.name == "i"),
+        "the sole iteration node must be the `$i++` update, got {:?}",
+        update_node.operation
+    );
+    Ok(())
+}
+
+#[test]
+fn pir_a_c_style_for_loop_edges_exclude_initializer_and_condition() -> TestResult {
+    let graph = parse_and_lower("for (my $i=0; $i<10; $i++) { my $x = 1; }");
+    let loop_node = single_loop(&graph)?;
+    let loop_id = loop_node.id;
+    let init_node = graph
+        .nodes
+        .iter()
+        .find(|n| matches!(&n.operation, PirOperation::LexicalWrite { name } if name.name == "i"))
+        .ok_or("initializer write for $i is missing")?;
+    assert!(init_node.id.index() < loop_id.index(), "initializer must lower before the Loop node");
+    Ok(())
+}
+
+#[test]
+fn pir_a_c_style_for_entry_edge_targets_body_not_initializer() -> TestResult {
+    let graph = parse_and_lower("for (my $i=0; $i<10; $i++) { my $x = 1; }");
+    let loop_id = single_loop(&graph)?.id;
+    let entry = graph
+        .edges
+        .iter()
+        .find(|e| e.from == loop_id && e.kind == PirEdgeKind::Loop)
+        .ok_or("expected a Loop entry edge")?;
+    let entry_target =
+        graph.node(entry.to.ok_or("entry edge must have a concrete target")?).ok_or("missing")?;
+    assert!(
+        matches!(&entry_target.operation, PirOperation::LexicalWrite { name } if name.name == "x"),
+        "entry edge must point at the body's first node, got {:?}",
+        entry_target.operation
+    );
+    Ok(())
+}
+
+#[test]
+fn pir_a_c_style_for_back_edge_sources_update_not_condition() -> TestResult {
+    let graph = parse_and_lower("for (my $i=0; $i<10; $i++) { my $x = 1; }");
+    let loop_node = single_loop(&graph)?;
+    let loop_id = loop_node.id;
+    let condition_id = loop_condition(loop_node)?.ok_or("C-style for must link a condition")?;
+    let back = graph
+        .edges
+        .iter()
+        .find(|e| e.to == Some(loop_id) && e.kind == PirEdgeKind::Loop)
+        .ok_or("expected a Loop back-edge")?;
+    assert_ne!(back.from, condition_id, "back-edge must not originate at the condition-read node");
+    let back_source = graph.node(back.from).ok_or("back-edge source node is missing")?;
+    assert!(
+        matches!(&back_source.operation, PirOperation::Modify { name, .. } if name.name == "i"),
+        "back-edge source must be the `$i++` update, got {:?}",
+        back_source.operation
+    );
+    Ok(())
+}
+
+#[test]
+fn pir_a_c_style_for_no_condition_still_links_body() -> TestResult {
+    let graph = parse_and_lower("for (;;) { my $x = 1; }");
+    let node = single_loop(&graph)?;
+    assert!(loop_condition(node)?.is_none(), "`for (;;)` has no condition to link");
+    let loop_id = node.id;
+    assert!(
+        graph.edges.iter().any(|e| e.from == loop_id && e.kind == PirEdgeKind::Loop),
+        "an infinite `for (;;)` must still emit a Loop entry edge to its body"
+    );
+    assert!(
+        graph.edges.iter().any(|e| e.to == Some(loop_id) && e.kind == PirEdgeKind::Loop),
+        "an infinite `for (;;)` must still emit a Loop back-edge from its body"
+    );
+    Ok(())
+}
+
+#[test]
+fn pir_a_nested_loop_back_edges_converge_on_innermost_last_node() -> TestResult {
+    let graph = parse_and_lower("while ($a) { while ($b) { my $x = 1; } }");
+    let loops = loop_nodes(&graph);
+    if loops.len() != 2 {
+        return Err(format!("expected exactly two Loop nodes, got {}", loops.len()).into());
+    }
+    let outer_id = loops[0].id;
+    let inner_id = loops[1].id;
+    assert!(outer_id.index() < inner_id.index(), "outer Loop node must be lowered first");
+    let outer_back = graph
+        .edges
+        .iter()
+        .find(|e| e.to == Some(outer_id) && e.kind == PirEdgeKind::Loop)
+        .ok_or("outer loop must have a back-edge")?;
+    let inner_back = graph
+        .edges
+        .iter()
+        .find(|e| e.to == Some(inner_id) && e.kind == PirEdgeKind::Loop)
+        .ok_or("inner loop must have a back-edge")?;
+    assert_eq!(
+        outer_back.from, inner_back.from,
+        "both back-edges must converge on the same innermost last-lowered node"
+    );
+    assert!(
+        outer_back.from.index() > inner_id.index(),
+        "shared back-edge source must be lowered after the inner Loop header"
+    );
+    let source_node = graph.node(outer_back.from).ok_or("back-edge source node is missing")?;
+    assert!(
+        matches!(&source_node.operation, PirOperation::LexicalWrite { name } if name.name == "x"),
+        "shared back-edge source must be the innermost body's last node, got {:?}",
+        source_node.operation
+    );
+    Ok(())
+}
