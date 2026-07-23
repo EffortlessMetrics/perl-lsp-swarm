@@ -167,6 +167,38 @@ export function markLanguageClientStartupMilestone(
 let lastStartupDiagnosis: StartupErrorDiagnosis | undefined;
 
 /**
+ * Cached extension context so the mid-session crash handler (which is wired
+ * through a lifecycle callback and has no parameter of its own) can drive an
+ * auto-restart via `restartServer(context)`. Set in `activate()`.
+ */
+let extensionContext: vscode.ExtensionContext | undefined;
+
+/**
+ * Mid-session crash recovery state (#4625).
+ *
+ * `autoRestartAttempts` counts consecutive crash-triggered auto-restart
+ * attempts. It is reset to 0 once the server has been stably `Running` for
+ * at least `STABLE_RUN_GRACE_MS` (so a transient crash does not permanently
+ * exhaust the retry budget, but a tight crash→restart→crash loop is capped).
+ *
+ * `stableRunningSince` records the timestamp at which the server last reached
+ * `Running`; consulted at crash time to decide whether the prior run was long
+ * enough to count as a new episode.
+ *
+ * `userInitiatedStopPending` is set before a user-driven stop/restart so the
+ * crash handler can distinguish an expected `Running → Stopped` transition
+ * from an unexpected one. The lifecycle controller also disposes its
+ * state-change listener before stopping, so this is defense-in-depth against
+ * any future code path that stops the client without going through the
+ * controller.
+ */
+const MAX_AUTO_RESTART_ATTEMPTS = 3;
+const STABLE_RUN_GRACE_MS = 30_000;
+let autoRestartAttempts = 0;
+let stableRunningSince: number | undefined;
+let userInitiatedStopPending = false;
+
+/**
  * Return the best available "server not running" message to show the user.
  *
  * When a startup failure has been diagnosed (`lastStartupDiagnosis` is set),
@@ -206,6 +238,49 @@ export function _setLastStartupDiagnosisForTest(
   diagnosis: StartupErrorDiagnosis | undefined,
 ): void {
   lastStartupDiagnosis = diagnosis;
+}
+
+/**
+ * Test helper — reset mid-session crash-recovery state between cases.
+ * @internal
+ */
+export function _resetCrashRecoveryStateForTest(): void {
+  autoRestartAttempts = 0;
+  stableRunningSince = undefined;
+  userInitiatedStopPending = false;
+}
+
+/**
+ * Test helper — read the current auto-restart attempt counter.
+ * @internal
+ */
+export function _autoRestartAttemptsForTest(): number {
+  return autoRestartAttempts;
+}
+
+/**
+ * Test helper — mark the server as having been stably running since the given
+ * timestamp (defaults to long enough ago to satisfy the stable-run grace).
+ * @internal
+ */
+export function _markStableRunningForTest(since?: number): void {
+  stableRunningSince = since ?? Date.now() - (STABLE_RUN_GRACE_MS + 1_000);
+}
+
+/**
+ * Test helper — inject the extension context required by the crash handler.
+ * @internal
+ */
+export function _setExtensionContextForTest(context: vscode.ExtensionContext): void {
+  extensionContext = context;
+}
+
+/**
+ * Test helper — set the user-initiated-stop sentinel.
+ * @internal
+ */
+export function _setUserInitiatedStopPendingForTest(value: boolean): void {
+  userInitiatedStopPending = value;
 }
 
 export async function syncPerlCriticConfiguration(
@@ -404,6 +479,9 @@ export async function copyProviderDecisionReceiptCommand(
 export async function activate(context: vscode.ExtensionContext) {
   languageClientStartupMetrics.markMilestone('activate_entered');
   featureActivationMetrics.beginActivation();
+  // Cache the context so the mid-session crash handler (#4625) can drive an
+  // auto-restart without a parameter of its own.
+  extensionContext = context;
   // Plain OutputChannel (not LogOutputChannel): the extension writes all
   // messages via appendLine, so a LogOutputChannel would advertise level-based
   // filtering in the UI that does not actually work. Using a plain channel
@@ -1015,6 +1093,12 @@ function createLanguageClientLifecycle(
         languageClientStartupMetrics.markMilestone('process_started');
         languageClientStartupMetrics.finishServerStart('ok');
       }
+      if (event.newState === LanguageClientState.Running) {
+        // Record when the server last reached Running so the crash handler
+        // (#4625) can decide whether the prior run was stable long enough to
+        // reset the auto-restart attempt counter.
+        stableRunningSince = Date.now();
+      }
       handleClientStateChange(event);
     },
     onCallbackError: (error, phase) => {
@@ -1401,6 +1485,13 @@ async function restartServer(_context: vscode.ExtensionContext) {
     return;
   }
 
+  // Mark this as a user-driven (or auto-recovery-driven) restart so the
+  // mid-session crash handler (#4625) does not treat the resulting
+  // Running → Stopped transition as an unexpected crash. The lifecycle
+  // controller also disposes its state-change listener before stopping, so
+  // this is defense-in-depth. Cleared in `finally` so a subsequent genuine
+  // crash is never accidentally suppressed.
+  userInitiatedStopPending = true;
   try {
     disposeClientIntegrations();
     const started = await lifecycle.restart();
@@ -1426,6 +1517,8 @@ async function restartServer(_context: vscode.ExtensionContext) {
           outputChannel.show();
         }
       });
+  } finally {
+    userInitiatedStopPending = false;
   }
 }
 
@@ -1659,29 +1752,122 @@ async function reinstallServerBinary(
   };
 }
 
-function handleClientStateChange(event: StateChangeEvent): void {
+export function handleClientStateChange(event: StateChangeEvent): void {
   // Preserve the status-bar signal for an unexpected language-client crash;
   // the controller state changes only on explicit lifecycle operations.
   healthWidget?.onStateChange(event.newState as unknown as ClientState);
 
-  // When the server stops unexpectedly after a successful start (mid-session
-  // crash), capture a generic diagnosis so serverNotRunningMessage() returns
-  // an actionable hint instead of the stale "not running" fallback.
-  // We can't run probeStartupFailure here (async) so we set a generic
-  // "server stopped" diagnosis; the user can run Health Check for details.
-  //
   // Note: event.newState / oldState are vscode-languageclient's `State` enum
   // which shares numeric values with ClientState (Stopped=1, Running=2) but
   // is a distinct nominal type, so we cast to number for comparison.
   const newStateNum = event.newState as unknown as number;
   const oldStateNum = event.oldState as unknown as number;
-  if (newStateNum === ClientState.Stopped && oldStateNum === ClientState.Running) {
-    lastStartupDiagnosis = {
-      kind: StartupErrorKind.Unknown,
-      hint: 'The Perl Language Server stopped unexpectedly. Check the Output panel for details.',
-      remediation:
-        'Try restarting the server (Command Palette: "Perl: Restart Server") or run the Health Check.',
-    };
+  if (newStateNum !== ClientState.Stopped || oldStateNum !== ClientState.Running) {
+    return;
+  }
+
+  // A user-initiated stop/restart disposes the lifecycle's state-change
+  // listener before the client stops, so this branch is only reached for
+  // *unexpected* mid-session crashes. The sentinel below is defense-in-depth
+  // for any future path that stops the client outside the controller.
+  if (userInitiatedStopPending) {
+    userInitiatedStopPending = false;
+    return;
+  }
+
+  // The server crashed mid-session. Capture a generic diagnosis so
+  // serverNotRunningMessage() returns an actionable hint instead of the stale
+  // "not running" fallback. We can't run probeStartupFailure here (async), so
+  // we set a generic "server stopped" diagnosis; the user can run Health Check
+  // for details.
+  lastStartupDiagnosis = {
+    kind: StartupErrorKind.Unknown,
+    hint: 'The Perl Language Server stopped unexpectedly. Check the Output panel for details.',
+    remediation:
+      'Try restarting the server (Command Palette: "Perl: Restart Server") or run the Health Check.',
+  };
+
+  outputChannel?.appendLine(
+    '[lifecycle] Perl Language Server stopped unexpectedly (mid-session crash).',
+  );
+
+  // If the prior run was stable long enough, treat this crash as a new
+  // episode and reset the auto-restart budget so transient crashes don't
+  // permanently exhaust it.
+  if (stableRunningSince !== undefined && Date.now() - stableRunningSince >= STABLE_RUN_GRACE_MS) {
+    autoRestartAttempts = 0;
+  }
+  stableRunningSince = undefined;
+
+  void handleUnexpectedServerStop();
+}
+
+/**
+ * Surface an unexpected mid-session server crash and attempt an auto-restart
+ * (#4625). Shows a user-visible toast (the diagnosis hint captured above) with
+ * `Restart Server` and `Show Output` actions, then retries up to
+ * `MAX_AUTO_RESTART_ATTEMPTS` times. Once the budget is exhausted, the toast
+ * asks the user to restart manually or run a Health Check.
+ */
+async function handleUnexpectedServerStop(): Promise<void> {
+  const context = extensionContext;
+  const hint =
+    lastStartupDiagnosis?.hint ??
+    'The Perl Language Server stopped unexpectedly. Check the Output panel for details.';
+
+  if (autoRestartAttempts < MAX_AUTO_RESTART_ATTEMPTS) {
+    autoRestartAttempts += 1;
+    const attempt = autoRestartAttempts;
+    outputChannel?.appendLine(
+      `[lifecycle] Auto-restarting Perl Language Server (attempt ${attempt}/${MAX_AUTO_RESTART_ATTEMPTS})\u2026`,
+    );
+    const message = `Perl Language Server crashed and is restarting automatically (attempt ${attempt}/${MAX_AUTO_RESTART_ATTEMPTS}). ${hint}`;
+    const selection = await vscode.window.showErrorMessage(message, 'Show Output');
+    if (selection === 'Show Output') {
+      outputChannel?.show();
+    }
+    if (!context) {
+      outputChannel?.appendLine(
+        '[lifecycle] Cannot auto-restart: extension context is not available.',
+      );
+      return;
+    }
+    try {
+      await restartServer(context);
+    } catch (error: unknown) {
+      // restartServer surfaces its own dialog/log; record the failure and
+      // let the next crash (if any) consume another retry slot.
+      const msg = error instanceof Error ? error.message : String(error);
+      outputChannel?.appendLine(`[lifecycle] Auto-restart attempt ${attempt} failed: ${msg}`);
+    }
+    return;
+  }
+
+  // Retry budget exhausted — do not loop. Ask the user to intervene.
+  outputChannel?.appendLine(
+    `[lifecycle] Auto-restart limit reached (${MAX_AUTO_RESTART_ATTEMPTS} attempts). Awaiting manual restart.`,
+  );
+  const exhausted = `Perl Language Server crashed and could not be restarted automatically after ${MAX_AUTO_RESTART_ATTEMPTS} attempts. ${hint}`;
+  const selection = await vscode.window.showErrorMessage(
+    exhausted,
+    'Restart Server',
+    'Run Health Check',
+    'Show Output',
+  );
+  if (selection === 'Restart Server' && context) {
+    // A manual restart resets the auto-restart budget.
+    autoRestartAttempts = 0;
+    try {
+      await restartServer(context);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      outputChannel?.appendLine(`[lifecycle] Manual restart failed: ${msg}`);
+    }
+  } else if (selection === 'Run Health Check') {
+    const serverPath = currentServerPath ?? undefined;
+    await vscode.commands.executeCommand('perl-lsp.runHealthCheck', serverPath);
+  } else if (selection === 'Show Output') {
+    outputChannel?.show();
   }
 }
 
@@ -1710,9 +1896,15 @@ function disposeClientIntegrations(): void {
 }
 
 async function disposeLanguageClient(): Promise<void> {
+  // Extension shutdown is user-initiated; suppress the crash handler and
+  // clear crash-recovery state so a re-activation starts with a fresh budget.
+  userInitiatedStopPending = true;
+  autoRestartAttempts = 0;
+  stableRunningSince = undefined;
   disposeClientIntegrations();
   if (languageClientLifecycle) {
     await languageClientLifecycle.stop();
     syncLifecycleProjection();
   }
+  userInitiatedStopPending = false;
 }

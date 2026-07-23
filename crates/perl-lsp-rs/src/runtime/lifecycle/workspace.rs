@@ -112,12 +112,28 @@ impl LspServer {
     /// In single-file mode (no workspace folders), returns early without searching.
     ///
     /// Multi-root workspaces: each folder loads its own `.perl-lsp.toml` independently.
+    ///
+    /// The `[perl]` section is scoped per-folder through `effective_workspace_config`.
+    /// The six server-global sections (`[diagnostics]`, `[critic]`, `[features]`,
+    /// `[formatting]`, `[ai_completion]`, `[next_edit]`) target the single shared
+    /// `ServerConfig`; they are merged with **first-folder-wins** semantics via
+    /// [`perl_lsp_rs_core::config::merge_project_configs_for_server`] so a later
+    /// folder can no longer silently overwrite an earlier folder's setting. When two
+    /// or more folders set the same global key to different values, a single
+    /// `window/showMessage` Warning is emitted naming the folders and keys, instead
+    /// of silently discarding a folder's configuration.
     pub(crate) fn load_and_apply_project_config(&self) {
         let mut folders = self.workspace_folders.lock();
 
         if folders.is_empty() {
             return; // Single-file mode; no workspace root to search
         }
+
+        // Collect (display_name, project_config) for folders that have a
+        // .perl-lsp.toml, in workspace-folder iteration order, so the server-global
+        // sections can be merged with first-folder-wins semantics after the loop.
+        let mut global_configs: Vec<(String, perl_lsp_rs_core::config::ProjectConfig)> =
+            Vec::with_capacity(folders.len());
 
         for folder in folders.iter_mut() {
             // Try to load .perl-lsp.toml from this folder
@@ -142,16 +158,14 @@ impl LspServer {
                         // Store project config in the folder state
                         folder.project_config = Some(project_config.clone());
 
-                        // Apply global settings to server config (editor preferences, etc.)
-                        {
-                            let mut config = self.config.lock();
-                            project_config.apply_to_server_config(&mut config);
-                        }
-
-                        // Layer project config on top of the init-options base already stored
-                        // in folder.effective_workspace_config.
+                        // Layer project config on top of the init-options base
+                        // already stored in folder.effective_workspace_config.
                         project_config
                             .apply_to_workspace_config(&mut folder.effective_workspace_config);
+
+                        // Defer the server-global sections to the post-loop merge so a
+                        // later folder cannot silently clobber an earlier folder's value.
+                        global_configs.push((folder.display_name().to_string(), project_config));
                     }
                     Err(msg) => {
                         let user_msg = format!(
@@ -176,10 +190,56 @@ impl LspServer {
             }
         }
 
+        // Merge the server-global sections across all folders that have a config,
+        // using first-folder-wins per field, then apply the merged result to the
+        // shared ServerConfig exactly once. This replaces the former per-folder
+        // `apply_to_server_config` loop, which silently let the last folder win.
+        if !global_configs.is_empty() {
+            let merge_inputs: Vec<(&str, &perl_lsp_rs_core::config::ProjectConfig)> =
+                global_configs.iter().map(|(name, cfg)| (name.as_str(), cfg)).collect();
+            let (merged, conflicts) =
+                perl_lsp_rs_core::config::merge_project_configs_for_server(&merge_inputs);
+
+            {
+                let mut config = self.config.lock();
+                merged.apply_to_server_config(&mut config);
+            }
+
+            if !conflicts.is_empty() {
+                self.emit_multi_root_config_conflict_warning(&conflicts);
+            }
+        }
+
         // Pull client-scoped workspace settings (if supported) and merge them
         // as the highest-precedence layer over TOML-derived folder config.
         drop(folders);
         self.request_workspace_configuration_for_folders();
+    }
+
+    /// Emit a `window/showMessage` Warning describing the conflicting
+    /// server-global `.perl-lsp.toml` keys across a multi-root workspace.
+    ///
+    /// The warning names each conflicting key and the per-folder values, and
+    /// states the first-folder-wins resolution, so a silently overwritten
+    /// folder setting becomes visible. See `docs/reference/CONFIG.md`.
+    fn emit_multi_root_config_conflict_warning(
+        &self,
+        conflicts: &[perl_lsp_rs_core::config::MultiRootConfigConflict],
+    ) {
+        let rendered = conflicts
+            .iter()
+            .map(perl_lsp_rs_core::config::MultiRootConfigConflict::render)
+            .collect::<Vec<_>>()
+            .join("; ");
+        let user_msg = format!(
+            "perl-lsp: multi-root workspace has conflicting .perl-lsp.toml settings across \
+             folders. The first folder wins for each key; others were ignored: {rendered}. \
+             See docs/reference/CONFIG.md (Multi-root workspaces) for details."
+        );
+        tracing::warn!(conflicts = %rendered, "Multi-root config conflict; first folder wins");
+        if let Err(e) = self.show_message(MessageType::Warning, &user_msg) {
+            tracing::warn!(error = %e, "Failed to send showMessage for multi-root config conflict");
+        }
     }
 }
 
@@ -368,6 +428,131 @@ include_paths = ["other_lib"]
                 .effective_workspace_config
                 .include_paths
                 .contains(&"other_lib".to_string())
+        );
+    }
+
+    #[test]
+    fn load_and_apply_project_config_multi_root_first_folder_wins_on_conflict() {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let folder1 = temp.path().join("folder1");
+        let folder2 = temp.path().join("folder2");
+        std::fs::create_dir_all(&folder1).expect("failed to create folder1");
+        std::fs::create_dir_all(&folder2).expect("failed to create folder2");
+
+        // folder1 enables perlcritic; folder2 disables it. Pre-fix, the loop
+        // applied folder2 last and silently won server-wide. Post-fix, the first
+        // folder wins and the conflict is surfaced instead of silently overwritten.
+        std::fs::write(folder1.join(".perl-lsp.toml"), "[diagnostics]\nperlcritic = true\n")
+            .expect("write config1");
+        std::fs::write(folder2.join(".perl-lsp.toml"), "[diagnostics]\nperlcritic = false\n")
+            .expect("write config2");
+
+        let uri1 =
+            url::Url::from_directory_path(&folder1).expect("failed to create uri1").to_string();
+        let uri2 =
+            url::Url::from_directory_path(&folder2).expect("failed to create uri2").to_string();
+
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri1.clone())
+                .with_path(folder1.clone()),
+        );
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri2.clone())
+                .with_path(folder2.clone()),
+        );
+
+        server.load_and_apply_project_config();
+
+        // First folder wins for the conflicting global key; folder2 does NOT
+        // silently overwrite it.
+        assert!(
+            server.config.lock().perlcritic_enabled,
+            "first folder's [diagnostics].perlcritic=true must win, not last folder's false"
+        );
+
+        // Both folders still have their own per-folder effective workspace config.
+        let folders = server.workspace_folders.lock();
+        assert_eq!(folders.len(), 2);
+        assert!(folders.iter().find(|f| f.uri == uri1).expect("folder1").project_config.is_some());
+        assert!(folders.iter().find(|f| f.uri == uri2).expect("folder2").project_config.is_some());
+    }
+
+    #[test]
+    fn load_and_apply_project_config_multi_root_non_conflicting_fields_all_apply() {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let folder1 = temp.path().join("folder1");
+        let folder2 = temp.path().join("folder2");
+        std::fs::create_dir_all(&folder1).expect("failed to create folder1");
+        std::fs::create_dir_all(&folder2).expect("failed to create folder2");
+
+        // folder1 sets [diagnostics].perlcritic; folder2 sets [features].inlay_hints.
+        // Different keys -> both apply, no silent override.
+        std::fs::write(folder1.join(".perl-lsp.toml"), "[diagnostics]\nperlcritic = true\n")
+            .expect("write config1");
+        std::fs::write(folder2.join(".perl-lsp.toml"), "[features]\ninlay_hints = false\n")
+            .expect("write config2");
+
+        let uri1 =
+            url::Url::from_directory_path(&folder1).expect("failed to create uri1").to_string();
+        let uri2 =
+            url::Url::from_directory_path(&folder2).expect("failed to create uri2").to_string();
+
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri1.clone())
+                .with_path(folder1.clone()),
+        );
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri2.clone())
+                .with_path(folder2.clone()),
+        );
+
+        server.load_and_apply_project_config();
+
+        let config = server.config.lock();
+        assert!(config.perlcritic_enabled, "folder1's perlcritic=true must apply");
+        assert!(
+            !config.inlay_hints_enabled,
+            "folder2's inlay_hints=false must apply (default is true)"
+        );
+    }
+
+    #[test]
+    fn load_and_apply_project_config_multi_root_last_folder_no_longer_wins_silently() {
+        // Regression guard for #4633: three folders, last one sets a value that
+        // must NOT silently win over the first.
+        let server = LspServer::new();
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let folder1 = temp.path().join("folder1");
+        let folder2 = temp.path().join("folder2");
+        let folder3 = temp.path().join("folder3");
+        std::fs::create_dir_all(&folder1).expect("folder1");
+        std::fs::create_dir_all(&folder2).expect("folder2");
+        std::fs::create_dir_all(&folder3).expect("folder3");
+
+        std::fs::write(folder1.join(".perl-lsp.toml"), "[diagnostics]\nperlcritic_severity = 3\n")
+            .expect("write config1");
+        std::fs::write(folder2.join(".perl-lsp.toml"), "[diagnostics]\nperlcritic_severity = 1\n")
+            .expect("write config2");
+        std::fs::write(folder3.join(".perl-lsp.toml"), "[diagnostics]\nperlcritic_severity = 5\n")
+            .expect("write config3");
+
+        for folder in [&folder1, &folder2, &folder3] {
+            let uri = url::Url::from_directory_path(folder).expect("uri").to_string();
+            server.workspace_folders.lock().push(
+                crate::runtime::workspace_folder::WorkspaceFolderState::new(uri)
+                    .with_path(folder.to_path_buf()),
+            );
+        }
+
+        server.load_and_apply_project_config();
+
+        // First folder (severity 3) wins; last folder (severity 5) does NOT win.
+        assert_eq!(
+            server.config.lock().perlcritic_severity,
+            3,
+            "first folder's severity=3 must win, not last folder's 5"
         );
     }
 

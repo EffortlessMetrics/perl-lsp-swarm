@@ -1558,6 +1558,339 @@ impl ProjectConfig {
     }
 }
 
+/// A conflict between two or more workspace folders over a shared (server-global)
+/// setting sourced from `.perl-lsp.toml`.
+///
+/// Produced by [`merge_project_configs_for_server`]. The `[perl]` section is
+/// intentionally excluded because it is already scoped per-folder via
+/// `WorkspaceConfig`; only the six server-global sections (`[diagnostics]`,
+/// `[critic]`, `[features]`, `[formatting]`, `[ai_completion]`, `[next_edit]`)
+/// participate in the merge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiRootConfigConflict {
+    /// Dotted path of the conflicting key, e.g. `"diagnostics.perlcritic"`.
+    pub key: &'static str,
+    /// Display names of the folders that set this key, in iteration order.
+    pub folders: Vec<String>,
+    /// Human-readable rendering of the differing values, parallel to `folders`.
+    pub values: Vec<String>,
+}
+
+impl MultiRootConfigConflict {
+    /// Render this conflict as `"key (folderA=vA, folderB=vB)"`.
+    #[must_use]
+    pub fn render(&self) -> String {
+        let pairs = self
+            .folders
+            .iter()
+            .zip(self.values.iter())
+            .map(|(folder, value)| format!("{folder}={value}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{} ({})", self.key, pairs)
+    }
+}
+
+/// Merge the server-global sections of multiple folders' `ProjectConfig`s into a
+/// single `ProjectConfig`, using **first-set-wins** per field.
+///
+/// In a multi-root workspace, each folder's `.perl-lsp.toml` is loaded
+/// independently. The `[perl]` section is correctly scoped per-folder through
+/// `WorkspaceConfig`, but the other six sections (`[diagnostics]`, `[critic]`,
+/// `[features]`, `[formatting]`, `[ai_completion]`, `[next_edit]`) target the
+/// single shared `ServerConfig`. Applying every folder's config in a loop would
+/// silently let the last folder win for any field set by more than one folder.
+///
+/// This function instead produces a merged `ProjectConfig` where each field
+/// takes the value from the **first** folder (in iteration order) that sets it,
+/// so a single subsequent `apply_to_server_config` call cannot clobber earlier
+/// folders. Fields that two or more folders set to *different* values are
+/// reported as conflicts so the caller can emit a user-visible warning instead
+/// of silently discarding a folder's setting.
+///
+/// Folders that have no `.perl-lsp.toml` (a `None` project config) are skipped
+/// by the caller before invoking this function.
+///
+/// Returns `(merged_config, conflicts)`.
+#[must_use]
+pub fn merge_project_configs_for_server(
+    folders: &[(&str, &ProjectConfig)],
+) -> (ProjectConfig, Vec<MultiRootConfigConflict>) {
+    let mut merged = ProjectConfig::default();
+    let mut conflicts: Vec<MultiRootConfigConflict> = Vec::new();
+
+    // `[diagnostics]`
+    merge_opt_field(
+        &mut merged.diagnostics.perlcritic,
+        &mut conflicts,
+        "diagnostics.perlcritic",
+        folders,
+        |c| c.diagnostics.perlcritic,
+    );
+    merge_opt_field(
+        &mut merged.diagnostics.perlcritic_severity,
+        &mut conflicts,
+        "diagnostics.perlcritic_severity",
+        folders,
+        |c| c.diagnostics.perlcritic_severity,
+    );
+
+    // `[features]`
+    merge_opt_field(
+        &mut merged.features.inlay_hints,
+        &mut conflicts,
+        "features.inlay_hints",
+        folders,
+        |c| c.features.inlay_hints,
+    );
+
+    // `[ai_completion]`
+    merge_opt_field(
+        &mut merged.ai_completion.enabled,
+        &mut conflicts,
+        "ai_completion.enabled",
+        folders,
+        |c| c.ai_completion.enabled,
+    );
+    merge_opt_field(
+        &mut merged.ai_completion.provider,
+        &mut conflicts,
+        "ai_completion.provider",
+        folders,
+        |c| c.ai_completion.provider.clone(),
+    );
+    merge_opt_field(
+        &mut merged.ai_completion.endpoint,
+        &mut conflicts,
+        "ai_completion.endpoint",
+        folders,
+        |c| c.ai_completion.endpoint.clone(),
+    );
+    merge_opt_field(
+        &mut merged.ai_completion.model,
+        &mut conflicts,
+        "ai_completion.model",
+        folders,
+        |c| c.ai_completion.model.clone(),
+    );
+    merge_opt_field(
+        &mut merged.ai_completion.api_key_env,
+        &mut conflicts,
+        "ai_completion.api_key_env",
+        folders,
+        |c| c.ai_completion.api_key_env.clone(),
+    );
+    merge_opt_field(
+        &mut merged.ai_completion.api_key_header,
+        &mut conflicts,
+        "ai_completion.api_key_header",
+        folders,
+        |c| c.ai_completion.api_key_header.clone(),
+    );
+    merge_opt_field(
+        &mut merged.ai_completion.api_key_prefix,
+        &mut conflicts,
+        "ai_completion.api_key_prefix",
+        folders,
+        |c| c.ai_completion.api_key_prefix.clone(),
+    );
+
+    // `[next_edit]`
+    merge_opt_field(
+        &mut merged.next_edit.enabled,
+        &mut conflicts,
+        "next_edit.enabled",
+        folders,
+        |c| c.next_edit.enabled,
+    );
+
+    // `[formatting]`
+    merge_opt_field(
+        &mut merged.formatting.enabled,
+        &mut conflicts,
+        "formatting.enabled",
+        folders,
+        |c| c.formatting.enabled,
+    );
+    merge_opt_field(
+        &mut merged.formatting.engine,
+        &mut conflicts,
+        "formatting.engine",
+        folders,
+        |c| c.formatting.engine.clone(),
+    );
+    merge_opt_field(
+        &mut merged.formatting.perltidy_profile,
+        &mut conflicts,
+        "formatting.perltidy_profile",
+        folders,
+        |c| c.formatting.perltidy_profile.clone(),
+    );
+    merge_opt_field(
+        &mut merged.formatting.perltidy_maximum_line_length,
+        &mut conflicts,
+        "formatting.perltidy_maximum_line_length",
+        folders,
+        |c| c.formatting.perltidy_maximum_line_length,
+    );
+    merge_opt_field(
+        &mut merged.formatting.perltidy_indent_columns,
+        &mut conflicts,
+        "formatting.perltidy_indent_columns",
+        folders,
+        |c| c.formatting.perltidy_indent_columns,
+    );
+    merge_opt_field(
+        &mut merged.formatting.perltidy_tabs,
+        &mut conflicts,
+        "formatting.perltidy_tabs",
+        folders,
+        |c| c.formatting.perltidy_tabs,
+    );
+    merge_opt_field(
+        &mut merged.formatting.perltidy_opening_brace_on_new_line,
+        &mut conflicts,
+        "formatting.perltidy_opening_brace_on_new_line",
+        folders,
+        |c| c.formatting.perltidy_opening_brace_on_new_line,
+    );
+    merge_opt_field(
+        &mut merged.formatting.perltidy_cuddled_else,
+        &mut conflicts,
+        "formatting.perltidy_cuddled_else",
+        folders,
+        |c| c.formatting.perltidy_cuddled_else,
+    );
+    merge_opt_field(
+        &mut merged.formatting.perltidy_space_after_keyword,
+        &mut conflicts,
+        "formatting.perltidy_space_after_keyword",
+        folders,
+        |c| c.formatting.perltidy_space_after_keyword,
+    );
+    merge_opt_field(
+        &mut merged.formatting.perltidy_add_trailing_commas,
+        &mut conflicts,
+        "formatting.perltidy_add_trailing_commas",
+        folders,
+        |c| c.formatting.perltidy_add_trailing_commas,
+    );
+    merge_opt_field(
+        &mut merged.formatting.perltidy_vertical_alignment,
+        &mut conflicts,
+        "formatting.perltidy_vertical_alignment",
+        folders,
+        |c| c.formatting.perltidy_vertical_alignment,
+    );
+    merge_opt_field(
+        &mut merged.formatting.perltidy_block_comment_indentation,
+        &mut conflicts,
+        "formatting.perltidy_block_comment_indentation",
+        folders,
+        |c| c.formatting.perltidy_block_comment_indentation,
+    );
+    merge_opt_field(
+        &mut merged.formatting.perltidy_timeout_secs,
+        &mut conflicts,
+        "formatting.perltidy_timeout_secs",
+        folders,
+        |c| c.formatting.perltidy_timeout_secs,
+    );
+    merge_vec_field(
+        &mut merged.formatting.perltidy_extra_args,
+        &mut conflicts,
+        "formatting.perltidy_extra_args",
+        folders,
+        |c| &c.formatting.perltidy_extra_args,
+    );
+
+    // `[critic]`
+    merge_opt_field(&mut merged.critic.engine, &mut conflicts, "critic.engine", folders, |c| {
+        c.critic.engine.clone()
+    });
+    merge_opt_field(&mut merged.critic.profile, &mut conflicts, "critic.profile", folders, |c| {
+        c.critic.profile.clone()
+    });
+    merge_opt_field(&mut merged.critic.include, &mut conflicts, "critic.include", folders, |c| {
+        c.critic.include.clone()
+    });
+    merge_opt_field(&mut merged.critic.exclude, &mut conflicts, "critic.exclude", folders, |c| {
+        c.critic.exclude.clone()
+    });
+
+    (merged, conflicts)
+}
+
+/// First-set-wins merge for a single `Option<T>` field across folders, recording
+/// a conflict when two or more folders set the field to different values.
+fn merge_opt_field<T: Clone + PartialEq + std::fmt::Debug>(
+    merged: &mut Option<T>,
+    conflicts: &mut Vec<MultiRootConfigConflict>,
+    key: &'static str,
+    folders: &[(&str, &ProjectConfig)],
+    extract: impl Fn(&ProjectConfig) -> Option<T>,
+) {
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for (name, cfg) in folders {
+        let Some(value) = extract(cfg) else { continue };
+        if merged.is_none() {
+            *merged = Some(value.clone());
+        }
+        let value_str = value_to_string(&value);
+        if !seen.iter().any(|(_, v)| v == &value_str) {
+            seen.push((name.to_string(), value_str));
+        }
+    }
+    push_conflict(conflicts, key, seen);
+}
+
+/// First-set-wins merge for a single `Vec<String>` field across folders (treated
+/// as unset when empty), recording a conflict when two or more folders set the
+/// field to different values.
+fn merge_vec_field(
+    merged: &mut Vec<String>,
+    conflicts: &mut Vec<MultiRootConfigConflict>,
+    key: &'static str,
+    folders: &[(&str, &ProjectConfig)],
+    extract: impl Fn(&ProjectConfig) -> &[String],
+) {
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for (name, cfg) in folders {
+        let value = extract(cfg);
+        if value.is_empty() {
+            continue;
+        }
+        if merged.is_empty() {
+            *merged = value.to_vec();
+        }
+        let value_str = value.join(",");
+        if !seen.iter().any(|(_, v)| v == &value_str) {
+            seen.push((name.to_string(), value_str));
+        }
+    }
+    push_conflict(conflicts, key, seen);
+}
+
+/// Record a conflict only when more than one distinct value was seen for a key.
+fn push_conflict(
+    conflicts: &mut Vec<MultiRootConfigConflict>,
+    key: &'static str,
+    seen: Vec<(String, String)>,
+) {
+    if seen.len() > 1 {
+        conflicts.push(MultiRootConfigConflict {
+            key,
+            folders: seen.iter().map(|(f, _)| f.clone()).collect(),
+            values: seen.iter().map(|(_, v)| v.clone()).collect(),
+        });
+    }
+}
+
+/// Render an arbitrary merge value to a stable string for conflict comparison.
+fn value_to_string<T: std::fmt::Debug>(value: &T) -> String {
+    format!("{value:?}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1565,6 +1898,125 @@ mod tests {
     use tracing_subscriber::layer::SubscriberExt as _;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn merge_project_configs_first_folder_wins_on_conflict() {
+        // Two folders set [diagnostics].perlcritic to different values.
+        let mut a = ProjectConfig::default();
+        a.diagnostics.perlcritic = Some(true);
+        let mut b = ProjectConfig::default();
+        b.diagnostics.perlcritic = Some(false);
+
+        let inputs: Vec<(&str, &ProjectConfig)> = vec![("folderA", &a), ("folderB", &b)];
+        let (merged, conflicts) = merge_project_configs_for_server(&inputs);
+
+        // First folder wins for the conflicting key.
+        assert_eq!(merged.diagnostics.perlcritic, Some(true));
+
+        // A conflict is reported naming both folders and values.
+        assert_eq!(conflicts.len(), 1);
+        let conflict = &conflicts[0];
+        assert_eq!(conflict.key, "diagnostics.perlcritic");
+        assert_eq!(conflict.folders, vec!["folderA", "folderB"]);
+        assert_eq!(conflict.values, vec!["true", "false"]);
+        assert_eq!(conflict.render(), "diagnostics.perlcritic (folderA=true, folderB=false)");
+    }
+
+    #[test]
+    fn merge_project_configs_non_conflicting_fields_all_apply() {
+        // folderA sets perlcritic; folderB sets inlay_hints. No conflict.
+        let mut a = ProjectConfig::default();
+        a.diagnostics.perlcritic = Some(true);
+        let mut b = ProjectConfig::default();
+        b.features.inlay_hints = Some(false);
+
+        let inputs: Vec<(&str, &ProjectConfig)> = vec![("folderA", &a), ("folderB", &b)];
+        let (merged, conflicts) = merge_project_configs_for_server(&inputs);
+
+        assert_eq!(merged.diagnostics.perlcritic, Some(true));
+        assert_eq!(merged.features.inlay_hints, Some(false));
+        assert!(conflicts.is_empty(), "non-conflicting fields must not warn: {conflicts:?}");
+    }
+
+    #[test]
+    fn merge_project_configs_same_value_is_not_a_conflict() {
+        // Both folders set perlcritic=true: not a conflict, value applies once.
+        let mut a = ProjectConfig::default();
+        a.diagnostics.perlcritic = Some(true);
+        let mut b = ProjectConfig::default();
+        b.diagnostics.perlcritic = Some(true);
+
+        let inputs: Vec<(&str, &ProjectConfig)> = vec![("folderA", &a), ("folderB", &b)];
+        let (merged, conflicts) = merge_project_configs_for_server(&inputs);
+
+        assert_eq!(merged.diagnostics.perlcritic, Some(true));
+        assert!(conflicts.is_empty(), "identical values must not warn: {conflicts:?}");
+    }
+
+    #[test]
+    fn merge_project_configs_unset_fields_stay_none() {
+        // No folder sets any global field.
+        let a = ProjectConfig::default();
+        let b = ProjectConfig::default();
+        let inputs: Vec<(&str, &ProjectConfig)> = vec![("folderA", &a), ("folderB", &b)];
+        let (merged, conflicts) = merge_project_configs_for_server(&inputs);
+
+        assert_eq!(merged.diagnostics.perlcritic, None);
+        assert_eq!(merged.features.inlay_hints, None);
+        assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn merge_project_configs_excludes_perl_section() {
+        // The [perl] section is per-folder; it must NOT participate in the merge.
+        let mut a = ProjectConfig::default();
+        a.perl.include_paths = vec!["a_lib".to_string()];
+        let mut b = ProjectConfig::default();
+        b.perl.include_paths = vec!["b_lib".to_string()];
+
+        let inputs: Vec<(&str, &ProjectConfig)> = vec![("folderA", &a), ("folderB", &b)];
+        let (merged, conflicts) = merge_project_configs_for_server(&inputs);
+
+        assert!(merged.perl.include_paths.is_empty(), "[perl] must not be merged");
+        assert!(conflicts.is_empty(), "[perl] differences must not be conflicts");
+    }
+
+    #[test]
+    fn merge_project_configs_three_folders_first_wins() {
+        let mut a = ProjectConfig::default();
+        a.diagnostics.perlcritic_severity = Some(3);
+        let mut b = ProjectConfig::default();
+        b.diagnostics.perlcritic_severity = Some(1);
+        let mut c = ProjectConfig::default();
+        c.diagnostics.perlcritic_severity = Some(5);
+
+        let inputs: Vec<(&str, &ProjectConfig)> =
+            vec![("folderA", &a), ("folderB", &b), ("folderC", &c)];
+        let (merged, conflicts) = merge_project_configs_for_server(&inputs);
+
+        assert_eq!(merged.diagnostics.perlcritic_severity, Some(3));
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].key, "diagnostics.perlcritic_severity");
+        assert_eq!(conflicts[0].folders, vec!["folderA", "folderB", "folderC"]);
+    }
+
+    #[test]
+    fn merge_project_configs_vec_field_conflict() {
+        let mut a = ProjectConfig::default();
+        a.critic.include = Some(vec!["ProhibitGrep".to_string()]);
+        let mut b = ProjectConfig::default();
+        b.critic.include = Some(vec!["ProhibitMap".to_string()]);
+
+        let inputs: Vec<(&str, &ProjectConfig)> = vec![("folderA", &a), ("folderB", &b)];
+        let (merged, conflicts) = merge_project_configs_for_server(&inputs);
+
+        assert_eq!(
+            merged.critic.include.as_ref().map(Vec::as_slice),
+            Some(&["ProhibitGrep".to_string()][..])
+        );
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].key, "critic.include");
+    }
 
     #[test]
     fn load_project_config_returns_none_when_missing() -> TestResult {

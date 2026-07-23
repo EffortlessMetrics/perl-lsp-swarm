@@ -443,26 +443,6 @@ impl<'a> AnalysisContext<'a> {
             Err(idx) => idx,
         }
     }
-
-    fn find_catch_variable_range(
-        &self,
-        catch_body_start: usize,
-        full_name: &str,
-    ) -> Option<(usize, usize)> {
-        if full_name.is_empty() || catch_body_start == 0 || catch_body_start > self.code.len() {
-            return None;
-        }
-
-        let window_start = catch_body_start.saturating_sub(256);
-        let window = self.code.get(window_start..catch_body_start)?;
-        let catch_start = window.rfind("catch")?;
-        let search_start = catch_start + "catch".len();
-        let var_offset = window[search_start..].rfind(full_name)? + search_start;
-        let start = window_start + var_offset;
-        let end = start + full_name.len();
-
-        Some((start, end))
-    }
 }
 
 impl<'a> ExtractedName<'a> {

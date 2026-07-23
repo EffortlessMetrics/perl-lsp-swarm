@@ -123,7 +123,10 @@ fn for_each_child_try_with_multiple_catches_and_finally() -> Result<(), Box<dyn 
         NodeKind::Try {
             body: Box::new(block(vec![])),
             catch_blocks: vec![
-                (Some("$e1".to_string()), Box::new(block(vec![]))),
+                (
+                    Some(("$e1".to_string(), SourceLocation { start: 0, end: 0 })),
+                    Box::new(block(vec![])),
+                ),
                 (None, Box::new(block(vec![]))),
             ],
             finally_block: Some(Box::new(block(vec![]))),
@@ -583,7 +586,10 @@ fn count_nodes_try_catch_finally() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(
         NodeKind::Try {
             body: Box::new(block(vec![num("1")])),
-            catch_blocks: vec![(Some("$e".to_string()), Box::new(block(vec![num("2")])))],
+            catch_blocks: vec![(
+                Some(("$e".to_string(), SourceLocation { start: 0, end: 0 })),
+                Box::new(block(vec![num("2")])),
+            )],
             finally_block: Some(Box::new(block(vec![num("3")]))),
         },
         loc(0, 50),

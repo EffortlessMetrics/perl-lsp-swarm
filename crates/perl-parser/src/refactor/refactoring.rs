@@ -2051,7 +2051,7 @@ fn visit_node(
             visit_node(body, start, end, inputs, outputs, declared_in_scope, declared_in_range);
             for (var, catch_body) in catch_blocks {
                 let mut inner_scope = declared_in_scope.clone();
-                if let Some(v_name) = var {
+                if let Some((v_name, _)) = var {
                     // Check if v_name has sigil, if not assume $
                     let full_name = if v_name.starts_with(['$', '@', '%']) {
                         v_name.clone()
