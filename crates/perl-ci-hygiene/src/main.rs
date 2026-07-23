@@ -30,6 +30,7 @@ mod process;
 use crate::cli::{Cli, CliCommand};
 use crate::commands::panic_test::check_panic_test;
 use crate::commands::print_in_lib::check_print_in_lib;
+use crate::commands::regex_static::check_regex_static;
 #[cfg(test)]
 use crate::commands::todos::{
     has_unlinked_todo_in_hash_line, has_unlinked_todo_in_perl_line, has_unlinked_todo_in_rust_line,
@@ -115,6 +116,7 @@ fn run() -> Result<i32> {
         CliCommand::CheckUnwrapsProd => cmd_check_unwraps_prod(&repo_root)?,
         CliCommand::CheckPanicTest => check_panic_test(&repo_root)?,
         CliCommand::CheckPrintInLib => check_print_in_lib(&repo_root)?,
+        CliCommand::CheckRegexStatic => check_regex_static(&repo_root)?,
         CliCommand::QuickCheck => cmd_quick_check(&repo_root)?,
         CliCommand::TestHeredocs => cmd_test_heredocs(&repo_root)?,
     };
