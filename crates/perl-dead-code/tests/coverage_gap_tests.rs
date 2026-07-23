@@ -1,3 +1,4 @@
+#![allow(clippy::panic)]
 //! Coverage gap tests for `perl-dead-code` — targeting missed branches in
 //! `dead_branches.rs` and `lib.rs` identified from the 74%/75% branch
 //! coverage baseline reported in issue #9101.

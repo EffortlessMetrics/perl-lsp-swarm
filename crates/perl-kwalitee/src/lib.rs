@@ -44,15 +44,16 @@ mod profile;
 mod receipt;
 mod score;
 
-pub use evaluator::{EvidencePaths, ExternalResult, KwaliteeOptions, evaluate, is_known_indicator};
+pub use evaluator::{evaluate, is_known_indicator, EvidencePaths, ExternalResult, KwaliteeOptions};
 pub use indicator::{
-    EvidenceRef, IndicatorExplanation, IndicatorStatus, KwaliteeIndicator, explain, indicator_ids,
+    explain, indicator_ids, EvidenceRef, IndicatorExplanation, IndicatorStatus, KwaliteeIndicator,
 };
 pub use profile::KwaliteeProfile;
 pub use receipt::{KwaliteeReceipt, KwaliteeVerdict, RECEIPT_KIND, SCHEMA_VERSION};
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic)]
     use super::*;
 
     #[test]
