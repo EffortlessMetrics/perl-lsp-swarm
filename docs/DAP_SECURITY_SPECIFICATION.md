@@ -2,24 +2,30 @@
 <!-- Labels: security:enterprise, validation:comprehensive, compliance:maintained -->
 
 **Issue**: #207 - Debug Adapter Protocol Support
-**Status**: Security Requirements Complete
+**Status**: Reconciled with implementation (2026-07-22)
 **Version**: 0.9.x
-**Date**: 2025-10-04
+**Date**: 2026-07-22
 
 ---
 
 ## Executive Summary
 
-This specification defines comprehensive security requirements for the DAP implementation, aligned with existing enterprise security framework (`docs/how-to/SECURITY_DEVELOPMENT_GUIDE.md`). All security measures are testable via AC16 validation suite.
+This specification documents the security measures implemented by the DAP
+server, aligned with the existing enterprise security framework
+(`docs/how-to/SECURITY_DEVELOPMENT_GUIDE.md`). Security measures are exercised
+by the test suites listed under each section.
+
+> **Scope note.** This document describes what the code **actually does today**,
+> not aspirational guarantees. Where the implementation has a known gap, that
+> gap is named explicitly rather than papered over. The direction of truth is
+> always implementation → spec, never the reverse (see #4641).
 
 **Key Security Domains**:
 1. **Path Traversal Prevention**: Canonical path validation within workspace boundaries
-2. **Safe Evaluation**: Non-mutating eval default with explicit opt-in for side effects
-3. **Timeout Enforcement**: Hard timeouts preventing DoS from infinite loops
+2. **Safe Evaluation (admission control)**: Non-mutating eval default with explicit opt-in for side effects
+3. **Timeout Enforcement**: Per-query timeouts for debugger I/O (the long-running debuggee is exempt — see §3)
 4. **Unicode Boundary Safety**: Symmetric UTF-16 ↔ UTF-8 conversion (PR #153 infrastructure)
-5. **Input Validation**: Expression sanitization and code injection prevention
-
-**Compliance Target**: Zero security findings in CI/CD security scanner gate (AC16)
+5. **Input Validation**: Expression policy validation, newline rejection, interpreter name validation, and shell-argument quoting (command injection prevention)
 
 ---
 
@@ -27,7 +33,7 @@ This specification defines comprehensive security requirements for the DAP imple
 
 ### 1.1 Threat Model
 
-**Attack Vector**: Malicious breakpoint paths attempting directory traversal
+**Attack Vector**: Malicious breakpoint or completion paths attempting directory traversal
 
 **Examples**:
 - `file:///workspace/../../../etc/passwd`
@@ -38,170 +44,118 @@ This specification defines comprehensive security requirements for the DAP imple
 
 ### 1.2 Defense Implementation
 
+The canonical implementation lives in `perl-parser-core` and is re-exported
+through a thin DAP wrapper so both LSP and DAP share one validation routine.
+
 #### 1.2.1 Canonical Path Validation
 
+**Core implementation**: `crates/perl-parser-core/src/syntax/path_security.rs`
+— function `validate_workspace_path(path, workspace_root)`.
+
+**DAP wrapper**: `crates/perl-dap/src/security/mod.rs` — function
+`validate_path(path, workspace_root)`, which delegates to the core routine and
+maps `WorkspacePathError` into the DAP `SecurityError` enum.
+
 ```rust
-// crates/perl-dap/src/security/path_validator.rs
-use std::path::{Path, PathBuf, Component};
-use anyhow::{Result, bail};
+// crates/perl-dap/src/security/mod.rs
+use perl_parser_core::path_security::{WorkspacePathError, validate_workspace_path};
 
-/// Validate breakpoint path is within workspace boundaries
-/// Aligned with docs/how-to/SECURITY_DEVELOPMENT_GUIDE.md
-pub fn validate_breakpoint_path(uri: &str, workspace_root: &Path) -> Result<PathBuf> {
-    // Convert URI to filesystem path
-    let path = uri_to_path(uri)?;
-
-    // Canonicalize path (resolves symlinks, normalizes separators)
-    let canonical = path.canonicalize()
-        .map_err(|e| SecurityError::InvalidPath(format!("Cannot canonicalize {}: {}", uri, e)))?;
-
-    // Ensure path is within workspace boundaries
-    if !canonical.starts_with(workspace_root) {
-        bail!(SecurityError::PathTraversalAttempt {
-            requested: uri.to_string(),
-            canonical: canonical.display().to_string(),
-            workspace: workspace_root.display().to_string(),
-        });
-    }
-
-    // Prevent directory traversal components
-    if canonical.components().any(|c| c == Component::ParentDir) {
-        bail!(SecurityError::PathTraversalAttempt {
-            requested: uri.to_string(),
-            canonical: canonical.display().to_string(),
-            workspace: workspace_root.display().to_string(),
-        });
-    }
-
-    Ok(canonical)
+/// Validate that a path is within the workspace boundary.
+pub fn validate_path(path: &Path, workspace_root: &Path) -> Result<PathBuf, SecurityError> {
+    validate_workspace_path(path, workspace_root).map_err(SecurityError::from)
 }
+```
 
-fn uri_to_path(uri: &str) -> Result<PathBuf> {
-    // Parse file:// URI to filesystem path
-    if let Some(path) = uri.strip_prefix("file://") {
-        Ok(PathBuf::from(path))
+The core routine (`validate_workspace_path`) does the following:
+
+1. **Rejects null bytes and control characters** (tab is explicitly allowed) —
+   `WorkspacePathError::InvalidPathCharacters`. This blocks the classic
+   `"file\x00.pm"` truncation attack.
+2. **Canonicalizes the workspace root** (`workspace_root.canonicalize()`).
+3. **Resolves the candidate**: absolute paths are kept as-is; relative paths are
+   joined to the workspace root.
+4. **Existing paths are canonicalized directly.** If the canonical result does
+   not start with the workspace root, a symlink-component scan distinguishes a
+   symlink escape (`SymlinkOutsideWorkspace`) from a direct outside-workspace
+   access (`PathOutsideWorkspace`).
+5. **Non-existing paths are normalized** via
+   `normalize_path_within_workspace`, which processes path components while
+   preventing escape beyond workspace depth (`PathTraversalAttempt`).
+6. **Final boundary check**: the resolved path must `starts_with` the canonical
+   workspace root, otherwise `PathOutsideWorkspace` is returned.
+
+```rust
+// crates/perl-parser-core/src/syntax/path_security.rs
+pub fn validate_workspace_path(
+    path: &Path,
+    workspace_root: &Path,
+) -> Result<PathBuf, WorkspacePathError> {
+    // Reject null bytes / control chars ...
+    let workspace_canonical = normalize_filesystem_path(workspace_root.canonicalize()?);
+    let resolved = if path.is_absolute() { path.to_path_buf() } else { workspace_root.join(path) };
+
+    let final_path = if let Ok(canonical) = resolved.canonicalize() {
+        let canonical = normalize_filesystem_path(canonical);
+        if !canonical.starts_with(&workspace_canonical) {
+            if path_has_symlink_component(&resolved) {
+                return Err(WorkspacePathError::SymlinkOutsideWorkspace(/* … */));
+            }
+            return Err(WorkspacePathError::PathOutsideWorkspace(/* … */));
+        }
+        canonical
     } else {
-        bail!(SecurityError::InvalidUri(uri.to_string()))
+        normalize_path_within_workspace(path, &workspace_canonical)?
+    };
+
+    if !final_path.starts_with(&workspace_canonical) {
+        return Err(WorkspacePathError::PathOutsideWorkspace(/* … */));
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum SecurityError {
-    #[error("Path traversal attempt: requested={requested}, canonical={canonical}, workspace={workspace}")]
-    PathTraversalAttempt {
-        requested: String,
-        canonical: String,
-        workspace: String,
-    },
-
-    #[error("Invalid URI: {0}")]
-    InvalidUri(String),
-
-    #[error("Invalid path: {0}")]
-    InvalidPath(String),
+    Ok(final_path)
 }
 ```
 
-#### 1.2.2 Platform-Specific Validation
+#### 1.2.2 Platform-Specific Behavior
 
-**Windows**:
-```rust
-#[cfg(windows)]
-pub fn validate_windows_path(path: &Path) -> Result<()> {
-    let path_str = path.to_str().ok_or(SecurityError::InvalidPath("Non-UTF8 path".to_string()))?;
+Platform differences are handled **inside** the shared core routine rather than
+via separate `#[cfg]` entry points:
 
-    // Reject UNC paths with traversal
-    if path_str.starts_with("\\\\") {
-        if path_str.contains("..") {
-            bail!(SecurityError::PathTraversalAttempt {
-                requested: path_str.to_string(),
-                canonical: "UNC path with traversal".to_string(),
-                workspace: "N/A".to_string(),
-            });
-        }
-    }
+**Windows** — `normalize_filesystem_path` strips the `\\?\` and `\\?\UNC\`
+verbatim prefixes that `canonicalize()` produces on Windows, so the boundary
+`starts_with` check compares against a normalized form. Mixed-separator
+traversal (`..\..\windows\system32`) is caught at the completion-sanitization
+layer (`sanitize_completion_path_input`), which rejects `..` components and
+backslash traversal regardless of platform.
 
-    // Normalize drive letter to uppercase
-    if let Some((drive, rest)) = path_str.split_once(':') {
-        if drive.len() != 1 || !drive.chars().next().unwrap().is_ascii_alphabetic() {
-            bail!(SecurityError::InvalidPath(format!("Invalid drive letter: {}", drive)));
-        }
-    }
+**Unix** — symlink escapes are detected by walking the path prefix-by-prefix
+(`path_has_symlink_component`) and reporting `SymlinkOutsideWorkspace` when a
+symlink resolves to a target outside the workspace root. Symlinks that stay
+within the workspace are allowed.
 
-    Ok(())
-}
-```
+There is **no** separate `validate_windows_path` / `validate_unix_path` entry
+point; the single `validate_workspace_path` covers both platforms.
 
-**Unix**:
-```rust
-#[cfg(unix)]
-pub fn validate_unix_path(path: &Path) -> Result<()> {
-    // Resolve symlinks
-    let canonical = path.canonicalize()?;
+### 1.3 Test Coverage
 
-    // Detect symlink pointing outside workspace
-    if canonical != path && !canonical.starts_with(workspace_root) {
-        bail!(SecurityError::PathTraversalAttempt {
-            requested: path.display().to_string(),
-            canonical: canonical.display().to_string(),
-            workspace: workspace_root.display().to_string(),
-        });
-    }
+Path-traversal tests live in `crates/perl-dap/tests/`:
 
-    Ok(())
-}
-```
+| Test file | Coverage |
+|-----------|----------|
+| `security_path_traversal_tests.rs` | Parent-dir escape, mixed separators, absolute paths |
+| `security_dap_path_traversal_hardened_tests.rs` | Null-byte injection, control chars, deep nesting |
+| `security_dap_security_ac16_tests.rs` | AC16 path-validation scenarios |
+| `security_regression_tests.rs` | Regression guards for prior traversal findings |
+| `dap_security_tests.rs` / `dap_security_validation_tests.rs` | Broad security-validation coverage |
 
-### 1.3 Test Coverage (AC16)
-
-```rust
-// crates/perl-dap/tests/security_validation.rs
-
-#[test] // AC16
-fn test_path_traversal_prevention() {
-    let workspace = PathBuf::from("/workspace");
-    let validator = PathValidator::new(workspace.clone());
-
-    // Valid workspace paths
-    assert!(validator.validate("file:///workspace/lib/Module.pm").is_ok());
-    assert!(validator.validate("file:///workspace/script.pl").is_ok());
-
-    // Path traversal attempts
-    assert!(validator.validate("file:///workspace/../../../etc/passwd").is_err());
-    assert!(validator.validate("file:///workspace/lib/../../sensitive.pl").is_err());
-    assert!(validator.validate("file:///../workspace/script.pl").is_err());
-}
-
-#[test] // AC16 - Windows-specific
-#[cfg(windows)]
-fn test_windows_unc_path_validation() {
-    let validator = PathValidator::new(PathBuf::from("C:\\workspace"));
-
-    // Valid UNC path
-    assert!(validator.validate("file://C:\\workspace\\lib\\Module.pm").is_ok());
-
-    // UNC traversal attack
-    assert!(validator.validate("file://\\\\server\\share\\..\\..\\sensitive").is_err());
-}
-
-#[test] // AC16 - Unix-specific
-#[cfg(unix)]
-fn test_unix_symlink_validation() {
-    let workspace = PathBuf::from("/workspace");
-    let validator = PathValidator::new(workspace.clone());
-
-    // Create symlink pointing outside workspace
-    std::fs::create_dir_all("/workspace/lib").unwrap();
-    std::os::unix::fs::symlink("/etc/passwd", "/workspace/lib/passwd").unwrap();
-
-    // Should reject symlink to /etc/passwd
-    assert!(validator.validate("file:///workspace/lib/passwd").is_err());
-}
-```
+The core routine also has its own unit tests in
+`crates/perl-parser-core/src/syntax/path_security.rs` (symlink escapes,
+Windows reserved filenames, Unicode paths, null-byte/control-char injection,
+very-long paths).
 
 ---
 
-## 2. Safe Evaluation
+## 2. Safe Evaluation (Admission Control)
+
+> **Important framing.** The safe-eval path is **admission control, not a sandboxed interpreter boundary**. This is the code's own characterization (see `crates/perl-dap/src/debug_adapter/safe_eval.rs` module doc and `crates/perl-dap/src/eval/validator.rs`). It validates an expression's *policy* before forwarding it to the Perl debugger for evaluation; it does **not** provide interpreter isolation, OS sandboxing, or a `Safe::Gem`-style compartment. A deployer who needs true isolation must run the debuggee in an external sandbox.
 
 ### 2.1 Threat Model
 
@@ -216,245 +170,169 @@ fn test_unix_symlink_validation() {
 
 ### 2.2 Defense Implementation
 
-#### 2.2.1 Safe Evaluation Mode (Default)
+Policy validation runs in two places, both consulted before an expression is
+sent to the debugger:
+
+1. **`crates/perl-dap/src/debug_adapter/safe_eval.rs`** —
+   `validate_safe_expression(expression) -> Option<String>`, the validator used
+   at the dispatch seam in `crates/perl-dap/src/debug_adapter/evaluation.rs`.
+2. **`crates/perl-dap/src/eval/validator.rs`** — the `SafeEvaluator` microcrate
+   type, re-invoked from the same handler to keep evaluation policy aligned with
+   the shared DAP security logic.
+
+When `allowSideEffects` is `false` (the default), the handler rejects the
+request if **either** validator returns an error. When `allowSideEffects` is
+`true`, both validators are skipped and the expression is evaluated in the
+debugger context.
+
+#### 2.2.1 What the validators block
+
+The admission-control checks (in `validate_safe_expression` /
+`SafeEvaluator::validate`) reject the following when `allowSideEffects` is
+false:
+
+- **Assignment operators** (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `.=`,
+  `&=`, `|=`, `^=`, `<<=`, `>>=`, `&&=`, `||=`, `//=`, `x=`), while
+  **allowing** comparison operators (`==`, `!=`, `<=`, `>=`, `<=`, `=~`, `!~`).
+- **Increment/decrement** (`++`, `--`).
+- **Dangerous builtins** via a deny-list regex covering: process control
+  (`system`, `exec`, `fork`, `exit`, `kill`, …), I/O (`print`, `say`, `open`,
+  `close`, `readline`, …), filesystem (`mkdir`, `unlink`, `chroot`, …), code
+  loading (`eval`, `require`, `do`), the tie mechanism (`tie`, `untie`),
+  network (`socket`, `connect`, `bind`, …), and IPC (`msg*`, `sem*`, `shm*`).
+  The full list is in `crates/perl-dap/src/eval/patterns.rs`
+  (`DANGEROUS_OPERATIONS`).
+- **`CORE::` / `CORE::GLOBAL::` qualified** forms of the above (explicitly
+  blocked so a caller cannot bypass the deny-list via `CORE::system`).
+- **Dynamic subroutine calls** `&{...}` (blocks `&{"sys"."tem"}("ls")`).
+- **Glob / filehandle reads** (`<*...>` and leading `<`).
+- **Backticks** (shell execution) — blocked unconditionally.
+- **Regex mutation operators** (`s///`, `tr///`, `y///`).
+
+Context-aware filters reduce false positives, allowing: sigil-prefixed
+identifiers (`$print`, `@say`, `%exit`), simple braced scalars (`${print}`),
+package-qualified names (`Foo::print`) unless `CORE::`, single-quoted string
+literals, and escape sequences (`\s` in regex literals).
+
+#### 2.2.2 Newline / carriage-return rejection (command injection)
+
+Before the policy validators run, the evaluate handler in
+`crates/perl-dap/src/debug_adapter/evaluation.rs` rejects any expression
+containing `\n` or `\r` outright:
 
 ```rust
-// crates/perl-dap/src/eval/safe_eval.rs
-use anyhow::{Result, bail};
-use tokio::time::timeout;
-use std::time::Duration;
-
-/// Evaluate expression with safety constraints (AC10)
-/// Performance: <5s timeout (default), configurable
-pub async fn evaluate_expression(
-    expr: &str,
-    context: &StackFrame,
-    allow_side_effects: bool,
-    timeout_secs: u64,
-) -> Result<EvaluationResult> {
-    // 1. Input validation
-    validate_expression_safety(expr, allow_side_effects)?;
-
-    // 2. Timeout enforcement (DoS prevention)
-    let timeout_duration = Duration::from_secs(timeout_secs);
-
-    let result = timeout(timeout_duration, async {
-        if allow_side_effects {
-            // Full evaluation with write access
-            context.eval_with_side_effects(expr).await
-        } else {
-            // Safe evaluation: read-only mode
-            context.eval_readonly(expr).await
-        }
-    }).await;
-
-    match result {
-        Ok(Ok(value)) => Ok(EvaluationResult::Success(value)),
-        Ok(Err(e)) => Ok(EvaluationResult::Error(e.to_string())),
-        Err(_) => bail!(SecurityError::EvaluationTimeout {
-            expression: expr.to_string(),
-            timeout_secs,
-        }),
-    }
-}
-
-/// Validate expression for side effects and injection attacks
-fn validate_expression_safety(expr: &str, allow_side_effects: bool) -> Result<()> {
-    // Check for assignment operators (side effects)
-    if !allow_side_effects {
-        let assignment_patterns = [
-            "=(?![=~])",  // Assignment (not == or =~)
-            r"\+=",        // Addition assignment
-            r"-=",         // Subtraction assignment
-            r"\*=",        // Multiplication assignment
-            r"/=",         // Division assignment
-            r"\.=",        // Concatenation assignment
-        ];
-
-        for pattern in &assignment_patterns {
-            if regex::Regex::new(pattern)?.is_match(expr) {
-                bail!(SecurityError::SideEffectsNotAllowed {
-                    expression: expr.to_string(),
-                });
-            }
-        }
-    }
-
-    // Check for dangerous function calls
-    let dangerous_patterns = [
-        r"\bsystem\b",    // System command execution
-        r"\bexec\b",      // Process replacement
-        r"\beval\b",      // Dynamic code evaluation
-        r"\brequire\b",   // Module loading
-        r"\bdo\b",        // File evaluation
-        r"\bopen\b",      // File opening (if not read-only)
-    ];
-
-    for pattern in &dangerous_patterns {
-        if regex::Regex::new(pattern)?.is_match(expr) {
-            // Allow if explicit opt-in
-            if !allow_side_effects {
-                bail!(SecurityError::DangerousFunctionCall {
-                    expression: expr.to_string(),
-                    function: pattern.to_string(),
-                });
-            }
-        }
-    }
-
-    Ok(())
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum SecurityError {
-    #[error("Side effects not allowed without allowSideEffects flag: {expression}")]
-    SideEffectsNotAllowed { expression: String },
-
-    #[error("Evaluation timeout after {timeout_secs}s: {expression}")]
-    EvaluationTimeout { expression: String, timeout_secs: u64 },
-
-    #[error("Dangerous function call not allowed: {function} in {expression}")]
-    DangerousFunctionCall { expression: String, function: String },
+// crates/perl-dap/src/debug_adapter/evaluation.rs
+// Security: Reject expressions with newlines to prevent command injection
+if expression.contains('\n') || expression.contains('\r') {
+    return /* … */ DapMessage::Response { message: "Expression cannot contain newlines" };
 }
 ```
 
-#### 2.2.2 Perl Shim Safe Evaluation
+The same newline rejection is encoded in
+`crates/perl-dap/src/security/mod.rs::validate_expression` and applied to
+breakpoint **conditions** via `validate_condition`.
 
-```perl
-# Devel/TSPerlDAP.pm
-sub evaluate_expression {
-    my ($args) = @_;
-    my $expr = $args->{expression};
-    my $frame_id = $args->{frameId};
-    my $allow_side_effects = $args->{allowSideEffects} // 0;
+#### 2.2.3 Perl-side evaluation
 
-    # Safe evaluation wrapper
-    my $result;
-    eval {
-        # Timeout enforcement
-        local $SIG{ALRM} = sub { die "Evaluation timeout\n" };
-        alarm(5);  # 5 second default
+The Perl shim evaluates the (already policy-validated) expression inside the
+debugger context via `eval $expr`. There is **no** `Safe.pm` compartment; the
+shim relies on the Rust-side admission control to screen the expression before
+it reaches `eval`. This is explicitly documented in
+`crates/perl-dap/tests/safe_eval_documentation_clarification_test.rs`.
 
-        if ($allow_side_effects) {
-            # Full evaluation with write access
-            $result = eval $expr;
-        } else {
-            # Safe evaluation: check for assignment
-            if ($expr =~ /=(?![=~])/) {
-                die "Side effects not allowed without allowSideEffects flag\n";
-            }
+### 2.3 Test Coverage
 
-            # Future work: Safe.pm compartment or interpreter isolation.
-            # The current implementation only validates the expression
-            # policy and still evaluates in the debugger context.
+> Current behavior is policy validation plus timeout framing, **not** a
+> sandboxed interpreter boundary. `allowSideEffects: true` skips the safe-mode
+> validators and evaluates in the debugger context.
 
-            $result = eval $expr;
-        }
+Relevant test files in `crates/perl-dap/tests/`:
 
-        alarm(0);
-    };
+| Test file | Coverage |
+|-----------|----------|
+| `safe_evaluation_tests.rs` | Safe-eval policy: blocked vs. allowed expressions |
+| `safe_eval_documentation_clarification_test.rs` | Asserts the "admission control" framing is accurate |
+| `eval_safe_evaluator.rs` | `SafeEvaluator` microcrate unit tests |
+| `security_evaluate_tests.rs` | Evaluate security scenarios |
+| `eval_timeout_and_exception_tests.rs` | Evaluation timeout + exception behavior |
+| `security_regression_tests.rs` | Regression guards |
 
-    if ($@) {
-        return {
-            success => 0,
-            message => "Evaluation failed: $@",
-        };
-    }
-
-    return {
-        success => 1,
-        result => render_value($result),
-        type => ref($result) || 'scalar',
-        variablesReference => is_expandable($result) ? allocate_ref($result) : 0,
-    };
-}
-```
-
-### 2.3 Test Coverage (AC16)
-
-Current behavior is policy validation plus timeout framing, not a sandboxed
-interpreter boundary. `allowSideEffects: true` skips the safe-mode validators
-and evaluates in the debugger context.
-
-```rust
-// crates/perl-dap/tests/security_validation.rs
-
-#[test] // AC16
-fn test_safe_eval_prevents_side_effects() {
-    let frame = create_test_frame();
-
-    // Read-only expressions (should succeed)
-    assert!(evaluate_expression("$var + 10", &frame, false, 5).await.is_ok());
-    assert!(evaluate_expression("@array[0..2]", &frame, false, 5).await.is_ok());
-    assert!(evaluate_expression("$x == 42", &frame, false, 5).await.is_ok());
-
-    // Side effects without opt-in (should fail)
-    assert!(evaluate_expression("$var = 42", &frame, false, 5).await.is_err());
-    assert!(evaluate_expression("$var += 10", &frame, false, 5).await.is_err());
-    assert!(evaluate_expression("system('ls')", &frame, false, 5).await.is_err());
-
-    // Explicit opt-in (should succeed)
-    assert!(evaluate_expression("$var = 42", &frame, true, 5).await.is_ok());
-}
-
-#[test] // AC16
-fn test_eval_timeout_prevents_dos() {
-    let frame = create_test_frame();
-
-    // Infinite loop should timeout
-    let result = evaluate_expression("while(1) {}", &frame, true, 5).await;
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("timeout"));
-
-    // Recursive function should timeout
-    let result = evaluate_expression("sub f { f() } f()", &frame, true, 5).await;
-    assert!(result.is_err());
-}
-```
+The microcrate also has its own unit tests in
+`crates/perl-dap/src/eval/validator.rs`.
 
 ---
 
 ## 3. Timeout Enforcement
 
-### 3.1 Configuration
+### 3.1 What is enforced
 
-```json
-// VS Code settings.json
-{
-  "perl.dap.evaluateTimeout": 5,        // seconds (default: 5)
-  "perl.dap.evaluateMaxDepth": 10,      // recursion depth limit
-  "perl.dap.stepTimeout": 30,           // step operation timeout
-  "perl.dap.continueTimeout": 300       // continue timeout (5 minutes)
-}
-```
+There are two distinct timeout surfaces, and they must not be conflated:
 
-### 3.2 Implementation
+**A. Per-query evaluation timeout (enforced).** Each `evaluate` request sent to
+the Perl debugger is bounded by a per-query deadline. The handler computes the
+budget via `DebugAdapter::debugger_timeout_budget_ms(5000)` — a 5-second default
+that is inflated only when `cargo llvm-cov` profiling is active. If the framed
+debugger output does not arrive within the budget, the request fails with an
+`evaluate timed out after {timeout_ms}ms` message.
 
 ```rust
-// crates/perl-dap/src/session.rs
-pub struct DapSession {
-    config: DapConfig,
-    // ...
-}
+// crates/perl-dap/src/debug_adapter/evaluation.rs
+// AC10.3: Get timeout configuration (5s default, 30s hard limit)
+let timeout_ms = Self::debugger_timeout_budget_ms(5000) as u32;
+```
 
-pub struct DapConfig {
-    pub evaluate_timeout: u64,        // seconds
-    pub evaluate_max_depth: u32,
-    pub step_timeout: u64,
-    pub continue_timeout: u64,
-}
+**B. Timeout-value validation (enforced).** `crates/perl-dap/src/security/mod.rs`
+caps any configured timeout at `MAX_TIMEOUT_MS = 300_000` (5 minutes) and clamps
+zero to 1 ms:
 
-impl Default for DapConfig {
-    fn default() -> Self {
-        Self {
-            evaluate_timeout: 5,
-            evaluate_max_depth: 10,
-            step_timeout: 30,
-            continue_timeout: 300,
-        }
+```rust
+// crates/perl-dap/src/security/mod.rs
+pub const MAX_TIMEOUT_MS: u32 = 300_000;   // 5 minutes
+pub const DEFAULT_TIMEOUT_MS: u32 = 5_000; // 5 seconds
+
+pub fn validate_timeout(timeout_ms: u32) -> Result<u32, SecurityError> {
+    if timeout_ms > MAX_TIMEOUT_MS {
+        return Err(SecurityError::ExcessiveTimeout(timeout_ms));
     }
+    Ok(timeout_ms.max(1))
 }
 ```
+
+This applies to timeouts supplied by the client (e.g. the TCP attach
+`timeout`/`timeoutMs` field, validated in `AttachConfiguration::validate` and
+capped at 5 minutes).
+
+### 3.2 What is NOT enforced — the debuggee exemption (#4640)
+
+**The long-running `perl -d` debuggee process has no wall-clock timeout.** The
+launch path in `crates/perl-dap/src/debug_adapter/process.rs` spawns the
+debugger and communicates over its stdin/stdout/stderr; there is no deadline on
+the process lifetime, no `continueTimeout`, and no `stepTimeout`. A debuggee
+that blocks indefinitely (infinite loop, network wait, deadlock) will hold the
+session open until the client disconnects or the process is killed externally.
+
+This is a **known gap**, tracked in #4640. Until it is closed:
+
+- Do **not** rely on the DAP server to kill a hung debuggee.
+- Deployers who need a wall-clock bound must enforce it externally (e.g. a
+  wrapper process with `timeout(1)` or a container deadline).
+- Earlier drafts of this spec listed `perl.dap.stepTimeout` /
+  `perl.dap.continueTimeout` VS Code settings and a `DapConfig` struct carrying
+  those fields. **Those settings and that struct do not exist in the
+  implementation** and have been removed from this document to avoid implying a
+  guarantee the code does not provide.
+
+### 3.3 Configuration that does exist
+
+Launch/attach configuration types live in `crates/perl-dap/src/config/mod.rs`:
+
+- `LaunchConfiguration` — `program`, `args`, `cwd`, `env`, `perl_path`,
+  `include_paths`. No timeout field (the debuggee is unbounded — see §3.2).
+- `AttachConfiguration` — `host`, `port`, `timeout_ms` (connection timeout,
+  capped at 5 minutes), `stop_on_entry`.
+
+There is no `DapConfig`/`DapSession` struct carrying per-operation timeouts;
+that shape was aspirational and has been removed from this spec.
 
 ---
 
@@ -478,61 +356,22 @@ use ropey::Rope;
 use lsp_types::Position;
 
 /// Render variable value with UTF-16 safe truncation (AC8, AC16)
-///
-/// Implementation Note: UTF-16 boundary validation follows PR #153 symmetric conversion
-/// patterns. The ensure_utf16_boundary utility will be implemented in perl-dap crate
-/// using Rope's char_to_byte and byte_to_char methods to ensure valid UTF-16 code units.
 pub fn render_variable_value(value: &str, rope: &Rope) -> String {
     // Truncate large values (1KB preview max)
     if value.len() > 1024 {
-        // UTF-16 safe truncation - find nearest char boundary before 1024 bytes
         let safe_truncate = ensure_utf16_safe_truncation(value, 1024);
         format!("{}…", safe_truncate)
     } else {
         value.to_string()
     }
 }
+```
 
-/// Ensure string truncation at UTF-16 code unit boundary (DAP-specific utility)
-///
-/// This function implements the symmetric position conversion strategy from PR #153
-/// to prevent UTF-16 boundary arithmetic issues. It ensures the truncated string
-/// ends at a valid UTF-16 code unit boundary, avoiding split surrogate pairs.
-fn ensure_utf16_safe_truncation(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
+The truncation helper backs up to a Rust `is_char_boundary` and additionally
+checks for a trailing 4-byte (surrogate-pair) sequence so no surrogate pair is
+split. Breakpoint/source positions reuse the shared LSP position mapper:
 
-    // Find the largest char boundary <= max_bytes
-    let mut boundary = max_bytes;
-    while boundary > 0 && !s.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-
-    // Ensure we're not splitting a surrogate pair (UTF-16 consideration)
-    // A surrogate pair in UTF-8 is represented as a 4-byte sequence
-    let truncated = &s[..boundary];
-
-    // Check if the last char is a high surrogate (would be split)
-    if let Some(last_char) = truncated.chars().last() {
-        // High surrogates: U+D800 to U+DBFF
-        // If last char requires >3 bytes in UTF-8, it's part of a surrogate pair
-        if last_char.len_utf8() == 4 {
-            // Back up to the previous char boundary to avoid split
-            let mut safe_boundary = boundary;
-            while safe_boundary > 0 {
-                safe_boundary -= 1;
-                if s.is_char_boundary(safe_boundary) {
-                    return &s[..safe_boundary];
-                }
-            }
-        }
-    }
-
-    truncated
-}
-
-// Reuse existing position mapper for breakpoint positions
+```rust
 use perl_lsp::textdoc::{lsp_pos_to_byte, byte_to_lsp_pos, PosEnc};
 
 pub fn dap_position_to_byte(rope: &Rope, line: u32, column: u32) -> Result<usize> {
@@ -542,114 +381,109 @@ pub fn dap_position_to_byte(rope: &Rope, line: u32, column: u32) -> Result<usize
 ```
 
 **Implementation Notes**:
-- UTF-16 safe truncation implemented directly in perl-dap crate (not in perl-parser)
-- Follows PR #153 symmetric conversion patterns for boundary validation
-- Prevents UTF-16 surrogate pair splitting during variable value truncation
-- Uses Rust's `is_char_boundary()` for UTF-8 correctness
-- Additional surrogate pair check prevents high/low surrogate splits
+- UTF-16 safe truncation implemented directly in `perl-dap`
+  (`crates/perl-dap/src/variables/renderer.rs`).
+- Follows PR #153 symmetric conversion patterns for boundary validation.
+- Prevents UTF-16 surrogate pair splitting during variable value truncation.
+- Uses Rust's `is_char_boundary()` for UTF-8 correctness.
 
-### 4.3 Test Coverage (AC16)
+### 4.3 Test Coverage
 
-```rust
-// crates/perl-dap/tests/security_validation.rs
+Relevant test files in `crates/perl-dap/tests/`:
 
-#[test] // AC16
-fn test_unicode_boundary_safety() {
-    let rope = Rope::from_str("my $emoji = '😀👨‍👩‍👧‍👦🎉';");
-
-    // Large unicode value should truncate safely
-    let large_value = "😀".repeat(500); // 2000 bytes (emoji are 4-byte UTF-8)
-    let rendered = render_variable_value(&large_value, &rope);
-
-    // Should not panic on UTF-16 boundary
-    assert!(rendered.len() <= 1024 + 1); // +1 for '…'
-    assert!(rendered.ends_with('…'));
-    assert!(is_valid_utf8(&rendered));
-
-    // Should not break emoji (surrogate pairs)
-    assert!(!rendered.contains('\u{FFFD}')); // No replacement character
-}
-
-#[test] // AC16
-fn test_position_conversion_symmetry() {
-    let rope = Rope::from_str("sub emoji { return '😀🎉' }");
-
-    // Test symmetric conversion
-    let line = 0;
-    let column = 10;
-
-    let byte_offset = dap_position_to_byte(&rope, line, column).unwrap();
-    let (line2, column2) = byte_offset_to_dap_position(&rope, byte_offset).unwrap();
-
-    assert_eq!(line, line2);
-    assert_eq!(column, column2);
-}
-
-fn is_valid_utf8(s: &str) -> bool {
-    std::str::from_utf8(s.as_bytes()).is_ok()
-}
-```
+| Test file | Coverage |
+|-----------|----------|
+| `variable_rendering_tests.rs` | Value rendering + truncation |
+| `variables_deep_truncation.rs` | Deep-structure truncation safety |
+| `variables_dap_deep_structure_truncation.rs` | DAP-specific deep truncation |
+| `dap_variable_reference_hardening_tests.rs` | Variable-reference hardening |
 
 ---
 
 ## 5. Input Validation
 
-### 5.1 Expression Sanitization
+### 5.1 Expression validation
+
+Expression input validation is split across two modules (there is **no**
+`crates/perl-dap/src/eval/sanitizer.rs` — that path referenced by earlier drafts
+does not exist):
+
+- **`crates/perl-dap/src/security/mod.rs::validate_expression`** — rejects
+  expressions containing `\n` or `\r` (protocol/command injection prevention).
+  Applied to evaluate expressions and breakpoint conditions
+  (`validate_condition`).
+- **`crates/perl-dap/src/eval/validator.rs::SafeEvaluator::validate`** — the
+  policy validator described in §2.2 (assignment ops, dangerous builtins,
+  backticks, increment/decrement, regex mutation, newline rejection).
 
 ```rust
-// crates/perl-dap/src/eval/sanitizer.rs
-
-/// Sanitize user input to prevent code injection
-pub fn sanitize_expression(expr: &str) -> Result<String> {
-    // 1. Trim whitespace
-    let expr = expr.trim();
-
-    // 2. Check maximum length (prevent memory exhaustion)
-    if expr.len() > 10_000 {
-        bail!(SecurityError::ExpressionTooLong {
-            length: expr.len(),
-            max_length: 10_000,
-        });
+// crates/perl-dap/src/security/mod.rs
+pub fn validate_expression(expression: &str) -> Result<(), SecurityError> {
+    if expression.contains('\n') || expression.contains('\r') {
+        return Err(SecurityError::InvalidExpression);
     }
-
-    // 3. Validate balanced delimiters
-    validate_balanced_delimiters(expr)?;
-
-    Ok(expr.to_string())
-}
-
-fn validate_balanced_delimiters(expr: &str) -> Result<()> {
-    let mut stack = Vec::new();
-
-    for ch in expr.chars() {
-        match ch {
-            '(' | '[' | '{' => stack.push(ch),
-            ')' => {
-                if stack.pop() != Some('(') {
-                    bail!(SecurityError::UnbalancedDelimiters);
-                }
-            },
-            ']' => {
-                if stack.pop() != Some('[') {
-                    bail!(SecurityError::UnbalancedDelimiters);
-                }
-            },
-            '}' => {
-                if stack.pop() != Some('{') {
-                    bail!(SecurityError::UnbalancedDelimiters);
-                }
-            },
-            _ => {},
-        }
-    }
-
-    if !stack.is_empty() {
-        bail!(SecurityError::UnbalancedDelimiters);
-    }
-
     Ok(())
 }
 ```
+
+### 5.2 Interpreter name validation
+
+Before spawning `perl -d`, the launch path validates the interpreter name in
+`crates/perl-dap/src/debug_adapter/process/perl_spawn.rs`:
+
+```rust
+// crates/perl-dap/src/debug_adapter/process/perl_spawn.rs
+pub(super) fn is_valid_perl_interpreter(perl_interpreter: &str) -> bool {
+    let trimmed = perl_interpreter.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let candidate = Path::new(trimmed)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(trimmed)
+        .to_ascii_lowercase();
+    let candidate = candidate.strip_suffix(".exe").unwrap_or(&candidate);
+    candidate == "perl" || candidate.starts_with("perl")
+}
+```
+
+This guards against a launch config that points the interpreter at an
+arbitrary executable.
+
+### 5.3 Command-injection prevention (flag arguments and shell quoting)
+
+Two layers prevent command injection into the spawned `perl` command line:
+
+- **Flag-argument handling** in `crates/perl-dap/src/debug_adapter/process.rs`:
+  script arguments are passed as discrete argv elements, not concatenated into
+  a shell string. The code comments note this "prevents command injection via
+  flag arguments (e.g., `-e malicious_code`)".
+- **Platform-aware shell-argument quoting** in
+  `crates/perl-dap/src/command_args/mod.rs::format_command_args`: arguments
+  containing whitespace or quotes are wrapped/escaped per platform rules
+  (double-quote escaping on Windows; single- or double-quote wrapping on Unix).
+
+```rust
+// crates/perl-dap/src/command_args/mod.rs
+pub fn format_command_args(args: &[String]) -> Vec<String> {
+    args.iter()
+        .map(|arg| {
+            if arg.is_empty() || arg.chars().any(char::is_whitespace) {
+                // platform-specific quoting/escaping …
+            } else {
+                arg.clone()
+            }
+        })
+        .collect()
+}
+```
+
+> **Known limitation (aspirational, not implemented).** Earlier drafts of this
+> spec described a `sanitize_expression` routine in a non-existent
+> `eval/sanitizer.rs` that enforced a 10 000-character length limit and
+> balanced-delimiter validation. **Neither the file nor those checks exist in
+> the implementation.** They are recorded here as a known gap, not a guarantee.
 
 ---
 
@@ -657,54 +491,52 @@ fn validate_balanced_delimiters(expr: &str) -> Result<()> {
 
 ### 6.1 Pre-Release Validation
 
-**Path Security** (AC16):
-- [ ] All file paths canonicalized before use
-- [ ] Path traversal attempts rejected with error
-- [ ] Symlink resolution within workspace boundaries
-- [ ] UNC path validation (Windows)
-- [ ] WSL path translation validated
+**Path Security**:
+- [x] All file paths canonicalized before use
+- [x] Path traversal attempts rejected with error
+- [x] Symlink resolution within workspace boundaries (Unix)
+- [x] Null-byte / control-character rejection
+- [ ] UNC path validation (Windows) — partial: verbatim-prefix normalization
+      exists; dedicated UNC traversal checks are not a separate entry point
 
-**Evaluation Security** (AC16):
-- [ ] Default safe evaluation mode (no side effects)
-- [ ] Explicit `allowSideEffects` opt-in required
-- [ ] Timeout enforcement (<5s default)
-- [ ] Dangerous function detection (system, exec, eval)
-- [ ] Input sanitization (delimiter balancing, length limits)
+**Evaluation Security (admission control)**:
+- [x] Default safe evaluation mode (no side effects)
+- [x] Explicit `allowSideEffects` opt-in required to skip validators
+- [x] Per-query evaluation timeout (5 s default)
+- [x] Dangerous function detection (system, exec, eval, …)
+- [x] Newline / carriage-return rejection (command injection)
+- [ ] Expression length limit — **not implemented** (see §5.1)
 
-**Unicode Security** (AC16):
-- [ ] UTF-16 ↔ UTF-8 conversion symmetric (PR #153)
-- [ ] Emoji and multi-byte character truncation safe
-- [ ] No surrogate pair splitting
-- [ ] Valid UTF-8 output always
+**Unicode Security**:
+- [x] UTF-16 ↔ UTF-8 conversion symmetric (PR #153)
+- [x] Emoji and multi-byte character truncation safe
+- [x] No surrogate pair splitting
 
 **DoS Prevention**:
-- [ ] Evaluation timeout configurable
-- [ ] Recursion depth limits enforced
-- [ ] Memory limits for variable expansion
-- [ ] Large file handling (>100K LOC)
+- [x] Per-query evaluation timeout configurable
+- [ ] **Debuggee wall-clock timeout — not enforced** (#4640, see §3.2)
+- [ ] Recursion depth limits — not enforced as a configurable bound
 
 ### 6.2 Continuous Validation
 
-**CI/CD Security Scanner** (AC16):
-```bash
-# Zero security findings requirement
-cargo test -p perl-dap --test security_validation
+Security tests are ordinary `cargo test` targets; there is **no** separate
+"zero findings" CI gate. Run the security test set with:
 
-# Expected: All tests passing
-# - test_path_traversal_prevention: PASSED
-# - test_safe_eval_prevents_side_effects: PASSED
-# - test_eval_timeout_prevents_dos: PASSED
-# - test_unicode_boundary_safety: PASSED
-# - test_windows_unc_path_validation: PASSED (Windows)
-# - test_unix_symlink_validation: PASSED (Unix)
+```bash
+cargo test -p perl-dap --test security_path_traversal_tests
+cargo test -p perl-dap --test security_dap_path_traversal_hardened_tests
+cargo test -p perl-dap --test security_evaluate_tests
+cargo test -p perl-dap --test safe_evaluation_tests
+cargo test -p perl-dap --test safe_eval_documentation_clarification_test
+cargo test -p perl-dap --test eval_timeout_and_exception_tests
+cargo test -p perl-dap --test security_regression_tests
 ```
 
-**Dependency Auditing**:
+**Dependency auditing**:
+
 ```bash
 # Check for known vulnerabilities
-cargo audit -p perl-dap
-
-# Expected: 0 vulnerabilities found
+cargo audit
 ```
 
 ---
@@ -713,7 +545,7 @@ cargo audit -p perl-dap
 
 ### 7.1 Vulnerability Reporting
 
-**Contact**: See SECURITY.md
+**Contact**: See `SECURITY.md`
 **Response Time**: 72 hours
 **Disclosure Timeline**: 90 days coordinated disclosure
 
@@ -732,27 +564,34 @@ cargo audit -p perl-dap
 ### 8.1 Security Standards Alignment
 
 **Enterprise Security Framework** (`docs/how-to/SECURITY_DEVELOPMENT_GUIDE.md`):
-- ✅ Path traversal prevention (canonical path validation)
-- ✅ UTF-16 position security (PR #153 symmetric conversion)
-- ✅ LSP error recovery patterns (safe logging)
-- ✅ Secure defaults (safe evaluation mode)
+- Path traversal prevention (canonical path validation)
+- UTF-16 position security (PR #153 symmetric conversion)
+- LSP error recovery patterns (safe logging)
+- Secure defaults (safe evaluation mode — admission control)
 
 **OWASP Top 10 Coverage**:
-- ✅ A01:2021 - Broken Access Control (path traversal prevention)
-- ✅ A03:2021 - Injection (expression sanitization, safe eval)
-- ✅ A04:2021 - Insecure Design (secure defaults, timeout enforcement)
+- A01:2021 - Broken Access Control (path traversal prevention)
+- A03:2021 - Injection (expression policy validation, newline rejection,
+  shell-argument quoting, interpreter name validation)
+- A04:2021 - Insecure Design (secure defaults, per-query timeout enforcement)
 
-### 8.2 Test Coverage Metrics (AC16)
+### 8.2 Test Coverage
 
-| Security Domain | Test Coverage | Validation Command |
-|----------------|---------------|-------------------|
-| Path Traversal | 100% | `cargo test --test security_validation -- test_path_traversal` |
-| Safe Evaluation | 100% | `cargo test --test security_validation -- test_safe_eval` |
-| Timeout Enforcement | 100% | `cargo test --test security_validation -- test_eval_timeout` |
-| Unicode Safety | 100% | `cargo test --test security_validation -- test_unicode` |
-| Platform-Specific | 100% | `cargo test --test security_validation -- test_windows test_unix` |
+| Security Domain | Test files |
+|-----------------|------------|
+| Path Traversal | `security_path_traversal_tests.rs`, `security_dap_path_traversal_hardened_tests.rs` |
+| Safe Evaluation | `safe_evaluation_tests.rs`, `eval_safe_evaluator.rs`, `security_evaluate_tests.rs` |
+| Timeout Enforcement | `eval_timeout_and_exception_tests.rs` |
+| Unicode Safety | `variable_rendering_tests.rs`, `variables_deep_truncation.rs` |
+| Command Injection | `command_args_integration_tests.rs`, `shell_integration_tests.rs` |
 
-**Target**: Zero security findings in CI/CD gate (AC16)
+> **Coverage claims.** Earlier drafts of this spec asserted "100% test
+> coverage" per domain and "zero security findings." Those claims were
+> aspirational and are contradicted by the audit pass that filed #4637
+> (command-injection vectors), #4638 (defense-in-depth gaps), #4639
+> (Windows-broken cluster), and #4640 (missing debuggee timeout). They have been
+> removed in favor of the factual test-file table above. Refer to the linked
+> issues for the current known-findings inventory.
 
 ---
 
@@ -763,6 +602,24 @@ cargo audit -p perl-dap
 - [DAP Implementation Specification](reference/DAP_IMPLEMENTATION_SPECIFICATION.md): Primary technical specification
 - [DAP Protocol Schema](reference/DAP_PROTOCOL_SCHEMA.md): JSON-RPC message schemas
 - [OWASP Top 10 2021](https://owasp.org/www-project-top-ten/)
+
+### 9.1 Implementation file index
+
+| Spec section | Implementation file |
+|--------------|---------------------|
+| §1 Path validation (core) | `crates/perl-parser-core/src/syntax/path_security.rs` |
+| §1 Path validation (DAP wrapper) | `crates/perl-dap/src/security/mod.rs` |
+| §2 Safe eval (dispatch seam) | `crates/perl-dap/src/debug_adapter/safe_eval.rs` |
+| §2 Safe eval (microcrate) | `crates/perl-dap/src/eval/validator.rs` |
+| §2 Dangerous-op patterns | `crates/perl-dap/src/eval/patterns.rs` |
+| §2 Evaluate handler | `crates/perl-dap/src/debug_adapter/evaluation.rs` |
+| §3 Timeout validation | `crates/perl-dap/src/security/mod.rs` |
+| §3 Debuggee launch (no wall-clock timeout) | `crates/perl-dap/src/debug_adapter/process.rs` |
+| §3 Config types | `crates/perl-dap/src/config/mod.rs` |
+| §4 Unicode / rendering | `crates/perl-dap/src/variables/renderer.rs` |
+| §5 Interpreter validation | `crates/perl-dap/src/debug_adapter/process/perl_spawn.rs` |
+| §5 Shell-argument quoting | `crates/perl-dap/src/command_args/mod.rs` |
+| §2/§5 Debug session struct | `crates/perl-dap/src/debug_adapter/session.rs` |
 
 ---
 
