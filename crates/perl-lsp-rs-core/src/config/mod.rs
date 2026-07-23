@@ -840,21 +840,11 @@ impl WorkspaceConfig {
                 self.include_paths =
                     paths.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
             }
-            if let Some(extensions) =
-                workspace.get("discoveryExtensions").and_then(|v| v.as_array())
-            {
-                self.discovery_extra_extensions = extensions
-                    .iter()
-                    .filter_map(|value| value.as_str().map(ToOwned::to_owned))
-                    .collect();
+            if let Some(extensions) = string_array(workspace.get("discoveryExtensions")) {
+                self.discovery_extra_extensions = extensions;
             }
-            if let Some(skipped_dirs) =
-                workspace.get("discoverySkippedDirs").and_then(|v| v.as_array())
-            {
-                self.discovery_extra_skipped_dirs = skipped_dirs
-                    .iter()
-                    .filter_map(|value| value.as_str().map(ToOwned::to_owned))
-                    .collect();
+            if let Some(skipped_dirs) = string_array(workspace.get("discoverySkippedDirs")) {
+                self.discovery_extra_skipped_dirs = skipped_dirs;
             }
             if let Some(use_inc) = workspace.get("useSystemInc").and_then(|v| v.as_bool()) {
                 if use_inc != self.use_system_inc {
@@ -1510,8 +1500,8 @@ impl ProjectConfig {
 
     /// Apply project config to `WorkspaceConfig` as the base layer.
     ///
-    /// Only applies `include_paths` when the TOML list is non-empty, so that
-    /// an absent key leaves the defaults unchanged (distinct from an explicit `[]`).
+    /// Only applies list settings when their TOML lists are non-empty, so that
+    /// absent keys leave defaults unchanged (distinct from explicit `[]`).
     pub fn apply_to_workspace_config(&self, config: &mut WorkspaceConfig) {
         if !self.perl.include_paths.is_empty() {
             config.include_paths = self.perl.include_paths.clone();
@@ -2578,11 +2568,11 @@ profile = "recommended"
 
         workspace.update_from_value(&serde_json::json!({
             "workspace": {
-                "discoveryExtensions": [".bar"],
-                "discoverySkippedDirs": ["cache"]
+                "discoveryExtensions": [" .bar ", ".bar", "BAR"],
+                "discoverySkippedDirs": [" cache ", "cache"]
             }
         }));
-        assert_eq!(workspace.discovery_extra_extensions, vec![".bar"]);
+        assert_eq!(workspace.discovery_extra_extensions, vec![".bar", "BAR"]);
         assert_eq!(workspace.discovery_extra_skipped_dirs, vec!["cache"]);
     }
 
