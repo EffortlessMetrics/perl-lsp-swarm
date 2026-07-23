@@ -4,5 +4,6 @@
 //! standalone `perl-workspace-discovery` satellite crate in Wave A, #4426).
 
 pub use perl_workspace::discovery::{
-    DiscoveryMethod, DiscoveryResult, discover_perl_files, discover_perl_files_with_include_paths,
+    DiscoveryConfig, DiscoveryMethod, DiscoveryResult, discover_perl_files,
+    discover_perl_files_with_config, discover_perl_files_with_include_paths,
 };

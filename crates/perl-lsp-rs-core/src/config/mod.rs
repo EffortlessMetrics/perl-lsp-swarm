@@ -653,6 +653,12 @@ pub struct WorkspaceConfig {
     /// Default: `["lib", ".", "local/lib/perl5"]`
     pub include_paths: Vec<String>,
 
+    /// Additional file extensions accepted during workspace discovery.
+    pub discovery_extra_extensions: Vec<String>,
+
+    /// Additional directory names skipped during workspace discovery.
+    pub discovery_extra_skipped_dirs: Vec<String>,
+
     /// Whether to include system @INC paths in module resolution
     /// Default: false (avoids blocking on network filesystems)
     pub use_system_inc: bool,
@@ -697,6 +703,8 @@ impl Default for WorkspaceConfig {
     fn default() -> Self {
         Self {
             include_paths: vec!["lib".to_string(), ".".to_string(), "local/lib/perl5".to_string()],
+            discovery_extra_extensions: Vec::new(),
+            discovery_extra_skipped_dirs: Vec::new(),
             use_system_inc: false,
             system_inc_cache: None,
             perl_path: None,
@@ -831,6 +839,22 @@ impl WorkspaceConfig {
             if let Some(paths) = workspace.get("includePaths").and_then(|v| v.as_array()) {
                 self.include_paths =
                     paths.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+            }
+            if let Some(extensions) =
+                workspace.get("discoveryExtensions").and_then(|v| v.as_array())
+            {
+                self.discovery_extra_extensions = extensions
+                    .iter()
+                    .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                    .collect();
+            }
+            if let Some(skipped_dirs) =
+                workspace.get("discoverySkippedDirs").and_then(|v| v.as_array())
+            {
+                self.discovery_extra_skipped_dirs = skipped_dirs
+                    .iter()
+                    .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                    .collect();
             }
             if let Some(use_inc) = workspace.get("useSystemInc").and_then(|v| v.as_bool()) {
                 if use_inc != self.use_system_inc {
@@ -1063,6 +1087,10 @@ pub struct ProjectPerlConfig {
     /// Relative entries are resolved against the workspace root. Absolute
     /// entries are honored literally as external include roots.
     pub include_paths: Vec<String>,
+    /// Additional file extensions accepted during workspace discovery.
+    pub discovery_extensions: Vec<String>,
+    /// Additional directory names skipped during workspace discovery.
+    pub discovery_skipped_dirs: Vec<String>,
     /// Perl version string (e.g. "5.38") — parsed but not yet wired to diagnostics.
     /// Reserved for future use; ignored in this implementation.
     pub version: Option<String>,
@@ -1487,6 +1515,14 @@ impl ProjectConfig {
     pub fn apply_to_workspace_config(&self, config: &mut WorkspaceConfig) {
         if !self.perl.include_paths.is_empty() {
             config.include_paths = self.perl.include_paths.clone();
+        }
+        if !self.perl.discovery_extensions.is_empty() {
+            config.discovery_extra_extensions =
+                normalize_string_list(&self.perl.discovery_extensions);
+        }
+        if !self.perl.discovery_skipped_dirs.is_empty() {
+            config.discovery_extra_skipped_dirs =
+                normalize_string_list(&self.perl.discovery_skipped_dirs);
         }
         if let Some(use_p5l) = self.perl.use_perl5lib {
             config.use_perl5lib = use_p5l;
@@ -2527,6 +2563,27 @@ profile = "recommended"
 
         assert!(!workspace.use_perl5lib);
         assert!(matches!(workspace.perl5lib_precedence, Perl5LibPrecedence::Append));
+    }
+
+    #[test]
+    fn project_and_client_config_apply_discovery_policy() {
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        project.perl.discovery_extensions = vec![".foo".to_string()];
+        project.perl.discovery_skipped_dirs = vec!["generated".to_string()];
+
+        project.apply_to_workspace_config(&mut workspace);
+        assert_eq!(workspace.discovery_extra_extensions, vec![".foo"]);
+        assert_eq!(workspace.discovery_extra_skipped_dirs, vec!["generated"]);
+
+        workspace.update_from_value(&serde_json::json!({
+            "workspace": {
+                "discoveryExtensions": [".bar"],
+                "discoverySkippedDirs": ["cache"]
+            }
+        }));
+        assert_eq!(workspace.discovery_extra_extensions, vec![".bar"]);
+        assert_eq!(workspace.discovery_extra_skipped_dirs, vec!["cache"]);
     }
 
     #[test]
