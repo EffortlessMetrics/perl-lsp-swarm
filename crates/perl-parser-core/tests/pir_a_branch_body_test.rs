@@ -122,7 +122,9 @@ fn pir_a_branch_edge_to_then_arm() -> TestResult {
     Ok(())
 }
 
-/// if/elsif/else emits a Branch edge to each arm's first node.
+/// if/elsif/else fans a Branch edge to each region entry: the then body, the
+/// elsif *condition* (so the else-path condition evaluation is not orphaned),
+/// the elsif body, and the else body — exactly four edges, no duplicates.
 #[test]
 fn pir_a_branch_edges_to_all_three_arms() -> TestResult {
     let graph = parse_and_lower(
@@ -135,12 +137,14 @@ fn pir_a_branch_edges_to_all_three_arms() -> TestResult {
         .iter()
         .filter(|e| e.from == branch_id && e.kind == PirEdgeKind::Branch)
         .collect();
-    assert!(
-        branch_edges.len() >= 3,
-        "if/elsif/else must emit at least 3 Branch edges, got {}",
+    assert_eq!(
+        branch_edges.len(),
+        4,
+        "if/elsif/else must emit exactly 4 Branch edges (then, elsif condition, elsif body, else), got {}",
         branch_edges.len()
     );
 
+    // Each arm body's first node is reachable by a direct Branch edge.
     for arm in ["left", "middle", "right"] {
         let write = write_node(&graph, arm)?;
         assert!(
@@ -148,6 +152,17 @@ fn pir_a_branch_edges_to_all_three_arms() -> TestResult {
             "arm `{arm}` first node must be reachable by a Branch edge"
         );
     }
+
+    // The elsif condition is connected into the CFG, not orphaned.
+    let elsif_cond = graph
+        .nodes
+        .iter()
+        .find(|n| is_read_of(n, "b"))
+        .ok_or("elsif condition read `b` was not lowered")?;
+    assert!(
+        branch_edges.iter().any(|e| e.to == Some(elsif_cond.id)),
+        "the elsif condition must be reachable by a Branch edge, not orphaned"
+    );
     Ok(())
 }
 
