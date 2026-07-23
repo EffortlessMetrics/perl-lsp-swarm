@@ -351,3 +351,127 @@ fn ignores_commented_regex() -> TestResult {
     );
     Ok(())
 }
+
+/// The literal text `Regex::new(` inside a string literal (help text, error
+/// message, doc example) must NOT be counted as a violation.
+#[test]
+fn ignores_regex_text_in_string_literal() -> TestResult {
+    let repo = TempRepo::new("string-literal")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+pub fn help_text() -> &'static str {
+    "Example usage: Regex::new(pattern) compiles a pattern with braces {("
+}
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "Regex::new mentioned in a string literal must not count\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    Ok(())
+}
+
+/// Two regex constructors on one line count as two, not one.
+#[test]
+fn counts_two_ctors_on_one_line() -> TestResult {
+    let repo = TempRepo::new("two-on-one")?;
+    // Baseline of 1 must still fail: the line holds two real per-call ctors.
+    repo.write_baseline(1)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+use regex::Regex;
+pub fn two(p1: &str, p2: &str) -> (Regex, Regex) {
+    (Regex::new(p1).unwrap(), Regex::new(p2).unwrap())
+}
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "two ctors on one line must count as two (exceeds baseline 1)\nstdout: {}",
+        stdout_of(&out)
+    );
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("count (2)"), "the reported count should be 2\nstdout: {stdout}");
+    Ok(())
+}
+
+/// An unbalanced brace inside a string inside a lazy closure must not leak the
+/// scope forward and mask a later, unrelated per-call regex.
+#[test]
+fn unbalanced_brace_in_string_does_not_mask_later_violation() -> TestResult {
+    let repo = TempRepo::new("scope-leak")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+use regex::Regex;
+use std::sync::LazyLock;
+static RE: LazyLock<Regex> = LazyLock::new(|| {
+    let _doc = "closing syntax looks like this: });";
+    Regex::new(r"\d+").unwrap()
+});
+pub fn bad(pattern: &str) -> Regex {
+    Regex::new(pattern).unwrap()
+}
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    // The lazy static is fine, but `bad`'s per-call regex is a real violation and
+    // must still be counted despite the brace-laden string in the closure above.
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "a later per-call regex must not be masked by a string brace in a lazy closure\nstdout: {}",
+        stdout_of(&out)
+    );
+    let stdout = stdout_of(&out);
+    assert!(
+        stdout.contains("count (1)"),
+        "exactly the one real violation should be counted\nstdout: {stdout}"
+    );
+    Ok(())
+}
+
+/// A doc comment that merely mentions the lazy-init opener must not activate the
+/// scope and thereby mask a later per-call regex.
+#[test]
+fn doc_comment_opener_does_not_leak_scope() -> TestResult {
+    let repo = TempRepo::new("doc-comment-leak")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+use regex::Regex;
+/// Example: static RE: LazyLock<Regex> = LazyLock::new(|| {
+pub fn safe() {}
+pub fn later_bad(pattern: &str) -> Regex {
+    Regex::new(pattern).unwrap()
+}
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "a comment mentioning the opener must not mask a real later violation\nstdout: {}",
+        stdout_of(&out)
+    );
+    Ok(())
+}

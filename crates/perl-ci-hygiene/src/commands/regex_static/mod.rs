@@ -8,16 +8,17 @@ use crate::{
     walk_rust_source_files_for_ci_checks,
 };
 
-use self::lazy_scope::{LazyStaticScope, line_is_whole_line_comment};
+use self::lazy_scope::{LazyStaticScope, code_only};
 
 mod lazy_scope;
 
 /// Matches the three regex-compilation constructors called out by issue #2897:
-/// `Regex::new(`, `RegexBuilder::new(`, and `Regex::builder(`. The `bytes` module
-/// variants (`bytes::Regex::new(` etc.) match by suffix; `RegexSet::new(` does not
-/// (there is no contiguous `Regex::new(` substring in it).
+/// `Regex::new(`, `RegexBuilder::new(`, and `Regex::builder(`. The leading `\b`
+/// anchors the match to a token boundary, so `bytes::Regex::new(` still matches
+/// (the `:` before `Regex` is a boundary) while an unrelated user type like
+/// `CachedRegex::new(` does not. `RegexSet::new(` never matches either constructor.
 static REGEX_CTOR_RE: LazyLock<Result<Regex, regex::Error>> =
-    LazyLock::new(|| Regex::new(r"Regex::new\(|RegexBuilder::new\(|Regex::builder\("));
+    LazyLock::new(|| Regex::new(r"\b(?:Regex::new|RegexBuilder::new|Regex::builder)\("));
 
 fn regex_from_static(
     regex: &'static LazyLock<Result<Regex, regex::Error>>,
@@ -61,16 +62,20 @@ pub(crate) fn check_regex_static(repo_root: &Path) -> Result<i32> {
                 break;
             }
 
-            if line_is_whole_line_comment(line) {
-                lazy_scope.observe_line(line);
-                continue;
+            // Match, count, and track scope over code-only text — string literals,
+            // char literals, and trailing comments are stripped so their content
+            // can neither trip a false match nor corrupt delimiter tracking.
+            let code = code_only(line);
+
+            if !lazy_scope.allows_current_line(&code) {
+                // Count every constructor on the line, not just the first, so two
+                // per-call regexes on one line cost two units of ratchet budget.
+                for _ in ctor_re.find_iter(&code) {
+                    offenders.push(format!("{rel}:{line_no}:{}", line.trim()));
+                }
             }
 
-            if ctor_re.is_match(line) && !lazy_scope.allows_current_line(line) {
-                offenders.push(format!("{rel}:{line_no}:{}", line.trim()));
-            }
-
-            lazy_scope.observe_line(line);
+            lazy_scope.observe_line(&code);
         }
     }
 
