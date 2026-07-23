@@ -732,7 +732,14 @@ fn refactor_runtime_blocker_ux_rename_receipt_records_package_fallback_noise()
     assert_eq!(package_pilot.get("reason").and_then(Value::as_str), Some("blocked"));
     assert_eq!(package_pilot.get("edit_count").and_then(Value::as_u64), Some(1));
     assert_json_array_contains(package_pilot, "edit_categories", "Definition")?;
-    assert_json_array_contains(package_pilot, "blocker_reasons", "ImportedSymbol")?;
+    // `helper` is defined in RealBaseline::Util's @EXPORT_OK and imported by App.pm.
+    // With exporter facts now bridged into the ImportExportIndex (#2587),
+    // `find_exporting_module` resolves the export and the rename is blocked as a
+    // `CrossModuleExport` (Req 16.3) — the precise classification that supersedes
+    // the prior `ImportedSymbol` fallback, which only appeared while the export
+    // index was unpopulated. The rename stays blocked (edit_count 1); only the
+    // reason is now the more accurate one.
+    assert_json_array_contains(package_pilot, "blocker_reasons", "CrossModuleExport")?;
     assert_eq!(package_pilot.get("no_live_rename_cutover").and_then(Value::as_bool), Some(true));
     assert_eq!(fallback_noise.get("provider").and_then(Value::as_str), Some("rename"));
     assert_eq!(fallback_noise.get("symbol").and_then(Value::as_str), Some("helper"));
@@ -781,7 +788,9 @@ fn refactor_runtime_blocker_ux_rename_receipt_records_package_fallback_noise()
             "rename runtime blocker UX",
             "compiler_plan_edits=",
             "blocker_count=1",
-            "ImportedSymbol",
+            // See the blocker_reasons assertion above: the export bridge (#2587)
+            // promotes this to CrossModuleExport over the ImportedSymbol fallback.
+            "CrossModuleExport",
             "requires_confirmation=true",
             "no live refactor behavior change",
         ],
