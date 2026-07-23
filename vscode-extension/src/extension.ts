@@ -1262,7 +1262,6 @@ function createLanguageClient(serverPath: string): LanguageClient {
       fileEvents: vscode.workspace.createFileSystemWatcher('**/.perltidyrc'),
     },
     outputChannel,
-    traceOutputChannel: outputChannel,
     middleware: {
       provideCodeLenses: async (document, token, next) => {
         const lenses = await next(document, token);
