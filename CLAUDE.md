@@ -178,7 +178,7 @@ cargo test --workspace --lib          # run all tests
 Full command catalog: [COMMANDS_REFERENCE.md](docs/reference/COMMANDS_REFERENCE.md) and
 the `justfile`. Crate map (~30 post-collapse crates; run `cargo metadata --no-deps` for
 the current member count — do not hardcode it, it drifts):
-[AGENTS.md § Project shape](AGENTS.md#project-shape).
+[IMPLEMENTATION_WORKER.md § Project shape](docs/agents/IMPLEMENTATION_WORKER.md#project-shape).
 Key paths, parser-version notes, workspace exclusions:
 [AGENTS.md](AGENTS.md) and [WORKSPACE_ARCHITECTURE.md](docs/project/WORKSPACE_ARCHITECTURE.md).
 
