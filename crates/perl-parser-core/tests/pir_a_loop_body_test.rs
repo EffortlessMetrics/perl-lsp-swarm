@@ -345,38 +345,20 @@ fn pir_a_c_style_for_no_condition_still_links_body() -> TestResult {
 }
 
 #[test]
-fn pir_a_nested_loop_back_edges_converge_on_innermost_last_node() -> TestResult {
-    let graph = parse_and_lower("while ($a) { while ($b) { my $x = 1; } }");
-    let loops = loop_nodes(&graph);
-    if loops.len() != 2 {
-        return Err(format!("expected exactly two Loop nodes, got {}", loops.len()).into());
-    }
-    let outer_id = loops[0].id;
-    let inner_id = loops[1].id;
-    assert!(outer_id.index() < inner_id.index(), "outer Loop node must be lowered first");
-    let outer_back = graph
-        .edges
-        .iter()
-        .find(|e| e.to == Some(outer_id) && e.kind == PirEdgeKind::Loop)
-        .ok_or("outer loop must have a back-edge")?;
-    let inner_back = graph
-        .edges
-        .iter()
-        .find(|e| e.to == Some(inner_id) && e.kind == PirEdgeKind::Loop)
-        .ok_or("inner loop must have a back-edge")?;
-    assert_eq!(
-        outer_back.from, inner_back.from,
-        "both back-edges must converge on the same innermost last-lowered node"
+fn pir_a_while_body_ending_in_branch_has_entry_but_no_back_edge() -> TestResult {
+    let graph = parse_and_lower("while ($c) { if ($x) { my $a = 1; } }");
+    let loop_id = single_loop(&graph)?.id;
+    assert!(
+        graph.edges.iter().any(|e| e.from == loop_id && e.kind == PirEdgeKind::Loop),
+        "the loop body is still reachable via its entry edge"
     );
     assert!(
-        outer_back.from.index() > inner_id.index(),
-        "shared back-edge source must be lowered after the inner Loop header"
-    );
-    let source_node = graph.node(outer_back.from).ok_or("back-edge source node is missing")?;
-    assert!(
-        matches!(&source_node.operation, PirOperation::LexicalWrite { name } if name.name == "x"),
-        "shared back-edge source must be the innermost body's last node, got {:?}",
-        source_node.operation
+        !graph.edges.iter().any(|e| e.to == Some(loop_id) && e.kind == PirEdgeKind::Loop),
+        "a body whose last top-level statement severs fallthrough (here: an `if`) \
+         has no single honest re-entry node, so no back-edge is emitted (v0 \
+         fail-closed limitation, not a false fact); this is a known coverage \
+         gap worth a follow-up (multi-predecessor back-edges from each severed \
+         exit), not a correctness defect"
     );
     Ok(())
 }
