@@ -550,6 +550,10 @@ fn map_boundary_kind(kind: DynamicBoundaryKind) -> PirDynamicBoundaryKind {
         DynamicBoundaryKind::DynamicStashMutation => PirDynamicBoundaryKind::RuntimeStashMutation,
         DynamicBoundaryKind::Autoload => PirDynamicBoundaryKind::Autoload,
         DynamicBoundaryKind::SymbolicReferenceDeref => PirDynamicBoundaryKind::SymbolicReference,
+        // PIR v0 has no dedicated regex-embedded-code category yet; keep the
+        // boundary visible (not dropped) via the generic `Unknown` bucket
+        // until a future PIR wave models regex/substitution lowering.
+        DynamicBoundaryKind::EmbeddedRegexCode => PirDynamicBoundaryKind::Unknown,
     }
 }
 
@@ -603,6 +607,13 @@ fn hir_kind_name(kind: &HirKind) -> &'static str {
         HirKind::ControlTransfer(_) => "ControlTransfer",
         HirKind::StatementModifierShell(_) => "StatementModifierShell",
         HirKind::DynamicBoundary(_) => "DynamicBoundary",
+        // Regex/match/substitution/transliteration shells are not yet lowered
+        // by PIR v0; they fall through to the `other =>` unsupported-count
+        // fallback in `lower_item`, keyed by these names.
+        HirKind::RegexExpr(_) => "RegexExpr",
+        HirKind::MatchExpr(_) => "MatchExpr",
+        HirKind::SubstitutionExpr(_) => "SubstitutionExpr",
+        HirKind::TransliterationExpr(_) => "TransliterationExpr",
     }
 }
 
