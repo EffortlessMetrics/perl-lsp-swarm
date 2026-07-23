@@ -398,10 +398,7 @@ fn test_read_parser_accuracy_artifact_loads_target_metrics() -> Result<()> {
 
 #[test]
 fn test_parser_salvage_missing_reports_insufficient_data() {
-    assert_eq!(
-        format_corpus_recovery_salvage_value(None),
-        "insufficient_data"
-    );
+    assert_eq!(format_corpus_recovery_salvage_value(None), "insufficient_data");
 }
 
 /// Verify that `generate_parser_status` renders scorecard values correctly
@@ -853,7 +850,9 @@ fn test_parser_tracking_old_cpan_receipt_missing_recovery_shape_reports_insuffic
 
     let result = generate_parser_status(&metrics, parser_status_template())?;
     assert!(
-        result.contains("| **Recovery salvage** | Ubuntu: insufficient_data / CPAN: insufficient_data |"),
+        result.contains(
+            "| **Recovery salvage** | Ubuntu: insufficient_data / CPAN: insufficient_data |"
+        ),
         "old CPAN receipt recovery salvage row must report insufficient_data"
     );
     assert!(
@@ -994,7 +993,8 @@ fn test_parser_error_density_and_salvage_rows_with_populated_receipt() -> Result
 
     let result = generate_parser_status(&metrics, parser_status_template())?;
     assert!(
-        result.contains("| **Error density** | Ubuntu: 4.25 per 1k LOC / CPAN: insufficient_data |"),
+        result
+            .contains("| **Error density** | Ubuntu: 4.25 per 1k LOC / CPAN: insufficient_data |"),
         "error density row must render per-corpus values"
     );
     assert!(
@@ -1054,11 +1054,15 @@ fn test_parser_error_density_row_no_dirty_files_reports_insufficient_data() -> R
 
     let result = generate_parser_status(&metrics, parser_status_template())?;
     assert!(
-        result.contains("| **Error density** | Ubuntu: insufficient_data / CPAN: insufficient_data |"),
+        result.contains(
+            "| **Error density** | Ubuntu: insufficient_data / CPAN: insufficient_data |"
+        ),
         "zero dirty files must not fabricate error density"
     );
     assert!(
-        result.contains("| **Recovery salvage** | Ubuntu: insufficient_data / CPAN: insufficient_data |"),
+        result.contains(
+            "| **Recovery salvage** | Ubuntu: insufficient_data / CPAN: insufficient_data |"
+        ),
         "zero dirty files must not fabricate salvage rate"
     );
     Ok(())

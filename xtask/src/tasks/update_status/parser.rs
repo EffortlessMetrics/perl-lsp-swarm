@@ -163,7 +163,6 @@ fn format_clean_rate(clean_files: usize, total_files: usize) -> String {
     format!("{clean_pct:.1}% clean (`{clean_files}/{total_files}`)")
 }
 
-
 pub(super) fn format_corpus_error_density_value(receipt: Option<&ParserSweepReceipt>) -> String {
     match receipt {
         None => "insufficient_data".to_string(),
