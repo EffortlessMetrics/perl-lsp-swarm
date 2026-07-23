@@ -37,7 +37,8 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             | IssueKind::UnusedVariable
             | IssueKind::ParameterShadowsGlobal
             | IssueKind::UnusedParameter
-            | IssueKind::UninitializedVariable => DiagnosticSeverity::Warning,
+            | IssueKind::UninitializedVariable
+            | IssueKind::FeatureNotEnabled => DiagnosticSeverity::Warning,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticSeverity::Information,
         };
 
@@ -52,6 +53,11 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             IssueKind::UnquotedBareword => DiagnosticCode::UnquotedBareword,
             IssueKind::UninitializedVariable => DiagnosticCode::UninitializedVariable,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticCode::CaptureVarWithoutRegexMatch,
+            // `say` used without its enabling feature parses as a bareword in Perl;
+            // reuse the bareword code here (dedicated PL code is a follow-up), while
+            // the analyzer-level `FeatureNotEnabled` kind keeps golden filters and the
+            // quote-quickfix (keyed on `UnquotedBareword`) correctly unaffected.
+            IssueKind::FeatureNotEnabled => DiagnosticCode::UnquotedBareword,
         };
 
         let related_info = build_scope_related_info(&issue);
@@ -219,7 +225,8 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             | IssueKind::UnusedVariable
             | IssueKind::ParameterShadowsGlobal
             | IssueKind::UnusedParameter
-            | IssueKind::UninitializedVariable => DiagnosticSeverity::Warning,
+            | IssueKind::UninitializedVariable
+            | IssueKind::FeatureNotEnabled => DiagnosticSeverity::Warning,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticSeverity::Information,
         };
 
@@ -234,6 +241,11 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             IssueKind::UnquotedBareword => DiagnosticCode::UnquotedBareword,
             IssueKind::UninitializedVariable => DiagnosticCode::UninitializedVariable,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticCode::CaptureVarWithoutRegexMatch,
+            // `say` used without its enabling feature parses as a bareword in Perl;
+            // reuse the bareword code here (dedicated PL code is a follow-up), while
+            // the analyzer-level `FeatureNotEnabled` kind keeps golden filters and the
+            // quote-quickfix (keyed on `UnquotedBareword`) correctly unaffected.
+            IssueKind::FeatureNotEnabled => DiagnosticCode::UnquotedBareword,
         };
 
         let mut related_info = build_scope_related_info(&issue);
@@ -428,6 +440,16 @@ fn build_scope_related_info(issue: &ScopeIssue) -> Vec<RelatedInformation> {
             RelatedInformation {
                 location: issue.range,
                 message: "ℹ️ Capture variables ($1, $2, etc.) hold the last successful match and may be undef if no match has occurred.".to_string(),
+            }
+        ],
+        IssueKind::FeatureNotEnabled => vec![
+            RelatedInformation {
+                location: issue.range,
+                message: "💡 Enable the feature with `use feature '...'` or a version bundle such as `use v5.36;`".to_string(),
+            },
+            RelatedInformation {
+                location: issue.range,
+                message: "ℹ️ Feature-gated keywords like `say` are only recognized when the matching `feature` is active in this lexical scope.".to_string(),
             }
         ],
     }

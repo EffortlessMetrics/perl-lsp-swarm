@@ -87,6 +87,9 @@ pub enum IssueKind {
     UninitializedVariable,
     /// Capture variable (`$1`, `$2`, etc.) used with no preceding regex match in scope.
     CaptureVarWithoutRegexMatch,
+    /// A feature-gated keyword (e.g. `say`) was used without the enabling
+    /// `use feature '...'` / `use vX.Y` pragma active at that offset.
+    FeatureNotEnabled,
 }
 
 /// A single scope-analysis finding with location and human-readable description.
@@ -383,6 +386,10 @@ pub(super) struct AnalysisContext<'a> {
     pragma_map: &'a [(Range<usize>, PragmaState)],
     pragma_cursor: RefCell<PragmaQueryCursor>,
     imported_barewords: HashSet<String>,
+    /// Names of subroutines defined anywhere in this file. Used to suppress the
+    /// feature-gate diagnostic when a user has shadowed a feature-gated keyword
+    /// with their own `sub` (e.g. `sub say { ... } say(...)`).
+    defined_subs: HashSet<String>,
     line_starts: RefCell<Option<Vec<usize>>>,
     /// Current package name, updated as `package` statements are traversed.
     current_package: RefCell<String>,
@@ -409,6 +416,7 @@ impl<'a> AnalysisContext<'a> {
             pragma_map,
             pragma_cursor: RefCell::new(PragmaQueryCursor::new()),
             imported_barewords: collect_imported_barewords(ast),
+            defined_subs: collect_defined_subs(ast),
             line_starts: RefCell::new(None),
             current_package: RefCell::new("main".to_string()),
             package_change_generation: Cell::new(0),
@@ -422,6 +430,10 @@ impl<'a> AnalysisContext<'a> {
 
     fn has_imported_bareword(&self, name: &str) -> bool {
         self.imported_barewords.contains(name)
+    }
+
+    fn has_defined_sub(&self, name: &str) -> bool {
+        self.defined_subs.contains(name)
     }
 
     fn get_line(&self, offset: usize) -> usize {
@@ -693,6 +705,7 @@ impl ScopeAnalyzer {
                     ancestors,
                     issues,
                     context,
+                    &pragma_state,
                     strict_vars_mode,
                 );
             }
@@ -1492,6 +1505,12 @@ impl ScopeAnalyzer {
                         issue.variable_name
                     )
                 }
+                IssueKind::FeatureNotEnabled => {
+                    format!(
+                        "Enable '{}' with `use feature '{}'` or a `use vX.Y` bundle",
+                        issue.variable_name, issue.variable_name
+                    )
+                }
             })
             .collect()
     }
@@ -1705,6 +1724,42 @@ fn collect_imported_barewords(ast: &Node) -> HashSet<String> {
     let mut imported = HashSet::new();
     visit(ast, &mut imported, false);
     imported
+}
+
+/// Collect the names of all subroutines defined anywhere in the file.
+///
+/// Used to suppress the feature-gate diagnostic when a user has defined their
+/// own sub with the same name as a feature-gated keyword (e.g. `sub say { ... }`),
+/// in which case `say(...)` is a call to the user sub, not the builtin.
+fn collect_defined_subs(ast: &Node) -> HashSet<String> {
+    fn visit(node: &Node, subs: &mut HashSet<String>) {
+        if let NodeKind::Subroutine { name: Some(name), .. } = &node.kind {
+            // Store the last path segment so `sub Foo::bar {}` also guards a
+            // later unqualified `bar(...)` call within the same file.
+            let short = name.rsplit("::").next().unwrap_or(name);
+            subs.insert(short.to_string());
+        }
+        for child in node.children() {
+            visit(child, subs);
+        }
+    }
+    let mut subs = HashSet::new();
+    visit(ast, &mut subs);
+    subs
+}
+
+/// Map a feature-gated keyword to the `feature` pragma name that enables it.
+///
+/// Currently only `say` (issue #2584 criterion 2). `state` is a distinct
+/// declaration-node path and is intentionally not gated here — tracked as a
+/// follow-up. Version bundles (`use v5.10`/`use v5.36`) enable the underlying
+/// feature and are resolved by `PragmaState::has_feature`, so they need no
+/// entry here.
+pub(super) fn feature_for_keyword(name: &str) -> Option<&'static str> {
+    match name {
+        "say" => Some("say"),
+        _ => None,
+    }
 }
 
 /// Returns true if `name` (without sigil) is a numbered capture variable.
@@ -2092,6 +2147,111 @@ mod tests_our_redecl {
 // source order. Suppression is scoped to the specific `uninitialized` category
 // only, never the blanket `all` marker — see `uninitialized_warning_suppressed`
 // for why (matching `all` would produce false-negatives on re-enable sequences).
+// ============================================================================
+// ============================================================================
+// Feature-gated keyword diagnostics (issue #2584, criterion 2).
+//
+// A feature-gated bareword such as `say` is only valid when the enabling
+// `feature` is active at that offset — `use feature 'say'`, or a version bundle
+// like `use v5.10`/`use v5.36` that includes it. The pragma model already
+// resolves bundle→feature membership via `PragmaState::has_feature`, so the
+// scope analyzer just gates the `say` FunctionCall on it. Method calls
+// (`$o->say`) and autoquoted hash keys (`say => 1`) are structurally different
+// nodes and are never gated; an explicit import or a user-defined `sub say`
+// suppresses the gate. `state` (a declaration node) is deliberately out of
+// scope for this slice.
+// ============================================================================
+#[cfg(test)]
+mod tests_feature_keyword_gate {
+    use super::{IssueKind, ScopeAnalyzer, ScopeIssue};
+    use crate::Parser;
+    use crate::pragma_tracker::PragmaTracker;
+
+    fn analyze(code: &str) -> Vec<ScopeIssue> {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().unwrap();
+        let pragma_map = PragmaTracker::build(&ast);
+        ScopeAnalyzer::new().analyze(&ast, code, &pragma_map)
+    }
+
+    fn feature_gate_issues<'a>(issues: &'a [ScopeIssue], name: &str) -> Vec<&'a ScopeIssue> {
+        issues
+            .iter()
+            .filter(|i| i.kind == IssueKind::FeatureNotEnabled && i.variable_name == name)
+            .collect()
+    }
+
+    /// Control + acceptance: `say` with no enabling pragma is flagged.
+    #[test]
+    fn say_without_feature_is_flagged() {
+        let issues = analyze("say \"hello\";\n");
+        assert!(
+            !feature_gate_issues(&issues, "say").is_empty(),
+            "say without `use feature 'say'` must be flagged; got: {issues:?}"
+        );
+    }
+
+    /// Acceptance (2): `use feature 'say'` enables `say`.
+    #[test]
+    fn say_with_use_feature_say_is_clean() {
+        let issues = analyze("use feature 'say';\nsay \"hello\";\n");
+        assert!(
+            feature_gate_issues(&issues, "say").is_empty(),
+            "`use feature 'say'` must enable say; got: {issues:?}"
+        );
+    }
+
+    /// Version bundles enable the feature: `use v5.36` includes `say`.
+    #[test]
+    fn say_with_use_v5_36_bundle_is_clean() {
+        let issues = analyze("use v5.36;\nsay \"hello\";\n");
+        assert!(
+            feature_gate_issues(&issues, "say").is_empty(),
+            "`use v5.36` bundle must enable say; got: {issues:?}"
+        );
+    }
+
+    /// `use v5.10` is the classic say-enabling bundle.
+    #[test]
+    fn say_with_use_v5_10_bundle_is_clean() {
+        let issues = analyze("use v5.10;\nsay \"hello\";\n");
+        assert!(
+            feature_gate_issues(&issues, "say").is_empty(),
+            "`use v5.10` bundle must enable say; got: {issues:?}"
+        );
+    }
+
+    /// False-positive guard: a method call `$o->say(...)` is not the builtin.
+    #[test]
+    fn method_call_say_not_flagged() {
+        let issues = analyze("my $o = shift;\n$o->say(\"hi\");\n");
+        assert!(
+            feature_gate_issues(&issues, "say").is_empty(),
+            "method-call say must not be flagged; got: {issues:?}"
+        );
+    }
+
+    /// False-positive guard: `say => 1` autoquotes to a hash key, not a call.
+    #[test]
+    fn say_hash_key_not_flagged() {
+        let issues = analyze("my %h = (say => 1);\n");
+        assert!(
+            feature_gate_issues(&issues, "say").is_empty(),
+            "autoquoted `say =>` key must not be flagged; got: {issues:?}"
+        );
+    }
+
+    /// False-positive guard: a user-defined `sub say` shadows the builtin.
+    #[test]
+    fn user_defined_sub_say_not_flagged() {
+        let issues = analyze("sub say { return 1; }\nsay();\n");
+        assert!(
+            feature_gate_issues(&issues, "say").is_empty(),
+            "call to user-defined `sub say` must not be flagged; got: {issues:?}"
+        );
+    }
+}
+
 // ============================================================================
 #[cfg(test)]
 mod tests_uninitialized_warning_gate {
