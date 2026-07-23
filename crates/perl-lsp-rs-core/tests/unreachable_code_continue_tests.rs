@@ -679,10 +679,9 @@ fn t_goto_sub_in_continue_block_then_statement_is_unreachable()
 #[test]
 fn t_goto_forward_label_in_continue_block_preserves_target_reachability()
 -> Result<(), Box<dyn std::error::Error>> {
-    let ast = Parser::new(
-        "while (1) { } continue { goto DONE; print 'dead'; DONE: print 'alive'; }",
-    )
-    .parse()?;
+    let ast =
+        Parser::new("while (1) { } continue { goto DONE; print 'dead'; DONE: print 'alive'; }")
+            .parse()?;
 
     let mut diagnostics = vec![];
     check_unreachable_code(&ast, &mut diagnostics);
