@@ -254,6 +254,8 @@ impl LspServer {
         // Detect early when the cursor is on a `->method` call: defer to the
         // inherited-method path so class-model metadata (including modifiers)
         // is surfaced at call sites instead of the generic subroutine card.
+        // Only discard when find_definition returned the enclosing sub (token
+        // mismatch) or when the class model has modifier metadata for the callee.
         let symbol_at_cursor = analyzer.find_definition(offset).filter(|sym| {
             let token = Self::get_token_at_position_static(text, offset);
             #[cfg(feature = "workspace")]
@@ -264,7 +266,27 @@ impl LspServer {
                 ) && Self::extract_arrow_receiver(text, offset).is_some()
                     && sym.declaration.as_deref() != Some("has")
                 {
-                    return false;
+                    if token != sym.name && !token.is_empty() {
+                        return false;
+                    }
+                    if token == sym.name {
+                        if let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset) {
+                            let receiver_pkg =
+                                Self::resolve_receiver_package_name(ast, offset, &raw_receiver);
+                            if !receiver_pkg.is_empty()
+                                && analyzer
+                                    .resolve_inherited_method_hover(&receiver_pkg, &sym.name)
+                                    .is_some_and(|hover| {
+                                        hover
+                                            .details
+                                            .iter()
+                                            .any(|detail| detail.starts_with("Decorated with:"))
+                                    })
+                            {
+                                return false;
+                            }
+                        }
+                    }
                 }
             }
             // If the token matches the symbol name this IS a direct hover on that
