@@ -781,6 +781,13 @@ impl LspServer {
             let actions = provider.get_code_actions(ast, (start_offset, end_offset), &diagnostics);
 
             for action in actions {
+                // LSP 3.16 §3.16.2: enabled refactor.extract requires a selection.
+                if start_offset == end_offset
+                    && action.kind == InternalCodeActionKind::RefactorExtract
+                {
+                    continue;
+                }
+
                 let mut changes = HashMap::new();
                 let edits: Vec<Value> = action
                     .edit
