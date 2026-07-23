@@ -9,12 +9,12 @@ This status tracks parser AST construct coverage for the crate-local HIR baselin
 
 | Status | Count | Meaning |
 | --- | ---: | --- |
-| `lowered` | 25 | Emits one or more HIR items today. |
-| `dynamic_boundary` | 4 | Emits an explicit dynamic-boundary HIR item for unsupported static truth. |
+| `lowered` | 30 | Emits one or more HIR items today. |
+| `dynamic_boundary` | 3 | Emits an explicit dynamic-boundary HIR item for unsupported static truth. |
 | `intentionally_skipped` | 20 | Traversal, metadata, or recovery placeholder; no standalone HIR item expected. |
-| `not_yet_modeled` | 21 | Parser AST construct exists, but HIR has no shell yet. |
+| `not_yet_modeled` | 18 | Parser AST construct exists, but HIR has no shell yet. |
 
-AST kinds tracked: `70`. HIR construct kinds tracked: `17`.
+AST kinds tracked: `71`. HIR construct kinds tracked: `22`.
 
 ## Inventory
 
@@ -30,7 +30,7 @@ AST kinds tracked: `70`. HIR construct kinds tracked: `17`.
 | `Assignment` | `dynamic_boundary` | `DynamicBoundary` | Typeglob assignment with a non-static RHS emits `DynamicBoundary`; other assignments traverse. |
 | `Binary` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
 | `Ternary` | `lowered` | `BranchShell` | Ternary expression lowered as a branch shell with both arms present. |
-| `Unary` | `dynamic_boundary` | `DynamicBoundary` | Symbolic reference dereference under no-strict-refs emits `DynamicBoundary`; operand always traversed. |
+| `Unary` | `lowered` | `DerefExpr`, `DynamicBoundary` | Aggregate dereferences emit `DerefExpr`; proven-symbolic dereferences (string-literal, `.`-concatenation, or interpolated-string operands) under no-strict-refs additionally emit `DynamicBoundary`; operand always traversed. |
 | `Diamond` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
 | `Ellipsis` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
 | `Undef` | `lowered` | `LiteralExpr` | Lowered as undef literal shell. |
@@ -39,6 +39,7 @@ AST kinds tracked: `70`. HIR construct kinds tracked: `17`.
 | `Typeglob` | `not_yet_modeled` | - | No standalone HIR shell yet; typeglob assignments can contribute StashGraph slots or boundaries. |
 | `Number` | `lowered` | `LiteralExpr` | Lowered as numeric literal shell. |
 | `String` | `lowered` | `LiteralExpr` | Lowered as string literal shell. |
+| `VString` | `not_yet_modeled` | - | No standalone HIR literal shell yet; falls through after parser-level v-string classification. |
 | `Heredoc` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
 | `ArrayLiteral` | `lowered` | `LiteralExpr` | Lowered as aggregate literal shell; children (elements) are traversed. |
 | `HashLiteral` | `lowered` | `LiteralExpr` | Lowered as aggregate literal shell; pairs are traversed. |
@@ -72,10 +73,10 @@ AST kinds tracked: `70`. HIR construct kinds tracked: `17`.
 | `MethodCall` | `lowered` | `MethodCallExpr` | Lowered as method-call shell. |
 | `FunctionCall` | `lowered` | `CallExpr`, `DynamicBoundary`, `RequireDecl` | `require` calls lower as `RequireDecl`; coderef calls add a dynamic boundary. |
 | `IndirectCall` | `lowered` | `IndirectCallExpr` | Lowered as indirect-object call shell. |
-| `Regex` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
-| `Match` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
-| `Substitution` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
-| `Transliteration` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
+| `Regex` | `lowered` | `RegexExpr`, `DynamicBoundary` | Lowered as regex literal shell; embedded `(?{...})` code emits `DynamicBoundary`. |
+| `Match` | `lowered` | `MatchExpr`, `DynamicBoundary` | Lowered as match-operation shell; bound expression is traversed and embedded `(?{...})` code emits `DynamicBoundary`. |
+| `Substitution` | `lowered` | `SubstitutionExpr`, `DynamicBoundary` | Lowered as substitution shell; bound expression is traversed and embedded code or the `e`/`ee` modifier emits `DynamicBoundary`. |
+| `Transliteration` | `lowered` | `TransliterationExpr` | Lowered as transliteration shell; bound expression is traversed. |
 | `Package` | `lowered` | `PackageDecl` | Lowered and updates package context plus package scope. |
 | `Use` | `lowered` | `UseDecl` | Lowered as use declaration shell and records CompileEnvironment directive facts. |
 | `No` | `intentionally_skipped` | - | `no` directives record CompileEnvironment facts; no standalone HIR item yet. |

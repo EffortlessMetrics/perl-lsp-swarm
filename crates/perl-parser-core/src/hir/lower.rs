@@ -20,12 +20,13 @@ use super::model::{
     ExportDeclarationKind, GlobSlot, GlobSlotKind, GlobSlotSource, HIR_BODY_MODEL_VERSION,
     HirBindingId, HirFile, HirId, HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact,
     IncRootKind, IndirectCallExpr, InheritanceSource, LiteralExpr, LiteralKind, LoopKind,
-    LoopShell, MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind,
+    LoopShell, MatchExpr, MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind,
     ModuleResolutionStatus, PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind,
-    PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable, RecoveryConfidence, RequireDecl,
-    ScopeFrame, ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary,
+    PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable, RecoveryConfidence, RegexExpr,
+    RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary,
     StashDynamicBoundaryKind, StashGraph, StashProvenance, StatementModifierKind,
-    StatementModifierShell, StorageClass, SubDecl, UseDecl, VariableBinding, VariableDecl,
+    StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr, TransliterationExpr, UseDecl,
+    VariableBinding, VariableDecl,
 };
 
 /// Lower a parser AST into first-slice HIR items plus canonical body arenas.
@@ -644,6 +645,126 @@ impl Lowerer {
                         Some(self.current_scope()),
                     );
                 }
+                self.visit_children(node, confidence);
+            }
+            NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::RegexExpr(RegexExpr {
+                        pattern: pattern.clone(),
+                        replacement: replacement.clone(),
+                        modifiers: modifiers.clone(),
+                        has_embedded_code: *has_embedded_code,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+                if *has_embedded_code {
+                    self.push_item(
+                        node,
+                        None,
+                        confidence,
+                        HirKind::DynamicBoundary(DynamicBoundary {
+                            kind: DynamicBoundaryKind::EmbeddedRegexCode,
+                            reason: "regex pattern contains embedded code `(?{...})` that is \
+                                     deferred to runtime"
+                                .to_string(),
+                        }),
+                        self.package_context.clone(),
+                        Some(self.current_scope()),
+                    );
+                }
+                self.visit_children(node, confidence);
+            }
+            NodeKind::Match { pattern, modifiers, has_embedded_code, negated, .. } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::MatchExpr(MatchExpr {
+                        pattern: pattern.clone(),
+                        modifiers: modifiers.clone(),
+                        has_embedded_code: *has_embedded_code,
+                        negated: *negated,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+                if *has_embedded_code {
+                    self.push_item(
+                        node,
+                        None,
+                        confidence,
+                        HirKind::DynamicBoundary(DynamicBoundary {
+                            kind: DynamicBoundaryKind::EmbeddedRegexCode,
+                            reason: "match pattern contains embedded code `(?{...})` that is \
+                                     deferred to runtime"
+                                .to_string(),
+                        }),
+                        self.package_context.clone(),
+                        Some(self.current_scope()),
+                    );
+                }
+                // Traverses the bound `expr` operand via the AST's own child
+                // iteration (`for_each_child`), same mechanism as Eval/Do.
+                self.visit_children(node, confidence);
+            }
+            NodeKind::Substitution {
+                pattern,
+                replacement,
+                modifiers,
+                has_embedded_code,
+                negated,
+                ..
+            } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::SubstitutionExpr(SubstitutionExpr {
+                        pattern: pattern.clone(),
+                        replacement: replacement.clone(),
+                        modifiers: modifiers.clone(),
+                        has_embedded_code: *has_embedded_code,
+                        negated: *negated,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+                if *has_embedded_code {
+                    self.push_item(
+                        node,
+                        None,
+                        confidence,
+                        HirKind::DynamicBoundary(DynamicBoundary {
+                            kind: DynamicBoundaryKind::EmbeddedRegexCode,
+                            reason:
+                                "substitution contains embedded code `(?{...})` or an `e`/`ee` \
+                                     modifier that evaluates the replacement as Perl code"
+                                    .to_string(),
+                        }),
+                        self.package_context.clone(),
+                        Some(self.current_scope()),
+                    );
+                }
+                self.visit_children(node, confidence);
+            }
+            NodeKind::Transliteration { search, replace, modifiers, negated, .. } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::TransliterationExpr(TransliterationExpr {
+                        search: search.clone(),
+                        replace: replace.clone(),
+                        modifiers: modifiers.clone(),
+                        negated: *negated,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
                 self.visit_children(node, confidence);
             }
             NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {

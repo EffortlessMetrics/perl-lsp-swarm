@@ -2767,6 +2767,14 @@ pub enum HirKind {
     StatementModifierShell(StatementModifierShell),
     /// Unsupported or intentionally dynamic Perl boundary.
     DynamicBoundary(DynamicBoundary),
+    /// Regex literal shell (`/pattern/modifiers` or `qr/pattern/modifiers`).
+    RegexExpr(RegexExpr),
+    /// Match-operation shell (`$str =~ /pattern/` or `$str !~ /pattern/`).
+    MatchExpr(MatchExpr),
+    /// Substitution-operation shell (`$str =~ s/pattern/replacement/`).
+    SubstitutionExpr(SubstitutionExpr),
+    /// Transliteration-operation shell (`$str =~ tr/search/replace/` or `y///`).
+    TransliterationExpr(TransliterationExpr),
 }
 
 impl HirKind {
@@ -2785,12 +2793,16 @@ impl HirKind {
         "IndirectCallExpr",
         "LiteralExpr",
         "LoopShell",
+        "MatchExpr",
         "MethodCallExpr",
         "MethodDecl",
         "PackageDecl",
+        "RegexExpr",
         "RequireDecl",
         "StatementModifierShell",
         "SubDecl",
+        "SubstitutionExpr",
+        "TransliterationExpr",
         "UseDecl",
         "VariableDecl",
     ];
@@ -2942,6 +2954,69 @@ pub struct BarewordExpr {
     pub name: String,
 }
 
+/// Regex literal shell payload (`/pattern/modifiers` or `qr/pattern/modifiers`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RegexExpr {
+    /// Regular expression pattern as parsed (including delimiters).
+    pub pattern: String,
+    /// Replacement string. Reserved for forward compatibility and currently
+    /// always `None`: the parser builds bare regex literals (`/.../`, `qr/.../`)
+    /// with no replacement, and `s///` is parsed as `NodeKind::Substitution`
+    /// (lowered to [`SubstitutionExpr`]), not as a `Regex` node.
+    pub replacement: Option<String>,
+    /// Regex modifiers (`i`, `m`, `s`, `x`, `g`, etc.).
+    pub modifiers: String,
+    /// Whether the pattern contains embedded code (`(?{...})`/`(??{...})`).
+    pub has_embedded_code: bool,
+}
+
+/// Match-operation shell payload (`$str =~ /pattern/` or `$str !~ /pattern/`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct MatchExpr {
+    /// Pattern being matched, as parsed (including delimiters).
+    pub pattern: String,
+    /// Match modifiers.
+    pub modifiers: String,
+    /// Whether the pattern contains embedded code (`(?{...})`/`(??{...})`).
+    pub has_embedded_code: bool,
+    /// Whether the binding operator was `!~` (negated match).
+    pub negated: bool,
+}
+
+/// Substitution-operation shell payload (`$str =~ s/pattern/replacement/`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SubstitutionExpr {
+    /// Pattern to find, as parsed.
+    pub pattern: String,
+    /// Replacement string, as parsed.
+    pub replacement: String,
+    /// Substitution modifiers (`g`, `e`, `r`, etc.).
+    pub modifiers: String,
+    /// Whether the substitution embeds runtime-evaluated code — either an
+    /// inline `(?{...})` pattern block or an `e`/`ee` modifier that evaluates
+    /// the replacement as Perl code.
+    pub has_embedded_code: bool,
+    /// Whether the binding operator was `!~` (negated match).
+    pub negated: bool,
+}
+
+/// Transliteration-operation shell payload (`$str =~ tr/search/replace/` or `y///`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TransliterationExpr {
+    /// Characters to search for.
+    pub search: String,
+    /// Replacement characters.
+    pub replace: String,
+    /// Transliteration modifiers (`c`, `d`, `s`, `r`).
+    pub modifiers: String,
+    /// Whether the binding operator was `!~` (negated match).
+    pub negated: bool,
+}
+
 /// Literal expression shell payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -3046,6 +3121,10 @@ pub enum DynamicBoundaryKind {
     Autoload,
     /// Symbolic-reference dereference whose target cannot be modeled statically.
     SymbolicReferenceDeref,
+    /// A regex/match/substitution embeds runtime-evaluated code — either an
+    /// inline `(?{...})`/`(??{...})` pattern block, or (for substitution) an
+    /// `e`/`ee` modifier that evaluates the replacement string as Perl code.
+    EmbeddedRegexCode,
 }
 
 /// Conditional-branch shell payload.
