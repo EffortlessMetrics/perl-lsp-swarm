@@ -47,6 +47,7 @@ impl LspServer {
             initialize_requested: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
             shutdown_received: AtomicBool::new(false),
+            pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             index_coordinator,
             // Cache up to 100 ASTs with 5 minute TTL
@@ -220,6 +221,7 @@ impl LspServer {
             initialize_requested: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
             shutdown_received: AtomicBool::new(false),
+            pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             index_coordinator,
             ast_cache: Arc::new(AstCache::new(100, 300)),
@@ -333,6 +335,7 @@ impl LspServer {
             initialize_requested: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
             shutdown_received: AtomicBool::new(false),
+            pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             index_coordinator,
             ast_cache: Arc::new(AstCache::new(100, 300)),

@@ -169,6 +169,22 @@ impl LspServer {
                 // capabilities object claims.
                 if is_jetbrains_client(params) {
                     caps.dynamic_registration_support = false;
+                    // Queue a one-time logMessage so the user can see the override
+                    // happened. The message is emitted after the `initialized`
+                    // notification arrives (see handle_initialized_dispatch)
+                    // because the LSP spec discourages sending notifications
+                    // before the initialize response is delivered (#4630).
+                    let client_name = params
+                        .get("clientInfo")
+                        .and_then(|info| info.get("name"))
+                        .and_then(|name| name.as_str())
+                        .unwrap_or("JetBrains");
+                    *self.pending_startup_log.lock() = Some(format!(
+                        "perl-lsp: Dynamic file-watcher registration has been disabled for \
+                         JetBrains-family client \"{client_name}\" because its registration \
+                         flow is unreliable. Workspace/didChangeWatchedFiles dynamic \
+                         registration requests from this client will be ignored."
+                    ));
                 }
 
                 caps.workspace_configuration_support = params
@@ -1647,6 +1663,59 @@ mod tests {
         assert!(
             server.client_capabilities.lock().dynamic_registration_support,
             "non-JetBrains clients that advertise dynamic registration must have it enabled"
+        );
+    }
+
+    #[test]
+    fn initialize_queues_startup_log_for_jetbrains_dynamic_registration_override() {
+        let server = LspServer::new();
+        let params = json!({
+            "clientInfo": {
+                "name": "IntelliJ IDEA"
+            },
+            "capabilities": {
+                "workspace": {
+                    "didChangeWatchedFiles": {
+                        "dynamicRegistration": true
+                    }
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+
+        let pending = server.pending_startup_log.lock();
+        assert!(pending.is_some(), "JetBrains override should queue a pending startup logMessage");
+        if let Some(ref msg) = *pending {
+            assert!(msg.contains("IntelliJ IDEA"), "pending log should name the client: got {msg}");
+            assert!(
+                msg.contains("dynamic"),
+                "pending log should mention the disabled capability: got {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn initialize_does_not_queue_startup_log_for_non_jetbrains_clients() {
+        let server = LspServer::new();
+        let params = json!({
+            "clientInfo": {
+                "name": "vscode"
+            },
+            "capabilities": {
+                "workspace": {
+                    "didChangeWatchedFiles": {
+                        "dynamicRegistration": true
+                    }
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+
+        assert!(
+            server.pending_startup_log.lock().is_none(),
+            "non-JetBrains clients should not have a pending startup logMessage"
         );
     }
 

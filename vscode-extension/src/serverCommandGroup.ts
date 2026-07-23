@@ -14,7 +14,7 @@ import type {
  * and health probing remain owned by the composition layer that supplies them.
  */
 export interface ServerCommandContext {
-  readonly outputChannel: vscode.LogOutputChannel;
+  readonly outputChannel: vscode.OutputChannel;
   readonly currentServerPath: () => string | null;
   readonly reinstallServerBinary: () => Promise<ReinstallCommandResult>;
   readonly restartServer: () => Promise<void>;

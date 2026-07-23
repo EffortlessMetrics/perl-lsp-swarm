@@ -325,3 +325,90 @@ fn inline_value_ranges_use_utf16_columns_after_non_bmp_prefix() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn inline_value_skips_comment_lines() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+
+    let uri = "file:///inline_value_comment.pl";
+    harness.open(uri, "my $real = 1;\n# my $commented = 2;\nprint $real;\n")?;
+
+    let items = request_inline_values(&mut harness, uri, 0, 2, None)?;
+    let names = variable_names(&items);
+
+    // $real on line 0 and line 2 should be detected.
+    assert!(names.contains(&"$real"), "real variables should be detected, got names={names:?}");
+    // $commented inside the comment on line 1 must NOT be detected.
+    assert!(
+        !names.contains(&"$commented"),
+        "variables in comments must not produce false-positive inline values, got names={names:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn inline_value_skips_pod_blocks() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+
+    let uri = "file:///inline_value_pod.pl";
+    harness.open(
+        uri,
+        "my $before = 1;\n\
+         =pod\n\
+         This is documentation about $documentation.\n\
+         =cut\n\
+         my $after = 2;\n",
+    )?;
+
+    let items = request_inline_values(&mut harness, uri, 0, 4, None)?;
+    let names = variable_names(&items);
+
+    // Variables in real code should be detected.
+    assert!(
+        names.contains(&"$before"),
+        "variables before POD should be detected, got names={names:?}"
+    );
+    assert!(
+        names.contains(&"$after"),
+        "variables after POD should be detected, got names={names:?}"
+    );
+    // Variables inside the POD block must NOT be detected.
+    assert!(
+        !names.contains(&"$documentation"),
+        "variables inside POD blocks must not produce false-positive inline values, got names={names:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn inline_value_skips_pod_block_spanning_requested_range() -> TestResult {
+    // Verify that POD state is tracked from the top of the file, so a
+    // requested range that starts *inside* an already-open POD block
+    // correctly skips all lines until =cut.
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+
+    let uri = "file:///inline_value_pod_span.pl";
+    harness.open(
+        uri,
+        "=pod\n\
+         my $inside_pod = 1;\n\
+         =cut\n\
+         my $outside_pod = 2;\n",
+    )?;
+
+    // Request only lines 1..=1 (the line inside the POD block).
+    let items = request_inline_values(&mut harness, uri, 1, 1, None)?;
+    let names = variable_names(&items);
+
+    assert!(
+        !names.contains(&"$inside_pod"),
+        "variables inside a POD block that opened before the requested range must be skipped, got names={names:?}"
+    );
+
+    Ok(())
+}
