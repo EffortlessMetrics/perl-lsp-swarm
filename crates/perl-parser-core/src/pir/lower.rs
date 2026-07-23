@@ -1024,17 +1024,9 @@ impl BodyLowerer {
                         .then(|| PirId::from_index(self.next_id - 1))
                 };
 
-                if let Some(iterator_binding) = iterator_binding {
-                    // A foreach iterable may be empty, so evaluating the iterator
-                    // binding is not an unconditional successor of the iterable
-                    // expression.
-                    self.last_in_scope.remove(&None);
-                    self.lower_expr(body, *iterator_binding, file);
-                }
-
-                // Emit the Loop node. It keeps the fallthrough from the last
-                // header node (condition / iterable) — control evaluates the
-                // header, then loops.
+                // Emit the Loop node right after the header. It keeps the
+                // fallthrough from the last header node (boolean condition /
+                // foreach iterable) — control evaluates the header, then loops.
                 let anchor = self.make_body_anchor(range);
                 let loop_id = self.push_body_node(
                     anchor,
@@ -1048,9 +1040,18 @@ impl BodyLowerer {
                 // the Loop node by an explicit `Loop` edge, never by unconditional
                 // fallthrough, and it must not fall through into the statement
                 // after the loop. Sever the fallthrough predecessor, then lower
-                // the iteration region (body + continue + C-style update).
+                // the iteration region.
                 self.last_in_scope.remove(&None);
                 let iteration_first = self.next_id;
+                // A `foreach` binds its loop variable once per iteration, so the
+                // binding belongs inside the iteration region (after the Loop
+                // node), not before it — the iterable was already lowered as the
+                // header above. Modeling the binding here makes the Loop entry
+                // edge target the per-iteration binding rather than a one-time
+                // pre-loop write.
+                if let Some(iterator_binding) = iterator_binding {
+                    self.lower_expr(body, *iterator_binding, file);
+                }
                 self.lower_block(body, *loop_body, file);
                 if let Some(block) = continue_block {
                     self.lower_block(body, *block, file);
@@ -1058,16 +1059,25 @@ impl BodyLowerer {
                 if let Some(update) = update {
                     self.lower_expr(body, *update, file);
                 }
+                // Back-edge source: the iteration region's fall-through endpoint
+                // (the node control would loop back from), not merely the last
+                // allocated node. A nested inner loop leaves its own node last,
+                // which must not be wired back to this outer header; and if the
+                // region severed its own fallthrough (nested loop / branch /
+                // loop-control), no honest back-edge exists, so none is emitted.
+                let iteration_last = self.last_in_scope.get(&None).copied();
                 if self.next_id > iteration_first {
-                    // Loop entry edge: header -> body entry.
+                    // Loop entry edge: header -> iteration entry.
                     self.edges.push(PirEdge {
                         from: loop_id,
                         to: Some(PirId::from_index(iteration_first)),
                         kind: PirEdgeKind::Loop,
                     });
-                    // Loop back-edge: last iteration node -> header.
+                }
+                if let Some(iteration_last) = iteration_last {
+                    // Loop back-edge: iteration exit -> header.
                     self.edges.push(PirEdge {
-                        from: PirId::from_index(self.next_id - 1),
+                        from: iteration_last,
                         to: Some(loop_id),
                         kind: PirEdgeKind::Loop,
                     });

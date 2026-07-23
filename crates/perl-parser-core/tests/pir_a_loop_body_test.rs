@@ -29,7 +29,7 @@ fn parse_and_lower(source: &str) -> PirGraph {
 }
 
 fn loop_nodes(graph: &PirGraph) -> Vec<&PirNode> {
-    graph.nodes.iter().filter(|n| matches!(n.operation, PirOperation::Loop { .. })).collect()
+    graph.nodes.iter().filter(|n| matches!(&n.operation, PirOperation::Loop { .. })).collect()
 }
 
 fn single_loop(graph: &PirGraph) -> Result<&PirNode, Box<dyn Error>> {
@@ -163,6 +163,54 @@ fn pir_a_loop_is_modeled_not_unsupported() -> TestResult {
         !graph.receipt.unsupported_construct_counts.contains_key("Loop"),
         "Loop must no longer appear in unsupported_construct_counts: {:?}",
         graph.receipt.unsupported_construct_counts
+    );
+    Ok(())
+}
+
+/// Regression (#4815 review): a nested loop must not wire an inner-body node
+/// back to the OUTER loop header. The outer loop's iteration region is the inner
+/// loop, which severs its own fallthrough, so the outer loop gets no back-edge —
+/// never a spurious edge derived from the last allocated (inner) node.
+#[test]
+fn pir_a_nested_loop_back_edge_stays_within_inner() -> TestResult {
+    let graph = parse_and_lower("while ($a) { while ($b) { my $x = 1; } }");
+    let loops = loop_nodes(&graph);
+    if loops.len() != 2 {
+        return Err(format!("expected two Loop nodes, got {}", loops.len()).into());
+    }
+    let outer = loops[0].id;
+    let inner = loops[1].id;
+    assert!(
+        !graph.edges.iter().any(|e| e.kind == PirEdgeKind::Loop && e.to == Some(outer)),
+        "the outer loop's region severs, so no Loop back-edge may target it"
+    );
+    assert!(
+        graph.edges.iter().any(|e| e.kind == PirEdgeKind::Loop && e.to == Some(inner)),
+        "the inner loop must retain its own back-edge"
+    );
+    Ok(())
+}
+
+/// Regression (#4815 review): a `foreach` binds its loop variable per iteration,
+/// so the binding is lowered inside the iteration region (after the Loop node)
+/// and the Loop entry edge targets it, rather than modeling a one-time pre-loop
+/// write.
+#[test]
+fn pir_a_foreach_binding_is_inside_iteration_region() -> TestResult {
+    let graph = parse_and_lower("foreach my $x (@list) { my $y = 1; }");
+    let loop_id = single_loop(&graph)?.id;
+    let binding = graph
+        .nodes
+        .iter()
+        .find(|n| matches!(&n.operation, PirOperation::LexicalWrite { name } if name.name == "x"))
+        .ok_or("foreach binding `$x` must be lowered")?;
+    assert!(binding.id > loop_id, "the foreach binding must come after the Loop node");
+    assert!(
+        graph
+            .edges
+            .iter()
+            .any(|e| e.from == loop_id && e.to == Some(binding.id) && e.kind == PirEdgeKind::Loop),
+        "the Loop entry edge must target the per-iteration binding"
     );
     Ok(())
 }
