@@ -973,6 +973,12 @@ impl LspServer {
                                 "perl.workspace.includePaths" => {
                                     json!(workspace_config.include_paths)
                                 }
+                                "perl.workspace.discoveryExtensions" => {
+                                    json!(workspace_config.discovery_extra_extensions)
+                                }
+                                "perl.workspace.discoverySkippedDirs" => {
+                                    json!(workspace_config.discovery_extra_skipped_dirs)
+                                }
                                 "perl.workspace.useSystemInc" => {
                                     json!(workspace_config.use_system_inc)
                                 }
@@ -1982,9 +1988,15 @@ impl LspServer {
                     continue;
                 };
 
-                let discovery = super::file_discovery::discover_perl_files_with_include_paths(
+                let workspace_config = &folder_state.effective_workspace_config;
+                let discovery_config = super::file_discovery::DiscoveryConfig::new(
+                    workspace_config.discovery_extra_extensions.clone(),
+                    workspace_config.discovery_extra_skipped_dirs.clone(),
+                );
+                let discovery = super::file_discovery::discover_perl_files_with_config(
                     &root,
-                    &folder_state.effective_workspace_config.include_paths,
+                    &workspace_config.include_paths,
+                    &discovery_config,
                 );
 
                 for path in discovery.files {
