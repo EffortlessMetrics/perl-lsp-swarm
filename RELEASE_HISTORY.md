@@ -15,7 +15,7 @@ Tag commit timestamps may differ from release dates.
 | Version | Tag | GitHub Release | Released | Tag commit | Compare | Assets | crates.io | VS Code Marketplace | Notes file |
 |---------|-----|----------------|----------|------------|---------|--------|-----------|---------------------|------------|
 | [0.17.0] | `v0.17.0` | [yes][gh-0.17.0] | 2026-06-28 | `pending` | [v0.16.0...v0.17.0] | 10 (7 binaries, VSIX, SHA256SUMS, SBOM) | 0.17.0 (31 crates) | [perl-lsp-rs][vsce] | [v0.17.0][n-0.17.0] |
-| [0.16.0] | `v0.16.0` | pending | pending | `pending` | [v0.15.2...v0.16.0] | pending | pending | pending | [v0.16.0][n-0.16.0] |
+| [0.16.0] | — | skipped | skipped | — | — | — | — | — | [v0.16.0][n-0.16.0] |
 | [0.15.2] | `v0.15.2` | pending | 2026-05-26 | `746edcb7` | [v0.15.1...v0.15.2] | pending | pending | pending | [v0.15.2][n-0.15.2] |
 | [0.15.1] | `v0.15.1` | pending | 2026-05-26 | `15cbe7e6` | [v0.15.0...v0.15.1] | pending | pending | pending | [v0.15.1][n-0.15.1] |
 | [0.15.0] | `v0.15.0` | pending | pending | `pending` | [v0.14.0...v0.15.0] | pending | pending | pending | [v0.15.0][n-0.15.0] |
@@ -46,6 +46,10 @@ Tag commit timestamps may differ from release dates.
 
 ### Corrections and receipts
 
+- **2026-07-22 — v0.16.0:** corrected the ledger to mark 0.16.0 as **skipped**.
+  No `v0.16.0` tag, GitHub Release, or crates.io publication exists. The
+  changes planned for 0.16.0 shipped as part of 0.17.0 (see CHANGELOG.md
+  `## [0.16.0] - Skipped (rolled into 0.17.0)`).
 - **2026-07-17 — v0.17.0:** verified the GitHub Release published 2026-06-28 at
   `ffee2824938f415e54923112c7b79e3f22040699`, with seven platform archives,
   VSIX, `SHA256SUMS`, and SPDX SBOM. The existing crates.io and VS Code
@@ -57,6 +61,7 @@ Tag commit timestamps may differ from release dates.
 
 - **"—"** = does not exist / not applicable
 - **"deferred"** = release published to GitHub but crates.io publish intentionally postponed
+- **"skipped"** = version number was reserved but never released; changes rolled into a later version
 - **"(CL)"** = date from CHANGELOG only (no tag or release exists)
 - **"(tag)"** = date from tag commit (no GitHub Release exists)
 - Versions without a tag or GitHub Release are CHANGELOG-only scope markers that never shipped as distinct artifacts

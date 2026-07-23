@@ -713,13 +713,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.16.0] - Unreleased
+## [0.16.0] - Skipped (rolled into 0.17.0)
 
 Release notes: [v0.16.0](docs/releases/v0.16.0.md)
 
-Minor release. Perldoc virtual-document links, inline completion hardening,
-LSP 3.18 applyEdit metadata and receipt locks, DAP improvements, quality and
-proof infrastructure.
+Version 0.16.0 was never released as a distinct artifact. The changes below
+were planned for 0.16.0 and shipped as part of [0.17.0] instead. This section
+is retained for historical reference; see `RELEASE_HISTORY.md` for the
+canonical release ledger.
 
 ### Added
 
