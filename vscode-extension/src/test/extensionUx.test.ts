@@ -18,14 +18,16 @@ jest.mock('vscode-languageclient/node', () => ({
   },
 }));
 import {
+  explainMissingModuleLookupCommand,
+  showWorkspaceTrustReportCommand,
+} from '../diagnosticCommands';
+import {
   copyProviderDecisionReceiptCommand,
   diagnoseConfiguredServerPath,
   explainDiagnosticCommand,
-  explainMissingModuleLookupCommand,
   explainProviderDecisionCommand,
   previewPackageRenameCommand,
   previewSafeDeleteCommand,
-  showWorkspaceTrustReportCommand,
   runPerlCriticOnActiveFile,
   setPerlCriticSeverity,
   syncPerlCriticConfiguration,
@@ -1102,7 +1104,6 @@ describe('extension UX warnings', () => {
       show: jest.fn(),
       dispose: jest.fn(),
     };
-    (vscode.window.createOutputChannel as jest.Mock).mockReturnValueOnce(outputChannel);
     const sendRequest = jest.fn(async () => ({
       schema_version: 'workspace_trust_report.v1',
       workspace: {
@@ -1182,7 +1183,9 @@ describe('extension UX warnings', () => {
       claim_boundary: 'Aggregates current runtime state only.',
     }));
 
-    await showWorkspaceTrustReportCommand({ sendRequest } as unknown as RequestClient, () => ({
+    await showWorkspaceTrustReportCommand(
+      { sendRequest } as unknown as RequestClient,
+      () => ({
       schema_version: 'workspace_trust_client_runtime.v1',
       source: 'vscode-extension',
       perldoc: {
@@ -1203,7 +1206,9 @@ describe('extension UX warnings', () => {
           claim_boundary: 'Launch configuration state reports counts and path classes only.',
         },
       },
-    }));
+    }),
+      { outputChannel: outputChannel as unknown as vscode.OutputChannel },
+    );
 
     expect(sendRequest).toHaveBeenCalledWith('workspace/executeCommand', {
       command: 'perl.workspaceTrustReport',
@@ -1265,7 +1270,6 @@ describe('extension UX warnings', () => {
       show: jest.fn(),
       dispose: jest.fn(),
     };
-    (vscode.window.createOutputChannel as jest.Mock).mockReturnValueOnce(outputChannel);
     const sendRequest = jest.fn(async () => ({
       schema_version: 'missing_module_lookup_explanation.v1',
       requested_module: 'Missing::Payload',
@@ -1306,7 +1310,11 @@ describe('extension UX warnings', () => {
       },
     };
 
-    await explainMissingModuleLookupCommand({ sendRequest } as unknown as RequestClient);
+    await explainMissingModuleLookupCommand(
+      { sendRequest } as unknown as RequestClient,
+      undefined,
+      { outputChannel: outputChannel as unknown as vscode.OutputChannel },
+    );
 
     expect(sendRequest).toHaveBeenCalledWith('workspace/executeCommand', {
       command: 'perl.explainMissingModuleLookup',
