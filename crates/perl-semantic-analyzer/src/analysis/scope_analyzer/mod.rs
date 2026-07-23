@@ -840,6 +840,39 @@ impl ScopeAnalyzer {
                 );
             }
 
+            // Perl 5.38+ `use feature 'class'` method declarations.
+            // Like a subroutine but `$self` is an implicit invocant that must be
+            // pre-declared in the method scope to avoid false UndeclaredVariable
+            // diagnostics when authors write `$self->foo` inside the body.
+            NodeKind::Method { signature, body, .. } => {
+                scope_constructs::handle_method(
+                    self,
+                    node,
+                    signature.as_deref(),
+                    body,
+                    scope,
+                    ancestors,
+                    issues,
+                    context,
+                );
+            }
+
+            // Perl 5.38+ class block.  Introduces a new package-level scope so
+            // that field declarations and method definitions do not leak into the
+            // enclosing lexical scope.
+            NodeKind::Class { name, body, .. } => {
+                scope_constructs::handle_package(
+                    self,
+                    node,
+                    name,
+                    Some(body),
+                    scope,
+                    ancestors,
+                    issues,
+                    context,
+                );
+            }
+
             NodeKind::Try { body, catch_blocks, finally_block } => {
                 scope_constructs::handle_try(
                     self,

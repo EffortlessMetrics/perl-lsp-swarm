@@ -75,8 +75,8 @@ parent's tools). Full model:
 
 **Component-proved ≠ system-proved.** Before "done"/"merge"/"live", verify the full
 production chain: the live caller, reachability from a real request, the durable
-artifact on `origin`, the externally observable effect — bound to the current repo
-identity + HEAD SHA. Track completion on independent axes (Implemented · Merged ·
+artifact on `origin`, and the externally observable effect — bound to the current
+repo identity and PR revision. Track completion on independent axes (Implemented · Merged ·
 Reachable · Correct · Measured · Promoted · Consolidated); a gap on
 Reachable/Promoted/Consolidated is **inventory, not product**. Background:
 [docs/forensics/2026-06-25-closure-gap-the-recurring-defect.md](docs/forensics/2026-06-25-closure-gap-the-recurring-defect.md).
@@ -87,7 +87,7 @@ incident, applying both confused the merge gate and let unfixed bugs ride to mai
 
 **No GitHub-enforced merge check depends on label state**: the two required checks
 (`Perl LSP Rust Small Result`, `ripr+ New Gap Gate` — classic branch-protection status
-checks) green on the exact head, plus 0 unresolved conversation threads (this repo's
+checks) green for the live PR, plus 0 unresolved conversation threads (this repo's
 conversation-resolution convention — enforced by the `main` branch ruleset's
 `required_review_thread_resolution` rule; classic branch protection's own
 `required_conversation_resolution` setting is off) is what gates a merge
@@ -99,6 +99,11 @@ checklist still treats an active `needs-*` label as a hard stop — an unaddress
 bounce label still blocks a PR from merging in practice, as reconciliation/process
 discipline, not a ruleset gate. **Main must stay green; merge requires green**
 (2026-04-26 directive) — verify workspace-wide CI, not just per-crate, before merging.
+
+Squash merge is the normal integration operation. Do not require the eventual squash
+commit SHA to exist before merging, or treat a branch SHA comparison as a separate
+merge gate; GitHub creates the squash commit and post-merge checks may run on that
+new commit afterward.
 
 ## Publication and proof
 

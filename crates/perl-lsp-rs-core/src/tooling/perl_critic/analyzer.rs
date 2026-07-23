@@ -187,7 +187,7 @@ impl CriticAnalyzer {
                     range: lsp_range,
                     severity: Some(v.severity.to_diagnostic_severity()),
                     code: Some(lsp_types::NumberOrString::String(v.policy.clone())),
-                    source: Some("perlcritic".to_string()),
+                    source: Some("perl-lsp-critic".to_string()),
                     message: v.description.clone(),
                     related_information: None,
                     tags: None,

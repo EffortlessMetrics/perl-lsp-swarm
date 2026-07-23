@@ -227,6 +227,12 @@ export const workspace = {
   })),
   applyEdit: jest.fn(async () => true),
   workspaceFolders: undefined as Array<{ uri: { fsPath: string } }> | undefined,
+  isTrusted: true,
+  onDidGrantWorkspaceTrust: jest.fn((callback: () => void) => {
+    // Store the callback so tests can simulate trust being granted.
+    (workspace as { _trustCallback?: () => void })._trustCallback = callback;
+    return { dispose: jest.fn() };
+  }),
 };
 
 export const tasks = {

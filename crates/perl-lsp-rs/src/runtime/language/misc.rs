@@ -1473,25 +1473,21 @@ impl LspServer {
         use crate::execute_command::ExecuteCommandProvider;
 
         if let Some(params) = params {
-            let command = params["command"]
-                .as_str()
+            let command = params
+                .get("command")
+                .and_then(Value::as_str)
                 .ok_or_else(|| invalid_params("Missing required parameter: command"))?;
 
-            // LSP 3.17 compliance: arguments field is required even if empty
-            if !params.as_object().unwrap_or(&serde_json::Map::new()).contains_key("arguments") {
-                return Err(JsonRpcError {
-                    code: -32602, // InvalidParams
-                    message: "Missing required 'arguments' field in executeCommand request"
-                        .to_string(),
-                    data: Some(json!({
-                        "command": command,
-                        "errorType": "executeCommand",
-                        "originalError": "Missing 'arguments' field"
-                    })),
-                });
-            }
-
-            let mut arguments = params["arguments"].as_array().cloned().unwrap_or_default();
+            // LSP ExecuteCommandParams.arguments is optional. Normalize an omitted
+            // field to an empty list and reject malformed present values before
+            // command-specific validation runs.
+            let mut arguments = match params.get("arguments") {
+                None => Vec::new(),
+                Some(value) => value
+                    .as_array()
+                    .cloned()
+                    .ok_or_else(|| invalid_params("'arguments' must be an array when present"))?,
+            };
             if command == "perl.explainProviderDecision" {
                 self.attach_provider_decision_trace(&mut arguments);
             }
@@ -1593,6 +1589,9 @@ impl LspServer {
                 }
                 "perl.workspaceTrustReport" => {
                     return self.workspace_trust_report(arguments.first());
+                }
+                "perl.agentContext" => {
+                    return self.agent_context(arguments.first());
                 }
                 "perl.previewSafeDelete" => {
                     let request = arguments

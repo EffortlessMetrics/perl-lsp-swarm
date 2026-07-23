@@ -309,6 +309,10 @@ fn call_expression(content: &str, start: usize, end: usize) -> String {
     }
 }
 
+fn source_span(content: &str, start: usize, end: usize) -> Option<&str> {
+    content.get(start..end)
+}
+
 /// A compact `sl:sc-el:ec` range string for the schema's string-typed
 /// `provenance.range` field.
 fn range_string(line_index: &LineIndex, start: usize, end: usize) -> String {
@@ -502,7 +506,7 @@ pub(crate) fn emit_relations_and_discriminators(
         .iter()
         .map(|(_, relative_path, content)| {
             let facts = match Parser::new(content).parse() {
-                Ok(ast) => TestCallFacts::from_ast(&ast),
+                Ok(ast) => TestCallFacts::from_ast(&ast, content),
                 Err(_) => TestCallFacts::unparsed(),
             };
             (relative_path.as_str(), facts)
@@ -579,30 +583,31 @@ pub(crate) fn emit_relations_and_discriminators(
 
     // Extract concrete discriminators + observed-sink facts from `is(...)` assertions.
     // Reuses the `t_files` collected above — no second directory walk.
-    for (_file_path, relative_path, content) in &t_files {
-        for line in content.lines() {
-            if let Some(args) = extract_is_args(line) {
-                // `is($got, $expected, $name)` → discriminator "$got == $expected"
-                let discriminator = format!("{} == {}", args.0, args.1);
-                let observable_id = format!("observable:{relative_path}:{}", args.0);
-                changed_observables.push(json!({
-                    "observable_id": observable_id,
-                    "expression": args.0,
-                    "file_id": format!("file:{relative_path}"),
-                    "discriminator": discriminator,
-                    "confidence": "medium"
-                }));
+    for (_file_path, relative_path, _content) in &t_files {
+        let Some(facts) = t_call_facts.get(relative_path.as_str()) else {
+            continue;
+        };
+        for args in &facts.is_args {
+            // `is($got, $expected, $name)` → discriminator "$got == $expected"
+            let discriminator = format!("{} == {}", args.0, args.1);
+            let observable_id = format!("observable:{relative_path}:{}", args.0);
+            changed_observables.push(json!({
+                "observable_id": observable_id,
+                "expression": args.0,
+                "file_id": format!("file:{relative_path}"),
+                "discriminator": discriminator,
+                "confidence": "medium"
+            }));
 
-                // Observed-sink: the oracle observes the `got` value.
-                let sink_id = format!("sink:{relative_path}:{}", args.0);
-                observed_sinks.push(json!({
-                    "sink_id": sink_id,
-                    "oracle_kind": "exact_return_assertion",
-                    "observed_expression": args.0,
-                    "file_id": format!("file:{relative_path}"),
-                    "confidence": "medium"
-                }));
-            }
+            // Observed-sink: the oracle observes the `got` value.
+            let sink_id = format!("sink:{relative_path}:{}", args.0);
+            observed_sinks.push(json!({
+                "sink_id": sink_id,
+                "oracle_kind": "exact_return_assertion",
+                "observed_expression": args.0,
+                "file_id": format!("file:{relative_path}"),
+                "confidence": "medium"
+            }));
         }
     }
 
@@ -697,16 +702,22 @@ struct TestCallFacts {
     calls: Vec<perl_symbol::surface::SymbolRef>,
     /// Modules imported by parsed `use` statements in the test file.
     used_modules: std::collections::HashSet<String>,
+    /// First two arguments from parser-backed `is(...)` assertions.
+    is_args: Vec<(String, String)>,
 }
 
 impl TestCallFacts {
     /// Conservative fallback for a test file that failed to parse: proves
     /// nothing, so [`test_calls_declared_sub`] always degrades for it.
     fn unparsed() -> Self {
-        Self { calls: Vec::new(), used_modules: std::collections::HashSet::new() }
+        Self {
+            calls: Vec::new(),
+            used_modules: std::collections::HashSet::new(),
+            is_args: Vec::new(),
+        }
     }
 
-    fn from_ast(ast: &Node) -> Self {
+    fn from_ast(ast: &Node, content: &str) -> Self {
         let mut used_modules = std::collections::HashSet::new();
         collect_used_modules(ast, &mut used_modules);
         let calls = extract_symbol_refs(ast)
@@ -720,7 +731,9 @@ impl TestCallFacts {
                 )
             })
             .collect();
-        Self { calls, used_modules }
+        let mut is_args = Vec::new();
+        collect_is_args(ast, content, &mut is_args);
+        Self { calls, used_modules, is_args }
     }
 }
 
@@ -849,17 +862,18 @@ fn test_calls_declared_sub(
     })
 }
 
-/// Extract the arguments from an `is(...)` call.
-/// Returns (got, expected) if parseable.
-fn extract_is_args(line: &str) -> Option<(String, String)> {
-    let trimmed = line.trim();
-    let inner = trimmed.strip_prefix("is(")?.strip_suffix(");")?;
-    let parts: Vec<&str> = inner.splitn(3, ',').collect();
-    if parts.len() >= 2 {
-        Some((parts[0].trim().to_string(), parts[1].trim().to_string()))
-    } else {
-        None
+fn collect_is_args(node: &Node, content: &str, output: &mut Vec<(String, String)>) {
+    if let NodeKind::FunctionCall { name, args } = &node.kind
+        && name == "is"
+        && args.len() >= 2
+    {
+        let got = source_span(content, args[0].location.start, args[0].location.end);
+        let expected = source_span(content, args[1].location.start, args[1].location.end);
+        if let (Some(got), Some(expected)) = (got, expected) {
+            output.push((got.trim().to_string(), expected.trim().to_string()));
+        }
     }
+    node.for_each_child(|child| collect_is_args(child, content, output));
 }
 
 /// Patterns that indicate a dynamic boundary in Perl source. Each entry maps
@@ -1797,6 +1811,30 @@ mod tests {
     }
 
     #[test]
+    fn emit_discriminators_from_indented_is_inside_subtest() {
+        let root = std::env::temp_dir().join("perl-B7-indented-subtest-root");
+        let t_dir = root.join("t");
+        std::fs::create_dir_all(&t_dir).unwrap();
+        std::fs::write(
+            t_dir.join("app.t"),
+            "use Test::More;\nsubtest 'nested' => sub {\n    my $x = 1;\n    is($x, 1); # trailing comment\n};\n",
+        )
+        .unwrap();
+
+        let (tests, _oracles, _provenance, _limitations) =
+            emit_tests_and_oracles(root.to_str().unwrap());
+        let (_relations, observables, sinks, _relation_limitations) =
+            emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
+
+        assert_eq!(observables.len(), 1, "the indented is() must be emitted");
+        assert_eq!(observables[0]["expression"], "$x");
+        assert_eq!(observables[0]["discriminator"], "$x == 1");
+        assert_eq!(sinks.len(), 1, "the indented is() must produce an observed sink");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn emit_returns_empty_when_no_t_files() {
         let root = std::env::temp_dir().join("perl-p4-empty-root");
         std::fs::create_dir_all(&root).expect("mkdir");
@@ -1848,16 +1886,27 @@ mod tests {
     }
 
     #[test]
-    fn extract_is_args_parses_simple_is_call() {
-        let (got, expected) =
-            extract_is_args("is(discount(100), 50, 'half price');").expect("must parse");
+    fn test_call_facts_collects_simple_is_call() {
+        let calls = facts_from_src("is(discount(100), 50, 'half price');").is_args;
+        let [(got, expected)] = calls.as_slice() else {
+            panic!("must parse exactly one is call");
+        };
         assert_eq!(got, "discount(100)");
         assert_eq!(expected, "50");
     }
 
     #[test]
-    fn extract_is_args_returns_none_for_non_is() {
-        assert!(extract_is_args("ok(1, 'truthy');").is_none());
+    fn test_call_facts_ignores_non_is_calls() {
+        assert!(facts_from_src("ok(1, 'truthy');").is_args.is_empty());
+    }
+
+    #[test]
+    fn test_call_facts_collects_indented_multiline_is_call() {
+        let calls = facts_from_src(
+            "subtest 'nested' => sub {\n    is(\n        $x,\n        1,\n    ); # trailing comment\n};\n",
+        )
+        .is_args;
+        assert_eq!(calls, vec![("$x".to_string(), "1".to_string())]);
     }
 
     #[test]
@@ -2561,7 +2610,7 @@ mod tests {
     /// Build `TestCallFacts` directly from source, mirroring what
     /// `emit_relations_and_discriminators` does per `.t` file.
     fn facts_from_src(src: &str) -> TestCallFacts {
-        TestCallFacts::from_ast(&parse_src(src))
+        TestCallFacts::from_ast(&parse_src(src), src)
     }
 
     fn one_sub(name: &str) -> std::collections::HashSet<String> {

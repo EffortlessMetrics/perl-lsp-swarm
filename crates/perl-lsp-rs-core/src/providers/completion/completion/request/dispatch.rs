@@ -303,9 +303,17 @@ fn complete_indirect_method_context(
         return false;
     }
 
-    // Second gate: the resolved package must actually contribute workspace
-    // methods. An unindexed class (`new SomeUnknownThing`) yields nothing and
-    // falls through rather than offering bare object defaults.
+    // Second gate: the resolved package must contribute at least one class-specific
+    // method — i.e. something beyond the UNIVERSAL defaults every Perl object
+    // inherits (`new`, `isa`, `can`, `DOES`, `VERSION`, `DESTROY`, `AUTOLOAD`).
+    //
+    // The probe consults *both* providers so an in-file package that hasn't been
+    // indexed into the workspace yet is still recognised.  Filtering the UNIVERSAL
+    // defaults before the emptiness check ensures a genuinely-unknown class
+    // (`new SomeUnknownThing`) still falls through even though
+    // `add_method_completions` adds those defaults for every receiver.
+    const OBJECT_DEFAULTS: &[&str] =
+        &["new", "isa", "can", "DOES", "VERSION", "DESTROY", "AUTOLOAD"];
     let mut probe = Vec::new();
     workspace::add_workspace_method_completions(
         &mut probe,
@@ -315,7 +323,14 @@ fn complete_indirect_method_context(
         &provider.workspace_index,
         &provider.used_modules,
     );
-    if probe.is_empty() {
+    methods::add_method_completions(
+        &mut probe,
+        &synth,
+        source,
+        &provider.symbol_table,
+        &provider.used_modules,
+    );
+    if !probe.iter().any(|c| !OBJECT_DEFAULTS.contains(&c.label.as_str())) {
         return false;
     }
 

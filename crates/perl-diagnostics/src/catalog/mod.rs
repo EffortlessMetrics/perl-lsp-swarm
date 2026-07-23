@@ -14,8 +14,7 @@ pub struct DiagnosticMeta {
     /// Optional code description object containing a docs URL.
     pub desc: Option<Value>,
     /// Optional human-readable context hint explaining what the diagnostic
-    /// means and how to resolve it.  `None` for codes (e.g. Perl::Critic)
-    /// whose per-policy descriptions already serve this purpose.
+    /// means and how to resolve it.
     pub hint: Option<&'static str>,
 }
 
@@ -131,36 +130,6 @@ pub fn eval_error_flow() -> DiagnosticMeta {
     diagnostic_meta(DiagnosticCode::EvalErrorFlow)
 }
 
-/// Perl::Critic severity-5 violation diagnostic (PC005).
-#[must_use]
-pub fn critic_severity_5() -> DiagnosticMeta {
-    diagnostic_meta(DiagnosticCode::CriticSeverity5)
-}
-
-/// Perl::Critic severity-4 violation diagnostic (PC004).
-#[must_use]
-pub fn critic_severity_4() -> DiagnosticMeta {
-    diagnostic_meta(DiagnosticCode::CriticSeverity4)
-}
-
-/// Perl::Critic severity-3 violation diagnostic (PC003).
-#[must_use]
-pub fn critic_severity_3() -> DiagnosticMeta {
-    diagnostic_meta(DiagnosticCode::CriticSeverity3)
-}
-
-/// Perl::Critic severity-2 violation diagnostic (PC002).
-#[must_use]
-pub fn critic_severity_2() -> DiagnosticMeta {
-    diagnostic_meta(DiagnosticCode::CriticSeverity2)
-}
-
-/// Perl::Critic severity-1 violation diagnostic (PC001).
-#[must_use]
-pub fn critic_severity_1() -> DiagnosticMeta {
-    diagnostic_meta(DiagnosticCode::CriticSeverity1)
-}
-
 /// Guess diagnostic metadata from a free-form message.
 #[must_use]
 pub fn from_message(msg: &str) -> Option<DiagnosticMeta> {
@@ -179,13 +148,6 @@ mod tests {
             meta.desc,
             Some(serde_json::json!({ "href": "https://docs.perl-lsp.org/errors/PL001" }))
         );
-    }
-
-    #[test]
-    fn critic_codes_have_no_docs_url() {
-        let meta = super::critic_severity_1();
-        assert_eq!(meta.code, "PC001");
-        assert!(meta.desc.is_none());
     }
 
     #[test]

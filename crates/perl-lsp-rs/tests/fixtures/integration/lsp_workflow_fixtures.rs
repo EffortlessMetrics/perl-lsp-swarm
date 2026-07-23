@@ -384,7 +384,7 @@ pub fn load_workflow_fixtures() -> Vec<WorkflowFixture> {
                                 },
                                 "severity": 1,
                                 "message": "Unterminated string literal",
-                                "source": "perl-parser"
+                                "source": "perl-lsp"
                             },
                             {
                                 "range": {

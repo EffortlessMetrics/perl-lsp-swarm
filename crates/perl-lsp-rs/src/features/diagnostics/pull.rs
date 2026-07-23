@@ -629,7 +629,7 @@ impl PullDiagnosticsProvider {
             severity,
             code,
             code_description: None,
-            source: Some("perl-lsp-critic".to_string()),
+            source: Some("perl-lsp".to_string()),
             message: finding.message,
             related_information: None,
             tags: None,
@@ -1288,12 +1288,24 @@ fn is_fixable_diagnostic(code: &str) -> bool {
 }
 
 /// Determine the diagnostic source based on the code.
+///
+/// Source taxonomy (see issue #4627):
+/// - `perl-lsp` — all built-in diagnostics: parse errors (`PL***` codes),
+///   built-in lints, and native critic findings (`native.*` codes).
+/// - `perl-lsp-critic` — findings from the external `perlcritic` binary,
+///   whose codes are fully-qualified Perl::Critic policy names (`Policy::Name`).
+///
+/// This resolves the former fragmentation across four strings
+/// (`perl-lsp`, `perl-lsp-critic`, `perlcritic`, `perl-parser`) so that the
+/// same logical finding carries the same source regardless of transport path.
 fn diagnostic_source(code: Option<&NumberOrString>) -> Option<String> {
     match code {
         Some(NumberOrString::String(code_str)) => {
-            // Perl::Critic policies contain "::" and are not in our DiagnosticCode enum
+            // External Perl::Critic policies contain "::" and are not in our
+            // DiagnosticCode enum. Native critic codes (`native.*`) and built-in
+            // lint codes (`PL***`) are both built-in and use `perl-lsp`.
             if code_str.contains("::") && DiagnosticCode::parse_code(code_str).is_none() {
-                Some("perlcritic".to_string())
+                Some("perl-lsp-critic".to_string())
             } else {
                 Some("perl-lsp".to_string())
             }
@@ -1502,7 +1514,7 @@ mod tests {
                     .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_strict"))
             })
             .ok_or("expected native strict finding")?;
-        assert_eq!(strict.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(strict.source.as_deref(), Some("perl-lsp"));
         assert_eq!(strict.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(strict.message, "Code does not use strict");
         let data = strict.data.as_ref().ok_or("native critic data should be populated")?;
@@ -1518,7 +1530,7 @@ mod tests {
                     .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_warnings"))
             })
             .ok_or("expected native warnings finding")?;
-        assert_eq!(warnings.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(warnings.source.as_deref(), Some("perl-lsp"));
 
         let assignment = items
             .iter()
@@ -1528,7 +1540,7 @@ mod tests {
                     .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.common.assignment_in_condition"))
             })
             .ok_or("expected native assignment-in-condition finding")?;
-        assert_eq!(assignment.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(assignment.source.as_deref(), Some("perl-lsp"));
         assert_eq!(assignment.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(assignment.message, "Assignment in condition - did you mean '=='?");
         let data = assignment
@@ -1547,7 +1559,7 @@ mod tests {
                 )
             })
             .ok_or("expected native printf format arity finding")?;
-        assert_eq!(printf_format.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(printf_format.source.as_deref(), Some("perl-lsp"));
         assert_eq!(printf_format.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(
             printf_format.message,
@@ -1569,7 +1581,7 @@ mod tests {
                 )
             })
             .ok_or("expected native deprecated-defined finding")?;
-        assert_eq!(deprecated_defined.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(deprecated_defined.source.as_deref(), Some("perl-lsp"));
         assert_eq!(deprecated_defined.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(deprecated_defined.message, "Use of 'defined @items' is deprecated");
         let data = deprecated_defined
@@ -1588,7 +1600,7 @@ mod tests {
                 )
             })
             .ok_or("expected native undef-comparison finding")?;
-        assert_eq!(undef_comparison.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(undef_comparison.source.as_deref(), Some("perl-lsp"));
         assert_eq!(undef_comparison.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(
             undef_comparison.message,
@@ -1610,7 +1622,7 @@ mod tests {
                 )
             })
             .ok_or("expected native stale-dollar-at finding")?;
-        assert_eq!(stale_dollar_at.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(stale_dollar_at.source.as_deref(), Some("perl-lsp"));
         assert_eq!(stale_dollar_at.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(stale_dollar_at.message, "Checking $@ after eval can observe a stale error");
         let data = stale_dollar_at
@@ -1629,7 +1641,7 @@ mod tests {
                 )
             })
             .ok_or("expected native unreachable-code finding")?;
-        assert_eq!(unreachable_code.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(unreachable_code.source.as_deref(), Some("perl-lsp"));
         assert_eq!(unreachable_code.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(unreachable_code.message, "Unreachable code: this statement cannot be executed");
         let data = unreachable_code
@@ -1648,7 +1660,7 @@ mod tests {
                     .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.io.bareword_filehandle"))
             })
             .ok_or("expected native bareword filehandle finding")?;
-        assert_eq!(bareword_filehandle.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(bareword_filehandle.source.as_deref(), Some("perl-lsp"));
         assert_eq!(bareword_filehandle.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(bareword_filehandle.message, "Bareword filehandle 'FH' should be lexical");
         let data = bareword_filehandle
@@ -1667,7 +1679,7 @@ mod tests {
                     .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.io.two_arg_open"))
             })
             .ok_or("expected native two-arg open finding")?;
-        assert_eq!(two_arg_open.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(two_arg_open.source.as_deref(), Some("perl-lsp"));
         assert_eq!(two_arg_open.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(two_arg_open.message, "Two-argument open should use an explicit mode");
         let data =
@@ -1684,7 +1696,7 @@ mod tests {
                     .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.io.pipe_open"))
             })
             .ok_or("expected native pipe-open finding")?;
-        assert_eq!(pipe_open.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(pipe_open.source.as_deref(), Some("perl-lsp"));
         assert_eq!(pipe_open.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(pipe_open.message, "Pipe-open executes a shell command");
         let data = pipe_open.data.as_ref().ok_or("native pipe-open data should be populated")?;
@@ -1700,7 +1712,7 @@ mod tests {
                 )
             })
             .ok_or("expected native unchecked open/close finding")?;
-        assert_eq!(unchecked_open_close.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(unchecked_open_close.source.as_deref(), Some("perl-lsp"));
         assert_eq!(unchecked_open_close.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(unchecked_open_close.message, "open() return value should be checked");
         let data = unchecked_open_close
@@ -1719,7 +1731,7 @@ mod tests {
                 )
             })
             .ok_or("expected native backtick execution finding")?;
-        assert_eq!(backtick_exec.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(backtick_exec.source.as_deref(), Some("perl-lsp"));
         assert_eq!(backtick_exec.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(backtick_exec.message, "Command execution detected");
         let data = backtick_exec
@@ -1738,7 +1750,7 @@ mod tests {
                 )
             })
             .ok_or("expected native qx/readpipe finding")?;
-        assert_eq!(qx_readpipe.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(qx_readpipe.source.as_deref(), Some("perl-lsp"));
         assert_eq!(qx_readpipe.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(qx_readpipe.message, "qx/readpipe command execution detected");
         let data =
@@ -1755,7 +1767,7 @@ mod tests {
                 )
             })
             .ok_or("expected native string eval finding")?;
-        assert_eq!(string_eval.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(string_eval.source.as_deref(), Some("perl-lsp"));
         assert_eq!(string_eval.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(string_eval.message, "String eval is a security risk");
         let data =
@@ -1772,7 +1784,7 @@ mod tests {
                 )
             })
             .ok_or("expected native system/exec finding")?;
-        assert_eq!(system_exec.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(system_exec.source.as_deref(), Some("perl-lsp"));
         assert_eq!(system_exec.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(system_exec.message, "system() executes a shell command");
         let data =
@@ -1790,7 +1802,7 @@ mod tests {
                     && diag.message == "Lexical variable '$unused' is declared but never used"
             })
             .ok_or("expected native unused lexical finding")?;
-        assert_eq!(unused.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(unused.source.as_deref(), Some("perl-lsp"));
         assert_eq!(unused.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(unused.message, "Lexical variable '$unused' is declared but never used");
         let data = unused.data.as_ref().ok_or("native unused lexical data should be populated")?;
@@ -1806,7 +1818,7 @@ mod tests {
                     .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_parameter"))
             })
             .ok_or("expected native unused parameter finding")?;
-        assert_eq!(unused_parameter.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(unused_parameter.source.as_deref(), Some("perl-lsp"));
         assert_eq!(unused_parameter.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(unused_parameter.message, "Parameter '$unused_param' is never used");
         let data = unused_parameter
@@ -1825,7 +1837,7 @@ mod tests {
                     .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.variables.duplicate_parameter"))
             })
             .ok_or("expected native duplicate parameter finding")?;
-        assert_eq!(duplicate_parameter.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(duplicate_parameter.source.as_deref(), Some("perl-lsp"));
         assert_eq!(duplicate_parameter.severity, Some(LspDiagnosticSeverity::ERROR));
         assert_eq!(
             duplicate_parameter.message,
@@ -1847,7 +1859,7 @@ mod tests {
                     .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.variables.parameter_shadows_global"))
             })
             .ok_or("expected native parameter shadowing finding")?;
-        assert_eq!(parameter_shadow.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(parameter_shadow.source.as_deref(), Some("perl-lsp"));
         assert_eq!(parameter_shadow.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(
             parameter_shadow.message,
@@ -1869,7 +1881,7 @@ mod tests {
                     .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.variables.duplicate_lexical"))
             })
             .ok_or("expected native duplicate lexical finding")?;
-        assert_eq!(duplicate.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(duplicate.source.as_deref(), Some("perl-lsp"));
         assert_eq!(duplicate.severity, Some(LspDiagnosticSeverity::ERROR));
         assert_eq!(
             duplicate.message,
@@ -1889,7 +1901,7 @@ mod tests {
                     .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.variables.shadowed_lexical"))
             })
             .ok_or("expected native shadowed lexical finding")?;
-        assert_eq!(shadowed.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(shadowed.source.as_deref(), Some("perl-lsp"));
         assert_eq!(shadowed.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(shadowed.message, "Lexical variable '$shadow' shadows an outer declaration");
         let data =
@@ -1906,7 +1918,7 @@ mod tests {
                 )
             })
             .ok_or("expected native required POD sections finding")?;
-        assert_eq!(require_pod_sections.source.as_deref(), Some("perl-lsp-critic"));
+        assert_eq!(require_pod_sections.source.as_deref(), Some("perl-lsp"));
         assert_eq!(require_pod_sections.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(
             require_pod_sections.message,

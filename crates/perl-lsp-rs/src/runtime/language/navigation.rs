@@ -681,38 +681,32 @@ fn inherited_method_definition_location(
 }
 
 #[cfg(feature = "workspace")]
-fn find_symbol_key_definition_location(
+fn find_symbol_key_definition_locations(
     workspace_index: &crate::workspace_index::WorkspaceIndex,
     symbol_key: &crate::workspace_index::SymbolKey,
-) -> Option<crate::workspace_index::Location> {
+) -> Vec<crate::workspace_index::Location> {
     if symbol_key.kind == crate::workspace_index::SymKind::Pack
         && symbol_key.pkg.starts_with("Plack::Middleware::")
     {
         if let Some(location) =
             find_plack_middleware_definition_location(workspace_index, symbol_key.pkg.as_ref())
         {
-            return Some(location);
+            return vec![location];
         }
     }
 
     if symbol_key.kind == crate::workspace_index::SymKind::Sub && symbol_key.sigil.is_none() {
-        find_workspace_definition_location(workspace_index, &symbol_key.pkg, &symbol_key.name)
-            .or_else(|| {
-                inherited_method_definition_location(
-                    workspace_index,
-                    &symbol_key.pkg,
-                    &symbol_key.name,
-                )
-            })
+        // For subroutines, try workspace definitions (may include multiple across packages),
+        // then fall back to inherited method resolution (single location).
+        let direct = workspace_index.find_defs(symbol_key);
+        if !direct.is_empty() {
+            return direct;
+        }
+        inherited_method_definition_location(workspace_index, &symbol_key.pkg, &symbol_key.name)
+            .into_iter()
+            .collect()
     } else {
-        workspace_index.find_def(symbol_key).or_else(|| {
-            let symbol_name = if symbol_key.kind == crate::workspace_index::SymKind::Sub {
-                format!("{}::{}", symbol_key.pkg, symbol_key.name)
-            } else {
-                symbol_key.name.to_string()
-            };
-            workspace_index.find_definition(&symbol_name)
-        })
+        workspace_index.find_defs(symbol_key)
     }
 }
 
@@ -1756,18 +1750,24 @@ impl LspServer {
                                 let workspace_symbol_key =
                                     super::to_workspace_symbol_key(&symbol_key);
 
-                                if let Some(def_location) = find_symbol_key_definition_location(
+                                let def_locations = find_symbol_key_definition_locations(
                                     workspace_index,
                                     &workspace_symbol_key,
-                                ) {
-                                    tracing::debug!(location = ?def_location, "found definition");
-                                    // Convert internal Location to LSP Location
-                                    if let Some(lsp_location) =
-                                        crate::workspace_index::lsp_adapter::to_lsp_location(
-                                            &def_location,
-                                        )
-                                    {
-                                        return Ok(Some(json!([lsp_location])));
+                                );
+                                if !def_locations.is_empty() {
+                                    tracing::debug!(
+                                        count = def_locations.len(),
+                                        "found definition(s)"
+                                    );
+                                    let lsp_locations: Vec<serde_json::Value> = def_locations
+                                        .iter()
+                                        .filter_map(|loc| {
+                                            let lsp_loc = crate::workspace_index::lsp_adapter::to_lsp_location(loc)?;
+                                            serde_json::to_value(lsp_loc).ok()
+                                        })
+                                        .collect();
+                                    if !lsp_locations.is_empty() {
+                                        return Ok(Some(json!(lsp_locations)));
                                     }
                                 }
 

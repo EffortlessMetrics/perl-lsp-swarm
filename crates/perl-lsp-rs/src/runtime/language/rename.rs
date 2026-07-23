@@ -11,7 +11,8 @@
 //!   package-scoped workspace renames fail closed instead of editing from stale facts
 
 use super::super::*;
-use crate::protocol::{REQUEST_FAILED, req_position, req_uri};
+use crate::cancellation::RequestCleanupGuard;
+use crate::protocol::{REQUEST_CANCELLED, REQUEST_FAILED, req_position, req_uri};
 #[cfg(feature = "workspace")]
 use crate::runtime::readiness::{IndexReadinessOutcome, IndexReadinessPolicy};
 #[cfg(feature = "workspace")]
@@ -1071,6 +1072,40 @@ impl LspServer {
 
         // Return null if rename is not possible at this position
         Ok(Some(json!(null)))
+    }
+
+    /// Cancellation-aware wrapper for `textDocument/rename`.
+    ///
+    /// Polls the cancellation token before the multi-step workspace rename
+    /// pipeline (symbol resolution, index access, cross-file edit planning)
+    /// so a `$/cancelRequest` issued while the handler is waiting on the
+    /// documents lock or the workspace index is observed promptly. Returns
+    /// `REQUEST_CANCELLED` (code -32800) when cancelled.
+    pub(crate) fn handle_rename_workspace_cancellable(
+        &self,
+        params: Option<Value>,
+        request_id: Option<&Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        let typed_id = request_id.and_then(JsonRpcId::try_from_value);
+        let _cleanup_guard = RequestCleanupGuard::from_ref(typed_id.as_ref());
+
+        if let Some(ref tid) = typed_id {
+            let token = GLOBAL_CANCELLATION_REGISTRY.get_token(tid).unwrap_or_else(|| {
+                let token =
+                    PerlLspCancellationToken::new(tid.clone(), "textDocument/rename".into());
+                let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
+                token
+            });
+            if token.is_cancelled_relaxed() {
+                return Err(JsonRpcError {
+                    code: REQUEST_CANCELLED,
+                    message: "Request cancelled - rename provider".to_string(),
+                    data: None,
+                });
+            }
+        }
+
+        self.handle_rename_workspace(params)
     }
 
     /// Handle textDocument/rename request with workspace support

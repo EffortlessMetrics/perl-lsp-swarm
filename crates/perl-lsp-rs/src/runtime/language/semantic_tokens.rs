@@ -5,7 +5,8 @@
 //! Includes deadline enforcement to prevent blocking on large files.
 
 use super::super::*;
-use crate::protocol::req_uri;
+use crate::cancellation::RequestCleanupGuard;
+use crate::protocol::{req_uri, REQUEST_CANCELLED};
 use crate::state::semantic_tokens_deadline;
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 use perl_semantic_facts::ProviderFallbackState;
@@ -97,6 +98,40 @@ impl LspServer {
             ),
         );
         Ok(Some(json!({ "data": [] })))
+    }
+
+    /// Cancellation-aware wrapper for `textDocument/semanticTokens/full`.
+    ///
+    /// Polls the cancellation token at the dispatch boundary and again just
+    /// before the expensive `collect_semantic_tokens` traversal, returning
+    /// `REQUEST_CANCELLED` (code -32800) if `$/cancelRequest` has fired.
+    pub(crate) fn handle_semantic_tokens_cancellable(
+        &self,
+        params: Option<Value>,
+        request_id: Option<&Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        let typed_id = request_id.and_then(JsonRpcId::try_from_value);
+        let _cleanup_guard = RequestCleanupGuard::from_ref(typed_id.as_ref());
+
+        if let Some(ref tid) = typed_id {
+            let token = GLOBAL_CANCELLATION_REGISTRY.get_token(tid).unwrap_or_else(|| {
+                let token = PerlLspCancellationToken::new(
+                    tid.clone(),
+                    "textDocument/semanticTokens".into(),
+                );
+                let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
+                token
+            });
+            if token.is_cancelled_relaxed() {
+                return Err(JsonRpcError {
+                    code: REQUEST_CANCELLED,
+                    message: "Request cancelled - semantic tokens provider".to_string(),
+                    data: None,
+                });
+            }
+        }
+
+        self.handle_semantic_tokens(params)
     }
 
     /// Record the latest semantic-tokens result for `uri` so a subsequent delta
@@ -697,8 +732,8 @@ mod tests {
     }
 
     #[test]
-    fn our_variable_declaration_candidate_scans_past_non_declaration_marker()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn our_variable_declaration_candidate_scans_past_non_declaration_marker(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // An earlier non-declaration `our ` (here inside a comment) must not mask
         // the real source-backed declaration that follows on a later line.
         let source = "# our $todo\nour $shared = 1;\n$shared++;\n";
@@ -721,8 +756,8 @@ mod tests {
     }
 
     #[test]
-    fn state_variable_declaration_candidate_scans_past_non_declaration_marker()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn state_variable_declaration_candidate_scans_past_non_declaration_marker(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // An earlier non-declaration `state ` (here inside a comment) must not
         // mask the real source-backed declaration that follows.
         let source = "# state $todo\nstate $count = 0;\n$count++;\n";
@@ -760,8 +795,8 @@ mod tests {
     }
 
     #[test]
-    fn named_function_call_candidate_handles_empty_argument_list()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn named_function_call_candidate_handles_empty_argument_list(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let source = "run_pipeline();\n";
         let candidate = semantic_token_named_function_call_candidate(source)
             .ok_or("a no-argument call should be detected")?;
@@ -790,8 +825,8 @@ mod tests {
     }
 
     #[test]
-    fn named_function_call_candidate_scans_past_commented_call()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn named_function_call_candidate_scans_past_commented_call(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // A `name(` inside a `#` line comment must not shadow the real call that
         // follows; the detector skips the comment and reports `dispatch`.
         let source = "# run_pipeline()\ndispatch();\n";
@@ -802,8 +837,8 @@ mod tests {
     }
 
     #[test]
-    fn named_function_call_candidate_scans_past_stringized_call()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn named_function_call_candidate_scans_past_stringized_call(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // A `name(` inside a quoted string literal must not shadow a later real
         // call.
         let source = "my $x = 'foo(';\nbar();\n";
@@ -814,8 +849,8 @@ mod tests {
     }
 
     #[test]
-    fn named_function_call_candidate_balances_parens_inside_string_arguments()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn named_function_call_candidate_balances_parens_inside_string_arguments(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Parentheses inside a quoted string argument must not be counted while
         // balancing, so the whole-call span still covers `emit(")")` (9 units)
         // to match the live FunctionCall token.
@@ -829,8 +864,8 @@ mod tests {
     }
 
     #[test]
-    fn named_function_call_candidate_scans_past_multiline_call_to_single_line_call()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn named_function_call_candidate_scans_past_multiline_call_to_single_line_call(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // A leading call whose parens span multiple lines cannot yield a
         // single-line span, so the scan continues to the later single-line call.
         let source = "outer(\n    1,\n);\ninner();\n";
@@ -864,8 +899,8 @@ mod tests {
     }
 
     #[test]
-    fn filter_encoded_semantic_tokens_by_range_reencodes_retained_range()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn filter_encoded_semantic_tokens_by_range_reencodes_retained_range(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let tokens: Vec<crate::semantic_tokens::EncodedToken> =
             vec![[0, 0, 5, 1, 0], [1, 2, 3, 2, 0], [0, 5, 4, 3, 1], [1, 1, 2, 4, 0]];
 
@@ -959,8 +994,8 @@ mod tests {
     }
 
     #[test]
-    fn handle_semantic_tokens_range_uses_core_label_tokens()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_semantic_tokens_range_uses_core_label_tokens(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let uri = "file:///semantic_range_label.pl";
         let source = "OUTER: while ($x) {\n    last OUTER;\n}\n";
@@ -2109,8 +2144,8 @@ mod semantic_tokens_guidance_tests {
     ///
     /// Ported from EffortlessMetrics/perl-lsp#9868.
     #[test]
-    fn semantic_tokens_closed_document_error_includes_sync_guidance()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn semantic_tokens_closed_document_error_includes_sync_guidance(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let uri = "file:///workspace/lib/Missing.pm";
 

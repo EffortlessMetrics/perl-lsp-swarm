@@ -310,6 +310,20 @@ The `perllsp` binary works with any editor that supports the Language Server Pro
   traffic may fail auto-download. Use `perl-lsp.serverPath` or
   `perl-lsp.downloadBaseUrl` for managed/internal deployment.
 
+## Workspace Trust
+
+perl-lsp **requires workspace trust** before downloading or spawning the
+language server binary. In an untrusted workspace the extension:
+
+- Does not auto-download the `perllsp` binary.
+- Does not start the language server.
+- Does not run background update checks.
+- Blocks the **Reinstall Server Binary** and **Check for Binary Updates** commands.
+
+When you grant trust to the workspace (VS Code's built-in trust prompt),
+perl-lsp automatically starts the language server. This prevents untrusted
+code from triggering binary downloads or spawning server processes. (#4631)
+
 ## Resources
 
 - [Source Code](https://github.com/EffortlessMetrics/perl-lsp)

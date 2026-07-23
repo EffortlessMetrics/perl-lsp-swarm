@@ -51,6 +51,7 @@ tracing.workspace = true
 clap = { workspace = true }
 
 # Inlined satellite dependencies (Wave H collapse)
+perl-ast = { workspace = true }
 perl-parser = { workspace = true }
 perl-parser-core = { workspace = true }
 thiserror.workspace = true
@@ -88,7 +89,7 @@ toml = "1.1.2"
 nix = { version = "0.31.3", features = ["signal"] }  # For SIGINT handling (AC9)
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3.9", features = ["processthreadsapi", "wincon"] }  # For Ctrl+C and GenerateConsoleCtrlEvent (AC9, #3028)
+winapi = { version = "0.3.9", features = ["processthreadsapi", "wincon", "winnt", "handleapi"] }  # For Ctrl+C and GenerateConsoleCtrlEvent (AC9, #3028)
 
 [features]
 default = ["dap-phase1", "dap-phase2", "dap-phase3"]
@@ -223,11 +224,20 @@ path = "tests/dap_scorecard_harness.rs"
 # AC:4069 DAP launch-success scorecard: 5 fixtures, ≥80% pass rate, p50/p95 latency
 
 [[test]]
+name = "dap_security_path_bypass_4638"
+path = "tests/dap_security_path_bypass_4638.rs"
+# #4638: validate_source_path bypass regression tests
+
+[[test]]
 name = "wave_h_collapse_integration"
 path = "tests/wave_h_collapse_integration.rs"
 # Integration tests for Wave H collapse: module accessibility, use-path updates, external consumers
 
 # Wave H collapsed satellite test files (28 tests from 11 satellites)
+[[test]]
+name = "breakpoint_classification_alignment_tests"
+path = "tests/breakpoint_classification_alignment_tests.rs"
+
 [[test]]
 name = "breakpoint_breakpoint_tests"
 path = "tests/breakpoint_breakpoint_tests.rs"

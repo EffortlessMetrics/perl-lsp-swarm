@@ -187,14 +187,14 @@ regressions.
 
 ### CI Watcher
 
-**Purpose:** Verify CI is genuinely green on the current HEAD SHA — not a
-stale result from an earlier push. Fix mechanical CI failures.
+**Purpose:** Verify the live required PR checks and merge state, not a cached
+label or stale report. Fix mechanical CI failures.
 
 **Model tier:** haiku
 
 **Constraints:**
 - Read-only signal collection; may push fixes for mechanical failures (fmt, clippy)
-- Never declare CI green from a cached label — query live SHA
+- Never declare CI green from a cached label — query the live PR checks
 - One routing decision: `ci-green` OR `needs-ci-fix`
 
 **Required output schema:**

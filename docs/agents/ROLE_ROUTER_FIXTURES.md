@@ -28,7 +28,7 @@ Issue: supplied issue
 Objective: review the named current PR head for the declared parser seam
 Read scope: named files, linked spec, current PR, required checks
 Write scope: none
-Proof: cite exact-head findings and commands
+Proof: cite findings and commands for the declared PR revision
 Stop: return if the head changes or the named seam is outside scope
 ```
 

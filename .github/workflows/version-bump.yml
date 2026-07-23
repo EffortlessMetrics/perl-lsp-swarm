@@ -34,6 +34,9 @@ on:
 permissions:
   contents: write
   pull-requests: write
+env:
+  GIT_CLIFF_VERSION: "2.13.1"
+  GIT_CLIFF_LINUX_AMD64_SHA256: "9a1263f24e59a2f508c7b3d3283c9dea94a8bf697f96dbc18cc783cac6284546"
 
 concurrency:
   group: version-bump
@@ -53,29 +56,26 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # stable (master)
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
         with:
           toolchain: stable
 
       - name: Install git-cliff
         run: |
+          set -euo pipefail
           install_dir="$(mktemp -d)"
-          GIT_CLIFF_TAG="$(curl -s https://api.github.com/repos/orhun/git-cliff/releases/latest | jq -r '.tag_name // ""')"
-          if [ -z "$GIT_CLIFF_TAG" ] || [ "$GIT_CLIFF_TAG" = "null" ]; then
-            echo "::error::Failed to resolve latest git-cliff release tag"
+          asset="git-cliff-${GIT_CLIFF_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          asset_url="https://github.com/orhun/git-cliff/releases/download/v${GIT_CLIFF_VERSION}/${asset}"
+          archive="${install_dir}/${asset}"
+
+          curl -fsSL "$asset_url" -o "$archive"
+          echo "${GIT_CLIFF_LINUX_AMD64_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "$archive" -C "$install_dir"
+          extracted_dir="$(tar -tzf "$archive" | sed -n '1s#/.*##p')"
+          if [ -z "$extracted_dir" ]; then
+            echo "::error::Could not determine git-cliff archive directory"
             exit 1
           fi
-
-          ASSET_URL="$(curl -s "https://api.github.com/repos/orhun/git-cliff/releases/tags/${GIT_CLIFF_TAG}" | \
-            jq -r '.assets[].browser_download_url | select(test("x86_64-unknown-linux-gnu\\.tar\\.gz$"))' | head -n 1)"
-          if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then
-            echo "::error::Failed to resolve linux x86_64 git-cliff asset from ${GIT_CLIFF_TAG}"
-            exit 1
-          fi
-
-          curl -fsSL "$ASSET_URL" -o "${install_dir}/git-cliff.tar.gz"
-          tar -xzf "${install_dir}/git-cliff.tar.gz" -C "$install_dir"
-          extracted_dir="$(tar -tzf "${install_dir}/git-cliff.tar.gz" | head -n 1 | cut -d'/' -f1)"
           mkdir -p /usr/local/bin
           sudo mv "${install_dir}/${extracted_dir}/git-cliff" /usr/local/bin/
           sudo chmod +x /usr/local/bin/git-cliff

@@ -72,4 +72,20 @@ impl<'a> RegexCursor<'a> {
         }
         true
     }
+
+    pub(crate) fn skip_comment(&mut self) -> bool {
+        if self.current() != Some(b'(') || self.peek(1) != Some(b'?') || self.peek(2) != Some(b'#')
+        {
+            return false;
+        }
+
+        self.pos += 3;
+        while let Some(ch) = self.current() {
+            self.pos += 1;
+            if ch == b')' {
+                break;
+            }
+        }
+        true
+    }
 }

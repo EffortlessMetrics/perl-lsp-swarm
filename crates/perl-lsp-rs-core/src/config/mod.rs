@@ -390,7 +390,18 @@ impl ServerConfig {
                 self.perlcritic_enabled = enabled;
             }
             if let Some(severity) = critic.get("severity").and_then(|v| v.as_u64()) {
-                self.perlcritic_severity = severity.clamp(1, 5) as u8;
+                let clamped = severity.clamp(1, 5) as u8;
+                if clamped as u64 != severity {
+                    tracing::warn!(
+                        target: "perl_lsp::config",
+                        setting = "perlcritic.severity",
+                        value = severity,
+                        valid_range = "1-5",
+                        "perlcritic severity out of range; clamped to {}",
+                        clamped,
+                    );
+                }
+                self.perlcritic_severity = clamped;
             }
             if let Some(profile) = critic.get("profile").and_then(|v| v.as_str()) {
                 let profile = profile.trim();
@@ -411,17 +422,42 @@ impl ServerConfig {
                 self.perlcritic_enabled = enabled;
             }
             if let Some(severity) = critic.get("severity").and_then(|v| v.as_u64()) {
-                self.perlcritic_severity = severity.clamp(1, 5) as u8;
+                let clamped = severity.clamp(1, 5) as u8;
+                if clamped as u64 != severity {
+                    tracing::warn!(
+                        target: "perl_lsp::config",
+                        setting = "critic.severity",
+                        value = severity,
+                        valid_range = "1-5",
+                        "critic severity out of range; clamped to {}",
+                        clamped,
+                    );
+                }
+                self.perlcritic_severity = clamped;
             }
-            if let Some(engine) =
-                critic.get("engine").and_then(|v| v.as_str()).and_then(parse_critic_engine)
-            {
-                self.critic_engine = engine;
+            if let Some(engine) = critic.get("engine").and_then(|v| v.as_str()) {
+                match parse_critic_engine(engine) {
+                    Some(engine) => self.critic_engine = engine,
+                    None => tracing::warn!(
+                        target: "perl_lsp::config",
+                        setting = "critic.engine",
+                        value = %engine,
+                        valid = CRITIC_ENGINE_VALID_OPTIONS,
+                        "unrecognized critic.engine value; keeping current setting",
+                    ),
+                }
             }
-            if let Some(profile) =
-                critic.get("profile").and_then(|v| v.as_str()).and_then(parse_native_critic_profile)
-            {
-                self.native_critic_profile = profile.to_string();
+            if let Some(profile) = critic.get("profile").and_then(|v| v.as_str()) {
+                match parse_native_critic_profile(profile) {
+                    Some(profile) => self.native_critic_profile = profile.to_string(),
+                    None => tracing::warn!(
+                        target: "perl_lsp::config",
+                        setting = "critic.profile",
+                        value = %profile,
+                        valid = NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
+                        "unrecognized critic.profile value; keeping current setting",
+                    ),
+                }
             }
             if let Some(include) = string_array(critic.get("include")) {
                 self.native_critic_include = include;
@@ -435,10 +471,17 @@ impl ServerConfig {
             if let Some(enabled) = formatting.get("enabled").and_then(|v| v.as_bool()) {
                 self.perltidy_enabled = enabled;
             }
-            if let Some(engine) = formatting.get("engine").and_then(|v| v.as_str())
-                && let Some(mode) = parse_formatter_mode(engine)
-            {
-                self.formatting_engine = mode;
+            if let Some(engine) = formatting.get("engine").and_then(|v| v.as_str()) {
+                match parse_formatter_mode(engine) {
+                    Some(mode) => self.formatting_engine = mode,
+                    None => tracing::warn!(
+                        target: "perl_lsp::config",
+                        setting = "formatting.engine",
+                        value = %engine,
+                        valid = FORMATTER_MODE_VALID_OPTIONS,
+                        "unrecognized formatting.engine value; keeping current setting",
+                    ),
+                }
             }
             if let Some(profile) = formatting.get("profile").and_then(|v| v.as_str()) {
                 let profile = profile.trim();
@@ -565,6 +608,22 @@ fn parse_native_critic_profile(value: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// Human-readable list of accepted `formatting.engine` values, used in
+/// `tracing::warn!` messages when a user supplies an unrecognized value.
+/// Kept in sync with [`parse_formatter_mode`].
+const FORMATTER_MODE_VALID_OPTIONS: &str = "native, compat (perltidy-compat), external-legacy (external-perltidy, perltidy), \
+     off (disabled, none)";
+
+/// Human-readable list of accepted `critic.engine` values, used in
+/// `tracing::warn!` messages when a user supplies an unrecognized value.
+/// Kept in sync with [`parse_critic_engine`].
+const CRITIC_ENGINE_VALID_OPTIONS: &str = "native, legacy (external, perlcritic)";
+
+/// Human-readable list of accepted `critic.profile` values, used in
+/// `tracing::warn!` messages when a user supplies an unrecognized value.
+/// Kept in sync with [`parse_native_critic_profile`].
+const NATIVE_CRITIC_PROFILE_VALID_OPTIONS: &str = "recommended, strict";
 
 /// Controls whether PERL5LIB paths are prepended or appended to `include_paths`.
 ///
@@ -803,7 +862,13 @@ impl WorkspaceConfig {
                 match prec {
                     "append" => self.perl5lib_precedence = Perl5LibPrecedence::Append,
                     "prepend" => self.perl5lib_precedence = Perl5LibPrecedence::Prepend,
-                    _ => {} // unknown value — leave current setting intact
+                    other => tracing::warn!(
+                        target: "perl_lsp::config",
+                        setting = "workspace.perl5libPrecedence",
+                        value = %other,
+                        valid = "prepend, append",
+                        "unrecognized perl5libPrecedence value; keeping current setting",
+                    ),
                 }
             }
         }
@@ -1283,7 +1348,18 @@ impl ProjectConfig {
             config.perlcritic_enabled = enabled;
         }
         if let Some(severity) = self.diagnostics.perlcritic_severity {
-            config.perlcritic_severity = severity.clamp(1, 5);
+            let clamped = severity.clamp(1, 5);
+            if clamped != severity {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    setting = "diagnostics.perlcritic_severity",
+                    value = severity,
+                    valid_range = "1-5",
+                    "perlcritic_severity out of range; clamped to {}",
+                    clamped,
+                );
+            }
+            config.perlcritic_severity = clamped;
         }
         if let Some(hints) = self.features.inlay_hints {
             config.inlay_hints_enabled = hints;
@@ -1321,20 +1397,44 @@ impl ProjectConfig {
         if let Some(enabled) = self.formatting.enabled {
             config.perltidy_enabled = enabled;
         }
-        if let Some(ref engine) = self.formatting.engine
-            && let Some(mode) = parse_formatter_mode(engine)
-        {
-            config.formatting_engine = mode;
+        if let Some(ref engine) = self.formatting.engine {
+            match parse_formatter_mode(engine) {
+                Some(mode) => config.formatting_engine = mode,
+                None => tracing::warn!(
+                    target: "perl_lsp::config",
+                    setting = "formatting.engine",
+                    value = %engine,
+                    valid = FORMATTER_MODE_VALID_OPTIONS,
+                    "unrecognized formatting.engine value in .perl-lsp.toml; \
+                     keeping current setting",
+                ),
+            }
         }
-        if let Some(ref engine) = self.critic.engine
-            && let Some(engine) = parse_critic_engine(engine)
-        {
-            config.critic_engine = engine;
+        if let Some(ref engine) = self.critic.engine {
+            match parse_critic_engine(engine) {
+                Some(engine) => config.critic_engine = engine,
+                None => tracing::warn!(
+                    target: "perl_lsp::config",
+                    setting = "critic.engine",
+                    value = %engine,
+                    valid = CRITIC_ENGINE_VALID_OPTIONS,
+                    "unrecognized critic.engine value in .perl-lsp.toml; \
+                     keeping current setting",
+                ),
+            }
         }
-        if let Some(ref profile) = self.critic.profile
-            && let Some(profile) = parse_native_critic_profile(profile)
-        {
-            config.native_critic_profile = profile.to_string();
+        if let Some(ref profile) = self.critic.profile {
+            match parse_native_critic_profile(profile) {
+                Some(profile) => config.native_critic_profile = profile.to_string(),
+                None => tracing::warn!(
+                    target: "perl_lsp::config",
+                    setting = "critic.profile",
+                    value = %profile,
+                    valid = NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
+                    "unrecognized critic.profile value in .perl-lsp.toml; \
+                     keeping current setting",
+                ),
+            }
         }
         if let Some(ref include) = self.critic.include {
             config.native_critic_include = normalize_string_list(include);
@@ -1400,6 +1500,8 @@ impl ProjectConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::layer::SubscriberExt as _;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -2184,6 +2286,180 @@ profile = "recommended"
             config.native_critic_exclude,
             vec!["native.common.assignment_in_condition".to_string()]
         );
+    }
+
+    // --- tracing::warn! capture helper for unrecognized-config tests (#4622) ---
+    // A minimal `tracing_subscriber` layer that records the `message` field of
+    // every WARN (and higher) event into a shared buffer. Installed scoped via
+    // `tracing::dispatcher::with_default` so parallel tests do not clobber the
+    // global subscriber.
+
+    /// `tracing::field::Visit` implementation that collects the value of every
+    /// field on a single event (the `message` literal as well as structured
+    /// fields like `setting`, `value`, `valid`) into a shared buffer.
+    struct MessageVisitor(Arc<Mutex<Vec<String>>>);
+    impl tracing::field::Visit for MessageVisitor {
+        fn record_debug(&mut self, _field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.lock().unwrap_or_else(|p| p.into_inner()).push(format!("{:?}", value));
+        }
+        fn record_str(&mut self, _field: &tracing::field::Field, value: &str) {
+            self.0.lock().unwrap_or_else(|p| p.into_inner()).push(value.to_string());
+        }
+    }
+
+    /// `tracing_subscriber` layer that records WARN+ events' message text.
+    struct CapturingLayer {
+        messages: Arc<Mutex<Vec<String>>>,
+    }
+    impl<S> tracing_subscriber::layer::Layer<S> for CapturingLayer
+    where
+        S: tracing::Subscriber,
+    {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            // Only capture WARN and above (the config code emits at warn!).
+            if event.metadata().level() <= &tracing::Level::WARN {
+                let mut visitor = MessageVisitor(Arc::clone(&self.messages));
+                event.record(&mut visitor);
+            }
+        }
+    }
+
+    /// Run `body` under a scoped tracing subscriber that captures WARN+ messages,
+    /// and return the captured message strings.
+    fn capture_warnings(body: impl FnOnce()) -> Vec<String> {
+        let messages: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let subscriber =
+            tracing_subscriber::registry().with(CapturingLayer { messages: Arc::clone(&messages) });
+        tracing::dispatcher::with_default(&subscriber.into(), body);
+        Arc::try_unwrap(messages).map(|m| m.into_inner().unwrap_or_default()).unwrap_or_default()
+    }
+
+    /// Assert that at least one captured warning mentions every `needle`.
+    fn assert_warned_contains(captured: &[String], needles: &[&str]) {
+        let combined: String = captured.join("\n");
+        for needle in needles {
+            assert!(
+                combined.contains(needle),
+                "expected a warning containing {:?}; captured warnings:\n{}",
+                needle,
+                combined,
+            );
+        }
+    }
+
+    #[test]
+    fn json_invalid_critic_engine_warns_and_keeps_default() {
+        let mut config = ServerConfig::default();
+        let prior = config.critic_engine;
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "engine": "nativ" }
+            }));
+        });
+        // Behaviour: typo is ignored, default/current setting kept.
+        assert_eq!(config.critic_engine, prior);
+        // Signal: a warning was emitted naming the setting and value.
+        assert_warned_contains(&captured, &["critic.engine", "nativ"]);
+    }
+
+    #[test]
+    fn json_invalid_critic_profile_warns_and_keeps_current() {
+        let mut config =
+            ServerConfig { native_critic_profile: "strict".to_string(), ..ServerConfig::default() };
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "profile": "recomended" }
+            }));
+        });
+        assert_eq!(config.native_critic_profile, "strict");
+        assert_warned_contains(&captured, &["critic.profile", "recomended"]);
+    }
+
+    #[test]
+    fn json_invalid_formatting_engine_warns_and_keeps_default() {
+        let mut config = ServerConfig::default();
+        let prior = config.formatting_engine;
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "formatting": { "engine": "perltide" }
+            }));
+        });
+        assert_eq!(config.formatting_engine, prior);
+        assert_warned_contains(&captured, &["formatting.engine", "perltide"]);
+    }
+
+    #[test]
+    fn json_invalid_perl5lib_precedence_warns_and_keeps_current() {
+        let mut config = WorkspaceConfig {
+            perl5lib_precedence: Perl5LibPrecedence::Append,
+            ..WorkspaceConfig::default()
+        };
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "workspace": { "perl5libPrecedence": "badvalue" }
+            }));
+        });
+        assert_eq!(config.perl5lib_precedence, Perl5LibPrecedence::Append);
+        assert_warned_contains(&captured, &["perl5libPrecedence", "badvalue"]);
+    }
+
+    #[test]
+    fn json_severity_out_of_range_warns_and_clamps() {
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "severity": 99 }
+            }));
+        });
+        assert_eq!(config.perlcritic_severity, 5);
+        assert_warned_contains(&captured, &["critic.severity", "99"]);
+    }
+
+    #[test]
+    fn toml_invalid_critic_engine_warns_and_keeps_default() {
+        let mut config = ServerConfig::default();
+        let prior = config.critic_engine;
+        let mut project = ProjectConfig::default();
+        project.critic.engine = Some("nativ".to_string());
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        assert_eq!(config.critic_engine, prior);
+        assert_warned_contains(&captured, &["critic.engine", "nativ"]);
+    }
+
+    #[test]
+    fn toml_invalid_critic_profile_warns_and_keeps_current() {
+        let mut config =
+            ServerConfig { native_critic_profile: "strict".to_string(), ..ServerConfig::default() };
+        let mut project = ProjectConfig::default();
+        project.critic.profile = Some("recomended".to_string());
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        assert_eq!(config.native_critic_profile, "strict");
+        assert_warned_contains(&captured, &["critic.profile", "recomended"]);
+    }
+
+    #[test]
+    fn toml_invalid_formatting_engine_warns_and_keeps_default() {
+        let mut config = ServerConfig::default();
+        let prior = config.formatting_engine;
+        let mut project = ProjectConfig::default();
+        project.formatting.engine = Some("perltide".to_string());
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        assert_eq!(config.formatting_engine, prior);
+        assert_warned_contains(&captured, &["formatting.engine", "perltide"]);
+    }
+
+    #[test]
+    fn toml_severity_out_of_range_warns_and_clamps() {
+        let mut config = ServerConfig::default();
+        let mut project = ProjectConfig::default();
+        project.diagnostics.perlcritic_severity = Some(99);
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        assert_eq!(config.perlcritic_severity, 5);
+        assert_warned_contains(&captured, &["perlcritic_severity", "99"]);
     }
 
     #[test]
