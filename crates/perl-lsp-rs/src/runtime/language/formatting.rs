@@ -135,12 +135,21 @@ impl LspServer {
 
             tracing::debug!(uri, "Formatting document");
 
-            let documents = self.documents_guard();
-            let doc =
-                self.get_document(&documents, uri).ok_or_else(|| document_not_open_error(uri))?;
+            // Snapshot the document text under the lock, then release the
+            // guard before running the perltidy subprocess. Holding the
+            // documents lock across the entire format would block every
+            // other concurrent handler (hover, completion, didChange, …)
+            // for the full subprocess duration (#4643).
+            let text = {
+                let documents = self.documents_guard();
+                let doc = self
+                    .get_document(&documents, uri)
+                    .ok_or_else(|| document_not_open_error(uri))?;
+                doc.text.clone()
+            };
             let config = self.build_perltidy_config();
             let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());
-            match formatter.format_document(&doc.text, &options) {
+            match formatter.format_document(&text, &options) {
                 Ok(edits) => {
                     let lsp_edits: Vec<Value> = edits
                         .into_iter()
@@ -201,12 +210,20 @@ impl LspServer {
 
             tracing::debug!(uri, "Formatting range in document");
 
-            let documents = self.documents_guard();
-            let doc =
-                self.get_document(&documents, uri).ok_or_else(|| document_not_open_error(uri))?;
+            // Snapshot the document text under the lock, then release the
+            // guard before running the perltidy subprocess so other LSP
+            // requests are not blocked for the full subprocess duration
+            // (#4643).
+            let text = {
+                let documents = self.documents_guard();
+                let doc = self
+                    .get_document(&documents, uri)
+                    .ok_or_else(|| document_not_open_error(uri))?;
+                doc.text.clone()
+            };
             let config = self.build_perltidy_config();
             let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());
-            match formatter.format_range(&doc.text, &range, &options) {
+            match formatter.format_range(&text, &range, &options) {
                 Ok(edits) => {
                     let lsp_edits: Vec<Value> = edits
                         .into_iter()
@@ -271,9 +288,17 @@ impl LspServer {
 
             tracing::debug!(count = ranges_array.len(), uri, "Formatting ranges in document");
 
-            let documents = self.documents_guard();
-            let doc =
-                self.get_document(&documents, uri).ok_or_else(|| document_not_open_error(uri))?;
+            // Snapshot the document text under the lock, then release the
+            // guard before running the perltidy subprocess so other LSP
+            // requests are not blocked for the full subprocess duration
+            // (#4643).
+            let text = {
+                let documents = self.documents_guard();
+                let doc = self
+                    .get_document(&documents, uri)
+                    .ok_or_else(|| document_not_open_error(uri))?;
+                doc.text.clone()
+            };
             let config = self.build_perltidy_config();
             let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());
             let mut all_edits = Vec::new();
@@ -317,7 +342,7 @@ impl LspServer {
                     WirePosition::new(end_line, end_char),
                 );
 
-                match formatter.format_range(&doc.text, &range, &options) {
+                match formatter.format_range(&text, &range, &options) {
                     Ok(edits) => {
                         all_edits.extend(edits);
                     }
@@ -484,5 +509,152 @@ mod tests {
         assert_eq!(rpc.code, INVALID_REQUEST);
         assert_eq!(rpc.message, format!("Document not open: {uri}"));
         assert!(rpc.data.is_none(), "document-not-open error should not include data");
+    }
+
+    #[test]
+    fn handle_formatting_returns_document_not_open_error() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // The snapshot lookup must still produce the correct error when the
+        // document is not open — the lock is acquired only for the lookup,
+        // then released.
+        let server = LspServer::new();
+
+        let params = Some(json!({
+            "textDocument": { "uri": "file:///nonexistent.pl", "version": 1 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        }));
+
+        let result = server.handle_formatting(params);
+        let err = result.err().ok_or("expected an error for a missing document")?;
+        assert_eq!(err.code, INVALID_REQUEST);
+        assert!(err.message.contains("Document not open"));
+        Ok(())
+    }
+
+    #[test]
+    fn handle_formatting_produces_edits_after_lock_scope_refactor(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Functional regression: the snapshot-and-release refactor must still
+        // produce correct formatting edits. The document text is cloned under
+        // the lock, the lock is released, and the formatter runs off-lock.
+        let server = LspServer::new();
+        let uri = "file:///test_lock_scope.pl";
+        server.test_apply_did_open(uri, "sub hello{my $x=1;return $x;}\n", 1)?;
+
+        let params = Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        }));
+
+        let result = server.handle_formatting(params)?;
+        let edits = result
+            .and_then(|v| v.as_array().map(|a| a.to_vec()))
+            .ok_or("expected an array of edits")?;
+        assert!(!edits.is_empty(), "native formatter should produce edits for unformatted Perl");
+
+        // The documents lock must be immediately acquirable after formatting
+        // returns, proving it was released.
+        assert!(
+            server.documents.try_lock().is_some(),
+            "documents lock must be released after handle_formatting returns"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn handle_formatting_lock_not_held_during_formatting() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Concurrency test: prove the documents lock is released before the
+        // formatting operation runs (#4643).
+        //
+        // Design:
+        // 1. The main thread holds the documents lock, then spawns the
+        //    formatting thread — which blocks on lock acquisition.
+        // 2. After the formatting thread is blocked, the poller thread starts.
+        //    The poller only records a success while `formatting_active` is
+        //    true, preventing false positives after formatting completes.
+        // 3. The main thread releases the lock. parking_lot hands the lock to
+        //    the waiting formatting thread (fairness), not the poller's
+        //    try_lock, so the poller cannot sneak in during the handoff.
+        // 4. With the fix: the formatting thread clones text, releases the
+        //    lock, then formats off-lock. The poller's try_lock succeeds
+        //    while formatting is still active.
+        // 5. Without the fix: the formatting thread holds the lock through
+        //    the entire formatting call. The poller's try_lock fails while
+        //    formatting is active, and `formatting_active` is cleared before
+        //    the poller can try again after the lock is released.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        let server = Arc::new(LspServer::new());
+        let uri = "file:///test_concurrent_lock.pl";
+
+        // Generate a large document so the native formatter has enough work
+        // to create a measurable window where the lock is released but
+        // formatting has not yet completed.
+        let mut text = String::with_capacity(200_000);
+        for i in 0..2000 {
+            text.push_str(&format!("sub func_{i}{{my $x={i};return $x;}}\n"));
+        }
+        server.test_apply_did_open(&uri, &text, 1)?;
+
+        let formatting_active = Arc::new(AtomicBool::new(false));
+        let lock_acquired_during_format = Arc::new(AtomicBool::new(false));
+        let stop_polling = Arc::new(AtomicBool::new(false));
+
+        // --- Hold the lock so the formatting thread blocks on acquisition ---
+        let lock_guard = server.documents.lock();
+
+        // --- Spawn the formatting thread (blocks on the lock) ---
+        let server_fmt = Arc::clone(&server);
+        let fmt_active = Arc::clone(&formatting_active);
+        let fmt_thread = thread::spawn(move || {
+            let params = Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "options": { "tabSize": 4, "insertSpaces": true },
+            }));
+            fmt_active.store(true, Ordering::SeqCst);
+            let _ = server_fmt.handle_formatting(params);
+            fmt_active.store(false, Ordering::SeqCst);
+        });
+
+        // Wait for the formatting thread to start and block on the lock.
+        thread::sleep(Duration::from_millis(50));
+
+        // --- Spawn the poller thread ---
+        let poll_lock = Arc::clone(&lock_acquired_during_format);
+        let poll_stop = Arc::clone(&stop_polling);
+        let poll_active = Arc::clone(&formatting_active);
+        let server_clone = Arc::clone(&server);
+        let poller = thread::spawn(move || {
+            while !poll_stop.load(Ordering::SeqCst) {
+                // Only try to acquire the lock while formatting is in flight.
+                if poll_active.load(Ordering::SeqCst) {
+                    if server_clone.documents.try_lock().is_some() {
+                        poll_lock.store(true, Ordering::SeqCst);
+                    }
+                }
+                thread::sleep(Duration::from_micros(50));
+            }
+        });
+
+        // --- Release the lock so the formatting thread can proceed ---
+        drop(lock_guard);
+
+        // Wait for formatting to complete.
+        fmt_thread.join().ok();
+
+        stop_polling.store(true, Ordering::SeqCst);
+        poller.join().ok();
+
+        assert!(
+            lock_acquired_during_format.load(Ordering::SeqCst),
+            "documents lock should be acquirable while handle_formatting is still \
+             running, proving the lock is not held across the formatting operation \
+             (#4643)"
+        );
+        Ok(())
     }
 }
