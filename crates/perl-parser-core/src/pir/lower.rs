@@ -1102,14 +1102,33 @@ impl BodyLowerer {
             }
 
             HirExpr::Return { value } => {
-                *self.unsupported.entry("Return").or_insert(0) += 1;
+                // Canonical PIR-A return lowering (#4856): emit a first-class
+                // Return node with a terminal exit edge, rather than counting the
+                // construct as unsupported. `return` yields no value at statement
+                // level — it transfers control out of the enclosing subroutine —
+                // so the node is Void and anchored at the return expression range
+                // (mirroring the flat `lower_return` path).
+                //
+                // Lower the returned expression FIRST so any variable read in
+                // return-operand position (`return $x`) produces a reachable
+                // LexicalRead node. The Return node is then pushed after it, so
+                // the operand -> Return fallthrough that `push_body_node` adds
+                // models control evaluating the operand before returning.
                 if let Some(value) = value {
                     self.lower_expr(body, *value, file);
                 }
-                // Return transfers control out of the enclosing body. The
-                // returned expression may have emitted the latest node, but
-                // statements after the return are unreachable and must not
-                // inherit it as an unconditional fallthrough predecessor.
+
+                let anchor = self.make_body_anchor(range);
+                let return_id =
+                    self.push_body_node(anchor, PirOperation::Return, PirContext::Void, None, file);
+
+                // A `return` is terminal: control leaves the enclosing body via
+                // the modeled-graph exit (`to: None`, mirroring the flat
+                // `lower_return` and the DynamicExit shape). Clear this scope's
+                // fallthrough source so statements after the return — unreachable
+                // in real control flow — are not linked by a spurious
+                // `Fallthrough` edge *from* the Return node.
+                self.edges.push(PirEdge { from: return_id, to: None, kind: PirEdgeKind::Return });
                 self.last_in_scope.remove(&None);
             }
 
