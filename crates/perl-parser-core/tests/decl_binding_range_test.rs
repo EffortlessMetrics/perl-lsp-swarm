@@ -140,6 +140,35 @@ fn local_is_not_a_lexical_binding() -> TestResult {
 }
 
 #[test]
+fn bare_state_declaration_anchors_at_variable() -> TestResult {
+    // No-initializer `state $n;` — the #2643 regression must hold for `state`, not
+    // just `my`. `state` lowers to a LexicalWrite, so the lexical extractor sees it.
+    let src = "sub counter { state $n; $n = 1; return $n; }\n";
+    let got = decl_write_range(src, "n").ok_or("no write fact for $n")?;
+    let want = token_range(src, "$n").ok_or("$n not in source")?;
+    assert_eq!(got, want, "bare `state` declaration must anchor at `$n`, not `state $n`");
+    Ok(())
+}
+
+#[test]
+fn bare_local_binding_range_anchors_at_variable() -> TestResult {
+    // No-initializer `local $x;` — anchors the HIR binding_range at `$x` (checked
+    // directly, since `local` is a StashWrite and invisible to the lexical
+    // extractor, which must still return None).
+    let src = "local $x;\n$x = 1;\n";
+    let (name, got) = first_let_name_and_binding(src).ok_or("no HirStmt::Let for local decl")?;
+    assert_eq!(name, "x", "bare local declaration name must be `x`, not `<unknown>`");
+    let want = token_range(src, "$x").ok_or("$x not in source")?;
+    assert_eq!(got, want, "bare local binding_range must anchor at `$x`");
+    assert_eq!(
+        decl_write_range(src, "x"),
+        None,
+        "bare `local` must not produce a lexical declaration write"
+    );
+    Ok(())
+}
+
+#[test]
 fn local_binding_range_anchors_at_variable() -> TestResult {
     // `local $x = 1;` parses its target as an `Assignment` (`$x = 1`), not a bare
     // `Variable`. Without unwrapping, the HIR `Let` would carry name "<unknown>"
