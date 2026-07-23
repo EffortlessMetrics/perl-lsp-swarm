@@ -231,6 +231,5 @@ mod tests {
             experimental.contains(&handler_gated),
             "handle_slow_operation_dispatch must be gated by {cfg_gate}"
         );
-        );
     }
 }
