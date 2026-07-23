@@ -1,4 +1,4 @@
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::{Result, eyre};
 use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;

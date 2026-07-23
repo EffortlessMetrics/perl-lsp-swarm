@@ -44,9 +44,9 @@ mod profile;
 mod receipt;
 mod score;
 
-pub use evaluator::{evaluate, is_known_indicator, EvidencePaths, ExternalResult, KwaliteeOptions};
+pub use evaluator::{EvidencePaths, ExternalResult, KwaliteeOptions, evaluate, is_known_indicator};
 pub use indicator::{
-    explain, indicator_ids, EvidenceRef, IndicatorExplanation, IndicatorStatus, KwaliteeIndicator,
+    EvidenceRef, IndicatorExplanation, IndicatorStatus, KwaliteeIndicator, explain, indicator_ids,
 };
 pub use profile::KwaliteeProfile;
 pub use receipt::{KwaliteeReceipt, KwaliteeVerdict, RECEIPT_KIND, SCHEMA_VERSION};
