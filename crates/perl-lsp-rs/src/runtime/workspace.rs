@@ -23,7 +23,9 @@ use crate::state::workspace_symbol_cap;
 use perl_module::path::file_path_to_module_name;
 use perl_module::rename::{apply_module_rename_edits, plan_module_rename_edits};
 #[cfg(feature = "workspace")]
-use perl_parser::workspace_index::{DegradationReason, EarlyExitReason, ResourceKind, SymbolKind};
+use perl_parser::workspace_index::{
+    DegradationReason, EarlyExitReason, IndexState, ResourceKind, SymbolKind,
+};
 #[cfg(feature = "workspace")]
 use perl_parser_core::source_file::{is_perl_source_path, is_perl_source_uri};
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -2318,16 +2320,29 @@ impl LspServer {
                 send_index_ready_notification(&outbound, false);
             } else {
                 indexing_receipt.log(budget_start.elapsed(), None);
-                let file_count = coordinator.index().file_count();
-                let symbol_count = coordinator.index().symbol_count();
-                coordinator.transition_to_ready(file_count, symbol_count);
-                let mut receipt = readiness_receipt.lock();
-                receipt.record_milestone(ReadinessMilestone::WholeWorkspaceReady, Instant::now());
-                receipt.log();
-                if work_done_progress {
-                    send_progress_end(&outbound, "Indexing complete");
+                let resource_limited = matches!(
+                    coordinator.state(),
+                    IndexState::Degraded { reason: DegradationReason::ResourceLimit { .. }, .. }
+                );
+                if resource_limited {
+                    readiness_receipt.lock().log();
+                    if work_done_progress {
+                        send_progress_end(&outbound, "Indexing stopped at resource limit");
+                    }
+                    send_index_ready_notification(&outbound, false);
+                } else {
+                    let file_count = coordinator.index().file_count();
+                    let symbol_count = coordinator.index().symbol_count();
+                    coordinator.transition_to_ready(file_count, symbol_count);
+                    let mut receipt = readiness_receipt.lock();
+                    receipt
+                        .record_milestone(ReadinessMilestone::WholeWorkspaceReady, Instant::now());
+                    receipt.log();
+                    if work_done_progress {
+                        send_progress_end(&outbound, "Indexing complete");
+                    }
+                    send_index_ready_notification(&outbound, true);
                 }
-                send_index_ready_notification(&outbound, true);
             }
         });
     }

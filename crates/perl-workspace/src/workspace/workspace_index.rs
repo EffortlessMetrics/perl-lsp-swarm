@@ -20,7 +20,7 @@
 //! - **Cross-file queries**: <50μs for typical workspace sizes
 //! - **Memory usage**: ~1MB per 10K symbols with optimized storage
 //! - **Incremental updates**: ≤1ms for file-level symbol changes
-//! - **Large workspace scaling**: Designed to scale to 50K+ files and large codebases
+//! - **Large workspace scaling**: Configurable admission caps prevent unbounded growth
 //! - **Benchmark targets**: <50μs lookups and ≤1ms incremental updates at scale
 //!
 //! # Dual Indexing Strategy
@@ -66,7 +66,7 @@ use crate::ast::{Node, NodeKind};
 use crate::document_store::{Document, DocumentStore};
 use crate::position::{Position, Range};
 use crate::workspace::monitoring::IndexInstrumentation;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use perl_position_tracking::{WireLocation, WirePosition, WireRange};
 use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, EdgeFact, EntityFact, EntityId, EntityKind, FileId,
@@ -270,8 +270,8 @@ pub struct IndexCoordinator {
     /// Resource limits configuration
     ///
     /// Enforces bounded resource usage to prevent unbounded memory growth:
-    /// - max_files: Triggers degradation when file count exceeds limit
-    /// - max_total_symbols: Triggers degradation when symbol count exceeds limit
+    /// - max_files: Rejects new files at the limit and degrades legacy over-limit state
+    /// - max_total_symbols: Rejects over-limit files and degrades legacy over-limit state
     /// - max_symbols_per_file: Used for per-file validation during indexing
     limits: IndexResourceLimits,
 
@@ -313,6 +313,7 @@ impl IndexCoordinator {
     /// let coordinator = IndexCoordinator::new();
     /// ```
     pub fn new() -> Self {
+        let limits = IndexResourceLimits::default();
         Self {
             state: Arc::new(RwLock::new(IndexState::Building {
                 phase: IndexPhase::Idle,
@@ -320,8 +321,8 @@ impl IndexCoordinator {
                 total_count: 0,
                 started_at: Instant::now(),
             })),
-            index: Arc::new(WorkspaceIndex::new()),
-            limits: IndexResourceLimits::default(),
+            index: Arc::new(WorkspaceIndex::with_resource_limits(limits.clone())),
+            limits,
             caps: IndexPerformanceCaps::default(),
             metrics: IndexMetrics::new(),
             instrumentation: IndexInstrumentation::new(),
@@ -354,7 +355,7 @@ impl IndexCoordinator {
                 total_count: 0,
                 started_at: Instant::now(),
             })),
-            index: Arc::new(WorkspaceIndex::new()),
+            index: Arc::new(WorkspaceIndex::with_resource_limits(limits.clone())),
             limits,
             caps: IndexPerformanceCaps::default(),
             metrics: IndexMetrics::new(),
@@ -376,7 +377,7 @@ impl IndexCoordinator {
                 total_count: 0,
                 started_at: Instant::now(),
             })),
-            index: Arc::new(WorkspaceIndex::new()),
+            index: Arc::new(WorkspaceIndex::with_resource_limits(limits.clone())),
             limits,
             caps,
             metrics: IndexMetrics::new(),
@@ -409,6 +410,9 @@ impl IndexCoordinator {
     /// }
     /// ```
     pub fn state(&self) -> IndexState {
+        if let Some(kind) = self.index.take_resource_limit_rejection() {
+            self.transition_to_degraded(DegradationReason::ResourceLimit { kind });
+        }
         self.state.read().clone()
     }
 
@@ -1316,6 +1320,10 @@ pub struct WorkspaceIndex {
     /// Used to determine which workspace folder a file belongs to for
     /// proper folder attribution in multi-root workspaces.
     workspace_folders: Arc<RwLock<Vec<String>>>,
+    /// Resource limits used to reject new entries before the maps grow.
+    limits: IndexResourceLimits,
+    /// Last resource-limit admission rejection, consumed by the coordinator.
+    resource_limit_rejection: Mutex<Option<ResourceKind>>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -1711,6 +1719,11 @@ impl WorkspaceIndex {
     /// assert!(!index.has_symbols());
     /// ```
     pub fn new() -> Self {
+        Self::with_resource_limits(IndexResourceLimits::default())
+    }
+
+    /// Create an empty index with explicit resource-admission limits.
+    pub fn with_resource_limits(limits: IndexResourceLimits) -> Self {
         Self {
             files: Arc::new(RwLock::new(HashMap::new())),
             symbols: Arc::new(RwLock::new(HashMap::new())),
@@ -1722,6 +1735,8 @@ impl WorkspaceIndex {
             semantic_package_graph_index: Arc::new(RwLock::new(PackageGraphIndex::new())),
             document_store: DocumentStore::new(),
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
+            limits,
+            resource_limit_rejection: Mutex::new(None),
         }
     }
 
@@ -1750,6 +1765,20 @@ impl WorkspaceIndex {
     /// assert!(!index.has_symbols());
     /// ```
     pub fn with_capacity(estimated_files: usize, avg_symbols_per_file: usize) -> Self {
+        Self::with_capacity_and_resource_limits(
+            estimated_files,
+            avg_symbols_per_file,
+            IndexResourceLimits::default(),
+        )
+    }
+
+    /// Create a workspace index with pre-allocated capacity and explicit
+    /// resource-admission limits.
+    pub fn with_capacity_and_resource_limits(
+        estimated_files: usize,
+        avg_symbols_per_file: usize,
+        limits: IndexResourceLimits,
+    ) -> Self {
         // Each symbol is stored twice (qualified + bare name) due to dual indexing.
         let sym_cap =
             estimated_files.saturating_mul(avg_symbols_per_file).saturating_mul(2).min(1_000_000);
@@ -1765,6 +1794,58 @@ impl WorkspaceIndex {
             semantic_package_graph_index: Arc::new(RwLock::new(PackageGraphIndex::new())),
             document_store: DocumentStore::new(),
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
+            limits,
+            resource_limit_rejection: Mutex::new(None),
+        }
+    }
+
+    fn record_resource_limit_rejection(&self, kind: ResourceKind) {
+        *self.resource_limit_rejection.lock() = Some(kind);
+    }
+
+    pub(crate) fn take_resource_limit_rejection(&self) -> Option<ResourceKind> {
+        self.resource_limit_rejection.lock().take()
+    }
+
+    fn resource_limit_error(kind: ResourceKind, limits: &IndexResourceLimits) -> String {
+        match kind {
+            ResourceKind::MaxFiles => {
+                format!("workspace index resource limit exceeded: max_files={}", limits.max_files)
+            }
+            ResourceKind::MaxSymbols => format!(
+                "workspace index resource limit exceeded: max_total_symbols={}",
+                limits.max_total_symbols
+            ),
+            ResourceKind::MaxCacheBytes => format!(
+                "workspace index resource limit exceeded: max_ast_cache_bytes={}",
+                limits.max_ast_cache_bytes
+            ),
+        }
+    }
+
+    fn restore_document(&self, uri: &str, rejected_text: &str, previous: Option<&Document>) {
+        self.document_store.restore_if_current(uri, 1, rejected_text, previous);
+    }
+
+    fn admission_limit_for(
+        &self,
+        files: &HashMap<String, FileIndex>,
+        key: &str,
+        candidate: &FileIndex,
+    ) -> Option<ResourceKind> {
+        if !files.contains_key(key) && files.len() >= self.limits.max_files {
+            return Some(ResourceKind::MaxFiles);
+        }
+
+        let current_symbols: usize = files.values().map(|file| file.symbols.len()).sum();
+        let replaced_symbols = files.get(key).map_or(0, |file| file.symbols.len());
+        let projected_symbols = current_symbols
+            .saturating_sub(replaced_symbols)
+            .saturating_add(candidate.symbols.len());
+        if projected_symbols > self.limits.max_total_symbols {
+            Some(ResourceKind::MaxSymbols)
+        } else {
+            None
         }
     }
 
@@ -1905,6 +1986,7 @@ impl WorkspaceIndex {
         // task could still land in -- flagged again by factory-droid on
         // PR #3618 after that partial fix).
         let key = DocumentStore::uri_key(&uri_str);
+        let previous_document = self.document_store.get(&uri_str);
         // Set below iff this task's generation genuinely advances the
         // claimed high-water mark (a genuine reservation, not a
         // same-or-older no-op). `ReservationGuard::drop` rolls the claim
@@ -1916,6 +1998,12 @@ impl WorkspaceIndex {
         let mut reservation: Option<ReservationGuard<'_>> = None;
         {
             let mut files = self.files.write();
+            if !files.contains_key(&key) && files.len() >= self.limits.max_files {
+                drop(files);
+                let kind = ResourceKind::MaxFiles;
+                self.record_resource_limit_rejection(kind.clone());
+                return Err(Self::resource_limit_error(kind, &self.limits));
+            }
             if let Some(existing_index) = files.get_mut(&key) {
                 if existing_index.content_hash == content_hash {
                     existing_index.generation = existing_index.generation.max(generation);
@@ -2000,6 +2088,7 @@ impl WorkspaceIndex {
                 // `pending_generation` back to the last genuinely committed
                 // generation -- this task never reaches the late guard's
                 // commit below.
+                self.restore_document(&uri_str, &text, previous_document.as_ref());
                 return Err(format!("Parse error: {}", e));
             }
         };
@@ -2011,7 +2100,13 @@ impl WorkspaceIndex {
         // return left `self.files[key].generation`'s reservation
         // permanently claimed with nothing that would ever commit it
         // (#3618 review-3660 finding 3(c)).
-        let mut doc = self.document_store.get(&uri_str).ok_or("Document not found")?;
+        let mut doc = match self.document_store.get(&uri_str) {
+            Some(document) => document,
+            None => {
+                self.restore_document(&uri_str, &text, previous_document.as_ref());
+                return Err("Document not found".to_string());
+            }
+        };
 
         // Determine workspace folder URI from the file URI
         let folder_uri = self.determine_folder_uri(&uri_str);
@@ -2131,6 +2226,13 @@ impl WorkspaceIndex {
                         return Ok(());
                     }
                 }
+            }
+
+            if let Some(kind) = self.admission_limit_for(&files, &key, &file_index) {
+                self.restore_document(&uri_str, &text, previous_document.as_ref());
+                drop(files);
+                self.record_resource_limit_rejection(kind.clone());
+                return Err(Self::resource_limit_error(kind, &self.limits));
             }
 
             // Remove stale global references from previous version of this file
@@ -2489,8 +2591,14 @@ impl WorkspaceIndex {
         let mut errors = Vec::new();
 
         // Phase 1: Parse all files without locks
-        let mut parsed: Vec<(String, String, FileIndex, Vec<PackageEdge>)> =
-            Vec::with_capacity(files_to_index.len());
+        let mut parsed: Vec<(
+            String,
+            String,
+            String,
+            FileIndex,
+            Vec<PackageEdge>,
+            Option<Document>,
+        )> = Vec::with_capacity(files_to_index.len());
         for (uri, text) in &files_to_index {
             let uri_str = uri.to_string();
 
@@ -2500,6 +2608,7 @@ impl WorkspaceIndex {
             let content_hash = hasher.finish();
 
             let key = DocumentStore::uri_key(&uri_str);
+            let previous_document = self.document_store.get(&uri_str);
 
             // Check if content unchanged
             {
@@ -2523,6 +2632,7 @@ impl WorkspaceIndex {
             let ast = match parser.parse() {
                 Ok(ast) => ast,
                 Err(e) => {
+                    self.restore_document(&uri_str, text, previous_document.as_ref());
                     errors.push(format!("Parse error in {}: {}", uri_str, e));
                     continue;
                 }
@@ -2531,6 +2641,7 @@ impl WorkspaceIndex {
             let mut doc = match self.document_store.get(&uri_str) {
                 Some(d) => d,
                 None => {
+                    self.restore_document(&uri_str, text, previous_document.as_ref());
                     errors.push(format!("Document not found: {}", uri_str));
                     continue;
                 }
@@ -2549,7 +2660,7 @@ impl WorkspaceIndex {
             visitor.visit(&ast, &mut file_index);
 
             let package_edges = package_graph_edges_from_hir(&ast);
-            parsed.push((key, uri_str, file_index, package_edges));
+            parsed.push((key, uri_str, text.clone(), file_index, package_edges, previous_document));
         }
 
         // Phase 2: Bulk insert with single cache rebuild
@@ -2564,7 +2675,14 @@ impl WorkspaceIndex {
             files.reserve(parsed.len());
             symbols.reserve(parsed.len().saturating_mul(20).saturating_mul(2));
 
-            for (key, uri_str, file_index, package_edges) in parsed {
+            for (key, uri_str, text, file_index, package_edges, previous_document) in parsed {
+                if let Some(kind) = self.admission_limit_for(&files, &key, &file_index) {
+                    self.restore_document(&uri_str, &text, previous_document.as_ref());
+                    self.record_resource_limit_rejection(kind.clone());
+                    errors.push(Self::resource_limit_error(kind, &self.limits));
+                    continue;
+                }
+
                 // Remove stale global references
                 if let Some(old_index) = files.get(&key) {
                     Self::remove_file_global_refs(&mut global_refs, old_index, &uri_str);
@@ -7436,14 +7554,15 @@ use Data::Dumper;
         };
 
         let coordinator = IndexCoordinator::with_limits(limits);
-        coordinator.transition_to_ready(10, 100);
+        coordinator.transition_to_ready(5, 5);
 
-        // Index 10 files (exceeds limit of 5)
-        for i in 0..10 {
-            let uri_str = format!("file:///test{}.pl", i);
-            let uri = must(url::Url::parse(&uri_str));
-            let code = "sub test { }";
-            must(coordinator.index().index_file(uri, code.to_string()));
+        // Simulate an over-limit legacy index so the retrospective checker
+        // remains covered even though new admissions are now rejected.
+        {
+            let mut files = coordinator.index().files.write();
+            for i in 0..6 {
+                files.insert(format!("file:///legacy{}.pl", i), FileIndex::default());
+            }
         }
 
         // Enforce limits
@@ -7464,6 +7583,205 @@ use Data::Dumper;
     }
 
     #[test]
+    fn test_index_file_rejects_new_files_at_max_files() {
+        let limits = IndexResourceLimits {
+            max_files: 2,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 50_000,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+
+        for i in 0..2 {
+            let uri = must(url::Url::parse(&format!("file:///bounded{}.pl", i)));
+            must(coordinator.index().index_file(uri, "sub bounded { }".to_string()));
+        }
+
+        let uri = must(url::Url::parse("file:///bounded-rejected.pl"));
+        let result = coordinator.index().index_file(uri.clone(), "sub rejected { }".to_string());
+
+        assert!(result.is_err(), "indexing beyond max_files must be rejected");
+        assert_eq!(coordinator.index().files.read().len(), 2);
+        assert!(!coordinator.index().document_store.is_open(uri.as_str()));
+        assert!(matches!(
+            coordinator.state(),
+            IndexState::Degraded {
+                reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxFiles },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_index_file_allows_existing_file_update_at_max_files() {
+        let limits = IndexResourceLimits {
+            max_files: 1,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 50_000,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+        let uri = must(url::Url::parse("file:///bounded-update.pl"));
+
+        must(coordinator.index().index_file(uri.clone(), "sub before { }".to_string()));
+        must(coordinator.index().index_file(uri.clone(), "sub after { }".to_string()));
+
+        let symbols = coordinator.index().file_symbols(uri.as_str());
+        assert!(symbols.iter().any(|symbol| symbol.name == "after"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "before"));
+        assert!(!matches!(coordinator.state(), IndexState::Degraded { .. }));
+    }
+
+    #[test]
+    fn test_index_file_rejects_new_symbols_at_max_total_symbols() {
+        let limits = IndexResourceLimits {
+            max_files: 10,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 2,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+
+        for i in 0..2 {
+            let uri = must(url::Url::parse(&format!("file:///symbols{}.pl", i)));
+            let source = format!("sub symbol{} {{ }}", i);
+            must(coordinator.index().index_file(uri, source));
+        }
+
+        let uri = must(url::Url::parse("file:///symbols-rejected.pl"));
+        let result = coordinator.index().index_file(uri.clone(), "sub rejected { }".to_string());
+
+        assert!(result.is_err(), "indexing beyond max_total_symbols must be rejected");
+        assert_eq!(coordinator.index().files.read().len(), 2);
+        assert!(!coordinator.index().document_store.is_open(uri.as_str()));
+        assert!(matches!(
+            coordinator.state(),
+            IndexState::Degraded {
+                reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxSymbols },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_index_file_restores_existing_document_after_symbol_rejection() {
+        let limits = IndexResourceLimits {
+            max_files: 10,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 1,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+        let uri = must(url::Url::parse("file:///symbols-existing.pl"));
+        let original = "sub retained { }".to_string();
+
+        must(coordinator.index().index_file(uri.clone(), original.clone()));
+        let result = coordinator
+            .index()
+            .index_file(uri.clone(), "sub retained { }\nsub rejected { }".to_string());
+
+        assert!(result.is_err(), "an update beyond max_total_symbols must be rejected");
+        assert_eq!(coordinator.index().files.read().len(), 1);
+        assert_eq!(coordinator.index().document_store.get_text(uri.as_str()), Some(original));
+        let symbols = coordinator.index().file_symbols(uri.as_str());
+        assert!(symbols.iter().any(|symbol| symbol.name == "retained"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "rejected"));
+        assert!(matches!(
+            coordinator.state(),
+            IndexState::Degraded {
+                reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxSymbols },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_rejected_document_restore_does_not_overwrite_newer_document() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///restore-race.pl";
+        index.document_store.open(uri.to_string(), 1, "original".to_string());
+        let previous = index.document_store.get(uri);
+
+        index.document_store.open(uri.to_string(), 1, "rejected".to_string());
+        index.document_store.open(uri.to_string(), 1, "newer accepted".to_string());
+        index.restore_document(uri, "rejected", previous.as_ref());
+
+        assert_eq!(index.document_store.get_text(uri), Some("newer accepted".to_string()));
+    }
+
+    #[test]
+    fn test_batch_indexing_rejects_new_files_at_max_files() {
+        let limits = IndexResourceLimits {
+            max_files: 1,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 50_000,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+        let first = must(url::Url::parse("file:///batch-first.pl"));
+        let second = must(url::Url::parse("file:///batch-second.pl"));
+
+        let errors = coordinator.index().index_files_batch(vec![
+            (first, "sub first { }".to_string()),
+            (second.clone(), "sub second { }".to_string()),
+        ]);
+
+        assert_eq!(errors.len(), 1, "the second batch entry must be rejected");
+        assert_eq!(coordinator.index().file_count(), 1);
+        assert_eq!(coordinator.index().document_store.count(), 1);
+        assert!(!coordinator.index().document_store.is_open(second.as_str()));
+        assert!(matches!(
+            coordinator.state(),
+            IndexState::Degraded {
+                reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxFiles },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_batch_indexing_rejects_new_symbols_at_max_total_symbols() {
+        let limits = IndexResourceLimits {
+            max_files: 10,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 1,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+        let first = must(url::Url::parse("file:///batch-symbol-first.pl"));
+        let second = must(url::Url::parse("file:///batch-symbol-second.pl"));
+
+        let errors = coordinator.index().index_files_batch(vec![
+            (first, "sub first { }".to_string()),
+            (second.clone(), "sub second { }".to_string()),
+        ]);
+
+        assert_eq!(errors.len(), 1, "the second batch entry must be rejected");
+        assert_eq!(coordinator.index().file_count(), 1);
+        assert_eq!(coordinator.index().symbol_count(), 1);
+        assert!(!coordinator.index().document_store.is_open(second.as_str()));
+        assert!(matches!(
+            coordinator.state(),
+            IndexState::Degraded {
+                reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxSymbols },
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn test_resource_limit_enforcement_max_symbols() {
         let limits = IndexResourceLimits {
             max_files: 100,
@@ -7477,26 +7795,19 @@ use Data::Dumper;
         let coordinator = IndexCoordinator::with_limits(limits);
         coordinator.transition_to_ready(0, 0);
 
-        // Index files with many symbols to exceed total symbol limit
-        for i in 0..10 {
-            let uri_str = format!("file:///test{}.pl", i);
-            let uri = must(url::Url::parse(&uri_str));
-            // Each file has 10 subroutines = 100 total symbols (exceeds limit of 50)
-            let code = r#"
-package Test;
-sub sub1 { }
-sub sub2 { }
-sub sub3 { }
-sub sub4 { }
-sub sub5 { }
-sub sub6 { }
-sub sub7 { }
-sub sub8 { }
-sub sub9 { }
-sub sub10 { }
-"#;
-            must(coordinator.index().index_file(uri, code.to_string()));
-        }
+        // Simulate an over-limit legacy index so the retrospective checker
+        // remains covered even though new admissions are now rejected.
+        let source_index = WorkspaceIndex::new();
+        let source =
+            (0..51).map(|i| format!("sub legacy_{} {{ }}", i)).collect::<Vec<_>>().join("\n");
+        let uri = must(url::Url::parse("file:///legacy-symbols.pl"));
+        must(source_index.index_file(uri, source));
+        let legacy_file = must_some(source_index.files.read().values().next().cloned());
+        coordinator
+            .index()
+            .files
+            .write()
+            .insert("file:///legacy-symbols.pl".to_string(), legacy_file);
 
         // Enforce limits
         coordinator.enforce_limits();
@@ -7552,16 +7863,16 @@ sub sub10 { }
 
         let coordinator = IndexCoordinator::with_limits(limits);
 
-        // Index files before transitioning to ready
-        for i in 0..5 {
-            let uri_str = format!("file:///test{}.pl", i);
-            let uri = must(url::Url::parse(&uri_str));
-            let code = "sub test { }";
-            must(coordinator.index().index_file(uri, code.to_string()));
+        // Simulate an over-limit legacy index before transitioning to ready.
+        {
+            let mut files = coordinator.index().files.write();
+            for i in 0..4 {
+                files.insert(format!("file:///legacy-ready{}.pl", i), FileIndex::default());
+            }
         }
 
-        // Transition to ready - should automatically enforce limits
-        coordinator.transition_to_ready(5, 100);
+        // Transition to ready - should automatically enforce limits.
+        coordinator.transition_to_ready(4, 0);
 
         let state = coordinator.state();
         assert!(
