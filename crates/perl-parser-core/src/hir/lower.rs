@@ -2822,7 +2822,18 @@ impl<'a> BodyBuilder2<'a> {
             }
 
             NodeKind::VariableDeclaration { declarator, variable, initializer, .. } => {
-                let (sigil_str, var_name) = match &variable.kind {
+                // `local $x = EXPR` parses its target as an `Assignment` (`$x = EXPR`)
+                // rather than a bare `Variable`, because `local` accepts arbitrary
+                // lvalues. Unwrap to the localized lvalue so the declared name and
+                // the `binding_range` anchor at the variable token, not the whole
+                // `$x = EXPR` span (mirrors `variable_binding()` in the first pass).
+                // For `my`/`our`/`state` the initializer is a separate field, so
+                // `variable` is already the bare token and this unwrap is a no-op.
+                let binding_node: &Node = match &variable.kind {
+                    NodeKind::Assignment { lhs, .. } => lhs.as_ref(),
+                    _ => variable.as_ref(),
+                };
+                let (sigil_str, var_name) = match &binding_node.kind {
                     NodeKind::Variable { sigil, name } => (sigil.as_str(), name.clone()),
                     NodeKind::VariableWithAttributes { variable, .. } => match &variable.kind {
                         NodeKind::Variable { sigil, name } => (sigil.as_str(), name.clone()),
@@ -2863,7 +2874,13 @@ impl<'a> BodyBuilder2<'a> {
                 });
 
                 self.alloc_stmt(
-                    HirStmt::Let { name: var_name, sigil, storage, init: init_expr_id },
+                    HirStmt::Let {
+                        name: var_name,
+                        sigil,
+                        storage,
+                        init: init_expr_id,
+                        binding_range: binding_node.location,
+                    },
                     range,
                 )
             }

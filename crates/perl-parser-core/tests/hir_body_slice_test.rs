@@ -53,14 +53,26 @@ fn hir_body_slice_specimen_structure() {
     let stmt = body.stmt(stmt_id).expect("stmt must exist");
 
     // ── 3. Statement is Let { name: "x", sigil: $, storage: my } ──────────
-    let (let_name, let_sigil, let_storage, init_id) = match stmt {
-        HirStmt::Let { name, sigil, storage, init } => (name.as_str(), sigil, storage, *init),
+    let (let_name, let_sigil, let_storage, init_id, let_binding_range) = match stmt {
+        HirStmt::Let { name, sigil, storage, init, binding_range } => {
+            (name.as_str(), sigil, storage, *init, *binding_range)
+        }
         other => panic!("expected HirStmt::Let, got {:?}", other),
     };
 
     assert_eq!(let_name, "x", "declared variable name must be 'x'");
     assert!(matches!(let_sigil, Sigil::Scalar), "sigil must be Scalar ($)");
     assert!(matches!(let_storage, DeclStorageClass::My), "storage class must be My");
+
+    // `binding_range` is the first-class declared-variable token span (`$x` at
+    // 3..5), captured at HIR-build time for every declaration form (#2643). It is
+    // the anchor the PIR lowerer uses so bare declarations without an initializer
+    // anchor at the variable, not the statement span.
+    assert_eq!(
+        let_binding_range,
+        SourceLocation { start: 3, end: 5 },
+        "binding_range must be the `$x` variable token span (3..5)"
+    );
 
     // ── 4. Statement source span: `my $x = $a + $b` (0..15, semicolon excluded
     //        by the VariableDeclaration AST node boundary) ───────────────────
