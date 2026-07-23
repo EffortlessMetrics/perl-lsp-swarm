@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Fixed
+body: "Windows installer (install.ps1) now installs the binary as `perllsp.exe` to match POSIX, the docs, and the release archive naming; also corrected the POSIX installer's Windows-fallback URL from the non-existent `scripts/install.ps1` to the root `install.ps1`."
+time: 2026-07-23T00:00:00Z
+custom:
+  PR: "4648"
+  Slug: windows-installer-binary-name
+  Breaking: "no"
