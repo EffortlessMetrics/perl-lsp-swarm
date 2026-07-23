@@ -200,7 +200,7 @@ pub(super) fn format_error_density_row(metrics: &ParserMetrics) -> String {
     let cpan = format_corpus_error_density_value(metrics.cpan_receipt.as_ref());
     let value = format!("Ubuntu: {ubuntu} / CPAN: {cpan}");
     format!(
-        "| **Error density** | {value} | median ERROR-node count per 1,000 LOC across dirty files only; clean files excluded | `.ci/*-corpus-baseline.json` |",
+        "| **Error density** | {value} | median ERROR-node count per 1,000 LOC across dirty files with ERROR nodes only; structured-recovery-only and clean files excluded | `.ci/*-corpus-baseline.json` |",
     )
 }
 

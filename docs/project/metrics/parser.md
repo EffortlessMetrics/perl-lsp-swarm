@@ -65,8 +65,8 @@ Improvement metrics are displayed on the status page and encouraged upward, but 
 | Improvement metric | Source | Next step |
 | --- | --- | --- |
 | `node_kind_coverage` | `corpus_audit` project-corpus summary | Candidate for floor once the denominator (`NodeKind` total) has been stable across two releases. |
-| `error_density_per_1k_loc` | `parser_corpus_sweep` schema 1.3.0 (`median_error_density_per_1k_loc` in sweep receipts) | Surfaced on the parser status page as a first-class row; median over dirty files only. |
-| `recovery_salvage_rate` | `.ci/parser-corpus-baseline.json` when the sweep has dirty files | First-class status row with explicit dirty-file denominator; improvement-only coarse structured-recovery share, not a symbol-preservation floor (#1360). |
+| `error_density_per_1k_loc` | `parser_corpus_sweep` schema 1.3.0 (`median_error_density_per_1k_loc` in sweep receipts) | Surfaced on the parser status page as a first-class row; median over dirty files with ERROR nodes only (structured-recovery-only dirty files excluded). |
+| `recovery_salvage_rate` | `parser_corpus_sweep` schema 1.3.0 (`recovery_salvage_rate` in sweep receipts) | First-class status row with explicit dirty-file denominator across Ubuntu and CPAN baselines; improvement-only coarse structured-recovery share, not a symbol-preservation floor (#1360). |
 
 ### 2.3 Cost metrics: cold / warm / incremental regimes
 

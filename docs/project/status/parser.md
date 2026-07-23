@@ -23,7 +23,7 @@
 | **Reliability** | Ubuntu: 48 unread / CPAN: 6 unread / Project: 0 timeout, 0 panic, 0 unread | -- | `.ci/*-baseline.json` |
 <!-- END: PARSER_RELIABILITY_ROW -->
 <!-- BEGIN: PARSER_ERROR_DENSITY_ROW -->
-| **Error density** | Ubuntu: insufficient_data / CPAN: 1.95 per 1k LOC | median ERROR-node count per 1,000 LOC across dirty files only; clean files excluded | `.ci/*-corpus-baseline.json` |
+| **Error density** | Ubuntu: insufficient_data / CPAN: 1.95 per 1k LOC | median ERROR-node count per 1,000 LOC across dirty files with ERROR nodes only; structured-recovery-only and clean files excluded | `.ci/*-corpus-baseline.json` |
 <!-- END: PARSER_ERROR_DENSITY_ROW -->
 <!-- BEGIN: PARSER_RECOVERY_SALVAGE_ROW -->
 | **Recovery salvage** | Ubuntu: insufficient_data / CPAN: 20.5% | `files_with_structured_recovery_only / total_dirty_files` from sweep receipts; proxy metric — does not measure symbol preservation (#1360) | `.ci/*-corpus-baseline.json` |
