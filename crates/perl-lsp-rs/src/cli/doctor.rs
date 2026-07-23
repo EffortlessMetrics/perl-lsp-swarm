@@ -13,8 +13,12 @@ use perl_lsp_rs_core::config::{
 use perl_lsp_rs_core::platform::{detect_perlbrew_perl, detect_plenv_perl, resolve_perl_path};
 use perl_parser_core::path_security::{WorkspacePathError, validate_workspace_path};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const PERL5LIB_SOURCE: &str = "PERL5LIB";
+
+/// Wall-clock timeout for external tool (`perltidy`/`perlcritic`) version probes.
+const DOCTOR_TOOL_TIMEOUT_SECS: u64 = 5;
 
 pub(super) fn run_doctor(dir: &str) -> i32 {
     match build_doctor_report(dir) {
@@ -37,6 +41,8 @@ fn build_doctor_report(dir: &str) -> Result<String, String> {
         .map(|value| WorkspaceConfig::parse_perl5lib(&value))
         .unwrap_or_default();
     let perl_report = probe_perl(&workspace_config, &workspace);
+    let perltidy_report = probe_tool("perltidy", "--version");
+    let perlcritic_report = probe_tool("perlcritic", "--version");
     let configured_paths = include_path_reports(
         &workspace,
         &workspace_config.include_paths,
@@ -54,6 +60,8 @@ fn build_doctor_report(dir: &str) -> Result<String, String> {
         workspace,
         config: config_report,
         perl: perl_report,
+        perltidy: perltidy_report,
+        perlcritic: perlcritic_report,
         perl5lib_paths,
         perl5lib_enabled: workspace_config.use_perl5lib,
         perl5lib_precedence: workspace_config.perl5lib_precedence.clone(),
@@ -67,6 +75,8 @@ struct DoctorReport {
     workspace: PathBuf,
     config: ProjectConfigReport,
     perl: PerlReport,
+    perltidy: ToolReport,
+    perlcritic: ToolReport,
     perl5lib_paths: Vec<String>,
     perl5lib_enabled: bool,
     perl5lib_precedence: Perl5LibPrecedence,
@@ -88,6 +98,17 @@ enum ProjectConfigStatus {
 }
 
 struct PerlReport {
+    binary: Option<PathBuf>,
+    source: &'static str,
+    version: Option<String>,
+    error: Option<String>,
+}
+
+/// Report for an external tool (`perltidy`/`perlcritic`) that perl-lsp may
+/// shell out to. Detection is read-only: the binary is located on `PATH` and
+/// asked for its version. A missing binary is reported, not fatal — doctor
+/// stays read-only and exits 0 as long as it can produce a report.
+struct ToolReport {
     binary: Option<PathBuf>,
     source: &'static str,
     version: Option<String>,
@@ -204,6 +225,68 @@ fn probe_perl_with_resolver(
 
 fn version_probe_error(output: &std::process::Output) -> String {
     version_probe_error_from_parts(&output.status.to_string(), &output.stderr)
+}
+
+/// Locate `name` on `PATH` and ask it for its version via `version_arg`.
+fn probe_tool(name: &'static str, version_arg: &str) -> ToolReport {
+    probe_tool_with_resolver(name, version_arg, |n| which::which(n).ok())
+}
+
+/// Dependency-injected core of [`probe_tool`]. `resolve` maps the tool name to
+/// a discovered binary path (or `None` when absent), so tests can exercise the
+/// missing-binary and version-probe-failure branches without a real install.
+fn probe_tool_with_resolver(
+    name: &'static str,
+    version_arg: &str,
+    resolve: impl FnOnce(&str) -> Option<PathBuf>,
+) -> ToolReport {
+    let binary = match resolve(name) {
+        Some(path) => path,
+        None => {
+            return ToolReport {
+                binary: None,
+                source: "PATH",
+                version: None,
+                error: Some(format!("{name} not found on PATH")),
+            };
+        }
+    };
+
+    let mut command = Command::new(&binary);
+    command.arg(version_arg);
+    match run_command_with_timeout(command, DOCTOR_TOOL_TIMEOUT_SECS) {
+        Ok(output) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .next()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(String::from);
+            ToolReport { binary: Some(binary), source: "PATH", version, error: None }
+        }
+        Ok(output) => ToolReport {
+            binary: Some(binary),
+            source: "PATH",
+            version: None,
+            error: Some(tool_version_probe_error(name, &output)),
+        },
+        Err(error) => {
+            ToolReport { binary: Some(binary), source: "PATH", version: None, error: Some(error) }
+        }
+    }
+}
+
+fn tool_version_probe_error(name: &str, output: &std::process::Output) -> String {
+    let status =
+        output.status.code().map(|code| code.to_string()).unwrap_or_else(|| "signal".to_string());
+    let mut error = format!("{name} version probe exited with status {status}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        error.push_str("; stderr: ");
+        error.push_str(stderr);
+    }
+    error
 }
 
 fn version_probe_error_from_parts(status: &str, stderr: &[u8]) -> String {
@@ -390,6 +473,8 @@ fn render_report(report: DoctorReport) -> String {
     out.push_str(&format!("Project config: {}\n", render_project_config_status(report.config)));
     out.push_str(&format!("Perl: {}\n", render_perl_binary(&report.perl)));
     out.push_str(&format!("Perl version: {}\n", render_perl_version(&report.perl)));
+    out.push_str(&format!("perltidy: {}\n", render_tool_report(&report.perltidy)));
+    out.push_str(&format!("perlcritic: {}\n", render_tool_report(&report.perlcritic)));
     out.push_str(&format!(
         "PERL5LIB: {}\n",
         render_perl5lib_status(report.perl5lib_enabled, report.perl5lib_paths.len())
@@ -427,6 +512,16 @@ fn render_report(report: DoctorReport) -> String {
     out.push_str(
         "  - Fix roots marked unsafe; module resolution ignores relative roots that escape the workspace.\n",
     );
+    if report.perltidy.binary.is_none() {
+        out.push_str(
+            "  - Install perltidy (cpanm Perl::Tidy) so external formatting via perltidy works; the native formatter does not require it.\n",
+        );
+    }
+    if report.perlcritic.binary.is_none() {
+        out.push_str(
+            "  - Install perlcritic (cpanm Perl::Critic) so external critic-based diagnostics work; the native critic engine does not require it.\n",
+        );
+    }
     out.push_str(
         "  - Editor-only settings may still override this CLI report after initialization.\n\n",
     );
@@ -458,6 +553,31 @@ fn render_perl_version(report: &PerlReport) -> String {
         format!("not available: {error}")
     } else {
         "not available".to_string()
+    }
+}
+
+fn render_tool_report(report: &ToolReport) -> String {
+    match &report.binary {
+        Some(path) => {
+            let version = report
+                .version
+                .as_deref()
+                .filter(|version| !version.is_empty())
+                .map(|version| version.to_string())
+                .or_else(|| {
+                    report.error.as_deref().map(|error| format!("version unavailable: {error}"))
+                })
+                .unwrap_or_else(|| "version unavailable".to_string());
+            format!("{} ({}); {}", path.display(), report.source, version)
+        }
+        None => {
+            let error = report
+                .error
+                .as_deref()
+                .filter(|error| !error.is_empty())
+                .unwrap_or("not found on PATH");
+            format!("not found ({}); {error}", report.source)
+        }
     }
 }
 
@@ -1193,6 +1313,129 @@ mod tests {
         assert!(report.version.is_none());
         let error = report.error.ok_or("missing configured Perl should fail to spawn")?;
         assert!(error.contains("command failed to start"));
+        Ok(())
+    }
+
+    #[test]
+    fn probe_tool_reports_missing_binary() -> TestResult {
+        let report = probe_tool_with_resolver("perltidy", "--version", |_| None);
+
+        assert_eq!(report.source, "PATH");
+        assert!(report.binary.is_none());
+        assert!(report.version.is_none());
+        let error = report.error.ok_or("missing tool should report an error")?;
+        assert!(error.contains("perltidy not found on PATH"));
+        Ok(())
+    }
+
+    #[test]
+    fn probe_tool_reports_version_probe_failure() -> TestResult {
+        let current_exe = std::env::current_exe()?;
+        let report = probe_tool_with_resolver("perltidy", "--version", |_| Some(current_exe));
+
+        assert_eq!(report.source, "PATH");
+        assert!(report.binary.is_some());
+        assert!(report.version.is_none());
+        let error = report.error.ok_or("non-perltidy binary should fail version probe")?;
+        assert!(error.contains("perltidy version probe exited with status"));
+        Ok(())
+    }
+
+    #[test]
+    fn render_tool_report_found_with_version() {
+        let report = ToolReport {
+            binary: Some(PathBuf::from("/usr/bin/perltidy")),
+            source: "PATH",
+            version: Some("perltidy, v20240202".to_string()),
+            error: None,
+        };
+        assert_eq!(render_tool_report(&report), "/usr/bin/perltidy (PATH); perltidy, v20240202");
+    }
+
+    #[test]
+    fn render_tool_report_found_without_version() {
+        let version_unavailable = ToolReport {
+            binary: Some(PathBuf::from("/usr/bin/perlcritic")),
+            source: "PATH",
+            version: None,
+            error: Some("perlcritic version probe exited with status 2".to_string()),
+        };
+        assert_eq!(
+            render_tool_report(&version_unavailable),
+            "/usr/bin/perlcritic (PATH); version unavailable: perlcritic version probe exited with status 2"
+        );
+
+        let no_error = ToolReport {
+            binary: Some(PathBuf::from("/usr/bin/perlcritic")),
+            source: "PATH",
+            version: None,
+            error: None,
+        };
+        assert_eq!(
+            render_tool_report(&no_error),
+            "/usr/bin/perlcritic (PATH); version unavailable"
+        );
+    }
+
+    #[test]
+    fn render_tool_report_missing() {
+        let report = ToolReport {
+            binary: None,
+            source: "PATH",
+            version: None,
+            error: Some("perltidy not found on PATH".to_string()),
+        };
+        assert_eq!(render_tool_report(&report), "not found (PATH); perltidy not found on PATH");
+    }
+
+    #[test]
+    fn doctor_report_includes_tool_detection_lines() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
+
+        let report = build_doctor_report(dir)?;
+
+        assert!(report.contains("perltidy:"));
+        assert!(report.contains("perlcritic:"));
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_report_next_steps_mention_install_hints_when_tools_missing() -> TestResult {
+        // Force both tools to be reported as missing by injecting a resolver
+        // that always returns None. Rebuild the report pieces the same way
+        // `build_doctor_report` does, but with the missing-tool reports, to
+        // assert the Next steps hints render without depending on whether
+        // perltidy/perlcritic are installed in the test environment.
+        let temp = tempfile::tempdir()?;
+        let workspace = workspace_dir(temp.path().to_str().ok_or("non-UTF-8 temp path")?)?;
+        let perltidy = probe_tool_with_resolver("perltidy", "--version", |_| None);
+        let perlcritic = probe_tool_with_resolver("perlcritic", "--version", |_| None);
+
+        let rendered = render_report(DoctorReport {
+            workspace,
+            config: ProjectConfigReport {
+                status: ProjectConfigStatus::Missing,
+                include_source: "default includePaths",
+            },
+            perl: PerlReport {
+                binary: None,
+                source: "PATH",
+                version: None,
+                error: Some("perl binary not found on PATH".to_string()),
+            },
+            perltidy,
+            perlcritic,
+            perl5lib_paths: Vec::new(),
+            perl5lib_enabled: false,
+            perl5lib_precedence: Perl5LibPrecedence::Prepend,
+            configured_paths: Vec::new(),
+            effective_paths: Vec::new(),
+            system_inc: SystemIncReport { status: "disabled", paths: Vec::new() },
+        });
+
+        assert!(rendered.contains("Install perltidy (cpanm Perl::Tidy)"));
+        assert!(rendered.contains("Install perlcritic (cpanm Perl::Critic)"));
         Ok(())
     }
 
