@@ -11,6 +11,14 @@ command = "cargo clippy --workspace --all-targets -- -D warnings -A missing_docs
 note = "All-target Clippy is the binding test-code seam per scripts/gate-local.sh and xtask CI runner."
 
 [policy]
+# Integration-test panic scan skips the same legacy/support crates as CI report walkers.
+panic_test_integration_exclude_crates = [
+    "tree-sitter-perl-c",
+    "perl-parser-pest",
+    "perl-tdd-support",
+    "perl-test-must",
+    "perl-ci-hygiene",
+]
 allow_unwrap_in_tests = true
 allow_unwrap_in_tests_owner = "lint-policy"
 allow_unwrap_in_tests_ledger = "policy/clippy-debt.toml"
