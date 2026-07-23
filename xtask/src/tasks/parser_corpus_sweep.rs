@@ -286,6 +286,19 @@ fn portable_report_path(path: &Path) -> String {
     }
 }
 
+/// Strip host-specific `@INC` prefixes so committed baseline `slowest_files`
+/// stay portable across Linux/Windows regenerations.
+fn portable_slowest_file_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    if let Some((_, after_lib)) = normalized.rsplit_once("/lib/") {
+        return after_lib.to_string();
+    }
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
 /// Per-file result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileResult {
@@ -666,7 +679,7 @@ fn top_n_slowest(measurements: &[FileMeasurement], limit: usize) -> Vec<SlowestF
         .into_iter()
         .take(limit)
         .map(|m| SlowestFileEntry {
-            path: m.path.clone(),
+            path: portable_slowest_file_path(&m.path),
             parse_duration_ms: m.parse_duration_ms,
             line_count: m.line_count,
         })
@@ -2218,6 +2231,18 @@ mod tests {
     fn test_portable_report_path_preserves_external_paths() {
         let path = PathBuf::from("/usr/share/perl/Foo.pm");
         assert_eq!(portable_report_path(&path), "/usr/share/perl/Foo.pm");
+    }
+
+    #[test]
+    fn test_portable_slowest_file_path_strips_inc_prefixes() {
+        assert_eq!(
+            portable_slowest_file_path("C:/Strawberry/perl/lib/Encode/Encoding.pm"),
+            "Encode/Encoding.pm"
+        );
+        assert_eq!(
+            portable_slowest_file_path("/usr/share/perl/5.38.2/Module/CoreList.pm"),
+            "CoreList.pm"
+        );
     }
 
     // ── schema 1.3.0: phase timings + slowest-files + median density ───

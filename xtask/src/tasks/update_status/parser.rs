@@ -164,12 +164,15 @@ fn format_clean_rate(clean_files: usize, total_files: usize) -> String {
 }
 
 pub(super) fn format_corpus_error_density_value(receipt: Option<&ParserSweepReceipt>) -> String {
-    match receipt {
+    let Some(receipt) = receipt else {
+        return "insufficient_data".to_string();
+    };
+    if !receipt.has_recovery_shape {
+        return "insufficient_data".to_string();
+    }
+    match receipt.median_error_density_per_1k_loc {
+        Some(density) => format!("{density:.2} per 1k LOC"),
         None => "insufficient_data".to_string(),
-        Some(receipt) => match receipt.median_error_density_per_1k_loc {
-            Some(density) => format!("{density:.2} per 1k LOC"),
-            None => "insufficient_data".to_string(),
-        },
     }
 }
 
