@@ -952,6 +952,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().declaration {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         let t0 = std::time::Instant::now();
 
         if let Some(params) = params {

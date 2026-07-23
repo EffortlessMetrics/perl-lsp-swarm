@@ -136,6 +136,71 @@ mod tests {
         );
     }
 
+    /// Capability gating (#4629): when a feature flag in `AdvertisedFeatures`
+    /// is `false`, the handler must return `method_not_advertised` (code
+    /// −32601) rather than silently executing.
+    #[test]
+    fn disabled_features_return_method_not_advertised() {
+        let server = LspServer::new();
+
+        // Initialize so preflight allows non-lifecycle requests.
+        let init = server.handle_request(request(1, "initialize", Some(json!({}))));
+        assert!(init.is_some_and(|r| r.error.is_none()), "initialize should succeed");
+
+        // Disable several feature flags.
+        {
+            let mut features = server.advertised_features.lock();
+            features.formatting = false;
+            features.semantic_tokens = false;
+            features.code_action = false;
+            features.folding_range = false;
+            features.document_symbol = false;
+        }
+
+        // Each disabled handler must return method_not_advertised (−32601).
+        let cases: &[(&str, Option<Value>)] = &[
+            ("textDocument/formatting", Some(json!({"textDocument": {"uri": "file:///test.pm"}}))),
+            (
+                "textDocument/semanticTokens/full",
+                Some(json!({"textDocument": {"uri": "file:///test.pm"}})),
+            ),
+            ("textDocument/codeAction", Some(json!({"textDocument": {"uri": "file:///test.pm"}}))),
+            (
+                "textDocument/foldingRange",
+                Some(json!({"textDocument": {"uri": "file:///test.pm"}})),
+            ),
+            (
+                "textDocument/documentSymbol",
+                Some(json!({"textDocument": {"uri": "file:///test.pm"}})),
+            ),
+        ];
+
+        for (method, params) in cases {
+            let resp = server.handle_request(request(2, method, params.clone()));
+            let code = resp.and_then(|r| r.error).map(|e| e.code).unwrap_or(0);
+            assert_eq!(
+                code, -32601,
+                "disabled feature `{method}` should return method_not_advertised (-32601), got {code}"
+            );
+        }
+
+        // Re-enabling a feature should restore normal behaviour (not the gate error).
+        {
+            let mut features = server.advertised_features.lock();
+            features.folding_range = true;
+        }
+        let resp = server.handle_request(request(
+            3,
+            "textDocument/foldingRange",
+            Some(json!({"textDocument": {"uri": "file:///test.pm"}})),
+        ));
+        let code = resp.and_then(|r| r.error).map(|e| e.code).unwrap_or(0);
+        assert_ne!(
+            code, -32601,
+            "re-enabled folding_range should not return method_not_advertised"
+        );
+    }
+
     /// Verify that the `$/test/slowOperation` endpoint is cfg-gated when neither
     /// test mode nor `expose_lsp_test_api` is enabled (issue #4632). The routing
     /// arm and handler must both carry the gate so a non-test, non-feature build

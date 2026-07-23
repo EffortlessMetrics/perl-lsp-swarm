@@ -267,6 +267,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<(), JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().notebook_document_sync {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         let params = params.ok_or_else(|| invalid_params("Missing params"))?;
 
         // Extract notebook document metadata
@@ -363,6 +368,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<(), JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().notebook_document_sync {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         let params = params.ok_or_else(|| invalid_params("Missing params"))?;
 
         let notebook_uri = params
@@ -564,6 +574,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<(), JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().notebook_document_sync {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         let params = params.ok_or_else(|| invalid_params("Missing params"))?;
 
         let notebook_uri = params
@@ -584,6 +599,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<(), JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().notebook_document_sync {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         let params = params.ok_or_else(|| invalid_params("Missing params"))?;
 
         let notebook_uri = params

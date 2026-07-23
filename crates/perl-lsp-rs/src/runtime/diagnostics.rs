@@ -1043,6 +1043,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().diagnostic_provider {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         use crate::features::diagnostics::PullDiagnosticsProvider;
         use crate::protocol::invalid_params;
         use lsp_types::Uri;
@@ -1437,6 +1442,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().diagnostic_provider {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         let previous_result_ids = if let Some(params) = &params {
             if let Some(ids) = params["previousResultIds"].as_array() {
                 ids.iter()

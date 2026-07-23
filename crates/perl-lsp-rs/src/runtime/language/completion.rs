@@ -1411,6 +1411,11 @@ impl LspServer {
         params: Option<Value>,
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().completion {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
         let request_start = Instant::now();
 

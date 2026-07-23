@@ -22,6 +22,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().semantic_tokens {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         let start = Instant::now();
         let deadline = semantic_tokens_deadline();
 
@@ -150,6 +155,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().semantic_tokens {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         let Some(params) = params else {
             return Ok(Some(json!({ "data": [] })));
         };
@@ -559,6 +569,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature
+        if !self.advertised_features.lock().semantic_tokens {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         use crate::protocol::req_range;
         if let Some(params) = params {
             let uri = req_uri(&params)?;
