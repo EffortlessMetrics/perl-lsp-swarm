@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
     DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirStmt,
-    HirStmtId, HirVariable, Sigil, UnaryMode, VariableKind,
+    HirStmtId, HirSubscript, HirVariable, Sigil, SubscriptKind, UnaryMode, VariableKind,
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
@@ -2893,6 +2893,14 @@ impl<'a> BodyBuilder2<'a> {
                 self.alloc_expr(HirExpr::Variable(var), range)
             }
 
+            // Subscript element access (`$arr[i]`, `$hash{k}`) is parsed as a
+            // `Binary` with a bracket operator. Model it as a first-class
+            // evaluate-once place rather than a generic binary op. A bare
+            // (non-lvalue) access reads the element.
+            NodeKind::Binary { op, left, right } if op == "[]" || op == "{}" => {
+                self.lower_subscript(op, left, right, AccessMode::Read, range)
+            }
+
             NodeKind::Binary { op, left, right } => {
                 let lhs_id = self.lower_expr(left);
                 let rhs_id = self.lower_expr(right);
@@ -3076,8 +3084,40 @@ impl<'a> BodyBuilder2<'a> {
                     HirVariable { sigil: sigil_from_str(sigil), name: name.clone(), kind, access };
                 self.alloc_expr(HirExpr::Variable(var), range)
             }
+            // A subscript element on the LHS of an assignment (or under `++`/`--`)
+            // is the write/RMW place: `$h{k} = v`, `$arr[$i] += 1`.
+            NodeKind::Binary { op, left, right } if op == "[]" || op == "{}" => {
+                self.lower_subscript(op, left, right, access, range)
+            }
             _ => self.lower_expr(node),
         }
+    }
+
+    /// Lower an array/hash subscript (`$arr[i]`, `$hash{k}`) into a first-class
+    /// [`HirExpr::Subscript`] place. The `container` and `subscript` are lowered
+    /// as separate expression IDs so a computed key/index is evaluated once; the
+    /// container is always a read (the aggregate is navigated, only the element
+    /// carries `access`).
+    fn lower_subscript(
+        &mut self,
+        op: &str,
+        container: &Node,
+        subscript: &Node,
+        access: AccessMode,
+        range: crate::SourceLocation,
+    ) -> HirExprId {
+        let kind = if op == "[]" { SubscriptKind::Array } else { SubscriptKind::Hash };
+        let container_id = self.lower_expr(container);
+        let subscript_id = self.lower_expr(subscript);
+        self.alloc_expr(
+            HirExpr::Subscript(HirSubscript {
+                kind,
+                container: container_id,
+                subscript: subscript_id,
+                access,
+            }),
+            range,
+        )
     }
 
     /// Lower a nested block and retain its statement sequence in the block arena.

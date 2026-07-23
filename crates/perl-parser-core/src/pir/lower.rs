@@ -1059,6 +1059,18 @@ impl BodyLowerer {
                     self.lower_expr(body, *arg_id, file);
                 }
             }
+
+            HirExpr::Subscript(subscript) => {
+                // PIR-A does not yet model subscript element access as a typed
+                // place (that lands with the PIR Place model, a separate item).
+                // Record it as unsupported, but walk the container and subscript
+                // child expressions so variable reads / calls inside them
+                // (e.g. the `$k` in `$h{$k}`, the container `$h`) still emit facts,
+                // exactly as they did when a subscript was a generic `Binary`.
+                *self.unsupported.entry("Subscript").or_insert(0) += 1;
+                self.lower_expr(body, subscript.container, file);
+                self.lower_expr(body, subscript.subscript, file);
+            }
         }
     }
 

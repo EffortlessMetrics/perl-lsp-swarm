@@ -12,7 +12,8 @@ mod model;
 pub use body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
     DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirStmt,
-    HirStmtId, HirVariable, LoopControlVerb, Sigil, UnaryMode, VariableKind, lower_body,
+    HirStmtId, HirSubscript, HirVariable, LoopControlVerb, Sigil, SubscriptKind, UnaryMode,
+    VariableKind, lower_body,
 };
 pub use lower::lower_ast;
 pub use model::{
