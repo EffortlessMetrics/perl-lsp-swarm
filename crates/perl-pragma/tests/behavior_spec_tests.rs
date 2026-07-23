@@ -588,3 +588,26 @@ fn given_disabled_warning_categories_when_specific_category_is_reenabled_then_ot
     assert!(state.is_warning_active("deprecated"));
     Ok(())
 }
+
+#[test]
+fn given_disabled_warning_categories_when_all_is_reenabled_then_disabled_set_is_cleared()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `use warnings 'all'` re-enables every category, exactly like a bare
+    // `use warnings`, so no previously-disabled category may linger in the
+    // flattened list. Prior behaviour only stripped the literal `all` string,
+    // leaving `uninitialized`/`deprecated` stuck disabled after the blanket
+    // re-enable.
+    let ast = program(vec![
+        use_node("warnings", &[], 0, 15),
+        no_node("warnings", &["qw(uninitialized deprecated)"], 16, 55),
+        use_node("warnings", &["'all'"], 56, 78),
+    ]);
+    let map = PragmaTracker::build(&ast);
+
+    let state = PragmaTracker::state_for_offset(&map, 70);
+    assert!(state.warnings);
+    assert!(state.disabled_warning_categories.is_empty());
+    assert!(state.is_warning_active("uninitialized"));
+    assert!(state.is_warning_active("deprecated"));
+    Ok(())
+}
