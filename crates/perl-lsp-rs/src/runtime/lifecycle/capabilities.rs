@@ -528,7 +528,30 @@ impl LspServer {
             }
         }
 
-        // Load .perl-lsp.toml from workspace root (base layer; LSP config overrides later)
+        // Apply initializationOptions.perl.* as the base config layer.
+        // This is parsed before .perl-lsp.toml so project config overrides it,
+        // and subsequent workspace/configuration responses override both.
+        if let Some(params) = params.as_ref() {
+            if let Some(init_options) = params.get("initializationOptions") {
+                if let Some(perl) = super::super::workspace::extract_perl_settings(init_options) {
+                    tracing::debug!("Applying initializationOptions.perl.* as base config layer");
+                    {
+                        let mut config = self.config.lock();
+                        config.update_from_value(perl);
+                    }
+                    {
+                        let mut workspace_config = self.workspace_config.lock();
+                        workspace_config.update_from_value(perl);
+                    }
+                    if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
+                        limits.update_from_value(perl);
+                    }
+                    *self.initialization_options_perl_settings.lock() = Some(perl.clone());
+                }
+            }
+        }
+
+        // Load .perl-lsp.toml from workspace root (init options base layer; LSP config overrides later)
         self.load_and_apply_project_config();
 
         // Detect Perl interpreter and surface an actionable error if not found.
@@ -822,6 +845,76 @@ mod tests {
         let before = flags.clone();
         apply_disabled_feature_id(&mut flags, "lsp.does_not_exist");
         assert_eq!(flags, before, "unknown ID must not mutate flags");
+    }
+
+    #[test]
+    fn handle_initialize_applies_perl_initialization_options()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("workspace");
+        std::fs::create_dir_all(&folder)?;
+        let uri =
+            url::Url::from_directory_path(&folder).map_err(|_| "invalid folder path")?.to_string();
+
+        let params = json!({
+            "capabilities": {},
+            "workspaceFolders": [{ "uri": uri, "name": "workspace" }],
+            "initializationOptions": {
+                "perl": {
+                    "workspace": {
+                        "includePaths": ["lib", "local"]
+                    },
+                    "inlayHints": {
+                        "enabled": false
+                    }
+                }
+            }
+        });
+
+        server.handle_initialize(Some(params))?;
+
+        let workspace_config = server.workspace_config.lock();
+        assert_eq!(workspace_config.include_paths, vec!["lib", "local"]);
+
+        let config = server.config.lock();
+        assert!(!config.inlay_hints_enabled);
+        Ok(())
+    }
+
+    #[test]
+    fn handle_initialize_perl_initialization_options_are_overridden_by_toml()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("workspace");
+        std::fs::create_dir_all(&folder)?;
+        std::fs::write(
+            folder.join(".perl-lsp.toml"),
+            "[perl]\ninclude_paths = [\"project_lib\"]\n",
+        )?;
+        let uri =
+            url::Url::from_directory_path(&folder).map_err(|_| "invalid folder path")?.to_string();
+
+        let params = json!({
+            "capabilities": {},
+            "workspaceFolders": [{ "uri": uri, "name": "workspace" }],
+            "initializationOptions": {
+                "perl": {
+                    "workspace": {
+                        "includePaths": ["lib", "local"]
+                    }
+                }
+            }
+        });
+
+        server.handle_initialize(Some(params))?;
+
+        // Per-folder effective config layers .perl-lsp.toml on top of init options.
+        let folders = server.workspace_folders.lock();
+        let folder_state = folders.first().ok_or("workspace folder should exist")?;
+        assert_eq!(folder_state.effective_workspace_config.include_paths, vec!["project_lib"]);
+        Ok(())
     }
 
     #[test]

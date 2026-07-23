@@ -123,7 +123,14 @@ impl LspServer {
             // Try to load .perl-lsp.toml from this folder
             if let Some(folder_path) = &folder.path {
                 folder.project_config = None;
-                folder.effective_workspace_config = WorkspaceConfig::default();
+
+                // Start with initializationOptions.perl.* as the base layer, then
+                // layer .perl-lsp.toml on top so project config wins.
+                let mut effective_config = WorkspaceConfig::default();
+                if let Some(init_opts) = self.initialization_options_perl_settings.lock().as_ref() {
+                    effective_config.update_from_value(init_opts);
+                }
+                folder.effective_workspace_config = effective_config;
 
                 match perl_lsp_rs_core::config::load_project_config(folder_path) {
                     Ok(None) => {
@@ -141,10 +148,10 @@ impl LspServer {
                             project_config.apply_to_server_config(&mut config);
                         }
 
-                        // Compute effective workspace config for this folder
-                        let mut effective_config = WorkspaceConfig::default();
-                        project_config.apply_to_workspace_config(&mut effective_config);
-                        folder.effective_workspace_config = effective_config;
+                        // Layer project config on top of the init-options base already stored
+                        // in folder.effective_workspace_config.
+                        project_config
+                            .apply_to_workspace_config(&mut folder.effective_workspace_config);
                     }
                     Err(msg) => {
                         let user_msg = format!(

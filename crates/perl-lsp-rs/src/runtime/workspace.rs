@@ -222,12 +222,14 @@ impl LspServer {
             return;
         };
         let mut folders = self.workspace_folders.lock();
+        let init_options_perl = self.initialization_options_perl_settings.lock();
         configuration_response::apply_workspace_configuration_results(
             &mut folders,
             &pending.folder_uris,
             pending.includes_global_item,
             results,
             i64::from(id.as_i32()),
+            init_options_perl.as_ref(),
         );
     }
 
@@ -1067,11 +1069,11 @@ impl LspServer {
     }
 }
 
-/// Extract the perl-specific settings object from a `workspace/didChangeConfiguration` payload.
+/// Extract the perl-specific settings object from a configuration payload.
 ///
 /// Accepts both the standard wrapped form `{"perl": {...}}` and the unwrapped form `{...}` used
 /// by clients such as Sublime Text's LSP package that omit the outer `"perl"` key.
-fn extract_perl_settings(settings: &Value) -> Option<&Value> {
+pub(crate) fn extract_perl_settings(settings: &Value) -> Option<&Value> {
     if let Some(perl) = settings.get("perl") {
         if perl.is_object() {
             return Some(perl);
@@ -1157,6 +1159,11 @@ impl LspServer {
                         tracing::debug!("Updated workspace config from perl settings");
                     }
 
+                    // Update global limits from the same perl settings layer.
+                    if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
+                        limits.update_from_value(perl);
+                    }
+
                     // Apply global client settings to each folder's effective config immediately.
                     // The async workspace/configuration pull that follows will refine per-folder
                     // settings once the client responds, but we update now so the window between
@@ -1164,9 +1171,13 @@ impl LspServer {
                     // with stale settings.
                     {
                         let mut folders = self.workspace_folders.lock();
+                        let init_options_perl = self.initialization_options_perl_settings.lock();
                         for folder in folders.iter_mut() {
                             let mut effective_config =
                                 perl_lsp_rs_core::config::WorkspaceConfig::default();
+                            if let Some(init_opts) = init_options_perl.as_ref() {
+                                effective_config.update_from_value(init_opts);
+                            }
                             if let Some(project_config) = &folder.project_config {
                                 project_config.apply_to_workspace_config(&mut effective_config);
                             }
@@ -3401,6 +3412,47 @@ mod tests {
 
         let read = read_text_file_with_encoding(&path)?;
         assert_eq!(read, "", "BOM-only file should decode to empty string after BOM strip");
+        Ok(())
+    }
+
+    #[test]
+    fn did_change_configuration_preserves_initialization_options_base_layer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("workspace");
+        std::fs::create_dir_all(&folder)?;
+        let uri =
+            url::Url::from_directory_path(&folder).map_err(|_| "invalid folder path")?.to_string();
+
+        let init_params = json!({
+            "capabilities": {},
+            "workspaceFolders": [{ "uri": uri, "name": "workspace" }],
+            "initializationOptions": {
+                "perl": {
+                    "workspace": {
+                        "includePaths": ["lib", "local"]
+                    }
+                }
+            }
+        });
+        server.handle_initialize(Some(init_params))?;
+
+        // Change a different workspace setting; includePaths from init options should remain.
+        server.handle_did_change_configuration(Some(json!({
+            "settings": {
+                "perl": {
+                    "workspace": {
+                        "resolutionTimeout": 123
+                    }
+                }
+            }
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let folder_state = folders.first().ok_or("workspace folder should exist")?;
+        assert_eq!(folder_state.effective_workspace_config.include_paths, vec!["lib", "local"]);
+        assert_eq!(folder_state.effective_workspace_config.resolution_timeout_ms, 123);
         Ok(())
     }
 }
