@@ -1781,7 +1781,8 @@ print "result: $final\n";
 
     #[test]
     fn test_send_continue_signal_does_not_panic_on_pid_1() {
-        // PID 1 on Unix is init (EPERM), on Windows GenerateConsoleCtrlEvent returns 0.
+        // PID 1 on Unix is init (EPERM). On Windows, send_continue_signal is a
+        // no-op that returns true (no SIGCONT equivalent — #4639).
         // Must not panic on any platform.
         let adapter = DebugAdapter::new();
         let _ = adapter.send_continue_signal(1);
@@ -1817,6 +1818,38 @@ print "result: $final\n";
     fn test_send_interrupt_signal_nonexistent_pid_returns_false() {
         let adapter = DebugAdapter::new();
         assert!(!adapter.send_interrupt_signal(999_999));
+    }
+
+    // ── Windows signal delivery tests (#4639) ──────────────────────────────────
+
+    /// On Windows, `send_continue_signal` returns `true` for a nonzero pid.
+    ///
+    /// Regression for #4639 defect #1: the old Windows branch always returned
+    /// `false`, which the adapter could misinterpret as "stuck". The fix returns
+    /// `true` because external-process continue is a no-op on Windows, not a
+    /// failure.
+    #[test]
+    #[cfg(windows)]
+    fn test_send_continue_signal_returns_true_on_windows_for_nonzero_pid() {
+        let adapter = DebugAdapter::new();
+        let pid = std::process::id();
+        assert!(
+            adapter.send_continue_signal(pid),
+            "send_continue_signal should return true on Windows for a nonzero pid (no-op, not failure)"
+        );
+    }
+
+    /// On Windows, `send_interrupt_signal` for a nonexistent pid does not panic.
+    ///
+    /// Regression for #4639 defect #2: the old code could call terminate_child_process
+    /// as a fallback on stdin-write failure. The fix returns `false` cleanly without
+    /// destroying the debuggee.
+    #[test]
+    #[cfg(windows)]
+    fn test_send_interrupt_signal_nonexistent_pid_no_panic_on_windows() {
+        let adapter = DebugAdapter::new();
+        // The key assertion is that it doesn't panic or destroy anything.
+        let _ = adapter.send_interrupt_signal(999_999);
     }
 
     // ── context_re unit tests ─────────────────────────────────────────────────
