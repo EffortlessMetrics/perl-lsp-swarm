@@ -1088,16 +1088,51 @@ impl BodyLowerer {
             }
 
             HirExpr::Ternary { condition, then_expr, else_expr } => {
-                *self.unsupported.entry("Ternary").or_insert(0) += 1;
+                // Canonical PIR-A ternary lowering (#4859): emit a first-class
+                // Branch node with a condition link and per-arm Branch edges,
+                // mirroring the statement `if`/`unless` body path (#4795), rather
+                // than counting the construct as unsupported.
+                //
+                // Context: unlike a statement branch (Void — it yields no value),
+                // a ternary is a value-producing rvalue. Its result context is
+                // inherited from the enclosing expression's position, which this
+                // slice does not model, so the node is `Unknown` (fail-closed):
+                // Void would falsely claim the ternary yields nothing, and
+                // Scalar/List would over-claim a context that cannot be proven
+                // statically here.
+                //
+                // Condition link (v0 approximation): the last PIR node lowered
+                // from the condition expression, when it lowered to at least one
+                // node (`$c ? ...`). A constant/opaque condition emits no node,
+                // so the link stays None (fail-closed). `next_id == nodes.len()`
+                // holds because `push_body_node` is the only node-emitting path.
+                let id_before_condition = self.next_id;
                 self.lower_expr(body, *condition, file);
-                // The selected arms are mutually exclusive. Do not connect the
-                // final node of the true arm to the first node of the false arm,
-                // or either arm to a later sibling through the shared synthetic
-                // body scope.
-                self.last_in_scope.remove(&None);
-                self.lower_expr(body, *then_expr, file);
-                self.last_in_scope.remove(&None);
-                self.lower_expr(body, *else_expr, file);
+                let condition = (self.next_id > id_before_condition)
+                    .then(|| PirId::from_index(self.next_id - 1));
+
+                // Emit the Branch node. It keeps the condition -> Branch
+                // fallthrough that `push_body_node` adds from the last condition
+                // node (control evaluates the condition, then branches).
+                let anchor = self.make_body_anchor(range);
+                let branch_id = self.push_body_node(
+                    anchor,
+                    PirOperation::Branch { condition },
+                    PirContext::Unknown,
+                    None,
+                    file,
+                );
+
+                // Each arm is a mutually exclusive rvalue region reached from the
+                // Branch node by an explicit `Branch` edge, never by fallthrough.
+                // A ternary arm is a single expression (not a block), so lower it
+                // via the expr-arm helper rather than `lower_branch_arm`.
+                self.lower_branch_expr_arm(body, *then_expr, branch_id, file);
+                self.lower_branch_expr_arm(body, *else_expr, branch_id, file);
+
+                // The ternary has no unconditional successor: a later sibling in
+                // the shared body scope must not inherit a fallthrough predecessor
+                // from either arm (conservative, matches the statement branch).
                 self.last_in_scope.remove(&None);
             }
 
@@ -1311,6 +1346,35 @@ impl BodyLowerer {
         self.last_in_scope.remove(&None);
         let arm_first = self.next_id;
         self.lower_block(body, block, file);
+        if self.next_id > arm_first {
+            self.edges.push(PirEdge {
+                from: branch_id,
+                to: Some(PirId::from_index(arm_first)),
+                kind: PirEdgeKind::Branch,
+            });
+        }
+    }
+
+    /// Lower one ternary arm expression and connect it to its `Branch` node.
+    ///
+    /// Mirrors [`lower_branch_arm`](Self::lower_branch_arm) but for a single
+    /// expression arm: a ternary `COND ? THEN : ELSE` arm is an `HirExprId`, not
+    /// a block. Arms are mutually exclusive rvalue regions reached from the
+    /// `Branch` node only by an explicit `Branch` edge; severing `last_in_scope`
+    /// first drops the fallthrough predecessor (the `Branch` node itself, or the
+    /// previous arm's last node) so the arm's first node is not linked by a
+    /// spurious `Fallthrough`. An arm that emits no node (e.g. a constant `1`)
+    /// contributes no edge.
+    fn lower_branch_expr_arm(
+        &mut self,
+        body: &HirBody,
+        expr: HirExprId,
+        branch_id: PirId,
+        file: &HirFile,
+    ) {
+        self.last_in_scope.remove(&None);
+        let arm_first = self.next_id;
+        self.lower_expr(body, expr, file);
         if self.next_id > arm_first {
             self.edges.push(PirEdge {
                 from: branch_id,
