@@ -33,6 +33,14 @@ fn send_request(server: &LspServer, method: &str, params: Option<Value>) -> Opti
 }
 
 /// Helper to send a request with explicit timeout to prevent hanging tests
+///
+/// Every method is dispatched through the real in-process server. The previous
+/// implementation short-circuited `textDocument/definition`, `workspace/symbol`,
+/// and `textDocument/references` with hard-coded `json!([])` mocks, which made
+/// every consuming test pass deterministically without ever exercising the
+/// server (issue #4642). The server's `handle_request` is synchronous and
+/// in-process, so there is no transport to hang on; if a handler genuinely
+/// blocks that is a source bug to fix, not a reason to mock the request away.
 fn send_request_with_timeout(
     server: &LspServer,
     method: &str,
@@ -46,28 +54,9 @@ fn send_request_with_timeout(
         params,
     };
 
-    // For operations that typically hang, return mock responses to keep tests working
-    // This is a temporary fix for tests that are known to hang
-    match method {
-        "textDocument/definition" => {
-            eprintln!("Warning: Using mock response for potentially hanging request: {}", method);
-            Some(json!([])) // Empty array of locations
-        }
-        "workspace/symbol" => {
-            eprintln!("Warning: Using mock response for potentially hanging request: {}", method);
-            Some(json!([])) // Empty array of symbols
-        }
-        "textDocument/references" => {
-            eprintln!("Warning: Using mock response for potentially hanging request: {}", method);
-            Some(json!([])) // Empty array of references
-        }
-        _ => {
-            // For other operations, proceed normally but with a fallback
-            match server.handle_request(request) {
-                Some(response) => response.result,
-                None => None,
-            }
-        }
+    match server.handle_request(request) {
+        Some(response) => response.result,
+        None => None,
     }
 }
 
@@ -360,16 +349,15 @@ my $user = create_user("Bob", "bob@example.com");
         })),
     );
 
-    assert!(result.is_some());
+    assert!(result.is_some(), "textDocument/definition must return a result");
     let locations = result.ok_or("Expected definition result")?;
-    assert!(locations.is_array());
+    assert!(locations.is_array(), "definition result must be an array");
 
     let locs = locations.as_array().ok_or("Expected locations array")?;
-    // Accept empty results for mock responses
-    if locs.is_empty() {
-        eprintln!("Note: Got empty definition results (likely mock response)");
-        return Ok(()); // Skip detailed checks for mock responses
-    }
+    // The server must resolve the in-file `create_user` definition; an empty
+    // array would mean go-to-definition is broken (previously hidden by a mock
+    // that returned `json!([])` without calling the server — issue #4642).
+    assert!(!locs.is_empty(), "go-to-definition should resolve the in-file `create_user` sub");
 
     // Should point to line 3 where create_user is defined
     assert_eq!(locs[0]["range"]["start"]["line"], 3);
@@ -422,25 +410,34 @@ print "Using config: $config_file\n";
         })),
     );
 
-    assert!(result.is_some());
+    assert!(result.is_some(), "textDocument/references must return a result");
     let references = result.ok_or("Expected references result")?;
-    assert!(references.is_array());
+    assert!(references.is_array(), "references result must be an array");
 
     let refs = references.as_array().ok_or("Expected references array")?;
-    // Accept empty results for mock responses
-    if refs.is_empty() {
-        eprintln!("Note: Got empty references results (likely mock response)");
-        return Ok(()); // Skip detailed checks for mock responses
-    }
-    // We expect 5 references total: 1 declaration + 4 uses
-    // Note: We modified the test to use || instead of 'or' due to parser limitations
-    // The references are:
-    // 1. Declaration: my $config_file = ...
-    // 2. Use in open: open my $fh, '<', $config_file
-    // 3. Use in die string: "Cannot open $config_file: $!"
-    // 4. Use in backup string: "$config_file.bak"
-    // 5. Use in print: "Using config: $config_file\n"
-    assert_eq!(refs.len(), 5, "Expected 5 references (1 declaration + 4 uses)");
+    // The server must find references to `$config_file`; an empty array would
+    // mean find-references is broken (previously hidden by a mock returning
+    // `json!([])` without calling the server — issue #4642).
+    assert!(!refs.is_empty(), "find-references should resolve uses of $config_file");
+
+    // The declaration on line 1 (`my $config_file = ...`) must be among the
+    // results when `includeDeclaration` is true.
+    let declaration_lines: Vec<u64> =
+        refs.iter().filter_map(|r| r["range"]["start"]["line"].as_u64()).collect();
+    assert!(
+        declaration_lines.contains(&1),
+        "find-references should include the declaration on line 1, got lines: {declaration_lines:?}"
+    );
+
+    // At minimum the five known textual occurrences of `$config_file` must be
+    // covered (declaration + open + die string + backup string + print). The
+    // server may report additional occurrences (e.g. interpolation sub-spans),
+    // so we assert a lower bound rather than an exact count.
+    assert!(
+        refs.len() >= 5,
+        "find-references should report at least the 5 known uses of $config_file, got {}",
+        refs.len()
+    );
 
     Ok(())
 }
@@ -729,15 +726,19 @@ sub process {
         })),
     );
 
-    assert!(result.is_some());
+    assert!(result.is_some(), "textDocument/codeAction must return a result");
     let actions = result.ok_or("Expected code actions result")?;
-    assert!(actions.is_array());
+    assert!(actions.is_array(), "codeAction result must be an array");
 
-    // Should offer to change = to == (if code actions are provided)
+    // The endpoint must respond with a well-formed array. The previous
+    // assertion `acts.is_empty() || !acts.is_empty()` was a tautology that
+    // always passed and gave false confidence (issue #4642); it is removed in
+    // favor of the structural validation above. Whether a specific diagnostic
+    // yields a code action is a separate, feature-specific concern.
     let acts = actions.as_array().ok_or("Expected actions array")?;
-    // Code actions may be empty if the diagnostic provider doesn't detect this specific issue
-    // Just verify we got a valid response
-    assert!(acts.is_empty() || !acts.is_empty());
+    for action in acts {
+        assert!(action.is_object(), "each code action must be an object, got: {action}");
+    }
 
     Ok(())
 }
@@ -856,15 +857,18 @@ print "Result: $result\n";
         })),
     );
 
-    assert!(symbols_result.is_some());
+    assert!(symbols_result.is_some(), "workspace/symbol must return a result");
     let symbols = symbols_result.ok_or("Expected workspace symbols result")?;
-    assert!(symbols.is_array());
+    assert!(symbols.is_array(), "workspace/symbol result must be an array");
 
     let symbol_array = symbols.as_array().ok_or("Expected symbols array")?;
-    if symbol_array.is_empty() {
-        eprintln!("Note: Got empty workspace symbols (likely mock response)");
-        return Ok(()); // Skip detailed checks for mock responses
-    }
+    // The server must resolve a workspace symbol query for `add`; an empty
+    // array would mean workspace/symbol is broken (previously hidden by a mock
+    // returning `json!([])` without calling the server — issue #4642).
+    assert!(
+        !symbol_array.is_empty(),
+        "workspace/symbol should find the `add` sub defined in Calculator.pm"
+    );
 
     // Step 4: Developer would navigate to the add function definition
     // (Skipping since textDocument/definition is not implemented)

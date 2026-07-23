@@ -8,7 +8,6 @@
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_parser::Parser;
 use std::fs;
-use std::process::Output;
 use tempfile::TempDir;
 
 #[derive(Debug)]
@@ -18,10 +17,17 @@ struct ValidProgramCase {
     expected_fragments: &'static [&'static str],
 }
 
-fn perl_syntax_check(source: &str) -> Result<Option<Output>, Box<dyn std::error::Error>> {
-    let Some(mut oracle) = PerlOracleEnv::for_dap_test_fixture() else {
-        return Ok(None);
-    };
+fn perl_syntax_check(source: &str) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    // These tests promise a perl-vs-parser oracle comparison. Previously,
+    // when perl was absent from PATH the helpers silently returned Ok(None)
+    // and every assertion early-returned, giving CI a green check for free on
+    // tests that never ran (issue #4642). Fail loudly instead so the gap is
+    // discovered rather than hidden.
+    let mut oracle = PerlOracleEnv::for_dap_test_fixture().ok_or_else(|| {
+        "perl oracle required for parser e2e conformance tests but \
+         PerlOracleEnv::for_dap_test_fixture() returned None (perl not on PATH)"
+            .to_string()
+    })?;
 
     let temp_dir = TempDir::new()?;
     let source_path = temp_dir.path().join("fixture.pl");
@@ -33,13 +39,11 @@ fn perl_syntax_check(source: &str) -> Result<Option<Output>, Box<dyn std::error:
     let mut command = oracle.into_command();
     let output = command.arg("-c").arg(&source_path).output()?;
 
-    Ok(Some(output))
+    Ok(output)
 }
 
 fn assert_real_perl_accepts(source: &str, name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(output) = perl_syntax_check(source)? else {
-        return Ok(());
-    };
+    let output = perl_syntax_check(source)?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -51,9 +55,7 @@ fn assert_real_perl_accepts(source: &str, name: &str) -> Result<(), Box<dyn std:
 }
 
 fn assert_real_perl_rejects(source: &str, name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(output) = perl_syntax_check(source)? else {
-        return Ok(());
-    };
+    let output = perl_syntax_check(source)?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

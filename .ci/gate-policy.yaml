@@ -475,6 +475,12 @@ gates:
     tier: pr_fast
     description: "Scope-aware library tests for ci-scope selected crates"
     required: true
+    # NOTE (#4642): `--lib` deliberately excludes `tests/` integration tests.
+    # Integration tests in `tests/` directories are DEFERRED: they are compiled
+    # by `check_tests_scoped` and run only by `unit_routed_full`, which is
+    # scope-aware (`{package_args}`) and therefore only executes the `tests/`
+    # suite for crates whose source is touched by the PR diff. A regression in
+    # an untouched crate's `tests/` directory will not be caught on this gate.
     command: cargo test --locked --lib {package_args}
     # Large source/sync cutovers can select most library crates and spend
     # the former 300s budget compiling before tests begin. Keep the gate
@@ -495,6 +501,10 @@ gates:
     tier: pr_fast
     description: "Compile integration tests for ci-scope selected crates"
     required: true
+    # NOTE (#4642): this gate COMPILES `tests/` integration targets only — it
+    # never runs them. Runtime assertion failures in integration tests are not
+    # caught here. Execution of `tests/` is deferred to `unit_routed_full`
+    # (scope-aware: only for diff-touched crates) and the merge-gate full suite.
     command: cargo check --locked --tests {package_args}
     timeout_seconds: 180
     retry_count: 0
@@ -580,6 +590,9 @@ gates:
     tier: pr_fast
     description: "Fast unit test subset for quick feedback"
     required: true
+    # NOTE (#4642): `--lib` only — `tests/` integration tests for these crates
+    # are not executed here. They are compiled by `check_tests_scoped`/run by
+    # `unit_routed_full` (scope-aware) and the merge-gate full suite.
     # Library tests only, no integration tests
     command: >-
       cargo test
@@ -618,6 +631,8 @@ gates:
     tier: pr_fast
     description: "Compile all workspace targets (lib/bin/tests/benches) to catch integration and bench bit-rot; also validates all-features paths"
     required: true
+    # NOTE (#4642): this is a COMPILE-ONLY gate — it never runs tests. It catches
+    # build/bit-rot in `tests/` and bench targets but not runtime failures.
     command: just check-all-targets
     # Two full-workspace cargo check passes (default + all-features) require more time
     # than the original 180s budget on a fresh CI runner. Aligned with unit_scoped budget.
@@ -662,6 +677,12 @@ gates:
     tier: pr_fast
     description: "Scoped routed integration tests for ci-scope selected crates (required test gate for #1470 coupling; --tests runs tests/ directories, catching runtime assertion failures not reachable by --lib)"
     required: true
+    # NOTE (#4642): this is the only pr_fast gate that RUNS `tests/` integration
+    # tests, and it is scope-aware (`{package_args}`): it only executes the
+    # `tests/` suite for crates whose source is touched by the PR diff. A
+    # regression in an untouched crate's `tests/` directory sails through pr_fast
+    # and is only caught at the merge-gate full suite. This deferral is the
+    # structural reason false-confidence patterns in `tests/` went undetected.
     command: cargo test --locked --tests {package_args}
     # PR #1585 produced timeout-only receipts at 600s and 900s for the
     # perl-lsp-rs/perl-lsp-rs-core/xtask route. Keep the required --tests proof
