@@ -36,6 +36,7 @@ import { WhatsNewManager } from './whatsNew';
 import { generateBoilerplate } from './fileCreation';
 import { handleFormattingError } from './formattingErrors';
 import { HealthWidget, ClientState } from './healthWidget';
+import { HealthWidgetDataSource } from './healthWidgetDataSource';
 import { registerPodPreview } from './podPreview';
 import { registerGherkinProviders } from './gherkinProviders';
 import { registerGherkinStepDefinitionSupport } from './gherkinStepDefinitions';
@@ -131,6 +132,7 @@ let currentServerPath: string | null = null;
 let configuredServerPathMissing: string | null = null;
 let statusBarItem: vscode.StatusBarItem | undefined;
 let healthWidget: HealthWidget | undefined;
+let healthWidgetDataSource: HealthWidgetDataSource | undefined;
 let streamingController: StreamingCompletionController | undefined;
 let languageClientLifecycle:
   | ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent>
@@ -403,6 +405,15 @@ export async function activate(context: vscode.ExtensionContext) {
   statusBarItem.show();
   healthWidget = new HealthWidget(statusBarItem);
   healthWidget.onStateChange(ClientState.Starting);
+  // Wire the file/error-count setters to client-side telemetry (#4620).
+  // Without this, the running-state status bar never shows the
+  // `perl-lsp v<x>: <N> files | <M> errors` indicator the widget promises.
+  healthWidgetDataSource = HealthWidgetDataSource.fromDeps(healthWidget, {
+    languages: vscode.languages,
+    workspace: vscode.workspace,
+  });
+  healthWidgetDataSource.start();
+  context.subscriptions.push(healthWidgetDataSource);
   languageClientLifecycle = createLanguageClientLifecycle(context);
   syncLifecycleProjection();
   context.subscriptions.push(statusBarItem);
