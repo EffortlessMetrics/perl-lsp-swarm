@@ -78,6 +78,18 @@ pub fn all_nodekind_instances() -> Vec<Node> {
             },
             loc(),
         ),
+        Node::new(
+            NodeKind::ArraySlice { target: Box::new(var("@", "arr")), indices: Box::new(num("0")) },
+            loc(),
+        ),
+        Node::new(
+            NodeKind::HashSlice { target: Box::new(var("@", "h")), keys: Box::new(num("0")) },
+            loc(),
+        ),
+        Node::new(
+            NodeKind::KeyValueSlice { target: Box::new(var("%", "h")), keys: Box::new(num("0")) },
+            loc(),
+        ),
         Node::new(NodeKind::Unary { op: "-".to_string(), operand: Box::new(num("1")) }, loc()),
         Node::new(
             NodeKind::If {

@@ -241,6 +241,16 @@ fn walk_security_node(
             walk_security_node(right, diagnostics, signal_shadowed);
             signal_shadowed
         }
+        NodeKind::ArraySlice { target, indices } => {
+            walk_security_node(target, diagnostics, signal_shadowed);
+            walk_security_node(indices, diagnostics, signal_shadowed);
+            signal_shadowed
+        }
+        NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
+            walk_security_node(target, diagnostics, signal_shadowed);
+            walk_security_node(keys, diagnostics, signal_shadowed);
+            signal_shadowed
+        }
         NodeKind::Ternary { condition, then_expr, else_expr } => {
             walk_security_node(condition, diagnostics, signal_shadowed);
             walk_security_node(then_expr, diagnostics, signal_shadowed);

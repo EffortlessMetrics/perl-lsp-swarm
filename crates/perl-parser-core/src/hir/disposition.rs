@@ -652,6 +652,9 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
         // to `_ => self.visit_children(node, confidence)`.
         // is_explicit_arm=false for all of these.
         "Binary" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
+        "ArraySlice" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
+        "HashSlice" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
+        "KeyValueSlice" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "Heredoc" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "Readline" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "Glob" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
@@ -1021,6 +1024,9 @@ mod tests {
         // therefore have `traverses_children=true` and `is_intentional=false`.
         for kind in [
             "Binary",
+            "ArraySlice",
+            "HashSlice",
+            "KeyValueSlice",
             "Heredoc",
             "Readline",
             "Glob",

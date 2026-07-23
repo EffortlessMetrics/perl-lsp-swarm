@@ -117,26 +117,20 @@ mod tests {
         assert_no_errors(code);
 
         let expr = first_expr(code);
-        // Should be Binary { op: "[]", left: Variable(@, "Pkg::Arr"), right: range }
+        // Should be ArraySlice { target: Variable(@, "Pkg::Arr"), indices: range }
         match &expr.kind {
-            NodeKind::Binary { op, left, .. } => {
-                assert_eq!(op, "[]", "Expected [] subscript operator, got: {op}");
-                match &left.kind {
-                    NodeKind::Variable { sigil, name } => {
-                        assert_eq!(sigil, "@", "Expected @ sigil");
-                        assert_eq!(
-                            name, "Pkg::Arr",
-                            "Expected qualified name Pkg::Arr, got: {name}"
-                        );
-                    }
-                    _ => panic!(
-                        "Expected Variable node as subscript target, got: {}",
-                        left.kind.kind_name()
-                    ),
+            NodeKind::ArraySlice { target, .. } => match &target.kind {
+                NodeKind::Variable { sigil, name } => {
+                    assert_eq!(sigil, "@", "Expected @ sigil");
+                    assert_eq!(name, "Pkg::Arr", "Expected qualified name Pkg::Arr, got: {name}");
                 }
-            }
+                _ => panic!(
+                    "Expected Variable node as slice target, got: {}",
+                    target.kind.kind_name()
+                ),
+            },
             _ => panic!(
-                "Expected Binary subscript node, got: {} (sexp: {})",
+                "Expected ArraySlice node, got: {} (sexp: {})",
                 expr.kind.kind_name(),
                 expr.to_sexp()
             ),
@@ -149,31 +143,25 @@ mod tests {
     // ---------------------------------------------------------------
     #[test]
     fn qualified_hash_slice() {
-        // Note: %hash{} is a hash slice, which returns a list of values
+        // Note: %hash{} is a key-value slice, which returns interleaved key-value pairs
         let code = "%Pkg::Hash{qw(a b)};";
         assert_no_errors(code);
 
         let expr = first_expr(code);
-        // Should be Binary { op: "{}", left: Variable(%, "Pkg::Hash"), right: ... }
+        // Should be KeyValueSlice { target: Variable(%, "Pkg::Hash"), keys: ... }
         match &expr.kind {
-            NodeKind::Binary { op, left, .. } => {
-                assert_eq!(op, "{}", "Expected {{}} subscript operator, got: {op}");
-                match &left.kind {
-                    NodeKind::Variable { sigil, name } => {
-                        assert_eq!(sigil, "%", "Expected % sigil");
-                        assert_eq!(
-                            name, "Pkg::Hash",
-                            "Expected qualified name Pkg::Hash, got: {name}"
-                        );
-                    }
-                    _ => panic!(
-                        "Expected Variable node as subscript target, got: {}",
-                        left.kind.kind_name()
-                    ),
+            NodeKind::KeyValueSlice { target, .. } => match &target.kind {
+                NodeKind::Variable { sigil, name } => {
+                    assert_eq!(sigil, "%", "Expected % sigil");
+                    assert_eq!(name, "Pkg::Hash", "Expected qualified name Pkg::Hash, got: {name}");
                 }
-            }
+                _ => panic!(
+                    "Expected Variable node as slice target, got: {}",
+                    target.kind.kind_name()
+                ),
+            },
             _ => panic!(
-                "Expected Binary subscript node, got: {} (sexp: {})",
+                "Expected KeyValueSlice node, got: {} (sexp: {})",
                 expr.kind.kind_name(),
                 expr.to_sexp()
             ),

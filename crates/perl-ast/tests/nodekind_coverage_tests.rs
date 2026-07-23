@@ -84,6 +84,39 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
         ),
         (
             Node::new(
+                NodeKind::ArraySlice {
+                    target: Box::new(leaf("target")),
+                    indices: Box::new(leaf("indices")),
+                },
+                loc(),
+            ),
+            "ArraySlice",
+            2,
+        ),
+        (
+            Node::new(
+                NodeKind::HashSlice {
+                    target: Box::new(leaf("target")),
+                    keys: Box::new(leaf("keys")),
+                },
+                loc(),
+            ),
+            "HashSlice",
+            2,
+        ),
+        (
+            Node::new(
+                NodeKind::KeyValueSlice {
+                    target: Box::new(leaf("target")),
+                    keys: Box::new(leaf("keys")),
+                },
+                loc(),
+            ),
+            "KeyValueSlice",
+            2,
+        ),
+        (
+            Node::new(
                 NodeKind::Ternary {
                     condition: Box::new(leaf("cond")),
                     then_expr: Box::new(leaf("then")),
