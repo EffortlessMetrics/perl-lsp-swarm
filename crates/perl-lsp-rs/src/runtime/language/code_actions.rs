@@ -501,6 +501,11 @@ impl LspServer {
         if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
             let start_offset = self.pos16_to_offset(doc, start_line, start_char);
             let end_offset = self.pos16_to_offset(doc, end_line, end_char);
+            // A zero-width range means the client sent a cursor position with no
+            // text selected.  Refactor-extract actions require a non-empty
+            // selection, so we emit them as disabled (LSP 3.16 `disabled` field)
+            // to communicate their availability without pretending they can run.
+            let is_cursor_only = start_offset == end_offset;
 
             // Get diagnostics from the document. `parsed` is guaranteed `Some`
             // here since `ast` was derived from it.
@@ -892,6 +897,31 @@ impl LspServer {
             // collapse byte-identical actions before aggregating or returning so
             // the lightbulb menu does not show repeated entries.
             dedupe_code_actions(&mut code_actions);
+
+            // LSP 3.16: when the client sent a cursor position (zero-width
+            // range), emit refactor.extract actions in the `disabled` state so
+            // editors show them greyed-out in the Refactor menu.  This teaches
+            // users that extract operations exist and require a selection without
+            // cluttering the menu with actions that would immediately error.
+            // We only add the disabled entry when no enabled action with the
+            // same title is already present (enabled variants take priority).
+            if is_cursor_only {
+                for (title, kind) in [
+                    ("Extract variable", "refactor.extract"),
+                    ("Extract subroutine", "refactor.extract"),
+                ] {
+                    let already_present = code_actions
+                        .iter()
+                        .any(|a| a.get("title").and_then(|t| t.as_str()) == Some(title));
+                    if !already_present {
+                        code_actions.push(json!({
+                            "title": title,
+                            "kind": kind,
+                            "disabled": { "reason": "requires code selection" }
+                        }));
+                    }
+                }
+            }
 
             // Aggregate all quick fixes collected so far into a single
             // `source.fixAll` action (LSP 3.17) when there are two or more
@@ -2157,6 +2187,121 @@ print $result;
             }),
             "expected extract-variable action, got: {actions:?}"
         );
+    }
+
+    #[test]
+    fn code_action_disabled_extract_variable_emitted_for_cursor_only_range() {
+        let server = LspServer::new();
+        let uri = "file:///test.pl";
+        let text = "my $result = length(\"hello\") + 10;\n";
+        open_test_document(&server, uri, text);
+
+        // cursor-only range (start == end) at column 5
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 5 },
+                "end":   { "line": 0, "character": 5 }
+            },
+            "context": { "diagnostics": [] }
+        })));
+        let actions =
+            response.ok().flatten().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+
+        let disabled = actions.iter().find(|a| {
+            a["title"].as_str() == Some("Extract variable") && a.get("disabled").is_some()
+        });
+        assert!(disabled.is_some(), "expected disabled 'Extract variable', got: {actions:?}");
+        assert_eq!(
+            disabled.unwrap()["disabled"]["reason"].as_str(),
+            Some("requires code selection"),
+            "disabled reason must be 'requires code selection'"
+        );
+    }
+
+    #[test]
+    fn code_action_disabled_extract_subroutine_emitted_for_cursor_only_range() {
+        let server = LspServer::new();
+        let uri = "file:///test.pl";
+        let text = "my $result = length(\"hello\") + 10;\n";
+        open_test_document(&server, uri, text);
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 5 },
+                "end":   { "line": 0, "character": 5 }
+            },
+            "context": { "diagnostics": [] }
+        })));
+        let actions =
+            response.ok().flatten().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+
+        let disabled = actions.iter().find(|a| {
+            a["title"].as_str() == Some("Extract subroutine") && a.get("disabled").is_some()
+        });
+        assert!(disabled.is_some(), "expected disabled 'Extract subroutine', got: {actions:?}");
+        assert_eq!(
+            disabled.unwrap()["disabled"]["reason"].as_str(),
+            Some("requires code selection"),
+            "disabled reason must be 'requires code selection'"
+        );
+    }
+
+    #[test]
+    fn code_action_disabled_extract_not_emitted_when_selection_exists() {
+        let server = LspServer::new();
+        let uri = "file:///test.pl";
+        let text = "my $result = length(\"hello\") + 10;\n";
+        open_test_document(&server, uri, text);
+
+        // non-zero selection: "length(\"hello\")"
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 13 },
+                "end":   { "line": 0, "character": 27 }
+            },
+            "context": { "diagnostics": [] }
+        })));
+        let actions =
+            response.ok().flatten().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+
+        let any_disabled = actions.iter().any(|a| a.get("disabled").is_some());
+        assert!(
+            !any_disabled,
+            "no action should have 'disabled' field when a selection exists, got: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn code_action_disabled_field_structure_valid_per_lsp_schema() {
+        let server = LspServer::new();
+        let uri = "file:///test.pl";
+        let text = "print \"hello\";\n";
+        open_test_document(&server, uri, text);
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end":   { "line": 0, "character": 0 }
+            },
+            "context": { "diagnostics": [] }
+        })));
+        let actions =
+            response.ok().flatten().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+
+        for action in &actions {
+            if let Some(disabled) = action.get("disabled") {
+                assert!(disabled.is_object(), "disabled must be an object: {action:?}");
+                let reason = disabled.get("reason").and_then(|r| r.as_str());
+                assert!(
+                    reason.is_some_and(|r| !r.is_empty()),
+                    "disabled.reason must be a non-empty string: {action:?}"
+                );
+            }
+        }
     }
 
     #[test]
