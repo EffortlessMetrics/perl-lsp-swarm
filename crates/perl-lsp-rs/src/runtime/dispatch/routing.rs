@@ -567,8 +567,8 @@ mod tests {
     /// cancellation token at the dispatch boundary instead of running to
     /// completion.
     #[test]
-    fn cancelled_ungated_providers_return_request_cancelled() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn cancelled_ungated_providers_return_request_cancelled()
+    -> Result<(), Box<dyn std::error::Error>> {
         let methods = [
             "textDocument/formatting",
             "textDocument/codeAction",
