@@ -196,6 +196,28 @@ fn arrow_array_deref_rmw_place_evaluate_once() {
 }
 
 #[test]
+fn array_slice_is_not_an_element_subscript() {
+    // `@a[1, 2]` is a SLICE (multi-element, `@`-sigil container), not a singular
+    // element place — it must NOT lower to a `HirSubscript`.
+    let file = lower("my @a; my @s = @a[1, 2];");
+    assert_eq!(subscripts(&file), vec![], "array slice must not be an element subscript");
+}
+
+#[test]
+fn hash_slice_is_not_an_element_subscript() {
+    let file = lower("my %h; my @s = @h{'a', 'b'};");
+    assert_eq!(subscripts(&file), vec![], "hash slice must not be an element subscript");
+}
+
+#[test]
+fn slice_assignment_is_not_an_element_write_place() {
+    // A slice on an assignment LHS writes MANY elements; modeling it as a single
+    // `AccessMode::Write` element place would be wrong.
+    let file = lower("my @a; @a[1, 2] = (3, 4);");
+    assert_eq!(subscripts(&file), vec![], "slice assignment must not be a singular element write");
+}
+
+#[test]
 fn subscript_is_not_a_generic_binary() {
     // Regression guard: a subscript must not fall through to `HirExpr::Binary`.
     let file = lower("my @arr; my $x = $arr[0];");

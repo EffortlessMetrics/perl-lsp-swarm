@@ -2523,11 +2523,34 @@ fn require_target(argument: Option<&Node>) -> Option<String> {
     }
 }
 
-/// Whether a `Binary` operator string denotes an array/hash element access that
-/// should lower to [`HirExpr::Subscript`]: the direct forms `[]`/`{}` and the
-/// arrow-deref forms `->[]`/`->{}` (`$ref->[i]` / `$ref->{k}`).
+/// Whether a `Binary` operator string denotes an array/hash subscript bracket:
+/// the direct forms `[]`/`{}` and the arrow-deref forms `->[]`/`->{}`.
 fn is_subscript_op(op: &str) -> bool {
     matches!(op, "[]" | "{}" | "->[]" | "->{}")
+}
+
+/// Whether a `Binary` node is a singular array/hash **element** access that should
+/// lower to [`HirExpr::Subscript`] — as opposed to a slice.
+///
+/// Perl reuses the same `[]`/`{}` brackets for slices (`@a[1, 2]`, `@h{'a','b'}`),
+/// which read/write MANY elements and so must NOT be modeled as one singular
+/// element place. Slices are distinguished by a list-context sigil on the
+/// container: `@a[...]` / `@h{...}` / `%h{...}`. A singular element access has a
+/// `$`-sigil container (`$a[i]`, `$h{k}`), a nested subscript container
+/// (`$a[0][1]`, `$h{a}{b}`), or is an arrow-deref form (always single-element).
+/// Anything else (e.g. sigil-deref element forms) is left as a generic `Binary`
+/// here — conservative, never a slice mis-modeled as an element write.
+fn is_element_subscript(op: &str, container: &Node) -> bool {
+    match op {
+        // Arrow-deref element access is always singular.
+        "->[]" | "->{}" => true,
+        "[]" | "{}" => match &container.kind {
+            NodeKind::Variable { sigil, .. } => sigil == "$",
+            NodeKind::Binary { op: inner_op, .. } => is_subscript_op(inner_op),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 fn variable_binding(node: &Node) -> Option<VariableBinding> {
@@ -2905,7 +2928,7 @@ impl<'a> BodyBuilder2<'a> {
             // `Binary` with a bracket operator (`[]`/`{}`/`->[]`/`->{}`). Model
             // them as a first-class evaluate-once place rather than a generic
             // binary op. A bare (non-lvalue) access reads the element.
-            NodeKind::Binary { op, left, right } if is_subscript_op(op) => {
+            NodeKind::Binary { op, left, right } if is_element_subscript(op, left) => {
                 self.lower_subscript(op, left, right, AccessMode::Read, range)
             }
 
@@ -3094,7 +3117,7 @@ impl<'a> BodyBuilder2<'a> {
             }
             // A subscript element on the LHS of an assignment (or under `++`/`--`)
             // is the write/RMW place: `$h{k} = v`, `$arr[$i] += 1`, `$ref->{k} = v`.
-            NodeKind::Binary { op, left, right } if is_subscript_op(op) => {
+            NodeKind::Binary { op, left, right } if is_element_subscript(op, left) => {
                 self.lower_subscript(op, left, right, access, range)
             }
             _ => self.lower_expr(node),
