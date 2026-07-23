@@ -1,0 +1,16 @@
+project: product
+component: Release tooling
+kind: Fixed
+body: >-
+  Delete the orphaned homebrew/perl-lsp.rb formula (v0.11.0, wrong shape —
+  single binary, outdated version, not tracked by version_sync or any
+  workflow). Reconcile CHANGELOG.md and RELEASE_HISTORY.md so version 0.16.0
+  is marked as skipped (changes rolled into 0.17.0) instead of "Unreleased".
+  Correct docs/RELEASE_PROCESS.md crates.io rollback section to document
+  cargo yank instead of the false claim that crates.io does not support
+  yanking.
+time: 2026-07-22T20:45:00Z
+custom:
+  PR: "4650"
+  Slug: homebrew-formula-fix
+  Breaking: "no"

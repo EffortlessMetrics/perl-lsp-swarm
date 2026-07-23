@@ -1873,7 +1873,6 @@
 | `fuzz/corpus/substitution_parsing/ff8d5d38ddd1e296708907715910c6f1363f0fad` | `` |
 | `fuzz/corpus/substitution_parsing/ff99c2b158ea84001232e62e8ebefdae89d0ba20` | `` |
 | `fuzz/corpus/substitution_parsing/ffcd602cafcf9c7f8349e995d7eff1da3ef4c558` | `` |
-| `homebrew/perl-lsp.rb` | `rb` |
 | `hooks/pre-push` | `` |
 | `icon/perl-lsp-logo-icon-256.png` | `png` |
 | `icon/perl-lsp-logo-icon.png` | `png` |

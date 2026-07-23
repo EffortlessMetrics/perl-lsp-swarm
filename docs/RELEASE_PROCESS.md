@@ -410,8 +410,18 @@ For a complete rollback:
 
 2. **Yank crates.io versions** (if necessary)
    ```bash
-   # Note: crates.io does not support yanking
-   # Must create a new release with fixes
+   # crates.io supports yanking — prevents new projects from depending on the version
+   # but does not delete it (existing lockfiles still resolve). See RELEASE.md for
+   # the full workspace-wide yank loop.
+   VERSION=X.Y.Z
+   cargo metadata --format-version=1 --no-deps | python3 -c '
+   import json, sys
+   meta = json.load(sys.stdin)
+   for name in meta.get("metadata", {}).get("publish", {}).get("allow", []):
+       print(name)
+   ' | while read crate; do
+     cargo yank --version "$VERSION" "$crate" || true
+   done
    ```
 
 3. **Create hotfix release**
