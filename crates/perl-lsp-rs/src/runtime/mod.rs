@@ -196,6 +196,9 @@ pub struct LspServer {
     client_supports_pull_diags: Arc<AtomicBool>,
     /// Workspace configuration for module resolution
     workspace_config: Arc<Mutex<WorkspaceConfig>>,
+    /// Perl settings extracted from `initializationOptions` during initialize.
+    /// Kept as a base config layer below `.perl-lsp.toml` and `workspace/configuration`.
+    initialization_options_perl_settings: Arc<Mutex<Option<Value>>>,
     /// Atomic counter for generating unique request IDs
     next_request_id: Arc<AtomicI32>,
     /// Pending workspace/configuration reverse requests keyed by request ID.
