@@ -1,3 +1,4 @@
+#![allow(clippy::panic)]
 //! Comprehensive integration tests for the perl-dead-code crate.
 //!
 //! These tests exercise the public API: DeadCodeDetector, DeadCodeAnalysis,

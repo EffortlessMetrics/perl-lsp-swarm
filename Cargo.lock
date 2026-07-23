@@ -1573,6 +1573,7 @@ dependencies = [
 name = "perl-dead-code"
 version = "0.17.0"
 dependencies = [
+ "perl-tdd-support",
  "perl-uri",
  "perl-workspace",
  "serde",
@@ -1605,6 +1606,7 @@ dependencies = [
 name = "perl-kwalitee"
 version = "0.17.0"
 dependencies = [
+ "perl-tdd-support",
  "serde",
  "serde_json",
  "tempfile",

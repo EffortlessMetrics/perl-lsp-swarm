@@ -1,3 +1,4 @@
+#![allow(clippy::panic)]
 //! Branch-coverage tests for `perl-dead-code`.
 //!
 //! These tests systematically exercise the branches in `dead_branches.rs`
