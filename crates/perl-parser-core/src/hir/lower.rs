@@ -2523,6 +2523,13 @@ fn require_target(argument: Option<&Node>) -> Option<String> {
     }
 }
 
+/// Whether a `Binary` operator string denotes an array/hash element access that
+/// should lower to [`HirExpr::Subscript`]: the direct forms `[]`/`{}` and the
+/// arrow-deref forms `->[]`/`->{}` (`$ref->[i]` / `$ref->{k}`).
+fn is_subscript_op(op: &str) -> bool {
+    matches!(op, "[]" | "{}" | "->[]" | "->{}")
+}
+
 fn variable_binding(node: &Node) -> Option<VariableBinding> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => {
@@ -2893,11 +2900,12 @@ impl<'a> BodyBuilder2<'a> {
                 self.alloc_expr(HirExpr::Variable(var), range)
             }
 
-            // Subscript element access (`$arr[i]`, `$hash{k}`) is parsed as a
-            // `Binary` with a bracket operator. Model it as a first-class
-            // evaluate-once place rather than a generic binary op. A bare
-            // (non-lvalue) access reads the element.
-            NodeKind::Binary { op, left, right } if op == "[]" || op == "{}" => {
+            // Subscript element access (`$arr[i]`, `$hash{k}`) — and the
+            // arrow-deref forms `$ref->[i]` / `$ref->{k}` — are parsed as a
+            // `Binary` with a bracket operator (`[]`/`{}`/`->[]`/`->{}`). Model
+            // them as a first-class evaluate-once place rather than a generic
+            // binary op. A bare (non-lvalue) access reads the element.
+            NodeKind::Binary { op, left, right } if is_subscript_op(op) => {
                 self.lower_subscript(op, left, right, AccessMode::Read, range)
             }
 
@@ -3085,19 +3093,20 @@ impl<'a> BodyBuilder2<'a> {
                 self.alloc_expr(HirExpr::Variable(var), range)
             }
             // A subscript element on the LHS of an assignment (or under `++`/`--`)
-            // is the write/RMW place: `$h{k} = v`, `$arr[$i] += 1`.
-            NodeKind::Binary { op, left, right } if op == "[]" || op == "{}" => {
+            // is the write/RMW place: `$h{k} = v`, `$arr[$i] += 1`, `$ref->{k} = v`.
+            NodeKind::Binary { op, left, right } if is_subscript_op(op) => {
                 self.lower_subscript(op, left, right, access, range)
             }
             _ => self.lower_expr(node),
         }
     }
 
-    /// Lower an array/hash subscript (`$arr[i]`, `$hash{k}`) into a first-class
-    /// [`HirExpr::Subscript`] place. The `container` and `subscript` are lowered
-    /// as separate expression IDs so a computed key/index is evaluated once; the
-    /// container is always a read (the aggregate is navigated, only the element
-    /// carries `access`).
+    /// Lower an array/hash subscript (`$arr[i]`, `$hash{k}`, and the arrow-deref
+    /// forms `$ref->[i]` / `$ref->{k}`) into a first-class [`HirExpr::Subscript`]
+    /// place. The `container` and `subscript` are lowered as separate expression
+    /// IDs so a computed key/index is evaluated once; the container is always a
+    /// read (the aggregate — or the reference to it — is navigated, only the
+    /// element carries `access`).
     fn lower_subscript(
         &mut self,
         op: &str,
@@ -3106,7 +3115,8 @@ impl<'a> BodyBuilder2<'a> {
         access: AccessMode,
         range: crate::SourceLocation,
     ) -> HirExprId {
-        let kind = if op == "[]" { SubscriptKind::Array } else { SubscriptKind::Hash };
+        let kind =
+            if op == "[]" || op == "->[]" { SubscriptKind::Array } else { SubscriptKind::Hash };
         let container_id = self.lower_expr(container);
         let subscript_id = self.lower_expr(subscript);
         self.alloc_expr(

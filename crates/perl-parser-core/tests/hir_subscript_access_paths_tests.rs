@@ -145,6 +145,57 @@ fn nested_subscripts_form_a_subscript_tree() {
 }
 
 #[test]
+fn arrow_array_deref_reads_element() {
+    // `$ref->[0]` is parsed as a `Binary` with op `->[]`; it must lower to a
+    // Subscript (Array) whose container is the reference expression, not a
+    // generic Binary.
+    let file = lower("my $ref; my $x = $ref->[0];");
+    let subs = subscripts(&file);
+    assert_eq!(subs.len(), 1, "expected exactly one subscript, got {subs:?}");
+    assert_eq!(subs[0].kind, SubscriptKind::Array);
+    assert_eq!(subs[0].access, AccessMode::Read);
+    assert_eq!(subs[0].container, "var:ref");
+    assert_eq!(subs[0].subscript, "opaque:Number");
+}
+
+#[test]
+fn arrow_hash_deref_reads_element() {
+    let file = lower("my $ref; my $x = $ref->{key};");
+    let subs = subscripts(&file);
+    assert_eq!(subs.len(), 1, "expected exactly one subscript, got {subs:?}");
+    assert_eq!(subs[0].kind, SubscriptKind::Hash);
+    assert_eq!(subs[0].access, AccessMode::Read);
+    assert_eq!(subs[0].container, "var:ref");
+    assert_eq!(subs[0].subscript, "opaque:Identifier");
+}
+
+#[test]
+fn arrow_hash_deref_write_place() {
+    // `$self->{field} = 1;` — the dominant real-world element write. The arrow
+    // hash access on the LHS is the write place.
+    let file = lower("my $self; $self->{field} = 1;");
+    let subs = subscripts(&file);
+    assert_eq!(subs.len(), 1, "expected exactly one subscript, got {subs:?}");
+    assert_eq!(subs[0].kind, SubscriptKind::Hash);
+    assert_eq!(subs[0].access, AccessMode::Write, "arrow-deref assignment LHS is a write place");
+    assert_eq!(subs[0].container, "var:self");
+    assert_eq!(subs[0].subscript, "opaque:Identifier");
+}
+
+#[test]
+fn arrow_array_deref_rmw_place_evaluate_once() {
+    // `$ref->[f()]++` — arrow-deref element under `++` is a read-modify-write
+    // place, and the computed index appears once as a single Call child.
+    let file = lower("my $ref; $ref->[f()]++;");
+    let subs = subscripts(&file);
+    assert_eq!(subs.len(), 1, "expected exactly one subscript, got {subs:?}");
+    assert_eq!(subs[0].kind, SubscriptKind::Array);
+    assert_eq!(subs[0].access, AccessMode::ReadModifyWrite);
+    assert_eq!(subs[0].container, "var:ref");
+    assert_eq!(subs[0].subscript, "call");
+}
+
+#[test]
 fn subscript_is_not_a_generic_binary() {
     // Regression guard: a subscript must not fall through to `HirExpr::Binary`.
     let file = lower("my @arr; my $x = $arr[0];");
