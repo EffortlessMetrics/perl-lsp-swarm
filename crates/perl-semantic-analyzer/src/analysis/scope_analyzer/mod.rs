@@ -2103,9 +2103,11 @@ mod tests_our_redecl {
 // #2584 — `no warnings 'uninitialized'` gates the UninitializedVariable
 // diagnostic. The pragma model records disabled warning categories in
 // source-ordered lexical ranges; the scope analyzer must consume that fact so an
-// explicit `no warnings 'uninitialized'` (or blanket `no warnings 'all'`)
-// suppresses the diagnostic within its lexical scope, and a later
-// `use warnings 'uninitialized'` re-enables it in source order.
+// explicit `no warnings 'uninitialized'` suppresses the diagnostic within its
+// lexical scope, and a later `use warnings 'uninitialized'` re-enables it in
+// source order. Suppression is scoped to the specific `uninitialized` category
+// only, never the blanket `all` marker — see `uninitialized_warning_suppressed`
+// for why (matching `all` would produce false-negatives on re-enable sequences).
 // ============================================================================
 #[cfg(test)]
 mod tests_uninitialized_warning_gate {
