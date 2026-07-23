@@ -26,19 +26,13 @@ import type { Diagnostic, DiagnosticSeverity, Disposable, Uri } from 'vscode';
 
 /** Telemetry subset of `vscode.languages` used by the data source. */
 export interface LanguagesTelemetry {
-  onDidChangeDiagnostics(
-    listener: (event: { uris: readonly Uri[] }) => void,
-  ): Disposable;
+  onDidChangeDiagnostics(listener: (event: { uris: readonly Uri[] }) => void): Disposable;
   getDiagnostics(): Array<[Uri, Diagnostic[]]>;
 }
 
 /** Telemetry subset of `vscode.workspace` used by the data source. */
 export interface WorkspaceTelemetry {
-  findFiles(
-    include: string,
-    exclude?: string | null,
-    maxResults?: number,
-  ): Thenable<Uri[]>;
+  findFiles(include: string, exclude?: string | null, maxResults?: number): Thenable<Uri[]>;
 }
 
 /** Perl source-file globs scanned for the workspace file count. */
