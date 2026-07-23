@@ -5,14 +5,14 @@ use std::sync::LazyLock;
 
 use perl_ci_hygiene::walk_rs_files;
 
-use crate::{
-    first_cfg_test_line_number, read_lines, read_usize_file, walk_rust_source_files_for_ci_checks,
-};
+use crate::{first_cfg_test_line_number, read_lines, walk_rust_source_files_for_ci_checks};
 
 static PANIC_MACRO_RE: LazyLock<Result<Regex, regex::Error>> =
     LazyLock::new(|| Regex::new(r"panic!\s*[\(\{]"));
 static COMMENT_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| Regex::new(r"^\s*//"));
 
+/// Crates excluded from integration-test panic scanning — mirrors `CI_REPORT_CRATES_EXCLUDE`
+/// in `main.rs` (legacy/test-support crates and self-check harnesses).
 const CI_REPORT_CRATES_EXCLUDE: [&str; 5] = [
     "tree-sitter-perl-c",
     "perl-parser-pest",
@@ -93,11 +93,23 @@ pub(crate) fn count_panic_in_test_code(repo_root: &Path) -> Result<usize> {
     Ok(count)
 }
 
+fn read_required_usize_baseline(path: &Path) -> Result<usize> {
+    if !path.is_file() {
+        return Err(eyre!("baseline file {:?} is missing; cannot enforce panic! budget", path));
+    }
+    let raw = std::fs::read_to_string(path).map_err(|err| eyre!("reading {:?}: {err}", path))?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(eyre!("baseline file {:?} is empty; cannot enforce panic! budget", path));
+    }
+    trimmed.parse::<usize>().map_err(|err| eyre!("invalid baseline {:?}: {err}", path))
+}
+
 /// Enforce the test-code `panic!` budget recorded in `ci/panic_test_baseline.txt`.
 pub(crate) fn check_panic_test(repo_root: &Path) -> Result<i32> {
     let current = count_panic_in_test_code(repo_root)?;
     let baseline_path = repo_root.join("ci/panic_test_baseline.txt");
-    let baseline = read_usize_file(&baseline_path, usize::MAX)?;
+    let baseline = read_required_usize_baseline(&baseline_path)?;
 
     println!("test panic!: {current} (baseline: {baseline})");
     if current > baseline {
@@ -183,6 +195,23 @@ pub fn boom() {
             "#[test]\nfn demo() { panic!(\"boom\"); }\n",
         )?;
         assert_eq!(check_panic_test(&repo.path)?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn check_panic_test_errors_when_baseline_missing() -> Result<()> {
+        let repo = TempRepo::new("baseline-missing")?;
+        let err = check_panic_test(&repo.path).unwrap_err();
+        assert!(err.to_string().contains("missing"), "expected missing-baseline error, got: {err}");
+        Ok(())
+    }
+
+    #[test]
+    fn check_panic_test_errors_when_baseline_empty() -> Result<()> {
+        let repo = TempRepo::new("baseline-empty")?;
+        fs::write(repo.path.join("ci/panic_test_baseline.txt"), "  \n")?;
+        let err = check_panic_test(&repo.path).unwrap_err();
+        assert!(err.to_string().contains("empty"), "expected empty-baseline error, got: {err}");
         Ok(())
     }
 }
