@@ -49,7 +49,11 @@ function makeLanguages(initial: Array<[Uri, Diagnostic[]]>): TestLanguages {
   return {
     onDidChangeDiagnostics(handler: (event: { uris: readonly Uri[] }) => void): Disposable {
       listener = handler;
-      return { dispose: () => { listener = undefined; } };
+      return {
+        dispose: () => {
+          listener = undefined;
+        },
+      };
     },
     getDiagnostics(): Array<[Uri, Diagnostic[]]> {
       return current;

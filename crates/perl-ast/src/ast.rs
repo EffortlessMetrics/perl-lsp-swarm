@@ -557,7 +557,7 @@ impl Node {
                 let mut parts = vec![format!("(try {})", body.to_sexp())];
 
                 for (var, block) in catch_blocks {
-                    if let Some(v) = var {
+                    if let Some((v, _)) = var {
                         parts.push(format!("(catch {} {})", v, block.to_sexp()));
                     } else {
                         parts.push(format!("(catch {})", block.to_sexp()));
@@ -2017,8 +2017,11 @@ pub enum NodeKind {
     Try {
         /// Try block body
         body: Box<Node>,
-        /// Catch blocks: (optional exception variable, handler block)
-        catch_blocks: Vec<(Option<String>, Box<Node>)>,
+        /// Catch blocks: (optional exception variable name with its source
+        /// location, handler block).  The source location is the precise byte
+        /// range of the catch variable as reported by the parser; when there
+        /// is no catch variable it is `None`.
+        catch_blocks: Vec<(Option<(String, SourceLocation)>, Box<Node>)>,
         /// Optional finally block
         finally_block: Option<Box<Node>>,
     },

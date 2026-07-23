@@ -144,8 +144,7 @@ impl DocumentHighlightProvider {
         // Check for Try catch parameters
         if let NodeKind::Try { catch_blocks, .. } = &node.kind {
             for (param, _) in catch_blocks {
-                if let Some(var_str) = param {
-                    // Find the catch parameter location in the source within this node
+                if let Some((var_str, _)) = param {
                     let node_source = source.get(node.location.start..node.location.end)?;
                     let relative_offset = offset - node.location.start;
                     // Search for the variable string near the offset. Inclusive
@@ -580,7 +579,7 @@ impl DocumentHighlightProvider {
                 let expected = format!("{}{}", target_sigil, target.name);
                 let mut search_from = body.location.end;
                 for (param, catch_body) in catch_blocks {
-                    if let Some(var_str) = param {
+                    if let Some((var_str, _)) = param {
                         if var_str == &expected {
                             // Search between previous body/catch end and catch body start
                             let search_end = catch_body.location.start;

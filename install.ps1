@@ -10,7 +10,11 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 $Repo = "EffortlessMetrics/perl-lsp"
-$Name = "perl-lsp"
+# The release workflow packages the binary as `perllsp` on every platform
+# (see .github/workflows/release.yml — NAME="perllsp"), and every editor doc
+# / README / POSIX installer (scripts/install.sh) uses `perllsp`. Install the
+# Windows binary as `perllsp.exe` so the name matches POSIX and the docs.
+$Name = "perllsp"
 
 function Write-Info {
     param([string]$Message)
