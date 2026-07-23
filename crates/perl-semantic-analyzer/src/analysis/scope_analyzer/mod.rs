@@ -1151,10 +1151,9 @@ impl ScopeAnalyzer {
         // use site gives lexically-correct suppression: `no warnings 'uninitialized'`
         // silences the diagnostic within its scope, and a later
         // `use warnings 'uninitialized'` re-enables it — all in source order via the
-        // range map. We gate on explicit category membership (`uninitialized`, or
-        // the blanket `all`) rather than the global `warnings` bit so the LSP's
-        // existing default-on behaviour for files without `use warnings` is
-        // preserved unchanged.
+        // range map. See `uninitialized_warning_suppressed` for why this gates on
+        // the specific category rather than the global `warnings` bit or a blanket
+        // `all`.
         if uninitialized_warning_suppressed(&context.pragma_state_for_offset(node.location.start)) {
             return;
         }
@@ -1898,21 +1897,30 @@ pub(super) fn builtin_declaration_arg_positions(name: &str) -> &'static [usize] 
     }
 }
 
-/// Whether the `uninitialized` warning category is explicitly disabled in `state`.
+/// Whether the specific `uninitialized` warning category is disabled in `state`.
 ///
-/// Returns `true` when the effective pragma state at a use site lists either the
-/// specific `uninitialized` category or the blanket `all` category in its
-/// `disabled_warning_categories` (populated by `no warnings 'uninitialized'` /
-/// `no warnings 'all'`). Consumers use this to suppress the
+/// Returns `true` when the effective pragma state at a use site lists the
+/// `uninitialized` category in its `disabled_warning_categories` (populated by
+/// `no warnings 'uninitialized'`). Consumers use this to suppress the
 /// [`IssueKind::UninitializedVariable`] diagnostic within the pragma's lexical
-/// scope. Gating on explicit category membership — rather than the global
-/// `warnings` flag — keeps the analyzer's default behaviour (emit for files with
-/// no `use warnings`) unchanged; only an explicit opt-out silences the diagnostic.
+/// scope; a later `use warnings 'uninitialized'` removes the entry and re-enables
+/// the diagnostic in source order.
+///
+/// Deliberately scoped to the *specific* category rather than the blanket `all`
+/// marker. Two considerations drive this:
+/// - Gating on explicit category membership — not the global `warnings` flag —
+///   keeps the analyzer's default behaviour (emit for files with no
+///   `use warnings`) unchanged; only an explicit per-category opt-out silences it.
+/// - Treating a bare `all` entry as suppression would misfire on re-enable
+///   transitions the flattened `disabled_warning_categories` list cannot express:
+///   after `no warnings 'all'; use warnings 'uninitialized'` the list still holds
+///   `all` even though `uninitialized` is active, so matching `all` would wrongly
+///   suppress a diagnostic Perl emits. The trade-off is that a blanket
+///   `no warnings 'all'` does not suppress this static lint — a conservative
+///   (never a false-negative) choice; use `no warnings 'uninitialized'` to
+///   suppress it explicitly.
 fn uninitialized_warning_suppressed(state: &PragmaState) -> bool {
-    state
-        .disabled_warning_categories
-        .iter()
-        .any(|category| category == "uninitialized" || category == "all")
+    state.disabled_warning_categories.iter().any(|category| category == "uninitialized")
 }
 
 /// Builtins that operate on `$_` by default when called with zero arguments.
@@ -2143,13 +2151,19 @@ mod tests_uninitialized_warning_gate {
         );
     }
 
-    /// Blanket `no warnings 'all'` also suppresses the diagnostic.
+    /// Suppression is scoped to the specific `uninitialized` category, not the
+    /// blanket `all` marker. The flattened `disabled_warning_categories` list
+    /// cannot express `all`-minus-a-re-enabled-category transitions, so treating
+    /// a bare `all` entry as suppression would produce false-negatives (see the
+    /// re-enable regression tests below). The deliberate trade-off: a blanket
+    /// `no warnings 'all'` does not silence this static lint — a conservative,
+    /// never-false-negative choice.
     #[test]
-    fn no_warnings_all_suppresses_diagnostic() {
+    fn no_warnings_all_does_not_suppress_specific_lint() {
         let issues = analyze("no warnings 'all';\nmy $x;\nprint $x;\n");
         assert!(
-            uninit_for_var(&issues, "$x").is_empty(),
-            "no warnings 'all' must suppress the diagnostic; got: {:?}",
+            !uninit_for_var(&issues, "$x").is_empty(),
+            "blanket no warnings 'all' is intentionally not treated as uninitialized suppression; got: {:?}",
             issues
         );
     }
@@ -2162,6 +2176,36 @@ mod tests_uninitialized_warning_gate {
         assert!(
             !uninit_for_var(&issues, "$x").is_empty(),
             "unrelated no warnings 'once' must not suppress uninitialized; got: {:?}",
+            issues
+        );
+    }
+
+    /// Regression (#4803 review, P1): `no warnings 'all'` followed by a specific
+    /// `use warnings 'uninitialized'` re-enables the category — Perl emits, so we
+    /// must too. The pragma list still holds `all` here, which is exactly why the
+    /// predicate matches the specific category only, never `all`.
+    #[test]
+    fn all_disable_then_specific_reenable_reports() {
+        let issues =
+            analyze("no warnings 'all';\nuse warnings 'uninitialized';\nmy $x;\nprint $x;\n");
+        assert!(
+            !uninit_for_var(&issues, "$x").is_empty(),
+            "use warnings 'uninitialized' after no warnings 'all' must re-enable the diagnostic; got: {:?}",
+            issues
+        );
+    }
+
+    /// Regression (#4803 review, P1): a specific `no warnings 'uninitialized'`
+    /// followed by a blanket `use warnings 'all'` re-enables everything — Perl
+    /// emits, so we must too. Relies on `use warnings 'all'` clearing the disabled
+    /// set in perl-pragma.
+    #[test]
+    fn specific_disable_then_all_reenable_reports() {
+        let issues =
+            analyze("no warnings 'uninitialized';\nuse warnings 'all';\nmy $x;\nprint $x;\n");
+        assert!(
+            !uninit_for_var(&issues, "$x").is_empty(),
+            "use warnings 'all' after no warnings 'uninitialized' must re-enable the diagnostic; got: {:?}",
             issues
         );
     }
