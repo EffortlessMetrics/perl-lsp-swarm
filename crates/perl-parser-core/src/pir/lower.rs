@@ -940,50 +940,39 @@ impl BodyLowerer {
                     file,
                 );
 
-                // Arms are mutually exclusive regions reached only by a Branch
-                // edge, never by fallthrough. Clearing `last_in_scope` before each
-                // arm preserves the existing cross-arm / post-branch fallthrough
-                // suppression and stops a spurious Fallthrough edge from
-                // duplicating the explicit Branch edge into the then-arm.
-                self.last_in_scope.remove(&None);
-                let then_first = self.next_id;
-                self.lower_block(body, *then_block, file);
-                if self.next_id > then_first {
-                    self.edges.push(PirEdge {
-                        from: branch_id,
-                        to: Some(PirId::from_index(then_first)),
-                        kind: PirEdgeKind::Branch,
-                    });
-                }
+                // Each arm is a mutually exclusive region reached from the Branch
+                // node by an explicit `Branch` edge, never by fallthrough. The
+                // then arm is emitted first.
+                self.lower_branch_arm(body, *then_block, branch_id, file);
 
+                // Each `elsif` contributes its own region. Its condition is
+                // evaluated on the else-path, so it must stay reachable rather
+                // than orphaned: fan a `Branch` edge from the Branch node to the
+                // first node of the elsif condition, then a second `Branch` edge
+                // (via `lower_branch_arm`) to the elsif arm body. PIR v0 models
+                // the whole if/elsif/else as a single Branch node, so the nested
+                // decision structure is conservatively flattened into per-region
+                // edges from that node.
                 for (elsif_condition, block) in elsif_arms {
                     self.last_in_scope.remove(&None);
+                    let condition_first = self.next_id;
                     self.lower_expr(body, *elsif_condition, file);
-                    // An elsif condition only selects its arm; it is not an
-                    // unconditional predecessor of the arm body.
-                    self.last_in_scope.remove(&None);
-                    let arm_first = self.next_id;
-                    self.lower_block(body, *block, file);
-                    if self.next_id > arm_first {
+                    if self.next_id > condition_first {
                         self.edges.push(PirEdge {
                             from: branch_id,
-                            to: Some(PirId::from_index(arm_first)),
+                            to: Some(PirId::from_index(condition_first)),
                             kind: PirEdgeKind::Branch,
                         });
                     }
+                    // The elsif condition only selects its arm; it is not an
+                    // unconditional predecessor of the arm body, so
+                    // `lower_branch_arm` severs the fallthrough and connects the
+                    // body to the Branch node directly.
+                    self.lower_branch_arm(body, *block, branch_id, file);
                 }
 
                 if let Some(block) = else_block {
-                    self.last_in_scope.remove(&None);
-                    let arm_first = self.next_id;
-                    self.lower_block(body, *block, file);
-                    if self.next_id > arm_first {
-                        self.edges.push(PirEdge {
-                            from: branch_id,
-                            to: Some(PirId::from_index(arm_first)),
-                            kind: PirEdgeKind::Branch,
-                        });
-                    }
+                    self.lower_branch_arm(body, *block, branch_id, file);
                 }
 
                 // The branch has no unconditional successor: a statement after
@@ -1213,6 +1202,34 @@ impl BodyLowerer {
             package_context: None, // deferred: body arenas don't carry package_context yet
         });
         id
+    }
+
+    /// Lower one branch arm block and connect it to its `Branch` node.
+    ///
+    /// Arms are mutually exclusive regions: the arm is reached from the `Branch`
+    /// node only by an explicit `Branch` edge, never by fallthrough. Severing
+    /// `last_in_scope` first drops any fallthrough predecessor (the `Branch` node
+    /// itself for the then arm, the elsif condition for an elsif arm), so the
+    /// arm's first node is not linked by a spurious `Fallthrough` that would
+    /// duplicate the `Branch` edge or imply unconditional entry. An empty arm
+    /// (no lowered nodes) contributes no edge.
+    fn lower_branch_arm(
+        &mut self,
+        body: &HirBody,
+        block: crate::hir::HirBlockId,
+        branch_id: PirId,
+        file: &HirFile,
+    ) {
+        self.last_in_scope.remove(&None);
+        let arm_first = self.next_id;
+        self.lower_block(body, block, file);
+        if self.next_id > arm_first {
+            self.edges.push(PirEdge {
+                from: branch_id,
+                to: Some(PirId::from_index(arm_first)),
+                kind: PirEdgeKind::Branch,
+            });
+        }
     }
 
     fn finish(self) -> PirGraph {
