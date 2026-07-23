@@ -2202,6 +2202,38 @@ impl WorkspaceIndex {
             }
             self.replace_fact_shard_incremental(&key, fact_shard);
 
+            // Update the import/export index while the winning generation's file
+            // commit is still serialized by `files.write()`. Publishing these
+            // after releasing the guard let an older parse overwrite a newer
+            // generation's imports/use-lib/exports out of order: two async
+            // parse-worker tasks for generations N and N+1 of the same URI can
+            // both pass their file-commit guard, then run this update out of
+            // completion order so N's stale facts replace N+1's (#2587 review).
+            // Keeping it inside the guard closes that hole exactly as the
+            // package-graph refresh below does — the guard's monotonic early
+            // return also skips this block for a superseded generation. The
+            // `files → import_export_index` acquisition order matches
+            // `remove_file`. Stale per-URI entries are removed first for
+            // incremental re-indexing.
+            {
+                let mut ie_idx = self.semantic_import_export_index.write();
+                ie_idx.remove_file_imports(&uri_str);
+                ie_idx.add_file_imports(&uri_str, file_id, import_specs);
+                ie_idx.remove_file_use_lib(&uri_str);
+                ie_idx.add_file_use_lib(&uri_str, file_id, use_lib_facts);
+                // Bridge this file's exporter facts (@EXPORT/@EXPORT_OK/%EXPORT_TAGS)
+                // so an importing file's `use M` resolves M's exported symbols
+                // (#2587). Export sets without a module name (no enclosing
+                // package) are skipped — they cannot be keyed for an importer's
+                // module-name lookup.
+                ie_idx.remove_module_exports(&uri_str);
+                for export_set in module_export_sets {
+                    if let Some(module_name) = export_set.module_name.clone() {
+                        ie_idx.add_module_exports(&uri_str, &module_name, export_set);
+                    }
+                }
+            }
+
             // Refresh the HIR-derived inheritance graph while the winning
             // generation's file commit is still serialized by `files.write()`.
             // Keeping remove/add in this guarded commit path prevents an older
@@ -2212,31 +2244,6 @@ impl WorkspaceIndex {
             package_graph.add_edges(&uri_str, file_id, package_edges);
             #[cfg(test)]
             reindex_metrics::record_generation_accepted();
-        }
-
-        // Update the import/export index with the freshly extracted import specs
-        // and use-lib facts.  Stale entries for this URI are removed first
-        // (incremental re-indexing).  This is done after the main write lock
-        // block to follow the established lock ordering
-        // (shards → reference_index → import_export_index).
-        {
-            let mut ie_idx = self.semantic_import_export_index.write();
-            ie_idx.remove_file_imports(&uri_str);
-            ie_idx.add_file_imports(&uri_str, file_id, import_specs);
-            ie_idx.remove_file_use_lib(&uri_str);
-            ie_idx.add_file_use_lib(&uri_str, file_id, use_lib_facts);
-            // Bridge this file's exporter facts (@EXPORT/@EXPORT_OK/%EXPORT_TAGS)
-            // into the index so an importing file's `use M` resolves M's exported
-            // symbols (#2587). Stale entries are removed first for incremental
-            // re-indexing parity with the imports/use-lib wiring above. Export
-            // sets without a module name (no enclosing package) are skipped —
-            // they cannot be keyed for an importer's module-name lookup.
-            ie_idx.remove_module_exports(&uri_str);
-            for export_set in module_export_sets {
-                if let Some(module_name) = export_set.module_name.clone() {
-                    ie_idx.add_module_exports(&uri_str, &module_name, export_set);
-                }
-            }
         }
 
         Ok(())
