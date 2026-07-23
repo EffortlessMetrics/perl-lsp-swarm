@@ -1,3 +1,4 @@
+#![allow(clippy::panic)]
 //! Error-path and edge-case tests for `perl-dead-code` (#814).
 //!
 //! Covers paths that the existing test suites leave untested:

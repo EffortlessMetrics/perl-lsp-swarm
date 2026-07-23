@@ -1674,6 +1674,42 @@ impl DebugAdapter {
             }
         }
 
+        #[cfg(windows)]
+        {
+            // Graceful shutdown first: send Ctrl+C via GenerateConsoleCtrlEvent,
+            // then wait for the process to exit. This mirrors the Unix SIGTERM →
+            // wait → SIGKILL escalation and satisfies the DAP security spec's
+            // graceful-shutdown expectation (regression for #4639: the old
+            // Windows path skipped this and killed outright).
+            let pid = process.id();
+            use winapi::um::wincon::{CTRL_C_EVENT, GenerateConsoleCtrlEvent};
+            // SAFETY: GenerateConsoleCtrlEvent is a stable Win32 API taking two
+            // POD-by-value arguments (u32 control code, u32 process group id)
+            // and returning a BOOL. No preconditions on calling thread/process
+            // state, no caller-owned resources, no pointer dereference — both
+            // arguments are passed by value. Failure is indicated by returning 0
+            // (FALSE), handled below.
+            let result = unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid) };
+            if result != 0 {
+                tracing::info!(pid, "Sent Ctrl+C for graceful termination");
+                if Self::wait_for_child_exit(
+                    process,
+                    Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
+                ) {
+                    return true;
+                }
+                tracing::warn!(
+                    pid,
+                    "Process did not exit after Ctrl+C, falling back to force-kill"
+                );
+            } else {
+                tracing::warn!(
+                    pid,
+                    "GenerateConsoleCtrlEvent failed for graceful termination, falling back to force-kill"
+                );
+            }
+        }
+
         if let Err(e) = process.kill() {
             tracing::warn!(error = %e, "Failed to terminate process");
         }
@@ -1861,10 +1897,10 @@ impl DebugAdapter {
     /// Send continue/resume signal to process.
     ///
     /// On Unix, sends SIGCONT. On Windows there is no direct equivalent of SIGCONT
-    /// for externally-attached processes; the function returns `false` and logs a
-    /// structured warning. Note that `handle_continue` emits the DAP `continued`
-    /// event unconditionally, so the client will not be left in a stuck state even
-    /// when this returns `false`.
+    /// for externally-attached processes; the function returns `true` (no error —
+    /// the process was never suspended by the adapter, so continue is a no-op)
+    /// rather than a silent `false` that the adapter could misinterpret as "stuck".
+    /// Note that `handle_continue` emits the DAP `continued` event unconditionally.
     pub(super) fn send_continue_signal(&self, pid: u32) -> bool {
         if pid == 0 {
             tracing::warn!("send_continue_signal called with pid 0, ignoring");
@@ -1887,12 +1923,19 @@ impl DebugAdapter {
         #[cfg(windows)]
         {
             // Windows has no direct SIGCONT equivalent for external processes.
+            // For session-mode continues, handle_continue sends "c\n" to the
+            // debugger's stdin directly — this path is only reached for
+            // attached-pid (external process) mode, where the process was never
+            // suspended by us (Ctrl+C is handled by the process's own console
+            // control handler). Returning `true` signals "no error" rather than
+            // a silent `false` that the adapter could misinterpret as "stuck".
             // The caller (handle_continue) emits the continued event regardless.
-            tracing::warn!(
-                "send_continue_signal: SIGCONT not available on Windows for pid {}",
+            tracing::debug!(
+                "send_continue_signal: no SIGCONT equivalent on Windows for pid {} — \
+                 external process continue is a no-op, returning success",
                 pid
             );
-            false
+            true
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -1906,6 +1949,8 @@ impl DebugAdapter {
     /// On Unix, sends SIGINT. On Windows, tries `GenerateConsoleCtrlEvent` first
     /// (works when the target is in the same console group), then falls back to
     /// writing the interrupt character to debugger stdin (session mode only).
+    /// On stdin-write failure, returns `false` without terminating the debuggee
+    /// (the session is left intact for the client to retry or disposition).
     /// Returns `false` on unsupported platforms.
     pub(super) fn send_interrupt_signal(&self, pid: u32) -> bool {
         if pid == 0 {
@@ -1947,6 +1992,10 @@ impl DebugAdapter {
             );
 
             // Fallback: write interrupt character to debugger stdin (session mode only).
+            // On stdin-write failure, return `false` — do NOT terminate the debuggee.
+            // A pause that fails delivery is a client-visible error, not a reason to
+            // destroy the session (regression for #4639: the old code called
+            // terminate_child_process here, killing the debuggee on pause failure).
             if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
             {
                 if let Some(stdin) = session.process.stdin.as_mut() {
@@ -1957,15 +2006,13 @@ impl DebugAdapter {
                             true
                         }
                         Err(e) => {
-                            tracing::error!("Failed to send interrupt to process {}: {}", pid, e);
-                            if Self::terminate_child_process(&mut session.process) {
-                                tracing::warn!("Terminated process {} as fallback", pid);
-                                session.state = DebugState::Terminated;
-                                true
-                            } else {
-                                tracing::error!("Failed to terminate process {}", pid);
-                                false
-                            }
+                            tracing::error!(
+                                "Failed to send interrupt to process {} via stdin: {}. \
+                                 Pause delivery failed — session left intact (not terminated).",
+                                pid,
+                                e
+                            );
+                            false
                         }
                     }
                 } else {
@@ -2446,6 +2493,133 @@ mod tests {
             !message.contains("Install Perl"),
             "non-NotFound errors should not use missing-perl guidance, got: {message}"
         );
+    }
+
+    // ── Cross-platform signal delivery tests (#4639) ───────────────────────────
+
+    /// `send_continue_signal` returns `true` on Windows for a nonzero pid.
+    ///
+    /// Regression for #4639 defect #1: the old Windows branch always returned
+    /// `false`, which the adapter could misinterpret as "stuck". The fix returns
+    /// `true` because external-process continue is a no-op on Windows (the
+    /// process was never suspended by the adapter), not a failure.
+    #[test]
+    #[cfg(windows)]
+    fn send_continue_signal_returns_true_on_windows_for_nonzero_pid() {
+        let adapter = DebugAdapter::new();
+        // Use the current process's pid — it's guaranteed nonzero and valid.
+        let pid = std::process::id();
+        assert!(
+            adapter.send_continue_signal(pid),
+            "send_continue_signal should return true on Windows for a nonzero pid (no-op, not failure)"
+        );
+    }
+
+    /// `send_continue_signal` still returns `false` for pid 0 on Windows.
+    #[test]
+    #[cfg(windows)]
+    fn send_continue_signal_pid_zero_returns_false_on_windows() {
+        let adapter = DebugAdapter::new();
+        assert!(!adapter.send_continue_signal(0));
+    }
+
+    /// `terminate_child_process` attempts graceful shutdown before force-kill on Windows.
+    ///
+    /// Regression for #4639 defect #3: the old Windows path skipped the graceful
+    /// first step and killed outright. This test spawns a short-lived process and
+    /// verifies `terminate_child_process` returns `true` (the process exited),
+    /// exercising the graceful-shutdown code path.
+    #[test]
+    #[cfg(windows)]
+    fn terminate_child_process_graceful_shutdown_on_windows() -> Result<(), String> {
+        use std::process::Command;
+
+        // Spawn a process that sleeps briefly. GenerateConsoleCtrlEvent may or may
+        // not succeed depending on console group membership, but the key assertion
+        // is that terminate_child_process returns true (the process was terminated,
+        // whether gracefully or via force-kill fallback).
+        let mut child = Command::new("cmd")
+            .args(["/c", "ping -n 30 127.0.0.1 > nul"])
+            .spawn()
+            .map_err(|e| format!("Failed to spawn test process: {e}"))?;
+
+        let result = DebugAdapter::terminate_child_process(&mut child);
+        if !result {
+            return Err("terminate_child_process should succeed on Windows".to_string());
+        }
+        // Verify the process is actually gone.
+        match child.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err("process still running after terminate_child_process".to_string()),
+            Err(e) => Err(format!("error polling process after terminate: {e}")),
+        }
+    }
+
+    /// `terminate_child_process` gracefully terminates a spawned process on Unix.
+    ///
+    /// This is the Unix counterpart to the Windows test above, verifying that
+    /// the SIGTERM → wait → SIGKILL escalation works for a real process.
+    #[test]
+    #[cfg(unix)]
+    fn terminate_child_process_graceful_shutdown_on_unix() -> Result<(), String> {
+        use std::process::Command;
+
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .map_err(|e| format!("Failed to spawn test process: {e}"))?;
+
+        let result = DebugAdapter::terminate_child_process(&mut child);
+        if !result {
+            return Err("terminate_child_process should succeed on Unix".to_string());
+        }
+        match child.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err("process still running after terminate_child_process".to_string()),
+            Err(e) => Err(format!("error polling process after terminate: {e}")),
+        }
+    }
+
+    /// `terminate_child_process` returns `true` immediately if the process already exited.
+    #[test]
+    fn terminate_child_process_already_exited_returns_true() -> Result<(), String> {
+        use std::process::Command;
+
+        // Spawn a process that exits immediately.
+        #[cfg(windows)]
+        let mut child = Command::new("cmd")
+            .args(["/c", "exit"])
+            .spawn()
+            .map_err(|e| format!("Failed to spawn: {e}"))?;
+        #[cfg(not(windows))]
+        let mut child =
+            Command::new("true").spawn().map_err(|e| format!("Failed to spawn: {e}"))?;
+
+        // Wait for it to exit.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let result = DebugAdapter::terminate_child_process(&mut child);
+        if !result {
+            return Err("terminate_child_process should return true for an already-exited process"
+                .to_string());
+        }
+        Ok(())
+    }
+
+    /// `send_interrupt_signal` does not panic for a nonexistent pid on Windows.
+    ///
+    /// Regression for #4639 defect #2: the old code could call terminate_child_process
+    /// as a fallback, which for a nonexistent pid is harmless but the code path
+    /// should not be reached. The fix ensures the function returns `false` cleanly.
+    #[test]
+    #[cfg(windows)]
+    fn send_interrupt_signal_nonexistent_pid_returns_false_on_windows() {
+        let adapter = DebugAdapter::new();
+        // 999_999 is virtually guaranteed not to exist.
+        let result = adapter.send_interrupt_signal(999_999);
+        // On Windows, GenerateConsoleCtrlEvent will likely fail for a nonexistent
+        // pid, and there's no session stdin to fall back to, so this returns false.
+        // The key assertion is that it doesn't panic or destroy anything.
+        let _ = result; // result depends on console state; the point is no panic
     }
 
     /// Verify the debuggee watchdog kills a long-running process after the

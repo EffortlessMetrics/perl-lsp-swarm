@@ -286,6 +286,54 @@ fn portable_report_path(path: &Path) -> String {
     }
 }
 
+/// Strip host-specific `@INC` prefixes so committed baseline `slowest_files`
+/// stay portable across Linux/Windows regenerations.
+fn looks_like_perl_version(segment: &str) -> bool {
+    let segment = segment.strip_prefix('v').unwrap_or(segment);
+    let mut parts = segment.split('.');
+    let Some(major) = parts.next() else {
+        return false;
+    };
+    if major.is_empty() || !major.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    parts.next().is_some_and(|minor| {
+        !minor.is_empty() && minor.chars().all(|c| c.is_ascii_digit() || c == '_')
+    }) && parts.all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit() || c == '_'))
+}
+
+fn portable_slowest_file_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+
+    const ANCHORS: &[&str] = &["/lib/", "/perl5/", "/site_perl/", "/vendor_perl/"];
+    if let Some((index, anchor_len)) = ANCHORS
+        .iter()
+        .filter_map(|anchor| normalized.rfind(anchor).map(|index| (index, anchor.len())))
+        .max_by_key(|(index, _)| *index)
+    {
+        return normalized[index + anchor_len..].to_string();
+    }
+
+    // Versioned core installs: .../perl/<version>/Module/Foo.pm
+    if let Some(idx) = normalized.rfind("/perl/") {
+        let after_perl = &normalized[idx + "/perl/".len()..];
+        if after_perl.ends_with(".pm") {
+            if let Some(slash) = after_perl.find('/') {
+                let first_segment = &after_perl[..slash];
+                if looks_like_perl_version(first_segment) {
+                    return after_perl[slash + 1..].to_string();
+                }
+            }
+            return after_perl.to_string();
+        }
+    }
+
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
 /// Per-file result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileResult {
@@ -400,26 +448,34 @@ fn walk_errors(
     });
 }
 
-/// Parse a manifest file into module names (skipping comments and empty lines).
+/// Parse a manifest file into module names (skipping comments, empty lines,
+/// and duplicate entries while preserving first-seen order).
 pub fn parse_manifest(manifest_path: &Path) -> Result<Vec<String>> {
     let file = fs::File::open(manifest_path)
         .with_context(|| format!("Failed to open manifest: {}", manifest_path.display()))?;
     let reader = std::io::BufReader::new(file);
     let mut modules = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for line in reader.lines() {
         let line = line.context("Failed to read manifest line")?;
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        modules.push(trimmed.to_string());
+        if seen.insert(trimmed.to_string()) {
+            modules.push(trimmed.to_string());
+        }
     }
     Ok(modules)
 }
 
 /// Discover manifest metadata for downstream measurement.
-pub fn discover_manifest(path: PathBuf, perl5lib: Vec<PathBuf>) -> CorpusManifest {
-    CorpusManifest { path, perl5lib, min_resolved: 6 }
+///
+/// `min_resolved` is set from the manifest line count so enforce/baseline paths
+/// require every pinned module to resolve, not a partial subset.
+pub fn discover_manifest(path: PathBuf, perl5lib: Vec<PathBuf>) -> Result<CorpusManifest> {
+    let modules = parse_manifest(&path)?;
+    Ok(CorpusManifest { path, perl5lib, min_resolved: modules.len() })
 }
 
 /// Discover .pm files from repository-owned roots.
@@ -434,7 +490,10 @@ pub fn discover_system_perl(base_roots: &[PathBuf]) -> Vec<PathBuf> {
 
 /// Resolve module names to file paths via a single `perl` invocation.
 ///
-/// Returns an error if fewer than `min_resolved` modules resolve successfully.
+/// Returns an error unless every manifest module resolves successfully.
+///
+/// `min_resolved` is retained for error context and must match the manifest
+/// line count (as set by [`discover_manifest`]).
 pub fn resolve_manifest_modules(
     manifest_path: &Path,
     perl5lib_paths: &[PathBuf],
@@ -500,19 +559,19 @@ pub fn resolve_manifest_modules(
     }
 
     resolved.sort();
-    resolved.dedup();
 
-    if resolved.len() < min_resolved {
+    if resolved.len() != modules.len() {
         return Err(color_eyre::eyre::eyre!(
-            "Only {} of {} modules resolved (minimum: {}). Resolved: {:?}",
+            "Only {} of {} manifest modules resolved; all {} must resolve (min_resolved: {}). Resolved: {:?}",
             resolved.len(),
+            modules.len(),
             modules.len(),
             min_resolved,
             resolved,
         ));
     }
 
-    resolved.sort();
+    resolved.dedup();
     Ok(resolved)
 }
 
@@ -666,7 +725,7 @@ fn top_n_slowest(measurements: &[FileMeasurement], limit: usize) -> Vec<SlowestF
         .into_iter()
         .take(limit)
         .map(|m| SlowestFileEntry {
-            path: m.path.clone(),
+            path: portable_slowest_file_path(&m.path),
             parse_duration_ms: m.parse_duration_ms,
             line_count: m.line_count,
         })
@@ -710,7 +769,7 @@ pub fn run(config: SweepConfig) -> Result<()> {
     let use_manifest = config.manifest_path.is_some();
 
     let report = if let Some(manifest_path) = config.manifest_path.clone() {
-        let manifest = discover_manifest(manifest_path, config.manifest_perl5lib.clone());
+        let manifest = discover_manifest(manifest_path, config.manifest_perl5lib.clone())?;
         measure_manifest(&manifest, &options)?
     } else {
         measure_source(
@@ -743,23 +802,17 @@ pub fn run(config: SweepConfig) -> Result<()> {
     }
     print_summary(&report);
 
-    // Write output if requested
-    if let Some(ref output_path) = config.output_path {
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent).context("Failed to create output directory")?;
-        }
-        let json = serde_json::to_string_pretty(&report).context("Failed to serialize report")?;
-        fs::write(output_path, json).context("Failed to write report file")?;
-        println!("\nReport written to: {}", output_path.display());
-    }
-
-    // Write receipt if requested
+    // Write receipt before enforce so failed gates still emit SHA-bound audit evidence.
+    // Receipt I/O is best-effort: a write failure must not skip strict-clean enforcement.
     if config.receipt {
-        let receipt_path = write_sweep_receipt(&report)?;
-        eprintln!("Receipt written to: {}", receipt_path.display());
+        match write_sweep_receipt(&report) {
+            Ok(receipt_path) => eprintln!("Receipt written to: {}", receipt_path.display()),
+            Err(err) => eprintln!("Warning: failed to write receipt: {err:#}"),
+        }
     }
 
-    // Enforcement: strict clean for manifest mode, ratchet for system mode
+    // Enforcement for manifest mode must run before writing the committed
+    // baseline so a dirty sweep cannot overwrite a zero-error gate.
     if use_manifest && config.enforce {
         let violations = enforce_strict_clean(&report);
         if !violations.is_empty() {
@@ -776,6 +829,16 @@ pub fn run(config: SweepConfig) -> Result<()> {
             ));
         }
         println!("Strict clean: all {} files parse without errors", report.total_files);
+    }
+
+    // Write output if requested
+    if let Some(ref output_path) = config.output_path {
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent).context("Failed to create output directory")?;
+        }
+        let json = serde_json::to_string_pretty(&report).context("Failed to serialize report")?;
+        fs::write(output_path, json).context("Failed to write report file")?;
+        println!("\nReport written to: {}", output_path.display());
     }
 
     // Baseline comparison and ratchet enforcement (system mode)
@@ -2218,6 +2281,95 @@ mod tests {
     fn test_portable_report_path_preserves_external_paths() {
         let path = PathBuf::from("/usr/share/perl/Foo.pm");
         assert_eq!(portable_report_path(&path), "/usr/share/perl/Foo.pm");
+    }
+
+    #[test]
+    fn test_portable_slowest_file_path_strips_inc_prefixes() {
+        assert_eq!(
+            portable_slowest_file_path("C:/Strawberry/perl/lib/Encode/Encoding.pm"),
+            "Encode/Encoding.pm"
+        );
+        assert_eq!(
+            portable_slowest_file_path("/usr/share/perl/5.38.2/Module/CoreList.pm"),
+            "Module/CoreList.pm"
+        );
+        assert_eq!(
+            portable_slowest_file_path(r"C:\Strawberry\perl\site\lib\Foo\Bar.pm"),
+            "Foo/Bar.pm"
+        );
+        assert_eq!(
+            portable_slowest_file_path("/opt/perl/lib/perl5/Digest/MD5.pm"),
+            "Digest/MD5.pm"
+        );
+        assert_eq!(
+            portable_slowest_file_path("/usr/share/perl/5.38.invalid/Module/CoreList.pm"),
+            "5.38.invalid/Module/CoreList.pm"
+        );
+        assert_eq!(
+            portable_slowest_file_path("/usr/share/perl/Module/CoreList.pm"),
+            "Module/CoreList.pm"
+        );
+    }
+
+    #[test]
+    fn test_parse_manifest_dedupes_duplicate_entries() -> Result<()> {
+        let dir =
+            std::env::temp_dir().join(format!("test_parse_manifest_dedup_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir)?;
+        let manifest_path = dir.join("manifest.txt");
+        fs::write(&manifest_path, "Foo::Bar\nFoo::Bar\nBaz\n")?;
+        let modules = parse_manifest(&manifest_path)?;
+        assert_eq!(modules, vec!["Foo::Bar".to_string(), "Baz".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_discover_manifest_sets_min_resolved_from_manifest_count() -> Result<()> {
+        let dir = std::env::temp_dir().join("test_discover_manifest_min_resolved");
+        fs::create_dir_all(&dir)?;
+        let manifest_path = dir.join("manifest.txt");
+        fs::write(&manifest_path, "# comment\nFoo::Bar\n# another\nBaz\n")?;
+        let manifest = discover_manifest(manifest_path.clone(), vec![])?;
+        assert_eq!(manifest.min_resolved, 2);
+        assert_eq!(manifest.path, manifest_path);
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolve_manifest_modules_requires_full_resolution() -> Result<()> {
+        let dir =
+            std::env::temp_dir().join(format!("test_resolve_manifest_full_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir)?;
+        let lib = dir.join("lib");
+        fs::create_dir_all(lib.join("Found4872"))?;
+        fs::write(lib.join("Found4872/Module.pm"), "package Found4872::Module; 1;")?;
+
+        let manifest_path = dir.join("manifest.txt");
+        fs::write(&manifest_path, "Found4872::Module\nMissing4872::Module\n")?;
+
+        let err = resolve_manifest_modules(&manifest_path, &[lib.clone()], 2)
+            .expect_err("partial resolution must fail");
+        let message = err.to_string();
+        assert!(message.contains("Only 1 of 2 manifest modules resolved"), "{message}");
+        assert!(message.contains("all 2 must resolve"), "{message}");
+
+        fs::create_dir_all(lib.join("Missing4872"))?;
+        fs::write(lib.join("Missing4872/Module.pm"), "package Missing4872::Module; 1;")?;
+        let resolved = resolve_manifest_modules(&manifest_path, &[lib], 2)?;
+        assert_eq!(resolved.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_sweep_receipt_succeeds_for_dirty_manifest_report() -> Result<()> {
+        let report = test_report(0, 1, 3, 0, BTreeMap::new());
+        let receipt_path = write_sweep_receipt(&report)?;
+        assert!(receipt_path.exists());
+        let contents = fs::read_to_string(receipt_path)?;
+        assert!(contents.contains("\"files_with_errors\": 1"));
+        Ok(())
     }
 
     // ── schema 1.3.0: phase timings + slowest-files + median density ───

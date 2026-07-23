@@ -29,6 +29,15 @@ impl LspServer {
 
         tracing::info!("Server initialized");
 
+        // Emit any pending startup logMessage (e.g. the JetBrains
+        // dynamic-registration override notice) now that the client has
+        // signalled readiness via the `initialized` notification (#4630).
+        if let Some(msg) = self.pending_startup_log.lock().take() {
+            if let Err(e) = self.log_message(super::super::window::MessageType::Info, &msg) {
+                tracing::warn!(error = %e, "Failed to send pending startup logMessage");
+            }
+        }
+
         // File watcher dynamic registration is intentionally separate from
         // feature-specific dynamic registrations such as inline completion.
         self.register_file_watchers_if_needed();

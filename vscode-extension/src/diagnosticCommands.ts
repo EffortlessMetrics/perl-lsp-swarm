@@ -31,6 +31,12 @@ const PROVIDER_DECISION_OPTIONS: ProviderDecisionQuickPickItem[] = [
 ];
 
 function outputChannel(options: DiagnosticCommandOptions): vscode.OutputChannel {
+  // In normal operation, activate() sets the module-level outputChannel
+  // before any command is invoked, so options.outputChannel is always
+  // present and this fallback never fires. The defensive fallback exists
+  // for direct programmatic invocation outside the normal activation flow
+  // (e.g. tests). Using a distinct name ('Perl LSP Trust') makes it
+  // obvious when the fallback has fired so it can be investigated (#4630).
   return options.outputChannel ?? vscode.window.createOutputChannel('Perl LSP Trust');
 }
 

@@ -99,6 +99,38 @@ your-project/
   t/
 ```
 
+### Multi-root workspaces
+
+In a multi-root workspace (e.g. a monorepo with several Perl subprojects), each
+folder loads its own `.perl-lsp.toml` independently. The sections split into two
+scoping tiers:
+
+- **Per-folder** — `[perl]` (module resolution: `include_paths`, `use_perl5lib`,
+  `perl5lib_precedence`). These are scoped to the owning folder through the
+  per-folder effective workspace config, so two folders can have completely
+  different include paths without interacting.
+- **Server-global** — `[diagnostics]`, `[critic]`, `[features]`, `[formatting]`,
+  `[ai_completion]`, and `[next_edit]`. These target the single shared
+  `ServerConfig`, so they are inherently server-wide rather than per-folder.
+
+Because the server-global sections are shared, two folders that set the **same**
+key to **different** values would conflict. perl-lsp resolves this with
+**first-folder-wins** semantics: each key takes the value from the first folder
+(in workspace-folder iteration order) that sets it, and a later folder's
+conflicting value is ignored. Non-conflicting keys from different folders all
+apply (e.g. folder A's `[diagnostics]` and folder B's `[features]` are both
+honored).
+
+When one or more keys conflict, the server emits a single `window/showMessage`
+**Warning** naming the conflicting keys and the per-folder values, so a silently
+overwritten setting becomes visible. The warning lists each conflict as
+`section.key (folderA=valueA, folderB=valueB)`.
+
+If you need genuinely per-folder diagnostics, formatting, or AI completion,
+configure those per folder through editor settings (`scope: "resource"` VS Code
+settings routed via `workspace/configuration`), which override `.perl-lsp.toml`
+per folder. See [Configuration Precedence](#configuration-precedence).
+
 ### Supported Sections and Keys
 
 #### `[perl]` — Module Resolution

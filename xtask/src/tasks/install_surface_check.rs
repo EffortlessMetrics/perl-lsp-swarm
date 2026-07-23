@@ -66,7 +66,11 @@ pub fn run() -> Result<()> {
     check_release_note_choosers(&files, &mut violations);
 
     if violations.is_empty() {
-        println!("Install surface check passed: {} active files scanned.", files.len());
+        // #4649: this validator checks a fixed list of hardcoded forbidden and
+        // required patterns. It cannot detect new install-surface drift; it
+        // only catches regressions of the literals listed below. State that
+        // scope explicitly so "passed" is not mistaken for full coverage.
+        println!("{}", success_message(files.len()));
         return Ok(());
     }
 
@@ -246,6 +250,20 @@ fn global_violation(message: String) -> Violation {
     Violation { location: "install surface".to_string(), message }
 }
 
+/// Build the success message reported when no install-surface violations are
+/// found. Extracted so the #4649 scope caveat ("only hardcoded literals are
+/// checked; new install-surface drift is NOT caught") can be unit-tested.
+fn success_message(files_count: usize) -> String {
+    format!(
+        "Install surface check passed: {files_count} active files scanned, {forbidden} \
+         forbidden patterns and {required} required patterns checked. Scope: only the \
+         hardcoded literals in FORBIDDEN_PATTERNS and REQUIRED_PATTERNS are checked; new \
+         install-surface drift is NOT caught.",
+        forbidden = FORBIDDEN_PATTERNS.len(),
+        required = REQUIRED_PATTERNS.len()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +296,23 @@ mod tests {
 
         assert_eq!(version, Some((0, 13, 0)));
         Ok(())
+    }
+
+    #[test]
+    fn success_message_states_hardcoded_literal_scope() {
+        let msg = success_message(12);
+        // #4649 acceptance: the pass message must explicitly state that only
+        // hardcoded literals are checked and new drift is NOT caught.
+        assert!(msg.contains("hardcoded literals"), "msg: {msg}");
+        assert!(msg.contains("new install-surface drift is NOT caught"), "msg: {msg}");
+        assert!(msg.contains("12 active files scanned"), "msg: {msg}");
+        assert!(msg.contains("forbidden patterns"), "msg: {msg}");
+        assert!(msg.contains("required patterns"), "msg: {msg}");
+    }
+
+    #[test]
+    fn forbidden_and_required_pattern_tables_are_non_empty() {
+        assert!(!FORBIDDEN_PATTERNS.is_empty(), "FORBIDDEN_PATTERNS must stay populated");
+        assert!(!REQUIRED_PATTERNS.is_empty(), "REQUIRED_PATTERNS must stay populated");
     }
 }

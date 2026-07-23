@@ -175,7 +175,7 @@ detect_platform() {
             ;;
         MINGW*|MSYS*|CYGWIN*)
             err "Windows is not supported by this script. Use the PowerShell installer instead:
-  irm https://raw.githubusercontent.com/$REPO/master/scripts/install.ps1 | iex"
+  irm https://raw.githubusercontent.com/$REPO/master/install.ps1 | iex"
             ;;
         *)
             err "unsupported operating system: $_os"

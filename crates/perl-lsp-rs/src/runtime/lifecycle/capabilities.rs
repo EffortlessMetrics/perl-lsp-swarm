@@ -169,6 +169,22 @@ impl LspServer {
                 // capabilities object claims.
                 if is_jetbrains_client(params) {
                     caps.dynamic_registration_support = false;
+                    // Queue a one-time logMessage so the user can see the override
+                    // happened. The message is emitted after the `initialized`
+                    // notification arrives (see handle_initialized_dispatch)
+                    // because the LSP spec discourages sending notifications
+                    // before the initialize response is delivered (#4630).
+                    let client_name = params
+                        .get("clientInfo")
+                        .and_then(|info| info.get("name"))
+                        .and_then(|name| name.as_str())
+                        .unwrap_or("JetBrains");
+                    *self.pending_startup_log.lock() = Some(format!(
+                        "perl-lsp: Dynamic file-watcher registration has been disabled for \
+                         JetBrains-family client \"{client_name}\" because its registration \
+                         flow is unreliable. Workspace/didChangeWatchedFiles dynamic \
+                         registration requests from this client will be ignored."
+                    ));
                 }
 
                 caps.workspace_configuration_support = params
@@ -528,7 +544,30 @@ impl LspServer {
             }
         }
 
-        // Load .perl-lsp.toml from workspace root (base layer; LSP config overrides later)
+        // Apply initializationOptions.perl.* as the base config layer.
+        // This is parsed before .perl-lsp.toml so project config overrides it,
+        // and subsequent workspace/configuration responses override both.
+        if let Some(params) = params.as_ref() {
+            if let Some(init_options) = params.get("initializationOptions") {
+                if let Some(perl) = super::super::workspace::extract_perl_settings(init_options) {
+                    tracing::debug!("Applying initializationOptions.perl.* as base config layer");
+                    {
+                        let mut config = self.config.lock();
+                        config.update_from_value(perl);
+                    }
+                    {
+                        let mut workspace_config = self.workspace_config.lock();
+                        workspace_config.update_from_value(perl);
+                    }
+                    if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
+                        limits.update_from_value(perl);
+                    }
+                    *self.initialization_options_perl_settings.lock() = Some(perl.clone());
+                }
+            }
+        }
+
+        // Load .perl-lsp.toml from workspace root (init options base layer; LSP config overrides later)
         self.load_and_apply_project_config();
 
         // Detect Perl interpreter and surface an actionable error if not found.
@@ -822,6 +861,76 @@ mod tests {
         let before = flags.clone();
         apply_disabled_feature_id(&mut flags, "lsp.does_not_exist");
         assert_eq!(flags, before, "unknown ID must not mutate flags");
+    }
+
+    #[test]
+    fn handle_initialize_applies_perl_initialization_options()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("workspace");
+        std::fs::create_dir_all(&folder)?;
+        let uri =
+            url::Url::from_directory_path(&folder).map_err(|_| "invalid folder path")?.to_string();
+
+        let params = json!({
+            "capabilities": {},
+            "workspaceFolders": [{ "uri": uri, "name": "workspace" }],
+            "initializationOptions": {
+                "perl": {
+                    "workspace": {
+                        "includePaths": ["lib", "local"]
+                    },
+                    "inlayHints": {
+                        "enabled": false
+                    }
+                }
+            }
+        });
+
+        server.handle_initialize(Some(params))?;
+
+        let workspace_config = server.workspace_config.lock();
+        assert_eq!(workspace_config.include_paths, vec!["lib", "local"]);
+
+        let config = server.config.lock();
+        assert!(!config.inlay_hints_enabled);
+        Ok(())
+    }
+
+    #[test]
+    fn handle_initialize_perl_initialization_options_are_overridden_by_toml()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("workspace");
+        std::fs::create_dir_all(&folder)?;
+        std::fs::write(
+            folder.join(".perl-lsp.toml"),
+            "[perl]\ninclude_paths = [\"project_lib\"]\n",
+        )?;
+        let uri =
+            url::Url::from_directory_path(&folder).map_err(|_| "invalid folder path")?.to_string();
+
+        let params = json!({
+            "capabilities": {},
+            "workspaceFolders": [{ "uri": uri, "name": "workspace" }],
+            "initializationOptions": {
+                "perl": {
+                    "workspace": {
+                        "includePaths": ["lib", "local"]
+                    }
+                }
+            }
+        });
+
+        server.handle_initialize(Some(params))?;
+
+        // Per-folder effective config layers .perl-lsp.toml on top of init options.
+        let folders = server.workspace_folders.lock();
+        let folder_state = folders.first().ok_or("workspace folder should exist")?;
+        assert_eq!(folder_state.effective_workspace_config.include_paths, vec!["project_lib"]);
+        Ok(())
     }
 
     #[test]
@@ -1554,6 +1663,59 @@ mod tests {
         assert!(
             server.client_capabilities.lock().dynamic_registration_support,
             "non-JetBrains clients that advertise dynamic registration must have it enabled"
+        );
+    }
+
+    #[test]
+    fn initialize_queues_startup_log_for_jetbrains_dynamic_registration_override() {
+        let server = LspServer::new();
+        let params = json!({
+            "clientInfo": {
+                "name": "IntelliJ IDEA"
+            },
+            "capabilities": {
+                "workspace": {
+                    "didChangeWatchedFiles": {
+                        "dynamicRegistration": true
+                    }
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+
+        let pending = server.pending_startup_log.lock();
+        assert!(pending.is_some(), "JetBrains override should queue a pending startup logMessage");
+        if let Some(ref msg) = *pending {
+            assert!(msg.contains("IntelliJ IDEA"), "pending log should name the client: got {msg}");
+            assert!(
+                msg.contains("dynamic"),
+                "pending log should mention the disabled capability: got {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn initialize_does_not_queue_startup_log_for_non_jetbrains_clients() {
+        let server = LspServer::new();
+        let params = json!({
+            "clientInfo": {
+                "name": "vscode"
+            },
+            "capabilities": {
+                "workspace": {
+                    "didChangeWatchedFiles": {
+                        "dynamicRegistration": true
+                    }
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+
+        assert!(
+            server.pending_startup_log.lock().is_none(),
+            "non-JetBrains clients should not have a pending startup logMessage"
         );
     }
 

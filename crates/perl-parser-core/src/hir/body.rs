@@ -241,6 +241,32 @@ pub struct HirVariable {
     pub access: AccessMode,
 }
 
+/// Aggregate flavour of a subscript element access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SubscriptKind {
+    /// Array element access: `$arr[index]`.
+    Array,
+    /// Hash element access: `$hash{key}`.
+    Hash,
+}
+
+/// An array/hash element access with evaluate-once place semantics.
+///
+/// The `container` and `subscript` are kept as separate explicit expression IDs
+/// so a computed index/key (e.g. `$h{f()}`) is modeled as evaluated exactly
+/// once, and so PIR lowering can treat the element as an lvalue place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirSubscript {
+    /// Array vs hash element access.
+    pub kind: SubscriptKind,
+    /// The aggregate being indexed (array or hash), as an explicit expr ID.
+    pub container: HirExprId,
+    /// The index or key expression, as an explicit expr ID.
+    pub subscript: HirExprId,
+    /// How the element is accessed (read, write-place, or read-modify-write).
+    pub access: AccessMode,
+}
+
 /// How an assignment is performed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssignMode {
@@ -396,6 +422,10 @@ pub enum HirExpr {
         ast_kind: String,
     },
 
+    /// Array/hash element access (`$arr[i]`, `$hash{k}`) modeled as an
+    /// evaluate-once place. See [`HirSubscript`].
+    Subscript(HirSubscript),
+
     /// Opaque expression — used when the AST shape is not yet modeled.
     Opaque {
         /// The AST node kind name for diagnostics.
@@ -452,6 +482,12 @@ pub enum HirStmt {
         storage: DeclStorageClass,
         /// Optional initializer expression ID.
         init: Option<HirExprId>,
+        /// Source span of the declared variable token (`$x`), for reference / LSP
+        /// anchoring. Distinct from the enclosing statement span (`stmt_ranges`)
+        /// and present for EVERY declaration form, including those without an
+        /// initializer — so PIR lowering anchors declarations at the variable,
+        /// matching the legacy find-references provider (#2643 range parity).
+        binding_range: SourceLocation,
     },
 
     /// Loop-control transfer (`next`, `last`, or `redo`).
@@ -622,8 +658,19 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
 
     match &node.kind {
         NodeKind::VariableDeclaration { declarator, variable, initializer, .. } => {
+            // `local $x = EXPR` parses its target as an `Assignment` (`$x = EXPR`)
+            // rather than a bare `Variable`, because `local` accepts arbitrary
+            // lvalues. Unwrap to the localized lvalue so the declared name and the
+            // `binding_range` anchor at the variable token, not the whole
+            // `$x = EXPR` span (mirrors `variable_binding()` in the first pass).
+            // For `my`/`our`/`state` the initializer is a separate field, so
+            // `variable` is already the bare token and this unwrap is a no-op.
+            let binding_node: &Node = match &variable.kind {
+                NodeKind::Assignment { lhs, .. } => lhs.as_ref(),
+                _ => variable.as_ref(),
+            };
             // Extract variable name and sigil from the inner Variable node.
-            let (sigil_str, var_name) = match &variable.kind {
+            let (sigil_str, var_name) = match &binding_node.kind {
                 NodeKind::Variable { sigil, name } => (sigil.as_str(), name.clone()),
                 _ => ("$", String::from("<unknown>")),
             };
@@ -658,7 +705,13 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
             });
 
             builder.alloc_stmt(
-                HirStmt::Let { name: var_name, sigil, storage, init: init_expr_id },
+                HirStmt::Let {
+                    name: var_name,
+                    sigil,
+                    storage,
+                    init: init_expr_id,
+                    binding_range: binding_node.location,
+                },
                 range,
             )
         }

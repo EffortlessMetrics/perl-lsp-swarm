@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
     DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirStmt,
-    HirStmtId, HirVariable, Sigil, UnaryMode, VariableKind,
+    HirStmtId, HirSubscript, HirVariable, Sigil, SubscriptKind, UnaryMode, VariableKind,
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
@@ -20,12 +20,13 @@ use super::model::{
     ExportDeclarationKind, GlobSlot, GlobSlotKind, GlobSlotSource, HIR_BODY_MODEL_VERSION,
     HirBindingId, HirFile, HirId, HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact,
     IncRootKind, IndirectCallExpr, InheritanceSource, LiteralExpr, LiteralKind, LoopKind,
-    LoopShell, MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind,
+    LoopShell, MatchExpr, MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind,
     ModuleResolutionStatus, PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind,
-    PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable, RecoveryConfidence, RequireDecl,
-    ScopeFrame, ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary,
+    PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable, RecoveryConfidence, RegexExpr,
+    RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary,
     StashDynamicBoundaryKind, StashGraph, StashProvenance, StatementModifierKind,
-    StatementModifierShell, StorageClass, SubDecl, UseDecl, VariableBinding, VariableDecl,
+    StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr, TransliterationExpr, UseDecl,
+    VariableBinding, VariableDecl,
 };
 
 /// Lower a parser AST into first-slice HIR items plus canonical body arenas.
@@ -644,6 +645,126 @@ impl Lowerer {
                         Some(self.current_scope()),
                     );
                 }
+                self.visit_children(node, confidence);
+            }
+            NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::RegexExpr(RegexExpr {
+                        pattern: pattern.clone(),
+                        replacement: replacement.clone(),
+                        modifiers: modifiers.clone(),
+                        has_embedded_code: *has_embedded_code,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+                if *has_embedded_code {
+                    self.push_item(
+                        node,
+                        None,
+                        confidence,
+                        HirKind::DynamicBoundary(DynamicBoundary {
+                            kind: DynamicBoundaryKind::EmbeddedRegexCode,
+                            reason: "regex pattern contains embedded code `(?{...})` that is \
+                                     deferred to runtime"
+                                .to_string(),
+                        }),
+                        self.package_context.clone(),
+                        Some(self.current_scope()),
+                    );
+                }
+                self.visit_children(node, confidence);
+            }
+            NodeKind::Match { pattern, modifiers, has_embedded_code, negated, .. } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::MatchExpr(MatchExpr {
+                        pattern: pattern.clone(),
+                        modifiers: modifiers.clone(),
+                        has_embedded_code: *has_embedded_code,
+                        negated: *negated,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+                if *has_embedded_code {
+                    self.push_item(
+                        node,
+                        None,
+                        confidence,
+                        HirKind::DynamicBoundary(DynamicBoundary {
+                            kind: DynamicBoundaryKind::EmbeddedRegexCode,
+                            reason: "match pattern contains embedded code `(?{...})` that is \
+                                     deferred to runtime"
+                                .to_string(),
+                        }),
+                        self.package_context.clone(),
+                        Some(self.current_scope()),
+                    );
+                }
+                // Traverses the bound `expr` operand via the AST's own child
+                // iteration (`for_each_child`), same mechanism as Eval/Do.
+                self.visit_children(node, confidence);
+            }
+            NodeKind::Substitution {
+                pattern,
+                replacement,
+                modifiers,
+                has_embedded_code,
+                negated,
+                ..
+            } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::SubstitutionExpr(SubstitutionExpr {
+                        pattern: pattern.clone(),
+                        replacement: replacement.clone(),
+                        modifiers: modifiers.clone(),
+                        has_embedded_code: *has_embedded_code,
+                        negated: *negated,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+                if *has_embedded_code {
+                    self.push_item(
+                        node,
+                        None,
+                        confidence,
+                        HirKind::DynamicBoundary(DynamicBoundary {
+                            kind: DynamicBoundaryKind::EmbeddedRegexCode,
+                            reason:
+                                "substitution contains embedded code `(?{...})` or an `e`/`ee` \
+                                     modifier that evaluates the replacement as Perl code"
+                                    .to_string(),
+                        }),
+                        self.package_context.clone(),
+                        Some(self.current_scope()),
+                    );
+                }
+                self.visit_children(node, confidence);
+            }
+            NodeKind::Transliteration { search, replace, modifiers, negated, .. } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::TransliterationExpr(TransliterationExpr {
+                        search: search.clone(),
+                        replace: replace.clone(),
+                        modifiers: modifiers.clone(),
+                        negated: *negated,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
                 self.visit_children(node, confidence);
             }
             NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
@@ -2523,6 +2644,40 @@ fn require_target(argument: Option<&Node>) -> Option<String> {
     }
 }
 
+/// Whether a `Binary` operator string denotes an array/hash subscript bracket:
+/// the direct forms `[]`/`{}` and the arrow-deref forms `->[]`/`->{}`.
+fn is_subscript_op(op: &str) -> bool {
+    matches!(op, "[]" | "{}" | "->[]" | "->{}")
+}
+
+/// Whether a `Binary` node is a singular array/hash **element** access that should
+/// lower to [`HirExpr::Subscript`] — as opposed to a slice.
+///
+/// Perl reuses the same `[]`/`{}` brackets for slices (`@a[1, 2]`, `@h{'a','b'}`),
+/// which read/write MANY elements and so must NOT be modeled as one singular
+/// element place. Slices are distinguished by a list-context sigil on the
+/// container: `@a[...]` / `@h{...}` / `%h{...}`. A singular element access has a
+/// `$`-sigil container (`$a[i]`, `$h{k}`), a nested subscript container
+/// (`$a[0][1]`, `$h{a}{b}`), or is an arrow-deref form (always single-element).
+/// Anything else (e.g. sigil-deref element forms) is left as a generic `Binary`
+/// here — conservative, never a slice mis-modeled as an element write.
+fn is_element_subscript(op: &str, container: &Node) -> bool {
+    match op {
+        // Arrow-deref element access is always singular.
+        "->[]" | "->{}" => true,
+        "[]" | "{}" => match &container.kind {
+            NodeKind::Variable { sigil, .. } => sigil == "$",
+            NodeKind::Binary { op: inner_op, .. } => is_subscript_op(inner_op),
+            // Scalar-deref element containers: `$$self{f}` / `${$self}{f}` parse
+            // with a `${}` unary-deref container and access a single element. The
+            // `@{}` / `%{}` deref forms are SLICES and stay generic `Binary`.
+            NodeKind::Unary { op: deref_op, .. } => deref_op == "${}",
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn variable_binding(node: &Node) -> Option<VariableBinding> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => {
@@ -2822,7 +2977,18 @@ impl<'a> BodyBuilder2<'a> {
             }
 
             NodeKind::VariableDeclaration { declarator, variable, initializer, .. } => {
-                let (sigil_str, var_name) = match &variable.kind {
+                // `local $x = EXPR` parses its target as an `Assignment` (`$x = EXPR`)
+                // rather than a bare `Variable`, because `local` accepts arbitrary
+                // lvalues. Unwrap to the localized lvalue so the declared name and
+                // the `binding_range` anchor at the variable token, not the whole
+                // `$x = EXPR` span (mirrors `variable_binding()` in the first pass).
+                // For `my`/`our`/`state` the initializer is a separate field, so
+                // `variable` is already the bare token and this unwrap is a no-op.
+                let binding_node: &Node = match &variable.kind {
+                    NodeKind::Assignment { lhs, .. } => lhs.as_ref(),
+                    _ => variable.as_ref(),
+                };
+                let (sigil_str, var_name) = match &binding_node.kind {
                     NodeKind::Variable { sigil, name } => (sigil.as_str(), name.clone()),
                     NodeKind::VariableWithAttributes { variable, .. } => match &variable.kind {
                         NodeKind::Variable { sigil, name } => (sigil.as_str(), name.clone()),
@@ -2863,7 +3029,13 @@ impl<'a> BodyBuilder2<'a> {
                 });
 
                 self.alloc_stmt(
-                    HirStmt::Let { name: var_name, sigil, storage, init: init_expr_id },
+                    HirStmt::Let {
+                        name: var_name,
+                        sigil,
+                        storage,
+                        init: init_expr_id,
+                        binding_range: binding_node.location,
+                    },
                     range,
                 )
             }
@@ -2891,6 +3063,15 @@ impl<'a> BodyBuilder2<'a> {
                     access: AccessMode::Read,
                 };
                 self.alloc_expr(HirExpr::Variable(var), range)
+            }
+
+            // Subscript element access (`$arr[i]`, `$hash{k}`) — and the
+            // arrow-deref forms `$ref->[i]` / `$ref->{k}` — are parsed as a
+            // `Binary` with a bracket operator (`[]`/`{}`/`->[]`/`->{}`). Model
+            // them as a first-class evaluate-once place rather than a generic
+            // binary op. A bare (non-lvalue) access reads the element.
+            NodeKind::Binary { op, left, right } if is_element_subscript(op, left) => {
+                self.lower_subscript(op, left, right, AccessMode::Read, range)
             }
 
             NodeKind::Binary { op, left, right } => {
@@ -3076,8 +3257,42 @@ impl<'a> BodyBuilder2<'a> {
                     HirVariable { sigil: sigil_from_str(sigil), name: name.clone(), kind, access };
                 self.alloc_expr(HirExpr::Variable(var), range)
             }
+            // A subscript element on the LHS of an assignment (or under `++`/`--`)
+            // is the write/RMW place: `$h{k} = v`, `$arr[$i] += 1`, `$ref->{k} = v`.
+            NodeKind::Binary { op, left, right } if is_element_subscript(op, left) => {
+                self.lower_subscript(op, left, right, access, range)
+            }
             _ => self.lower_expr(node),
         }
+    }
+
+    /// Lower an array/hash subscript (`$arr[i]`, `$hash{k}`, and the arrow-deref
+    /// forms `$ref->[i]` / `$ref->{k}`) into a first-class [`HirExpr::Subscript`]
+    /// place. The `container` and `subscript` are lowered as separate expression
+    /// IDs so a computed key/index is evaluated once; the container is always a
+    /// read (the aggregate — or the reference to it — is navigated, only the
+    /// element carries `access`).
+    fn lower_subscript(
+        &mut self,
+        op: &str,
+        container: &Node,
+        subscript: &Node,
+        access: AccessMode,
+        range: crate::SourceLocation,
+    ) -> HirExprId {
+        let kind =
+            if op == "[]" || op == "->[]" { SubscriptKind::Array } else { SubscriptKind::Hash };
+        let container_id = self.lower_expr(container);
+        let subscript_id = self.lower_expr(subscript);
+        self.alloc_expr(
+            HirExpr::Subscript(HirSubscript {
+                kind,
+                container: container_id,
+                subscript: subscript_id,
+                access,
+            }),
+            range,
+        )
     }
 
     /// Lower a nested block and retain its statement sequence in the block arena.

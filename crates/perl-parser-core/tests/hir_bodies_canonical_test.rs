@@ -65,7 +65,7 @@ fn hir_canonical_let_lhs_write_rhs_read_lexical() {
 
     let stmt = body.stmt(root.stmts[0]).expect("stmt");
     let (name, init_id) = match stmt {
-        HirStmt::Let { name, sigil, storage, init } => {
+        HirStmt::Let { name, sigil, storage, init, .. } => {
             assert_eq!(name.as_str(), "x");
             assert!(matches!(sigil, Sigil::Scalar));
             assert!(matches!(storage, DeclStorageClass::My));

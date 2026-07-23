@@ -7,9 +7,16 @@ pub(super) fn apply_workspace_configuration_results(
     includes_global_item: bool,
     results: &[Value],
     request_id: i64,
+    init_options_perl: Option<&Value>,
 ) {
     let global_settings = if includes_global_item { results.first() } else { None };
     let folder_results_start = usize::from(includes_global_item);
+
+    if let Some(global_settings) = global_settings {
+        if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
+            limits.update_from_value(global_settings);
+        }
+    }
 
     for (idx, folder_uri) in folder_uris.iter().enumerate() {
         let Some(folder) = folders.iter_mut().find(|folder| &folder.uri == folder_uri) else {
@@ -17,6 +24,9 @@ pub(super) fn apply_workspace_configuration_results(
         };
 
         let mut effective_config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+        if let Some(init_opts) = init_options_perl {
+            effective_config.update_from_value(init_opts);
+        }
         if let Some(project_config) = &folder.project_config {
             project_config.apply_to_workspace_config(&mut effective_config);
         }
@@ -60,7 +70,7 @@ mod tests {
             json!({"workspace": {"resolutionTimeout": 250}}),
         ];
 
-        apply_workspace_configuration_results(&mut folders, &folder_uris, true, &results, 42);
+        apply_workspace_configuration_results(&mut folders, &folder_uris, true, &results, 42, None);
 
         assert!(folders[0].effective_workspace_config.use_system_inc);
         assert_eq!(folders[0].effective_workspace_config.resolution_timeout_ms, 150);
@@ -77,7 +87,14 @@ mod tests {
         let folder_uris = vec!["file:///workspace-a".to_string()];
         let results = vec![json!({"workspace": {"resolutionTimeout": 200}})];
 
-        apply_workspace_configuration_results(&mut folders, &folder_uris, false, &results, 43);
+        apply_workspace_configuration_results(
+            &mut folders,
+            &folder_uris,
+            false,
+            &results,
+            43,
+            None,
+        );
 
         assert_eq!(folders[0].effective_workspace_config.resolution_timeout_ms, 200);
         assert_eq!(folders[1].effective_workspace_config.resolution_timeout_ms, 50);
@@ -97,7 +114,14 @@ mod tests {
         let folder_uris = vec![folder_uri];
         let results = vec![json!({})];
 
-        apply_workspace_configuration_results(&mut folders, &folder_uris, false, &results, 44);
+        apply_workspace_configuration_results(
+            &mut folders,
+            &folder_uris,
+            false,
+            &results,
+            44,
+            None,
+        );
 
         assert!(
             folders[0]

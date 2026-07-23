@@ -2186,7 +2186,7 @@ impl ExtractionWalk {
         &mut self,
         try_node: &Node,
         body: &Node,
-        catch_blocks: &[(Option<String>, Box<Node>)],
+        catch_blocks: &[(Option<(String, SourceLocation)>, Box<Node>)],
         finally: Option<&Node>,
     ) {
         // Match the original: the catch-binding's range classification is
@@ -2195,7 +2195,7 @@ impl ExtractionWalk {
         self.visit(body);
         for (var, catch_body) in catch_blocks {
             self.with_inner_scope(|inner| {
-                if let Some(v_name) = var {
+                if let Some((v_name, _)) = var {
                     let full_name = if v_name.starts_with(['$', '@', '%']) {
                         v_name.clone()
                     } else {

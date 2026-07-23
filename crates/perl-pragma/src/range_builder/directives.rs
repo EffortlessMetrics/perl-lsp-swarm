@@ -238,7 +238,16 @@ fn enable_warnings_categories(args: &[String], state: &mut PragmaState) {
 
     for arg in args {
         for category in pragma_arg_items(arg) {
-            state.disabled_warning_categories.retain(|disabled| disabled != &category);
+            if category == "all" {
+                // `use warnings 'all'` re-enables every category, exactly like a
+                // bare `use warnings`. Clearing the disabled set keeps the list
+                // accurate so a later per-category query does not read a stale
+                // `disabled_warning_categories` entry as still disabled after the
+                // blanket re-enable.
+                state.disabled_warning_categories.clear();
+            } else {
+                state.disabled_warning_categories.retain(|disabled| disabled != &category);
+            }
         }
     }
 }

@@ -295,10 +295,7 @@ impl<'a> Parser<'a> {
     /// Called after the keyword (`for` or `foreach`) has been consumed and we
     /// know the next token is `(`. Handles both syntaxes because in Perl `for`
     /// and `foreach` are fully interchangeable.
-    fn parse_c_style_or_implicit_foreach(
-        &mut self,
-        start: usize,
-    ) -> ParseResult<Node> {
+    fn parse_c_style_or_implicit_foreach(&mut self, start: usize) -> ParseResult<Node> {
         self.expect(TokenKind::LeftParen)?;
 
         // Parse init (or check if it's a foreach)
@@ -527,7 +524,9 @@ impl<'a> Parser<'a> {
     /// Parse return statement
     fn parse_return(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'return'
+        // Consume 'return' via consume_token so `last_end_position` advances past
+        // the keyword; capture its end for the valueless fallback span (#4861).
+        let return_end = self.consume_token()?.end;
 
         // Check if we have a value to return - only stop at clear ends or statement modifiers.
         // Word operators (or, and, xor) belong to the enclosing statement, not the return value.
@@ -538,15 +537,14 @@ impl<'a> Parser<'a> {
             || matches!(
                 self.peek_kind(),
                 Some(TokenKind::WordOr | TokenKind::WordAnd | TokenKind::WordXor)
-            )
-        {
+            ) {
             None
         } else {
             // Parse the return value
             Some(Box::new(self.parse_expression()?))
         };
 
-        let end = value.as_ref().map(|v| v.location.end).unwrap_or(self.previous_position());
+        let end = value.as_ref().map(|v| v.location.end).unwrap_or(return_end);
         Ok(Node::new(NodeKind::Return { value }, SourceLocation { start, end }))
     }
 
@@ -558,7 +556,9 @@ impl<'a> Parser<'a> {
     /// expression.
     fn parse_return_expr(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'return'
+        // Consume 'return' via consume_token so `last_end_position` advances past
+        // the keyword; capture its end for the valueless fallback span (#4861).
+        let return_end = self.consume_token()?.end;
 
         // Determine whether there is a return value.
         // Stop at all expression-level boundaries as well as statement-level ones.
@@ -580,14 +580,8 @@ impl<'a> Parser<'a> {
             Some(Box::new(self.parse_assignment()?))
         };
 
-        let end = value
-            .as_ref()
-            .map(|v| v.location.end)
-            .unwrap_or(self.previous_position());
-        Ok(Node::new(
-            NodeKind::Return { value },
-            SourceLocation { start, end },
-        ))
+        let end = value.as_ref().map(|v| v.location.end).unwrap_or(return_end);
+        Ok(Node::new(NodeKind::Return { value }, SourceLocation { start, end }))
     }
 
     /// Parse eval expression/block
@@ -661,13 +655,10 @@ impl<'a> Parser<'a> {
         let start = self.consume_token()?.start; // consume 'defer'
         let block = self.parse_block()?;
         let end = block.location.end;
-        Ok(Node::new(
-            NodeKind::Defer { block: Box::new(block) },
-            SourceLocation { start, end },
-        ))
+        Ok(Node::new(NodeKind::Defer { block: Box::new(block) }, SourceLocation { start, end }))
     }
 
-        /// Parse try/catch/finally block
+    /// Parse try/catch/finally block
     fn parse_try(&mut self) -> ParseResult<Node> {
         let start = self.consume_token()?.start; // consume 'try'
 
@@ -689,7 +680,9 @@ impl<'a> Parser<'a> {
                 {
                     let var = self.parse_variable()?;
                     match &var.kind {
-                        NodeKind::Variable { sigil, name } => Some(format!("{}{}", sigil, name)),
+                        NodeKind::Variable { sigil, name } => {
+                            Some((format!("{}{}", sigil, name), var.location))
+                        }
                         _ => None,
                     }
                 } else {
@@ -708,8 +701,8 @@ impl<'a> Parser<'a> {
             if var.is_none() && self.peek_kind() != Some(TokenKind::LeftBrace) {
                 let mut consumed_filter = false;
                 while let Some(kind) = self.peek_kind() {
-                    let is_component =
-                        kind == TokenKind::Identifier && self.tokens.peek()?.text.as_ref() != "with";
+                    let is_component = kind == TokenKind::Identifier
+                        && self.tokens.peek()?.text.as_ref() != "with";
                     if is_component {
                         self.consume_token()?;
                         consumed_filter = true;
@@ -849,10 +842,8 @@ impl<'a> Parser<'a> {
                         self.errors.push(e.clone());
                         let error_location = self.current_position();
                         let error_msg = format!("{}", e);
-                        let peek_display = self
-                            .peek_kind()
-                            .map(|k| k.display_name())
-                            .unwrap_or("end of input");
+                        let peek_display =
+                            self.peek_kind().map(|k| k.display_name()).unwrap_or("end of input");
                         let error_node = self.recover_from_error(
                             error_msg,
                             "statement".to_string(),
@@ -1033,7 +1024,6 @@ impl<'a> Parser<'a> {
 
         Ok(Node::new(NodeKind::Default { body: Box::new(body) }, SourceLocation { start, end }))
     }
-
 }
 
 #[cfg(test)]

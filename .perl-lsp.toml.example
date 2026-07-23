@@ -13,6 +13,16 @@
 #
 # Editor settings always override this file, so team members can still
 # customize their own environments.
+#
+# Multi-root workspaces: each workspace folder loads its own .perl-lsp.toml.
+# [perl] is scoped per-folder (include_paths etc. never leak across folders).
+# The other sections — [diagnostics], [critic], [features], [formatting],
+# [ai_completion], [next_edit] — are server-global: if two folders set the
+# same key to different values, the FIRST folder wins and the server emits a
+# window/showMessage warning naming the conflict. Non-conflicting keys from
+# different folders all apply. For genuinely per-folder diagnostics/formatting,
+# use per-folder editor settings (scope: "resource") instead. See
+# docs/reference/CONFIG.md (Multi-root workspaces).
 
 # ── [perl] ───────────────────────────────────────────────────────────────────
 # Module resolution settings.

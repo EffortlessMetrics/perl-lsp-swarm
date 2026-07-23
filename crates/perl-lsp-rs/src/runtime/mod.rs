@@ -151,6 +151,11 @@ pub struct LspServer {
     initialized: AtomicBool,
     /// Whether shutdown was received (for LSP-compliant exit handling)
     shutdown_received: AtomicBool,
+    /// Pending `window/logMessage` text to emit once the client has sent the
+    /// `initialized` notification (notifications must not be sent before the
+    /// initialize response is delivered). Currently used for the JetBrains
+    /// dynamic-registration override notice (#4630).
+    pub(crate) pending_startup_log: Arc<Mutex<Option<String>>>,
     /// Index coordinator for workspace-wide features with lifecycle management
     #[cfg(feature = "workspace")]
     pub(crate) index_coordinator: Option<Arc<IndexCoordinator>>,
@@ -198,6 +203,9 @@ pub struct LspServer {
     client_supports_pull_diags: Arc<AtomicBool>,
     /// Workspace configuration for module resolution
     workspace_config: Arc<Mutex<WorkspaceConfig>>,
+    /// Perl settings extracted from `initializationOptions` during initialize.
+    /// Kept as a base config layer below `.perl-lsp.toml` and `workspace/configuration`.
+    initialization_options_perl_settings: Arc<Mutex<Option<Value>>>,
     /// Atomic counter for generating unique request IDs
     next_request_id: Arc<AtomicI32>,
     /// Pending workspace/configuration reverse requests keyed by request ID.
@@ -299,6 +307,12 @@ pub struct LspServer {
     /// exit paths including panics).
     #[cfg(feature = "workspace")]
     indexing_in_progress: Arc<AtomicBool>,
+    /// Set when a workspace-folder change arrives during an active scan.
+    #[cfg(feature = "workspace")]
+    indexing_rescan_pending: Arc<AtomicBool>,
+    /// Serializes the active/pending indexing handoff at scan completion.
+    #[cfg(feature = "workspace")]
+    indexing_transition_lock: Arc<Mutex<()>>,
     /// One-time guard for the `window/showMessage` permission-denied warning.
     ///
     /// Set to `true` after the first permission-denied file is encountered during

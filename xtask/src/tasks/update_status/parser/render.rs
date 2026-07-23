@@ -5,9 +5,9 @@ use color_eyre::eyre::Result;
 use super::accuracy::parser_accuracy_rows;
 use super::failure::{build_failure_bucket_details, build_failure_worklist};
 use super::{
-    ParserMetrics, format_clean_rate, format_failure_receipt_note, format_nodekind_gap_note,
-    format_perf_metric_row, format_recovery_shape_note, format_salvage_rate,
-    replace_parser_status_block, short_day,
+    ParserMetrics, format_clean_rate, format_error_density_row, format_failure_receipt_note,
+    format_nodekind_gap_note, format_perf_metric_row, format_recovery_salvage_row,
+    format_recovery_shape_note, replace_parser_status_block, short_day,
 };
 
 pub(super) fn generate_parser_status(metrics: &ParserMetrics, original: &str) -> Result<String> {
@@ -17,9 +17,8 @@ pub(super) fn generate_parser_status(metrics: &ParserMetrics, original: &str) ->
         },
         |report| {
             format!(
-                "| **Ubuntu system Perl** | {} / {} | Compatibility baseline; Perl `{}`, {}, baseline `{}` | `.ci/parser-corpus-baseline.json` |",
+                "| **Ubuntu system Perl** | {} | Compatibility baseline; Perl `{}`, {}, baseline `{}` | `.ci/parser-corpus-baseline.json` |",
                 format_clean_rate(report.clean_files, report.total_files),
-                format_salvage_rate(report.recovery_salvage_rate),
                 report.perl_version,
                 format_recovery_shape_note(report),
                 short_day(&report.timestamp),
@@ -33,9 +32,8 @@ pub(super) fn generate_parser_status(metrics: &ParserMetrics, original: &str) ->
         },
         |report| {
             format!(
-                "| **CPAN top 1000** | {} / {} | Ecosystem breadth baseline; {}, cached downloads in `target/cpan-corpus/.cpanm`, baseline `{}` | `.ci/cpan-corpus-baseline.json` |",
+                "| **CPAN top 1000** | {} | Ecosystem breadth baseline; {}, cached downloads in `target/cpan-corpus/.cpanm`, baseline `{}` | `.ci/cpan-corpus-baseline.json` |",
                 format_clean_rate(report.clean_files, report.total_files),
-                format_salvage_rate(report.recovery_salvage_rate),
                 format_recovery_shape_note(report),
                 short_day(&report.timestamp),
             )
@@ -101,6 +99,9 @@ pub(super) fn generate_parser_status(metrics: &ParserMetrics, original: &str) ->
         )
     };
 
+    let error_density_row = format_error_density_row(metrics);
+    let recovery_salvage_row = format_recovery_salvage_row(metrics);
+
     let pinned = metrics.common_corpus_pinned;
     let strict_clean_row = metrics.common_corpus_receipt.as_ref().map_or_else(
         || {
@@ -113,7 +114,7 @@ pub(super) fn generate_parser_status(metrics: &ParserMetrics, original: &str) ->
             let total = receipt.total_files;
             let pct = if total == 0 { 100.0 } else { 100.0 * pass as f64 / total as f64 };
             format!(
-                "| **Strict-clean subset** | {pass}/{total} ({pct:.0}%) | {pinned} pinned modules, zero-error gate | `.ci/common-corpus-manifest.txt` |",
+                "| **Strict-clean subset** | {pass}/{total} ({pct:.0}%) | {pinned} pinned modules, zero-error gate | `.ci/common-corpus-baseline.json` |",
             )
         },
     );
@@ -219,6 +220,9 @@ pub(super) fn generate_parser_status(metrics: &ParserMetrics, original: &str) ->
     text = replace_parser_status_block(&text, "TOKEN_HEALTH_TABLE", &token_table)?;
     text = replace_parser_status_block(&text, "PARSER_NODEKIND_ROW", &nodekind_row)?;
     text = replace_parser_status_block(&text, "PARSER_RELIABILITY_ROW", &reliability_row)?;
+    text = replace_parser_status_block(&text, "PARSER_ERROR_DENSITY_ROW", &error_density_row)?;
+    text =
+        replace_parser_status_block(&text, "PARSER_RECOVERY_SALVAGE_ROW", &recovery_salvage_row)?;
     text = replace_parser_status_block(&text, "PARSER_STRICT_CLEAN_ROW", &strict_clean_row)?;
     text = replace_parser_status_block(&text, "PARSER_ACCURACY_SUMMARY", &parser_accuracy_summary)?;
     text = replace_parser_status_block(&text, "PARSER_FAILURE_WORKLIST", &failure_worklist)?;

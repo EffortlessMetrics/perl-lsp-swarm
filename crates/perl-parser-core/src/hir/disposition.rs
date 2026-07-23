@@ -175,6 +175,10 @@ pub fn hir_kinds_for(ast_kind: &str) -> &'static [&'static str] {
         "Goto" => &["ControlTransfer"],
         "StatementModifier" => &["StatementModifierShell"],
         "Unary" => &["DerefExpr", "DynamicBoundary"],
+        "Regex" => &["RegexExpr", "DynamicBoundary"],
+        "Match" => &["MatchExpr", "DynamicBoundary"],
+        "Substitution" => &["SubstitutionExpr", "DynamicBoundary"],
+        "Transliteration" => &["TransliterationExpr"],
         _ => &[],
     }
 }
@@ -378,6 +382,49 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
             false,
             true,
             "Postfix statement modifiers lowered as modifier shells with a condition anchor."
+        ),
+        // Regex: emits a RegexExpr shell; a `(?{...})`/`(??{...})` embedded-code
+        // pattern additionally emits DynamicBoundary::EmbeddedRegexCode.
+        "Regex" => disp!(
+            true,
+            true,
+            true,
+            false,
+            true,
+            "Lowered as regex literal shell; embedded `(?{...})` code emits `DynamicBoundary`."
+        ),
+        // Match: emits a MatchExpr shell and traverses the bound `expr` operand;
+        // embedded-code patterns additionally emit DynamicBoundary.
+        "Match" => disp!(
+            true,
+            true,
+            true,
+            false,
+            true,
+            "Lowered as match-operation shell; bound expression is traversed and embedded \
+             `(?{...})` code emits `DynamicBoundary`."
+        ),
+        // Substitution: emits a SubstitutionExpr shell and traverses the bound
+        // `expr` operand; `has_embedded_code` (set for both `(?{...})` patterns
+        // and the `e`/`ee` modifier) emits DynamicBoundary.
+        "Substitution" => disp!(
+            true,
+            true,
+            true,
+            false,
+            true,
+            "Lowered as substitution shell; bound expression is traversed and embedded code \
+             or the `e`/`ee` modifier emits `DynamicBoundary`."
+        ),
+        // Transliteration: emits a TransliterationExpr shell and traverses the
+        // bound `expr` operand. tr/// has no embedded-code form, so no boundary.
+        "Transliteration" => disp!(
+            true,
+            false,
+            true,
+            false,
+            true,
+            "Lowered as transliteration shell; bound expression is traversed."
         ),
 
         // ── Conditional dynamic-boundary only (no non-boundary HIR item emitted) ──
@@ -618,12 +665,6 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
             false,
             "No standalone HIR shell yet; typeglob assignments can contribute StashGraph slots or boundaries."
         ),
-        "Regex" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
-        "Match" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
-        "Substitution" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
-        "Transliteration" => {
-            disp!(false, false, true, false, false, "No first-slice HIR shell yet.")
-        }
         "Given" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "When" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "Default" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
@@ -986,10 +1027,6 @@ mod tests {
             "Diamond",
             "Ellipsis",
             "Typeglob",
-            "Regex",
-            "Match",
-            "Substitution",
-            "Transliteration",
             "Given",
             "When",
             "Default",

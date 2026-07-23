@@ -954,7 +954,7 @@ impl SymbolExtractor {
                 self.visit_node(body);
                 for (catch_var, catch_block) in catch_blocks {
                     self.table.push_scope(ScopeKind::Block, catch_block.location);
-                    if let Some(full_name) = catch_var.as_deref() {
+                    if let Some((full_name, _)) = catch_var {
                         self.register_catch_variable(full_name, catch_block.location);
                     }
                     self.visit_node(catch_block);

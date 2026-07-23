@@ -710,6 +710,7 @@ fn load_required_ci_checks(root: &Path) -> Result<BTreeSet<String>> {
 fn required_ci_checks_from_policy(policy: &toml::Value) -> BTreeSet<String> {
     let mut checks = BTreeSet::new();
 
+    // `[[checks]]` (plural) is the branch-protection status-context inventory.
     if let Some(items) = policy.get("checks").and_then(toml::Value::as_array) {
         for item in items {
             if item.get("required").and_then(toml::Value::as_bool) == Some(true)
@@ -717,6 +718,32 @@ fn required_ci_checks_from_policy(policy: &toml::Value) -> BTreeSet<String> {
             {
                 checks.insert(name.to_string());
             }
+        }
+    }
+
+    // #4649: also union required `[[check]]` (singular) entries. The previous
+    // parser silently dropped these, so a required check moved from `[[checks]]`
+    // to `[[check]]` would become invisible to the live-CI classifier. We log a
+    // note about the schema split so the inclusion is visible, not silent.
+    let singular_required: Vec<String> = policy
+        .get("check")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("required").and_then(toml::Value::as_bool) == Some(true))
+        .filter_map(|item| item.get("name").and_then(toml::Value::as_str).map(String::from))
+        .collect();
+
+    if !singular_required.is_empty() {
+        eprintln!(
+            "queue-reconciler: unioning {} required [[check]] entry/ies into the live-CI \
+             required-context set (schema split: [[check]] = workflow-trigger-lint shape, \
+             [[checks]] = branch-protection contexts): {}",
+            singular_required.len(),
+            singular_required.join(", ")
+        );
+        for name in singular_required {
+            checks.insert(name);
         }
     }
 

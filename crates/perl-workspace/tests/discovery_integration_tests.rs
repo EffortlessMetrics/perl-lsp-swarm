@@ -1,7 +1,8 @@
 //! End-to-end integration tests for workspace discovery.
 
 use perl_workspace::discovery::{
-    DiscoveryMethod, discover_perl_files, discover_perl_files_with_include_paths,
+    DiscoveryConfig, DiscoveryMethod, discover_perl_files, discover_perl_files_with_config,
+    discover_perl_files_with_include_paths,
 };
 use std::fs;
 use std::path::Path;
@@ -17,6 +18,40 @@ fn create_file(root: &Path, relative: &str) -> TestResult {
         fs::create_dir_all(parent)?;
     }
     fs::write(path, "# integration fixture\n")?;
+    Ok(())
+}
+
+#[test]
+fn discovers_fcgi_and_skips_perl_lsp_cache_by_default() -> TestResult {
+    let tmp = TempDir::new()?;
+    let root = tmp.path();
+
+    create_file(root, "app.fcgi")?;
+    create_file(root, ".perl-lsp/cache/foo.pm")?;
+
+    let result = discover_perl_files(root);
+
+    assert!(contains_relative_file(&result.files, "app.fcgi"));
+    assert!(!contains_relative_file(&result.files, ".perl-lsp/cache/foo.pm"));
+    Ok(())
+}
+
+#[test]
+fn configured_discovery_extensions_and_skipped_dirs_are_additive() -> TestResult {
+    let tmp = TempDir::new()?;
+    let root = tmp.path();
+
+    create_file(root, "custom/example.foo")?;
+    create_file(root, "generated/cache.pm")?;
+
+    let config = DiscoveryConfig::new(
+        vec![".foo".to_string(), "FOO".to_string()],
+        vec![" generated ".to_string()],
+    );
+    let result = discover_perl_files_with_config(root, &[] as &[&Path], &config);
+
+    assert!(contains_relative_file(&result.files, "custom/example.foo"));
+    assert!(!contains_relative_file(&result.files, "generated/cache.pm"));
     Ok(())
 }
 

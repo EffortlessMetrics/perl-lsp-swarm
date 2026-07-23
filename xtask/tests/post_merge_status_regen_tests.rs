@@ -335,6 +335,8 @@ fn test_status_marker_parser_contract() -> Result<(), Box<dyn std::error::Error>
         "TOKEN_HEALTH_TABLE",
         "PARSER_NODEKIND_ROW",
         "PARSER_RELIABILITY_ROW",
+        "PARSER_ERROR_DENSITY_ROW",
+        "PARSER_RECOVERY_SALVAGE_ROW",
         "PARSER_STRICT_CLEAN_ROW",
     ];
 

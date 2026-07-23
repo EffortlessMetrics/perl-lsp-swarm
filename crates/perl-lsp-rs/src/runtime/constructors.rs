@@ -47,6 +47,7 @@ impl LspServer {
             initialize_requested: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
             shutdown_received: AtomicBool::new(false),
+            pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             index_coordinator,
             // Cache up to 100 ASTs with 5 minute TTL
@@ -65,6 +66,7 @@ impl LspServer {
             advertised_feature_ids: Mutex::new(default_feature_ids),
             client_supports_pull_diags: Arc::new(AtomicBool::new(false)),
             workspace_config: Arc::new(Mutex::new(WorkspaceConfig::default())),
+            initialization_options_perl_settings: Arc::new(Mutex::new(None)),
             next_request_id: Arc::new(AtomicI32::new(1)),
             pending_workspace_configuration_requests: Arc::new(Mutex::new(HashMap::new())),
             progress_tokens: Arc::new(Mutex::new(HashSet::new())),
@@ -99,6 +101,10 @@ impl LspServer {
             use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "workspace")]
+            indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "workspace")]
+            indexing_transition_lock: Arc::new(Mutex::new(())),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
@@ -219,6 +225,7 @@ impl LspServer {
             initialize_requested: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
             shutdown_received: AtomicBool::new(false),
+            pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             index_coordinator,
             ast_cache: Arc::new(AstCache::new(100, 300)),
@@ -236,6 +243,7 @@ impl LspServer {
             advertised_feature_ids: Mutex::new(default_feature_ids),
             client_supports_pull_diags: Arc::new(AtomicBool::new(false)),
             workspace_config: Arc::new(Mutex::new(WorkspaceConfig::default())),
+            initialization_options_perl_settings: Arc::new(Mutex::new(None)),
             next_request_id: Arc::new(AtomicI32::new(1)),
             pending_workspace_configuration_requests: Arc::new(Mutex::new(HashMap::new())),
             progress_tokens: Arc::new(Mutex::new(HashSet::new())),
@@ -270,6 +278,10 @@ impl LspServer {
             use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "workspace")]
+            indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "workspace")]
+            indexing_transition_lock: Arc::new(Mutex::new(())),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
@@ -331,6 +343,7 @@ impl LspServer {
             initialize_requested: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
             shutdown_received: AtomicBool::new(false),
+            pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             index_coordinator,
             ast_cache: Arc::new(AstCache::new(100, 300)),
@@ -348,6 +361,7 @@ impl LspServer {
             advertised_feature_ids: Mutex::new(default_feature_ids),
             client_supports_pull_diags: Arc::new(AtomicBool::new(false)),
             workspace_config: Arc::new(Mutex::new(WorkspaceConfig::default())),
+            initialization_options_perl_settings: Arc::new(Mutex::new(None)),
             next_request_id: Arc::new(AtomicI32::new(1)),
             pending_workspace_configuration_requests: Arc::new(Mutex::new(HashMap::new())),
             progress_tokens: Arc::new(Mutex::new(HashSet::new())),
@@ -382,6 +396,10 @@ impl LspServer {
             use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "workspace")]
+            indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "workspace")]
+            indexing_transition_lock: Arc::new(Mutex::new(())),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),

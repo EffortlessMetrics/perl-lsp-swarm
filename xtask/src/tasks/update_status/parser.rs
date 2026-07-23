@@ -92,8 +92,8 @@ struct ParserPerfMetric {
 }
 
 pub(super) fn collect_parser_metrics(root: &Path) -> ParserMetrics {
-    let common_corpus_receipt =
-        read_sweep_report(&root.join("target/receipts/common-corpus-sweep.json"));
+    let common_corpus_receipt = read_sweep_report(&root.join(".ci/common-corpus-baseline.json"))
+        .or_else(|| read_sweep_report(&root.join("target/receipts/common-corpus-sweep.json")));
     let common_corpus_pinned = count_common_corpus_pinned(root);
     ParserMetrics {
         syntax_sections: count_corpus_sections(root),
@@ -163,11 +163,48 @@ fn format_clean_rate(clean_files: usize, total_files: usize) -> String {
     format!("{clean_pct:.1}% clean (`{clean_files}/{total_files}`)")
 }
 
-fn format_salvage_rate(salvage_rate: Option<f64>) -> String {
-    match salvage_rate {
-        Some(rate) => format!("{:.1}% salvage", rate * 100.0),
-        None => "insufficient_data salvage".to_string(),
+pub(super) fn format_corpus_error_density_value(receipt: Option<&ParserSweepReceipt>) -> String {
+    let Some(receipt) = receipt else {
+        return "insufficient_data".to_string();
+    };
+    if !receipt.has_recovery_shape {
+        return "insufficient_data".to_string();
     }
+    match receipt.median_error_density_per_1k_loc {
+        Some(density) => format!("{density:.2} per 1k LOC"),
+        None => "insufficient_data".to_string(),
+    }
+}
+
+pub(super) fn format_corpus_recovery_salvage_value(receipt: Option<&ParserSweepReceipt>) -> String {
+    let Some(receipt) = receipt else {
+        return "insufficient_data".to_string();
+    };
+    if !receipt.has_recovery_shape {
+        return "insufficient_data".to_string();
+    }
+    match (receipt.recovery_salvage_rate, receipt.total_dirty_files) {
+        (Some(rate), dirty) if dirty > 0 => format!("{:.1}%", rate * 100.0),
+        _ => "insufficient_data".to_string(),
+    }
+}
+
+pub(super) fn format_recovery_salvage_row(metrics: &ParserMetrics) -> String {
+    let ubuntu = format_corpus_recovery_salvage_value(metrics.system_receipt.as_ref());
+    let cpan = format_corpus_recovery_salvage_value(metrics.cpan_receipt.as_ref());
+    let value = format!("Ubuntu: {ubuntu} / CPAN: {cpan}");
+    format!(
+        "| **Recovery salvage** | {value} | `files_with_structured_recovery_only / total_dirty_files` from sweep receipts; proxy metric — does not measure symbol preservation (#1360) | `.ci/*-corpus-baseline.json` |",
+    )
+}
+
+pub(super) fn format_error_density_row(metrics: &ParserMetrics) -> String {
+    let ubuntu = format_corpus_error_density_value(metrics.system_receipt.as_ref());
+    let cpan = format_corpus_error_density_value(metrics.cpan_receipt.as_ref());
+    let value = format!("Ubuntu: {ubuntu} / CPAN: {cpan}");
+    format!(
+        "| **Error density** | {value} | median ERROR-node count per 1,000 LOC across dirty files with ERROR nodes only; structured-recovery-only and clean files excluded | `.ci/*-corpus-baseline.json` |",
+    )
 }
 
 fn format_recovery_shape_note(receipt: &ParserSweepReceipt) -> String {

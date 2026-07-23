@@ -127,8 +127,12 @@ pub(crate) enum CliCommand {
     CheckUnwrapsModules,
     /// Enforce production unwrap/panic-family budgets.
     CheckUnwrapsProd,
+    /// Enforce test-code `panic!` budget against `ci/panic_test_baseline.txt`.
+    CheckPanicTest,
     /// Enforce no raw print macros in library source (println!/eprintln! belong in tracing).
     CheckPrintInLib,
+    /// Enforce regex constructors live in LazyLock/OnceLock statics, never per-call.
+    CheckRegexStatic,
     /// Execute the quick CI mirror.
     QuickCheck,
     /// Run heredoc integration tests, using xtask when available.

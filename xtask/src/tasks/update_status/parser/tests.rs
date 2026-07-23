@@ -9,13 +9,15 @@ use super::failure::{
 use super::*;
 use color_eyre::eyre::Result;
 
-const PARSER_STATUS_MARKER_NAMES: [&str; 11] = [
+const PARSER_STATUS_MARKER_NAMES: [&str; 13] = [
     "PARSER_TRACKING_TABLE",
     "PARSER_PERFORMANCE_TABLE",
     "PARSER_METRICS_BULLETS",
     "TOKEN_HEALTH_TABLE",
     "PARSER_NODEKIND_ROW",
     "PARSER_RELIABILITY_ROW",
+    "PARSER_ERROR_DENSITY_ROW",
+    "PARSER_RECOVERY_SALVAGE_ROW",
     "PARSER_STRICT_CLEAN_ROW",
     "PARSER_ACCURACY_SUMMARY",
     "PARSER_FAILURE_WORKLIST",
@@ -27,6 +29,8 @@ fn parser_status_template() -> &'static str {
     "h\n<!-- BEGIN: PARSER_TRACKING_TABLE -->\nold\n<!-- END: PARSER_TRACKING_TABLE -->\n\
          <!-- BEGIN: PARSER_NODEKIND_ROW -->\nold\n<!-- END: PARSER_NODEKIND_ROW -->\n\
          <!-- BEGIN: PARSER_RELIABILITY_ROW -->\nold\n<!-- END: PARSER_RELIABILITY_ROW -->\n\
+         <!-- BEGIN: PARSER_ERROR_DENSITY_ROW -->\nold\n<!-- END: PARSER_ERROR_DENSITY_ROW -->\n\
+         <!-- BEGIN: PARSER_RECOVERY_SALVAGE_ROW -->\nold\n<!-- END: PARSER_RECOVERY_SALVAGE_ROW -->\n\
          <!-- BEGIN: PARSER_STRICT_CLEAN_ROW -->\nold\n<!-- END: PARSER_STRICT_CLEAN_ROW -->\n\
          <!-- BEGIN: PARSER_ACCURACY_SUMMARY -->\nold\n<!-- END: PARSER_ACCURACY_SUMMARY -->\n\
          <!-- BEGIN: PARSER_PERFORMANCE_TABLE -->\nold\n<!-- END: PARSER_PERFORMANCE_TABLE -->\n\
@@ -394,7 +398,7 @@ fn test_read_parser_accuracy_artifact_loads_target_metrics() -> Result<()> {
 
 #[test]
 fn test_parser_salvage_missing_reports_insufficient_data() {
-    assert_eq!(format_salvage_rate(None), "insufficient_data salvage");
+    assert_eq!(format_corpus_recovery_salvage_value(None), "insufficient_data");
 }
 
 /// Verify that `generate_parser_status` renders scorecard values correctly
@@ -846,8 +850,10 @@ fn test_parser_tracking_old_cpan_receipt_missing_recovery_shape_reports_insuffic
 
     let result = generate_parser_status(&metrics, parser_status_template())?;
     assert!(
-        result.contains("insufficient_data salvage"),
-        "old CPAN receipt must not fabricate a salvage rate"
+        result.contains(
+            "| **Recovery salvage** | Ubuntu: insufficient_data / CPAN: insufficient_data |"
+        ),
+        "old CPAN receipt recovery salvage row must report insufficient_data"
     );
     assert!(
         result.contains("`insufficient_data` recovery-only"),
@@ -938,5 +944,126 @@ fn status_marker_contract_parser_md() -> Result<()> {
             "status marker contract violation: missing or duplicate END marker for {marker_name} in {target_file}; expected exactly one `{begin_marker}` and one `{end_marker}`",
         );
     }
+    Ok(())
+}
+
+#[test]
+fn test_parser_error_density_and_salvage_rows_with_populated_receipt() -> Result<()> {
+    use std::collections::BTreeMap;
+
+    let report = super::super::super::parser_corpus_sweep::SweepReport {
+        schema_version: "1.3.0".to_string(),
+        commit: "abc".to_string(),
+        timestamp: "2026-04-09T00:00:00Z".to_string(),
+        corpus_profile: "system".to_string(),
+        corpus_roots: vec![],
+        resolved_roots_count: 86,
+        perl_version: "5.038002".to_string(),
+        total_files: 100,
+        files_unreadable: 0,
+        clean_files: 88,
+        files_with_errors: 12,
+        total_dirty_files: 12,
+        files_with_structured_recovery_only: 3,
+        files_with_error_nodes: 9,
+        files_with_catastrophic_parse_failure: 0,
+        total_error_nodes: 40,
+        recovered_node_count: 0,
+        first_unrecovered_error_node_buckets: BTreeMap::new(),
+        first_error_buckets: BTreeMap::new(),
+        files_by_bucket: BTreeMap::new(),
+        file_results: vec![],
+        elapsed_secs: 1.0,
+        phase_timings: None,
+        median_error_density_per_1k_loc: Some(4.25),
+        recovery_salvage_rate: Some(0.25),
+        slowest_files: vec![],
+    };
+    let metrics = ParserMetrics {
+        syntax_sections: 611,
+        system_receipt: Some(ParserSweepReceipt::with_recovery_shape(report)),
+        cpan_receipt: None,
+        project_corpus: None,
+        common_corpus_receipt: None,
+        common_corpus_pinned: 10,
+        performance_scorecard: None,
+        parser_accuracy: None,
+        token_metrics: token::token_metrics_fixture(),
+    };
+
+    let result = generate_parser_status(&metrics, parser_status_template())?;
+    assert!(
+        result
+            .contains("| **Error density** | Ubuntu: 4.25 per 1k LOC / CPAN: insufficient_data |"),
+        "error density row must render per-corpus values"
+    );
+    assert!(
+        result.contains("| **Recovery salvage** | Ubuntu: 25.0% / CPAN: insufficient_data |"),
+        "recovery salvage row must render per-corpus values"
+    );
+    assert!(
+        result.contains("files_with_structured_recovery_only / total_dirty_files"),
+        "recovery salvage row must document denominator semantics"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_parser_error_density_row_no_dirty_files_reports_insufficient_data() -> Result<()> {
+    use std::collections::BTreeMap;
+
+    let report = super::super::super::parser_corpus_sweep::SweepReport {
+        schema_version: "1.3.0".to_string(),
+        commit: "abc".to_string(),
+        timestamp: "2026-04-09T00:00:00Z".to_string(),
+        corpus_profile: "system".to_string(),
+        corpus_roots: vec![],
+        resolved_roots_count: 86,
+        perl_version: "5.038002".to_string(),
+        total_files: 100,
+        files_unreadable: 0,
+        clean_files: 100,
+        files_with_errors: 0,
+        total_dirty_files: 0,
+        files_with_structured_recovery_only: 0,
+        files_with_error_nodes: 0,
+        files_with_catastrophic_parse_failure: 0,
+        total_error_nodes: 0,
+        recovered_node_count: 0,
+        first_unrecovered_error_node_buckets: BTreeMap::new(),
+        first_error_buckets: BTreeMap::new(),
+        files_by_bucket: BTreeMap::new(),
+        file_results: vec![],
+        elapsed_secs: 1.0,
+        phase_timings: None,
+        median_error_density_per_1k_loc: None,
+        recovery_salvage_rate: None,
+        slowest_files: vec![],
+    };
+    let metrics = ParserMetrics {
+        syntax_sections: 611,
+        system_receipt: Some(ParserSweepReceipt::with_recovery_shape(report)),
+        cpan_receipt: None,
+        project_corpus: None,
+        common_corpus_receipt: None,
+        common_corpus_pinned: 10,
+        performance_scorecard: None,
+        parser_accuracy: None,
+        token_metrics: token::token_metrics_fixture(),
+    };
+
+    let result = generate_parser_status(&metrics, parser_status_template())?;
+    assert!(
+        result.contains(
+            "| **Error density** | Ubuntu: insufficient_data / CPAN: insufficient_data |"
+        ),
+        "zero dirty files must not fabricate error density"
+    );
+    assert!(
+        result.contains(
+            "| **Recovery salvage** | Ubuntu: insufficient_data / CPAN: insufficient_data |"
+        ),
+        "zero dirty files must not fabricate salvage rate"
+    );
     Ok(())
 }

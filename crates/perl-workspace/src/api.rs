@@ -27,7 +27,8 @@
 
 // Discovery public API
 pub use crate::discovery::{
-    DiscoveryMethod, DiscoveryResult, discover_perl_files, discover_perl_files_with_include_paths,
+    DiscoveryConfig, DiscoveryMethod, DiscoveryResult, discover_perl_files,
+    discover_perl_files_with_config, discover_perl_files_with_include_paths,
     is_perl_discovery_path,
 };
 

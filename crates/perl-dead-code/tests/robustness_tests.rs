@@ -1,3 +1,4 @@
+#![allow(clippy::panic)]
 //! Robustness tests for `perl-dead-code` (#791, #795).
 //!
 //! - #791: bounds-safe slicing — empty / short conditions must not panic.

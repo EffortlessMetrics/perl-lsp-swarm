@@ -5,26 +5,54 @@
 
 use std::path::{Component, Path};
 
-const SKIPPED_DIRS: [&str; 9] =
-    [".git", ".hg", ".svn", "target", "node_modules", ".cache", "blib", "local", "vendor"];
+const SKIPPED_DIRS: [&str; 10] = [
+    ".git",
+    ".hg",
+    ".svn",
+    "target",
+    "node_modules",
+    ".cache",
+    "blib",
+    "local",
+    "vendor",
+    ".perl-lsp",
+];
 
 /// Returns true when `name` matches one of the canonical workspace noise directories.
 #[must_use]
 pub fn is_skipped_dir_name(name: &str) -> bool {
     SKIPPED_DIRS.contains(&name)
 }
+/// Returns true when `name` matches a canonical or configured skipped directory.
+#[must_use]
+pub fn is_skipped_dir_name_with_extra(name: &str, extra: &[String]) -> bool {
+    is_skipped_dir_name(name) || extra.iter().any(|candidate| candidate == name)
+}
 
 /// Returns true when any path component belongs to the canonical skipped directory set.
 #[must_use]
 pub fn path_contains_skipped_component(path: &Path) -> bool {
+    path_contains_skipped_component_with_extra(path, &[])
+}
+
+/// Returns true when any path component belongs to the canonical or configured skipped set.
+#[must_use]
+pub fn path_contains_skipped_component_with_extra(path: &Path, extra: &[String]) -> bool {
     path.components().any(|component| {
-        matches!(component, Component::Normal(name) if name.to_str().is_some_and(is_skipped_dir_name))
+        matches!(
+            component,
+            Component::Normal(name)
+                if name.to_str().is_some_and(|name| is_skipped_dir_name_with_extra(name, extra))
+        )
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SKIPPED_DIRS, is_skipped_dir_name, path_contains_skipped_component};
+    use super::{
+        SKIPPED_DIRS, is_skipped_dir_name, path_contains_skipped_component,
+        path_contains_skipped_component_with_extra,
+    };
     use std::path::Path;
 
     // ── is_skipped_dir_name: default patterns ──────────────────────────
@@ -84,7 +112,21 @@ mod tests {
 
     #[test]
     fn test_skipped_dir_name_constant_has_expected_count() {
-        assert_eq!(SKIPPED_DIRS.len(), 9);
+        assert_eq!(SKIPPED_DIRS.len(), 10);
+    }
+
+    #[test]
+    fn test_skipped_dir_name_perl_lsp_matches() {
+        assert!(is_skipped_dir_name(".perl-lsp"));
+    }
+
+    #[test]
+    fn test_path_configured_skipped_component_matches() {
+        let extra = vec!["generated".to_string()];
+        assert!(path_contains_skipped_component_with_extra(
+            Path::new("workspace/generated/cache.pm"),
+            &extra
+        ));
     }
 
     // ── is_skipped_dir_name: non-matching names ────────────────────────

@@ -280,7 +280,10 @@ fn try_catch_finally() -> Result<(), Box<dyn std::error::Error>> {
         NodeKind::Try {
             body: Box::new(block_node(vec![])),
             catch_blocks: vec![
-                (Some("$e".to_string()), Box::new(block_node(vec![]))),
+                (
+                    Some(("$e".to_string(), SourceLocation { start: 0, end: 0 })),
+                    Box::new(block_node(vec![])),
+                ),
                 (None, Box::new(block_node(vec![]))),
             ],
             finally_block: Some(Box::new(block_node(vec![]))),
@@ -755,7 +758,10 @@ fn sexp_try_catch_finally() -> Result<(), Box<dyn std::error::Error>> {
     let t = Node::new(
         NodeKind::Try {
             body: Box::new(block_node(vec![])),
-            catch_blocks: vec![(Some("$e".to_string()), Box::new(block_node(vec![])))],
+            catch_blocks: vec![(
+                Some(("$e".to_string(), SourceLocation { start: 0, end: 0 })),
+                Box::new(block_node(vec![])),
+            )],
             finally_block: Some(Box::new(block_node(vec![]))),
         },
         loc(0, 40),

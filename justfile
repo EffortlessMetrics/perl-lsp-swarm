@@ -952,6 +952,7 @@ ci-gate:
     just ci-unwrap-panic-ratchet && \
     just ci-unsafe-ratchet && \
     just ci-print-in-lib-ratchet && \
+    just ci-regex-static-ratchet && \
     just ci-forbid-fatal && \
     just ci-test-lib && \
     just check-all-targets && \
@@ -1075,6 +1076,12 @@ ci-unwrap-panic-ratchet:
     @cargo xtask ci-hygiene check-unwraps-prod
     @echo "✅ Unwrap/panic-family ratchet passed"
 
+# Test-code panic! ratchet (integration tests and #[cfg(test)] modules)
+ci-panic-test-ratchet:
+    @echo "🛡️  Checking test-code panic! ratchet..."
+    @cargo xtask ci-hygiene check-panic-test
+    @echo "✅ Test-code panic! ratchet passed"
+
 # Unsafe syntax ratchet (production source only)
 ci-unsafe-ratchet:
     @echo "🛡️  Checking unsafe syntax ratchet..."
@@ -1086,6 +1093,12 @@ ci-print-in-lib-ratchet:
     @echo "🖨️  Checking print-macro ratchet (library source only)..."
     @cargo xtask ci-hygiene check-print-in-lib
     @echo "✅ Print-macro ratchet passed"
+
+# Regex-static ratchet: regex constructors must live in LazyLock/OnceLock statics, never per-call
+ci-regex-static-ratchet:
+    @echo "🔎 Checking regex-static ratchet (library source only)..."
+    @cargo xtask ci-hygiene check-regex-static
+    @echo "✅ Regex-static ratchet passed"
 
 # Forbid fatal constructs gate - catches abort/exit/panic that Clippy misses
 ci-forbid-fatal:
@@ -2844,6 +2857,11 @@ corpus-sweep-check:
 common-corpus-check:
     cargo run -p xtask -- parser-corpus-sweep \
         --manifest .ci/common-corpus-manifest.txt --enforce --receipt
+
+# Bootstrap/update the committed common-corpus baseline
+common-corpus-baseline-update:
+    cargo run -p xtask -- parser-corpus-sweep \
+        --manifest .ci/common-corpus-manifest.txt --enforce --receipt --output .ci/common-corpus-baseline.json
 
 # Update corpus baseline with current results
 corpus-sweep-update:

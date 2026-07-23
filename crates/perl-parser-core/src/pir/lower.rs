@@ -550,6 +550,10 @@ fn map_boundary_kind(kind: DynamicBoundaryKind) -> PirDynamicBoundaryKind {
         DynamicBoundaryKind::DynamicStashMutation => PirDynamicBoundaryKind::RuntimeStashMutation,
         DynamicBoundaryKind::Autoload => PirDynamicBoundaryKind::Autoload,
         DynamicBoundaryKind::SymbolicReferenceDeref => PirDynamicBoundaryKind::SymbolicReference,
+        // PIR v0 has no dedicated regex-embedded-code category yet; keep the
+        // boundary visible (not dropped) via the generic `Unknown` bucket
+        // until a future PIR wave models regex/substitution lowering.
+        DynamicBoundaryKind::EmbeddedRegexCode => PirDynamicBoundaryKind::Unknown,
     }
 }
 
@@ -603,6 +607,13 @@ fn hir_kind_name(kind: &HirKind) -> &'static str {
         HirKind::ControlTransfer(_) => "ControlTransfer",
         HirKind::StatementModifierShell(_) => "StatementModifierShell",
         HirKind::DynamicBoundary(_) => "DynamicBoundary",
+        // Regex/match/substitution/transliteration shells are not yet lowered
+        // by PIR v0; they fall through to the `other =>` unsupported-count
+        // fallback in `lower_item`, keyed by these names.
+        HirKind::RegexExpr(_) => "RegexExpr",
+        HirKind::MatchExpr(_) => "MatchExpr",
+        HirKind::SubstitutionExpr(_) => "SubstitutionExpr",
+        HirKind::TransliterationExpr(_) => "TransliterationExpr",
     }
 }
 
@@ -737,7 +748,7 @@ impl BodyLowerer {
             None => return,
         };
         match stmt {
-            HirStmt::Let { name, sigil, storage, init } => {
+            HirStmt::Let { name, sigil, storage, init, binding_range } => {
                 // Emit exactly ONE Write op for the declaration target.
                 // `storage` determines whether this is a lexical (my/state) or
                 // package (our) slot. Ignoring `storage` was the root cause of
@@ -749,24 +760,14 @@ impl BodyLowerer {
                 // wrapper, which would re-emit the LHS variable as a second Write).
                 // Anchor the declaration write at the VARIABLE token (`$x`) to match
                 // the legacy find-references / LSP anchoring, NOT the whole
-                // `my $x = ...` statement span (issue #2640, PR3 range parity). The
-                // variable's range is the LHS of the initialiser's `Assign`; fall back
-                // to the statement range for declarations without an initialiser.
-                // Resolve the initialiser to its `Assign` so its LHS variable range
-                // can anchor the write. `body.expr` is folded into the `and_then` so
-                // the `None` arm is reached by declarations WITHOUT an initialiser
-                // (`my $x;` / `our $x;` → `init` is `None`), not just the unreachable
-                // non-`Assign` case — keeping the arm exercised by tests.
-                let var_range = match init.as_ref().and_then(|init_id| body.expr(*init_id)) {
-                    Some(HirExpr::Assign { lhs, .. }) => {
-                        body.source_map.expr_ranges.get(lhs.0 as usize).copied()
-                    }
-                    _ => None,
-                };
-                let range = var_range
-                    .or_else(|| body.source_map.stmt_ranges.get(stmt_id.0 as usize).copied());
-                if let Some(range) = range {
-                    let anchor = self.make_body_anchor(range);
+                // `my $x = ...` statement span (issue #2643, range parity).
+                // `binding_range` is a first-class field carrying the declared
+                // variable's source span, captured at HIR-build time for EVERY
+                // declaration form — including bare declarations WITHOUT an
+                // initialiser (`my $x;` / `our $x;`), which the previous
+                // init-LHS-or-statement-span fallback mis-anchored at the statement.
+                {
+                    let anchor = self.make_body_anchor(*binding_range);
                     let op = match storage {
                         // `our` binds a package/stash symbol; `local` dynamically
                         // scopes a package/global slot. Both are stash writes.
@@ -907,26 +908,77 @@ impl BodyLowerer {
             }
 
             HirExpr::Branch { condition, then_block, elsif_arms, else_block, .. } => {
-                *self.unsupported.entry("Branch").or_insert(0) += 1;
+                // Canonical PIR-A branch lowering (#4795): emit a first-class
+                // Branch node with a condition link and per-arm Branch edges,
+                // rather than counting the construct as unsupported. `if`/`unless`
+                // are control-flow forks that yield no value at statement level,
+                // so the node is Void and anchored at the whole branch expression
+                // range (mirroring the flat `lower_branch` path).
+                //
+                // Condition link (v0 approximation): the last PIR node lowered
+                // from the condition expression, when the condition lowered to at
+                // least one node. A constant or otherwise opaque condition
+                // (`if (1)`) emits no PIR node, so the link stays None
+                // (fail-closed). Compound conditions (`$a && $b`) are not modeled
+                // as a single value node; the link points at the last lowered
+                // operand. `next_id == nodes.len()` holds in this lowerer because
+                // `push_body_node` is the only node-emitting path, so `next_id - 1`
+                // is the id of the last-pushed node.
+                let id_before_condition = self.next_id;
                 self.lower_expr(body, *condition, file);
-                // Body nodes currently share one synthetic scope. A branch arm
-                // is a mutually exclusive region, so do not let its final node
-                // become the fallthrough predecessor of the next arm or of the
-                // statement after the branch.
-                self.last_in_scope.remove(&None);
-                self.lower_block(body, *then_block, file);
-                for (condition, block) in elsif_arms {
+                let condition = (self.next_id > id_before_condition)
+                    .then(|| PirId::from_index(self.next_id - 1));
+
+                // Emit the Branch node. It keeps the condition -> Branch
+                // fallthrough that `push_body_node` adds from the last condition
+                // node (control evaluates the condition, then branches).
+                let anchor = self.make_body_anchor(range);
+                let branch_id = self.push_body_node(
+                    anchor,
+                    PirOperation::Branch { condition },
+                    PirContext::Void,
+                    None,
+                    file,
+                );
+
+                // Each arm is a mutually exclusive region reached from the Branch
+                // node by an explicit `Branch` edge, never by fallthrough. The
+                // then arm is emitted first.
+                self.lower_branch_arm(body, *then_block, branch_id, file);
+
+                // Each `elsif` contributes its own region. Its condition is
+                // evaluated on the else-path, so it must stay reachable rather
+                // than orphaned: fan a `Branch` edge from the Branch node to the
+                // first node of the elsif condition, then a second `Branch` edge
+                // (via `lower_branch_arm`) to the elsif arm body. PIR v0 models
+                // the whole if/elsif/else as a single Branch node, so the nested
+                // decision structure is conservatively flattened into per-region
+                // edges from that node.
+                for (elsif_condition, block) in elsif_arms {
                     self.last_in_scope.remove(&None);
-                    self.lower_expr(body, *condition, file);
-                    // An elsif condition only selects its arm; it is not an
-                    // unconditional predecessor of the arm body.
-                    self.last_in_scope.remove(&None);
-                    self.lower_block(body, *block, file);
+                    let condition_first = self.next_id;
+                    self.lower_expr(body, *elsif_condition, file);
+                    if self.next_id > condition_first {
+                        self.edges.push(PirEdge {
+                            from: branch_id,
+                            to: Some(PirId::from_index(condition_first)),
+                            kind: PirEdgeKind::Branch,
+                        });
+                    }
+                    // The elsif condition only selects its arm; it is not an
+                    // unconditional predecessor of the arm body, so
+                    // `lower_branch_arm` severs the fallthrough and connects the
+                    // body to the Branch node directly.
+                    self.lower_branch_arm(body, *block, branch_id, file);
                 }
+
                 if let Some(block) = else_block {
-                    self.last_in_scope.remove(&None);
-                    self.lower_block(body, *block, file);
+                    self.lower_branch_arm(body, *block, branch_id, file);
                 }
+
+                // The branch has no unconditional successor: a statement after
+                // the branch must not inherit a fallthrough predecessor from any
+                // arm (conservative, matches pre-#4795 behavior).
                 self.last_in_scope.remove(&None);
             }
 
@@ -939,24 +991,68 @@ impl BodyLowerer {
                 iterator_binding,
                 ..
             } => {
-                *self.unsupported.entry("Loop").or_insert(0) += 1;
+                // Canonical PIR-A loop lowering (#4815): emit a first-class Loop
+                // node with a condition link and a `Loop` back-edge, rather than
+                // counting the construct as unsupported. Mirrors the Branch slice
+                // (#4795): while/until/C-style-for/foreach are control-flow
+                // constructs that yield no value at statement level, so the node
+                // is Void and anchored at the whole loop expression range.
+
+                // A C-style `for` initializer runs once before the loop; it chains
+                // into the condition/header by normal fallthrough.
                 if let Some(init) = init {
                     self.lower_block(body, *init, file);
                 }
+
+                // Condition link (v0 approximation, mirroring lower_branch): the
+                // last PIR node lowered from the boolean loop condition when it
+                // lowered at least one node. `foreach` stores its *iterable* in the
+                // same HIR `condition` field (see hir/lower.rs NodeKind::Foreach);
+                // that iterable is still lowered so its read is reachable, but a
+                // `foreach` has no boolean condition, so the link stays None.
+                // Constant or otherwise opaque conditions also leave it None
+                // (fail-closed). `foreach` is the only form carrying an
+                // `iterator_binding`.
+                let is_foreach = iterator_binding.is_some();
+                let id_before_condition = self.next_id;
                 if let Some(condition) = condition {
                     self.lower_expr(body, *condition, file);
                 }
+                let condition = if is_foreach {
+                    None
+                } else {
+                    (self.next_id > id_before_condition)
+                        .then(|| PirId::from_index(self.next_id - 1))
+                };
+
+                // Emit the Loop node right after the header. It keeps the
+                // fallthrough from the last header node (boolean condition /
+                // foreach iterable) — control evaluates the header, then loops.
+                let anchor = self.make_body_anchor(range);
+                let loop_id = self.push_body_node(
+                    anchor,
+                    PirOperation::Loop { condition },
+                    PirContext::Void,
+                    None,
+                    file,
+                );
+
+                // The loop body executes zero or more times: it is reached from
+                // the Loop node by an explicit `Loop` edge, never by unconditional
+                // fallthrough, and it must not fall through into the statement
+                // after the loop. Sever the fallthrough predecessor, then lower
+                // the iteration region.
+                self.last_in_scope.remove(&None);
+                let iteration_first = self.next_id;
+                // A `foreach` binds its loop variable once per iteration, so the
+                // binding belongs inside the iteration region (after the Loop
+                // node), not before it — the iterable was already lowered as the
+                // header above. Modeling the binding here makes the Loop entry
+                // edge target the per-iteration binding rather than a one-time
+                // pre-loop write.
                 if let Some(iterator_binding) = iterator_binding {
-                    // A foreach iterable may be empty, so evaluating the
-                    // iterator binding is not an unconditional successor of
-                    // the iterable expression.
-                    self.last_in_scope.remove(&None);
                     self.lower_expr(body, *iterator_binding, file);
                 }
-                // Loop bodies execute zero or more times. They must not look
-                // like unconditional fallthrough from the loop header or into
-                // the first statement after the loop.
-                self.last_in_scope.remove(&None);
                 self.lower_block(body, *loop_body, file);
                 if let Some(block) = continue_block {
                     self.lower_block(body, *block, file);
@@ -964,32 +1060,147 @@ impl BodyLowerer {
                 if let Some(update) = update {
                     self.lower_expr(body, *update, file);
                 }
+                // Back-edge source: the iteration region's fall-through endpoint
+                // (the node control would loop back from), not merely the last
+                // allocated node. A nested inner loop leaves its own node last,
+                // which must not be wired back to this outer header; and if the
+                // region severed its own fallthrough (nested loop / branch /
+                // loop-control), no honest back-edge exists, so none is emitted.
+                let iteration_last = self.last_in_scope.get(&None).copied();
+                if self.next_id > iteration_first {
+                    // Loop entry edge: header -> iteration entry.
+                    self.edges.push(PirEdge {
+                        from: loop_id,
+                        to: Some(PirId::from_index(iteration_first)),
+                        kind: PirEdgeKind::Loop,
+                    });
+                }
+                if let Some(iteration_last) = iteration_last {
+                    // Loop back-edge: iteration exit -> header.
+                    self.edges.push(PirEdge {
+                        from: iteration_last,
+                        to: Some(loop_id),
+                        kind: PirEdgeKind::Loop,
+                    });
+                }
+
+                // No unconditional fallthrough past the loop.
                 self.last_in_scope.remove(&None);
             }
 
             HirExpr::Ternary { condition, then_expr, else_expr } => {
-                *self.unsupported.entry("Ternary").or_insert(0) += 1;
+                // Canonical PIR-A ternary lowering (#4859): emit a first-class
+                // Branch node with a condition link and per-arm Branch edges,
+                // mirroring the statement `if`/`unless` body path (#4795), rather
+                // than counting the construct as unsupported.
+                //
+                // Context: unlike a statement branch (Void — it yields no value),
+                // a ternary is a value-producing rvalue. Its result context is
+                // inherited from the enclosing expression's position, which this
+                // slice does not model, so the node is `Unknown` (fail-closed):
+                // Void would falsely claim the ternary yields nothing, and
+                // Scalar/List would over-claim a context that cannot be proven
+                // statically here.
+                //
+                // Condition link (v0 approximation): the last PIR node lowered
+                // from the condition expression, when it lowered to at least one
+                // node (`$c ? ...`). A constant/opaque condition emits no node,
+                // so the link stays None (fail-closed). `next_id == nodes.len()`
+                // holds because `push_body_node` is the only node-emitting path.
+                //
+                // Known v0 imprecision (tracked follow-up): when a ternary is
+                // *itself* the condition of an enclosing `if`/`while`/`unless`
+                // (`if ($p ? 1 : 2) { ... }`), that enclosing construct's own
+                // `next_id - 1` condition link resolves to this Branch node rather
+                // than a value node — the same "last lowered node" heuristic the
+                // compound-condition (`$a && $b`) case already accepts, extended to
+                // a control node. Making the enclosing link skip control nodes is a
+                // separate condition-link-precision slice, not this one.
+                let id_before_condition = self.next_id;
                 self.lower_expr(body, *condition, file);
-                // The selected arms are mutually exclusive. Do not connect the
-                // final node of the true arm to the first node of the false arm,
-                // or either arm to a later sibling through the shared synthetic
-                // body scope.
-                self.last_in_scope.remove(&None);
-                self.lower_expr(body, *then_expr, file);
-                self.last_in_scope.remove(&None);
-                self.lower_expr(body, *else_expr, file);
-                self.last_in_scope.remove(&None);
+                let condition = (self.next_id > id_before_condition)
+                    .then(|| PirId::from_index(self.next_id - 1));
+
+                // Emit the Branch node. It keeps the condition -> Branch
+                // fallthrough that `push_body_node` adds from the last condition
+                // node (control evaluates the condition, then branches).
+                let anchor = self.make_body_anchor(range);
+                let branch_id = self.push_body_node(
+                    anchor,
+                    PirOperation::Branch { condition },
+                    PirContext::Unknown,
+                    None,
+                    file,
+                );
+
+                // Each arm is a mutually exclusive rvalue region reached from the
+                // Branch node by an explicit `Branch` edge, never by fallthrough.
+                // A ternary arm is a single expression (not a block), so lower it
+                // via the expr-arm helper rather than `lower_branch_arm`.
+                let then_falls_through =
+                    self.lower_branch_expr_arm(body, *then_expr, branch_id, file);
+                let else_falls_through =
+                    self.lower_branch_expr_arm(body, *else_expr, branch_id, file);
+
+                // Reachable consumer — but only if control can actually reach it.
+                // A ternary is a value-producing rvalue: its consumer (the
+                // assignment, call argument, `return` operand, etc. the caller
+                // pushes *next*) is reached once a *non-terminal* arm has run.
+                //
+                // If at least one arm falls through, point `last_in_scope[None]`
+                // at the Branch node so the consumer inherits a `Fallthrough` edge
+                // and stays reachable. Severing unconditionally (as the statement
+                // `if`/`unless` path does, since a statement's successor is a
+                // *separate* statement) would orphan the consumer — `return $c ?
+                // $a : $b;` would leave the `Return` node with no incoming edge,
+                // contradicting the operand-reachability guarantee the simple
+                // paths uphold (`pir_a_return_value_read_is_reachable`).
+                //
+                // But if *both* arms are terminal (`$c ? return 1 : return 2`),
+                // control never reaches the consumer; the arms already severed
+                // their live tails, so leave `last_in_scope[None]` empty and the
+                // consumer (e.g. a following `my $dead = ...`) correctly stays
+                // unreachable rather than spuriously fallthrough-linked.
+                //
+                // Anchoring the fallthrough at the Branch node conservatively
+                // over-approximates (the edge does not pass through an arm node);
+                // precise per-arm value-merge edges are the deferred value-join
+                // follow-up (#4859 non-goals).
+                if then_falls_through || else_falls_through {
+                    self.last_in_scope.insert(None, branch_id);
+                } else {
+                    self.last_in_scope.remove(&None);
+                }
             }
 
             HirExpr::Return { value } => {
-                *self.unsupported.entry("Return").or_insert(0) += 1;
+                // Canonical PIR-A return lowering (#4856): emit a first-class
+                // Return node with a terminal exit edge, rather than counting the
+                // construct as unsupported. `return` yields no value at statement
+                // level — it transfers control out of the enclosing subroutine —
+                // so the node is Void and anchored at the return expression range
+                // (mirroring the flat `lower_return` path).
+                //
+                // Lower the returned expression FIRST so any variable read in
+                // return-operand position (`return $x`) produces a reachable
+                // LexicalRead node. The Return node is then pushed after it, so
+                // the operand -> Return fallthrough that `push_body_node` adds
+                // models control evaluating the operand before returning.
                 if let Some(value) = value {
                     self.lower_expr(body, *value, file);
                 }
-                // Return transfers control out of the enclosing body. The
-                // returned expression may have emitted the latest node, but
-                // statements after the return are unreachable and must not
-                // inherit it as an unconditional fallthrough predecessor.
+
+                let anchor = self.make_body_anchor(range);
+                let return_id =
+                    self.push_body_node(anchor, PirOperation::Return, PirContext::Void, None, file);
+
+                // A `return` is terminal: control leaves the enclosing body via
+                // the modeled-graph exit (`to: None`, mirroring the flat
+                // `lower_return` and the DynamicExit shape). Clear this scope's
+                // fallthrough source so statements after the return — unreachable
+                // in real control flow — are not linked by a spurious
+                // `Fallthrough` edge *from* the Return node.
+                self.edges.push(PirEdge { from: return_id, to: None, kind: PirEdgeKind::Return });
                 self.last_in_scope.remove(&None);
             }
 
@@ -1007,6 +1218,18 @@ impl BodyLowerer {
                 for arg_id in args {
                     self.lower_expr(body, *arg_id, file);
                 }
+            }
+
+            HirExpr::Subscript(subscript) => {
+                // PIR-A does not yet model subscript element access as a typed
+                // place (that lands with the PIR Place model, a separate item).
+                // Record it as unsupported, but walk the container and subscript
+                // child expressions so variable reads / calls inside them
+                // (e.g. the `$k` in `$h{$k}`, the container `$h`) still emit facts,
+                // exactly as they did when a subscript was a generic `Binary`.
+                *self.unsupported.entry("Subscript").or_insert(0) += 1;
+                self.lower_expr(body, subscript.container, file);
+                self.lower_expr(body, subscript.subscript, file);
             }
         }
     }
@@ -1151,6 +1374,79 @@ impl BodyLowerer {
             package_context: None, // deferred: body arenas don't carry package_context yet
         });
         id
+    }
+
+    /// Lower one branch arm block and connect it to its `Branch` node.
+    ///
+    /// Arms are mutually exclusive regions: the arm is reached from the `Branch`
+    /// node only by an explicit `Branch` edge, never by fallthrough. Severing
+    /// `last_in_scope` first drops any fallthrough predecessor (the `Branch` node
+    /// itself for the then arm, the elsif condition for an elsif arm), so the
+    /// arm's first node is not linked by a spurious `Fallthrough` that would
+    /// duplicate the `Branch` edge or imply unconditional entry. An empty arm
+    /// (no lowered nodes) contributes no edge.
+    fn lower_branch_arm(
+        &mut self,
+        body: &HirBody,
+        block: crate::hir::HirBlockId,
+        branch_id: PirId,
+        file: &HirFile,
+    ) {
+        self.last_in_scope.remove(&None);
+        let arm_first = self.next_id;
+        self.lower_block(body, block, file);
+        if self.next_id > arm_first {
+            self.edges.push(PirEdge {
+                from: branch_id,
+                to: Some(PirId::from_index(arm_first)),
+                kind: PirEdgeKind::Branch,
+            });
+        }
+    }
+
+    /// Lower one ternary arm expression, connect it to its `Branch` node, and
+    /// report whether the arm can fall through to the ternary's consumer.
+    ///
+    /// Mirrors [`lower_branch_arm`](Self::lower_branch_arm) but for a single
+    /// expression arm: a ternary `COND ? THEN : ELSE` arm is an `HirExprId`, not
+    /// a block. Arms are mutually exclusive rvalue regions reached from the
+    /// `Branch` node only by an explicit `Branch` edge; severing `last_in_scope`
+    /// first drops the fallthrough predecessor (the `Branch` node itself, or the
+    /// previous arm's last node) so the arm's first node is not linked by a
+    /// spurious `Fallthrough`. An arm that emits no node (e.g. a constant `1`)
+    /// contributes no edge.
+    ///
+    /// Returns `true` when control can leave the arm and reach whatever consumes
+    /// the ternary, and `false` when the arm is terminal (e.g. `return`). The
+    /// only non-falling-through shape is an arm that emitted node(s) and then
+    /// severed its own `last_in_scope[None]` (a terminal control transfer such as
+    /// `$c ? return 1 : ...`); an empty arm (constant, no node) and a live-tailed
+    /// arm both fall through. The caller uses this to reconnect the ternary's
+    /// consumer only when at least one arm can actually reach it, so
+    /// `$c ? return 1 : return 2; my $dead = ...;` correctly leaves `$dead`
+    /// unreachable instead of spuriously fallthrough-linked.
+    fn lower_branch_expr_arm(
+        &mut self,
+        body: &HirBody,
+        expr: HirExprId,
+        branch_id: PirId,
+        file: &HirFile,
+    ) -> bool {
+        self.last_in_scope.remove(&None);
+        let arm_first = self.next_id;
+        self.lower_expr(body, expr, file);
+        let emitted = self.next_id > arm_first;
+        if emitted {
+            self.edges.push(PirEdge {
+                from: branch_id,
+                to: Some(PirId::from_index(arm_first)),
+                kind: PirEdgeKind::Branch,
+            });
+        }
+        // Falls through unless it emitted node(s) and then severed its live tail
+        // (a terminal transfer). An empty arm emits nothing but still falls
+        // through with its constant value.
+        !emitted || self.last_in_scope.contains_key(&None)
     }
 
     fn finish(self) -> PirGraph {

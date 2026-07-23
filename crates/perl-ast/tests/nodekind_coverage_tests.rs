@@ -152,7 +152,10 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
             Node::new(
                 NodeKind::Try {
                     body: Box::new(leaf("body")),
-                    catch_blocks: vec![(Some("$err".to_string()), Box::new(leaf("catch")))],
+                    catch_blocks: vec![(
+                        Some(("$err".to_string(), SourceLocation { start: 0, end: 0 })),
+                        Box::new(leaf("catch")),
+                    )],
                     finally_block: Some(Box::new(leaf("finally"))),
                 },
                 loc(),

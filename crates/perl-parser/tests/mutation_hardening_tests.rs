@@ -82,13 +82,17 @@ mod incremental_position_arithmetic_tests {
         // This tests the position adjustment logic indirectly
         let result = doc.apply_edit(edit);
 
-        // The key test is that position arithmetic doesn't panic or produce invalid results
-        if initial_position as isize + delta < 0 {
-            // Negative result should be handled gracefully
-            assert!(result.is_ok() || result.is_err(), "Should not panic on underflow");
-        } else {
-            assert!(result.is_ok(), "Valid position adjustments should succeed");
-        }
+        // The key test is that position arithmetic doesn't panic or produce invalid results.
+        // NOTE: the parametrized `initial_position`/`delta` cases are not wired into the
+        // fixed 0..5 edit below, so every case applies the same valid edit. The previous
+        // `result.is_ok() || result.is_err()` assertion was a tautology that always passed
+        // and gave false confidence (issue #4642); the edit is valid, so assert it succeeds.
+        let _ = (initial_position, delta); // edge-case parameters documented above
+        assert!(
+            result.is_ok(),
+            "valid edit should apply without panicking; got {:?}",
+            result.err()
+        );
         Ok(())
     }
 
@@ -753,11 +757,10 @@ mod ast_sexp_validation_tests {
         let mut parser = Parser::new(code);
         let result = parser.parse();
 
-        if result.is_err() {
-            println!("Note: {} parsing not fully supported: {:?}", test_name, result.err());
-            return Ok(());
-        }
-
+        // Previously this early-returned Ok(()) when parsing produced an error,
+        // which made the test pass for a mutant that breaks parsing — the
+        // opposite of what a mutation-hardening test must do (issue #4642).
+        // Propagate the error so a parse regression fails the test.
         let ast = result?;
         let sexp = ast.to_sexp();
         let sexp_inner = ast.to_sexp_inner();
@@ -975,14 +978,11 @@ mod ast_node_validation_tests {
         // Anonymous subroutine (name should be None)
         let code = "my $sub = sub { print 'anonymous'; };";
         let mut parser = Parser::new(code);
-        let result = parser.parse();
-
-        if result.is_err() {
-            println!("Note: Anonymous subroutine syntax might not be fully supported");
-            return Ok(());
-        }
-
-        let ast = result?;
+        // Previously this early-returned Ok(()) when parsing produced an error,
+        // which made the test pass for a mutant that breaks parsing — the
+        // opposite of what a mutation-hardening test must do (issue #4642).
+        // Propagate the error so a parse regression fails the test.
+        let ast = parser.parse()?;
 
         let sexp = ast.to_sexp();
         let sexp_inner = ast.to_sexp_inner();
