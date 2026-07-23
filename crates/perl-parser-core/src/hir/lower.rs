@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
     DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirStmt,
-    HirStmtId, HirVariable, Sigil, UnaryMode, VariableKind,
+    HirStmtId, HirSubscript, HirVariable, Sigil, SubscriptKind, UnaryMode, VariableKind,
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
@@ -2523,6 +2523,40 @@ fn require_target(argument: Option<&Node>) -> Option<String> {
     }
 }
 
+/// Whether a `Binary` operator string denotes an array/hash subscript bracket:
+/// the direct forms `[]`/`{}` and the arrow-deref forms `->[]`/`->{}`.
+fn is_subscript_op(op: &str) -> bool {
+    matches!(op, "[]" | "{}" | "->[]" | "->{}")
+}
+
+/// Whether a `Binary` node is a singular array/hash **element** access that should
+/// lower to [`HirExpr::Subscript`] — as opposed to a slice.
+///
+/// Perl reuses the same `[]`/`{}` brackets for slices (`@a[1, 2]`, `@h{'a','b'}`),
+/// which read/write MANY elements and so must NOT be modeled as one singular
+/// element place. Slices are distinguished by a list-context sigil on the
+/// container: `@a[...]` / `@h{...}` / `%h{...}`. A singular element access has a
+/// `$`-sigil container (`$a[i]`, `$h{k}`), a nested subscript container
+/// (`$a[0][1]`, `$h{a}{b}`), or is an arrow-deref form (always single-element).
+/// Anything else (e.g. sigil-deref element forms) is left as a generic `Binary`
+/// here — conservative, never a slice mis-modeled as an element write.
+fn is_element_subscript(op: &str, container: &Node) -> bool {
+    match op {
+        // Arrow-deref element access is always singular.
+        "->[]" | "->{}" => true,
+        "[]" | "{}" => match &container.kind {
+            NodeKind::Variable { sigil, .. } => sigil == "$",
+            NodeKind::Binary { op: inner_op, .. } => is_subscript_op(inner_op),
+            // Scalar-deref element containers: `$$self{f}` / `${$self}{f}` parse
+            // with a `${}` unary-deref container and access a single element. The
+            // `@{}` / `%{}` deref forms are SLICES and stay generic `Binary`.
+            NodeKind::Unary { op: deref_op, .. } => deref_op == "${}",
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn variable_binding(node: &Node) -> Option<VariableBinding> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => {
@@ -2910,6 +2944,15 @@ impl<'a> BodyBuilder2<'a> {
                 self.alloc_expr(HirExpr::Variable(var), range)
             }
 
+            // Subscript element access (`$arr[i]`, `$hash{k}`) — and the
+            // arrow-deref forms `$ref->[i]` / `$ref->{k}` — are parsed as a
+            // `Binary` with a bracket operator (`[]`/`{}`/`->[]`/`->{}`). Model
+            // them as a first-class evaluate-once place rather than a generic
+            // binary op. A bare (non-lvalue) access reads the element.
+            NodeKind::Binary { op, left, right } if is_element_subscript(op, left) => {
+                self.lower_subscript(op, left, right, AccessMode::Read, range)
+            }
+
             NodeKind::Binary { op, left, right } => {
                 let lhs_id = self.lower_expr(left);
                 let rhs_id = self.lower_expr(right);
@@ -3093,8 +3136,42 @@ impl<'a> BodyBuilder2<'a> {
                     HirVariable { sigil: sigil_from_str(sigil), name: name.clone(), kind, access };
                 self.alloc_expr(HirExpr::Variable(var), range)
             }
+            // A subscript element on the LHS of an assignment (or under `++`/`--`)
+            // is the write/RMW place: `$h{k} = v`, `$arr[$i] += 1`, `$ref->{k} = v`.
+            NodeKind::Binary { op, left, right } if is_element_subscript(op, left) => {
+                self.lower_subscript(op, left, right, access, range)
+            }
             _ => self.lower_expr(node),
         }
+    }
+
+    /// Lower an array/hash subscript (`$arr[i]`, `$hash{k}`, and the arrow-deref
+    /// forms `$ref->[i]` / `$ref->{k}`) into a first-class [`HirExpr::Subscript`]
+    /// place. The `container` and `subscript` are lowered as separate expression
+    /// IDs so a computed key/index is evaluated once; the container is always a
+    /// read (the aggregate — or the reference to it — is navigated, only the
+    /// element carries `access`).
+    fn lower_subscript(
+        &mut self,
+        op: &str,
+        container: &Node,
+        subscript: &Node,
+        access: AccessMode,
+        range: crate::SourceLocation,
+    ) -> HirExprId {
+        let kind =
+            if op == "[]" || op == "->[]" { SubscriptKind::Array } else { SubscriptKind::Hash };
+        let container_id = self.lower_expr(container);
+        let subscript_id = self.lower_expr(subscript);
+        self.alloc_expr(
+            HirExpr::Subscript(HirSubscript {
+                kind,
+                container: container_id,
+                subscript: subscript_id,
+                access,
+            }),
+            range,
+        )
     }
 
     /// Lower a nested block and retain its statement sequence in the block arena.

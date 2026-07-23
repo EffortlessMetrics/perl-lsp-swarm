@@ -241,6 +241,32 @@ pub struct HirVariable {
     pub access: AccessMode,
 }
 
+/// Aggregate flavour of a subscript element access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SubscriptKind {
+    /// Array element access: `$arr[index]`.
+    Array,
+    /// Hash element access: `$hash{key}`.
+    Hash,
+}
+
+/// An array/hash element access with evaluate-once place semantics.
+///
+/// The `container` and `subscript` are kept as separate explicit expression IDs
+/// so a computed index/key (e.g. `$h{f()}`) is modeled as evaluated exactly
+/// once, and so PIR lowering can treat the element as an lvalue place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirSubscript {
+    /// Array vs hash element access.
+    pub kind: SubscriptKind,
+    /// The aggregate being indexed (array or hash), as an explicit expr ID.
+    pub container: HirExprId,
+    /// The index or key expression, as an explicit expr ID.
+    pub subscript: HirExprId,
+    /// How the element is accessed (read, write-place, or read-modify-write).
+    pub access: AccessMode,
+}
+
 /// How an assignment is performed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssignMode {
@@ -395,6 +421,10 @@ pub enum HirExpr {
         /// The AST node kind name, for diagnostics.
         ast_kind: String,
     },
+
+    /// Array/hash element access (`$arr[i]`, `$hash{k}`) modeled as an
+    /// evaluate-once place. See [`HirSubscript`].
+    Subscript(HirSubscript),
 
     /// Opaque expression — used when the AST shape is not yet modeled.
     Opaque {
