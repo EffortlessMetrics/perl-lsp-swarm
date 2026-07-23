@@ -288,6 +288,20 @@ fn portable_report_path(path: &Path) -> String {
 
 /// Strip host-specific `@INC` prefixes so committed baseline `slowest_files`
 /// stay portable across Linux/Windows regenerations.
+fn looks_like_perl_version(segment: &str) -> bool {
+    let segment = segment.strip_prefix('v').unwrap_or(segment);
+    let mut parts = segment.split('.');
+    let Some(major) = parts.next() else {
+        return false;
+    };
+    if major.is_empty() || !major.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    parts.next().is_some_and(|minor| {
+        !minor.is_empty() && minor.chars().all(|c| c.is_ascii_digit() || c == '_')
+    })
+}
+
 fn portable_slowest_file_path(path: &str) -> String {
     let normalized = path.replace('\\', "/");
 
@@ -301,11 +315,14 @@ fn portable_slowest_file_path(path: &str) -> String {
     // Versioned core installs: .../perl/<version>/Module/Foo.pm
     if let Some(idx) = normalized.rfind("/perl/") {
         let after_perl = &normalized[idx + "/perl/".len()..];
-        if let Some(slash) = after_perl.find('/') {
-            let module_relative = &after_perl[slash + 1..];
-            if module_relative.ends_with(".pm") {
-                return module_relative.to_string();
+        if after_perl.ends_with(".pm") {
+            if let Some(slash) = after_perl.find('/') {
+                let first_segment = &after_perl[..slash];
+                if looks_like_perl_version(first_segment) {
+                    return after_perl[slash + 1..].to_string();
+                }
             }
+            return after_perl.to_string();
         }
     }
 
@@ -429,19 +446,23 @@ fn walk_errors(
     });
 }
 
-/// Parse a manifest file into module names (skipping comments and empty lines).
+/// Parse a manifest file into module names (skipping comments, empty lines,
+/// and duplicate entries while preserving first-seen order).
 pub fn parse_manifest(manifest_path: &Path) -> Result<Vec<String>> {
     let file = fs::File::open(manifest_path)
         .with_context(|| format!("Failed to open manifest: {}", manifest_path.display()))?;
     let reader = std::io::BufReader::new(file);
     let mut modules = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for line in reader.lines() {
         let line = line.context("Failed to read manifest line")?;
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        modules.push(trimmed.to_string());
+        if seen.insert(trimmed.to_string()) {
+            modules.push(trimmed.to_string());
+        }
     }
     Ok(modules)
 }
@@ -781,9 +802,12 @@ pub fn run(config: SweepConfig) -> Result<()> {
     print_summary(&report);
 
     // Write receipt before enforce so failed gates still emit SHA-bound audit evidence.
+    // Receipt I/O is best-effort: a write failure must not skip strict-clean enforcement.
     if config.receipt {
-        let receipt_path = write_sweep_receipt(&report)?;
-        eprintln!("Receipt written to: {}", receipt_path.display());
+        match write_sweep_receipt(&report) {
+            Ok(receipt_path) => eprintln!("Receipt written to: {}", receipt_path.display()),
+            Err(err) => eprintln!("Warning: failed to write receipt: {err:#}"),
+        }
     }
 
     // Enforcement for manifest mode must run before writing the committed
@@ -2276,6 +2300,23 @@ mod tests {
             portable_slowest_file_path("/opt/perl/lib/perl5/Digest/MD5.pm"),
             "perl5/Digest/MD5.pm"
         );
+        assert_eq!(
+            portable_slowest_file_path("/usr/share/perl/Module/CoreList.pm"),
+            "Module/CoreList.pm"
+        );
+    }
+
+    #[test]
+    fn test_parse_manifest_dedupes_duplicate_entries() -> Result<()> {
+        let dir =
+            std::env::temp_dir().join(format!("test_parse_manifest_dedup_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir)?;
+        let manifest_path = dir.join("manifest.txt");
+        fs::write(&manifest_path, "Foo::Bar\nFoo::Bar\nBaz\n")?;
+        let modules = parse_manifest(&manifest_path)?;
+        assert_eq!(modules, vec!["Foo::Bar".to_string(), "Baz".to_string()]);
+        Ok(())
     }
 
     #[test]
@@ -2283,10 +2324,7 @@ mod tests {
         let dir = std::env::temp_dir().join("test_discover_manifest_min_resolved");
         fs::create_dir_all(&dir)?;
         let manifest_path = dir.join("manifest.txt");
-        fs::write(
-            &manifest_path,
-            "# comment\nFoo::Bar\n# another\nBaz\n",
-        )?;
+        fs::write(&manifest_path, "# comment\nFoo::Bar\n# another\nBaz\n")?;
         let manifest = discover_manifest(manifest_path.clone(), vec![])?;
         assert_eq!(manifest.min_resolved, 2);
         assert_eq!(manifest.path, manifest_path);
@@ -2295,10 +2333,8 @@ mod tests {
 
     #[test]
     fn test_resolve_manifest_modules_requires_full_resolution() -> Result<()> {
-        let dir = std::env::temp_dir().join(format!(
-            "test_resolve_manifest_full_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("test_resolve_manifest_full_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir)?;
         let lib = dir.join("lib");
