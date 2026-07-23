@@ -2061,7 +2061,13 @@ impl WorkspaceIndex {
         let file_id = Self::hash_uri_to_file_id(&uri_str);
         let import_specs = bundle.import_specs;
         let use_lib_facts = bundle.use_lib_facts;
-        let package_edges = package_graph_edges_from_hir(&ast);
+        // Lower the HIR once and derive both the package-graph edges and this
+        // file's module export sets (#2587), so the exporter's @EXPORT/@EXPORT_OK
+        // facts reach the import/export index rather than being computed and
+        // discarded.
+        let file_hir = perl_parser_core::hir::lower_ast(&ast);
+        let package_edges = package_edges_from_stash_graph(&file_hir.stash_graph);
+        let module_export_sets = file_hir.stash_graph.export_sets();
 
         // Update the index, refresh the global symbol cache, and replace this file's
         // contribution in the global reference index.
@@ -2219,6 +2225,18 @@ impl WorkspaceIndex {
             ie_idx.add_file_imports(&uri_str, file_id, import_specs);
             ie_idx.remove_file_use_lib(&uri_str);
             ie_idx.add_file_use_lib(&uri_str, file_id, use_lib_facts);
+            // Bridge this file's exporter facts (@EXPORT/@EXPORT_OK/%EXPORT_TAGS)
+            // into the index so an importing file's `use M` resolves M's exported
+            // symbols (#2587). Stale entries are removed first for incremental
+            // re-indexing parity with the imports/use-lib wiring above. Export
+            // sets without a module name (no enclosing package) are skipped —
+            // they cannot be keyed for an importer's module-name lookup.
+            ie_idx.remove_module_exports(&uri_str);
+            for export_set in module_export_sets {
+                if let Some(module_name) = export_set.module_name.clone() {
+                    ie_idx.add_module_exports(&uri_str, &module_name, export_set);
+                }
+            }
         }
 
         Ok(())
@@ -4435,8 +4453,17 @@ impl FileExtractionBundle {
 }
 
 fn package_graph_edges_from_hir(ast: &Node) -> Vec<PackageEdge> {
-    let hir = perl_parser_core::hir::lower_ast(ast);
-    hir.stash_graph
+    package_edges_from_stash_graph(&perl_parser_core::hir::lower_ast(ast).stash_graph)
+}
+
+/// Project a lowered HIR stash graph's inheritance edges into package-graph
+/// edges. Split from [`package_graph_edges_from_hir`] so the single-file index
+/// path can lower the HIR once and derive both package edges and export sets
+/// (see [`WorkspaceIndex::index_file_with_generation`]).
+fn package_edges_from_stash_graph(
+    stash_graph: &perl_parser_core::hir::StashGraph,
+) -> Vec<PackageEdge> {
+    stash_graph
         .inheritance_edges
         .iter()
         .filter_map(|edge| {
