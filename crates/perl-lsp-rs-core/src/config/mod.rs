@@ -1169,17 +1169,52 @@ pub struct ProjectFormattingConfig {
     pub perltidy_timeout_secs: Option<u64>,
 }
 
-/// Load project config from `<workspace_root>/.perl-lsp.toml`.
+/// Walk parent directories from `start_dir` upward looking for `.perl-lsp.toml`.
 ///
-/// Returns `None` if the file does not exist (normal case — most projects won't have one).
-/// Returns `Err` on TOML parse failure, I/O errors, oversized files, or non-regular paths;
-/// caller should emit a `window/showMessage` warning and continue with defaults.
+/// This mirrors the parent-walk strategy used by `.perlcriticrc` discovery
+/// (`find_workspace_perlcritic_profile`) so that a monorepo opened at a
+/// subdirectory still finds a root-level `.perl-lsp.toml`. The search starts
+/// at `start_dir` itself and proceeds upward to the filesystem root.
+///
+/// Returns the path to the first `.perl-lsp.toml` found, or `None` if no
+/// candidate exists in any ancestor directory.
+fn discover_project_config_path(start_dir: &Path) -> Option<PathBuf> {
+    let mut current = Some(start_dir);
+    while let Some(dir) = current {
+        let candidate = dir.join(".perl-lsp.toml");
+        // Use `exists()` (not `is_file()`) so that a non-regular entry (e.g. a
+        // directory named `.perl-lsp.toml`) is still surfaced to the caller —
+        // the metadata checks in `load_project_config` will reject it with a
+        // descriptive error rather than silently skipping it.
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+/// Load project config from `.perl-lsp.toml`, searching upward from
+/// `workspace_root`.
+///
+/// The search walks parent directories from `workspace_root` to the filesystem
+/// root, returning the first `.perl-lsp.toml` found. This matches the
+/// parent-walk behavior of `.perlcriticrc` discovery so that a monorepo
+/// opened at a subdirectory discovers a root-level config.
+///
+/// Returns `None` if no `.perl-lsp.toml` exists in any ancestor (normal case —
+/// most projects won't have one). Returns `Err` on TOML parse failure, I/O
+/// errors, oversized files, or non-regular paths; caller should emit a
+/// `window/showMessage` warning and continue with defaults.
 pub fn load_project_config(
     workspace_root: &std::path::Path,
 ) -> Result<Option<ProjectConfig>, String> {
     const MAX_PROJECT_CONFIG_BYTES: u64 = 1024 * 1024; // 1 MiB
 
-    let path = workspace_root.join(".perl-lsp.toml");
+    let path = match discover_project_config_path(workspace_root) {
+        Some(p) => p,
+        None => return Ok(None),
+    };
     let metadata = match std::fs::metadata(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
@@ -1509,6 +1544,68 @@ mod tests {
     fn load_project_config_returns_none_when_missing() -> TestResult {
         let temp = tempfile::tempdir()?;
         let config = load_project_config(temp.path())?;
+        assert!(config.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn load_project_config_finds_toml_in_parent_directory() -> TestResult {
+        // Simulates a monorepo where the workspace folder is a subdirectory
+        // but .perl-lsp.toml lives at the parent (monorepo root).
+        let root = tempfile::tempdir()?;
+        std::fs::write(
+            root.path().join(".perl-lsp.toml"),
+            r#"
+[diagnostics]
+perlcritic = true
+"#,
+        )?;
+        let subdir = root.path().join("services").join("web");
+        std::fs::create_dir_all(&subdir)?;
+
+        let config = load_project_config(&subdir)?;
+        let parsed = config.ok_or("expected config from parent .perl-lsp.toml")?;
+        assert_eq!(parsed.diagnostics.perlcritic, Some(true));
+        Ok(())
+    }
+
+    #[test]
+    fn load_project_config_prefers_nearest_toml_in_parent_walk() -> TestResult {
+        // When .perl-lsp.toml exists in both a parent and a nearer directory,
+        // the nearer one wins (first match in the upward walk).
+        let root = tempfile::tempdir()?;
+        std::fs::write(
+            root.path().join(".perl-lsp.toml"),
+            r#"
+[diagnostics]
+perlcritic_severity = 5
+"#,
+        )?;
+        let mid = root.path().join("services");
+        std::fs::create_dir_all(&mid)?;
+        std::fs::write(
+            mid.join(".perl-lsp.toml"),
+            r#"
+[diagnostics]
+perlcritic_severity = 2
+"#,
+        )?;
+        let leaf = mid.join("web");
+        std::fs::create_dir_all(&leaf)?;
+
+        let config = load_project_config(&leaf)?;
+        let parsed = config.ok_or("expected config from nearest .perl-lsp.toml")?;
+        assert_eq!(parsed.diagnostics.perlcritic_severity, Some(2));
+        Ok(())
+    }
+
+    #[test]
+    fn load_project_config_returns_none_when_no_ancestor_has_toml() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let subdir = root.path().join("a").join("b").join("c");
+        std::fs::create_dir_all(&subdir)?;
+
+        let config = load_project_config(&subdir)?;
         assert!(config.is_none());
         Ok(())
     }
