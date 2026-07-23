@@ -1136,27 +1136,40 @@ impl BodyLowerer {
                 // Branch node by an explicit `Branch` edge, never by fallthrough.
                 // A ternary arm is a single expression (not a block), so lower it
                 // via the expr-arm helper rather than `lower_branch_arm`.
-                self.lower_branch_expr_arm(body, *then_expr, branch_id, file);
-                self.lower_branch_expr_arm(body, *else_expr, branch_id, file);
+                let then_falls_through =
+                    self.lower_branch_expr_arm(body, *then_expr, branch_id, file);
+                let else_falls_through =
+                    self.lower_branch_expr_arm(body, *else_expr, branch_id, file);
 
-                // Reachable consumer. A ternary is a value-producing rvalue: its
-                // consumer — the assignment, call argument, `return` operand, etc.
-                // that the caller pushes *next* — is reached on every real path
-                // once an arm has run. Point `last_in_scope[None]` at the Branch
-                // node so that consumer inherits a `Fallthrough` edge from it and
-                // stays reachable. Severing here (as the statement `if`/`unless`
-                // path does, because a statement's successor is a *separate*
-                // statement) would instead orphan the consumer: `return $c ? $a :
-                // $b;` would leave the `Return` node with no incoming edge,
+                // Reachable consumer — but only if control can actually reach it.
+                // A ternary is a value-producing rvalue: its consumer (the
+                // assignment, call argument, `return` operand, etc. the caller
+                // pushes *next*) is reached once a *non-terminal* arm has run.
+                //
+                // If at least one arm falls through, point `last_in_scope[None]`
+                // at the Branch node so the consumer inherits a `Fallthrough` edge
+                // and stays reachable. Severing unconditionally (as the statement
+                // `if`/`unless` path does, since a statement's successor is a
+                // *separate* statement) would orphan the consumer — `return $c ?
+                // $a : $b;` would leave the `Return` node with no incoming edge,
                 // contradicting the operand-reachability guarantee the simple
-                // paths uphold (`pir_a_return_value_read_is_reachable`) and
-                // under-approximating control flow in the direction that makes a
-                // reachability/dead-code analysis wrongly flag the consumer as
-                // dead. Anchoring the fallthrough at the Branch node conservatively
+                // paths uphold (`pir_a_return_value_read_is_reachable`).
+                //
+                // But if *both* arms are terminal (`$c ? return 1 : return 2`),
+                // control never reaches the consumer; the arms already severed
+                // their live tails, so leave `last_in_scope[None]` empty and the
+                // consumer (e.g. a following `my $dead = ...`) correctly stays
+                // unreachable rather than spuriously fallthrough-linked.
+                //
+                // Anchoring the fallthrough at the Branch node conservatively
                 // over-approximates (the edge does not pass through an arm node);
                 // precise per-arm value-merge edges are the deferred value-join
                 // follow-up (#4859 non-goals).
-                self.last_in_scope.insert(None, branch_id);
+                if then_falls_through || else_falls_through {
+                    self.last_in_scope.insert(None, branch_id);
+                } else {
+                    self.last_in_scope.remove(&None);
+                }
             }
 
             HirExpr::Return { value } => {
@@ -1378,7 +1391,8 @@ impl BodyLowerer {
         }
     }
 
-    /// Lower one ternary arm expression and connect it to its `Branch` node.
+    /// Lower one ternary arm expression, connect it to its `Branch` node, and
+    /// report whether the arm can fall through to the ternary's consumer.
     ///
     /// Mirrors [`lower_branch_arm`](Self::lower_branch_arm) but for a single
     /// expression arm: a ternary `COND ? THEN : ELSE` arm is an `HirExprId`, not
@@ -1388,23 +1402,38 @@ impl BodyLowerer {
     /// previous arm's last node) so the arm's first node is not linked by a
     /// spurious `Fallthrough`. An arm that emits no node (e.g. a constant `1`)
     /// contributes no edge.
+    ///
+    /// Returns `true` when control can leave the arm and reach whatever consumes
+    /// the ternary, and `false` when the arm is terminal (e.g. `return`). The
+    /// only non-falling-through shape is an arm that emitted node(s) and then
+    /// severed its own `last_in_scope[None]` (a terminal control transfer such as
+    /// `$c ? return 1 : ...`); an empty arm (constant, no node) and a live-tailed
+    /// arm both fall through. The caller uses this to reconnect the ternary's
+    /// consumer only when at least one arm can actually reach it, so
+    /// `$c ? return 1 : return 2; my $dead = ...;` correctly leaves `$dead`
+    /// unreachable instead of spuriously fallthrough-linked.
     fn lower_branch_expr_arm(
         &mut self,
         body: &HirBody,
         expr: HirExprId,
         branch_id: PirId,
         file: &HirFile,
-    ) {
+    ) -> bool {
         self.last_in_scope.remove(&None);
         let arm_first = self.next_id;
         self.lower_expr(body, expr, file);
-        if self.next_id > arm_first {
+        let emitted = self.next_id > arm_first;
+        if emitted {
             self.edges.push(PirEdge {
                 from: branch_id,
                 to: Some(PirId::from_index(arm_first)),
                 kind: PirEdgeKind::Branch,
             });
         }
+        // Falls through unless it emitted node(s) and then severed its live tail
+        // (a terminal transfer). An empty arm emits nothing but still falls
+        // through with its constant value.
+        !emitted || self.last_in_scope.contains_key(&None)
     }
 
     fn finish(self) -> PirGraph {

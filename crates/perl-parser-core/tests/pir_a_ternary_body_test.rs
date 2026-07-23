@@ -287,3 +287,44 @@ fn pir_a_ternary_as_enclosing_condition_pins_two_branches() -> TestResult {
     );
     Ok(())
 }
+
+/// When BOTH ternary arms are terminal (`$c ? return 1 : return 2`), control
+/// never reaches the ternary's consumer. The Branch node must NOT gain a
+/// `Fallthrough` successor, so a following statement (`my $dead = 3;`) stays
+/// unreachable rather than spuriously fallthrough-linked. Regression guard for
+/// over-reconnecting the consumer (the flip side of the orphaned-consumer bug).
+#[test]
+fn pir_a_ternary_both_arms_terminal_leave_consumer_unreachable() -> TestResult {
+    let graph = parse_and_lower("sub f { $c ? return 1 : return 2; my $dead = 3; }");
+    let branch = single_branch(&graph)?;
+    // Both arms `return`, so the Branch node has no fallthrough successor.
+    let branch_fallthrough_successor =
+        graph.edges.iter().any(|e| e.from == branch.id && e.kind == PirEdgeKind::Fallthrough);
+    assert!(
+        !branch_fallthrough_successor,
+        "both arms terminal: the Branch must not reconnect a Fallthrough consumer, edges: {:?}",
+        graph.edges
+    );
+    // Both arms still emit their own terminal Return exit edges.
+    let return_exits =
+        graph.edges.iter().filter(|e| e.kind == PirEdgeKind::Return && e.to.is_none()).count();
+    assert_eq!(return_exits, 2, "each terminal arm keeps its own Return exit edge");
+    Ok(())
+}
+
+/// When only ONE arm is terminal (`$c ? return 1 : $b`), the other arm falls
+/// through, so the consumer stays reachable: the Branch node keeps a
+/// `Fallthrough` successor.
+#[test]
+fn pir_a_ternary_one_arm_terminal_keeps_consumer_reachable() -> TestResult {
+    let graph = parse_and_lower("sub f { $c ? return 1 : $b; my $y = 3; }");
+    let branch = single_branch(&graph)?;
+    let has_fallthrough_successor =
+        graph.edges.iter().any(|e| e.from == branch.id && e.kind == PirEdgeKind::Fallthrough);
+    assert!(
+        has_fallthrough_successor,
+        "one non-terminal arm falls through, so the consumer must stay reachable, edges: {:?}",
+        graph.edges
+    );
+    Ok(())
+}
