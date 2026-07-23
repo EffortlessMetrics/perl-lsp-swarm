@@ -23,18 +23,18 @@ fn find_node_by_kind<'a>(node: &'a Node, target: &str) -> Option<&'a Node> {
     None
 }
 
-fn return_node(source: &str) -> Node {
+fn return_node(source: &str) -> Result<Node, Box<dyn std::error::Error>> {
     let ast = parse(source);
-    find_node_by_kind(&ast, "Return")
-        .cloned()
-        .unwrap_or_else(|| panic!("no Return node found in AST for source: {source}"))
+    let node = find_node_by_kind(&ast, "Return")
+        .ok_or_else(|| format!("no Return node found in AST for source: {source}"))?;
+    Ok(node.clone())
 }
 
 /// The core bug: a valueless `return;` must not produce an inverted span.
 #[test]
 fn test_valueless_return_span_is_wellformed() -> Result<(), Box<dyn std::error::Error>> {
     let source = "sub f { return; }";
-    let ret = return_node(source);
+    let ret = return_node(source)?;
 
     assert!(
         ret.location.end >= ret.location.start,
@@ -62,7 +62,7 @@ fn test_valueless_return_span_is_wellformed() -> Result<(), Box<dyn std::error::
 #[test]
 fn test_value_return_span_unchanged() -> Result<(), Box<dyn std::error::Error>> {
     let source = "sub f { return $x; }";
-    let ret = return_node(source);
+    let ret = return_node(source)?;
 
     let sliced = source.get(ret.location.start..ret.location.end).ok_or_else(|| {
         format!("span {}..{} out of bounds", ret.location.start, ret.location.end)
@@ -78,7 +78,7 @@ fn test_value_return_span_unchanged() -> Result<(), Box<dyn std::error::Error>> 
 #[test]
 fn test_toplevel_valueless_return_span() -> Result<(), Box<dyn std::error::Error>> {
     let source = "return;";
-    let ret = return_node(source);
+    let ret = return_node(source)?;
 
     assert!(
         ret.location.end >= ret.location.start,
@@ -96,7 +96,7 @@ fn test_toplevel_valueless_return_span() -> Result<(), Box<dyn std::error::Error
 #[test]
 fn test_expression_context_valueless_return_span() -> Result<(), Box<dyn std::error::Error>> {
     let source = "sub f { $ok ? return : 0; }";
-    let ret = return_node(source);
+    let ret = return_node(source)?;
 
     assert!(
         ret.location.end >= ret.location.start,
