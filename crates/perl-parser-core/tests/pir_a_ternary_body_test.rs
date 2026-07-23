@@ -184,3 +184,77 @@ fn pir_a_ternary_operation_counts_match_node_count() -> TestResult {
     assert_eq!(op_total, graph.nodes.len(), "operation_counts must sum to the node count");
     Ok(())
 }
+
+/// A ternary in `return`-operand position keeps the `Return` node reachable:
+/// the consumer pushed *after* the ternary inherits a `Fallthrough` edge from
+/// the ternary's Branch node. Regression guard for the orphaned-consumer bug —
+/// a bare `return $x;` is guaranteed operand→Return reachability
+/// (`pir_a_return_body_test::pir_a_return_value_read_is_reachable`), and a
+/// ternary operand must not silently break that by leaving `Return` with no
+/// incoming edge.
+#[test]
+fn pir_a_ternary_as_return_operand_keeps_return_reachable() -> TestResult {
+    let graph = parse_and_lower("sub f { return $c ? $a : $b; }");
+    let branch = single_branch(&graph)?;
+    let return_node = graph
+        .nodes
+        .iter()
+        .find(|n| matches!(&n.operation, PirOperation::Return))
+        .ok_or("a `return <ternary>` must emit a Return node")?;
+    // The Return node must be reachable — at least one incoming edge — and
+    // specifically inherit a Fallthrough from the ternary's Branch node.
+    let reached_from_branch = graph.edges.iter().any(|e| {
+        e.from == branch.id && e.to == Some(return_node.id) && e.kind == PirEdgeKind::Fallthrough
+    });
+    assert!(
+        reached_from_branch,
+        "the Return node must inherit a Fallthrough edge from the ternary's Branch node \
+         (consumer of an rvalue ternary must stay reachable), edges: {:?}",
+        graph.edges
+    );
+    Ok(())
+}
+
+/// A ternary as the RHS of a bare (non-`my`) assignment likewise keeps its
+/// consumer reachable: the node the assignment pushes after the ternary
+/// inherits a Fallthrough from the Branch node, so nothing is orphaned.
+#[test]
+fn pir_a_ternary_as_bare_assign_rhs_keeps_consumer_reachable() -> TestResult {
+    let graph = parse_and_lower("$x = $c ? $a : $b;");
+    let branch = single_branch(&graph)?;
+    // The Branch node must have an outgoing Fallthrough successor (its consumer),
+    // distinct from the per-arm Branch edges.
+    let has_fallthrough_successor =
+        graph.edges.iter().any(|e| e.from == branch.id && e.kind == PirEdgeKind::Fallthrough);
+    assert!(
+        has_fallthrough_successor,
+        "the ternary Branch node must have a Fallthrough successor (its rvalue consumer), \
+         edges: {:?}",
+        graph.edges
+    );
+    Ok(())
+}
+
+/// A ternary as the condition of an enclosing `if` emits two Branch nodes (the
+/// outer `if` and the inner ternary) and stays coherent. This pins the known
+/// v0 imprecision documented in the lowerer: the outer condition link resolves
+/// to the inner ternary Branch node (a control node) rather than a value node —
+/// the "last lowered node" heuristic extended to a ternary condition. Precise
+/// enclosing-condition linking is a separate follow-up.
+#[test]
+fn pir_a_ternary_as_enclosing_condition_pins_two_branches() -> TestResult {
+    let graph = parse_and_lower("sub f { if ($p ? 1 : 2) { my $y = 1; } }");
+    let branches = branch_nodes(&graph);
+    assert_eq!(
+        branches.len(),
+        2,
+        "an `if (<ternary>)` emits an outer if-Branch and an inner ternary-Branch, got {}",
+        branches.len()
+    );
+    // The condition read `$p` stays reachable.
+    assert!(
+        graph.nodes.iter().any(|n| is_read_of(n, "p")),
+        "the ternary condition `$p` must lower to a reachable read"
+    );
+    Ok(())
+}

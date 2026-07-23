@@ -1106,6 +1106,15 @@ impl BodyLowerer {
                 // node (`$c ? ...`). A constant/opaque condition emits no node,
                 // so the link stays None (fail-closed). `next_id == nodes.len()`
                 // holds because `push_body_node` is the only node-emitting path.
+                //
+                // Known v0 imprecision (tracked follow-up): when a ternary is
+                // *itself* the condition of an enclosing `if`/`while`/`unless`
+                // (`if ($p ? 1 : 2) { ... }`), that enclosing construct's own
+                // `next_id - 1` condition link resolves to this Branch node rather
+                // than a value node — the same "last lowered node" heuristic the
+                // compound-condition (`$a && $b`) case already accepts, extended to
+                // a control node. Making the enclosing link skip control nodes is a
+                // separate condition-link-precision slice, not this one.
                 let id_before_condition = self.next_id;
                 self.lower_expr(body, *condition, file);
                 let condition = (self.next_id > id_before_condition)
@@ -1130,10 +1139,24 @@ impl BodyLowerer {
                 self.lower_branch_expr_arm(body, *then_expr, branch_id, file);
                 self.lower_branch_expr_arm(body, *else_expr, branch_id, file);
 
-                // The ternary has no unconditional successor: a later sibling in
-                // the shared body scope must not inherit a fallthrough predecessor
-                // from either arm (conservative, matches the statement branch).
-                self.last_in_scope.remove(&None);
+                // Reachable consumer. A ternary is a value-producing rvalue: its
+                // consumer — the assignment, call argument, `return` operand, etc.
+                // that the caller pushes *next* — is reached on every real path
+                // once an arm has run. Point `last_in_scope[None]` at the Branch
+                // node so that consumer inherits a `Fallthrough` edge from it and
+                // stays reachable. Severing here (as the statement `if`/`unless`
+                // path does, because a statement's successor is a *separate*
+                // statement) would instead orphan the consumer: `return $c ? $a :
+                // $b;` would leave the `Return` node with no incoming edge,
+                // contradicting the operand-reachability guarantee the simple
+                // paths uphold (`pir_a_return_value_read_is_reachable`) and
+                // under-approximating control flow in the direction that makes a
+                // reachability/dead-code analysis wrongly flag the consumer as
+                // dead. Anchoring the fallthrough at the Branch node conservatively
+                // over-approximates (the edge does not pass through an arm node);
+                // precise per-arm value-merge edges are the deferred value-join
+                // follow-up (#4859 non-goals).
+                self.last_in_scope.insert(None, branch_id);
             }
 
             HirExpr::Return { value } => {
