@@ -7,8 +7,8 @@
 
 | --- | --- | --- | --- |
 | <!-- BEGIN: PARSER_TRACKING_TABLE -->
-| **Ubuntu system Perl** | 99.3% clean (`7047/7095`) / insufficient_data salvage | Compatibility baseline; Perl `5.038002`, `48` unreadable, `0` recovery-only, `0` ERROR-node files, `0` catastrophic, baseline `2026-05-18` | `.ci/parser-corpus-baseline.json` |
-| **CPAN top 1000** | 95.3% clean (`8931/9372`) / insufficient_data salvage | Ecosystem breadth baseline; `6` unreadable, `insufficient_data` recovery-only, `insufficient_data` ERROR-node files, `insufficient_data` catastrophic, cached downloads in `target/cpan-corpus/.cpanm`, baseline `2026-04-09` | `.ci/cpan-corpus-baseline.json` |
+| **Ubuntu system Perl** | 99.3% clean (`7047/7095`) | Compatibility baseline; Perl `5.038002`, `48` unreadable, `0` recovery-only, `0` ERROR-node files, `0` catastrophic, baseline `2026-05-18` | `.ci/parser-corpus-baseline.json` |
+| **CPAN top 1000** | 95.3% clean (`8931/9372`) | Ecosystem breadth baseline; `6` unreadable, `90` recovery-only, `350` ERROR-node files, `0` catastrophic, cached downloads in `target/cpan-corpus/.cpanm`, baseline `2026-04-09` | `.ci/cpan-corpus-baseline.json` |
 | **Project corpus** | 100.0% clean (`96/96`) | Deterministic regression baseline; `74` `test_corpus/` + `22` `perl-corpus` files, `0` errors, `0` timeouts, `0` panics, `66/69` NodeKinds, `12/12` GA features | `test_corpus/` + `crates/perl-corpus/src/gen` |
 <!-- END: PARSER_TRACKING_TABLE -->
 
@@ -22,8 +22,14 @@
 <!-- BEGIN: PARSER_RELIABILITY_ROW -->
 | **Reliability** | Ubuntu: 48 unread / CPAN: 6 unread / Project: 0 timeout, 0 panic, 0 unread | -- | `.ci/*-baseline.json` |
 <!-- END: PARSER_RELIABILITY_ROW -->
+<!-- BEGIN: PARSER_ERROR_DENSITY_ROW -->
+| **Error density** | Ubuntu: insufficient_data / CPAN: 1.95 per 1k LOC | median ERROR-node count per 1,000 LOC across dirty files only; clean files excluded | `.ci/*-corpus-baseline.json` |
+<!-- END: PARSER_ERROR_DENSITY_ROW -->
+<!-- BEGIN: PARSER_RECOVERY_SALVAGE_ROW -->
+| **Recovery salvage** | Ubuntu: insufficient_data / CPAN: 20.5% | `files_with_structured_recovery_only / total_dirty_files` from sweep receipts; proxy metric — does not measure symbol preservation (#1360) | `.ci/*-corpus-baseline.json` |
+<!-- END: PARSER_RECOVERY_SALVAGE_ROW -->
 <!-- BEGIN: PARSER_STRICT_CLEAN_ROW -->
-| **Strict-clean subset** | insufficient_data | 10 pinned modules; run `just common-corpus-check` to generate receipt | `.ci/common-corpus-manifest.txt` |
+| **Strict-clean subset** | 10/10 (100%) | 10 pinned modules, zero-error gate | `.ci/common-corpus-baseline.json` |
 <!-- END: PARSER_STRICT_CLEAN_ROW -->
 
 ## Parser Accuracy Observability

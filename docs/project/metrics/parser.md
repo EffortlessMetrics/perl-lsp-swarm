@@ -50,7 +50,7 @@ Floor metrics are what the ratchet (see [`README.md` §4](README.md#4-the-ratche
 | --- | --- | --- | --- | --- |
 | `system_clean_rate` | ratio (0..1) | higher-is-better | `.ci/parser-corpus-baseline.json` | Clean-parse rate on the Ubuntu system Perl corpus (~7 000 files). The "compatibility" floor — defends against shipping a parser that can't parse the system Perl install. |
 | `cpan_clean_rate` | ratio (0..1) | higher-is-better | `.ci/cpan-corpus-baseline.json` | Clean-parse rate on the CPAN top-1000 corpus (~9 000 files). The "ecosystem breadth" floor — defends against shipping a parser that drops popular CPAN modules. |
-| `strict_clean_subset_pass_rate` | ratio (0..1) | higher-is-better | `target/receipts/common-corpus-sweep.json` | Clean-parse rate on the 10 pinned modules in `.ci/common-corpus-manifest.txt`. The "promise list" floor — smaller, strict, zero-error. |
+| `strict_clean_subset_pass_rate` | ratio (0..1) | higher-is-better | `.ci/common-corpus-baseline.json` | Clean-parse rate on the 10 pinned modules in `.ci/common-corpus-manifest.txt`. The "promise list" floor — smaller, strict, zero-error. |
 | `system_crash_count` | count | lower-is-better | `.ci/parser-corpus-baseline.json` | Panic / crash count on the Ubuntu corpus. Must stay at zero. |
 | `system_files_unreadable` | count | lower-is-better | `.ci/parser-corpus-baseline.json` | Files that could not be opened on the Ubuntu corpus. Moves only when the corpus changes. |
 | `system_total_error_nodes` | count | lower-is-better | `.ci/parser-corpus-baseline.json` | Total error-node count across the Ubuntu corpus. A coarse "how many mistakes did we make?" counter. |
@@ -65,8 +65,8 @@ Improvement metrics are displayed on the status page and encouraged upward, but 
 | Improvement metric | Source | Next step |
 | --- | --- | --- |
 | `node_kind_coverage` | `corpus_audit` project-corpus summary | Candidate for floor once the denominator (`NodeKind` total) has been stable across two releases. |
-| `error_density_per_1k_loc` | not yet instrumented | [#4063 PR 2 plan](https://github.com/perl-lsp/perl-lsp/issues/4063#issuecomment-4229331588): count lines in `parser_corpus_sweep` and divide by `total_error_nodes`, median over dirty files. |
-| `recovery_salvage_rate` | `.ci/parser-corpus-baseline.json` when the sweep has dirty files | Improvement-only. The current value is a coarse structured-recovery share over dirty corpus files, not a floor. A ratchetable salvage floor requires a stable malformed-fixture denominator under `crates/perl-corpus/fixtures/malformed/` or equivalent. |
+| `error_density_per_1k_loc` | `parser_corpus_sweep` schema 1.3.0 (`median_error_density_per_1k_loc` in sweep receipts) | Surfaced on the parser status page as a first-class row; median over dirty files only. |
+| `recovery_salvage_rate` | `.ci/parser-corpus-baseline.json` when the sweep has dirty files | First-class status row with explicit dirty-file denominator; improvement-only coarse structured-recovery share, not a symbol-preservation floor (#1360). |
 
 ### 2.3 Cost metrics: cold / warm / incremental regimes
 

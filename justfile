@@ -2845,6 +2845,11 @@ common-corpus-check:
     cargo run -p xtask -- parser-corpus-sweep \
         --manifest .ci/common-corpus-manifest.txt --enforce --receipt
 
+# Bootstrap/update the committed common-corpus baseline
+common-corpus-baseline-update:
+    cargo run -p xtask -- parser-corpus-sweep \
+        --manifest .ci/common-corpus-manifest.txt --output .ci/common-corpus-baseline.json
+
 # Update corpus baseline with current results
 corpus-sweep-update:
     cargo run -p xtask -- parser-corpus-sweep \

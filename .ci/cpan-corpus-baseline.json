@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.2.0",
+  "schema_version": "1.3.0",
   "commit": "fb9484be",
   "timestamp": "2026-04-09T21:41:13.506791875+00:00",
   "corpus_profile": "cpan",
@@ -12,7 +12,13 @@
   "files_unreadable": 6,
   "clean_files": 8931,
   "files_with_errors": 435,
+  "total_dirty_files": 440,
+  "files_with_structured_recovery_only": 90,
+  "files_with_error_nodes": 350,
+  "files_with_catastrophic_parse_failure": 0,
   "total_error_nodes": 3015,
+  "recovered_node_count": 0,
+  "first_unrecovered_error_node_buckets": {},
   "first_error_buckets": {
     "CHECK must be followed by a block": 2,
     "Incomplete arrow expression": 4,
@@ -533,5 +539,8 @@
       "target/cpan-corpus/lib/perl5/Log/Message.pm"
     ]
   },
+  "median_error_density_per_1k_loc": 1.95,
+  "recovery_salvage_rate": 0.20454545454545453,
+  "slowest_files": [],
   "elapsed_secs": 6.100542583
 }
