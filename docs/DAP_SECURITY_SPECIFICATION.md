@@ -456,6 +456,44 @@ impl Default for DapConfig {
 }
 ```
 
+### 3.3 Debuggee Wall-Clock Timeout (#4640)
+
+The `perl -d` debuggee process is a long-running subprocess that, unlike the
+short-lived probes (version check, syntax check), has no built-in timeout. A
+debuggee that hits an infinite loop, blocks on `<STDIN>`, deadlocks, or waits
+on a network call stays alive forever, holding the adapter session open
+indefinitely.
+
+**Configuration**: The `debuggeeTimeoutSeconds` field in the launch
+configuration controls the wall-clock timeout:
+
+```json
+// launch.json
+{
+  "type": "perl",
+  "request": "launch",
+  "program": "${workspaceFolder}/script.pl",
+  "debuggeeTimeoutSeconds": 60
+}
+```
+
+- **Default**: `0` (disabled). This preserves compatibility with legitimate
+  long-running debug sessions (e.g. a server process paused at a breakpoint
+  for minutes). Users who want timeout enforcement set a positive value.
+- **When the timeout fires**: The adapter sends a `terminated` event with
+  `reason: "debuggee_timeout"` to the client, then kills the debuggee process.
+  The `TerminationState.emitted` flag ensures only one `terminated` event
+  reaches the client even if the output reader concurrently observes EOF.
+- **Generation-aware**: The watchdog checks the session generation before
+  acting, so a replaced session (restart / relaunch) is not killed by a
+  stale watchdog from the prior session.
+
+**Implementation**: `DebugAdapter::start_debuggee_watchdog` spawns a watchdog
+thread that sleeps for the configured duration, then checks whether the
+debuggee process is still alive. If alive, it emits the `terminated` event and
+calls `terminate_child_process` to kill the debuggee. The output reader
+thread's subsequent EOF handling performs session-state cleanup.
+
 ---
 
 ## 4. Unicode Boundary Safety
