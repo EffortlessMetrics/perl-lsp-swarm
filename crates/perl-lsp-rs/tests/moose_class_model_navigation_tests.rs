@@ -549,29 +549,29 @@ mod moose_class_model_navigation_tests {
         Ok(())
     }
 
-    /// Hovering on a call site `$self->save` must not crash or return an error
-    /// response, even when `save` is decorated with multiple method modifiers.
+    /// Hovering on a call site `$self->save` where `save` is decorated with method
+    /// modifiers must surface the modifier decoration in the hover text.
     ///
-    /// NOTE: The current implementation does not surface modifier information at
-    /// call sites — that is a separate enhancement. This test guards robustness only.
+    /// Issue #1728: distinguishes decorated methods from plain methods at call sites.
     #[test]
-    fn test_moo_modifier_decorated_method_call_site_hover_does_not_crash() -> TestResult {
+    fn test_method_modifier_hover_indicates_decorator() -> TestResult {
         let code = include_str!("fixtures/frameworks/moo_method_modifiers.pl");
         let uri = "file:///moo_modifier_hover_callsite.pl";
 
         // Line 25 (0-indexed): `    $self->save;  # call site`
-        let server = TestServerBuilder::new().build();
-        server.open_document(uri, code);
-        let (line, character) = semantic::find_pos(code, "save", 25);
-        let resp = server.get_hover(uri, line, character);
+        let resp = hover_at(code, uri, "save", 25)?;
+        let content = semantic::hover_content(&resp)
+            .ok_or("Expected hover content for decorated method call site 'save'")?;
 
+        for modifier in ["before", "after", "around"] {
+            assert!(
+                content.contains(modifier),
+                "Hover on decorated method call should mention '{modifier}' modifier, got: {content}"
+            );
+        }
         assert!(
-            resp.get("error").is_none(),
-            "Hover on $self->save call site should not return an error, got: {resp:#}"
-        );
-        assert!(
-            resp.get("result").is_some(),
-            "Hover on $self->save call site should return an LSP result field, got: {resp:#}"
+            content.contains("Decorated with"),
+            "Hover should list modifier decoration, got: {content}"
         );
         Ok(())
     }
