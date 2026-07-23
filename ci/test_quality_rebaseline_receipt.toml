@@ -1,0 +1,42 @@
+# Machine-readable receipt for issue #3021 test-code lint re-baseline.
+# Generated against the workspace at the recorded SHA; counts exclude archives.
+
+schema = 1
+issue = 3021
+sha = "HEAD"
+generated_at = "2026-07-23"
+
+[gate]
+command = "cargo clippy --workspace --all-targets -- -D warnings -A missing_docs"
+note = "All-target Clippy is the binding test-code seam per scripts/gate-local.sh and xtask CI runner."
+
+[policy]
+allow_unwrap_in_tests = true
+allow_unwrap_in_tests_owner = "lint-policy"
+allow_unwrap_in_tests_ledger = "policy/clippy-debt.toml"
+allow_unwrap_in_tests_expires = "2026-07-01"
+
+[baselines]
+panic_test = { file = "ci/panic_test_baseline.txt", consumer = "cargo xtask ci-hygiene check-panic-test" }
+todo_test = { file = "ci/todo_test_baseline.txt", value = 0 }
+
+[counts.test_code]
+panic_macro = 213
+println_macro_files = 61
+eprintln_macro_files = 179
+
+[counts.spinoffs_reconciled]
+"#3016" = { title = "println/eprintln triage", status = "open", note = "April ~2000 headline stale; current file-level hits are lower after consolidation." }
+"#3018" = { title = "hardcoded absolute paths", status = "open", note = "Many absorbed crate paths invalid; triage remains judgment-heavy." }
+"#3019" = { title = "no-assertion tests", status = "open", note = "April ~620 count stale; scout sampling still required." }
+"#3020" = { title = "match-arm panic cleanup", status = "open", note = "Narrow burn-down landed for parser-core/dap; full crate sweep deferred." }
+
+[coordination.invalid_shorthand]
+"#3258" = "unrelated July DAP doc PR in this repo"
+"#3259" = "unrelated work in this repo"
+"#3260" = "unrelated work in this repo"
+"#3263" = "unrelated work in this repo"
+
+[coordination.completed_cross_repo]
+"EffortlessMetrics/perl-lsp#3261" = "closed"
+"EffortlessMetrics/perl-lsp#3262" = "closed"
