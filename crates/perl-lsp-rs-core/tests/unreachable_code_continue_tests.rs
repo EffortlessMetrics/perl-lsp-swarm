@@ -12,6 +12,7 @@
 
 use perl_lsp_rs_core::providers::diagnostics::Diagnostic;
 use perl_lsp_rs_core::providers::diagnostics::unreachable_code::check_unreachable_code;
+use perl_parser::Parser;
 use perl_parser_core::{Node, NodeKind, SourceLocation};
 
 // ---------------------------------------------------------------------------
@@ -600,6 +601,96 @@ fn t_continue_12_die_in_foreach_continue_block() -> Result<(), Box<dyn std::erro
         count_pl406(&diagnostics),
         1,
         "T-continue-12: Expected exactly 1 PL406 diagnostic, got: {:?}",
+        diagnostics
+    );
+    Ok(())
+}
+
+// --------------------------------------------------------------------------
+// T-goto: every goto form transfers control without returning to the next
+// statement, so the following sibling is unreachable.
+// --------------------------------------------------------------------------
+
+#[test]
+fn t_goto_label_then_statement_is_unreachable() -> Result<(), Box<dyn std::error::Error>> {
+    let ast = Parser::new("goto DONE; print 'dead';").parse()?;
+
+    let mut diagnostics = vec![];
+    check_unreachable_code(&ast, &mut diagnostics);
+
+    assert_eq!(
+        count_pl406(&diagnostics),
+        1,
+        "T-goto-label: expected one PL406 after goto LABEL, got: {:?}",
+        diagnostics
+    );
+    Ok(())
+}
+
+#[test]
+fn t_goto_forward_label_preserves_target_reachability() -> Result<(), Box<dyn std::error::Error>> {
+    let ast = Parser::new("goto DONE; print 'dead'; DONE: print 'alive';").parse()?;
+
+    let mut diagnostics = vec![];
+    check_unreachable_code(&ast, &mut diagnostics);
+
+    assert_eq!(
+        count_pl406(&diagnostics),
+        1,
+        "T-goto-forward-label: expected only the statement before DONE to be PL406, got: {:?}",
+        diagnostics
+    );
+    Ok(())
+}
+
+#[test]
+fn t_goto_sub_then_statement_is_unreachable() -> Result<(), Box<dyn std::error::Error>> {
+    let ast = Parser::new("goto &handler; print 'dead';").parse()?;
+
+    let mut diagnostics = vec![];
+    check_unreachable_code(&ast, &mut diagnostics);
+
+    assert_eq!(
+        count_pl406(&diagnostics),
+        1,
+        "T-goto-sub: expected one PL406 after goto &sub, got: {:?}",
+        diagnostics
+    );
+    Ok(())
+}
+
+#[test]
+fn t_goto_sub_in_continue_block_then_statement_is_unreachable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ast = Parser::new("while (1) { } continue { goto &handler; print 'dead'; }").parse()?;
+
+    let mut diagnostics = vec![];
+    check_unreachable_code(&ast, &mut diagnostics);
+
+    assert_eq!(
+        count_pl406(&diagnostics),
+        1,
+        "T-goto-continue: expected one PL406 after goto &handler, got: {:?}",
+        diagnostics
+    );
+    Ok(())
+}
+
+#[test]
+fn t_goto_forward_label_in_continue_block_preserves_target_reachability()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ast = Parser::new(
+        "while (1) { } continue { goto DONE; print 'dead'; DONE: print 'alive'; }",
+    )
+    .parse()?;
+
+    let mut diagnostics = vec![];
+    check_unreachable_code(&ast, &mut diagnostics);
+
+    assert_eq!(
+        count_pl406(&diagnostics),
+        1,
+        "T-goto-continue-forward-label: expected only the statement before DONE to be PL406, got: {:?}",
         diagnostics
     );
     Ok(())
