@@ -222,16 +222,45 @@ fn pir_a_ternary_as_return_operand_keeps_return_reachable() -> TestResult {
 fn pir_a_ternary_as_bare_assign_rhs_keeps_consumer_reachable() -> TestResult {
     let graph = parse_and_lower("$x = $c ? $a : $b;");
     let branch = single_branch(&graph)?;
-    // The Branch node must have an outgoing Fallthrough successor (its consumer),
-    // distinct from the per-arm Branch edges.
-    let has_fallthrough_successor =
-        graph.edges.iter().any(|e| e.from == branch.id && e.kind == PirEdgeKind::Fallthrough);
+    // The Branch node must have an outgoing Fallthrough successor (its consumer).
+    let successor = graph
+        .edges
+        .iter()
+        .find(|e| e.from == branch.id && e.kind == PirEdgeKind::Fallthrough)
+        .and_then(|e| e.to)
+        .ok_or("the ternary Branch node must have a Fallthrough successor (its rvalue consumer)")?;
+    // Stronger oracle: the successor is the assignment consumer, NOT one of the
+    // arm reads (which are reached by `Branch` edges, not fallthrough). A
+    // regression that pointed the fallthrough back at an arm would slip past a
+    // mere "has a successor" check.
+    let succ_node = graph.node(successor).ok_or("successor must resolve to a real node")?;
     assert!(
-        has_fallthrough_successor,
-        "the ternary Branch node must have a Fallthrough successor (its rvalue consumer), \
-         edges: {:?}",
-        graph.edges
+        !is_read_of(succ_node, "a") && !is_read_of(succ_node, "b"),
+        "the Branch fallthrough successor must be the assignment consumer, not an arm read, \
+         got {:?}",
+        succ_node.operation
     );
+    Ok(())
+}
+
+/// A constant/opaque condition (`1 ? $a : $b`) emits no condition node, so the
+/// ternary Branch's condition link stays `None` (fail-closed) — the Branch node
+/// is still emitted with its arm edges.
+#[test]
+fn pir_a_ternary_constant_condition_link_is_none() -> TestResult {
+    let graph = parse_and_lower("my $x = 1 ? $a : $b;");
+    let node = single_branch(&graph)?;
+    assert!(
+        branch_condition(node)?.is_none(),
+        "a constant condition emits no node, so the condition link must be None (fail-closed)"
+    );
+    // The arms still lower and are reached by Branch edges.
+    for ident in ["a", "b"] {
+        assert!(
+            graph.nodes.iter().any(|n| is_read_of(n, ident)),
+            "arm operand `${ident}` must still lower to a reachable read"
+        );
+    }
     Ok(())
 }
 
