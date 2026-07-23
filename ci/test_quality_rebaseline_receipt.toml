@@ -3,7 +3,7 @@
 
 schema = 1
 issue = 3021
-sha = "HEAD"
+sha = "bdba66e1feed16dd736b74c4288689e584fd35d2"
 generated_at = "2026-07-23"
 
 [gate]
