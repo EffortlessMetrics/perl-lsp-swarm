@@ -57,13 +57,27 @@ fn pir_a_bare_return_emits_one_return_node_void() -> TestResult {
     Ok(())
 }
 
-/// The Return node is anchored to explicit source with a concrete range.
+/// The Return node is anchored to explicit source, spanning exactly the
+/// `return $x` expression — not the enclosing block or subroutine. The value
+/// form is used because it carries a well-formed range (a bare valueless
+/// `return;` currently gets a degenerate upstream AST range, shared by the flat
+/// path; that oddity is out of scope for this PIR slice).
 #[test]
 fn pir_a_return_has_explicit_source_anchor() -> TestResult {
-    let graph = parse_and_lower("sub f { return; }");
+    let src = "sub f { return $x; }";
+    let graph = parse_and_lower(src);
     let node = single_return(&graph)?;
     assert_eq!(node.source_anchor.kind, PirAnchorKind::ExplicitSource);
-    assert!(node.source_anchor.range.is_some(), "Return must preserve a source range");
+    let r = node.source_anchor.range.ok_or("Return must preserve a source range")?;
+    // Expected span: from the `return` keyword up to (but excluding) the `;`.
+    let expected_start = src.find("return").ok_or("source contains `return`")?;
+    let expected_end = src.find(';').ok_or("source contains `;`")?;
+    assert_eq!(
+        (r.start, r.end),
+        (expected_start, expected_end),
+        "Return anchor must span exactly the `return $x` expression, got {:?}",
+        src.get(r.start..r.end)
+    );
     Ok(())
 }
 
@@ -167,16 +181,24 @@ fn pir_a_return_inside_branch_arm_emits_return() -> TestResult {
     Ok(())
 }
 
-/// `return` is no longer counted as an unsupported construct.
+/// `return` is now tallied as a first-class `Return` operation and is absent
+/// from the unsupported-construct counts. Both halves matter: the receipt's
+/// operation accounting must record the Return so a downstream regression that
+/// silently drops the node (leaving the graph-node tests green) is still caught.
 #[test]
 fn pir_a_return_is_not_unsupported() -> TestResult {
     let graph = parse_and_lower("sub f { return; }");
-    // The receipt's unsupported tally must not carry a "Return" entry now that
-    // the body path models it as a first-class node.
-    let count = graph.receipt.unsupported_construct_counts.get("Return").copied();
+    // Positive accounting: exactly one Return in the operation counts.
+    assert_eq!(
+        graph.receipt.operation_counts.get("Return"),
+        Some(&1),
+        "Return must be recorded once in operation_counts"
+    );
+    // Negative accounting: Return must not carry an unsupported tally.
+    let unsupported = graph.receipt.unsupported_construct_counts.get("Return").copied();
     assert!(
-        count.is_none() || count == Some(0),
-        "Return must no longer be tallied as unsupported, got count {count:?}"
+        unsupported.is_none() || unsupported == Some(0),
+        "Return must no longer be tallied as unsupported, got count {unsupported:?}"
     );
     Ok(())
 }
