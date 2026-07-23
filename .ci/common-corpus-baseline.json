@@ -1,11 +1,13 @@
 {
   "schema_version": "1.3.0",
-  "commit": "local",
-  "timestamp": "2026-07-23T10:00:00+00:00",
+  "commit": "46f2ff92a",
+  "timestamp": "2026-07-23T12:28:54.431054700+00:00",
   "corpus_profile": "common",
-  "corpus_roots": [],
+  "corpus_roots": [
+    ".ci/common-corpus-manifest.txt"
+  ],
   "resolved_roots_count": 10,
-  "perl_version": "5.038002",
+  "perl_version": "5.042002",
   "total_files": 10,
   "files_unreadable": 0,
   "clean_files": 10,
@@ -18,16 +20,63 @@
   "recovered_node_count": 0,
   "first_unrecovered_error_node_buckets": {},
   "first_error_buckets": {},
-  "files_by_bucket": {},
-  "file_results": [],
-  "elapsed_secs": 0.5,
+  "elapsed_secs": 18.8257209,
   "phase_timings": {
-    "discovery_ms": 1,
-    "file_io_ms": 5,
-    "parse_ms": 450,
-    "total_ms": 500
+    "discovery_ms": 18781,
+    "file_io_ms": 1,
+    "parse_ms": 29,
+    "total_ms": 18825
   },
-  "median_error_density_per_1k_loc": null,
-  "recovery_salvage_rate": null,
-  "slowest_files": []
+  "slowest_files": [
+    {
+      "path": "C:/Strawberry/perl/lib/Config.pm",
+      "parse_duration_ms": 27,
+      "line_count": 111
+    },
+    {
+      "path": "C:/Strawberry/perl/lib/Encode/Encoding.pm",
+      "parse_duration_ms": 1,
+      "line_count": 356
+    },
+    {
+      "path": "C:/Strawberry/perl/lib/File/Spec.pm",
+      "parse_duration_ms": 0,
+      "line_count": 343
+    },
+    {
+      "path": "C:/Strawberry/perl/lib/I18N/Langinfo.pm",
+      "parse_duration_ms": 0,
+      "line_count": 521
+    },
+    {
+      "path": "C:/Strawberry/perl/lib/MIME/Base64.pm",
+      "parse_duration_ms": 0,
+      "line_count": 188
+    },
+    {
+      "path": "C:/Strawberry/perl/lib/Tie/Scalar.pm",
+      "parse_duration_ms": 0,
+      "line_count": 164
+    },
+    {
+      "path": "C:/Strawberry/perl/lib/bytes.pm",
+      "parse_duration_ms": 0,
+      "line_count": 109
+    },
+    {
+      "path": "C:/Strawberry/perl/lib/integer.pm",
+      "parse_duration_ms": 0,
+      "line_count": 93
+    },
+    {
+      "path": "C:/Strawberry/perl/lib/subs.pm",
+      "parse_duration_ms": 0,
+      "line_count": 43
+    },
+    {
+      "path": "C:/Strawberry/perl/lib/utf8.pm",
+      "parse_duration_ms": 0,
+      "line_count": 299
+    }
+  ]
 }
