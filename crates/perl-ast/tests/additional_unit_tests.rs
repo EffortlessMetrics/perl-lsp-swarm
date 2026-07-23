@@ -871,7 +871,10 @@ fn sexp_catch_with_variable() {
     let node = Node::new(
         NodeKind::Try {
             body: Box::new(block_node(vec![])),
-            catch_blocks: vec![(Some("$e".to_string()), Box::new(block_node(vec![])))],
+            catch_blocks: vec![(
+                Some(("$e".to_string(), SourceLocation { start: 0, end: 0 })),
+                Box::new(block_node(vec![])),
+            )],
             finally_block: None,
         },
         loc(0, 30),

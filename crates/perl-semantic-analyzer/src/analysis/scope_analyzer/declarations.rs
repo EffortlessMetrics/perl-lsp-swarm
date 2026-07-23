@@ -25,11 +25,18 @@ pub(super) fn handle_variable_declaration<'a>(
     let extracted = analyzer.extract_variable_name(variable);
     let (sigil, var_name_part) = extracted.parts();
 
-    let is_our = declarator == "our";
+    // `local` NEVER creates a lexical — it temporarily localizes the package global.
+    // Treat it like `our` (is_our = true) so the variable is registered under its
+    // qualified package name (e.g. `main::x`) rather than as a lexical binding.
+    // This ensures a subsequent `my $x` in the same scope is not flagged
+    // VariableRedeclaration, since `local $x` and `my $x` occupy different slots.
+    let is_our = declarator == "our" || declarator == "local";
     // `state` variables are implicitly initialized to `undef` on first call (Perl semantics).
     // A bare `state $x;` without an explicit initializer is NOT uninitialized — it is safe
     // to read (yields undef) and must not trigger UninitializedVariable diagnostics.
-    let is_initialized = declarator == "state" || initializer.is_some();
+    // `local` similarly saves and restores the global, defaulting to `undef` when no
+    // initializer is given — it is safe to read.
+    let is_initialized = declarator == "state" || declarator == "local" || initializer.is_some();
 
     // `local` of a builtin special variable (e.g. `local $/`, `local $,`) temporarily
     // modifies the global; it does not create a new lexical binding.  Declaring it in
@@ -167,10 +174,12 @@ pub(super) fn handle_variable_list_declaration<'a>(
     issues: &mut Vec<ScopeIssue>,
     context: &AnalysisContext<'a>,
 ) {
-    let is_our = declarator == "our";
+    // `local` in list form also localizes package globals, not lexicals.
+    let is_our = declarator == "our" || declarator == "local";
     // `state` variables are implicitly initialized to `undef` on first call (Perl semantics).
     // A bare `state ($x, $y);` list without an explicit initializer is NOT uninitialized.
-    let is_initialized = declarator == "state" || initializer.is_some();
+    // `local` similarly defaults to `undef` and is safe to read.
+    let is_initialized = declarator == "state" || declarator == "local" || initializer.is_some();
 
     // Analyze initializer first
     if let Some(init) = initializer {

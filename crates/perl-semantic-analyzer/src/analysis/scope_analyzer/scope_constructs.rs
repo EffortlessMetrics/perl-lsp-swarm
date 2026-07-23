@@ -4,7 +4,7 @@ use super::{
     AnalysisContext, IssueKind, Scope, ScopeAnalyzer, ScopeIssue, sigil_to_index,
     split_variable_name,
 };
-use crate::ast::{Node, NodeKind};
+use crate::ast::{Node, NodeKind, SourceLocation};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -98,7 +98,29 @@ pub(super) fn handle_foreach<'a>(
 
     // Declare the loop variable and immediately mark it initialized — the list
     // provides its value at runtime so there is no uninitialized window.
-    analyzer.analyze_node(variable, &loop_scope, ancestors, issues, context);
+    //
+    // When `for (@list) { ... }` has no explicit loop variable, the parser
+    // synthesises a zero-width `Variable { "$", "_" }`.  That synthesized node
+    // must be declared in the loop scope (Perl guarantees `$_` is localized for
+    // the duration of the loop) rather than merely analyzed as a use — otherwise
+    // `$_` is never inserted as a binding and bareword `print;`, `chomp;`, etc.
+    // inside the loop produce false `UndeclaredVariable` diagnostics.
+    let is_implicit_topic = variable.location.start == variable.location.end
+        && matches!(&variable.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "_");
+
+    if is_implicit_topic {
+        analyzer.declare_variable_parts_in_context(
+            &loop_scope,
+            "$",
+            "_",
+            variable.location.start,
+            false,
+            true,
+            context,
+        );
+    } else {
+        analyzer.analyze_node(variable, &loop_scope, ancestors, issues, context);
+    }
     analyzer.mark_initialized(variable, &loop_scope, context);
     analyzer.analyze_node(list, &loop_scope, ancestors, issues, context);
     analyzer.analyze_node(body, &loop_scope, ancestors, issues, context);
@@ -302,7 +324,7 @@ pub(super) fn handle_try<'a>(
     analyzer: &ScopeAnalyzer,
     node: &'a Node,
     body: &'a Node,
-    catch_blocks: &'a [(Option<String>, Box<Node>)],
+    catch_blocks: &'a [(Option<(String, SourceLocation)>, Box<Node>)],
     finally_block: Option<&'a Node>,
     scope: &Rc<Scope>,
     ancestors: &mut Vec<&'a Node>,
@@ -315,10 +337,10 @@ pub(super) fn handle_try<'a>(
     for (catch_var, catch_body) in catch_blocks {
         let catch_scope = Rc::new(Scope::with_parent(scope.clone()));
 
-        if let Some(full_name) = catch_var.as_deref() {
-            let catch_var_range = context
-                .find_catch_variable_range(catch_body.location.start, full_name)
-                .unwrap_or((catch_body.location.start, catch_body.location.start));
+        if let Some((full_name, var_loc)) = catch_var {
+            // Use the parser-provided source range directly instead of re-deriving
+            // it via a fragile backward substring scan.
+            let catch_var_range = (var_loc.start, var_loc.end);
             let (sigil, name) = split_variable_name(full_name);
             if !sigil.is_empty() && !name.is_empty() && !name.contains("::") {
                 if let Some(issue_kind) =
