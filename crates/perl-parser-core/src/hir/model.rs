@@ -2775,6 +2775,12 @@ pub enum HirKind {
     SubstitutionExpr(SubstitutionExpr),
     /// Transliteration-operation shell (`$str =~ tr/search/replace/` or `y///`).
     TransliterationExpr(TransliterationExpr),
+    /// `try { ... } catch (...) { ... } finally { ... }` shell.
+    TryExpr(TryExpr),
+    /// `class Name :isa(Parent) { ... }` declaration shell (Perl 5.38+).
+    ClassDecl(ClassDecl),
+    /// `defer { ... }` shell (Perl 5.36+ experimental, stable in 5.40).
+    DeferExpr(DeferExpr),
 }
 
 impl HirKind {
@@ -2787,7 +2793,9 @@ impl HirKind {
         "BlockShell",
         "BranchShell",
         "CallExpr",
+        "ClassDecl",
         "ControlTransfer",
+        "DeferExpr",
         "DerefExpr",
         "DynamicBoundary",
         "IndirectCallExpr",
@@ -2803,6 +2811,7 @@ impl HirKind {
         "SubDecl",
         "SubstitutionExpr",
         "TransliterationExpr",
+        "TryExpr",
         "UseDecl",
         "VariableDecl",
     ];
@@ -3016,6 +3025,51 @@ pub struct TransliterationExpr {
     /// Whether the binding operator was `!~` (negated match).
     pub negated: bool,
 }
+
+/// Try/catch/finally shell payload (`try { ... } catch (...) { ... } finally { ... }`,
+/// Syntax::Keyword::Try style / `use feature 'try'`).
+///
+/// The `try` body, each `catch` handler body, and the `finally` body (when
+/// present) are all traversed via the AST's own child iteration (the same
+/// mechanism `Eval`/`Do` use), so nested statements still lower to their own
+/// HIR items; this shell only records the static shape of the construct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TryExpr {
+    /// Number of parsed `catch` clauses.
+    pub catch_count: usize,
+    /// Whether a `finally` block is present.
+    pub has_finally: bool,
+}
+
+/// Class declaration shell payload (`class Name :isa(Parent) { ... }`, Perl
+/// 5.38+ with `use feature 'class'`).
+///
+/// The class body is traversed via `visit_children`, so methods/fields inside
+/// it still lower to their own HIR items. First slice only: no dedicated
+/// `Class` scope frame or package-stash slot is recorded yet (unlike
+/// [`PackageDecl`]); see the lowerer arm for follow-up notes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ClassDecl {
+    /// Class name.
+    pub name: String,
+    /// Precise class-name source range, when available.
+    pub name_range: Option<SourceLocation>,
+    /// Parent class names from `:isa(Parent)` attributes.
+    pub parents: Vec<String>,
+}
+
+/// Defer-block shell payload (`defer { ... }`, Perl 5.36+ experimental,
+/// stable in 5.40).
+///
+/// First-slice marker only: the parser always parses a full block as the
+/// deferred body, and that block is traversed via `visit_children` and earns
+/// its own [`BlockShell`] and scope frame, so this shell currently carries no
+/// fields beyond the anchor itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DeferExpr {}
 
 /// Literal expression shell payload.
 #[derive(Debug, Clone, PartialEq, Eq)]

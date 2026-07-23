@@ -12,11 +12,11 @@ use super::body::{
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
-    BlockShell, BranchKeyword, BranchShell, CallExpr, CallForm, CompileConfidence,
+    BlockShell, BranchKeyword, BranchShell, CallExpr, CallForm, ClassDecl, CompileConfidence,
     CompileDirective, CompileDirectiveAction, CompileDirectiveKind, CompileEnvironment,
     CompileEnvironmentBoundary, CompileEnvironmentBoundaryKind, CompilePhase, CompilePhaseBlock,
-    CompileProvenance, ControlTransfer, ControlTransferKind, DerefAggregateKind, DerefExpr,
-    DerefOperandKind, DynamicBoundary, DynamicBoundaryKind, ExportDeclaration,
+    CompileProvenance, ControlTransfer, ControlTransferKind, DeferExpr, DerefAggregateKind,
+    DerefExpr, DerefOperandKind, DynamicBoundary, DynamicBoundaryKind, ExportDeclaration,
     ExportDeclarationKind, GlobSlot, GlobSlotKind, GlobSlotSource, HIR_BODY_MODEL_VERSION,
     HirBindingId, HirFile, HirId, HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact,
     IncRootKind, IndirectCallExpr, InheritanceSource, LiteralExpr, LiteralKind, LoopKind,
@@ -25,8 +25,8 @@ use super::model::{
     PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable, RecoveryConfidence, RegexExpr,
     RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary,
     StashDynamicBoundaryKind, StashGraph, StashProvenance, StatementModifierKind,
-    StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr, TransliterationExpr, UseDecl,
-    VariableBinding, VariableDecl,
+    StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr, TransliterationExpr, TryExpr,
+    UseDecl, VariableBinding, VariableDecl,
 };
 
 /// Lower a parser AST into first-slice HIR items plus canonical body arenas.
@@ -765,6 +765,61 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
+                self.visit_children(node, confidence);
+            }
+            NodeKind::Try { catch_blocks, finally_block, .. } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::TryExpr(TryExpr {
+                        catch_count: catch_blocks.len(),
+                        has_finally: finally_block.is_some(),
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+                // The try body, each catch handler body, and the finally body
+                // (when present) are all visited via the AST's own child
+                // iteration, same mechanism as Eval/Do/Match, so nested
+                // statements still lower to their own HIR items.
+                self.visit_children(node, confidence);
+            }
+            NodeKind::Class { name, name_span, parents, .. } => {
+                // First slice: shell + child traversal only. Unlike `Package`,
+                // this does not yet enter a dedicated scope frame or record a
+                // package-stash slot for the class name — `ScopeKind` has no
+                // `Class` variant and `record_package_declaration` assumes
+                // package semantics that a Perl 5.38+ class body only partly
+                // shares (methods/fields, not arbitrary package globals).
+                // Follow-up: model a `Class` scope frame once method/field
+                // lowering needs it.
+                self.push_item(
+                    node,
+                    *name_span,
+                    confidence,
+                    HirKind::ClassDecl(ClassDecl {
+                        name: name.clone(),
+                        name_range: *name_span,
+                        parents: parents.clone(),
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+                self.visit_children(node, confidence);
+            }
+            NodeKind::Defer { .. } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::DeferExpr(DeferExpr {}),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+                // The deferred block is visited via the AST's own child
+                // iteration; it earns its own `BlockShell` and scope frame
+                // exactly like any other `Block` node.
                 self.visit_children(node, confidence);
             }
             NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
