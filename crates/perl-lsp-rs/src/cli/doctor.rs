@@ -227,9 +227,27 @@ fn version_probe_error(output: &std::process::Output) -> String {
     version_probe_error_from_parts(&output.status.to_string(), &output.stderr)
 }
 
+/// Locate an external tool on `PATH`, using the hardened resolver on Windows
+/// to avoid binary-planting via relative PATH entries or the CWD (#2764/#3028).
+fn resolve_tool_on_path(name: &str) -> Option<PathBuf> {
+    #[cfg(all(windows, not(target_arch = "wasm32")))]
+    {
+        perl_subprocess_runtime::resolve_program(name).ok().map(PathBuf::from)
+    }
+    #[cfg(all(not(windows), not(target_arch = "wasm32")))]
+    {
+        which::which(name).ok()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = name;
+        None
+    }
+}
+
 /// Locate `name` on `PATH` and ask it for its version via `version_arg`.
 fn probe_tool(name: &'static str, version_arg: &str) -> ToolReport {
-    probe_tool_with_resolver(name, version_arg, |n| which::which(n).ok())
+    probe_tool_with_resolver(name, version_arg, resolve_tool_on_path)
 }
 
 /// Dependency-injected core of [`probe_tool`]. `resolve` maps the tool name to
@@ -277,16 +295,7 @@ fn probe_tool_with_resolver(
 }
 
 fn tool_version_probe_error(name: &str, output: &std::process::Output) -> String {
-    let status =
-        output.status.code().map(|code| code.to_string()).unwrap_or_else(|| "signal".to_string());
-    let mut error = format!("{name} version probe exited with status {status}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stderr = stderr.trim();
-    if !stderr.is_empty() {
-        error.push_str("; stderr: ");
-        error.push_str(stderr);
-    }
-    error
+    format!("{name} {}", version_probe_error(output))
 }
 
 fn version_probe_error_from_parts(status: &str, stderr: &[u8]) -> String {
