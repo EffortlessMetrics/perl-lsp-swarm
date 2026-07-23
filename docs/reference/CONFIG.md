@@ -70,6 +70,25 @@ The server silently skips the file if it does not exist. If the file exists but 
 
 Unknown keys and sections are silently ignored for forward compatibility.
 
+### Discovery strategy
+
+The server searches for `.perl-lsp.toml` by walking **parent directories**
+upward from each workspace folder root to the filesystem root, returning the
+first file found. This matches the parent-walk behavior used for
+`.perlcriticrc` discovery, so that a monorepo opened at a subdirectory (e.g.
+`monorepo/services/web/`) still discovers a root-level `.perl-lsp.toml` at the
+monorepo root. When multiple `.perl-lsp.toml` files exist along the path, the
+nearest one to the workspace folder wins.
+
+```
+monorepo/
+  .perl-lsp.toml        ← found from any subdirectory
+  .perlcriticrc         ← also discovered via parent walk
+  services/
+    web/                ← opened as the workspace folder
+      lib/App.pm
+```
+
 ### File Location
 
 ```
