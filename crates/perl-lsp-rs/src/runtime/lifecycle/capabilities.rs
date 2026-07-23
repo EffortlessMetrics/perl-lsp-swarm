@@ -266,6 +266,10 @@ impl LspServer {
                     .pointer("/capabilities/textDocument/codeAction/documentationSupport")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
+                caps.code_action_disabled_support = params
+                    .pointer("/capabilities/textDocument/codeAction/disabledSupport")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 caps.code_action_llm_generated_tag_support = params
                     .pointer("/capabilities/textDocument/codeAction/tagSupport/valueSet")
                     .and_then(Value::as_array)
@@ -1379,6 +1383,24 @@ mod tests {
         let _ = server.handle_initialize(Some(params));
 
         assert!(server.client_capabilities.lock().code_action_documentation_support);
+    }
+
+    #[test]
+    fn initialize_parses_code_action_disabled_support() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "textDocument": {
+                    "codeAction": {
+                        "disabledSupport": true
+                    }
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+
+        assert!(server.client_capabilities.lock().code_action_disabled_support);
     }
 
     #[test]

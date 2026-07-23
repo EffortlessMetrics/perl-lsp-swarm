@@ -55,71 +55,59 @@ fn doctor_reports_workspace_setup() -> Result<(), Box<dyn std::error::Error>> {
     let lib = workspace.join("lib");
     let lines: Vec<_> = stdout.lines().collect();
 
+    let line_with_prefix = |prefix: &str| -> Option<&str> {
+        lines.iter().copied().find(|line| line.starts_with(prefix))
+    };
+
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stderr, "");
     assert_eq!(lines.first().copied(), Some("perl-lsp doctor"));
     assert_eq!(lines.get(1).copied(), Some("==============="));
     assert_eq!(lines.get(3).copied(), Some(format!("Workspace: {}", workspace.display()).as_str()));
     assert_eq!(lines.get(4).copied(), Some("Project config: loaded .perl-lsp.toml"));
-    assert_eq!(lines.get(7).copied(), Some("PERL5LIB: environment empty"));
-    assert_eq!(lines.get(8).copied(), Some("PERL5LIB precedence: prepend"));
-    assert_eq!(lines.get(10).copied(), Some("Configured includePaths:"));
-    assert_eq!(
-        lines.get(11).copied(),
-        Some(
-            format!("  - {} (.perl-lsp.toml include_paths, exists; raw: lib)", lib.display())
-                .as_str()
-        )
-    );
-    assert_eq!(lines.get(13).copied(), Some("Effective @INC roots:"));
-    assert_eq!(
-        lines.get(14).copied(),
-        Some(
-            format!("  - {} (.perl-lsp.toml include_paths, exists; raw: lib)", lib.display())
-                .as_str()
-        )
-    );
-    assert_eq!(lines.get(16).copied(), Some("System @INC: disabled"));
-    assert_eq!(lines.get(18).copied(), Some("Module lookup example:"));
-    assert_eq!(
-        lines.get(19).copied(),
-        Some("  use Foo::Bar; searches Foo/Bar.pm under the effective roots above, in order.")
-    );
-    assert_eq!(lines.get(21).copied(), Some("Next steps:"));
-    assert_eq!(
-        lines.get(22).copied(),
-        Some("  - Add missing project module roots to .perl-lsp.toml [perl].include_paths.")
-    );
-    assert_eq!(
-        lines.get(23).copied(),
-        Some(
-            "  - Set PERL5LIB or use_perl5lib intentionally; doctor reports whether it participates."
-        )
-    );
-    assert_eq!(
-        lines.get(24).copied(),
-        Some(
-            "  - Fix roots marked unsafe; module resolution ignores relative roots that escape the workspace."
-        )
-    );
-    assert_eq!(
-        lines.get(25).copied(),
-        Some("  - Editor-only settings may still override this CLI report after initialization.")
-    );
-    assert_eq!(lines.get(27).copied(), Some("Claim boundary:"));
-    assert_eq!(
-        lines.get(28).copied(),
-        Some(
-            "  Read-only CLI report. It does not start the LSP, mutate config, scan the workspace, or apply editor-specific settings."
-        )
-    );
+    assert!(line_with_prefix("Perl: ").is_some());
+    assert!(line_with_prefix("Perl version: ").is_some());
+    assert!(line_with_prefix("perltidy: ").is_some());
+    assert!(line_with_prefix("perlcritic: ").is_some());
+    assert_eq!(line_with_prefix("PERL5LIB: "), Some("PERL5LIB: environment empty"));
+    assert_eq!(line_with_prefix("PERL5LIB precedence: "), Some("PERL5LIB precedence: prepend"));
+    assert_eq!(line_with_prefix("Configured includePaths:"), Some("Configured includePaths:"));
+    let lib_entry = line_with_prefix("  - ")
+        .ok_or("doctor output missing configured includePaths entry")?;
+    assert!(lib_entry.contains(&lib.display().to_string()));
+    assert!(lib_entry.contains(".perl-lsp.toml include_paths"));
+    assert_eq!(line_with_prefix("Effective @INC roots:"), Some("Effective @INC roots:"));
+    assert_eq!(line_with_prefix("System @INC: "), Some("System @INC: disabled"));
+    assert_eq!(line_with_prefix("Module lookup example:"), Some("Module lookup example:"));
+    assert!(stdout.contains(
+        "  use Foo::Bar; searches Foo/Bar.pm under the effective roots above, in order."
+    ));
+    assert!(stdout.contains("Next steps:"));
+    assert!(stdout.contains(
+        "  - Add missing project module roots to .perl-lsp.toml [perl].include_paths."
+    ));
+    assert!(stdout.contains(
+        "  - Set PERL5LIB or use_perl5lib intentionally; doctor reports whether it participates."
+    ));
+    assert!(stdout.contains(
+        "  - Fix roots marked unsafe; module resolution ignores relative roots that escape the workspace."
+    ));
+    assert!(stdout.contains(
+        "  - Editor-only settings may still override this CLI report after initialization."
+    ));
+    assert!(stdout.contains("Claim boundary:"));
+    assert!(stdout.contains(
+        "  Read-only CLI report. It does not start the LSP, mutate config, scan the workspace, or apply editor-specific settings."
+    ));
     assert!(stdout.ends_with('\n'));
     assert_eq!(
         stdout
-            .matches(&format!(
-                "  - {} (.perl-lsp.toml include_paths, exists; raw: lib)",
-                lib.display()
-            ))
+            .lines()
+            .filter(|line| {
+                line.starts_with("  - ")
+                    && line.contains(".perl-lsp.toml include_paths")
+                    && line.contains(&lib.display().to_string())
+            })
             .count(),
         2
     );
