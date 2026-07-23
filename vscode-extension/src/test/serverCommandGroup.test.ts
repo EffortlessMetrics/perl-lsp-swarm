@@ -5,7 +5,7 @@ import { HealthCheckStatus, type HealthCheckResult } from '../onboarding';
 const outputChannel = {
   appendLine: jest.fn(),
   show: jest.fn(),
-} as unknown as vscode.OutputChannel;
+} as unknown as vscode.LogOutputChannel;
 
 function makeDependencies(results: HealthCheckResult[] = []): ServerCommandContext & {
   reinstallServerBinary: jest.Mock;

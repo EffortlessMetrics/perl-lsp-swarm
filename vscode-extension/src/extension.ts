@@ -123,7 +123,7 @@ import type { ManagedBinarySource, ReinstallCommandResult } from './commandResul
 // ownership lives in `languageClientLifecycle`; these values are synchronized
 // from its authoritative snapshot and never drive start/stop transitions.
 let client: LanguageClient | undefined;
-let outputChannel: vscode.OutputChannel;
+let outputChannel: vscode.LogOutputChannel;
 let testAdapter: PerlTestAdapter | undefined;
 let currentServerPath: string | null = null;
 // Set by getServerPath() when perl-lsp.serverPath is configured but the file
@@ -299,7 +299,7 @@ export async function runPerlCriticOnActiveFile(
   // practice; assigning to the module-level variable (rather than a local)
   // ensures subsequent calls reuse the same channel (#4630).
   if (!outputChannel) {
-    outputChannel = vscode.window.createOutputChannel('Perl Language Server');
+    outputChannel = vscode.window.createOutputChannel('Perl Language Server', { log: true });
   }
   const channel = outputChannel;
   const editor = vscode.window.activeTextEditor;
@@ -482,11 +482,10 @@ export async function activate(context: vscode.ExtensionContext) {
   // Cache the context so the mid-session crash handler (#4625) can drive an
   // auto-restart without a parameter of its own.
   extensionContext = context;
-  // Plain OutputChannel (not LogOutputChannel): the extension writes all
-  // messages via appendLine, so a LogOutputChannel would advertise level-based
-  // filtering in the UI that does not actually work. Using a plain channel
-  // avoids false confidence for support/troubleshooting (#4630).
-  outputChannel = vscode.window.createOutputChannel('Perl Language Server');
+  // LogOutputChannel is required by vscode-languageclient for outputChannel and
+  // traceOutputChannel. The extension writes via appendLine only, so the level
+  // filter UI is cosmetic until we route messages through log levels (#4630).
+  outputChannel = vscode.window.createOutputChannel('Perl Language Server', { log: true });
   const mcpDisposable = featureActivationMetrics.measure('mcp', true, () =>
     registerMcpSupport(outputChannel),
   );
@@ -1262,6 +1261,7 @@ function createLanguageClient(serverPath: string): LanguageClient {
       fileEvents: vscode.workspace.createFileSystemWatcher('**/.perltidyrc'),
     },
     outputChannel,
+    traceOutputChannel: outputChannel,
     middleware: {
       provideCodeLenses: async (document, token, next) => {
         const lenses = await next(document, token);
