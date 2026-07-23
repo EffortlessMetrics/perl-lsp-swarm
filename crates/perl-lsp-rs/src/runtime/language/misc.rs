@@ -31,7 +31,7 @@ mod inline_values;
 mod live_provider_trace;
 #[cfg(not(target_arch = "wasm32"))]
 use debug_launch::debug_command_from_oracle;
-use inline_values::{inline_value_regex, is_comment_line, is_pod_directive};
+use inline_values::{inline_value_regex, is_comment_line, is_pod_directive, update_pod_state};
 pub(super) use live_provider_trace::{
     DIAGNOSTIC_EXPLANATION_SCHEMA_VERSION, diagnostic_explanation_payload_from_diagnostics,
 };
@@ -1232,11 +1232,10 @@ impl LspServer {
                     return Ok(Some(json!([])));
                 };
 
-                // Track POD block state. A POD block starts at a line beginning
-                // with `=` followed by an alpha character (e.g. `=pod`,
-                // `=head1`) and ends at `=cut`. We must scan from the top of
-                // the file because the requested range may begin inside an
-                // already-open POD block.
+                // Track POD block state. POD directives (`=pod`, `=head1`, …)
+                // open a block until `=cut` or `=end`; `=for` is single-paragraph
+                // only. We must scan from the top of the file because the
+                // requested range may begin inside an already-open POD block.
                 //
                 // NOTE: This is a line-level heuristic, not an AST cross-check.
                 // Variables inside double-quoted strings are still matched
@@ -1248,10 +1247,7 @@ impl LspServer {
                         break;
                     }
                     if is_pod_directive(line) {
-                        // =cut ends a POD block; any other POD directive (=pod,
-                        // =head1, =over, …) opens one. Must match the logic
-                        // used in the main loop below.
-                        in_pod = !line.trim_start().starts_with("=cut");
+                        update_pod_state(line, &mut in_pod);
                     }
                 }
 
@@ -1266,7 +1262,7 @@ impl LspServer {
 
                     // Update POD block state for the current line
                     if is_pod_directive(line_text) {
-                        in_pod = !line_text.trim_start().starts_with("=cut");
+                        update_pod_state(line_text, &mut in_pod);
                         continue;
                     }
                     if in_pod {
@@ -2044,6 +2040,21 @@ mod tests {
         assert!(!super::is_pod_directive(" # =pod"), "commented POD directive is not POD");
         assert!(!super::is_pod_directive("==pod"), "double equals is not POD");
         assert!(!super::is_pod_directive(""), "empty line is not POD");
+    }
+
+    #[test]
+    fn update_pod_state_closes_begin_end_and_for_paragraphs() {
+        let mut in_pod = false;
+
+        super::update_pod_state("=begin html", &mut in_pod);
+        assert!(in_pod, "=begin should open a POD block");
+        super::update_pod_state("<p>$html_var</p>", &mut in_pod);
+        assert!(in_pod, "non-directive lines stay inside =begin blocks");
+        super::update_pod_state("=end html", &mut in_pod);
+        assert!(!in_pod, "=end should close a =begin block");
+
+        super::update_pod_state("=for html $for_var", &mut in_pod);
+        assert!(!in_pod, "=for is single-paragraph and must not leave POD open");
     }
 
     #[test]

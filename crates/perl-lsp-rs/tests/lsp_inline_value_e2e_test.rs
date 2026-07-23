@@ -412,3 +412,57 @@ fn inline_value_skips_pod_block_spanning_requested_range() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn inline_value_resumes_after_begin_end_pod_block() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+
+    let uri = "file:///inline_value_begin_end.pl";
+    harness.open(
+        uri,
+        "my $x = 1;\n\
+         =begin html\n\
+         <p>$html_var</p>\n\
+         =end html\n\
+         my $y = 2;\n",
+    )?;
+
+    let items = request_inline_values(&mut harness, uri, 0, 4, None)?;
+    let names = variable_names(&items);
+
+    assert!(names.contains(&"$x"), "code before =begin should be detected, got {names:?}");
+    assert!(names.contains(&"$y"), "code after =end should be detected, got {names:?}");
+    assert!(
+        !names.contains(&"$html_var"),
+        "variables inside =begin…=end must be skipped, got {names:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn inline_value_resumes_after_for_pod_paragraph() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+
+    let uri = "file:///inline_value_for.pl";
+    harness.open(
+        uri,
+        "my $x = 1;\n\
+         =for html This documents $for_var\n\
+         my $y = 2;\n",
+    )?;
+
+    let items = request_inline_values(&mut harness, uri, 0, 2, None)?;
+    let names = variable_names(&items);
+
+    assert!(names.contains(&"$x"), "code before =for should be detected, got {names:?}");
+    assert!(
+        names.contains(&"$y"),
+        "code after a single-paragraph =for must still be detected, got {names:?}"
+    );
+    assert!(!names.contains(&"$for_var"), "variables on =for lines must be skipped, got {names:?}");
+
+    Ok(())
+}

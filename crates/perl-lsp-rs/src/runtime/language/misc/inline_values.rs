@@ -10,7 +10,8 @@
 //! stale values for variables not actually in scope at the breakpoint.
 //!
 //! To reduce false positives the handler skips Perl comments (`# ...`) and POD
-//! blocks (`=pod` … `=cut`), but string-interpolated variables are still
+//! blocks (`=pod` … `=cut`, `=begin` … `=end`, and single-paragraph `=for`),
+//! but string-interpolated variables are still
 //! matched because distinguishing interpolation from real code requires AST
 //! context (see issue #4630, non-goal: AST-driven inline values).
 //!
@@ -42,4 +43,34 @@ pub(super) fn is_comment_line(line: &str) -> bool {
 /// an alphabetic character.
 pub(super) fn is_pod_directive(line: &str) -> bool {
     POD_DIRECTIVE_REGEX.as_ref().map(|re| re.is_match(line)).unwrap_or(false)
+}
+
+fn is_for_directive(trimmed: &str) -> bool {
+    trimmed == "=for" || trimmed.starts_with("=for ") || trimmed.starts_with("=for\t")
+}
+
+fn is_end_directive(trimmed: &str) -> bool {
+    trimmed == "=end" || trimmed.starts_with("=end ") || trimmed.starts_with("=end\t")
+}
+
+/// Update open/closed POD-block state for a directive line.
+///
+/// `=cut` and `=end …` close a block; `=for …` is a single-paragraph directive
+/// and does not leave the block open; all other POD directives open a block
+/// until the next `=cut` or `=end`.
+pub(super) fn update_pod_state(line: &str, in_pod: &mut bool) {
+    if !is_pod_directive(line) {
+        return;
+    }
+
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("=cut") {
+        *in_pod = false;
+    } else if is_end_directive(trimmed) {
+        *in_pod = false;
+    } else if is_for_directive(trimmed) {
+        // Single-paragraph POD: skip the directive line only.
+    } else {
+        *in_pod = true;
+    }
 }
