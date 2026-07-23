@@ -990,24 +990,67 @@ impl BodyLowerer {
                 iterator_binding,
                 ..
             } => {
-                *self.unsupported.entry("Loop").or_insert(0) += 1;
+                // Canonical PIR-A loop lowering (#4815): emit a first-class Loop
+                // node with a condition link and a `Loop` back-edge, rather than
+                // counting the construct as unsupported. Mirrors the Branch slice
+                // (#4795): while/until/C-style-for/foreach are control-flow
+                // constructs that yield no value at statement level, so the node
+                // is Void and anchored at the whole loop expression range.
+
+                // A C-style `for` initializer runs once before the loop; it chains
+                // into the condition/header by normal fallthrough.
                 if let Some(init) = init {
                     self.lower_block(body, *init, file);
                 }
+
+                // Condition link (v0 approximation, mirroring lower_branch): the
+                // last PIR node lowered from the boolean loop condition when it
+                // lowered at least one node. `foreach` stores its *iterable* in the
+                // same HIR `condition` field (see hir/lower.rs NodeKind::Foreach);
+                // that iterable is still lowered so its read is reachable, but a
+                // `foreach` has no boolean condition, so the link stays None.
+                // Constant or otherwise opaque conditions also leave it None
+                // (fail-closed). `foreach` is the only form carrying an
+                // `iterator_binding`.
+                let is_foreach = iterator_binding.is_some();
+                let id_before_condition = self.next_id;
                 if let Some(condition) = condition {
                     self.lower_expr(body, *condition, file);
                 }
+                let condition = if is_foreach {
+                    None
+                } else {
+                    (self.next_id > id_before_condition)
+                        .then(|| PirId::from_index(self.next_id - 1))
+                };
+
                 if let Some(iterator_binding) = iterator_binding {
-                    // A foreach iterable may be empty, so evaluating the
-                    // iterator binding is not an unconditional successor of
-                    // the iterable expression.
+                    // A foreach iterable may be empty, so evaluating the iterator
+                    // binding is not an unconditional successor of the iterable
+                    // expression.
                     self.last_in_scope.remove(&None);
                     self.lower_expr(body, *iterator_binding, file);
                 }
-                // Loop bodies execute zero or more times. They must not look
-                // like unconditional fallthrough from the loop header or into
-                // the first statement after the loop.
+
+                // Emit the Loop node. It keeps the fallthrough from the last
+                // header node (condition / iterable) — control evaluates the
+                // header, then loops.
+                let anchor = self.make_body_anchor(range);
+                let loop_id = self.push_body_node(
+                    anchor,
+                    PirOperation::Loop { condition },
+                    PirContext::Void,
+                    None,
+                    file,
+                );
+
+                // The loop body executes zero or more times: it is reached from
+                // the Loop node by an explicit `Loop` edge, never by unconditional
+                // fallthrough, and it must not fall through into the statement
+                // after the loop. Sever the fallthrough predecessor, then lower
+                // the iteration region (body + continue + C-style update).
                 self.last_in_scope.remove(&None);
+                let iteration_first = self.next_id;
                 self.lower_block(body, *loop_body, file);
                 if let Some(block) = continue_block {
                     self.lower_block(body, *block, file);
@@ -1015,6 +1058,22 @@ impl BodyLowerer {
                 if let Some(update) = update {
                     self.lower_expr(body, *update, file);
                 }
+                if self.next_id > iteration_first {
+                    // Loop entry edge: header -> body entry.
+                    self.edges.push(PirEdge {
+                        from: loop_id,
+                        to: Some(PirId::from_index(iteration_first)),
+                        kind: PirEdgeKind::Loop,
+                    });
+                    // Loop back-edge: last iteration node -> header.
+                    self.edges.push(PirEdge {
+                        from: PirId::from_index(self.next_id - 1),
+                        to: Some(loop_id),
+                        kind: PirEdgeKind::Loop,
+                    });
+                }
+
+                // No unconditional fallthrough past the loop.
                 self.last_in_scope.remove(&None);
             }
 
