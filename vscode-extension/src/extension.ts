@@ -293,7 +293,15 @@ export async function syncPerlCriticConfiguration(
 export async function runPerlCriticOnActiveFile(
   activeClient: Pick<LanguageClient, 'sendRequest' | 'sendNotification'> | undefined = client,
 ): Promise<void> {
-  const channel = outputChannel ?? vscode.window.createOutputChannel('Perl Language Server');
+  // Use the module-level outputChannel so critic output is not fragmented
+  // into a separate channel instance. activate() creates the channel before
+  // any command can be invoked, so the fallback should never fire in
+  // practice; assigning to the module-level variable (rather than a local)
+  // ensures subsequent calls reuse the same channel (#4630).
+  if (!outputChannel) {
+    outputChannel = vscode.window.createOutputChannel('Perl Language Server', { log: true });
+  }
+  const channel = outputChannel;
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== 'perl') {
     vscode.window.showErrorMessage('No active Perl file to run Critic on');
@@ -474,6 +482,9 @@ export async function activate(context: vscode.ExtensionContext) {
   // Cache the context so the mid-session crash handler (#4625) can drive an
   // auto-restart without a parameter of its own.
   extensionContext = context;
+  // LogOutputChannel is required by vscode-languageclient for outputChannel and
+  // traceOutputChannel. The extension writes via appendLine only, so the level
+  // filter UI is cosmetic until we route messages through log levels (#4630).
   outputChannel = vscode.window.createOutputChannel('Perl Language Server', { log: true });
   const mcpDisposable = featureActivationMetrics.measure('mcp', true, () =>
     registerMcpSupport(outputChannel),

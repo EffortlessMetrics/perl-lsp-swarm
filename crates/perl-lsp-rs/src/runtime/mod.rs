@@ -151,6 +151,11 @@ pub struct LspServer {
     initialized: AtomicBool,
     /// Whether shutdown was received (for LSP-compliant exit handling)
     shutdown_received: AtomicBool,
+    /// Pending `window/logMessage` text to emit once the client has sent the
+    /// `initialized` notification (notifications must not be sent before the
+    /// initialize response is delivered). Currently used for the JetBrains
+    /// dynamic-registration override notice (#4630).
+    pub(crate) pending_startup_log: Arc<Mutex<Option<String>>>,
     /// Index coordinator for workspace-wide features with lifecycle management
     #[cfg(feature = "workspace")]
     pub(crate) index_coordinator: Option<Arc<IndexCoordinator>>,

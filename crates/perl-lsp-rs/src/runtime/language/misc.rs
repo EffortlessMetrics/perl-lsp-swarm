@@ -31,7 +31,7 @@ mod inline_values;
 mod live_provider_trace;
 #[cfg(not(target_arch = "wasm32"))]
 use debug_launch::debug_command_from_oracle;
-use inline_values::inline_value_regex;
+use inline_values::{inline_value_regex, is_comment_line, is_pod_directive, update_pod_state};
 pub(super) use live_provider_trace::{
     DIAGNOSTIC_EXPLANATION_SCHEMA_VERSION, diagnostic_explanation_payload_from_diagnostics,
 };
@@ -1232,6 +1232,25 @@ impl LspServer {
                     return Ok(Some(json!([])));
                 };
 
+                // Track POD block state. POD directives (`=pod`, `=head1`, …)
+                // open a block until `=cut` or `=end`; `=for` is single-paragraph
+                // only. We must scan from the top of the file because the
+                // requested range may begin inside an already-open POD block.
+                //
+                // NOTE: This is a line-level heuristic, not an AST cross-check.
+                // Variables inside double-quoted strings are still matched
+                // because distinguishing interpolation from real code requires
+                // AST context (see issue #4630).
+                let mut in_pod = false;
+                for (i, line) in lines.iter().copied().enumerate() {
+                    if i >= start_line as usize {
+                        break;
+                    }
+                    if is_pod_directive(line) {
+                        update_pod_state(line, &mut in_pod);
+                    }
+                }
+
                 for (line_num, line_text) in lines
                     .iter()
                     .copied()
@@ -1240,6 +1259,21 @@ impl LspServer {
                     .take(requested_line_count)
                 {
                     let line_num = line_num as u32;
+
+                    // Update POD block state for the current line
+                    if is_pod_directive(line_text) {
+                        update_pod_state(line_text, &mut in_pod);
+                        continue;
+                    }
+                    if in_pod {
+                        continue;
+                    }
+
+                    // Skip comment lines to avoid false-positive inline values
+                    // for variables mentioned in comments (e.g. `# $variable`).
+                    if is_comment_line(line_text) {
+                        continue;
+                    }
 
                     // Find $scalar, @array, and %hash variables
                     for cap in re.captures_iter(line_text) {
@@ -1981,6 +2015,46 @@ mod tests {
             "empty documents should return an empty inline value array"
         );
         Ok(())
+    }
+
+    #[test]
+    fn is_comment_line_detects_hash_comments() {
+        assert!(super::is_comment_line("# my $var = 1;"), "bare comment");
+        assert!(super::is_comment_line("  # $var"), "indented comment");
+        assert!(super::is_comment_line("#"), "bare hash");
+        assert!(!super::is_comment_line("my $var = 1;"), "code is not a comment");
+        assert!(
+            !super::is_comment_line("print '# not a comment';"),
+            "hash inside string is not a comment"
+        );
+        assert!(!super::is_comment_line(""), "empty line is not a comment");
+    }
+
+    #[test]
+    fn is_pod_directive_detects_pod_blocks() {
+        assert!(super::is_pod_directive("=pod"), "=pod");
+        assert!(super::is_pod_directive("=head1 NAME"), "=head1");
+        assert!(super::is_pod_directive("=cut"), "=cut");
+        assert!(super::is_pod_directive("=over 4"), "=over");
+        assert!(!super::is_pod_directive("my $var = 1;"), "code is not POD");
+        assert!(!super::is_pod_directive(" # =pod"), "commented POD directive is not POD");
+        assert!(!super::is_pod_directive("==pod"), "double equals is not POD");
+        assert!(!super::is_pod_directive(""), "empty line is not POD");
+    }
+
+    #[test]
+    fn update_pod_state_closes_begin_end_and_for_paragraphs() {
+        let mut in_pod = false;
+
+        super::update_pod_state("=begin html", &mut in_pod);
+        assert!(in_pod, "=begin should open a POD block");
+        super::update_pod_state("<p>$html_var</p>", &mut in_pod);
+        assert!(in_pod, "non-directive lines stay inside =begin blocks");
+        super::update_pod_state("=end html", &mut in_pod);
+        assert!(!in_pod, "=end should close a =begin block");
+
+        super::update_pod_state("=for html $for_var", &mut in_pod);
+        assert!(!in_pod, "=for is single-paragraph and must not leave POD open");
     }
 
     #[test]
