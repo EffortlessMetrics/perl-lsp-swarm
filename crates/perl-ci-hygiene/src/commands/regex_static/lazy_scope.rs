@@ -94,20 +94,29 @@ mod tests {
 
     #[test]
     fn detects_each_trigger() {
-        assert!(line_opens_lazy_init("static R: LazyLock<Regex> = LazyLock::new(|| {"));
-        assert!(line_opens_lazy_init("LazyCell::new(|| foo())"));
-        assert!(line_opens_lazy_init("Lazy::new(|| bar())"));
-        assert!(line_opens_lazy_init("CELL.get_or_init(|| baz())"));
-        assert!(line_opens_lazy_init("CELL.get_or_try_init(|| baz())"));
-        assert!(!line_opens_lazy_init("let re = Regex::new(pat)?;"));
+        assert!(
+            line_opens_lazy_init("static R: LazyLock<Regex> = LazyLock::new(|| {"),
+            "LazyLock::new is a trigger"
+        );
+        assert!(line_opens_lazy_init("LazyCell::new(|| foo())"), "LazyCell::new is a trigger");
+        assert!(line_opens_lazy_init("Lazy::new(|| bar())"), "Lazy::new is a trigger");
+        assert!(line_opens_lazy_init("CELL.get_or_init(|| baz())"), "get_or_init is a trigger");
+        assert!(
+            line_opens_lazy_init("CELL.get_or_try_init(|| baz())"),
+            "get_or_try_init is a trigger"
+        );
+        assert!(
+            !line_opens_lazy_init("let re = Regex::new(pat)?;"),
+            "a bare Regex::new is not a trigger"
+        );
     }
 
     #[test]
     fn delim_delta_counts_parens_and_braces() {
-        assert_eq!(delim_delta("LazyLock::new(|| {"), 2);
-        assert_eq!(delim_delta("});"), -2);
-        assert_eq!(delim_delta("Regex::new(r\"x\").unwrap()"), 0);
-        assert_eq!(delim_delta("no delimiters here"), 0);
+        assert_eq!(delim_delta("LazyLock::new(|| {"), 2, "open paren and open brace each add one");
+        assert_eq!(delim_delta("});"), -2, "close brace and close paren each subtract one");
+        assert_eq!(delim_delta("Regex::new(r\"x\").unwrap()"), 0, "balanced parens net to zero");
+        assert_eq!(delim_delta("no delimiters here"), 0, "no delimiters net to zero");
     }
 
     #[test]
@@ -125,7 +134,7 @@ mod tests {
         let mut scope = LazyStaticScope::default();
 
         let opener = "static RE: LazyLock<Regex> = LazyLock::new(|| {";
-        assert!(scope.allows_current_line(opener));
+        assert!(scope.allows_current_line(opener), "the opener line itself is allowed");
         scope.observe_line(opener);
         assert!(scope.active, "unbalanced opener activates the multi-line scope");
 
@@ -155,14 +164,20 @@ mod tests {
         let mut scope = LazyStaticScope::default();
         let opener = "    CELL.get_or_init(|| {";
         scope.observe_line(opener);
-        assert!(scope.active);
+        assert!(scope.active, "get_or_init opener activates the multi-line scope");
         let inner = "        Regex::new(pattern).unwrap()";
-        assert!(scope.allows_current_line(inner));
+        assert!(scope.allows_current_line(inner), "regex inside get_or_init is allowed");
     }
 
     #[test]
     fn whole_line_comment_detection() {
-        assert!(line_is_whole_line_comment("   // Regex::new(fake) in a comment"));
-        assert!(!line_is_whole_line_comment("let re = Regex::new(x); // trailing"));
+        assert!(
+            line_is_whole_line_comment("   // Regex::new(fake) in a comment"),
+            "an indented // line is a whole-line comment"
+        );
+        assert!(
+            !line_is_whole_line_comment("let re = Regex::new(x); // trailing"),
+            "code with a trailing comment is not a whole-line comment"
+        );
     }
 }
