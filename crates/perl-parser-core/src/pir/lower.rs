@@ -737,7 +737,7 @@ impl BodyLowerer {
             None => return,
         };
         match stmt {
-            HirStmt::Let { name, sigil, storage, init } => {
+            HirStmt::Let { name, sigil, storage, init, binding_range } => {
                 // Emit exactly ONE Write op for the declaration target.
                 // `storage` determines whether this is a lexical (my/state) or
                 // package (our) slot. Ignoring `storage` was the root cause of
@@ -749,24 +749,14 @@ impl BodyLowerer {
                 // wrapper, which would re-emit the LHS variable as a second Write).
                 // Anchor the declaration write at the VARIABLE token (`$x`) to match
                 // the legacy find-references / LSP anchoring, NOT the whole
-                // `my $x = ...` statement span (issue #2640, PR3 range parity). The
-                // variable's range is the LHS of the initialiser's `Assign`; fall back
-                // to the statement range for declarations without an initialiser.
-                // Resolve the initialiser to its `Assign` so its LHS variable range
-                // can anchor the write. `body.expr` is folded into the `and_then` so
-                // the `None` arm is reached by declarations WITHOUT an initialiser
-                // (`my $x;` / `our $x;` → `init` is `None`), not just the unreachable
-                // non-`Assign` case — keeping the arm exercised by tests.
-                let var_range = match init.as_ref().and_then(|init_id| body.expr(*init_id)) {
-                    Some(HirExpr::Assign { lhs, .. }) => {
-                        body.source_map.expr_ranges.get(lhs.0 as usize).copied()
-                    }
-                    _ => None,
-                };
-                let range = var_range
-                    .or_else(|| body.source_map.stmt_ranges.get(stmt_id.0 as usize).copied());
-                if let Some(range) = range {
-                    let anchor = self.make_body_anchor(range);
+                // `my $x = ...` statement span (issue #2643, range parity).
+                // `binding_range` is a first-class field carrying the declared
+                // variable's source span, captured at HIR-build time for EVERY
+                // declaration form — including bare declarations WITHOUT an
+                // initialiser (`my $x;` / `our $x;`), which the previous
+                // init-LHS-or-statement-span fallback mis-anchored at the statement.
+                {
+                    let anchor = self.make_body_anchor(*binding_range);
                     let op = match storage {
                         // `our` binds a package/stash symbol; `local` dynamically
                         // scopes a package/global slot. Both are stash writes.
