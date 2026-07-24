@@ -449,12 +449,18 @@ fn build_scope_related_info(issue: &ScopeIssue) -> Vec<RelatedInformation> {
         IssueKind::FeatureNotEnabled => vec![
             RelatedInformation {
                 location: issue.range,
-                message: "💡 Enable the feature with `use feature '...'` or a version bundle such as `use v5.36;`".to_string(),
+                message: format!(
+                    "💡 Enable it with `use feature '{}'` or a version bundle such as `use v5.36;`",
+                    issue.variable_name
+                ),
             },
             RelatedInformation {
                 location: issue.range,
-                message: "ℹ️ Feature-gated keywords like `say` are only recognized when the matching `feature` is active in this lexical scope.".to_string(),
-            }
+                message: format!(
+                    "ℹ️ `{}` is only recognized when its `feature` is active in this lexical scope.",
+                    issue.variable_name
+                ),
+            },
         ],
     }
 }
