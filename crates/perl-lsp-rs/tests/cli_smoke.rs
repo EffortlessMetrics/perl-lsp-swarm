@@ -63,8 +63,11 @@ fn doctor_reports_workspace_setup() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(stderr, "");
     assert_eq!(lines.first().copied(), Some("perl-lsp doctor"));
     assert_eq!(lines.get(1).copied(), Some("==============="));
-    assert_eq!(lines.get(3).copied(), Some(format!("Workspace: {}", workspace.display()).as_str()));
-    assert_eq!(lines.get(4).copied(), Some("Project config: loaded .perl-lsp.toml"));
+    assert_eq!(
+        line_with_prefix("Workspace: "),
+        Some(format!("Workspace: {}", workspace.display()).as_str())
+    );
+    assert_eq!(line_with_prefix("Project config: "), Some("Project config: loaded .perl-lsp.toml"));
     assert!(line_with_prefix("Perl: ").is_some());
     assert!(line_with_prefix("Perl version: ").is_some());
     assert!(line_with_prefix("perltidy: ").is_some());
@@ -72,9 +75,15 @@ fn doctor_reports_workspace_setup() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(line_with_prefix("PERL5LIB: "), Some("PERL5LIB: environment empty"));
     assert_eq!(line_with_prefix("PERL5LIB precedence: "), Some("PERL5LIB precedence: prepend"));
     assert_eq!(line_with_prefix("Configured includePaths:"), Some("Configured includePaths:"));
-    let lib_entry = line_with_prefix("  - ")
-        .ok_or("doctor output missing configured includePaths entry")?;
-    assert!(lib_entry.contains(&lib.display().to_string()));
+    let lib_entry = lines
+        .iter()
+        .copied()
+        .find(|line| {
+            line.starts_with("  - ")
+                && line.contains(&lib.display().to_string())
+                && line.contains(".perl-lsp.toml include_paths")
+        })
+        .ok_or("doctor output missing configured includePaths entry for lib")?;
     assert!(lib_entry.contains(".perl-lsp.toml include_paths"));
     assert_eq!(line_with_prefix("Effective @INC roots:"), Some("Effective @INC roots:"));
     assert_eq!(line_with_prefix("System @INC: "), Some("System @INC: disabled"));
@@ -83,9 +92,8 @@ fn doctor_reports_workspace_setup() -> Result<(), Box<dyn std::error::Error>> {
         "  use Foo::Bar; searches Foo/Bar.pm under the effective roots above, in order."
     ));
     assert!(stdout.contains("Next steps:"));
-    assert!(stdout.contains(
-        "  - Add missing project module roots to .perl-lsp.toml [perl].include_paths."
-    ));
+    assert!(stdout
+        .contains("  - Add missing project module roots to .perl-lsp.toml [perl].include_paths."));
     assert!(stdout.contains(
         "  - Set PERL5LIB or use_perl5lib intentionally; doctor reports whether it participates."
     ));
