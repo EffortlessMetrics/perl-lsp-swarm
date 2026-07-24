@@ -1591,7 +1591,8 @@ fn collect_imported_barewords(ast: &Node) -> HashSet<String> {
     }
 
     fn require_module_name(node: &Node) -> Option<String> {
-        let NodeKind::FunctionCall { name, args } = &node.kind else {
+        let (NodeKind::FunctionCall { name, args } | NodeKind::AmperCall { name, args }) = &node.kind
+        else {
             return None;
         };
         if name != "require" {
@@ -1612,7 +1613,8 @@ fn collect_imported_barewords(ast: &Node) -> HashSet<String> {
     }
 
     fn require_variable_name(node: &Node) -> Option<String> {
-        let NodeKind::FunctionCall { name, args } = &node.kind else {
+        let (NodeKind::FunctionCall { name, args } | NodeKind::AmperCall { name, args }) = &node.kind
+        else {
             return None;
         };
         if name != "require" {
