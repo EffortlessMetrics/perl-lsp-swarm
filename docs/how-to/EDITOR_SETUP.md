@@ -288,7 +288,7 @@ push.
   [OPENCODE_SETUP.md](../EDITORS/OPENCODE_SETUP.md) Troubleshooting.
 - **JetBrains (LSP4IJ):** dynamic capability registration is force-disabled
   because LSP4IJ's registration flow is unreliable. See
-  [INTELLIJ_IDEA_SETUP.md](../EDITORS/INTELLIJ_IDEA_SETUP.md) Known Limitations.
+  [INTELLIJ_IDEA_SETUP.md](../EDITORS/INTELLIJ_IDEA_SETUP.md) Troubleshooting.
 
 ## When Setup Fails
 
