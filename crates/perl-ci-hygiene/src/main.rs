@@ -208,6 +208,46 @@ pub(crate) fn first_cfg_test_line_number(path: &Path) -> Result<usize> {
     Ok(usize::MAX)
 }
 
+/// Return true when a `// SAFETY:` comment directly documents `lines[unsafe_idx]`.
+///
+/// Scans upward at most 10 physical lines, skipping blanks, attributes, and
+/// non-SAFETY `//` comments. Stops at the first other code line (including a
+/// prior `unsafe` construct) so a SAFETY comment for an earlier block cannot
+/// satisfy a later one.
+pub(crate) fn has_adjacent_safety_comment(
+    lines: &[String],
+    unsafe_idx: usize,
+    safety_re: &Regex,
+    attr_re: &Regex,
+    comment_re: &Regex,
+    unsafe_impl_re: &Regex,
+) -> bool {
+    let mut scanned = 0usize;
+    let mut j = unsafe_idx;
+    while j > 0 && scanned < 10 {
+        j -= 1;
+        scanned += 1;
+        let line = &lines[j];
+        if line.trim().is_empty() {
+            continue;
+        }
+        if safety_re.is_match(line) {
+            return true;
+        }
+        if attr_re.is_match(line) {
+            continue;
+        }
+        if comment_re.is_match(line) {
+            continue;
+        }
+        if unsafe_impl_re.is_match(line) {
+            continue;
+        }
+        return false;
+    }
+    false
+}
+
 fn read_json_value(path: &Path) -> Result<Value> {
     let raw = fs::read_to_string(path).with_context(|| format!("reading {:?}", path))?;
     let value =
@@ -2341,8 +2381,9 @@ fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
         r"unsafe[[:space:]]*\{|unsafe[[:space:]]+extern|unsafe[[:space:]]+impl|#!\[allow\(unsafe_code\)\]",
     )?;
     let comment_re = Regex::new(r"^\s*//")?;
-    // A SAFETY comment must appear within 10 lines above an unsafe construct.
-    let safety_re = Regex::new(r"//\s*SAFETY:")?;
+    let safety_re = Regex::new(r"^\s*//\s*SAFETY:")?;
+    let attr_re = Regex::new(r"^\s*#\[")?;
+    let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl")?;
 
     let mut all_matches: Vec<String> = Vec::new();
     let mut bare_unsafe: Vec<String> = Vec::new();
@@ -2364,11 +2405,14 @@ fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
                 let location = format!("{rel}:{line_no}:{line}");
                 all_matches.push(location.clone());
 
-                // Require a // SAFETY: comment within the 10 preceding lines.
-                let window_start = idx.saturating_sub(10);
-                let has_safety =
-                    lines[window_start..idx].iter().any(|prev| safety_re.is_match(prev));
-                if !has_safety {
+                if !has_adjacent_safety_comment(
+                    &lines,
+                    idx,
+                    &safety_re,
+                    &attr_re,
+                    &comment_re,
+                    &unsafe_impl_re,
+                ) {
                     bare_unsafe.push(location);
                 }
             }
@@ -3957,5 +4001,70 @@ mod tests {
         assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
         let _ = std::fs::remove_file(&tmp);
         Ok(())
+    }
+
+    #[test]
+    fn adjacent_safety_comment_matches_directly_above() {
+        let safety_re = Regex::new(r"^\s*//\s*SAFETY:").unwrap();
+        let attr_re = Regex::new(r"^\s*#\[").unwrap();
+        let comment_re = Regex::new(r"^\s*//").unwrap();
+        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl").unwrap();
+        let lines = vec![
+            "// SAFETY: Win32 API".to_string(),
+            "unsafe { api(); }".to_string(),
+        ];
+        assert!(has_adjacent_safety_comment(
+            &lines,
+            1,
+            &safety_re,
+            &attr_re,
+            &comment_re,
+            &unsafe_impl_re,
+        ));
+    }
+
+    #[test]
+    fn adjacent_safety_comment_does_not_cross_intervening_code() {
+        let safety_re = Regex::new(r"^\s*//\s*SAFETY:").unwrap();
+        let attr_re = Regex::new(r"^\s*#\[").unwrap();
+        let comment_re = Regex::new(r"^\s*//").unwrap();
+        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl").unwrap();
+        let lines = vec![
+            "// SAFETY: first block".to_string(),
+            "unsafe { first(); }".to_string(),
+            "fn between() {}".to_string(),
+            "unsafe { second(); }".to_string(),
+        ];
+        assert!(!has_adjacent_safety_comment(
+            &lines,
+            3,
+            &safety_re,
+            &attr_re,
+            &comment_re,
+            &unsafe_impl_re,
+        ));
+    }
+
+    #[test]
+    fn adjacent_safety_comment_covers_back_to_back_unsafe_impls() {
+        let safety_re = Regex::new(r"^\s*//\s*SAFETY:").unwrap();
+        let attr_re = Regex::new(r"^\s*#\[").unwrap();
+        let comment_re = Regex::new(r"^\s*//").unwrap();
+        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl").unwrap();
+        let lines = vec![
+            "// SAFETY: shared Send/Sync justification".to_string(),
+            "#[allow(unsafe_code)]".to_string(),
+            "unsafe impl Send for Handle {}".to_string(),
+            "#[allow(unsafe_code)]".to_string(),
+            "unsafe impl Sync for Handle {}".to_string(),
+        ];
+        assert!(has_adjacent_safety_comment(
+            &lines,
+            4,
+            &safety_re,
+            &attr_re,
+            &comment_re,
+            &unsafe_impl_re,
+        ));
     }
 }
