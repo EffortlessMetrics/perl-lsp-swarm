@@ -4,7 +4,7 @@
 
 use super::super::*;
 use perl_workspace::folder::{extract_workspace_folder_uris, root_path_to_file_uri};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 fn is_opencode_client(params: &Value) -> bool {
     params
@@ -266,6 +266,10 @@ impl LspServer {
                     .pointer("/capabilities/textDocument/codeAction/documentationSupport")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
+                caps.code_action_disabled_support = params
+                    .pointer("/capabilities/textDocument/codeAction/disabledSupport")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 caps.code_action_llm_generated_tag_support = params
                     .pointer("/capabilities/textDocument/codeAction/tagSupport/valueSet")
                     .and_then(Value::as_array)
@@ -394,8 +398,13 @@ impl LspServer {
                     encodings
                         .iter()
                         .find_map(|enc| {
-                            enc.as_str()
-                                .and_then(|s| if supported.contains(&s) { Some(s) } else { None })
+                            enc.as_str().and_then(|s| {
+                                if supported.contains(&s) {
+                                    Some(s)
+                                } else {
+                                    None
+                                }
+                            })
                         })
                         .and_then(|enc_str| match enc_str {
                             "utf-8" => Some(crate::textdoc::PosEnc::Utf8),
@@ -841,10 +850,10 @@ mod init_options_tests {
 #[cfg(test)]
 mod tests {
     use super::{apply_disabled_feature_id, is_jetbrains_client, is_opencode_client};
-    use crate::LspServer;
     use crate::protocol::capabilities::BuildFlags;
+    use crate::LspServer;
     use perl_workspace::folder::root_path_to_file_uri;
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
     use std::sync::atomic::Ordering;
 
     #[test]
@@ -864,8 +873,8 @@ mod tests {
     }
 
     #[test]
-    fn handle_initialize_applies_perl_initialization_options()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_initialize_applies_perl_initialization_options(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let temp = tempfile::tempdir()?;
         let folder = temp.path().join("workspace");
@@ -899,8 +908,8 @@ mod tests {
     }
 
     #[test]
-    fn handle_initialize_perl_initialization_options_are_overridden_by_toml()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_initialize_perl_initialization_options_are_overridden_by_toml(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let temp = tempfile::tempdir()?;
         let folder = temp.path().join("workspace");
@@ -1101,8 +1110,8 @@ mod tests {
     }
 
     #[test]
-    fn initialize_disables_workspace_folder_server_capability_when_client_lacks_support()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn initialize_disables_workspace_folder_server_capability_when_client_lacks_support(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let params = json!({
             "capabilities": {
@@ -1133,8 +1142,8 @@ mod tests {
     }
 
     #[test]
-    fn initialize_always_advertises_workspace_folder_change_notifications_per_lsp_spec()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn initialize_always_advertises_workspace_folder_change_notifications_per_lsp_spec(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let params = json!({
             "capabilities": {
@@ -1382,6 +1391,27 @@ mod tests {
     }
 
     #[test]
+    fn initialize_parses_code_action_disabled_support() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "textDocument": {
+                    "codeAction": {
+                        "disabledSupport": true
+                    }
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+
+        if !server.client_capabilities.lock().code_action_disabled_support {
+            return Err("disabledSupport capability was not parsed".into());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn initialize_parses_code_action_llm_generated_tag_support() {
         let server = LspServer::new();
         let params = json!({
@@ -1509,8 +1539,8 @@ mod tests {
     }
 
     #[test]
-    fn initialize_advertises_code_action_documentation_only_when_supported()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn initialize_advertises_code_action_documentation_only_when_supported(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let unsupported = LspServer::new()
             .handle_initialize(Some(json!({ "capabilities": {} })))?
             .ok_or("initialize should return unsupported-client payload")?;
