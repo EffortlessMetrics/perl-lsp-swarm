@@ -61,7 +61,7 @@ impl<'a> Parser<'a> {
             if self.peek_kind() == Some(TokenKind::LeftBrace) {
                 if let NodeKind::Variable { sigil, .. } = &expr.kind {
                     if sigil == "@" || sigil == "%" {
-                        let is_at = sigil == "@"; // last use of borrow; NLL releases it here
+                        let is_at = sigil == "@";
                         self.tokens.next()?; // consume {
                         let key = self.parse_hash_subscript_key()?;
                         self.expect_closing_delimiter(TokenKind::RightBrace)?;
