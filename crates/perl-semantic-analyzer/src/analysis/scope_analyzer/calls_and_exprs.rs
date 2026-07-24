@@ -1,10 +1,12 @@
 //! Handlers for call-shaped and structural recursion node kinds in scope analysis.
 
 use super::{
-    AnalysisContext, Scope, ScopeAnalyzer, ScopeIssue, builtin_declaration_arg_positions,
-    is_topic_defaulting_builtin, is_topic_modifying_builtin,
+    AnalysisContext, IssueKind, Scope, ScopeAnalyzer, ScopeIssue,
+    builtin_declaration_arg_positions, feature_for_keyword, is_topic_defaulting_builtin,
+    is_topic_modifying_builtin,
 };
 use crate::ast::Node;
+use crate::pragma_tracker::PragmaState;
 use std::rc::Rc;
 
 /// Handle `NodeKind::FunctionCall`.
@@ -18,6 +20,7 @@ pub(super) fn handle_function_call<'a>(
     ancestors: &mut Vec<&'a Node>,
     issues: &mut Vec<ScopeIssue>,
     context: &AnalysisContext<'a>,
+    pragma_state: &PragmaState,
     strict_vars_mode: bool,
 ) {
     if let Some((sigil, var_name)) = analyzer.extract_name_like_variable(name) {
@@ -30,6 +33,36 @@ pub(super) fn handle_function_call<'a>(
             sigil,
             var_name,
         );
+    }
+
+    // Feature-gated barewords (e.g. `say`) are only valid when the enabling
+    // `feature` is active at this offset — via `use feature '...'` or a version
+    // bundle (`use v5.10`/`use v5.36`), both resolved by `has_feature` (#2584).
+    // A method call (`$o->say`) and an autoquoted hash key (`say => 1`) parse as
+    // different node kinds and never reach here, so no extra guard is needed for
+    // them; an explicitly imported symbol (`use Foo qw(say)`) or a user-defined
+    // sub of the same name suppresses the gate.
+    //
+    // When the file declares a version pragma (`use vX.Y`), the `version_compat`
+    // lint (`PL900`) owns this diagnostic with a version-specific message, so the
+    // gate stands down there to avoid a duplicate warning on the same `say`; the
+    // bare-`say`-with-no-version case (which `version_compat` skips) stays ours.
+    if let Some(feature) = feature_for_keyword(name) {
+        if !pragma_state.has_feature(feature)
+            && !context.has_declared_version()
+            && !context.has_imported_bareword(name)
+            && !context.has_defined_sub(name)
+        {
+            issues.push(ScopeIssue {
+                kind: IssueKind::FeatureNotEnabled,
+                variable_name: name.to_string(),
+                line: context.get_line(node.location.start),
+                range: (node.location.start, node.location.end),
+                description: format!(
+                    "'{name}' requires `use feature '{feature}'` (or a `use vX.Y` bundle that enables it)"
+                ),
+            });
+        }
     }
 
     // Builtins that default to $_ when called with zero arguments implicitly

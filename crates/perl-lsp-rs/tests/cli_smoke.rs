@@ -92,8 +92,11 @@ fn doctor_reports_workspace_setup() -> Result<(), Box<dyn std::error::Error>> {
         "  use Foo::Bar; searches Foo/Bar.pm under the effective roots above, in order."
     ));
     assert!(stdout.contains("Next steps:"));
-    assert!(stdout
-        .contains("  - Add missing project module roots to .perl-lsp.toml [perl].include_paths."));
+    assert!(
+        stdout.contains(
+            "  - Add missing project module roots to .perl-lsp.toml [perl].include_paths."
+        )
+    );
     assert!(stdout.contains(
         "  - Set PERL5LIB or use_perl5lib intentionally; doctor reports whether it participates."
     ));

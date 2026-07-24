@@ -182,7 +182,9 @@ fn test_exact_failure_class_taxonomy_in_artifact() -> TestResult {
         );
     } else {
         // Red TDD: this test documents that the builder must add failure_class field.
-        anyhow::bail!("receipt must have failure_class field; builder will add it");
+        return Err(
+            anyhow::anyhow!("receipt must have failure_class field; builder will add it").into()
+        );
     }
 
     Ok(())

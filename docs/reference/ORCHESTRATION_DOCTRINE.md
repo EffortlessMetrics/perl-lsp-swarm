@@ -43,7 +43,7 @@ See [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md) for the full classifi
 
 The pipeline is gates (coarse stages) with multiple agents working within each gate. Sequencing within a gate is preferred because each agent reads the prior, but sequencing is not strict. Some gates may be skipped when not relevant to a given PR's nature.
 
-The six gates:
+The pipeline has seven gates. Gates 1–6 are the sequential delivery path; Gate 7 (learning consolidation) is cross-cutting — learning happens throughout all gates, and Gate 7 consolidates captured artifacts into durable memory, doctrine, and follow-up work. The canonical gate table lives in [PIPELINE_GATES.md](PIPELINE_GATES.md); the summary below is for orientation.
 
 | Gate | Purpose | Agents (within-gate) |
 |------|---------|----------------------|
@@ -53,8 +53,7 @@ The six gates:
 | **4. Review/improve** | Right thing × what codebase needs × right way | reviewer, maintainer-pr, refactor-planner, green-refactor, reviewer-deep, diff-auditor |
 | **5. CI green** | Live CI actually green (not just the label) | green-ci, pr-responder (iterations) |
 | **6. Merge** | Land it | ops |
-
-A seventh layer (Gate 7 — learning consolidation) is cross-cutting: learning happens throughout all gates, and Gate 7 consolidates captured artifacts into durable memory, doctrine, and follow-up work.
+| **7. Learn** | Consolidate captured artifacts into durable memory, doctrine, and follow-up work | wisdom, memory-recalibrator |
 
 ### 3. The reconciler is the authoritative label-state engine
 
@@ -149,7 +148,7 @@ Issue → Gate 1 → Gate 2 → Gate 3 → Gate 4 → Gate 5 → Gate 6 → Gate
 The tactical issues that implement this doctrine, grouped by theme:
 
 **Gate model documentation and implementation:**
-- Gate-model docs: introduce the 6-gate structure in `docs/reference/` and update CLAUDE.md
+- Gate-model docs: the 7-gate structure is documented in `docs/reference/PIPELINE_GATES.md` and referenced from CLAUDE.md
 - Gate-model implementation: make routing logic gate-aware (skip irrelevant gates by PR nature)
 
 **Reconciler maturity:**

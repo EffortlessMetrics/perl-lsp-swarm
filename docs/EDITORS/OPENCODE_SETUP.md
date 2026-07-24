@@ -107,6 +107,15 @@ You can combine this `permission` block with the `lsp` block above.
 
 ## Troubleshooting
 
+### Diagnostics use push mode (even if OpenCode advertises pull)
+
+The server force-enables push diagnostics (`textDocument/publishDiagnostics`)
+for OpenCode clients, even when OpenCode advertises the
+`textDocument/diagnostic` (pull) capability. This is because OpenCode currently
+relies on push diagnostics for its agent feedback loop. If you see diagnostics
+in OpenCode's output but not via a pull-based diagnostic UI, this is expected;
+see `capabilities.rs` `is_opencode_client` for the rationale.
+
 - If no Perl files activate the server, verify the file extension is listed in
   `opencode.json`.
 - If OpenCode cannot start the server, run `command -v perllsp`,
