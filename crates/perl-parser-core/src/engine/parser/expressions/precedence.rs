@@ -641,6 +641,27 @@ impl<'a> Parser<'a> {
                         break;
                     }
                 }
+                TokenKind::Spaceship | TokenKind::StringCompare => {
+                    let op_token = self.tokens.next()?;
+                    let right = if let Some(missing) =
+                        self.recover_missing_infix_rhs(op_token.start)
+                    {
+                        missing
+                    } else {
+                        self.parse_relational()?
+                    };
+                    let start = expr.location.start;
+                    let end = right.location.end;
+
+                    expr = Node::new(
+                        NodeKind::Binary {
+                            op: op_token.text.to_string(),
+                            left: Box::new(expr),
+                            right: Box::new(right),
+                        },
+                        SourceLocation { start, end },
+                    );
+                }
                 TokenKind::Equal
                 | TokenKind::NotEqual
                 | TokenKind::Match

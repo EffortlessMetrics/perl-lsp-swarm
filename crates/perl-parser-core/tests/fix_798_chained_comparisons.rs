@@ -181,3 +181,13 @@ fn test_spaceship_and_less_do_not_chain() {
         "cross-precedence `<=>` and `<` must not chain, got: {ks:?}"
     );
 }
+
+#[test]
+fn test_standalone_spaceship_parses_clean() {
+    assert_clean_parse("my $r = $a <=> $b;");
+}
+
+#[test]
+fn test_standalone_cmp_parses_clean() {
+    assert_clean_parse("my $r = $a cmp $b;");
+}
