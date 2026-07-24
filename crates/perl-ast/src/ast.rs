@@ -462,6 +462,17 @@ impl Node {
                 format!("(key_value_slice {} {})", target.to_sexp(), keys.to_sexp())
             }
 
+            NodeKind::ChainedComparison { operands, ops } => {
+                let mut parts = Vec::with_capacity(operands.len() + ops.len());
+                for (i, operand) in operands.iter().enumerate() {
+                    parts.push(operand.to_sexp());
+                    if let Some(op) = ops.get(i) {
+                        parts.push(op.clone());
+                    }
+                }
+                format!("(chained_comparison {})", parts.join(" "))
+            }
+
             NodeKind::Ternary { condition, then_expr, else_expr } => {
                 format!(
                     "(ternary {} {} {})",
@@ -1067,6 +1078,11 @@ impl Node {
                 f(target);
                 f(keys);
             }
+            NodeKind::ChainedComparison { operands, .. } => {
+                for operand in operands {
+                    f(operand);
+                }
+            }
             NodeKind::Ternary { condition, then_expr, else_expr } => {
                 f(condition);
                 f(then_expr);
@@ -1346,6 +1362,11 @@ impl Node {
             NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
                 emit!(FieldId::TARGET, target);
                 emit!(FieldId::KEY, keys);
+            }
+            NodeKind::ChainedComparison { operands, .. } => {
+                for operand in operands {
+                    emit!(FieldId::ELEMENTS, operand);
+                }
             }
             NodeKind::Ternary { condition, then_expr, else_expr } => {
                 emit!(FieldId::CONDITION, condition);
@@ -1950,6 +1971,20 @@ pub enum NodeKind {
         target: Box<Node>,
         /// Key expression
         keys: Box<Node>,
+    },
+
+    /// Chained comparison expression (Perl 5.32+): `1 < $x < 10`
+    ///
+    /// Represents two or more consecutive comparison operators at the same
+    /// precedence level. Semantically equivalent to `($a op1 $b) && ($b op2 $c)`
+    /// with each intermediate operand evaluated only once.
+    ///
+    /// A single comparison (`$x < 10`) always produces [`Binary`] instead.
+    ChainedComparison {
+        /// The N+1 operands in declaration order, where N is the number of operators (N >= 2).
+        operands: Vec<Node>,
+        /// The N comparison operators between adjacent operand pairs.
+        ops: Vec<String>,
     },
 
     /// Ternary conditional expression for Perl parsing workflow logic
@@ -2613,6 +2648,7 @@ impl NodeKind {
             NodeKind::ArraySlice { .. } => "ArraySlice",
             NodeKind::HashSlice { .. } => "HashSlice",
             NodeKind::KeyValueSlice { .. } => "KeyValueSlice",
+            NodeKind::ChainedComparison { .. } => "ChainedComparison",
             NodeKind::Ternary { .. } => "Ternary",
             NodeKind::Unary { .. } => "Unary",
             NodeKind::Diamond => "Diamond",
@@ -2709,6 +2745,7 @@ impl NodeKind {
             NodeKind::ArraySlice { .. } => Some("array_slice"),
             NodeKind::HashSlice { .. } => Some("hash_slice"),
             NodeKind::KeyValueSlice { .. } => Some("key_value_slice"),
+            NodeKind::ChainedComparison { .. } => Some("chained_comparison"),
             NodeKind::NestedVariableList { .. } => Some("nested_variable_list"),
             NodeKind::Variable { .. } => Some("variable"),
             NodeKind::VariableWithAttributes { .. } => Some("variable_with_attributes"),
@@ -2831,6 +2868,7 @@ impl NodeKind {
             NodeKind::ArraySlice { .. }
             | NodeKind::HashSlice { .. }
             | NodeKind::KeyValueSlice { .. }
+            | NodeKind::ChainedComparison { .. }
             | NodeKind::NestedVariableList { .. }
             | NodeKind::Variable { .. }
             | NodeKind::VariableWithAttributes { .. }
@@ -3182,6 +3220,7 @@ mod tests {
                 target: Box::new(dummy_node()),
                 keys: Box::new(dummy_node()),
             },
+            NodeKind::ChainedComparison { operands: vec![], ops: vec![] },
             NodeKind::Ternary {
                 condition: Box::new(dummy_node()),
                 then_expr: Box::new(dummy_node()),

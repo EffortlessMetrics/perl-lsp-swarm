@@ -251,6 +251,12 @@ fn walk_security_node(
             walk_security_node(keys, diagnostics, signal_shadowed);
             signal_shadowed
         }
+        NodeKind::ChainedComparison { operands, .. } => {
+            for operand in operands {
+                walk_security_node(operand, diagnostics, signal_shadowed);
+            }
+            signal_shadowed
+        }
         NodeKind::Ternary { condition, then_expr, else_expr } => {
             walk_security_node(condition, diagnostics, signal_shadowed);
             walk_security_node(then_expr, diagnostics, signal_shadowed);

@@ -244,9 +244,7 @@ fn coderef_target_name(node: &Node) -> Option<&str> {
             Some(name)
         }
         NodeKind::AmperCall { name, args }
-            if args.is_empty()
-                && !name.is_empty()
-                && !name.starts_with(['$', '@', '%']) =>
+            if args.is_empty() && !name.is_empty() && !name.starts_with(['$', '@', '%']) =>
         {
             Some(name)
         }

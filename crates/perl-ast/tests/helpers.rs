@@ -90,6 +90,13 @@ pub fn all_nodekind_instances() -> Vec<Node> {
             NodeKind::KeyValueSlice { target: Box::new(var("%", "h")), keys: Box::new(num("0")) },
             loc(),
         ),
+        Node::new(
+            NodeKind::ChainedComparison {
+                operands: vec![num("1"), var("$", "x"), num("10")],
+                ops: vec!["<".to_string(), "<".to_string()],
+            },
+            loc(),
+        ),
         Node::new(NodeKind::Unary { op: "-".to_string(), operand: Box::new(num("1")) }, loc()),
         Node::new(
             NodeKind::If {
