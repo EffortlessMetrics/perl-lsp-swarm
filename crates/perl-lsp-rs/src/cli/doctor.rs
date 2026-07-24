@@ -12,6 +12,7 @@ use perl_lsp_rs_core::config::{
 };
 use perl_lsp_rs_core::platform::{detect_perlbrew_perl, detect_plenv_perl, resolve_perl_path};
 use perl_parser_core::path_security::{WorkspacePathError, validate_workspace_path};
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -20,11 +21,24 @@ const PERL5LIB_SOURCE: &str = "PERL5LIB";
 /// Wall-clock timeout for external tool (`perltidy`/`perlcritic`) version probes.
 const DOCTOR_TOOL_TIMEOUT_SECS: u64 = 5;
 
-pub(super) fn run_doctor(dir: &str) -> i32 {
-    match build_doctor_report(dir) {
+pub(super) fn run_doctor(dir: &str, json: bool) -> i32 {
+    match build_doctor_report_struct(dir) {
         Ok(report) => {
-            print!("{report}");
-            0
+            if json {
+                match serde_json::to_string_pretty(&report) {
+                    Ok(json_str) => {
+                        println!("{json_str}");
+                        0
+                    }
+                    Err(err) => {
+                        eprintln!("Failed to serialize doctor report: {err}");
+                        1
+                    }
+                }
+            } else {
+                print!("{}", render_report(report));
+                0
+            }
         }
         Err(error) => {
             eprintln!("{error}");
@@ -33,7 +47,7 @@ pub(super) fn run_doctor(dir: &str) -> i32 {
     }
 }
 
-fn build_doctor_report(dir: &str) -> Result<String, String> {
+fn build_doctor_report_struct(dir: &str) -> Result<DoctorReport, String> {
     let workspace = workspace_dir(dir)?;
     let mut workspace_config = WorkspaceConfig::default();
     let config_report = load_workspace_config(&workspace, &mut workspace_config)?;
@@ -56,7 +70,7 @@ fn build_doctor_report(dir: &str) -> Result<String, String> {
     );
     let system_inc = system_inc_report(&workspace, &mut workspace_config);
 
-    Ok(render_report(DoctorReport {
+    Ok(DoctorReport {
         workspace,
         config: config_report,
         perl: perl_report,
@@ -68,9 +82,10 @@ fn build_doctor_report(dir: &str) -> Result<String, String> {
         configured_paths,
         effective_paths,
         system_inc,
-    }))
+    })
 }
 
+#[derive(Serialize)]
 struct DoctorReport {
     workspace: PathBuf,
     config: ProjectConfigReport,
@@ -85,18 +100,19 @@ struct DoctorReport {
     system_inc: SystemIncReport,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize)]
 struct ProjectConfigReport {
     status: ProjectConfigStatus,
     include_source: &'static str,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize)]
 enum ProjectConfigStatus {
     Loaded,
     Missing,
 }
 
+#[derive(Serialize)]
 struct PerlReport {
     binary: Option<PathBuf>,
     source: &'static str,
@@ -108,6 +124,7 @@ struct PerlReport {
 /// shell out to. Detection is read-only: the binary is located on `PATH` and
 /// asked for its version. A missing binary is reported, not fatal — doctor
 /// stays read-only and exits 0 as long as it can produce a report.
+#[derive(Serialize)]
 struct ToolReport {
     binary: Option<PathBuf>,
     source: &'static str,
@@ -115,6 +132,7 @@ struct ToolReport {
     error: Option<String>,
 }
 
+#[derive(Serialize)]
 struct PathReport {
     raw: String,
     resolved: PathBuf,
@@ -127,6 +145,7 @@ struct EffectiveRootCandidate {
     source: &'static str,
 }
 
+#[derive(Serialize)]
 struct SystemIncReport {
     status: &'static str,
     paths: Vec<PathBuf>,
@@ -912,7 +931,7 @@ mod tests {
         let missing_dir = missing.to_str().ok_or("non-UTF-8 temp path")?;
 
         let error =
-            build_doctor_report(missing_dir).err().ok_or("missing workspace should fail doctor")?;
+            build_doctor_report_struct(missing_dir).err().ok_or("missing workspace should fail doctor")?;
 
         assert_eq!(error, format!("{missing_dir}: directory not found"));
         Ok(())
@@ -923,7 +942,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        assert_eq!(run_doctor(dir), 0);
+        assert_eq!(run_doctor(dir, false), 0);
         Ok(())
     }
 
@@ -931,11 +950,11 @@ mod tests {
     fn run_doctor_match_arm_discriminator() -> TestResult {
         let temp = tempfile::tempdir()?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
-        assert_eq!(run_doctor(dir), 0);
+        assert_eq!(run_doctor(dir, false), 0);
 
         let missing = temp.path().join("missing-workspace");
         let missing_dir = missing.to_str().ok_or("non-UTF-8 temp path")?;
-        assert_eq!(run_doctor(missing_dir), 1);
+        assert_eq!(run_doctor(missing_dir, false), 1);
         Ok(())
     }
 
@@ -1163,7 +1182,7 @@ mod tests {
         )?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        let report = build_doctor_report(dir)?;
+        let report = render_report(build_doctor_report_struct(dir)?);
 
         assert!(report.contains("Project config: loaded .perl-lsp.toml"));
         assert!(report.contains("custom/lib"));
@@ -1192,7 +1211,7 @@ mod tests {
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
         let error =
-            build_doctor_report(dir).err().ok_or("invalid project config should fail doctor")?;
+            build_doctor_report_struct(dir).err().ok_or("invalid project config should fail doctor")?;
 
         assert!(error.contains(".perl-lsp.toml"));
         assert!(error.contains("syntax error"));
@@ -1402,7 +1421,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        let report = build_doctor_report(dir)?;
+        let report = render_report(build_doctor_report_struct(dir)?);
 
         assert!(report.contains("perltidy:"));
         assert!(report.contains("perlcritic:"));
@@ -1413,7 +1432,7 @@ mod tests {
     fn doctor_report_next_steps_mention_install_hints_when_tools_missing() -> TestResult {
         // Force both tools to be reported as missing by injecting a resolver
         // that always returns None. Rebuild the report pieces the same way
-        // `build_doctor_report` does, but with the missing-tool reports, to
+        // `build_doctor_report_struct` does, but with the missing-tool reports, to
         // assert the Next steps hints render without depending on whether
         // perltidy/perlcritic are installed in the test environment.
         let temp = tempfile::tempdir()?;
