@@ -4,8 +4,8 @@
 //! including try/catch, given/when, class/method, signatures, and more.
 
 use perl_parser::{
-    ast::{Node, NodeKind},
     Parser,
+    ast::{Node, NodeKind},
 };
 
 /// Test try/catch with signatures, class methods, and variable declarations
@@ -326,11 +326,7 @@ my $data = $rect->serialize();
         class_nodes
             .iter()
             .filter(|n| {
-                if let NodeKind::Class { name, .. } = &n.kind {
-                    name == "Shape"
-                } else {
-                    false
-                }
+                if let NodeKind::Class { name, .. } = &n.kind { name == "Shape" } else { false }
             })
             .collect();
     assert_eq!(shape_class.len(), 1, "Should have Shape class");
@@ -339,11 +335,7 @@ my $data = $rect->serialize();
     let rect_class: Vec<_> = class_nodes
         .iter()
         .filter(|n| {
-            if let NodeKind::Class { name, .. } = &n.kind {
-                name == "Rectangle"
-            } else {
-                false
-            }
+            if let NodeKind::Class { name, .. } = &n.kind { name == "Rectangle" } else { false }
         })
         .collect();
     assert_eq!(rect_class.len(), 1, "Should have Rectangle class");
