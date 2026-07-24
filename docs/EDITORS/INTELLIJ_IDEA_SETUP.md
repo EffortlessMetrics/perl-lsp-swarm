@@ -240,12 +240,11 @@ reload `perllsp` without restarting IntelliJ IDEA.
 
 ### Dynamic file-watcher registration is disabled
 
-The server force-disables dynamic capability registration for JetBrains-family
+The server force-disables dynamic file-watcher registration for JetBrains-family
 clients (IntelliJ IDEA, PyCharm, etc.) because LSP4IJ's registration flow is
 unreliable and can degrade startup. This means `workspace/didChangeWatchedFiles`
-is not dynamically registered. File changes detected by the server's own
-file-watcher (if enabled) will still trigger re-indexing, but LSP4IJ-side file
-watchers that depend on dynamic registration will not be set up. This is
+is not dynamically registered, so LSP4IJ-side file watchers that depend on
+dynamic registration will not be set up. This is
 intentional; see `capabilities.rs` `is_jetbrains_client` for the rationale.
 
 ## Windows Notes
