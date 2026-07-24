@@ -799,18 +799,20 @@ impl SymbolExtractor {
                 self.visit_node(operand);
             }
 
-            NodeKind::FunctionCall { name, args } => {
-                if self.const_fast_enabled
-                    && name == "const"
-                    && self.try_extract_const_fast_declaration(args)
-                {
-                    return;
-                }
-                if self.readonly_enabled
-                    && name == "Readonly"
-                    && self.try_extract_readonly_declaration(args)
-                {
-                    return;
+            NodeKind::FunctionCall { name, args } | NodeKind::AmperCall { name, args } => {
+                if matches!(&node.kind, NodeKind::FunctionCall { .. }) {
+                    if self.const_fast_enabled
+                        && name == "const"
+                        && self.try_extract_const_fast_declaration(args)
+                    {
+                        return;
+                    }
+                    if self.readonly_enabled
+                        && name == "Readonly"
+                        && self.try_extract_readonly_declaration(args)
+                    {
+                        return;
+                    }
                 }
 
                 // Track function call as a reference
@@ -4205,6 +4207,27 @@ sub jump {
         assert!(
             references.iter().any(|reference| reference.kind == SymbolKind::Subroutine),
             "goto &target should produce a subroutine reference"
+        );
+    }
+
+    #[test]
+    fn test_amper_call_records_subroutine_reference() {
+        let code = r#"
+sub callee { }
+sub caller {
+    &callee(1);
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+
+        let extractor = SymbolExtractor::new_with_source(code);
+        let table = extractor.extract(&ast);
+        let references = must_some(table.references.get("callee"));
+
+        assert!(
+            references.iter().any(|reference| reference.kind == SymbolKind::Subroutine),
+            "&callee(1) should record a subroutine reference"
         );
     }
 
