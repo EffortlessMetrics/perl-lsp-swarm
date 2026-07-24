@@ -125,7 +125,7 @@ fn walk(node: &Node, out: &mut Vec<SymbolRef>) {
             });
         }
 
-        NodeKind::FunctionCall { name, args } => {
+        NodeKind::FunctionCall { name, args } | NodeKind::AmperCall { name, args } => {
             // The parser reuses FunctionCall for a few non-call constructs using
             // sentinel names that contain non-identifier characters or are reserved
             // keywords.  Filter them out so consumers never see synthetic nodes:
@@ -133,7 +133,8 @@ fn walk(node: &Node, out: &mut Vec<SymbolRef>) {
             //   "&{}":  coderef dereference
             //   "field": Perl 5.38+ OOP `field $x => accessor` form — a declaration,
             //            not a call; must not be reported as a SubroutineCall ref.
-            let is_sentinel = matches!(name.as_str(), "->()" | "&{}" | "field");
+            let is_sentinel = matches!(&node.kind, NodeKind::FunctionCall { .. })
+                && matches!(name.as_str(), "->()" | "&{}" | "field");
             if !is_sentinel {
                 let (package_qualifier, bare_name, qualified_name) = split_qualified_name(name);
                 out.push(SymbolRef {
@@ -239,6 +240,13 @@ fn coderef_target_name(node: &Node) -> Option<&str> {
         // ampersand. Keep ordinary `\foo()` / `goto foo()` as call expressions.
         NodeKind::FunctionCall { name, args }
             if args.is_empty() && has_parser_ampersand_span(node, name) =>
+        {
+            Some(name)
+        }
+        NodeKind::AmperCall { name, args }
+            if args.is_empty()
+                && !name.is_empty()
+                && !name.starts_with(['$', '@', '%']) =>
         {
             Some(name)
         }

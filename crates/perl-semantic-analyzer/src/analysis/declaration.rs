@@ -1304,7 +1304,9 @@ impl<'a> DeclarationProvider<'a> {
                 }
                 children
             }
-            NodeKind::FunctionCall { args, .. } => args.iter().collect(),
+            NodeKind::FunctionCall { args, .. } | NodeKind::AmperCall { args, .. } => {
+                args.iter().collect()
+            }
             NodeKind::MethodCall { object, args, .. } => {
                 let mut children = vec![object.as_ref()];
                 children.extend(args.iter());
