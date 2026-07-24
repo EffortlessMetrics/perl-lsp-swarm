@@ -1526,9 +1526,14 @@ impl ScopeAnalyzer {
                     )
                 }
                 IssueKind::FeatureNotEnabled => {
+                    // Resolve the enabling `feature` name from the keyword rather
+                    // than assuming they match — they coincide for `say` but not
+                    // for e.g. `given`/`when` (feature `switch`).
+                    let feature =
+                        feature_for_keyword(&issue.variable_name).unwrap_or(&issue.variable_name);
                     format!(
                         "Enable '{}' with `use feature '{}'` or a `use vX.Y` bundle",
-                        issue.variable_name, issue.variable_name
+                        issue.variable_name, feature
                     )
                 }
             })
@@ -1815,7 +1820,7 @@ fn collect_defined_subs(ast: &Node) -> HashSet<String> {
 /// follow-up. Version bundles (`use v5.10`/`use v5.36`) enable the underlying
 /// feature and are resolved by `PragmaState::has_feature`, so they need no
 /// entry here.
-pub(super) fn feature_for_keyword(name: &str) -> Option<&'static str> {
+pub fn feature_for_keyword(name: &str) -> Option<&'static str> {
     match name {
         "say" => Some("say"),
         _ => None,

@@ -4,7 +4,7 @@
 //! into diagnostic messages with pragma-aware severity mapping.
 
 use perl_diagnostics::codes::DiagnosticCode;
-use perl_semantic_analyzer::scope_analyzer::{IssueKind, ScopeIssue};
+use perl_semantic_analyzer::scope_analyzer::{IssueKind, ScopeIssue, feature_for_keyword};
 use perl_semantic_facts::{Confidence, FileId, VisibleSymbol, VisibleSymbolSource};
 use perl_workspace::semantic::queries::SemanticQueries;
 
@@ -446,22 +446,27 @@ fn build_scope_related_info(issue: &ScopeIssue) -> Vec<RelatedInformation> {
                 message: "ℹ️ Capture variables ($1, $2, etc.) hold the last successful match and may be undef if no match has occurred.".to_string(),
             }
         ],
-        IssueKind::FeatureNotEnabled => vec![
-            RelatedInformation {
-                location: issue.range,
-                message: format!(
-                    "💡 Enable it with `use feature '{}'` or a version bundle such as `use v5.36;`",
-                    issue.variable_name
-                ),
-            },
-            RelatedInformation {
-                location: issue.range,
-                message: format!(
-                    "ℹ️ `{}` is only recognized when its `feature` is active in this lexical scope.",
-                    issue.variable_name
-                ),
-            },
-        ],
+        IssueKind::FeatureNotEnabled => {
+            // Resolve the enabling `feature` name from the keyword; they coincide
+            // for `say` but not for future keywords (e.g. `given`/`when` → `switch`).
+            let feature =
+                feature_for_keyword(&issue.variable_name).unwrap_or(&issue.variable_name);
+            vec![
+                RelatedInformation {
+                    location: issue.range,
+                    message: format!(
+                        "💡 Enable it with `use feature '{feature}'` or a version bundle such as `use v5.36;`"
+                    ),
+                },
+                RelatedInformation {
+                    location: issue.range,
+                    message: format!(
+                        "ℹ️ `{}` is only recognized when its `feature` is active in this lexical scope.",
+                        issue.variable_name
+                    ),
+                },
+            ]
+        }
     }
 }
 
