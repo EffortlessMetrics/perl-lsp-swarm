@@ -158,3 +158,26 @@ fn test_parenthesised_comparison_not_chained() {
         "parenthesised `(1 < $x) < 10` should not become ChainedComparison, got: {ks:?}"
     );
 }
+
+#[test]
+fn test_word_relational_chain_produces_chained_comparison_node() {
+    let ks = kinds("my $r = $a lt $b le $c;");
+    assert!(
+        ks.contains(&"ChainedComparison"),
+        "expected ChainedComparison for `$a lt $b le $c`, got: {ks:?}"
+    );
+}
+
+#[test]
+fn test_isa_followed_by_relational_parses_clean() {
+    assert_clean_parse("my $r = $x isa Foo < 10;");
+}
+
+#[test]
+fn test_spaceship_and_less_do_not_chain() {
+    let ks = kinds("my $r = 1 <=> $x < 10;");
+    assert!(
+        !ks.contains(&"ChainedComparison"),
+        "cross-precedence `<=>` and `<` must not chain, got: {ks:?}"
+    );
+}

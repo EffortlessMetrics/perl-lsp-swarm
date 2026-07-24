@@ -1981,7 +1981,7 @@ pub enum NodeKind {
     ///
     /// A single comparison (`$x < 10`) always produces [`Binary`] instead.
     ChainedComparison {
-        /// The N+1 operands in declaration order (N >= 2 operands, N >= 1 operator).
+        /// The N+1 operands in declaration order, where N is the number of operators (N >= 2).
         operands: Vec<Node>,
         /// The N comparison operators between adjacent operand pairs.
         ops: Vec<String>,

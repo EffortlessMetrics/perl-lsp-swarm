@@ -617,7 +617,7 @@ impl<'a> Parser<'a> {
             match kind {
                 TokenKind::Identifier => {
                     let next_text = self.tokens.peek()?.text.as_ref();
-                    if matches!(next_text, "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "cmp") {
+                    if matches!(next_text, "eq" | "ne" | "cmp") {
                         let op_token = self.tokens.next()?;
                         let right = if let Some(missing) =
                             self.recover_missing_infix_rhs(op_token.start)
@@ -749,25 +749,28 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    /// Returns true when the next token is one of the symbolic relational
-    /// comparison operators (`<`, `>`, `<=`, `>=`, `<=>`, `cmp`).
+    /// Returns true when the next token is a chained-relational comparison
+    /// operator (`<`, `>`, `<=`, `>=`, or word forms `lt`/`le`/`gt`/`ge`).
     fn peek_is_relational_op(&mut self) -> bool {
-        matches!(
-            self.peek_kind(),
+        match self.peek_kind() {
             Some(
                 TokenKind::Less
-                    | TokenKind::Greater
-                    | TokenKind::LessEqual
-                    | TokenKind::GreaterEqual
-                    | TokenKind::Spaceship
-                    | TokenKind::StringCompare
-            )
-        )
+                | TokenKind::Greater
+                | TokenKind::LessEqual
+                | TokenKind::GreaterEqual,
+            ) => true,
+            Some(TokenKind::Identifier) => self
+                .tokens
+                .peek()
+                .ok()
+                .is_some_and(|t| matches!(t.text.as_ref(), "lt" | "le" | "gt" | "ge")),
+            _ => false,
+        }
     }
 
-    fn parse_relational_with(&mut self, lhs: Node) -> ParseResult<Node> {
-        // `isa`/`ISA` is a relational-level operator but cannot be part of a
-        // chained comparison — handle it first as a plain binary node.
+    fn parse_relational_with(&mut self, mut lhs: Node) -> ParseResult<Node> {
+        // `isa`/`ISA` binds tighter than chained relational ops but may be
+        // followed by one (e.g. `$x isa Foo < 10` → `($x isa Foo) < 10`).
         if matches!(self.peek_kind(), Some(TokenKind::Identifier)) {
             let peek_text = self.tokens.peek()?.text.as_ref().to_string();
             if peek_text == "ISA" || peek_text == "isa" {
@@ -781,16 +784,19 @@ impl<'a> Parser<'a> {
                 };
                 let start = lhs.location.start;
                 let end = right.location.end;
-                return Ok(Node::new(
+                lhs = Node::new(
                     NodeKind::Binary {
                         op: op_token.text.to_string(),
                         left: Box::new(lhs),
                         right: Box::new(right),
                     },
                     SourceLocation { start, end },
-                ));
+                );
+            } else if matches!(peek_text.as_str(), "lt" | "le" | "gt" | "ge") {
+                // fall through to chained-relational handling below
+            } else {
+                return Ok(lhs);
             }
-            return Ok(lhs);
         }
 
         // If there is no symbolic relational operator next, nothing to do.
