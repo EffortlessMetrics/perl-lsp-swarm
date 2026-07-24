@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Check bounded-result overflow invariants that draft-07 cannot express."""
+"""Check bounded-result overflow invariants that draft-07 cannot express.
+
+Wired into the Policy Validators workflow (.github/workflows/policy-validators.yml)
+and triggered on changes to the schema, fixtures, or this script.
+"""
 
 from __future__ import annotations
 
