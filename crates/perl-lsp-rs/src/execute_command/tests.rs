@@ -1,8 +1,12 @@
 //! Integration-style unit tests for execute-command provider behaviors.
-
-// Tests are permitted to use `.expect()`/`.expect_err()` on Result/Option per
-// the repo's coding standards (unlike production code, where they are banned).
-#![allow(clippy::expect_used)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
+#![expect(
+    clippy::expect_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 
 use super::get_supported_commands;
 use super::provider::{ExecuteCommandProvider, TestRunner, select_test_runner};

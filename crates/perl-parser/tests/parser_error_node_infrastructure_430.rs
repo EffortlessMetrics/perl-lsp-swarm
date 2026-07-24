@@ -2,6 +2,10 @@
 //!
 //! This test suite validates comprehensive error recovery and partial AST generation
 //! capabilities required for IDE features on incomplete or broken code.
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 
 use perl_parser::{Node, NodeKind, Parser, SourceLocation};
 

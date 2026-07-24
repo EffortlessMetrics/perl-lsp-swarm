@@ -410,6 +410,10 @@ fn is_dist_metadata(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
     use super::*;
 
     /// Materialize a fixture tree under a unique temp dir, run the builder, and

@@ -1,4 +1,5 @@
 use perl_pod::{extract_pod, extract_pod_from_file};
+use perl_test_must::must_some;
 use std::io::Write as _;
 use std::path::Path;
 
@@ -979,7 +980,7 @@ The second parameter.
 "#;
     let doc = extract_pod(source);
     assert!(doc.arguments.is_some(), "ARGUMENTS section should be extracted");
-    let args = doc.arguments.as_ref().unwrap();
+    let args = must_some(doc.arguments.as_ref());
     assert!(args.contains("$param1"), "arguments should contain param1");
     assert!(args.contains("The first parameter"), "arguments should contain param1 description");
 }
@@ -999,7 +1000,7 @@ Returns a reference to a hash containing the results.
 "#;
     let doc = extract_pod(source);
     assert!(doc.return_values.is_some(), "RETURN VALUES section should be extracted");
-    let ret = doc.return_values.as_ref().unwrap();
+    let ret = must_some(doc.return_values.as_ref());
     assert!(ret.contains("hash"), "return values should contain description");
 }
 
@@ -1019,7 +1020,7 @@ My::Module - A test module
 "#;
     let doc = extract_pod(source);
     assert!(doc.examples.is_some(), "EXAMPLES section should be extracted");
-    let examples = doc.examples.as_ref().unwrap();
+    let examples = must_some(doc.examples.as_ref());
     assert!(examples.contains("use My::Module"), "examples should contain usage code");
 }
 
@@ -1038,7 +1039,7 @@ L<Some::Other::Module>, L<Another::Module>
 "#;
     let doc = extract_pod(source);
     assert!(doc.see_also.is_some(), "SEE ALSO section should be extracted");
-    let see_also = doc.see_also.as_ref().unwrap();
+    let see_also = must_some(doc.see_also.as_ref());
     assert!(see_also.contains("Some::Other::Module"), "see_also should contain module references");
 }
 

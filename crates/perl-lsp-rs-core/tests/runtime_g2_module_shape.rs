@@ -133,7 +133,7 @@ fn test_runtime_limits_lsp_limits() -> Result<(), Box<dyn std::error::Error>> {
 fn test_runtime_global_limits_static() -> Result<(), Box<dyn std::error::Error>> {
     use perl_lsp_rs_core::runtime::limits::LSP_LIMITS;
     // Verify the static is accessible by reading it.
-    let _ = &*LSP_LIMITS.read().unwrap();
+    let _ = &*must(LSP_LIMITS.read());
     Ok(())
 }
 

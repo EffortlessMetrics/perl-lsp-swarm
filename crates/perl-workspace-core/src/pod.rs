@@ -142,6 +142,10 @@ fn classify_directive(line: &str) -> Option<(PodSectionKind, String)> {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
     use super::*;
     use crate::id::Digest;
 

@@ -1,7 +1,10 @@
 //! Integration tests for PR 4: import / compile-effect / dynamic-boundary facts.
 // Integration-test helpers live outside `#[test]` fns, so clippy's
 // allow-unwrap-in-tests does not reach them; allow unwrap for the whole file.
-#![allow(clippy::unwrap_used)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 
 use std::path::PathBuf;
 

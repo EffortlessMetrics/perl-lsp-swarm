@@ -2,6 +2,10 @@
 //!
 //! This test suite validates that parse errors are enriched with actionable
 //! fix suggestions when converted to LSP diagnostics.
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 
 use perl_lsp::{JsonRpcRequest, LspServer};
 use serde_json::json;

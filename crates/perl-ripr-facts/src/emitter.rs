@@ -1685,6 +1685,10 @@ fn is_perl_source_file(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
     use super::*;
 
     fn parse_src(src: &str) -> Node {

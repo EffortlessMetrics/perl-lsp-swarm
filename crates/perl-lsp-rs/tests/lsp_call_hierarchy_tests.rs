@@ -11,6 +11,10 @@
 //! - Cross-package calls
 //! - Method calls on objects
 //! - Edge cases: Unicode, nested calls, no calls found
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 
 mod support;
 use serde_json::json;

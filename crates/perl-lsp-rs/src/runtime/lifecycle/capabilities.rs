@@ -849,6 +849,10 @@ mod init_options_tests {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
     use super::{apply_disabled_feature_id, is_jetbrains_client, is_opencode_client};
     use crate::protocol::capabilities::BuildFlags;
     use crate::LspServer;

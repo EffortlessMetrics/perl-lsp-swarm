@@ -7,6 +7,7 @@ use perl_lsp_rs_core::runtime::limits::{
     LspLimits, MemoryBudget, MemoryMonitor, MemoryPressure, ast_cache_max_memory_bytes,
     memory_critical_threshold_bytes, memory_warning_threshold_bytes,
 };
+use perl_tdd_support::must_some;
 
 #[test]
 fn memory_budget_default_has_sensible_values() -> Result<(), Box<dyn std::error::Error>> {
@@ -192,7 +193,7 @@ fn memory_monitor_log_message_on_warning() -> Result<(), Box<dyn std::error::Err
     monitor.record_alloc(600);
     let msg = monitor.pressure_log_message();
     assert!(msg.is_some());
-    let msg = msg.unwrap();
+    let msg = must_some(msg);
     assert!(msg.contains("warning") || msg.contains("Warning") || msg.contains("WARNING"));
     Ok(())
 }
@@ -208,7 +209,7 @@ fn memory_monitor_log_message_on_critical() -> Result<(), Box<dyn std::error::Er
     monitor.record_alloc(1100);
     let msg = monitor.pressure_log_message();
     assert!(msg.is_some());
-    let msg = msg.unwrap();
+    let msg = must_some(msg);
     assert!(msg.contains("critical") || msg.contains("Critical") || msg.contains("CRITICAL"));
     Ok(())
 }

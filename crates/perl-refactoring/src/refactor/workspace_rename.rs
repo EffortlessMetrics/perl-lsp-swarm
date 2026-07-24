@@ -1003,6 +1003,10 @@ fn find_package_at_offset(text: &str, offset: usize) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
     use super::*;
 
     #[test]

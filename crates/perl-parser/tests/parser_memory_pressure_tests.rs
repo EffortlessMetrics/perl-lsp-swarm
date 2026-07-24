@@ -5,6 +5,10 @@
 //! - Parser behavior when memory is constrained
 //! - Memory fragmentation scenarios
 //! - Cleanup and resource release validation
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 
 use perl_parser::Parser;
 use std::sync::{Arc, Mutex};

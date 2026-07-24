@@ -1974,6 +1974,10 @@ fn is_filehandle(name: &str) -> bool {
 // ============================================================================
 #[cfg(test)]
 mod tests_our_redecl {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
     use super::{IssueKind, ScopeAnalyzer, ScopeIssue};
     use crate::Parser;
     use crate::pragma_tracker::PragmaTracker;
@@ -2091,6 +2095,10 @@ mod tests_our_redecl {
 // ============================================================================
 #[cfg(test)]
 mod tests_uninitialized_warning_gate {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
     use super::{IssueKind, ScopeAnalyzer, ScopeIssue};
     use crate::Parser;
     use crate::pragma_tracker::PragmaTracker;
