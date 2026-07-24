@@ -13,6 +13,7 @@ use crate::cancellation::{
 use crate::completion::{
     CompletionItemKind, CompletionProvider, add_xs_api_completions_for_prefix,
 };
+use crate::runtime::lifecycle::inc_context::RequestIncContext;
 #[cfg(feature = "workspace")]
 use crate::runtime::readiness::IndexReadinessPolicy;
 use crate::runtime::types::workspace_folder_matches_doc_uri;
@@ -484,19 +485,32 @@ impl LspServer {
         }
     }
 
+    /// Include-root view for module completion at a standalone document
+    /// position, assembling its own `@INC` context.
+    ///
+    /// Callers that already hold a request-scoped context should use
+    /// [`Self::module_completion_roots`] so the context is built once per
+    /// request rather than once per consumer (#1684).
     pub(super) fn module_completion_roots_for_doc(
         &self,
         uri: &str,
         doc_text: &str,
         cursor_offset: usize,
     ) -> (Vec<PathBuf>, Vec<PathBuf>, bool) {
+        self.module_completion_roots(&RequestIncContext::new(self, uri, doc_text, cursor_offset))
+    }
+
+    /// Include-root view for module completion, reading the request's shared
+    /// `@INC` context instead of assembling its own.
+    pub(super) fn module_completion_roots(
+        &self,
+        inc_context: &RequestIncContext<'_>,
+    ) -> (Vec<PathBuf>, Vec<PathBuf>, bool) {
         let mut include_paths: Vec<PathBuf> = Vec::new();
         let mut seen_include: HashSet<PathBuf> = HashSet::new();
         let mut system_inc_paths: Vec<PathBuf> = Vec::new();
         let mut seen_system: HashSet<PathBuf> = HashSet::new();
-        let Some(context) =
-            self.effective_inc_context_for_doc(Some(uri), Some(doc_text), Some(cursor_offset))
-        else {
+        let Some(context) = inc_context.get() else {
             return (include_paths, system_inc_paths, false);
         };
 
@@ -749,15 +763,23 @@ impl LspServer {
         }
     }
 
+    /// Adds workspace-index completions.
+    ///
+    /// Takes the request's shared `@INC` context rather than a loose
+    /// `(text, uri, offset)` triple: the position is the same one the module
+    /// roots were built from, and passing the holder makes that structural
+    /// instead of a convention the call sites have to keep in step (#1684).
     fn add_runtime_workspace_completions(
         &self,
         completions: &mut Vec<crate::completion::CompletionItem>,
-        doc_text: &str,
-        doc_uri: &str,
-        offset: usize,
+        inc_context: &RequestIncContext<'_>,
         workspace_mode: &IndexAccessMode,
         cap: usize,
     ) {
+        let doc_text = inc_context.doc_text();
+        let doc_uri = inc_context.doc_uri();
+        let offset = inc_context.offset();
+
         if Self::is_module_import_completion_context(doc_text, offset) {
             return;
         }
@@ -792,12 +814,10 @@ impl LspServer {
                     trimmed.ends_with("use") || trimmed.ends_with("require")
                 };
 
-                // Build @INC context once (only when needed for filtering).
-                let inc_ctx = if is_use_module_context {
-                    self.effective_inc_context_for_doc(Some(doc_uri), Some(doc_text), Some(offset))
-                } else {
-                    None
-                };
+                // Reuse the request's @INC context (only when needed for
+                // filtering) — on the completion paths it was already built for
+                // the module roots, so this is a cache read, not a rebuild.
+                let inc_ctx = if is_use_module_context { inc_context.get() } else { None };
 
                 // For multi-root workspaces, determine the workspace folder that owns
                 // the document so we can filter non-module symbols to that folder only.
@@ -843,7 +863,7 @@ impl LspServer {
                             | crate::workspace_index::SymbolKind::Role
                     );
                     if is_use_module_context && is_module_kind {
-                        if let Some(ref ctx) = inc_ctx {
+                        if let Some(ctx) = inc_ctx {
                             if !ctx.symbol_uri_reachable(&symbol.uri) {
                                 tracing::trace!(
                                     symbol = %symbol.name,
@@ -1207,12 +1227,16 @@ impl LspServer {
                 let offset = self.pos16_to_offset(doc, line, character);
                 let ast_available = doc.current_parsed().is_some_and(|p| p.ast().is_some());
 
+                // One `@INC` context per request, shared by the module roots
+                // below and the workspace-symbol filter further down (#1684).
+                let inc_context = RequestIncContext::new(self, uri, &doc.text, offset);
+
                 // Get completions, with fallback for missing AST
                 let parsed = doc.current_parsed();
                 #[cfg_attr(not(feature = "workspace"), allow(unused_mut))]
                 let mut completions = if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let (include_paths, system_inc_paths, include_system_inc) =
-                        self.module_completion_roots_for_doc(uri, &doc.text, offset);
+                        self.module_completion_roots(&inc_context);
                     // Only provide workspace index when Full access is available
                     // This ensures we don't bypass routing policy
                     #[cfg(feature = "workspace")]
@@ -1308,9 +1332,7 @@ impl LspServer {
                 if start.elapsed() < deadline {
                     self.add_runtime_workspace_completions(
                         &mut completions,
-                        &doc.text,
-                        uri,
-                        offset,
+                        &inc_context,
                         &workspace_mode,
                         cap,
                     );
@@ -1540,11 +1562,15 @@ impl LspServer {
                     }
                 };
 
+                // One `@INC` context per request, shared by the module roots
+                // below and the workspace-symbol filter further down (#1684).
+                let inc_context = RequestIncContext::new(self, uri, &doc.text, offset);
+
                 // Get completions with optimized cancellation support
                 let parsed = doc.current_parsed();
                 let mut completions = if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let (include_paths, system_inc_paths, include_system_inc) =
-                        self.module_completion_roots_for_doc(uri, &doc.text, offset);
+                        self.module_completion_roots(&inc_context);
                     // Only provide workspace index when Full access is available
                     // This ensures we don't bypass routing policy
                     #[cfg(feature = "workspace")]
@@ -1605,9 +1631,7 @@ impl LspServer {
                 #[cfg(feature = "workspace")]
                 self.add_runtime_workspace_completions(
                     &mut completions,
-                    &doc.text,
-                    uri,
-                    offset,
+                    &inc_context,
                     &workspace_mode,
                     completion_cap(),
                 );
@@ -3101,6 +3125,122 @@ mod tests {
         Ok(())
     }
 
+    /// The two `@INC` consumers on a completion request — the module-completion
+    /// roots and the workspace-symbol reachability filter — must be served by a
+    /// single assembled context.
+    ///
+    /// Before #1684 each built its own, so one keystroke on a `use <pragma>`
+    /// line paid twice for the `use lib`/`no lib` source scan, the `PERL5LIB`
+    /// parse, and two `workspace_folders` lock acquisitions.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn shared_request_context_is_built_once_for_both_completion_consumers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::runtime::routing::IndexAccessMode;
+        use perl_parser::workspace_index::IndexCoordinator;
+        use std::sync::Arc;
+        use tempfile::TempDir;
+        use url::Url;
+
+        let temp = TempDir::new()?;
+        let workspace = temp.path().join("workspace");
+        let doc_path = workspace.join("bin").join("app.pl");
+        std::fs::create_dir_all(doc_path.parent().ok_or("missing doc parent")?)?;
+
+        let workspace_uri =
+            Url::from_file_path(&workspace).map_err(|_| "bad workspace uri")?.to_string();
+        let doc_uri = Url::from_file_path(&doc_path).map_err(|_| "bad doc uri")?.to_string();
+        let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+        config.include_paths = vec!["lib".to_string()];
+        config.use_system_inc = false;
+
+        let server = LspServer::default();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(workspace_uri)
+                .with_path(workspace.clone())
+                .with_effective_workspace_config(config),
+        );
+
+        let coordinator = Arc::new(IndexCoordinator::new());
+        coordinator.transition_to_ready(1, 1);
+
+        // A lowercase pragma prefix is the case that exercises both consumers:
+        // `is_module_import_completion_context` is false, so the workspace pass
+        // does not early-return, while `is_use_module_context` is true, so it
+        // genuinely needs the @INC context for reachability filtering.
+        let doc_text = "use lib 't/lib';\nuse pa";
+        let probe = crate::runtime::lifecycle::inc_context::inc_context_build_probe();
+        let inc_context = RequestIncContext::new(&server, &doc_uri, doc_text, doc_text.len());
+
+        let (include_paths, _, _) = server.module_completion_roots(&inc_context);
+        assert_eq!(probe.count(), 1, "the module-roots consumer should have assembled the context");
+
+        let mut completions = Vec::new();
+        server.add_runtime_workspace_completions(
+            &mut completions,
+            &inc_context,
+            &IndexAccessMode::Full(&coordinator),
+            500,
+        );
+
+        assert_eq!(
+            probe.count(),
+            1,
+            "the workspace-symbol consumer must reuse the context, not assemble a second one"
+        );
+        // Guard against the assertion above going vacuous if the roots ever stop
+        // being computed at all.
+        assert!(
+            include_paths.iter().any(|path| path.ends_with("t/lib")),
+            "expected the lexical `use lib` root in the shared context; got {include_paths:?}"
+        );
+        Ok(())
+    }
+
+    /// Reading the roots through a shared request context must produce exactly
+    /// what the standalone entry point produces — the #1684 change is a
+    /// computation-sharing change, not a semantic one.
+    #[test]
+    fn shared_request_context_roots_match_standalone_roots()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tempfile::TempDir;
+        use url::Url;
+
+        let temp = TempDir::new()?;
+        let workspace = temp.path().join("workspace");
+        let doc_path = workspace.join("bin").join("app.pl");
+        std::fs::create_dir_all(doc_path.parent().ok_or("missing doc parent")?)?;
+
+        let workspace_uri =
+            Url::from_file_path(&workspace).map_err(|_| "bad workspace uri")?.to_string();
+        let doc_uri = Url::from_file_path(&doc_path).map_err(|_| "bad doc uri")?.to_string();
+        let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+        config.include_paths = vec!["lib".to_string()];
+        config.use_system_inc = false;
+
+        let server = LspServer::default();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(workspace_uri)
+                .with_path(workspace.clone())
+                .with_effective_workspace_config(config),
+        );
+
+        // Includes a `no lib` cancellation so the comparison covers the
+        // position-sensitive part of the assembly, not just the static roots.
+        let doc_text = "use lib 't/lib';\nno lib 'lib';\nuse Demo::Worker;\n";
+
+        let standalone = server.module_completion_roots_for_doc(&doc_uri, doc_text, doc_text.len());
+        let shared = server.module_completion_roots(&RequestIncContext::new(
+            &server,
+            &doc_uri,
+            doc_text,
+            doc_text.len(),
+        ));
+
+        assert_eq!(standalone, shared);
+        Ok(())
+    }
+
     #[test]
     fn test_module_completion_roots_match_effective_inc_context_for_workspace_doc()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3978,12 +4118,11 @@ sub cross_folder_sub_b { 1 }
 
         let doc_text = "my $x = cr";
         let doc_uri = "file:///project/folder-a/script.pl";
+        let inc_context = RequestIncContext::new(&server, doc_uri, doc_text, doc_text.len());
         let mut completions = Vec::new();
         server.add_runtime_workspace_completions(
             &mut completions,
-            doc_text,
-            doc_uri,
-            doc_text.len(),
+            &inc_context,
             &IndexAccessMode::Full(&coordinator),
             500,
         );
@@ -4029,12 +4168,11 @@ sub single_root_sub { 1 }
 
         let doc_text = "single";
         let doc_uri = "file:///project/folder-a/script.pl";
+        let inc_context = RequestIncContext::new(&server, doc_uri, doc_text, doc_text.len());
         let mut completions = Vec::new();
         server.add_runtime_workspace_completions(
             &mut completions,
-            doc_text,
-            doc_uri,
-            doc_text.len(),
+            &inc_context,
             &IndexAccessMode::Full(&coordinator),
             500,
         );

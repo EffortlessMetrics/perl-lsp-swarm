@@ -7,6 +7,7 @@
 use super::super::*;
 use perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay;
 use perl_module::resolution::{IncRoot, build_effective_inc_roots};
+use std::cell::OnceCell;
 use std::path::PathBuf;
 
 mod assembly;
@@ -103,6 +104,99 @@ impl EffectiveIncContext {
     }
 }
 
+/// Request-scoped, lazily built [`EffectiveIncContext`].
+///
+/// A single completion request needs the effective `@INC` view in two places:
+/// the module-completion roots and the workspace-symbol reachability filter.
+/// Building it is not free — it takes the `workspace_folders` lock twice, parses
+/// `PERL5LIB`, and scans the document source for `use lib`/`no lib` operations.
+/// Letting each consumer build its own repeated all of that work on every
+/// keystroke; sharing one assembly per request is the fix for #1684.
+///
+/// This holder binds the `(uri, text, offset)` triple once and memoizes the
+/// result, so every consumer on the request shares a single computation. It
+/// stays lazy: a request that never asks for the context — the AST-less fallback
+/// path outside a `use`/`require` line, for instance — never builds one.
+pub(crate) struct RequestIncContext<'a> {
+    server: &'a LspServer,
+    doc_uri: &'a str,
+    doc_text: &'a str,
+    offset: usize,
+    cached: OnceCell<Option<EffectiveIncContext>>,
+}
+
+// Counts `LspServer::effective_inc_context_for_doc` assemblies on the current
+// thread, so tests can assert how many times a request actually paid for the
+// `@INC` build instead of inferring it from structure.
+//
+// Thread-local rather than global: the completion request path is synchronous,
+// so every assembly a request triggers lands on the request's own thread, and
+// concurrently running tests cannot perturb each other's counts.
+#[cfg(test)]
+thread_local! {
+    static INC_CONTEXT_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Resets the current thread's assembly counter and returns a probe for it.
+#[cfg(test)]
+pub(crate) fn inc_context_build_probe() -> IncContextBuildProbe {
+    INC_CONTEXT_BUILDS.with(|builds| builds.set(0));
+    IncContextBuildProbe
+}
+
+/// Reads how many `@INC` context assemblies have happened on this thread since
+/// [`inc_context_build_probe`] was called.
+#[cfg(test)]
+pub(crate) struct IncContextBuildProbe;
+
+#[cfg(test)]
+impl IncContextBuildProbe {
+    pub(crate) fn count(&self) -> usize {
+        INC_CONTEXT_BUILDS.with(std::cell::Cell::get)
+    }
+}
+
+impl<'a> RequestIncContext<'a> {
+    /// Bind a lazy context to one document position for the life of a request.
+    pub(crate) fn new(
+        server: &'a LspServer,
+        doc_uri: &'a str,
+        doc_text: &'a str,
+        offset: usize,
+    ) -> Self {
+        Self { server, doc_uri, doc_text, offset, cached: OnceCell::new() }
+    }
+
+    /// The effective `@INC` context for this request, building it on first use.
+    ///
+    /// Returns `None` when no workspace root can be resolved for the document,
+    /// matching [`LspServer::effective_inc_context_for_doc`]. The `None` is
+    /// memoized too — an unresolvable document does not retry on every consumer.
+    pub(crate) fn get(&self) -> Option<&EffectiveIncContext> {
+        self.cached
+            .get_or_init(|| {
+                self.server.effective_inc_context_for_doc(
+                    Some(self.doc_uri),
+                    Some(self.doc_text),
+                    Some(self.offset),
+                )
+            })
+            .as_ref()
+    }
+
+    pub(crate) fn doc_uri(&self) -> &'a str {
+        self.doc_uri
+    }
+
+    pub(crate) fn doc_text(&self) -> &'a str {
+        self.doc_text
+    }
+
+    pub(crate) fn offset(&self) -> usize {
+        self.offset
+    }
+}
+
 impl LspServer {
     /// Build the shared, labeled include-root context for a document.
     ///
@@ -116,6 +210,9 @@ impl LspServer {
         doc_text: Option<&str>,
         doc_offset: Option<usize>,
     ) -> Option<EffectiveIncContext> {
+        #[cfg(test)]
+        INC_CONTEXT_BUILDS.with(|builds| builds.set(builds.get() + 1));
+
         let (root, folder_uri, config) = {
             let folders = self.workspace_folders.lock();
             let best_folder =
@@ -201,6 +298,68 @@ mod tests {
         url::Url::from_file_path(path)
             .map(|url| url.to_string())
             .map_err(|()| format!("failed to create URI for {}", path.display()))
+    }
+
+    /// The request-scoped holder stays lazy until first use, then assembles the
+    /// context at most once no matter how many consumers read it, handing each
+    /// of them the same instance (#1684).
+    #[test]
+    fn request_inc_context_builds_once_and_shares_one_instance() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let script = workspace.join("script").join("run.pl");
+        std::fs::create_dir_all(script.parent().ok_or("missing script parent")?)?;
+
+        let workspace_uri = file_uri(&workspace)?;
+        let doc_uri = file_uri(&script)?;
+        let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+        config.include_paths = vec!["lib".to_string()];
+        config.use_system_inc = false;
+        config.use_perl5lib = false;
+
+        let server = LspServer::new();
+        *server.workspace_folders.lock() = vec![
+            WorkspaceFolderState::new(workspace_uri)
+                .with_path(workspace.clone())
+                .with_effective_workspace_config(config),
+        ];
+        *server.root_path.lock() = Some(workspace.clone());
+
+        let source = "use lib 't/lib';\nuse Demo::Worker;\n";
+        let probe = inc_context_build_probe();
+        let holder = RequestIncContext::new(&server, &doc_uri, source, source.len());
+        assert_eq!(probe.count(), 0, "holder must not assemble anything until first read");
+
+        let first = holder.get().ok_or("expected effective @INC context")?;
+        let second = holder.get().ok_or("expected effective @INC context")?;
+
+        assert_eq!(probe.count(), 1, "repeated reads must not reassemble the context");
+        assert!(
+            std::ptr::eq(first, second),
+            "every consumer on a request must share one assembled context"
+        );
+        // Sanity-check that the memoized value is the real thing, not an empty
+        // placeholder that would make the count assertion vacuous.
+        assert_eq!(first.root, workspace);
+        assert_eq!(first.effective_roots.len(), 2);
+        Ok(())
+    }
+
+    /// A document with no resolvable workspace root yields `None` — and that
+    /// `None` is memoized too, so an unresolvable document does not re-run the
+    /// assembly for every consumer that asks.
+    #[test]
+    fn request_inc_context_memoizes_the_absent_case() -> TestResult {
+        let server = LspServer::new();
+        *server.workspace_folders.lock() = Vec::new();
+        *server.root_path.lock() = None;
+
+        let probe = inc_context_build_probe();
+        let holder = RequestIncContext::new(&server, "file:///nowhere/run.pl", "use strict;\n", 0);
+        assert!(holder.get().is_none());
+        assert!(holder.get().is_none());
+        assert_eq!(probe.count(), 1, "the absent case must be memoized, not retried");
+        Ok(())
     }
 
     #[test]
