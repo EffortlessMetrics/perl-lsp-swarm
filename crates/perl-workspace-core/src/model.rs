@@ -1,5 +1,7 @@
 //! The project model: the assembled set of facts for a workspace.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
 
 use crate::boundary::DynamicBoundary;
@@ -16,6 +18,7 @@ use crate::pod::PodFact;
 use crate::relation::RelationFact;
 use crate::symbol::SymbolRecord;
 use crate::test::TestFact;
+use crate::{ProjectDelta, ProjectFactShard, ProjectShardState, ShardError};
 
 /// The deterministic set of facts derived from a workspace.
 ///
@@ -52,6 +55,9 @@ pub struct ProjectModel {
     pub dynamic_boundaries: Vec<DynamicBoundary>,
     /// Things the model could not fully determine.
     pub limitations: Vec<ModelLimitation>,
+    /// Generation and fingerprint metadata for shards adopted through the ingestion API.
+    #[serde(default)]
+    pub shard_states: BTreeMap<String, ProjectShardState>,
 }
 
 impl ProjectModel {
@@ -73,6 +79,7 @@ impl ProjectModel {
             relations: Vec::new(),
             dynamic_boundaries: Vec::new(),
             limitations: Vec::new(),
+            shard_states: BTreeMap::new(),
         }
     }
 
@@ -180,6 +187,142 @@ impl ProjectModel {
             (a.file_id.as_str(), a.range.start_byte).cmp(&(b.file_id.as_str(), b.range.start_byte))
         });
         self.limitations.sort_by(|a, b| a.id.cmp(&b.id));
+    }
+
+    /// Atomically insert or replace all contributions owned by one file.
+    pub fn insert_or_replace(
+        &mut self,
+        shard: ProjectFactShard,
+    ) -> Result<ProjectDelta, ShardError> {
+        shard.validate()?;
+        let shard = shard.normalized();
+        let file_id = shard.file.file_id.clone();
+        let relative_path = shard.file.relative_path.clone();
+        let fingerprint = shard.fingerprint()?;
+
+        if let Some(current) = self.shard_states.get(&relative_path) {
+            if shard.generation < current.generation {
+                return Err(ShardError::StaleGeneration {
+                    current: current.generation,
+                    incoming: shard.generation,
+                });
+            }
+            if shard.generation == current.generation && fingerprint == current.fingerprint {
+                return Ok(ProjectDelta::empty());
+            }
+            if shard.generation == current.generation {
+                return Err(ShardError::ConflictingGeneration { generation: shard.generation });
+            }
+        }
+
+        let replaced_file_id = self.file_by_path(&relative_path).map(|file| file.file_id.clone());
+        let existed = replaced_file_id.is_some();
+        if let Some(previous_file_id) = replaced_file_id {
+            self.remove_owned_facts(&previous_file_id, &relative_path);
+        }
+        let limitation_ids = shard.limitations.iter().map(|item| item.id.clone()).collect();
+        self.files.push(shard.file);
+        self.packages.extend(shard.packages);
+        self.symbols.extend(shard.symbols);
+        self.imports.extend(shard.imports);
+        self.exports.extend(shard.exports);
+        self.compile_effects.extend(shard.compile_effects);
+        self.dist_metadata.extend(shard.dist_metadata);
+        self.tests.extend(shard.tests);
+        self.pod.extend(shard.pod);
+        self.relations.extend(shard.relations);
+        self.dynamic_boundaries.extend(shard.dynamic_boundaries);
+        self.limitations.extend(shard.limitations);
+        self.shard_states.insert(
+            relative_path,
+            ProjectShardState {
+                generation: shard.generation,
+                producer: shard.producer,
+                schema_version: shard.schema_version,
+                fingerprint,
+                limitation_ids,
+            },
+        );
+        self.sort_for_determinism();
+
+        let mut delta = ProjectDelta::empty();
+        if existed {
+            delta.changed_files.push(file_id);
+        } else {
+            delta.added_files.push(file_id);
+        }
+        Ok(delta)
+    }
+
+    /// Remove all contributions owned by a file at a current or newer generation.
+    pub fn remove_file(
+        &mut self,
+        file_id: &FileId,
+        generation: u64,
+    ) -> Result<ProjectDelta, ShardError> {
+        let relative_path = self.file(file_id).map(|file| file.relative_path.clone());
+        let current = relative_path.as_ref().and_then(|path| self.shard_states.get(path));
+        if let Some(current) = current
+            && generation < current.generation
+        {
+            return Err(ShardError::StaleRemoval {
+                current: current.generation,
+                incoming: generation,
+            });
+        }
+
+        let mut delta = ProjectDelta::empty();
+        if self.file(file_id).is_none() {
+            return Ok(delta);
+        }
+        let removed_path = relative_path;
+        if let Some(path) = &removed_path {
+            self.remove_owned_facts(file_id, path);
+        }
+        if let Some(path) = &removed_path {
+            self.shard_states.remove(path);
+        }
+        delta.removed_files.push(file_id.clone());
+        if let Some(path) = removed_path {
+            delta.invalidated_files = self.dependents_for_target(&path, file_id);
+        }
+        self.sort_for_determinism();
+        Ok(delta)
+    }
+
+    /// Deterministic identity of the current serialized model.
+    pub fn snapshot_identity(&self) -> Result<String, ShardError> {
+        let encoded = serde_json::to_vec(self)
+            .map_err(|error| ShardError::Serialization { message: error.to_string() })?;
+        Ok(format!("fnv64:{:016x}", crate::fnv1a(&encoded)))
+    }
+
+    fn remove_owned_facts(&mut self, file_id: &FileId, relative_path: &str) {
+        self.files.retain(|fact| &fact.file_id != file_id);
+        self.packages.retain(|fact| &fact.file_id != file_id);
+        self.symbols.retain(|fact| &fact.file_id != file_id);
+        self.imports.retain(|fact| &fact.file_id != file_id);
+        self.exports.retain(|fact| &fact.file_id != file_id);
+        self.compile_effects.retain(|fact| &fact.file_id != file_id);
+        self.dist_metadata.retain(|fact| &fact.file_id != file_id);
+        self.tests.retain(|fact| &fact.file_id != file_id);
+        self.pod.retain(|fact| &fact.file_id != file_id);
+        self.relations.retain(|fact| &fact.file_id != file_id);
+        self.dynamic_boundaries.retain(|fact| &fact.file_id != file_id);
+        if let Some(state) = self.shard_states.get(relative_path) {
+            let ids: BTreeSet<&str> = state.limitation_ids.iter().map(String::as_str).collect();
+            self.limitations.retain(|limitation| !ids.contains(limitation.id.as_str()));
+        }
+    }
+
+    fn dependents_for_target(&self, target: &str, removed: &FileId) -> Vec<FileId> {
+        let mut dependents = BTreeSet::new();
+        for relation in &self.relations {
+            if relation.target == target && &relation.file_id != removed {
+                dependents.insert(relation.file_id.clone());
+            }
+        }
+        dependents.into_iter().collect()
     }
 }
 

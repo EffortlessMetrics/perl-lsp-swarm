@@ -55,6 +55,19 @@ for pkg in &model.packages {
 - **Fact classes** — `FactClasses` gates the work: a request that omits symbols
   never pays to parse.
 
+## Incremental ingestion
+
+Schema v2 adds `ProjectFactShard`, a versioned LSP-free envelope for all facts
+owned by one file, and generation-aware `ProjectModel::insert_or_replace` and
+`ProjectModel::remove_file` operations. Replacement ownership is keyed by the
+normalized relative path because the existing `FileId` intentionally includes
+the content digest and therefore changes after an edit.
+
+Serialized schema-v1 `ProjectModel` values remain readable: the new
+`shard_states` field defaults to an empty map when absent. A model loaded that
+way has no generation history until shards are adopted through the ingestion
+API. Producers must not infer freshness from an empty map.
+
 ## Status
 
 **All 11 fact classes are implemented** — a request for any class has a real

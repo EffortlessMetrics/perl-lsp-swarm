@@ -60,11 +60,12 @@ pub mod pod;
 pub mod provenance;
 pub mod range;
 pub mod relation;
+pub mod shard;
 pub mod symbol;
 pub mod test;
 
 /// The fact-schema version this crate emits. Bump on any breaking model change.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 // ── Curated public surface ──────────────────────────────────────────────────
 pub use boundary::{DynamicBoundary, DynamicBoundaryKind};
@@ -83,5 +84,6 @@ pub use pod::{PodFact, PodSection, PodSectionKind};
 pub use provenance::{Confidence, EvidenceSource, Producer, Provenance};
 pub use range::{SourceRange, Utf8LineIndex};
 pub use relation::{RelationFact, RelationKind};
+pub use shard::{ProjectDelta, ProjectFactShard, ProjectShardState, ShardError};
 pub use symbol::{SymbolFactKind, SymbolRecord, Visibility};
 pub use test::TestFact;
