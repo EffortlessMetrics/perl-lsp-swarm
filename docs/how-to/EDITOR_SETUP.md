@@ -286,7 +286,7 @@ push.
   regardless of capability advertisement, because OpenCode's agent feedback
   loop relies on push. See
   [OPENCODE_SETUP.md](../EDITORS/OPENCODE_SETUP.md) Troubleshooting.
-- **JetBrains (LSP4IJ):** dynamic capability registration is force-disabled
+- **JetBrains (LSP4IJ):** dynamic file-watcher registration is force-disabled
   because LSP4IJ's registration flow is unreliable. See
   [INTELLIJ_IDEA_SETUP.md](../EDITORS/INTELLIJ_IDEA_SETUP.md) Troubleshooting.
 
