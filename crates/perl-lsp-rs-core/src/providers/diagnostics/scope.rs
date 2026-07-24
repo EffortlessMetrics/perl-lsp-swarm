@@ -53,11 +53,13 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             IssueKind::UnquotedBareword => DiagnosticCode::UnquotedBareword,
             IssueKind::UninitializedVariable => DiagnosticCode::UninitializedVariable,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticCode::CaptureVarWithoutRegexMatch,
-            // `say` used without its enabling feature parses as a bareword in Perl;
-            // reuse the bareword code here (dedicated PL code is a follow-up), while
-            // the analyzer-level `FeatureNotEnabled` kind keeps golden filters and the
-            // quote-quickfix (keyed on `UnquotedBareword`) correctly unaffected.
-            IssueKind::FeatureNotEnabled => DiagnosticCode::UnquotedBareword,
+            // A feature-gated keyword used without its feature is a version/feature
+            // compatibility issue — the same class the `version_compat` lint reports
+            // for the version-declared case. Reuse its `VersionIncompatFeature`
+            // (PL900) code: it carries no quick-fix route (so no misleading "quote
+            // the bareword" action is offered — unlike `UnquotedBareword`), and it
+            // keeps both `say` diagnostics under one consistent code.
+            IssueKind::FeatureNotEnabled => DiagnosticCode::VersionIncompatFeature,
         };
 
         let related_info = build_scope_related_info(&issue);
@@ -241,11 +243,13 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             IssueKind::UnquotedBareword => DiagnosticCode::UnquotedBareword,
             IssueKind::UninitializedVariable => DiagnosticCode::UninitializedVariable,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticCode::CaptureVarWithoutRegexMatch,
-            // `say` used without its enabling feature parses as a bareword in Perl;
-            // reuse the bareword code here (dedicated PL code is a follow-up), while
-            // the analyzer-level `FeatureNotEnabled` kind keeps golden filters and the
-            // quote-quickfix (keyed on `UnquotedBareword`) correctly unaffected.
-            IssueKind::FeatureNotEnabled => DiagnosticCode::UnquotedBareword,
+            // A feature-gated keyword used without its feature is a version/feature
+            // compatibility issue — the same class the `version_compat` lint reports
+            // for the version-declared case. Reuse its `VersionIncompatFeature`
+            // (PL900) code: it carries no quick-fix route (so no misleading "quote
+            // the bareword" action is offered — unlike `UnquotedBareword`), and it
+            // keeps both `say` diagnostics under one consistent code.
+            IssueKind::FeatureNotEnabled => DiagnosticCode::VersionIncompatFeature,
         };
 
         let mut related_info = build_scope_related_info(&issue);

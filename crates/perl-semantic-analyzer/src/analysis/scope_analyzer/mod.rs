@@ -438,8 +438,18 @@ impl<'a> AnalysisContext<'a> {
         self.imported_barewords.contains(name)
     }
 
+    /// Whether a `sub` named `name` is defined in the package that an unqualified
+    /// call at the current position would resolve to. An unqualified name resolves
+    /// against the active package; an explicitly-qualified name (`Foo::bar`) is
+    /// matched directly. Keeps a `sub say` in one package from suppressing the
+    /// feature gate for `say` in a different package of the same file (#4892).
     fn has_defined_sub(&self, name: &str) -> bool {
-        self.defined_subs.contains(name)
+        if name.contains("::") {
+            self.defined_subs.contains(name)
+        } else {
+            let pkg = self.current_package.borrow();
+            self.defined_subs.contains(&format!("{}::{}", pkg.as_str(), name))
+        }
     }
 
     fn has_declared_version(&self) -> bool {
@@ -1742,19 +1752,59 @@ fn collect_imported_barewords(ast: &Node) -> HashSet<String> {
 /// own sub with the same name as a feature-gated keyword (e.g. `sub say { ... }`),
 /// in which case `say(...)` is a call to the user sub, not the builtin.
 fn collect_defined_subs(ast: &Node) -> HashSet<String> {
-    fn visit(node: &Node, subs: &mut HashSet<String>) {
-        if let NodeKind::Subroutine { name: Some(name), .. } = &node.kind {
-            // Store the last path segment so `sub Foo::bar {}` also guards a
-            // later unqualified `bar(...)` call within the same file.
-            let short = name.rsplit("::").next().unwrap_or(name);
-            subs.insert(short.to_string());
+    // Store each sub as a **package-qualified** name (`main::foo`, `Foo::bar`) so
+    // an unqualified call in package P is only suppressed by P's own `sub`, not by
+    // a same-named sub in a different package of the same file (review #4892): e.g.
+    // `package Other; sub say {} package main; say "x";` must still flag `main::say`.
+    fn qualify(current_pkg: &str, name: &str) -> String {
+        if name.contains("::") {
+            // Already explicitly qualified (`sub Foo::bar {}`) — package-independent.
+            name.to_string()
+        } else {
+            format!("{current_pkg}::{name}")
         }
-        for child in node.children() {
-            visit(child, subs);
+    }
+    fn inner(stmt: &Node) -> &Node {
+        if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
+            expression.as_ref()
+        } else {
+            stmt
+        }
+    }
+    fn visit(node: &Node, current_pkg: &str, subs: &mut HashSet<String>) {
+        match &node.kind {
+            // A statement list threads the active package across siblings: a
+            // statement-form `package Foo;` rebinds it for everything that follows,
+            // matching Perl's file-scoped package semantics.
+            NodeKind::Program { statements } | NodeKind::Block { statements } => {
+                let mut pkg = current_pkg.to_string();
+                for stmt in statements {
+                    if let NodeKind::Package { name, block: None, .. } = &inner(stmt).kind {
+                        pkg = name.clone();
+                    }
+                    visit(stmt, &pkg, subs);
+                }
+            }
+            // Block-form `package Foo { ... }` scopes the package to its block only.
+            NodeKind::Package { name, block: Some(block), .. } => {
+                visit(block, name, subs);
+            }
+            NodeKind::Subroutine { name: Some(name), .. } => {
+                subs.insert(qualify(current_pkg, name));
+                for child in node.children() {
+                    visit(child, current_pkg, subs);
+                }
+            }
+            _ => {
+                for child in node.children() {
+                    visit(child, current_pkg, subs);
+                }
+            }
         }
     }
     let mut subs = HashSet::new();
-    visit(ast, &mut subs);
+    // A file with no `package` statement is in `main`.
+    visit(ast, "main", &mut subs);
     subs
 }
 
@@ -2197,10 +2247,11 @@ mod tests_feature_keyword_gate {
     use super::{IssueKind, ScopeAnalyzer, ScopeIssue};
     use crate::Parser;
     use crate::pragma_tracker::PragmaTracker;
+    use perl_tdd_support::must;
 
     fn analyze(code: &str) -> Vec<ScopeIssue> {
         let mut parser = Parser::new(code);
-        let ast = parser.parse().unwrap();
+        let ast = must(parser.parse());
         let pragma_map = PragmaTracker::build(&ast);
         ScopeAnalyzer::new().analyze(&ast, code, &pragma_map)
     }
@@ -2305,6 +2356,30 @@ mod tests_feature_keyword_gate {
         assert!(
             !feature_gate_issues(&issues, "say").is_empty(),
             "bare say with no version pragma must still be flagged; got: {issues:?}"
+        );
+    }
+
+    /// Package-aware shadowing (#4892 review): a `sub say` in one package must NOT
+    /// suppress the feature gate for `say` in a different package of the same file —
+    /// the unqualified call resolves against the active package (`main`), which has
+    /// no `say`, so the diagnostic still fires.
+    #[test]
+    fn say_not_suppressed_by_other_package_sub() {
+        let issues = analyze("package Other;\nsub say { return 1; }\npackage main;\nsay \"x\";\n");
+        assert!(
+            !feature_gate_issues(&issues, "say").is_empty(),
+            "Other::say must not suppress the main-package say gate; got: {issues:?}"
+        );
+    }
+
+    /// Control for the above: a `sub say` in the *same* package as the call still
+    /// suppresses the gate.
+    #[test]
+    fn say_suppressed_by_same_package_sub() {
+        let issues = analyze("package Foo;\nsub say { return 1; }\nsay \"x\";\n");
+        assert!(
+            feature_gate_issues(&issues, "say").is_empty(),
+            "same-package sub say must suppress the gate; got: {issues:?}"
         );
     }
 }
