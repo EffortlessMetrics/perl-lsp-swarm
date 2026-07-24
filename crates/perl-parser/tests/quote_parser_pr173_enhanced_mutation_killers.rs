@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
+
 /// Enhanced Mutation Killer Tests for PR #173 - Targeting ~66% → 80%+ Mutation Score
 ///
 /// This test file specifically addresses the 28+ surviving mutants identified in PR #173

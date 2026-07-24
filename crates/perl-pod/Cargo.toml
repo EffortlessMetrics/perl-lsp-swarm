@@ -17,6 +17,7 @@ include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE*"]
 [dependencies]
 
 [dev-dependencies]
+perl-test-must = { workspace = true }
 tempfile.workspace = true
 
 [package.metadata.docs.rs]

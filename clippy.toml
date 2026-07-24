@@ -14,4 +14,3 @@ too-many-lines-threshold = 500
 # Clippy's collapsible_if is aggressive and would require many changes
 # in critical parsing paths that could introduce regressions
 disallowed-methods = []
-allow-unwrap-in-tests = true

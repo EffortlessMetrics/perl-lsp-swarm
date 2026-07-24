@@ -2,7 +2,10 @@
 //!
 //! These tests are structured as Given/When/Then scenarios to validate
 //! end-to-end user workflows using the real JSON-RPC harness.
-
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 // Integration tests print diagnostic output for CI troubleshooting; this is
 // not the LSP server's stdio transport, so print_stderr doesn't apply the
 // way it does to production code.

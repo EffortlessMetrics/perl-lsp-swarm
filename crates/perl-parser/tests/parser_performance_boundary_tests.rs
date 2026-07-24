@@ -5,6 +5,10 @@
 //! - Very large numbers of tokens and AST nodes
 //! - Parsing time limits and timeout behavior
 //! - Memory usage limits and garbage collection
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 
 use perl_parser::Parser;
 use std::sync::{Arc, Mutex};

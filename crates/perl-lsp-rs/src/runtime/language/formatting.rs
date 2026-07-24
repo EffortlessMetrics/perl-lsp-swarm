@@ -642,7 +642,7 @@ mod tests {
         for i in 0..2000 {
             text.push_str(&format!("sub func_{i}{{my $x={i};return $x;}}\n"));
         }
-        server.test_apply_did_open(&uri, &text, 1)?;
+        server.test_apply_did_open(uri, &text, 1)?;
 
         let formatting_active = Arc::new(AtomicBool::new(false));
         let lock_acquired_during_format = Arc::new(AtomicBool::new(false));

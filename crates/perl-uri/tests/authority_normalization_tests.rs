@@ -101,6 +101,7 @@ mod filesystem_authorities {
 }
 
 mod classification_authorities {
+    use perl_tdd_support::must_some;
     use perl_uri::{is_file_uri, is_special_scheme, uri_extension, uri_key};
 
     #[test]
@@ -147,7 +148,7 @@ mod classification_authorities {
         let uri_with_query_fragment = "file:///tmp/module.pl?rev=1&version=2#L42";
         let path = perl_uri::uri_to_fs_path(uri_with_query_fragment);
         assert!(path.is_some(), "should accept URI with query and fragment");
-        let path_buf = path.unwrap();
+        let path_buf = must_some(path);
         let path_str = path_buf.to_string_lossy();
         assert!(
             path_str.ends_with("module.pl"),

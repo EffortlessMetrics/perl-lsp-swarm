@@ -29,6 +29,7 @@ use perl_lsp_rs_core::runtime::limits::{
     LSP_LIMITS, LspLimits, MemoryBudget, MemoryMonitor, MemoryPressure,
 };
 use perl_lsp_rs_core::runtime::text_utils::TextEditHelpers;
+use perl_tdd_support::must;
 use std::path::Path;
 
 /// Test that PerlLspCancellationToken is publicly accessible.
@@ -95,7 +96,7 @@ fn test_api_lsp_limits_type_public() -> Result<(), Box<dyn std::error::Error>> {
 /// Test that LSP_LIMITS static is publicly accessible.
 #[test]
 fn test_api_lsp_limits_static_public() -> Result<(), Box<dyn std::error::Error>> {
-    let _ = &*LSP_LIMITS.read().unwrap();
+    let _ = &*must(LSP_LIMITS.read());
     Ok(())
 }
 

@@ -17,6 +17,7 @@ use perl_semantic_facts::{
     ProviderFactTrace, ProviderFallbackState, ProviderSurface, RenamePlan, SafeDeletePlan, ScopeId,
     ValueShape, VisibleSymbol, VisibleSymbolContext, VisibleSymbolSource,
 };
+use perl_test_must::must_some;
 
 // ── Scenario 1: Goto-Definition Provider — Candidate Ranking ──────────────
 
@@ -617,9 +618,9 @@ fn given_attribute_accessors_when_collecting_then_predicate_and_clearer_distingu
         ),
     ];
 
-    let accessor = members.iter().find(|m| m.kind == GeneratedMemberKind::Accessor).unwrap();
-    let predicate = members.iter().find(|m| m.kind == GeneratedMemberKind::Predicate).unwrap();
-    let clearer = members.iter().find(|m| m.kind == GeneratedMemberKind::Clearer).unwrap();
+    let accessor = must_some(members.iter().find(|m| m.kind == GeneratedMemberKind::Accessor));
+    let predicate = must_some(members.iter().find(|m| m.kind == GeneratedMemberKind::Predicate));
+    let clearer = must_some(members.iter().find(|m| m.kind == GeneratedMemberKind::Clearer));
 
     assert_eq!(accessor.name, "name");
     assert_eq!(predicate.name, "has_name");

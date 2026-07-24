@@ -1349,6 +1349,10 @@ pub fn find_perlcritic() -> Option<String> {
 
 #[cfg(test)]
 mod normalize_tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
     use super::{
         document_symbol_names, find_binary_near_exe, is_active_document_ready_event,
         is_index_ready_event, is_truthy_env_value, normalize_lsp_payload,

@@ -265,6 +265,10 @@ impl VariableReference {
 
 #[cfg(test)]
 mod codec_unit_tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
     use super::*;
 
     #[test]

@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
+
 /// Targeted mutation elimination tests for quote_parser.rs
 /// This test suite targets specific surviving mutants identified in PR #170 mutation testing.
 ///

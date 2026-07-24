@@ -142,7 +142,7 @@ fn workflow() -> Result<(String, Value)> {
     Ok((content, workflow))
 }
 
-fn route_script<'a>(router: &'a Value) -> Result<&'a str> {
+fn route_script(router: &Value) -> Result<&str> {
     mapping_value(router, "steps")?
         .as_sequence()
         .ok_or_else(|| anyhow!("router steps must be a YAML sequence"))?

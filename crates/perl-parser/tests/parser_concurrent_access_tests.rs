@@ -5,6 +5,10 @@
 //! - Multiple concurrent parsing requests
 //! - Incremental parsing under concurrent modifications
 //! - Workspace indexing under concurrent access
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 
 use perl_parser::Parser;
 use perl_tdd_support::must;

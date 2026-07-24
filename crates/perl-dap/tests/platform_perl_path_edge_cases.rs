@@ -4,6 +4,10 @@
 //! - Non-standard Perl installations (custom PATH, perlbrew, plenv, system perl)
 //! - Edge cases: empty PATH, missing perl, multiple perls, unusual locations
 //! - Path normalization boundary conditions
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 
 use perl_dap::platform::{
     PerlInterpreterResult, find_perl_interpreter_cached, normalize_path, resolve_perl_path,

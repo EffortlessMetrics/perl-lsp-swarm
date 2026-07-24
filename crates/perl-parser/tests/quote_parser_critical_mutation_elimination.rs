@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
+
 /// Critical mutation elimination tests for quote_parser.rs
 /// These tests target the 52 highest-impact surviving mutants identified in PR #165
 /// to improve mutation score from 37% to ≥80%.
