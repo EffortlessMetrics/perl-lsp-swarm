@@ -345,7 +345,7 @@ export async function runPerlCriticOnActiveFile(
     typeof response.analyzerUsed === 'string' ? response.analyzerUsed : 'unknown';
   const fileName = path.basename(editor.document.uri.fsPath);
 
-  channel.appendLine(
+  channel.info(
     `[critic] ${fileName}: status=${status} violations=${violationCount} analyzer=${analyzerUsed}`,
   );
 
@@ -483,8 +483,8 @@ export async function activate(context: vscode.ExtensionContext) {
   // auto-restart without a parameter of its own.
   extensionContext = context;
   // LogOutputChannel is required by vscode-languageclient for outputChannel and
-  // traceOutputChannel. The extension writes via appendLine only, so the level
-  // filter UI is cosmetic until we route messages through log levels (#4630).
+  // traceOutputChannel. Messages are routed through level-aware methods
+  // (debug/info/warn/error) so the VS Code Output panel level filter works.
   outputChannel = vscode.window.createOutputChannel('Perl Language Server', { log: true });
   const mcpDisposable = featureActivationMetrics.measure('mcp', true, () =>
     registerMcpSupport(outputChannel),
@@ -687,7 +687,7 @@ export async function activate(context: vscode.ExtensionContext) {
         if (event.affectsConfiguration('perl-lsp.trace.server') && client) {
           const newTrace = getTraceLevel();
           await client.setTrace(newTrace);
-          outputChannel.appendLine(`Trace level changed to: ${newTrace}`);
+          outputChannel.info(`Trace level changed to: ${newTrace}`);
         }
 
         if (event.affectsConfiguration('perl-lsp.includePaths')) {
@@ -716,7 +716,7 @@ export async function activate(context: vscode.ExtensionContext) {
       onRestartRequired: () => promptForClientRefresh(context),
       onError: (error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
-        outputChannel.appendLine(`[configuration] change handling failed: ${message}`);
+        outputChannel.error(`[configuration] change handling failed: ${message}`);
       },
     }),
   );
@@ -784,7 +784,7 @@ export async function activate(context: vscode.ExtensionContext) {
     context.extensionMode === vscode.ExtensionMode.Test &&
     process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP === '1'
   ) {
-    outputChannel.appendLine('[extension-test] Skipping automatic server startup.');
+    outputChannel.warn('[extension-test] Skipping automatic server startup.');
     languageClientStartupMetrics.markMilestone('activate_returned');
     return {
       getLanguageClientStartupMetrics,
@@ -797,11 +797,11 @@ export async function activate(context: vscode.ExtensionContext) {
   // Workspace Trust gate: do not download binaries or spawn the language
   // server in an untrusted workspace. Defer startup until trust is granted.
   if (!vscode.workspace.isTrusted) {
-    outputChannel.appendLine(
+    outputChannel.info(
       '[startup] Workspace is not trusted — deferring language server startup until trust is granted.',
     );
     const trustDisposable = vscode.workspace.onDidGrantWorkspaceTrust(() => {
-      outputChannel.appendLine('[startup] Workspace trust granted — starting language server.');
+      outputChannel.info('[startup] Workspace trust granted — starting language server.');
       startLanguageClientAfterActivation(context, whatsNewManager);
     });
     context.subscriptions.push(trustDisposable);
@@ -838,7 +838,7 @@ function startLanguageClientAfterActivation(
 ): void {
   finishStartupAfterActivation(context, whatsNewManager).catch((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);
-    outputChannel.appendLine(`[startup] Background startup failed: ${msg}`);
+    outputChannel.error(`[startup] Background startup failed: ${msg}`);
     healthWidget?.onStateChange(ClientState.Stopped);
   });
 }
@@ -863,10 +863,10 @@ async function finishStartupAfterActivation(
     const updateDownloader = new BinaryDownloader(context, outputChannel);
     updateDownloader.checkForUpdateSilent().catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
-      outputChannel.appendLine(`[update-check] Error: ${msg}`);
+      outputChannel.error(`[update-check] Error: ${msg}`);
     });
   } else {
-    outputChannel.appendLine(
+    outputChannel.info(
       '[update-check] Skipped background update check in untrusted workspace.',
     );
   }
@@ -882,13 +882,13 @@ async function finishStartupAfterActivation(
     // Fire-and-forget; failures must not block extension startup.
     onboarding.showWelcomeNotification(currentServerPath).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
-      outputChannel.appendLine(`[onboarding] Error showing welcome: ${msg}`);
+      outputChannel.error(`[onboarding] Error showing welcome: ${msg}`);
     });
     // Mark the version seen on first install so the next activation
     // (after an update) triggers the What's New panel instead of welcome.
     whatsNewManager.markVersionSeen().catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
-      outputChannel.appendLine(`[whats-new] Error marking version seen: ${msg}`);
+      outputChannel.error(`[whats-new] Error marking version seen: ${msg}`);
     });
   } else if (whatsNewManager.shouldShowWhatsNew()) {
     // Extension was updated — show What's New panel.
@@ -900,7 +900,7 @@ async function finishStartupAfterActivation(
       })
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
-        outputChannel.appendLine(`[whats-new] Error showing What's New: ${msg}`);
+        outputChannel.error(`[whats-new] Error showing What's New: ${msg}`);
       });
   }
 }
@@ -920,7 +920,7 @@ export function diagnoseConfiguredServerPath(
   if (!userPath || pathExists) {
     return null;
   }
-  channel.appendLine(
+  channel.info(
     `[startup] perl-lsp.serverPath is configured but does not exist: ${userPath}. ` +
       `Falling back to PATH/bundled binary (or auto-download).`,
   );
@@ -936,7 +936,7 @@ async function getServerPath(
   const userPathExists = userPath ? fs.existsSync(userPath) : false;
 
   if (userPath && userPathExists) {
-    outputChannel.appendLine(`Using user-configured Perl LSP binary: ${userPath}`);
+    outputChannel.info(`Using user-configured Perl LSP binary: ${userPath}`);
     configuredServerPathMissing = null;
     return { path: userPath, source: 'configured' };
   }
@@ -958,7 +958,7 @@ async function getServerPath(
       for (const binaryName of binaryNames) {
         const fullPath = path.join(dir, binaryName);
         if (fs.existsSync(fullPath)) {
-          outputChannel.appendLine(`Found Perl LSP binary in PATH: ${fullPath}`);
+          outputChannel.info(`Found Perl LSP binary in PATH: ${fullPath}`);
           return fullPath;
         }
       }
@@ -979,13 +979,13 @@ async function getServerPath(
         continue;
       }
 
-      outputChannel.appendLine(`Using bundled Perl LSP binary: ${bundledPath}`);
+      outputChannel.info(`Using bundled Perl LSP binary: ${bundledPath}`);
       if (platform !== 'win32') {
         try {
           fs.chmodSync(bundledPath, 0o755);
         } catch (chmodError: unknown) {
           const msg = chmodError instanceof Error ? chmodError.message : String(chmodError);
-          outputChannel.appendLine(
+          outputChannel.info(
             `[startup] Could not update executable permissions for bundled binary: ${msg}`,
           );
         }
@@ -1024,26 +1024,26 @@ async function getServerPath(
     // Defense-in-depth: the activate() trust gate already prevents server
     // startup in untrusted workspaces, but getServerPath can also be reached
     // via reinstall/restart paths. Block binary download here too.
-    outputChannel.appendLine(
+    outputChannel.info(
       'Perl LSP binary not found, but auto-download is skipped in untrusted workspaces.',
     );
     return { path: null, source: 'unavailable' };
   }
 
   if (autoDownload) {
-    outputChannel.appendLine('Perl LSP binary not found, attempting to download...');
+    outputChannel.info('Perl LSP binary not found, attempting to download...');
     const downloader = new BinaryDownloader(context, outputChannel);
     const downloadedPath = await downloader.ensureBinary();
 
     if (downloadedPath) {
-      outputChannel.appendLine(`Downloaded Perl LSP binary to: ${downloadedPath}`);
+      outputChannel.info(`Downloaded Perl LSP binary to: ${downloadedPath}`);
       return { path: downloadedPath, source: 'downloaded' };
     }
   } else {
-    outputChannel.appendLine('Perl LSP binary not found and auto-download is disabled');
+    outputChannel.warn('Perl LSP binary not found and auto-download is disabled');
   }
 
-  outputChannel.appendLine('Failed to obtain a Perl LSP binary');
+  outputChannel.error('Failed to obtain a Perl LSP binary');
   return { path: null, source: 'unavailable' };
 }
 
@@ -1102,7 +1102,7 @@ function createLanguageClientLifecycle(
     },
     onCallbackError: (error, phase) => {
       const message = error instanceof Error ? error.message : String(error);
-      outputChannel.appendLine(`[lifecycle] ${phase} callback failed: ${message}`);
+      outputChannel.error(`[lifecycle] ${phase} callback failed: ${message}`);
     },
   });
 }
@@ -1132,7 +1132,7 @@ async function finalizeStartedLanguageClient(
   // Fire-and-forget; failures must not block lifecycle finalization.
   suggestAiCompletionIfSupported(context, startedClient).catch((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);
-    outputChannel.appendLine(`[ai-completion] Error suggesting AI completion: ${msg}`);
+    outputChannel.error(`[ai-completion] Error suggesting AI completion: ${msg}`);
   });
 
   await refreshTestAdapter(context);
@@ -1141,10 +1141,10 @@ async function finalizeStartedLanguageClient(
     await syncLanguageClientConfiguration(startedClient);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    outputChannel.appendLine(`[configuration] initial synchronization failed: ${message}`);
+    outputChannel.error(`[configuration] initial synchronization failed: ${message}`);
   }
   lastStartupDiagnosis = undefined;
-  outputChannel.appendLine('Perl Language Server started successfully');
+  outputChannel.info('Perl Language Server started successfully');
 }
 
 async function initializeLanguageClient(context: vscode.ExtensionContext): Promise<boolean> {
@@ -1152,7 +1152,7 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
 
   const lifecycle = languageClientLifecycle;
   if (!lifecycle) {
-    outputChannel.appendLine('[startup] Language client lifecycle was not composed');
+    outputChannel.debug('[startup] Language client lifecycle was not composed');
     healthWidget?.onStateChange(ClientState.Stopped);
     return false;
   }
@@ -1165,14 +1165,14 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
 
     const serverPath = lifecycle.serverPath;
     if (!serverPath) {
-      outputChannel.appendLine('[startup] Lifecycle started without a server path');
+      outputChannel.debug('[startup] Lifecycle started without a server path');
       return false;
     }
 
     return true;
   } catch (startError: unknown) {
     const msg = startError instanceof Error ? startError.message : String(startError);
-    outputChannel.appendLine(`[startup] Language client failed to start: ${msg}`);
+    outputChannel.error(`[startup] Language client failed to start: ${msg}`);
 
     if (!lifecycle.serverPath) {
       healthWidget?.onStateChange(ClientState.Stopped);
@@ -1383,9 +1383,9 @@ async function probeStartupFailure(serverPath: string): Promise<StartupErrorDiag
       (err: Error | null, stdout: string, stderr: string) => {
         const combined = [stderr, stdout].filter(Boolean).join('\n').trim();
         if (err) {
-          outputChannel.appendLine(`[startup-probe] Binary probe failed: ${err.message}`);
+          outputChannel.error(`[startup-probe] Binary probe failed: ${err.message}`);
           if (combined) {
-            outputChannel.appendLine(`[startup-probe] stderr: ${combined}`);
+            outputChannel.debug(`[startup-probe] stderr: ${combined}`);
           }
 
           // When stderr is empty, infer from the OS error code so the
@@ -1455,7 +1455,7 @@ function normalizeFeatureProfile(rawProfile: string): string | null {
   const knownProfiles = getSupportedFeatureProfiles();
 
   if (!knownProfiles.includes(normalizedProfile)) {
-    outputChannel.appendLine(`Unsupported featureProfile '${rawProfile}'. Falling back to 'auto'.`);
+    outputChannel.warn(`Unsupported featureProfile '${rawProfile}'. Falling back to 'auto'.`);
     return null;
   }
 
@@ -1508,7 +1508,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
       });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    outputChannel.appendLine(`Failed to restart perl-lsp: ${message}`);
+    outputChannel.error(`Failed to restart perl-lsp: ${message}`);
     vscode.window
       .showErrorMessage(`Failed to restart Perl Language Server: ${message}`, 'Show Output')
       .then((selection) => {
@@ -1547,13 +1547,13 @@ async function refreshTestAdapter(context: vscode.ExtensionContext) {
 
   const config = vscode.workspace.getConfiguration('perl-lsp');
   if (!config.get<boolean>('enableTestIntegration', true)) {
-    outputChannel.appendLine('Perl test integration disabled.');
+    outputChannel.warn('Perl test integration disabled.');
     return;
   }
 
   testAdapter = new PerlTestAdapter();
   context.subscriptions.push(testAdapter);
-  outputChannel.appendLine('Perl test integration enabled.');
+  outputChannel.info('Perl test integration enabled.');
 }
 
 /**
@@ -1579,7 +1579,7 @@ function refreshStreamingController(activeClient: LanguageClient | undefined): v
 
   if (aiEnabled && streamingEnabled) {
     streamingController = new StreamingCompletionController(activeClient);
-    outputChannel.appendLine('Streaming inline completion controller enabled.');
+    outputChannel.info('Streaming inline completion controller enabled.');
   }
 }
 
@@ -1624,7 +1624,7 @@ async function reinstallServerBinary(
   }
 
   outputChannel.show(true);
-  outputChannel.appendLine('Reinstalling perllsp binary...');
+  outputChannel.info('Reinstalling perllsp binary...');
 
   const downloader = new BinaryDownloader(context, outputChannel);
   const target = downloader.getTargetTriple();
@@ -1640,12 +1640,12 @@ async function reinstallServerBinary(
   const previousServerPath = languageClientLifecycle?.serverPath ?? null;
 
   if (wasRunning) {
-    outputChannel.appendLine('[reinstall] stopping language client to release the running binary');
+    outputChannel.debug('[reinstall] stopping language client to release the running binary');
     try {
       await disposeLanguageClient();
     } catch (stopErr: unknown) {
       const msg = stopErr instanceof Error ? stopErr.message : String(stopErr);
-      outputChannel.appendLine(`[reinstall] language client stop reported: ${msg}`);
+      outputChannel.debug(`[reinstall] language client stop reported: ${msg}`);
     }
     // Brief grace period: Windows can lag a few ms releasing the
     // executable file handle after the LSP child process exits.
@@ -1670,7 +1670,7 @@ async function reinstallServerBinary(
         }
       });
     if (wasRunning && previousServerPath) {
-      outputChannel.appendLine('[reinstall] restoring previous binary after failed download');
+      outputChannel.error('[reinstall] restoring previous binary after failed download');
       languageClientLifecycle?.setServerPathOverride(previousServerPath);
       try {
         await restartServer(context);
@@ -1707,7 +1707,7 @@ async function reinstallServerBinary(
         }
       });
     if (wasRunning && previousServerPath) {
-      outputChannel.appendLine('[reinstall] restoring previous binary after failed health check');
+      outputChannel.error('[reinstall] restoring previous binary after failed health check');
       languageClientLifecycle?.setServerPathOverride(previousServerPath);
       try {
         await restartServer(context);
@@ -1729,7 +1729,7 @@ async function reinstallServerBinary(
   languageClientLifecycle?.setServerPathOverride(downloadedPath);
 
   if (wasRunning) {
-    outputChannel.appendLine(
+    outputChannel.info(
       '[reinstall] restarting language client with the freshly installed binary',
     );
     try {
@@ -1786,7 +1786,7 @@ export function handleClientStateChange(event: StateChangeEvent): void {
       'Try restarting the server (Command Palette: "Perl: Restart Server") or run the Health Check.',
   };
 
-  outputChannel?.appendLine(
+  outputChannel?.info(
     '[lifecycle] Perl Language Server stopped unexpectedly (mid-session crash).',
   );
 
@@ -1817,7 +1817,7 @@ async function handleUnexpectedServerStop(): Promise<void> {
   if (autoRestartAttempts < MAX_AUTO_RESTART_ATTEMPTS) {
     autoRestartAttempts += 1;
     const attempt = autoRestartAttempts;
-    outputChannel?.appendLine(
+    outputChannel?.info(
       `[lifecycle] Auto-restarting Perl Language Server (attempt ${attempt}/${MAX_AUTO_RESTART_ATTEMPTS})\u2026`,
     );
     const message = `Perl Language Server crashed and is restarting automatically (attempt ${attempt}/${MAX_AUTO_RESTART_ATTEMPTS}). ${hint}`;
@@ -1826,7 +1826,7 @@ async function handleUnexpectedServerStop(): Promise<void> {
       outputChannel?.show();
     }
     if (!context) {
-      outputChannel?.appendLine(
+      outputChannel?.info(
         '[lifecycle] Cannot auto-restart: extension context is not available.',
       );
       return;
@@ -1837,13 +1837,13 @@ async function handleUnexpectedServerStop(): Promise<void> {
       // restartServer surfaces its own dialog/log; record the failure and
       // let the next crash (if any) consume another retry slot.
       const msg = error instanceof Error ? error.message : String(error);
-      outputChannel?.appendLine(`[lifecycle] Auto-restart attempt ${attempt} failed: ${msg}`);
+      outputChannel?.error(`[lifecycle] Auto-restart attempt ${attempt} failed: ${msg}`);
     }
     return;
   }
 
   // Retry budget exhausted — do not loop. Ask the user to intervene.
-  outputChannel?.appendLine(
+  outputChannel?.info(
     `[lifecycle] Auto-restart limit reached (${MAX_AUTO_RESTART_ATTEMPTS} attempts). Awaiting manual restart.`,
   );
   const exhausted = `Perl Language Server crashed and could not be restarted automatically after ${MAX_AUTO_RESTART_ATTEMPTS} attempts. ${hint}`;
@@ -1860,7 +1860,7 @@ async function handleUnexpectedServerStop(): Promise<void> {
       await restartServer(context);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
-      outputChannel?.appendLine(`[lifecycle] Manual restart failed: ${msg}`);
+      outputChannel?.error(`[lifecycle] Manual restart failed: ${msg}`);
     }
   } else if (selection === 'Run Health Check') {
     const serverPath = currentServerPath ?? undefined;
