@@ -7,10 +7,15 @@
 //! EmbeddedRegexCode` boundary, instead of falling into the flat-path
 //! `other =>` unsupported-count fallback.
 //!
-//! Slice 1 is strictly PIR-only (no `hir/model.rs` or `hir/lower.rs` edits):
-//! target/place resolution is deferred, so every op's `target` is always
-//! `PirRegexTarget::Unknown` here. See `docs/specs/PLSP-SPEC-0025-pir-v0.md`
-//! and the issue #4848 spec for the claim boundary.
+//! Slice 2 of #4848 adds HIR target-descriptor enrichment: `MatchExpr`/
+//! `SubstitutionExpr`/`TransliterationExpr` now carry `target_kind`/
+//! `target_ast_kind` fields (classified from the bound `expr` operand's AST
+//! shape in `hir::lower::classify_regex_target`), and PIR maps them to
+//! `PirRegexTarget::Place`/`Expression` instead of always `Unknown`. See
+//! `docs/specs/PLSP-SPEC-0025-pir-v0.md` and the issue #4848 spec for the
+//! claim boundary; `PirRegexTarget::DefaultTopic` remains unconstructed
+//! (bare `/pat/` and `qr/pat/` share `NodeKind::Regex` with no
+//! distinguishing field).
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{HirFile, lower_ast};
@@ -94,8 +99,8 @@ fn match_access_is_read_only() -> TestResult {
         _ => None,
     }));
     assert_eq!(access, PirTargetAccess::ReadOnly);
-    // Slice 1 leaves targets unresolved pending HIR target-descriptor enrichment.
-    assert_eq!(target, PirRegexTarget::Unknown);
+    // `$x` is a bare variable: a statically known lvalue place.
+    assert_eq!(target, PirRegexTarget::Place { kind: "Variable" });
     Ok(())
 }
 
@@ -107,7 +112,7 @@ fn substitution_is_mutate_access() -> TestResult {
         _ => None,
     }));
     assert_eq!(access, PirTargetAccess::Mutate);
-    assert_eq!(target, PirRegexTarget::Unknown);
+    assert_eq!(target, PirRegexTarget::Place { kind: "Variable" });
 
     let copy = lower("$x =~ s/a/b/r;");
     let (access, target) = must_some(copy.nodes.iter().find_map(|node| match &node.operation {
@@ -115,7 +120,7 @@ fn substitution_is_mutate_access() -> TestResult {
         _ => None,
     }));
     assert_eq!(access, PirTargetAccess::MutateCopy);
-    assert_eq!(target, PirRegexTarget::Unknown);
+    assert_eq!(target, PirRegexTarget::Place { kind: "Variable" });
     Ok(())
 }
 
@@ -127,7 +132,7 @@ fn transliteration_is_distinct_op() -> TestResult {
         _ => None,
     }));
     assert_eq!(access, PirTargetAccess::Mutate);
-    assert_eq!(target, PirRegexTarget::Unknown);
+    assert_eq!(target, PirRegexTarget::Place { kind: "Variable" });
     assert_eq!(graph.receipt.operation_counts.get("Transliteration"), Some(&1));
 
     let copy = lower("$x =~ tr/a-z/A-Z/r;");
@@ -136,7 +141,7 @@ fn transliteration_is_distinct_op() -> TestResult {
         _ => None,
     }));
     assert_eq!(access, PirTargetAccess::MutateCopy);
-    assert_eq!(target, PirRegexTarget::Unknown);
+    assert_eq!(target, PirRegexTarget::Place { kind: "Variable" });
     Ok(())
 }
 
@@ -213,18 +218,18 @@ fn embedded_code_uses_dedicated_boundary() -> TestResult {
 
 #[test]
 fn construct_target_operand_lowers_and_op_is_anchored() -> TestResult {
-    // Verified against real HIR/PIR output: HIR lowers `Match`'s bound
-    // expression via `visit_children`, which emits the `foo()` CallExpr item
-    // *after* the MatchExpr item (not before it, and not via the
-    // Literal-only operand-splice machinery `push_operand_node` reuses for
-    // literal operands nested inside Call/Deref/Assign). So for a call target
-    // the Call op follows the Match op in the fallthrough chain, rather than
-    // preceding it the way a nested Literal would. This is a real,
-    // parser/HIR-verified limitation of Slice 1's flat-path lowering, not an
-    // assumption: only `lower_literal` currently calls
-    // `enclosing_expression_parent`/`push_operand_node`; `lower_call` always
-    // pushes its own node unconditionally. Slice 2 (or a follow-up) can widen
-    // the operand-splice reuse to Call targets once target resolution lands.
+    // Slice 2 widens `lower_call`'s operand-splice reuse (previously only
+    // `lower_literal` called `enclosing_expression_parent`/
+    // `push_operand_node`) to Call targets: HIR still lowers `Match`'s bound
+    // expression via `visit_children`, emitting the `foo()` CallExpr item
+    // *after* the MatchExpr item in HIR's flat pre-order stream, but PIR now
+    // recognizes the Match node as the Call's enclosing expression parent
+    // (Match's source range fully contains Call's) and splices the Call in
+    // via `push_operand_node` — the same machinery a nested Literal operand
+    // already used. That reverses the fallthrough edge from Slice 1: it now
+    // runs Call -> Match (evaluate `foo()`, then perform the match), not
+    // Match -> Call. Node ids stay in emission order (Match first, Call
+    // second) — only the edge direction inverts.
     let graph = lower("foo() =~ /b/;");
     let match_node = must_some(
         graph.nodes.iter().find(|node| matches!(node.operation, PirOperation::Match { .. })),
@@ -236,14 +241,94 @@ fn construct_target_operand_lowers_and_op_is_anchored() -> TestResult {
     );
     assert!(call_node.source_anchor.is_anchored());
 
-    // Real observed order: Match (id 0) falls through to Call (id 1) — the
-    // op precedes its construct target here, the opposite of the
-    // Literal-in-Call operand order. Document, don't fabricate, the shape.
+    // Node ids still follow flat-HIR emission order: Match (id 0) before
+    // Call (id 1).
     assert!(match_node.id.index() < call_node.id.index());
+    // But the fallthrough edge is now INVERTED from Slice 1: Call splices
+    // in before Match, so the edge runs Call -> Match.
     assert!(graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == call_node.id
+            && edge.to == Some(match_node.id)
+    }));
+    // The old Slice-1 Match -> Call edge must no longer exist.
+    assert!(!graph.edges.iter().any(|edge| {
         edge.kind == PirEdgeKind::Fallthrough
             && edge.from == match_node.id
             && edge.to == Some(call_node.id)
+    }));
+    Ok(())
+}
+
+#[test]
+fn coderef_call_target_keeps_dynamic_boundary_after_splice() -> TestResult {
+    // Regression for the critical `push_operand_node` fix: before it, the
+    // function hardcoded `dynamic_boundary: None`, so widening `lower_call`'s
+    // Coderef arm to splice via `push_operand_node` would have silently
+    // dropped the `pending_dynamic_callee` boundary link. Verify the Call
+    // node's `dynamic_boundary` still resolves to a `DynamicCallee` boundary
+    // node after the splice.
+    let graph = lower("$coderef->() =~ /pat/;");
+    let call_node = must_some(
+        graph.nodes.iter().find(|node| matches!(node.operation, PirOperation::Call { .. })),
+    );
+    let boundary_id = must_some(call_node.dynamic_boundary);
+    let boundary = must_some(graph.node(boundary_id));
+    assert!(
+        matches!(
+            &boundary.operation,
+            PirOperation::DynamicBoundary { kind, .. }
+                if *kind == PirDynamicBoundaryKind::DynamicCallee
+        ),
+        "coderef Call's dynamic_boundary must still point at the DynamicCallee \
+         boundary node after the operand splice, not be dropped to None"
+    );
+    Ok(())
+}
+
+#[test]
+fn method_call_target_precedes_match_after_splice() -> TestResult {
+    // A method-call target (`$obj->m =~ /pat/`) is an Expression operand and,
+    // like Call/Deref targets, must splice in before its Match parent
+    // (MethodCall -> Match), not trail it — the same operand-precedes-parent
+    // invariant the other target shapes uphold.
+    let graph = lower("$obj->m =~ /pat/;");
+    let match_node = must_some(
+        graph.nodes.iter().find(|node| matches!(node.operation, PirOperation::Match { .. })),
+    );
+    let mc_node = must_some(
+        graph.nodes.iter().find(|node| matches!(node.operation, PirOperation::MethodCall { .. })),
+    );
+    assert!(graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == mc_node.id
+            && edge.to == Some(match_node.id)
+    }));
+    Ok(())
+}
+
+#[test]
+fn scalar_deref_match_target_resolves_to_expression() -> TestResult {
+    // `${$ref}` scalar-deref targets classify as `Expression`, not `Place`
+    // (Slice 2 scope decision), and the Deref HIR item still splices in
+    // before the Match node like the Call operand above.
+    let graph = lower("${$ref} =~ /pat/;");
+    let target = must_some(graph.nodes.iter().find_map(|node| match &node.operation {
+        PirOperation::Match { target, .. } => Some(target.clone()),
+        _ => None,
+    }));
+    assert_eq!(target, PirRegexTarget::Expression { kind: "Unary" });
+
+    let match_node = must_some(
+        graph.nodes.iter().find(|node| matches!(node.operation, PirOperation::Match { .. })),
+    );
+    let deref_node = must_some(
+        graph.nodes.iter().find(|node| matches!(node.operation, PirOperation::Deref { .. })),
+    );
+    assert!(graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == deref_node.id
+            && edge.to == Some(match_node.id)
     }));
     Ok(())
 }

@@ -23,10 +23,10 @@ use super::model::{
     LoopShell, MatchExpr, MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind,
     ModuleResolutionStatus, PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind,
     PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable, RecoveryConfidence, RegexExpr,
-    RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary,
-    StashDynamicBoundaryKind, StashGraph, StashProvenance, StatementModifierKind,
-    StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr, TransliterationExpr, TryExpr,
-    UseDecl, VariableBinding, VariableDecl,
+    RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence,
+    StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
+    StatementModifierKind, StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr,
+    TransliterationExpr, TryExpr, UseDecl, VariableBinding, VariableDecl,
 };
 
 /// Lower a parser AST into first-slice HIR items plus canonical body arenas.
@@ -678,7 +678,8 @@ impl Lowerer {
                 }
                 self.visit_children(node, confidence);
             }
-            NodeKind::Match { pattern, modifiers, has_embedded_code, negated, .. } => {
+            NodeKind::Match { expr, pattern, modifiers, has_embedded_code, negated } => {
+                let (target_kind, target_ast_kind) = classify_regex_target(expr);
                 self.push_item(
                     node,
                     None,
@@ -688,6 +689,8 @@ impl Lowerer {
                         modifiers: modifiers.clone(),
                         has_embedded_code: *has_embedded_code,
                         negated: *negated,
+                        target_kind,
+                        target_ast_kind,
                     }),
                     self.package_context.clone(),
                     Some(self.current_scope()),
@@ -712,13 +715,14 @@ impl Lowerer {
                 self.visit_children(node, confidence);
             }
             NodeKind::Substitution {
+                expr,
                 pattern,
                 replacement,
                 modifiers,
                 has_embedded_code,
                 negated,
-                ..
             } => {
+                let (target_kind, target_ast_kind) = classify_regex_target(expr);
                 self.push_item(
                     node,
                     None,
@@ -729,6 +733,8 @@ impl Lowerer {
                         modifiers: modifiers.clone(),
                         has_embedded_code: *has_embedded_code,
                         negated: *negated,
+                        target_kind,
+                        target_ast_kind,
                     }),
                     self.package_context.clone(),
                     Some(self.current_scope()),
@@ -751,7 +757,8 @@ impl Lowerer {
                 }
                 self.visit_children(node, confidence);
             }
-            NodeKind::Transliteration { search, replace, modifiers, negated, .. } => {
+            NodeKind::Transliteration { expr, search, replace, modifiers, negated } => {
+                let (target_kind, target_ast_kind) = classify_regex_target(expr);
                 self.push_item(
                     node,
                     None,
@@ -761,6 +768,8 @@ impl Lowerer {
                         replace: replace.clone(),
                         modifiers: modifiers.clone(),
                         negated: *negated,
+                        target_kind,
+                        target_ast_kind,
                     }),
                     self.package_context.clone(),
                     Some(self.current_scope()),
@@ -2730,6 +2739,46 @@ fn is_element_subscript(op: &str, container: &Node) -> bool {
             _ => false,
         },
         _ => false,
+    }
+}
+
+/// Classify a `=~`/`!~`-bound `expr` operand (Match/Substitution/
+/// Transliteration) as a statically known lvalue place or an arbitrary
+/// expression, from its AST shape alone.
+///
+/// A scalar variable (`$x`) or a singular element subscript (`$h{k}`, `$a[0]`,
+/// `$obj->{k}`) is a `Place`. A declaration or attribute wrapper used directly
+/// as a target (`(my $x =~ ...)`, `(our $AUTOLOAD =~ ...)`, `local $h{k} =~
+/// ...`) is classified by its inner declared lvalue — the `my`/`our`/`local`/
+/// `state` and `:attr` wrappers are incidental to the target's place-ness.
+/// Everything else — including non-scalar variables (`@a`/`%h`/`&sub`/`*foo`,
+/// which scalarize rather than name a scalar place), calls (`foo() =~ ...`),
+/// method calls (`$obj->m =~ ...`), scalar-deref operands (`${$ref} =~ ...`),
+/// and list declarations — is an `Expression`. Only `$`-sigil variables are
+/// places because `=~`/`!~` bind scalar lvalues (mirrors the `$`-sigil check
+/// in `is_element_subscript`). `${}` classifies as `Expression`, not `Place`:
+/// `lower_expr_as_place` treats bare `${}` as non-place even for assignment
+/// LHS, and a standalone `${$ref}` produces its own `DerefExpr` HIR item, like
+/// a function call.
+fn classify_regex_target(expr: &Node) -> (RegexTargetKind, &'static str) {
+    match &expr.kind {
+        NodeKind::Variable { sigil, .. } if sigil == "$" => {
+            (RegexTargetKind::Place, expr.kind.kind_name())
+        }
+        NodeKind::Binary { op, left, .. } if is_element_subscript(op, left) => {
+            (RegexTargetKind::Place, expr.kind.kind_name())
+        }
+        // A declaration or attribute wrapper used directly as a target keeps its
+        // place-ness: recurse on the inner declared lvalue. `my`/`our`/`state`
+        // wrap a bare variable; `local` may wrap an element subscript; and a
+        // `VariableWithAttributes` wrapper (`my $x :shared`) wraps either.
+        // Unwrapping mirrors `variable_binding`/`variable_decl_bindings`, which
+        // handle the same wrappers. A list declaration
+        // (`VariableListDeclaration`) is not a singular place and falls through
+        // to `Expression`.
+        NodeKind::VariableDeclaration { variable, .. }
+        | NodeKind::VariableWithAttributes { variable, .. } => classify_regex_target(variable),
+        _ => (RegexTargetKind::Expression, expr.kind.kind_name()),
     }
 }
 
