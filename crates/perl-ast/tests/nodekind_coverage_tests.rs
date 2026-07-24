@@ -117,6 +117,17 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
         ),
         (
             Node::new(
+                NodeKind::ChainedComparison {
+                    operands: vec![leaf("a"), leaf("b"), leaf("c")],
+                    ops: vec!["<".to_string(), "<".to_string()],
+                },
+                loc(),
+            ),
+            "ChainedComparison",
+            3,
+        ),
+        (
+            Node::new(
                 NodeKind::Ternary {
                     condition: Box::new(leaf("cond")),
                     then_expr: Box::new(leaf("then")),

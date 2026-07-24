@@ -5826,7 +5826,8 @@ impl IndexVisitor {
                                     },
                                 );
                             }
-                            NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
+                            NodeKind::FunctionCall { name, .. }
+                            | NodeKind::AmperCall { name, .. } => {
                                 let location = self.node_to_range(operand);
                                 let (pkg, bare_name) = if let Some(idx) = name.rfind("::") {
                                     (&name[..idx], &name[idx + 2..])
@@ -5991,9 +5992,7 @@ fn canonical_coderef_target_ref(
             name.as_str()
         }
         NodeKind::AmperCall { name, args }
-            if args.is_empty()
-                && !name.is_empty()
-                && !name.starts_with(['$', '@', '%']) =>
+            if args.is_empty() && !name.is_empty() && !name.starts_with(['$', '@', '%']) =>
         {
             name.as_str()
         }

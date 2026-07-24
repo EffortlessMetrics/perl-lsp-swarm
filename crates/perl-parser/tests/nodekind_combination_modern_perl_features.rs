@@ -600,7 +600,7 @@ where
         NodeKind::Class { body, .. } => {
             find_nodes_recursive(body, predicate, results);
         }
-        NodeKind::FunctionCall { args, .. } => {
+        NodeKind::FunctionCall { args, .. } | NodeKind::AmperCall { args, .. } => {
             for arg in args {
                 find_nodes_recursive(arg, predicate, results);
             }
