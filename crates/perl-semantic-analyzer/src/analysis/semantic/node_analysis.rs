@@ -448,6 +448,12 @@ impl SemanticAnalyzer {
                 self.analyze_node(keys, scope_id);
             }
 
+            NodeKind::ChainedComparison { operands, .. } => {
+                for operand in operands {
+                    self.analyze_node(operand, scope_id);
+                }
+            }
+
             NodeKind::Assignment { lhs, rhs, .. } => {
                 self.analyze_node(lhs, scope_id);
                 self.analyze_node(rhs, scope_id);

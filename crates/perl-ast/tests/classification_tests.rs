@@ -84,6 +84,7 @@ const SAFE_FOR_BREAKPOINT_TRUE: &[&str] = &[
     "ArraySlice",
     "HashSlice",
     "KeyValueSlice",
+    "ChainedComparison",
     "Ternary",
     "Unary",
     "Diamond",

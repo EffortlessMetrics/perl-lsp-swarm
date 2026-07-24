@@ -219,6 +219,7 @@ impl NodeKind {
             | NodeKind::ArraySlice { .. }
             | NodeKind::HashSlice { .. }
             | NodeKind::KeyValueSlice { .. }
+            | NodeKind::ChainedComparison { .. }
             | NodeKind::Ternary { .. }
             | NodeKind::Unary { .. }
             | NodeKind::Diamond
@@ -368,6 +369,15 @@ impl NodeKind {
             | NodeKind::ArraySlice { .. }
             | NodeKind::HashSlice { .. }
             | NodeKind::KeyValueSlice { .. } => flags!(
+                exec = true,
+                scope = false,
+                decl = false,
+                refs = true,
+                children = true,
+                recovery = false,
+                bp = true
+            ),
+            NodeKind::ChainedComparison { .. } => flags!(
                 exec = true,
                 scope = false,
                 decl = false,
