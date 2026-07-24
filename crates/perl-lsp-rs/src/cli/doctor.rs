@@ -930,8 +930,9 @@ mod tests {
         let missing = temp.path().join("missing-workspace");
         let missing_dir = missing.to_str().ok_or("non-UTF-8 temp path")?;
 
-        let error =
-            build_doctor_report_struct(missing_dir).err().ok_or("missing workspace should fail doctor")?;
+        let error = build_doctor_report_struct(missing_dir)
+            .err()
+            .ok_or("missing workspace should fail doctor")?;
 
         assert_eq!(error, format!("{missing_dir}: directory not found"));
         Ok(())
@@ -1210,8 +1211,9 @@ mod tests {
         std::fs::write(temp.path().join(".perl-lsp.toml"), "[perl\ninclude_paths = [\"lib\"]")?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        let error =
-            build_doctor_report_struct(dir).err().ok_or("invalid project config should fail doctor")?;
+        let error = build_doctor_report_struct(dir)
+            .err()
+            .ok_or("invalid project config should fail doctor")?;
 
         assert!(error.contains(".perl-lsp.toml"));
         assert!(error.contains("syntax error"));

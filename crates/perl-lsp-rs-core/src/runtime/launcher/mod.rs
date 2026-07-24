@@ -810,7 +810,9 @@ pub fn help_text() -> String {
     out.push_str("  --check <files...>   Validate Perl files and report parse errors\n");
     out.push_str("  --check-project [dir] Scan project directory for parsability report\n");
     out.push_str("  --doctor [dir]       Explain Perl path, config, and effective @INC roots\n");
-    out.push_str("  --json               Machine-readable JSON output (currently affects --doctor)\n");
+    out.push_str(
+        "  --json               Machine-readable JSON output (currently affects --doctor)\n",
+    );
     out.push_str("  --perltidy-compat-report <profile>\n");
     out.push_str("                       Report native formatter compatibility for .perltidyrc\n");
     out.push_str("  --perlcritic-compat-report <profile>\n");
