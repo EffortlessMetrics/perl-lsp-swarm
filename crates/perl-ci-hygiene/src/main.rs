@@ -161,13 +161,91 @@ fn is_excluded_test_path(path: &Path) -> bool {
 
 pub(crate) fn first_cfg_test_line_number(path: &Path) -> Result<usize> {
     let contents = read_lines(path)?;
-    let pattern = Regex::new(r"^\s*#\[cfg\(test\)\]")?;
+    // Plain #[cfg(test)] is an unconditional test-scope boundary: any item guarded
+    // this way is test-only regardless of what follows, so treat the first occurrence
+    // as the boundary immediately (matches the original heuristic).
+    //
+    // #[cfg(all(test, ...))] requires a lookahead: it must be followed (possibly after
+    // blank lines or other attributes) by a `mod` declaration to count as a boundary.
+    // This prevents a lone `#[cfg(all(test, not(target_arch = "wasm32")))] use …` near
+    // the top of a file (e.g. config/mod.rs:9) from falsely excluding the rest of the
+    // file from production CI checks.
+    //
+    // #[cfg(any(test, feature = "…"))] is intentionally NOT matched because such items
+    // are compiled into production builds when the feature is active.
+    let cfg_test_plain_re = Regex::new(r"^\s*#\[cfg\(test\)\]")?;
+    let cfg_all_test_re = Regex::new(r"^\s*#\[cfg\(all\(test[,\)]")?;
+    let attr_re = Regex::new(r"^\s*#\[")?;
+    let mod_re = Regex::new(r"^\s*(?:pub\s+)?mod\s+")?;
     for (idx, line) in contents.iter().enumerate() {
-        if pattern.is_match(line) {
+        if cfg_test_plain_re.is_match(line) {
             return Ok(idx + 1);
+        }
+        if cfg_all_test_re.is_match(line) {
+            // Only treat #[cfg(all(test, ...))] as a boundary when the next
+            // non-blank, non-attribute line is a `mod` declaration.
+            let mut j = idx + 1;
+            loop {
+                if j >= contents.len() {
+                    break;
+                }
+                let next = &contents[j];
+                if next.trim().is_empty() {
+                    j += 1;
+                    continue;
+                }
+                if attr_re.is_match(next) {
+                    j += 1;
+                    continue;
+                }
+                if mod_re.is_match(next) {
+                    return Ok(idx + 1);
+                }
+                break;
+            }
         }
     }
     Ok(usize::MAX)
+}
+
+/// Return true when a `// SAFETY:` comment directly documents `lines[unsafe_idx]`.
+///
+/// Scans upward at most 10 physical lines, skipping blanks, attributes, and
+/// non-SAFETY `//` comments. Stops at the first other code line (including a
+/// prior `unsafe` construct) so a SAFETY comment for an earlier block cannot
+/// satisfy a later one.
+pub(crate) fn has_adjacent_safety_comment(
+    lines: &[String],
+    unsafe_idx: usize,
+    safety_re: &Regex,
+    attr_re: &Regex,
+    comment_re: &Regex,
+    unsafe_impl_re: &Regex,
+) -> bool {
+    let mut scanned = 0usize;
+    let mut j = unsafe_idx;
+    while j > 0 && scanned < 10 {
+        j -= 1;
+        scanned += 1;
+        let line = &lines[j];
+        if line.trim().is_empty() {
+            continue;
+        }
+        if safety_re.is_match(line) {
+            return true;
+        }
+        if attr_re.is_match(line) {
+            continue;
+        }
+        if comment_re.is_match(line) {
+            continue;
+        }
+        if unsafe_impl_re.is_match(line) {
+            continue;
+        }
+        return false;
+    }
+    false
 }
 
 fn read_json_value(path: &Path) -> Result<Value> {
@@ -2297,50 +2375,87 @@ fn cmd_check_parser_matrix(repo_root: &Path) -> Result<i32> {
 }
 
 fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
-    let pattern = Regex::new(
+    // Matches real unsafe constructs; comment_re filters comment-only lines so
+    // that doc-comment prose containing "unsafe impl …" isn't counted.
+    let unsafe_re = Regex::new(
         r"unsafe[[:space:]]*\{|unsafe[[:space:]]+extern|unsafe[[:space:]]+impl|#!\[allow\(unsafe_code\)\]",
     )?;
-    let total = walk_rust_source_files_for_ci_checks(repo_root)?
-        .into_iter()
-        .map(|path| {
-            let file = read_lines(&path).map(|lines| {
-                let test_start = first_cfg_test_line_number(&path).unwrap_or(usize::MAX);
-                lines
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, line)| {
-                        let line_no = index + 1;
-                        if line_no >= test_start {
-                            return None;
-                        }
-                        if pattern.is_match(line) {
-                            Some(format!("{}:{line_no}:{line}", display_path(repo_root, &path)))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<String>>()
-            })?;
-            Ok::<Vec<String>, color_eyre::eyre::Report>(file)
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let comment_re = Regex::new(r"^\s*//")?;
+    let safety_re = Regex::new(r"^\s*//\s*SAFETY:")?;
+    let attr_re = Regex::new(r"^\s*#\[")?;
+    let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl")?;
 
-    let all_matches = total.into_iter().flatten().collect::<Vec<_>>();
+    let mut all_matches: Vec<String> = Vec::new();
+    let mut bare_unsafe: Vec<String> = Vec::new();
+
+    for path in walk_rust_source_files_for_ci_checks(repo_root)? {
+        let rel = display_path(repo_root, &path);
+        let lines = read_lines(&path)?;
+        let test_start = first_cfg_test_line_number(&path).unwrap_or(usize::MAX);
+        for (idx, line) in lines.iter().enumerate() {
+            let line_no = idx + 1;
+            if line_no >= test_start {
+                continue;
+            }
+            if comment_re.is_match(line) {
+                // Skip comment lines — prose mentioning "unsafe impl" is not unsafe.
+                continue;
+            }
+            if unsafe_re.is_match(line) {
+                let location = format!("{rel}:{line_no}:{line}");
+                all_matches.push(location.clone());
+
+                if !has_adjacent_safety_comment(
+                    &lines,
+                    idx,
+                    &safety_re,
+                    &attr_re,
+                    &comment_re,
+                    &unsafe_impl_re,
+                ) {
+                    bare_unsafe.push(location);
+                }
+            }
+        }
+    }
+
     let baseline = read_usize_file(&repo_root.join("ci/unsafe_prod_baseline.txt"), 0)?;
-    println!("unsafe syntax: {} (baseline: {baseline})", all_matches.len());
-    if all_matches.len() <= baseline {
+    println!("unsafe syntax in production: {} (baseline: {baseline})", all_matches.len());
+
+    let mut exit_code = 0;
+
+    if all_matches.len() > baseline {
+        println!("FAIL: unsafe syntax count ({}) exceeds baseline ({baseline})", all_matches.len());
+        println!("New or uncounted offenders:");
+        for item in &all_matches {
+            println!("  {item}");
+        }
+        exit_code = 1;
+    }
+
+    if !bare_unsafe.is_empty() {
+        println!(
+            "FAIL: {} unsafe block(s) missing a preceding // SAFETY: comment:",
+            bare_unsafe.len()
+        );
+        for item in &bare_unsafe {
+            println!("  {item}");
+        }
+        exit_code = 1;
+    }
+
+    if exit_code == 0 {
         if all_matches.is_empty() {
             println!("No unsafe syntax in production scopes");
+        } else {
+            println!(
+                "✓ All {} unsafe block(s) carry SAFETY comments and count ≤ baseline",
+                all_matches.len()
+            );
         }
-        return Ok(0);
     }
 
-    println!("FAIL: unsafe syntax count ({}) exceeds baseline ({baseline})", all_matches.len());
-    println!("Offenders:");
-    for item in &all_matches {
-        println!("{item}");
-    }
-    Ok(1)
+    Ok(exit_code)
 }
 
 fn cmd_check_unwraps_modules(repo_root: &Path) -> Result<i32> {
@@ -3809,5 +3924,147 @@ mod tests {
              Violations found in:\n  {}",
             violations.join("\n  ")
         );
+    }
+
+    // ── first_cfg_test_line_number tests (#2894) ───────────────────────────────
+
+    #[test]
+    fn cfg_test_line_number_plain_cfg_test() -> Result<()> {
+        let tmp = std::env::temp_dir().join("pch_test_plain_cfg_test.rs");
+        std::fs::write(
+            &tmp,
+            "fn prod() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn it() {}\n}\n",
+        )?;
+        // Line 3 carries #[cfg(test)]; function returns 1-based line index.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_cfg_all_test_followed_by_mod() -> Result<()> {
+        // Regression guard for #2894: #[cfg(all(test, ...))] must be recognised
+        // as a test-module boundary when the next non-blank, non-attribute line
+        // is a `mod` declaration.
+        let tmp = std::env::temp_dir().join("pch_test_cfg_all_test.rs");
+        std::fs::write(
+            &tmp,
+            "fn prod() {}\n\n\
+             #[cfg(all(test, not(target_arch = \"wasm32\")))]\n\
+             mod tests {\n    #[test]\n    fn it() {}\n}\n",
+        )?;
+        // Line 3 carries the cfg attribute; anything at line ≥ 3 is test scope.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_cfg_all_test_on_use_is_not_boundary() -> Result<()> {
+        // A lone #[cfg(all(test,...))] on a `use` statement must NOT trigger the
+        // test-boundary heuristic — the next non-blank line is `use`, not `mod`.
+        let tmp = std::env::temp_dir().join("pch_test_use_not_mod.rs");
+        std::fs::write(
+            &tmp,
+            "#[cfg(all(test, not(target_arch = \"wasm32\")))]\nuse std::env;\n\nfn prod() {}\n",
+        )?;
+        // No `mod` follows the cfg attr → no boundary → usize::MAX.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, usize::MAX);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_no_test_section() -> Result<()> {
+        let tmp = std::env::temp_dir().join("pch_test_no_section.rs");
+        std::fs::write(&tmp, "fn prod() { let _x = 1; }\n")?;
+        assert_eq!(first_cfg_test_line_number(&tmp)?, usize::MAX);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_plain_cfg_test_is_immediate_boundary() -> Result<()> {
+        // Plain #[cfg(test)] is an unconditional boundary: the lookahead-for-mod
+        // check applies only to #[cfg(all(test, ...))].  Verify that intermediate
+        // attributes between the cfg line and the `mod` block do not change the
+        // reported boundary line.
+        let tmp = std::env::temp_dir().join("pch_test_attrs_between.rs");
+        std::fs::write(
+            &tmp,
+            "fn prod() {}\n\n\
+             #[cfg(test)]\n\
+             #[allow(clippy::too_many_lines)]\n\
+             mod tests {\n}\n",
+        )?;
+        // #[cfg(test)] is at line 3; that is the boundary, not the `mod` line.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn adjacent_safety_comment_matches_directly_above() {
+        let safety_re = Regex::new(r"^\s*//\s*SAFETY:").unwrap();
+        let attr_re = Regex::new(r"^\s*#\[").unwrap();
+        let comment_re = Regex::new(r"^\s*//").unwrap();
+        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl").unwrap();
+        let lines = vec![
+            "// SAFETY: Win32 API".to_string(),
+            "unsafe { api(); }".to_string(),
+        ];
+        assert!(has_adjacent_safety_comment(
+            &lines,
+            1,
+            &safety_re,
+            &attr_re,
+            &comment_re,
+            &unsafe_impl_re,
+        ));
+    }
+
+    #[test]
+    fn adjacent_safety_comment_does_not_cross_intervening_code() {
+        let safety_re = Regex::new(r"^\s*//\s*SAFETY:").unwrap();
+        let attr_re = Regex::new(r"^\s*#\[").unwrap();
+        let comment_re = Regex::new(r"^\s*//").unwrap();
+        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl").unwrap();
+        let lines = vec![
+            "// SAFETY: first block".to_string(),
+            "unsafe { first(); }".to_string(),
+            "fn between() {}".to_string(),
+            "unsafe { second(); }".to_string(),
+        ];
+        assert!(!has_adjacent_safety_comment(
+            &lines,
+            3,
+            &safety_re,
+            &attr_re,
+            &comment_re,
+            &unsafe_impl_re,
+        ));
+    }
+
+    #[test]
+    fn adjacent_safety_comment_covers_back_to_back_unsafe_impls() {
+        let safety_re = Regex::new(r"^\s*//\s*SAFETY:").unwrap();
+        let attr_re = Regex::new(r"^\s*#\[").unwrap();
+        let comment_re = Regex::new(r"^\s*//").unwrap();
+        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl").unwrap();
+        let lines = vec![
+            "// SAFETY: shared Send/Sync justification".to_string(),
+            "#[allow(unsafe_code)]".to_string(),
+            "unsafe impl Send for Handle {}".to_string(),
+            "#[allow(unsafe_code)]".to_string(),
+            "unsafe impl Sync for Handle {}".to_string(),
+        ];
+        assert!(has_adjacent_safety_comment(
+            &lines,
+            4,
+            &safety_re,
+            &attr_re,
+            &comment_re,
+            &unsafe_impl_re,
+        ));
     }
 }
