@@ -442,6 +442,14 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
         ),
         (
             Node::new(
+                NodeKind::AmperCall { name: "helper".to_string(), args: vec![leaf("arg")] },
+                loc(),
+            ),
+            "AmperCall",
+            1,
+        ),
+        (
+            Node::new(
                 NodeKind::IndirectCall {
                     method: "new".to_string(),
                     object: Box::new(leaf("object")),

@@ -1132,7 +1132,9 @@ impl<'a> Parser<'a> {
             return self.parse_code_dereference(start);
         }
 
-        // Special handling for & sigil - it's a function call
+        // Special handling for & sigil - ampersand-sigil subroutine call.
+        // Distinct from plain FunctionCall: preserves & context for prototype bypass
+        // and argument-forwarding semantics (bare &foo forwards @_ verbatim).
         if sigil == "&" {
             let args = if self.peek_kind() == Some(TokenKind::LeftParen) {
                 self.consume_token()?; // consume (
@@ -1141,7 +1143,7 @@ impl<'a> Parser<'a> {
                 vec![]
             };
 
-            Ok(Node::new(NodeKind::FunctionCall { name, args }, SourceLocation { start, end }))
+            Ok(Node::new(NodeKind::AmperCall { name, args }, SourceLocation { start, end }))
         } else if sigil == "*" {
             let name = normalize_dynamic_typeglob_name(&name);
             Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }))

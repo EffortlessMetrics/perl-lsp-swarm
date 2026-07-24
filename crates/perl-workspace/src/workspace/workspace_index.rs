@@ -4859,7 +4859,7 @@ impl IndexVisitor {
                 });
             }
 
-            NodeKind::FunctionCall { name, args, .. } => {
+            NodeKind::FunctionCall { name, args, .. } | NodeKind::AmperCall { name, args, .. } => {
                 let func_name = name.clone();
                 let location = self.node_to_range(node);
 
@@ -5470,7 +5470,7 @@ impl IndexVisitor {
                 }
             }
 
-            NodeKind::FunctionCall { name, args, .. } => {
+            NodeKind::FunctionCall { name, args, .. } | NodeKind::AmperCall { name, args, .. } => {
                 let func_name = name.clone();
                 let location = self.node_to_range(node);
 
@@ -5826,7 +5826,7 @@ impl IndexVisitor {
                                     },
                                 );
                             }
-                            NodeKind::FunctionCall { name, .. } => {
+                            NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
                                 let location = self.node_to_range(operand);
                                 let (pkg, bare_name) = if let Some(idx) = name.rfind("::") {
                                     (&name[..idx], &name[idx + 2..])
@@ -5932,8 +5932,10 @@ fn canonical_ref_for_node(node: &Node) -> Option<perl_symbol::surface::r#ref::Sy
                 anchor_span: Some((node.location.start, node.location.end)),
             })
         }
-        NodeKind::FunctionCall { name, .. } => {
-            if matches!(name.as_str(), "->()" | "&{}" | "field") {
+        NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
+            if matches!(&node.kind, NodeKind::FunctionCall { .. })
+                && matches!(name.as_str(), "->()" | "&{}" | "field")
+            {
                 return None;
             }
             let (package_qualifier, bare_name, qualified_name) = split_qualified_name_dup(name);
@@ -5985,6 +5987,13 @@ fn canonical_coderef_target_ref(
         NodeKind::FunctionCall { name, args }
             if args.is_empty()
                 && node.location.end.saturating_sub(node.location.start) == name.len() + 1 =>
+        {
+            name.as_str()
+        }
+        NodeKind::AmperCall { name, args }
+            if args.is_empty()
+                && !name.is_empty()
+                && !name.starts_with(['$', '@', '%']) =>
         {
             name.as_str()
         }

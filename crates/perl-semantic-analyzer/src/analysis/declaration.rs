@@ -329,7 +329,9 @@ impl<'a> DeclarationProvider<'a> {
         // Check what kind of node we're on
         match &node.kind {
             NodeKind::Variable { name, .. } => self.find_variable_declaration(node, name),
-            NodeKind::FunctionCall { name, .. } => self.find_subroutine_declaration(node, name),
+            NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
+                self.find_subroutine_declaration(node, name)
+            }
             NodeKind::MethodCall { method, object, .. } => {
                 self.find_method_declaration(node, method, object)
             }
@@ -351,12 +353,12 @@ impl<'a> DeclarationProvider<'a> {
                     GotoTargetForm::Sub => {
                         // goto &sub — navigate to the subroutine declaration.
                         // Skip dynamic coderefs (e.g. `goto &$var`, where the parser
-                        // produces `FunctionCall { name: "$var", .. }`) so we don't
+                        // produces `AmperCall { name: "$var", .. }`) so we don't
                         // issue a wasted lookup for a non-existent subroutine. This
                         // mirrors the sigil guard in symbol.rs so both consumers of
                         // the `form` field agree on what the `Sub` arm means.
                         match &target.kind {
-                            NodeKind::FunctionCall { name, .. }
+                            NodeKind::AmperCall { name, .. }
                                 if !name.is_empty() && !name.starts_with(['$', '@', '%']) =>
                             {
                                 self.find_subroutine_declaration(node, name)
@@ -1302,7 +1304,9 @@ impl<'a> DeclarationProvider<'a> {
                 }
                 children
             }
-            NodeKind::FunctionCall { args, .. } => args.iter().collect(),
+            NodeKind::FunctionCall { args, .. } | NodeKind::AmperCall { args, .. } => {
+                args.iter().collect()
+            }
             NodeKind::MethodCall { object, args, .. } => {
                 let mut children = vec![object.as_ref()];
                 children.extend(args.iter());
@@ -1576,7 +1580,11 @@ fn symbol_at_cursor_internal(
         /// `::` -separated string suitable for workspace lookup.
         fn require_module_name(node: &Node) -> Option<String> {
             let args = match &node.kind {
-                NodeKind::FunctionCall { name, args } if name == "require" => args,
+                NodeKind::FunctionCall { name, args } | NodeKind::AmperCall { name, args }
+                    if name == "require" =>
+                {
+                    args
+                }
                 _ => return None,
             };
             let arg = args.first()?;
@@ -2285,7 +2293,7 @@ mod tests {
     // =========================================================================
 
     /// `goto &target` (named subroutine) resolves to the sub declaration —
-    /// exercises the guarded `FunctionCall { name, .. }` arm of GotoTargetForm::Sub.
+    /// exercises the guarded `AmperCall { name, .. }` arm of GotoTargetForm::Sub.
     ///
     /// Covered changed lines: ~351-360 (Sub arm, named-subroutine branch).
     #[test]
@@ -2345,6 +2353,18 @@ mod tests {
         assert!(
             provider.find_declaration(offset, 0).is_none(),
             "goto $target (Expr form) resolves to no declaration"
+        );
+    }
+
+    /// `&callee(1)` at a callsite resolves to the subroutine declaration.
+    #[test]
+    fn amper_call_decl_resolves_named_subroutine() {
+        let source = "sub callee { 1 }\nsub caller { &callee(1); }\n";
+        let provider = make_provider(source);
+        let offset = source.find("&callee").expect("&callee must be in source") + 1;
+        assert!(
+            provider.find_declaration(offset, 0).is_some(),
+            "find_declaration on &callee(1) must resolve the subroutine"
         );
     }
 

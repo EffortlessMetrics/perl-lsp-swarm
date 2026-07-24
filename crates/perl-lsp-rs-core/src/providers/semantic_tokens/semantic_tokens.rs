@@ -865,9 +865,10 @@ pub fn collect_semantic_tokens(
         let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
 
         let (kind, mods): (&str, u32) = match &node.kind {
-            NodeKind::FunctionCall { name, .. } => {
-                if (const_fast_enabled && name == "const")
-                    || (readonly_enabled && name == "Readonly")
+            NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
+                if matches!(&node.kind, NodeKind::FunctionCall { .. })
+                    && ((const_fast_enabled && name == "const")
+                        || (readonly_enabled && name == "Readonly"))
                 {
                     return true;
                 }

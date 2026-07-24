@@ -846,6 +846,15 @@ impl Node {
                 }
             }
 
+            NodeKind::AmperCall { name, args } => {
+                let args_str = args.iter().map(|a| a.to_sexp()).collect::<Vec<_>>().join(" ");
+                if args.is_empty() {
+                    format!("(amper_call &{})", name)
+                } else {
+                    format!("(amper_call &{} ({}))", name, args_str)
+                }
+            }
+
             NodeKind::IndirectCall { method, object, args } => {
                 let args_str = args.iter().map(|a| a.to_sexp()).collect::<Vec<_>>().join(" ");
                 format!("(indirect_call {} {} ({}))", method, object.to_sexp(), args_str)
@@ -1146,7 +1155,7 @@ impl Node {
             }
 
             // Function calls
-            NodeKind::FunctionCall { args, .. } => {
+            NodeKind::FunctionCall { args, .. } | NodeKind::AmperCall { args, .. } => {
                 for arg in args {
                     f(arg);
                 }
@@ -1426,7 +1435,7 @@ impl Node {
             }
 
             // Function calls
-            NodeKind::FunctionCall { args, .. } => {
+            NodeKind::FunctionCall { args, .. } | NodeKind::AmperCall { args, .. } => {
                 for arg in args {
                     emit!(FieldId::ARGS, arg);
                 }
@@ -2351,6 +2360,18 @@ pub enum NodeKind {
         args: Vec<Node>,
     },
 
+    /// Ampersand-sigil subroutine call: `&foo(@args)`, `&Package::sub()`
+    ///
+    /// Distinct from `FunctionCall`: the explicit `&` sigil bypasses prototypes
+    /// and changes argument-passing semantics in Perl (`&foo` with no parens
+    /// forwards the caller's `@_` verbatim).
+    AmperCall {
+        /// Target name (bareword or qualified: `Package::func`)
+        name: String,
+        /// Call arguments (empty when called without parens)
+        args: Vec<Node>,
+    },
+
     /// Indirect object call (legacy syntax): `new Class @args`
     IndirectCall {
         /// Method name
@@ -2635,6 +2656,7 @@ impl NodeKind {
             NodeKind::Goto { .. } => "Goto",
             NodeKind::MethodCall { .. } => "MethodCall",
             NodeKind::FunctionCall { .. } => "FunctionCall",
+            NodeKind::AmperCall { .. } => "AmperCall",
             NodeKind::IndirectCall { .. } => "IndirectCall",
             NodeKind::Regex { .. } => "Regex",
             NodeKind::Match { .. } => "Match",
@@ -2681,6 +2703,7 @@ impl NodeKind {
             | NodeKind::Subroutine { .. }
             | NodeKind::LoopControl { .. }
             | NodeKind::FunctionCall { .. }
+            | NodeKind::AmperCall { .. }
             | NodeKind::Match { .. }
             | NodeKind::PhaseBlock { .. } => None,
             NodeKind::ArraySlice { .. } => Some("array_slice"),
@@ -2796,6 +2819,9 @@ impl NodeKind {
                 "ambiguous_function_call_expression"
             }
             .to_string(),
+            NodeKind::AmperCall { args, .. } => {
+                if args.is_empty() { "amper_sub" } else { "amper_call_expression" }.to_string()
+            }
             NodeKind::Match { negated, .. } => {
                 if *negated { "not_match" } else { "match" }.to_string()
             }
@@ -3271,6 +3297,7 @@ mod tests {
                 args: vec![],
             },
             NodeKind::FunctionCall { name: String::new(), args: vec![] },
+            NodeKind::AmperCall { name: String::new(), args: vec![] },
             NodeKind::IndirectCall {
                 method: String::new(),
                 object: Box::new(dummy_node()),

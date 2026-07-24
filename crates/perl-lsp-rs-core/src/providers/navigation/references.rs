@@ -167,7 +167,7 @@ pub fn find_references_single_file(ast: &Node, offset: usize) -> Option<Vec<(usi
             let sigil_char = sigil.chars().next();
             ("var", "main".to_string(), name.clone(), sigil_char)
         }
-        NodeKind::FunctionCall { name, .. } => {
+        NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
             let (pkg, bare) = split_qualified_name(name);
             let pkg = pkg.unwrap_or("main").to_string();
             let bare = bare.to_string();
@@ -200,7 +200,9 @@ pub fn find_references_single_file(ast: &Node, offset: usize) -> Option<Vec<(usi
                     out.push((location.start, location.end));
                 }
             }
-            NodeKind::FunctionCall { name, .. } if want_kind == "sub" => {
+            NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. }
+                if want_kind == "sub" =>
+            {
                 let (pkg, bare) = split_qualified_name(name);
                 let pkg = pkg.unwrap_or("main");
                 if bare == want_name && pkg == want_pkg {

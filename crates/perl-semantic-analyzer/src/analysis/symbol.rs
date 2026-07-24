@@ -799,18 +799,20 @@ impl SymbolExtractor {
                 self.visit_node(operand);
             }
 
-            NodeKind::FunctionCall { name, args } => {
-                if self.const_fast_enabled
-                    && name == "const"
-                    && self.try_extract_const_fast_declaration(args)
-                {
-                    return;
-                }
-                if self.readonly_enabled
-                    && name == "Readonly"
-                    && self.try_extract_readonly_declaration(args)
-                {
-                    return;
+            NodeKind::FunctionCall { name, args } | NodeKind::AmperCall { name, args } => {
+                if matches!(&node.kind, NodeKind::FunctionCall { .. }) {
+                    if self.const_fast_enabled
+                        && name == "const"
+                        && self.try_extract_const_fast_declaration(args)
+                    {
+                        return;
+                    }
+                    if self.readonly_enabled
+                        && name == "Readonly"
+                        && self.try_extract_readonly_declaration(args)
+                    {
+                        return;
+                    }
                 }
 
                 // Track function call as a reference
@@ -1082,13 +1084,13 @@ impl SymbolExtractor {
                     // goto &sub — frame replacement (tail call); record a subroutine reference
                     // so that find-references and call-hierarchy can trace the tail-call edge.
                     // The target may be:
-                    //   - FunctionCall { name: "foo", .. } for goto &foo or goto &Pkg::bar
-                    //   - FunctionCall { name: "$dispatch", .. } for goto &$var (NOT a subroutine ref)
+                    //   - AmperCall { name: "foo", .. } for goto &foo or goto &Pkg::bar
+                    //   - AmperCall { name: "$dispatch", .. } for goto &$var (NOT a subroutine ref)
                     //   - Unary { op: "&{}", .. } for goto &{ code } (NOT a subroutine ref)
-                    // Only record a subroutine reference for FunctionCall with a plain name
+                    // Only record a subroutine reference for AmperCall with a plain name
                     // (no leading sigil), which indicates a real named subroutine.
                     match &target.kind {
-                        NodeKind::FunctionCall { name, .. }
+                        NodeKind::AmperCall { name, .. }
                             if !name.is_empty() && !name.starts_with(['$', '@', '%']) =>
                         {
                             // Real named subroutine: goto &foo or goto &Pkg::bar
@@ -4209,8 +4211,29 @@ sub jump {
     }
 
     #[test]
+    fn test_amper_call_records_subroutine_reference() {
+        let code = r#"
+sub callee { }
+sub caller {
+    &callee(1);
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+
+        let extractor = SymbolExtractor::new_with_source(code);
+        let table = extractor.extract(&ast);
+        let references = must_some(table.references.get("callee"));
+
+        assert!(
+            references.iter().any(|reference| reference.kind == SymbolKind::Subroutine),
+            "&callee(1) should record a subroutine reference"
+        );
+    }
+
+    #[test]
     fn test_goto_dynamic_coderef_records_no_subroutine_reference() {
-        // goto &$dispatch — Sub form, but the FunctionCall name carries a sigil
+        // goto &$dispatch — Sub form, but the AmperCall name carries a sigil
         // (dynamic coderef), so the `_ => visit_node` arm runs and NO subroutine
         // reference is recorded for a clean named subroutine `dispatch`.
         let code = r#"
