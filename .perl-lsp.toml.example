@@ -47,11 +47,12 @@
 
 [diagnostics]
 
-# Enable critic diagnostics (default: false).
+# Enable critic diagnostics (default: true).
+# Uncomment and set to false to disable critic diagnostics.
 #
-# perlcritic = false
+# perlcritic = true
 
-# Minimum perlcritic severity to report (1 = most severe, 5 = everything).
+# Minimum perlcritic severity to report (1 = least severe, 5 = most severe).
 # Default: 3 (Harsh). Must be in the range 1-5.
 # Equivalent to `perlcritic --severity N`.
 #
@@ -63,10 +64,10 @@
 [critic]
 
 # Engine values:
+#   native (default)               = Rust-native critic rule registry
 #   legacy / perlcritic / external = Perl::Critic-compatible legacy path
-#   native                         = Rust-native critic rule registry
 #
-# engine = "legacy"
+# engine = "native"
 
 # ── [features] ───────────────────────────────────────────────────────────────
 # LSP feature toggles.
