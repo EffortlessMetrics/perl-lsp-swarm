@@ -102,7 +102,9 @@ fn walk(
                 result,
             );
         }
-        NodeKind::FunctionCall { name, args } if name == "require" => {
+        NodeKind::FunctionCall { name, args } | NodeKind::AmperCall { name, args }
+            if name == "require" =>
+        {
             record_require(node, file_id, line_index, args.first(), result);
         }
         NodeKind::Eval { block } => {
