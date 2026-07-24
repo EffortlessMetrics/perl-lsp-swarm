@@ -46,7 +46,7 @@ Issue
  / defer]
   |
   v
-[cleanup]            ← haiku: wisdom, label hygiene
+[cleanup]            ← sonnet: wisdom; haiku: label hygiene
 ```
 
 ---
@@ -242,7 +242,10 @@ analysis requires synthesis
 **Purpose:** Worktree pruning, stale label hygiene, wisdom consolidation,
 memory recalibration after a merge batch.
 
-**Model tier:** haiku
+**Model tier:** haiku for label hygiene and worktree pruning; sonnet for wisdom
+consolidation (see [PIPELINE_GATES.md](../reference/PIPELINE_GATES.md) Gate 7
+and [.claude/agents/wisdom.md](../../.claude/agents/wisdom.md) `model: sonnet`
+for the authoritative per-agent tier).
 
 **Constraints:**
 - Read-only for label decisions; may prune stale worktrees and stash entries
