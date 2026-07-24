@@ -115,6 +115,38 @@ fn literal_operands_precede_enclosing_pir_parents() {
 }
 
 #[test]
+fn call_operand_precedes_enclosing_pir_parent() {
+    // #4848 Slice 2 widened the operand-splice reuse — previously only `Literal`
+    // operands (via `lower_literal`) spliced before their parent — to `Call`
+    // and `Deref`. This is general, not regex-specific: a Call nested inside any
+    // enclosing expression parent now precedes that parent, the same invariant
+    // `literal_operands_precede_enclosing_pir_parents` locks in for literals.
+    let graph = lower("my $x = foo();");
+    let assign_id = must_some(
+        graph
+            .nodes
+            .iter()
+            .find(|node| matches!(node.operation, PirOperation::Assign))
+            .map(|node| node.id),
+    );
+    let call_id = must_some(
+        graph
+            .nodes
+            .iter()
+            .find(|node| matches!(node.operation, PirOperation::Call { .. }))
+            .map(|node| node.id),
+    );
+    // Call splices in before Assign: the Call -> Assign edge exists...
+    assert!(graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough && edge.from == call_id && edge.to == Some(assign_id)
+    }));
+    // ...and the reverse Assign -> Call edge does not.
+    assert!(!graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough && edge.from == assign_id && edge.to == Some(call_id)
+    }));
+}
+
+#[test]
 fn multi_operand_initializer_literals_all_precede_assignment() {
     let graph = lower("my $x = 1 + 2;");
     let assignment_id = must_some(

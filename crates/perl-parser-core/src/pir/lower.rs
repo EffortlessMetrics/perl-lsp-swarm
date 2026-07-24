@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use crate::hir::{
     AccessMode, AssignMode, BranchShell, CallForm, ControlTransferKind, DeclStorageClass,
     DerefExpr, DynamicBoundaryKind, HIR_BODY_MODEL_VERSION, HirBody, HirBodyId, HirExpr, HirExprId,
-    HirFile, HirItem, HirKind, HirScopeId, HirStmt, LiteralKind, LoopShell, Sigil,
+    HirFile, HirItem, HirKind, HirScopeId, HirStmt, LiteralKind, LoopShell, RegexTargetKind, Sigil,
     StatementModifierKind, UnaryMode, VariableKind,
 };
 
@@ -181,10 +181,26 @@ impl Lowerer {
         // scalar or list behavior.
         let operation = PirOperation::Literal { kind: map_literal_kind(kind) };
         let anchor = PirSourceAnchor::explicit(item.range, item.id);
+        self.push_node_maybe_operand(item, anchor, operation, None);
+    }
+
+    /// Push a node, splicing it in as an operand before its enclosing
+    /// expression parent when one exists (via [`Self::push_operand_node`]),
+    /// otherwise appending it as an ordinary node (via [`Self::push_node`]).
+    /// Both paths use `PirContext::Unknown` and thread `dynamic_boundary`
+    /// identically, so a boundary link survives the splice. Returns the new
+    /// node's id.
+    fn push_node_maybe_operand(
+        &mut self,
+        item: &HirItem,
+        anchor: PirSourceAnchor,
+        operation: PirOperation,
+        dynamic_boundary: Option<PirId>,
+    ) -> PirId {
         if let Some(parent) = self.enclosing_expression_parent(item) {
-            self.push_operand_node(item, anchor, operation, parent);
+            self.push_operand_node(item, anchor, operation, parent, dynamic_boundary)
         } else {
-            self.push_node(item, anchor, operation, PirContext::Unknown, None);
+            self.push_node(item, anchor, operation, PirContext::Unknown, dynamic_boundary)
         }
     }
 
@@ -233,7 +249,7 @@ impl Lowerer {
                     callee: named_callee(&call.name),
                     arg_count: call.arg_count,
                 };
-                self.push_node(item, anchor, operation, PirContext::Unknown, None);
+                self.push_node_maybe_operand(item, anchor, operation, None);
             }
             CallForm::Coderef => {
                 // HIR already emitted a `DynamicBoundary(CoderefCall)` item
@@ -242,7 +258,13 @@ impl Lowerer {
                 let anchor = PirSourceAnchor::explicit(item.range, item.id);
                 let operation =
                     PirOperation::Call { callee: PirCallee::Dynamic, arg_count: call.arg_count };
-                self.push_node(item, anchor, operation, PirContext::Unknown, boundary_id);
+                // If this coderef call is itself the bound target operand of an
+                // enclosing Match/Substitution/Transliteration (or another
+                // expression parent), it splices in before that parent — and
+                // the boundary link must survive: `push_node_maybe_operand`
+                // threads `boundary_id` down both paths, so it is never
+                // silently dropped.
+                self.push_node_maybe_operand(item, anchor, operation, boundary_id);
             }
         }
     }
@@ -260,7 +282,11 @@ impl Lowerer {
             method: PirMethod::Named(method.to_string()),
             arg_count,
         };
-        self.push_node(item, anchor, operation, PirContext::Unknown, None);
+        // Like Call/Deref/Literal, a method call nested in an enclosing
+        // expression parent (e.g. `$obj->m =~ /pat/`, where MethodCall is in
+        // `is_expression_parent`) splices in before that parent rather than
+        // trailing it, keeping the operand-precedes-parent invariant uniform.
+        self.push_node_maybe_operand(item, anchor, operation, None);
     }
 
     fn lower_deref(&mut self, item: &HirItem, deref: &DerefExpr) {
@@ -269,7 +295,11 @@ impl Lowerer {
             aggregate_kind: deref.aggregate_kind,
             operand_kind: deref.operand_kind,
         };
-        let id = self.push_node(item, anchor, operation, PirContext::Unknown, None);
+        // `pending_deref` is set to the returned id regardless of which push
+        // path fires inside the helper: it is back-patched by a post-hoc find
+        // (see `lower_dynamic_boundary`) keyed on the id itself, not on how the
+        // node was pushed, so the operand-splice path is safe here too.
+        let id = self.push_node_maybe_operand(item, anchor, operation, None);
         self.pending_deref = Some(id);
     }
 
@@ -303,7 +333,7 @@ impl Lowerer {
         // `lower_literal`/`lower_branch` handle context they cannot prove.
         let context = PirContext::Unknown;
         let operation = PirOperation::Match {
-            target: PirRegexTarget::Unknown,
+            target: map_regex_target(match_expr.target_kind, match_expr.target_ast_kind),
             // A match reads its target without reassigning it.
             access: PirTargetAccess::ReadOnly,
             modifiers: Box::new(modifiers),
@@ -323,7 +353,7 @@ impl Lowerer {
         let access =
             if modifiers.r { PirTargetAccess::MutateCopy } else { PirTargetAccess::Mutate };
         let operation = PirOperation::Substitution {
-            target: PirRegexTarget::Unknown,
+            target: map_regex_target(subst.target_kind, subst.target_ast_kind),
             access,
             modifiers: Box::new(modifiers),
             negated: subst.negated,
@@ -342,7 +372,7 @@ impl Lowerer {
         let access =
             if modifiers.r { PirTargetAccess::MutateCopy } else { PirTargetAccess::Mutate };
         let operation = PirOperation::Transliteration {
-            target: PirRegexTarget::Unknown,
+            target: map_regex_target(tr.target_kind, tr.target_ast_kind),
             access,
             modifiers: Box::new(modifiers),
             negated: tr.negated,
@@ -532,6 +562,7 @@ impl Lowerer {
         source_anchor: PirSourceAnchor,
         operation: PirOperation,
         parent: PirId,
+        dynamic_boundary: Option<PirId>,
     ) -> PirId {
         let id = PirId::from_index(self.next_id);
         self.next_id += 1;
@@ -552,7 +583,7 @@ impl Lowerer {
             source_anchor,
             operation,
             context: PirContext::Unknown,
-            dynamic_boundary: None,
+            dynamic_boundary,
             scope: item.scope_context,
             package_context: item.package_context.clone(),
         });
@@ -701,6 +732,19 @@ fn map_literal_kind(kind: LiteralKind) -> PirLiteralKind {
         LiteralKind::Undef => PirLiteralKind::Undef,
         LiteralKind::Array => PirLiteralKind::Array,
         LiteralKind::Hash => PirLiteralKind::Hash,
+    }
+}
+
+/// Map a HIR-classified `=~`/`!~` target descriptor to its PIR representation.
+///
+/// `DefaultTopic` is intentionally never constructed here: HIR's
+/// `RegexTargetKind` only distinguishes `Place`/`Expression` (see
+/// `hir::lower::classify_regex_target`) and never produces a topic-variable
+/// classification.
+fn map_regex_target(kind: RegexTargetKind, ast_kind: &'static str) -> PirRegexTarget {
+    match kind {
+        RegexTargetKind::Place => PirRegexTarget::Place { kind: ast_kind },
+        RegexTargetKind::Expression => PirRegexTarget::Expression { kind: ast_kind },
     }
 }
 

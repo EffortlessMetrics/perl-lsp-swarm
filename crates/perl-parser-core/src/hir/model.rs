@@ -2992,6 +2992,12 @@ pub struct MatchExpr {
     pub has_embedded_code: bool,
     /// Whether the binding operator was `!~` (negated match).
     pub negated: bool,
+    /// Whether the bound `expr` operand is a statically known lvalue place
+    /// (`Place`) or an arbitrary expression (`Expression`).
+    pub target_kind: RegexTargetKind,
+    /// Parser AST kind name for the bound `expr` operand (e.g. `"Variable"`,
+    /// `"FunctionCall"`), preserved for PIR target resolution.
+    pub target_ast_kind: &'static str,
 }
 
 /// Substitution-operation shell payload (`$str =~ s/pattern/replacement/`).
@@ -3010,6 +3016,12 @@ pub struct SubstitutionExpr {
     pub has_embedded_code: bool,
     /// Whether the binding operator was `!~` (negated match).
     pub negated: bool,
+    /// Whether the bound `expr` operand is a statically known lvalue place
+    /// (`Place`) or an arbitrary expression (`Expression`).
+    pub target_kind: RegexTargetKind,
+    /// Parser AST kind name for the bound `expr` operand (e.g. `"Variable"`,
+    /// `"FunctionCall"`), preserved for PIR target resolution.
+    pub target_ast_kind: &'static str,
 }
 
 /// Transliteration-operation shell payload (`$str =~ tr/search/replace/` or `y///`).
@@ -3024,6 +3036,12 @@ pub struct TransliterationExpr {
     pub modifiers: String,
     /// Whether the binding operator was `!~` (negated match).
     pub negated: bool,
+    /// Whether the bound `expr` operand is a statically known lvalue place
+    /// (`Place`) or an arbitrary expression (`Expression`).
+    pub target_kind: RegexTargetKind,
+    /// Parser AST kind name for the bound `expr` operand (e.g. `"Variable"`,
+    /// `"FunctionCall"`), preserved for PIR target resolution.
+    pub target_ast_kind: &'static str,
 }
 
 /// Try/catch/finally shell payload (`try { ... } catch (...) { ... } finally { ... }`,
@@ -3122,6 +3140,27 @@ pub enum DerefOperandKind {
     /// A string literal supplies an explicit symbolic name.
     StringLiteral,
     /// A computed expression supplies the target at runtime.
+    Expression,
+}
+
+/// Whether a `=~`/`!~`-bound `expr` operand (Match/Substitution/
+/// Transliteration) is a statically known lvalue place or an arbitrary
+/// expression.
+///
+/// Classified purely from the parser AST shape of the bound `expr` node
+/// (`hir::lower::classify_regex_target`) — never from runtime evaluation.
+/// `${ $ref }` scalar-deref targets classify as `Expression`, not `Place`:
+/// `lower_expr_as_place` (the only existing place-classifier) treats bare
+/// `${}` as non-place even for assignment LHS, and a standalone `${$ref}`
+/// produces its own `DerefExpr` HIR item, like a function call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RegexTargetKind {
+    /// A statically named lvalue place: a bare variable (`$x`) or a singular
+    /// element subscript (`$h{k}`, `$a[0]`, `$obj->{k}`).
+    Place,
+    /// An arbitrary expression the operator binds to (e.g. `foo() =~ ...`,
+    /// `${$ref} =~ ...`), preserved as a syntactic shape without evaluating it.
     Expression,
 }
 

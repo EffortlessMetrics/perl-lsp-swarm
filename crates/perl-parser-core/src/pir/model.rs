@@ -317,12 +317,16 @@ impl PirDynamicBoundaryKind {
 /// How a regex/match/substitution/transliteration operation's target is
 /// modeled by PIR v0.
 ///
-/// Slice 1 always constructs [`Unknown`](Self::Unknown): today's HIR regex
-/// shells (`RegexExpr`/`MatchExpr`/`SubstitutionExpr`/`TransliterationExpr`)
-/// carry no target/place field, and bare-variable targets (e.g. the `$x` in
-/// `$x =~ /pat/`) are not HIR items at all — so PIR cannot resolve a target
-/// without a HIR-side enrichment. The other variants are kept so the enum is
-/// stable across slices, but only `Unknown` is constructed in Slice 1.
+/// Slice 2 resolves `Place`/`Expression` from the HIR target-descriptor
+/// fields (`target_kind`/`target_ast_kind`) that `MatchExpr`/
+/// `SubstitutionExpr`/`TransliterationExpr` now carry — see
+/// `hir::lower::classify_regex_target`. `DefaultTopic` remains unconstructed
+/// in this slice: bare `/pat/` and `qr/pat/` are both `NodeKind::Regex` with
+/// no distinguishing field to tell an implicit-`$_` topic from a `qr//`
+/// value literal, and `RegexLiteral` (from `RegexExpr`) carries no `target`
+/// field at all — only `Match`/`Substitution`/`Transliteration` bind a
+/// target. `Unknown` is reserved for future unclassifiable shapes; Slice 2
+/// does not construct it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PirRegexTarget {
@@ -340,7 +344,10 @@ pub enum PirRegexTarget {
         /// Parser AST kind name for the target expression.
         kind: &'static str,
     },
-    /// Target has not been resolved. Slice 1 always constructs this variant.
+    /// Target could not be classified. Not constructed for `Match`/
+    /// `Substitution`/`Transliteration` in Slice 2 — their targets always
+    /// resolve to `Place`/`Expression` — reserved for future unclassifiable
+    /// shapes.
     Unknown,
 }
 
@@ -595,7 +602,8 @@ pub enum PirOperation {
     /// A `=~`/`!~` match operation (`HirKind::MatchExpr`). Does not evaluate
     /// the pattern or its target.
     Match {
-        /// Match target. Slice 1 always constructs `Unknown`.
+        /// Match target, resolved from the HIR target-descriptor fields
+        /// (`Place`/`Expression`) — see [`PirRegexTarget`].
         target: PirRegexTarget,
         /// How the operation accesses its target. A match reads its target
         /// without reassigning it, so this is always `ReadOnly`.
@@ -613,7 +621,8 @@ pub enum PirOperation {
     /// A `s///` substitution operation (`HirKind::SubstitutionExpr`). Does
     /// not evaluate the pattern, replacement, or target.
     Substitution {
-        /// Substitution target. Slice 1 always constructs `Unknown`.
+        /// Substitution target, resolved from the HIR target-descriptor
+        /// fields (`Place`/`Expression`) — see [`PirRegexTarget`].
         target: PirRegexTarget,
         /// Mutate-in-place vs. mutate-a-copy (`/r`), derived only from the
         /// modifier set.
@@ -631,7 +640,8 @@ pub enum PirOperation {
     /// (`HirKind::TransliterationExpr`). Does not evaluate the search/replace
     /// sets or the target.
     Transliteration {
-        /// Transliteration target. Slice 1 always constructs `Unknown`.
+        /// Transliteration target, resolved from the HIR target-descriptor
+        /// fields (`Place`/`Expression`) — see [`PirRegexTarget`].
         target: PirRegexTarget,
         /// Mutate-in-place vs. mutate-a-copy (`/r`), derived only from the
         /// modifier set.
