@@ -265,7 +265,7 @@ fn walk_security_node(
             walk_security_node(variable, diagnostics, signal_shadowed);
             signal_shadowed
         }
-        NodeKind::FunctionCall { name, args } => {
+        NodeKind::FunctionCall { name, args } | NodeKind::AmperCall { name, args } => {
             check_two_arg_open(name, args, node, diagnostics);
             check_string_eval(name, args, node, diagnostics);
             check_system_call(name, node, diagnostics);
