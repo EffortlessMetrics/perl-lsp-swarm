@@ -76,6 +76,41 @@ fn amper_call_empty_args_when_no_parens() {
     assert!(args.is_empty(), "no-paren form must have empty args");
 }
 
+fn collect_kinds(node: &perl_parser_core::Node, out: &mut Vec<&'static str>) {
+    out.push(node.kind.kind_name());
+    for child in node.children() {
+        collect_kinds(child, out);
+    }
+}
+
+#[test]
+fn amper_call_dynamic_coderef_with_args_produces_amper_call_node() {
+    let ast = parse("sub wrapper { my $callback = sub {}; &$callback(1); }");
+    let mut found = Vec::new();
+    collect_kinds(&ast, &mut found);
+    assert!(
+        found.contains(&"AmperCall"),
+        "&$callback(1) must include AmperCall node, got kinds: {found:?}"
+    );
+}
+
+#[test]
+fn goto_amper_dynamic_coderef_target_is_amper_call() {
+    let ast = parse("goto &$callback;");
+    let NodeKind::Program { statements } = ast.kind else {
+        panic!("expected Program");
+    };
+    let stmt = statements.into_iter().next().expect("expected statement");
+    let NodeKind::Goto { target, .. } = stmt.kind else {
+        panic!("expected Goto node, got: {:?}", stmt.kind.kind_name());
+    };
+    assert!(
+        matches!(target.kind, NodeKind::AmperCall { .. }),
+        "goto &$callback target must be AmperCall, got: {:?}",
+        target.kind.kind_name()
+    );
+}
+
 #[test]
 fn amper_call_parses_cleanly() {
     assert_clean_parse("&foo(1, 2, 3);");
