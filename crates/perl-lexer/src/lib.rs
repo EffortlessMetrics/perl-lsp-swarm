@@ -3751,6 +3751,10 @@ impl<'a> PerlLexer<'a> {
 
         let mut regex_parse_steps: usize = 0;
         let mut in_character_class = false;
+        // Tracks whether the next `]` is the first character of a character class
+        // (in which case it is a literal `]`, not the class terminator, per perlre).
+        // Perl documents this for `[]]` (class containing `]`) and `[^]]` (negated).
+        let mut class_first_char = false;
 
         while let Some(ch) = self.current_char() {
             regex_parse_steps += 1;
@@ -3804,6 +3808,7 @@ impl<'a> PerlLexer<'a> {
                 }
                 '\\' => {
                     // Handle escape sequences: consume backslash + next char
+                    class_first_char = false;
                     self.advance();
                     if self.current_char().is_some() {
                         self.advance();
@@ -3811,13 +3816,24 @@ impl<'a> PerlLexer<'a> {
                 }
                 '[' => {
                     in_character_class = true;
+                    class_first_char = true;
                     self.advance();
                 }
                 ']' if in_character_class => {
-                    in_character_class = false;
+                    if class_first_char {
+                        // Per perlre: `]` as the first character of a class (e.g. `[]]`)
+                        // is a literal `]`, not the class terminator.
+                        class_first_char = false;
+                        self.advance();
+                    } else {
+                        in_character_class = false;
+                        self.advance();
+                    }
+                }
+                _ => {
+                    class_first_char = false;
                     self.advance();
                 }
-                _ => self.advance(),
             }
         }
 

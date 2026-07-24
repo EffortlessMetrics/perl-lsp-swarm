@@ -97,7 +97,7 @@ impl PerlLexer<'_> {
     #[inline]
     pub(crate) fn matches_bytes(&self, pattern: &[u8]) -> bool {
         let Some(end_offset) = pattern.len().checked_sub(1) else {
-            return true;
+            return false;
         };
 
         if end_offset > self.config.max_lookahead {
@@ -165,4 +165,5 @@ impl PerlLexer<'_> {
 #[cfg(test)]
 mod tests {
     include!("../../../tests/fixtures/ripr_seam_proof_peek_char_unit.inc");
+    include!("../../../tests/fixtures/ripr_seam_proof_matches_bytes_unit.inc");
 }

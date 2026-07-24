@@ -105,25 +105,34 @@ pub fn extract_pod(source: &str) -> PodDoc {
             continue;
         }
 
-        // =over / =item / =back for lists
+        // =over / =item / =back for lists.
+        // Only accumulate list content when inside a known section; pre-header
+        // list blocks have no target field in PodDoc and would be discarded
+        // anyway when the first =head1 clears the body buffer.
         if line.starts_with("=over") {
-            in_over = true;
-            body.push('\n');
+            if current_section.is_some() {
+                in_over = true;
+                body.push('\n');
+            }
             continue;
         }
         if line.starts_with("=back") {
-            in_over = false;
-            body.push('\n');
+            if current_section.is_some() {
+                in_over = false;
+                body.push('\n');
+            }
             continue;
         }
         if line.starts_with("=item") {
-            let item_text = line.strip_prefix("=item").map(str::trim).unwrap_or("");
-            if !body.is_empty() {
+            if current_section.is_some() {
+                let item_text = line.strip_prefix("=item").map(str::trim).unwrap_or("");
+                if !body.is_empty() {
+                    body.push('\n');
+                }
+                body.push_str("- ");
+                body.push_str(&strip_pod_formatting(item_text));
                 body.push('\n');
             }
-            body.push_str("- ");
-            body.push_str(&strip_pod_formatting(item_text));
-            body.push('\n');
             continue;
         }
 

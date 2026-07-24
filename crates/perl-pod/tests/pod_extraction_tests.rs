@@ -1085,3 +1085,138 @@ Related modules go here.
     assert!(doc.examples.is_some());
     assert!(doc.see_also.is_some());
 }
+
+// ── Fix #2488: list blocks before any section header ─────────────────────────
+
+/// A list block that appears before the first `=head1` must not corrupt the body
+/// buffer — the subsequent section content must be correctly captured.
+#[test]
+fn pre_header_list_does_not_corrupt_subsequent_section() {
+    let source = r#"
+=over 4
+
+=item First item
+
+=item Second item
+
+=back
+
+=head1 NAME
+
+MyModule - A test module
+
+=cut
+"#;
+    let doc = extract_pod(source);
+    assert_eq!(
+        doc.name.as_deref(),
+        Some("MyModule - A test module"),
+        "NAME section must be captured even when a list precedes it"
+    );
+}
+
+/// Pre-header list items must not appear in any extracted field.
+#[test]
+fn pre_header_list_items_are_not_captured() {
+    let source = r#"
+=over 4
+
+=item Orphaned item
+
+=back
+
+=head1 DESCRIPTION
+
+The description.
+
+=cut
+"#;
+    let doc = extract_pod(source);
+    let desc = doc.description.as_deref().unwrap_or("");
+    assert!(
+        !desc.contains("Orphaned item"),
+        "pre-header list items must not leak into DESCRIPTION; got: {desc:?}"
+    );
+    assert!(
+        desc.contains("The description."),
+        "DESCRIPTION section must be captured; got: {desc:?}"
+    );
+}
+
+/// List items that appear INSIDE a known section must still be captured.
+#[test]
+fn list_inside_section_is_still_captured() {
+    let source = r#"
+=head2 options
+
+Available options:
+
+=over 4
+
+=item verbose
+
+Enable verbose output.
+
+=item quiet
+
+Suppress output.
+
+=back
+
+=cut
+"#;
+    let doc = extract_pod(source);
+    assert!(doc.methods.contains_key("options"), "options method must be present");
+    let method_doc = &doc.methods["options"];
+    assert!(method_doc.contains("- verbose"), "list items inside section must be captured");
+    assert!(method_doc.contains("- quiet"), "list items inside section must be captured");
+}
+
+/// A module with only a pre-header list and no named sections must produce an
+/// empty doc (no panic, no bogus fields).
+#[test]
+fn only_pre_header_list_produces_empty_doc() {
+    let source = r#"
+=over 4
+
+=item Foo
+
+=item Bar
+
+=back
+
+=cut
+"#;
+    let doc = extract_pod(source);
+    assert!(doc.is_empty(), "doc with only a pre-header list must be empty; got: {doc:?}");
+}
+
+/// Interleaved code and pre-header list: the list must not bleed into the
+/// first real section's body.
+#[test]
+fn interleaved_code_and_pre_header_list_do_not_bleed() {
+    let source = r#"
+package MyModule;
+use strict;
+
+=item Preamble item
+
+=head1 NAME
+
+MyModule - Clean extraction
+
+=head1 DESCRIPTION
+
+Correct content here.
+
+=cut
+"#;
+    let doc = extract_pod(source);
+    assert_eq!(doc.name.as_deref(), Some("MyModule - Clean extraction"));
+    let desc = doc.description.as_deref().unwrap_or("");
+    assert!(
+        !desc.contains("Preamble item"),
+        "preamble item must not appear in DESCRIPTION; got: {desc:?}"
+    );
+    assert!(desc.contains("Correct content"), "DESCRIPTION must be captured; got: {desc:?}");
+}
