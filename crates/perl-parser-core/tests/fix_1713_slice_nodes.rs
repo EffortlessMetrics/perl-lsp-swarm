@@ -144,6 +144,7 @@ fn arrow_hash_subscript_still_uses_binary_node() {
     assert_clean_parse(source);
     let ks = kinds(source);
     assert!(!ks.contains(&"HashSlice"), "$ref->{{key}} must NOT produce HashSlice, got: {ks:?}");
+    assert!(ks.contains(&"Binary"), "$ref->{{key}} must remain Binary, got: {ks:?}");
 }
 
 #[test]
@@ -152,6 +153,7 @@ fn arrow_array_subscript_still_uses_binary_node() {
     assert_clean_parse(source);
     let ks = kinds(source);
     assert!(!ks.contains(&"ArraySlice"), "$ref->[0] must NOT produce ArraySlice, got: {ks:?}");
+    assert!(ks.contains(&"Binary"), "$ref->[0] must remain Binary, got: {ks:?}");
 }
 
 // ── Real-world idioms ─────────────────────────────────────────────────────────

@@ -413,7 +413,9 @@ fn signal_handler_name(node: &Node) -> Option<SignalHandlerTarget> {
         NodeKind::Binary { op, left, right } if op == "{}" => {
             signal_handler_from_hash_and_key(left, right)
         }
-        NodeKind::KeyValueSlice { target, keys } => signal_handler_from_hash_and_key(target, keys),
+        NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
+            signal_handler_from_hash_and_key(target, keys)
+        }
         _ => None,
     }
 }
