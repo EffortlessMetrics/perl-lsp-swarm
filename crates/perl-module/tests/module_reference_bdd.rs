@@ -48,3 +48,48 @@ fn given_non_import_context_when_cursor_is_inside_module_like_text_then_no_refer
 
     assert_eq!(extract_module_reference(line, cursor), None);
 }
+
+// --- non-ASCII / multi-byte character boundary tests (regression for #4938) ---
+
+#[test]
+fn given_emoji_before_use_when_cursor_is_on_module_then_reference_is_extracted() {
+    // 😀 is 4 bytes; byte-wise idx++ would panic when slicing line[idx..] mid-codepoint.
+    let line = r#"my $x = "😀" ; use My::Module;"#;
+    let cursor = line.find("My::Module").expect("line contains My::Module") + 2;
+    assert_eq!(extract_module_reference(line, cursor), Some("My::Module".to_string()),);
+}
+
+#[test]
+fn given_emoji_on_line_when_cursor_is_mid_codepoint_byte_then_no_panic() {
+    // 😀 spans bytes 9–12; byte index 10 is a continuation byte — passing it as
+    // cursor_pos must not panic regardless of whether it falls inside a char.
+    let line = r#"my $x = "😀😀"; use My::Module;"#;
+    let mid_emoji_byte = 10; // inside 😀's 4-byte encoding
+    // The call must not panic; result may be None (cursor is not on a module).
+    let _ = extract_module_reference(line, mid_emoji_byte);
+}
+
+#[test]
+fn given_accented_char_before_use_when_cursor_is_on_module_then_reference_is_extracted() {
+    // 'ö' is 2 bytes (U+00F6); ensures 2-byte chars are also handled.
+    let line = "my $zö = 1; use My::Module;";
+    let cursor = line.find("My::Module").expect("line contains My::Module") + 2;
+    assert_eq!(extract_module_reference(line, cursor), Some("My::Module".to_string()),);
+}
+
+#[test]
+fn given_cjk_chars_before_require_when_cursor_is_on_module_then_reference_is_extracted() {
+    // CJK characters are 3 bytes each in UTF-8.
+    let line = r#"my $x = "こんにちは"; require My::Module;"#;
+    let cursor = line.find("My::Module").expect("line contains My::Module") + 2;
+    assert_eq!(extract_module_reference(line, cursor), Some("My::Module".to_string()),);
+}
+
+#[test]
+fn given_mixed_emoji_and_ascii_on_same_line_when_cursor_is_on_module_then_reference_is_extracted() {
+    // Mirrors the reproduction from issue #4938: emojis + umlaut before module call.
+    let line = r#"my $obj = "😀😀 zö " . My::Module->new(); use My::Module;"#;
+    let cursor =
+        line.rfind("use My::Module").expect("line contains use My::Module") + "use ".len() + 2;
+    assert_eq!(extract_module_reference(line, cursor), Some("My::Module".to_string()),);
+}
