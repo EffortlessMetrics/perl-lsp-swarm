@@ -978,15 +978,36 @@ default_pr = false
 runner = "self_hosted_workflow_nano"
 base_lem = 2
 owner = "ci"
-intent = "Validate CI policy ledgers when policy/ or gate-policy changes."
-failure_mode = "Risk packs reference unknown lanes, gates have no lane mapping, or TOML files break."
-proof_obligation = "Run validate_risk_packs.py, validate_gate_lane_mapping.py, and policy/*.toml parse-checks in --strict mode."
+intent = "Validate CI policy ledgers when policy/, gate-policy, or validator scripts change."
+failure_mode = "Risk packs reference unknown lanes, gates have no lane mapping, bounded-result overflow invariants break, or TOML files break."
+proof_obligation = "Run validate_risk_packs.py, validate_gate_lane_mapping.py, validate_trust_lanes.py, check_bounded_result_overflow.py, and policy/*.toml parse-checks in --strict mode."
 evidence = ["job logs"]
 allowed_triggers = ["pull_request", "workflow_dispatch"]
 expensive = false
 duplicate_of = []
 review_after = "2026-06-07"
 expires = "2026-11-07"
+
+[[lane]]
+id = "commit_checks"
+workflow = "cargo xtask gates --tier commit"
+job = "(local)"
+tier = "commit"
+kind = "hygiene"
+blocking = false
+default_pr = false
+runner = "local"
+base_lem = 0
+owner = "ci"
+intent = "Local staged-tree hygiene before git commit."
+failure_mode = "Conflict markers, oversized staged blobs, or policy violations reach remote CI."
+proof_obligation = "Run cargo xtask gates --tier commit --staged; each gate in .ci/gate-policy.yaml commit tier must pass or advisory-report."
+evidence = ["AgentReceipt JSON from xtask gates", "local hook logs"]
+allowed_triggers = ["pre_commit", "manual"]
+expensive = false
+duplicate_of = []
+review_after = "2026-07-24"
+expires = "2026-12-24"
 
 # =============================================================================
 # UB / native-boundary advisory review lanes (PR 1 advisory scaffold)
