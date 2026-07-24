@@ -5,10 +5,10 @@
 
 use super::super::*;
 use super::misc::{
-    diagnostic_explanation_payload_from_diagnostics, DIAGNOSTIC_EXPLANATION_SCHEMA_VERSION,
+    DIAGNOSTIC_EXPLANATION_SCHEMA_VERSION, diagnostic_explanation_payload_from_diagnostics,
 };
 use crate::cancellation::RequestCleanupGuard;
-use crate::protocol::{req_range, req_uri, REQUEST_CANCELLED};
+use crate::protocol::{REQUEST_CANCELLED, req_range, req_uri};
 use std::sync::LazyLock;
 
 static GLOBAL_VAR_ASSIGNMENT_RE: LazyLock<regex::Regex> =
@@ -259,11 +259,7 @@ fn quickfix_text_edits_for_uri<'a>(action: &'a Value, uri: &str) -> Option<Vec<&
         collected.extend(edits.iter());
     }
 
-    if collected.is_empty() {
-        None
-    } else {
-        Some(collected)
-    }
+    if collected.is_empty() { None } else { Some(collected) }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -440,11 +436,7 @@ fn snippet_text_edits_from_changes(action: &Value, uri: &str) -> Option<Vec<Valu
         }));
     }
 
-    if snippet_edits.is_empty() {
-        None
-    } else {
-        Some(snippet_edits)
-    }
+    if snippet_edits.is_empty() { None } else { Some(snippet_edits) }
 }
 
 fn convert_pragma_quickfix_edits_to_snippet_text_edits(
@@ -1396,8 +1388,8 @@ mod tests {
     }
 
     #[test]
-    fn code_action_tag_gate_keeps_only_supported_llm_generated_tag(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn code_action_tag_gate_keeps_only_supported_llm_generated_tag()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut actions = vec![
             json!({
                 "title": "generated",
@@ -1453,8 +1445,8 @@ mod tests {
     }
 
     #[test]
-    fn code_action_runtime_offers_explain_diagnostic_for_pl701_and_pl109(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn code_action_runtime_offers_explain_diagnostic_for_pl701_and_pl109()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let uri = "file:///explain-diagnostic.pl";
         let text = "use Missing::Payload;\nprint bareword;\n";
@@ -1574,8 +1566,8 @@ mod tests {
     }
 
     #[test]
-    fn code_action_runtime_emits_snippet_text_edits_when_supported(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn code_action_runtime_emits_snippet_text_edits_when_supported()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         {
             let mut caps = server.client_capabilities.lock();
@@ -1622,8 +1614,8 @@ mod tests {
     }
 
     #[test]
-    fn code_action_runtime_emits_snippet_text_edits_without_ast_when_supported(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn code_action_runtime_emits_snippet_text_edits_without_ast_when_supported()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         {
             let mut caps = server.client_capabilities.lock();
@@ -1772,8 +1764,8 @@ mod tests {
     }
 
     #[test]
-    fn snippet_text_edit_conversion_rewrites_pragma_quickfixes(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn snippet_text_edit_conversion_rewrites_pragma_quickfixes()
+    -> Result<(), Box<dyn std::error::Error>> {
         let uri = "file:///snippet_conversion.pl";
         let mut actions = vec![
             make_quickfix(uri, 0, 0, 0, "use strict;\n", "Add use strict;", Some("PL201")),
@@ -2299,8 +2291,8 @@ print $result;
     // ── LSP 3.16 disabled field (refactor.extract) ──────────────────────────
 
     #[test]
-    fn code_action_disabled_extract_variable_for_zero_width_selection(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn code_action_disabled_extract_variable_for_zero_width_selection()
+    -> Result<(), Box<dyn std::error::Error>> {
         // LSP 3.16 §3.16.2: a disabled action with `disabled.reason` should be
         // emitted for refactor.extract when the selection is zero-width so
         // editors can render a greyed-out menu item that guides the user.
@@ -2349,8 +2341,8 @@ print $result;
     }
 
     #[test]
-    fn code_action_no_disabled_extract_for_non_zero_selection(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn code_action_no_disabled_extract_for_non_zero_selection()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         enable_code_action_disabled_support(&server);
         let uri = "file:///test_enabled.pl";
@@ -2397,8 +2389,8 @@ print $result;
     }
 
     #[test]
-    fn code_action_disabled_extract_filtered_by_refactor_extract_kind(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn code_action_disabled_extract_filtered_by_refactor_extract_kind()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         enable_code_action_disabled_support(&server);
         let uri = "file:///test_filtered_disabled.pl";
@@ -2438,8 +2430,8 @@ my $x = 1 + 2;
     }
 
     #[test]
-    fn code_action_skips_disabled_extract_when_client_lacks_support(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn code_action_skips_disabled_extract_when_client_lacks_support()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let uri = "file:///test_no_disabled_cap.pl";
         open_test_document(&server, uri, "my $x = 1 + 2;\n");
@@ -2468,8 +2460,8 @@ my $x = 1 + 2;
     }
 
     #[test]
-    fn code_action_disabled_extract_emitted_without_ast_when_supported(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn code_action_disabled_extract_emitted_without_ast_when_supported()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         enable_code_action_disabled_support(&server);
         let uri = "file:///test_disabled_no_ast.pl";

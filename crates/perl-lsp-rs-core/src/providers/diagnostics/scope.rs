@@ -4,7 +4,7 @@
 //! into diagnostic messages with pragma-aware severity mapping.
 
 use perl_diagnostics::codes::DiagnosticCode;
-use perl_semantic_analyzer::scope_analyzer::{IssueKind, ScopeIssue};
+use perl_semantic_analyzer::scope_analyzer::{IssueKind, ScopeIssue, feature_for_keyword};
 use perl_semantic_facts::{Confidence, FileId, VisibleSymbol, VisibleSymbolSource};
 use perl_workspace::semantic::queries::SemanticQueries;
 
@@ -37,7 +37,8 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             | IssueKind::UnusedVariable
             | IssueKind::ParameterShadowsGlobal
             | IssueKind::UnusedParameter
-            | IssueKind::UninitializedVariable => DiagnosticSeverity::Warning,
+            | IssueKind::UninitializedVariable
+            | IssueKind::FeatureNotEnabled => DiagnosticSeverity::Warning,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticSeverity::Information,
         };
 
@@ -52,6 +53,13 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             IssueKind::UnquotedBareword => DiagnosticCode::UnquotedBareword,
             IssueKind::UninitializedVariable => DiagnosticCode::UninitializedVariable,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticCode::CaptureVarWithoutRegexMatch,
+            // A feature-gated keyword used without its feature is a version/feature
+            // compatibility issue — the same class the `version_compat` lint reports
+            // for the version-declared case. Reuse its `VersionIncompatFeature`
+            // (PL900) code: it carries no quick-fix route (so no misleading "quote
+            // the bareword" action is offered — unlike `UnquotedBareword`), and it
+            // keeps both `say` diagnostics under one consistent code.
+            IssueKind::FeatureNotEnabled => DiagnosticCode::VersionIncompatFeature,
         };
 
         let related_info = build_scope_related_info(&issue);
@@ -219,7 +227,8 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             | IssueKind::UnusedVariable
             | IssueKind::ParameterShadowsGlobal
             | IssueKind::UnusedParameter
-            | IssueKind::UninitializedVariable => DiagnosticSeverity::Warning,
+            | IssueKind::UninitializedVariable
+            | IssueKind::FeatureNotEnabled => DiagnosticSeverity::Warning,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticSeverity::Information,
         };
 
@@ -234,6 +243,13 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             IssueKind::UnquotedBareword => DiagnosticCode::UnquotedBareword,
             IssueKind::UninitializedVariable => DiagnosticCode::UninitializedVariable,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticCode::CaptureVarWithoutRegexMatch,
+            // A feature-gated keyword used without its feature is a version/feature
+            // compatibility issue — the same class the `version_compat` lint reports
+            // for the version-declared case. Reuse its `VersionIncompatFeature`
+            // (PL900) code: it carries no quick-fix route (so no misleading "quote
+            // the bareword" action is offered — unlike `UnquotedBareword`), and it
+            // keeps both `say` diagnostics under one consistent code.
+            IssueKind::FeatureNotEnabled => DiagnosticCode::VersionIncompatFeature,
         };
 
         let mut related_info = build_scope_related_info(&issue);
@@ -430,6 +446,27 @@ fn build_scope_related_info(issue: &ScopeIssue) -> Vec<RelatedInformation> {
                 message: "ℹ️ Capture variables ($1, $2, etc.) hold the last successful match and may be undef if no match has occurred.".to_string(),
             }
         ],
+        IssueKind::FeatureNotEnabled => {
+            // Resolve the enabling `feature` name from the keyword; they coincide
+            // for `say` but not for future keywords (e.g. `given`/`when` → `switch`).
+            let feature =
+                feature_for_keyword(&issue.variable_name).unwrap_or(&issue.variable_name);
+            vec![
+                RelatedInformation {
+                    location: issue.range,
+                    message: format!(
+                        "💡 Enable it with `use feature '{feature}'` or a version bundle such as `use v5.36;`"
+                    ),
+                },
+                RelatedInformation {
+                    location: issue.range,
+                    message: format!(
+                        "ℹ️ `{}` is only recognized when its `feature` is active in this lexical scope.",
+                        issue.variable_name
+                    ),
+                },
+            ]
+        }
     }
 }
 
