@@ -4009,10 +4009,7 @@ mod tests {
         let attr_re = Regex::new(r"^\s*#\[").unwrap();
         let comment_re = Regex::new(r"^\s*//").unwrap();
         let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl").unwrap();
-        let lines = vec![
-            "// SAFETY: Win32 API".to_string(),
-            "unsafe { api(); }".to_string(),
-        ];
+        let lines = vec!["// SAFETY: Win32 API".to_string(), "unsafe { api(); }".to_string()];
         assert!(has_adjacent_safety_comment(
             &lines,
             1,
