@@ -245,9 +245,14 @@ impl LspServer {
 
 #[cfg(test)]
 mod tests {
-    // Tests are permitted to use `.expect()` on Result/Option per the repo's
-    // coding standards (unlike production code, where it is banned).
-    #![allow(clippy::expect_used)]
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
+    #![expect(
+        clippy::expect_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
 
     use super::*;
 

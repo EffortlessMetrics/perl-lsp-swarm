@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
+
 /// Realistic mutation hardening tests based on actual quote parser behavior
 ///
 /// These tests target the remaining mutations by working with the actual behavior

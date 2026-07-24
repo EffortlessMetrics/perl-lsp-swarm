@@ -35,6 +35,16 @@ fn code_action_kind_matches_filter(kind: &str, requested_kind: &str) -> bool {
         || kind.strip_prefix(requested_kind).is_some_and(|suffix| suffix.starts_with('.'))
 }
 
+fn disabled_extract_variable_placeholder() -> Value {
+    json!({
+        "title": "Extract variable",
+        "kind": "refactor.extract",
+        "disabled": {
+            "reason": "requires code selection"
+        }
+    })
+}
+
 fn retain_requested_code_action_kinds(code_actions: &mut Vec<Value>, requested_kinds: &[&str]) {
     if requested_kinds.is_empty() {
         return;
@@ -466,6 +476,21 @@ impl LspServer {
         caps.workspace_edit_document_changes_support && caps.workspace_edit_snippet_edit_support
     }
 
+    fn supports_code_action_disabled(&self) -> bool {
+        self.client_capabilities.lock().code_action_disabled_support
+    }
+
+    fn maybe_push_disabled_extract_placeholder(
+        &self,
+        code_actions: &mut Vec<Value>,
+        start_offset: usize,
+        end_offset: usize,
+    ) {
+        if start_offset == end_offset && self.supports_code_action_disabled() {
+            code_actions.push(disabled_extract_variable_placeholder());
+        }
+    }
+
     fn enforce_code_action_tag_capabilities(&self, code_actions: &mut [Value]) {
         let supports_llm_generated_tag =
             self.client_capabilities.lock().code_action_llm_generated_tag_support;
@@ -498,10 +523,9 @@ impl LspServer {
         };
 
         let parsed = doc.current_parsed();
+        let start_offset = self.pos16_to_offset(doc, start_line, start_char);
+        let end_offset = self.pos16_to_offset(doc, end_line, end_char);
         if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-            let start_offset = self.pos16_to_offset(doc, start_line, start_char);
-            let end_offset = self.pos16_to_offset(doc, end_line, end_char);
-
             // Get diagnostics from the document. `parsed` is guaranteed `Some`
             // here since `ast` was derived from it.
             let empty_errors: std::sync::Arc<[perl_parser::error::ParseError]> =
@@ -781,6 +805,13 @@ impl LspServer {
             let actions = provider.get_code_actions(ast, (start_offset, end_offset), &diagnostics);
 
             for action in actions {
+                // LSP 3.16 §3.16.2: enabled refactor.extract requires a selection.
+                if start_offset == end_offset
+                    && action.kind == InternalCodeActionKind::RefactorExtract
+                {
+                    continue;
+                }
+
                 let mut changes = HashMap::new();
                 let edits: Vec<Value> = action
                     .edit
@@ -830,6 +861,16 @@ impl LspServer {
             let subroutines = test_generator.find_subroutines(ast);
 
             for action in enhanced_actions {
+                // LSP 3.16 §3.16.2: refactor.extract requires a non-empty
+                // selection. When the cursor position is a zero-width range we
+                // skip the enabled action and emit a disabled placeholder
+                // afterward so editors can render the item as greyed-out.
+                if start_offset == end_offset
+                    && action.kind == InternalCodeActionKind::RefactorExtract
+                {
+                    continue;
+                }
+
                 let mut changes = HashMap::new();
                 let edits: Vec<Value> = action
                     .edit
@@ -868,6 +909,15 @@ impl LspServer {
                     },
                 }));
             }
+
+            // Emit a disabled "Extract variable" placeholder when the selection
+            // is zero-width (cursor-only) and the client declared
+            // `textDocument.codeAction.disabledSupport`.
+            self.maybe_push_disabled_extract_placeholder(
+                &mut code_actions,
+                start_offset,
+                end_offset,
+            );
 
             // Add test generation actions for subroutines in range
             for sub_info in subroutines {
@@ -987,6 +1037,12 @@ impl LspServer {
                     }
                 }));
             }
+
+            self.maybe_push_disabled_extract_placeholder(
+                &mut code_actions,
+                start_offset,
+                end_offset,
+            );
 
             self.enforce_code_action_tag_capabilities(&mut code_actions);
             retain_requested_code_action_kinds(&mut code_actions, &requested_kinds);
@@ -1382,6 +1438,10 @@ mod tests {
             }
         })));
         assert!(result.is_ok(), "didOpen failed: {result:?}");
+    }
+
+    fn enable_code_action_disabled_support(server: &LspServer) {
+        server.client_capabilities.lock().code_action_disabled_support = true;
     }
 
     #[test]
@@ -2226,6 +2286,210 @@ print $result;
             fix_all_count, 0,
             "no source.fixAll should be emitted for a file with no quick fixes: {actions:#?}"
         );
+    }
+
+    // ── LSP 3.16 disabled field (refactor.extract) ──────────────────────────
+
+    #[test]
+    fn code_action_disabled_extract_variable_for_zero_width_selection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // LSP 3.16 §3.16.2: a disabled action with `disabled.reason` should be
+        // emitted for refactor.extract when the selection is zero-width so
+        // editors can render a greyed-out menu item that guides the user.
+        let server = LspServer::new();
+        enable_code_action_disabled_support(&server);
+        let uri = "file:///test_disabled.pl";
+        let text = r#"
+my $str = "hello";
+my $result = length($str) + 10;
+print $result;
+"#;
+        open_test_document(&server, uri, text);
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 2, "character": 13 },
+                "end": { "line": 2, "character": 13 }
+            },
+            "context": { "diagnostics": [] }
+        })))?;
+        let actions = response
+            .ok_or("missing code action response")?
+            .as_array()
+            .ok_or("code action response must be an array")?
+            .clone();
+
+        let extract_actions: Vec<&Value> =
+            actions.iter().filter(|a| a["kind"].as_str() == Some("refactor.extract")).collect();
+
+        assert!(
+            !extract_actions.is_empty(),
+            "expected at least one refactor.extract action for zero-width cursor, got: {actions:?}"
+        );
+
+        for action in &extract_actions {
+            let reason = action["disabled"]["reason"]
+                .as_str()
+                .ok_or_else(|| format!("refactor.extract for zero-width selection must have disabled.reason: {action:?}"))?;
+            assert!(
+                reason.contains("selection"),
+                "disabled.reason should mention selection requirement, got: {reason:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn code_action_no_disabled_extract_for_non_zero_selection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        enable_code_action_disabled_support(&server);
+        let uri = "file:///test_enabled.pl";
+        let text = r#"
+my $str = "hello";
+my $result = length($str) + 10;
+print $result;
+"#;
+        open_test_document(&server, uri, text);
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 2, "character": 13 },
+                "end": { "line": 2, "character": 25 }
+            },
+            "context": { "diagnostics": [] }
+        })))?;
+        let actions = response
+            .ok_or("missing code action response")?
+            .as_array()
+            .ok_or("code action response must be an array")?
+            .clone();
+
+        let extract_actions: Vec<&Value> =
+            actions.iter().filter(|a| a["kind"].as_str() == Some("refactor.extract")).collect();
+
+        let enabled: Vec<&Value> =
+            extract_actions.iter().copied().filter(|a| a["disabled"].is_null()).collect();
+        assert!(
+            !enabled.is_empty(),
+            "non-zero selection should yield at least one enabled refactor.extract action, \
+             got: {actions:?}"
+        );
+
+        let disabled: Vec<&Value> =
+            extract_actions.iter().copied().filter(|a| !a["disabled"].is_null()).collect();
+        assert!(
+            disabled.is_empty(),
+            "non-zero selection must not yield any disabled refactor.extract actions, \
+             got: {disabled:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn code_action_disabled_extract_filtered_by_refactor_extract_kind()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        enable_code_action_disabled_support(&server);
+        let uri = "file:///test_filtered_disabled.pl";
+        let text = r#"
+my $x = 1 + 2;
+"#;
+        open_test_document(&server, uri, text);
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 1, "character": 8 },
+                "end": { "line": 1, "character": 8 }
+            },
+            "context": {
+                "diagnostics": [],
+                "only": ["refactor.extract"]
+            }
+        })))?;
+        let actions = response
+            .ok_or("missing code action response")?
+            .as_array()
+            .ok_or("code action response must be an array")?
+            .clone();
+
+        let disabled_extract: Vec<&Value> = actions
+            .iter()
+            .filter(|a| a["kind"].as_str() == Some("refactor.extract") && !a["disabled"].is_null())
+            .collect();
+
+        assert!(
+            !disabled_extract.is_empty(),
+            "disabled refactor.extract must survive kind filter when 'refactor.extract' is \
+             requested, got: {actions:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn code_action_skips_disabled_extract_when_client_lacks_support()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///test_no_disabled_cap.pl";
+        open_test_document(&server, uri, "my $x = 1 + 2;\n");
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 8 },
+                "end": { "line": 0, "character": 8 }
+            },
+            "context": { "diagnostics": [] }
+        })))?;
+        let actions = response
+            .ok_or("missing code action response")?
+            .as_array()
+            .ok_or("code action response must be an array")?
+            .clone();
+
+        assert!(
+            !actions.iter().any(|action| {
+                action["kind"].as_str() == Some("refactor.extract") && !action["disabled"].is_null()
+            }),
+            "clients without disabledSupport must not receive disabled placeholders: {actions:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn code_action_disabled_extract_emitted_without_ast_when_supported()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        enable_code_action_disabled_support(&server);
+        let uri = "file:///test_disabled_no_ast.pl";
+        open_test_document(&server, uri, "sub foo { my $x = 1 + ;\n");
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 16 },
+                "end": { "line": 0, "character": 16 }
+            },
+            "context": { "diagnostics": [] }
+        })))?;
+        let actions = response
+            .ok_or("missing code action response")?
+            .as_array()
+            .ok_or("code action response must be an array")?
+            .clone();
+
+        let disabled_extract: Vec<&Value> = actions
+            .iter()
+            .filter(|a| a["kind"].as_str() == Some("refactor.extract") && !a["disabled"].is_null())
+            .collect();
+        assert!(
+            !disabled_extract.is_empty(),
+            "zero-width cursor on unparsable source should still emit disabled extract when supported: {actions:?}"
+        );
+        Ok(())
     }
 
     #[test]

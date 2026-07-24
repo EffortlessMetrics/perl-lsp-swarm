@@ -113,6 +113,10 @@ fn scan(node: &Node, framework: &mut Option<String>, assertions: &mut u32, has_p
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
     use super::*;
     use crate::id::Digest;
     use perl_parser_core::Parser;

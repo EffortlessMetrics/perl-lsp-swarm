@@ -930,6 +930,10 @@ fn write_packet(out: &str, packet: &serde_json::Value) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
     use super::{
         RiprFactsError, RiprFactsRequest, build_ripr_facts_packet, build_unavailable_packet,
         callable_name_from_owner_id, normalize_fact_classes, ripr_packet_fingerprint, run_cli,

@@ -58,6 +58,15 @@ default_pr = true
 blocking = true
 duplicate_of = ["gate:check_conflict_markers"]
 
+[lane.commit_checks]
+description = "Local staged-tree hygiene gates run via cargo xtask gates --tier commit."
+intent = "pre-commit mechanical correctness"
+runner = "local"
+base_lem = 0
+default_pr = false
+blocking = false
+duplicate_of = []
+
 # -----------------------------------------------------------------------------
 # Default Rust gates
 # -----------------------------------------------------------------------------

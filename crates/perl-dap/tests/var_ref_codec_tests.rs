@@ -18,6 +18,10 @@
 //! ```
 //!
 //! Decode is pure-range — no residue disambiguation is needed or used.
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 
 use perl_dap::var_ref::{ScopeKind, VariableReference};
 

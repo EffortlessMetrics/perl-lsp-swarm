@@ -264,6 +264,32 @@ registration for `textDocument/inlineCompletion`; static clients receive
 top-level `inlineCompletionProvider`. `experimental.inlineCompletionProvider`
 is not used.
 
+## Diagnostics Mode (Push vs Pull)
+
+The server supports both push diagnostics (`textDocument/publishDiagnostics`)
+and pull diagnostics (`textDocument/diagnostic`). At `initialize`, if the
+client advertises `textDocument.diagnostic` capability, the server switches to
+pull mode and stops pushing. If the client does not advertise the capability,
+the server uses push mode exclusively.
+
+**If diagnostics disappear after enabling the server**, the most common cause is
+a half-implemented pull client — one that advertises `textDocument.diagnostic`
+but does not actually poll `textDocument/diagnostic`. In that case the server
+is waiting for pulls that never come, and push has been suppressed. The fix is
+either to complete the pull client's implementation or to disable the
+`textDocument.diagnostic` capability advertisement so the server falls back to
+push.
+
+**Editor-specific notes:**
+
+- **OpenCode:** the server force-enables push diagnostics for OpenCode clients
+  regardless of capability advertisement, because OpenCode's agent feedback
+  loop relies on push. See
+  [OPENCODE_SETUP.md](../EDITORS/OPENCODE_SETUP.md) Troubleshooting.
+- **JetBrains (LSP4IJ):** dynamic file-watcher registration is force-disabled
+  because LSP4IJ's registration flow is unreliable. See
+  [INTELLIJ_IDEA_SETUP.md](../EDITORS/INTELLIJ_IDEA_SETUP.md) Troubleshooting.
+
 ## When Setup Fails
 
 - If the server is not found, re-run `perllsp --version` in a shell and fix

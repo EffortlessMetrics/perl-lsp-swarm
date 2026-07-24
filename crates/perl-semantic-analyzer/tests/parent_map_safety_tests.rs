@@ -152,7 +152,7 @@ fn parent_map_child_points_to_correct_parent() {
     let parent_ptr = map.get(&stmt_ptr).copied();
     assert!(parent_ptr.is_some(), "ExpressionStatement must have a parent entry");
     assert_eq!(
-        parent_ptr.unwrap(),
+        must_some(parent_ptr),
         root_ptr,
         "ExpressionStatement's parent pointer must equal the Program root pointer"
     );

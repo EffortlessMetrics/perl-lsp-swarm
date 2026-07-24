@@ -138,11 +138,13 @@ for worktree mechanics.
 ## Merge and CI
 
 Exactly two branch-protection required checks (authoritative:
-[.ci/policies/required-checks.toml](.ci/policies/required-checks.toml)):
+[.ci/policies/required-checks.toml](.ci/policies/required-checks.toml) — the
+plural `[[checks]]` array is the merge-blocking inventory; the singular
+`[[check]]` array feeds `workflow-trigger-lint` for workflow-shape linting):
 - `Perl LSP Rust Small Result`
 - `ripr+ New Gap Gate`
 
-(`Codecov / Patch 95`, `CI Gate (Merge-Blocking)`, `PR Smoke` are advisory — not
+(`Codecov / Patch 95`, `CI Gate (Advisory Aggregate)`, `PR Smoke` are advisory — not
 required.) Merge in batches of 3 (CI cancellation cascade); run
 `just cpan-corpus-ratchet` after parser merges — batch-of-3 mechanics:
 [.claude/agents/ops.md](.claude/agents/ops.md) and

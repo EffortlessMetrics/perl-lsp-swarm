@@ -41,7 +41,9 @@ pub use query_facade::{
 pub use tokens::{SemanticToken, SemanticTokenModifier, SemanticTokenType};
 
 use crate::SourceLocation;
-use crate::analysis::class_model::{ClassModel, ClassModelBuilder, MethodResolutionOrder};
+use crate::analysis::class_model::{
+    ClassModel, ClassModelBuilder, MethodResolutionOrder, ModifierKind,
+};
 use crate::analysis::generated_member_extractor::GeneratedMemberExtractor;
 use crate::analysis::package_graph_extractor::PackageGraphExtractor;
 use crate::ast::Node;
@@ -426,11 +428,26 @@ impl SemanticAnalyzer {
     ) -> Option<HoverInfo> {
         if model.methods.iter().any(|m| m.name == method_name) {
             let is_direct = model.name == receiver_class;
-            let details = if is_direct {
+            let mut details = if is_direct {
                 vec![format!("Defined in {}", model.name)]
             } else {
                 vec![format!("Inherited from {}", model.name)]
             };
+            let modifier_names: Vec<&str> = model
+                .modifiers
+                .iter()
+                .filter(|modifier| modifier.method_name == method_name)
+                .map(|modifier| match modifier.kind {
+                    ModifierKind::Before => "before",
+                    ModifierKind::After => "after",
+                    ModifierKind::Around => "around",
+                    ModifierKind::Override => "override",
+                    ModifierKind::Augment => "augment",
+                })
+                .collect();
+            if !modifier_names.is_empty() {
+                details.push(format!("Decorated with: {}", modifier_names.join(", ")));
+            }
             return Some(HoverInfo {
                 signature: format!("sub {}::{}", model.name, method_name),
                 documentation: None,
@@ -639,6 +656,10 @@ impl SemanticAnalyzer {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
     use super::*;
     use crate::ast::{Node, NodeKind};
     use crate::parser::Parser;

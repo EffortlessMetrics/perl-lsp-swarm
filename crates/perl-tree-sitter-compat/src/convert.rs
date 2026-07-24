@@ -59,6 +59,10 @@ pub fn to_ts_node(node: &Node, line_index: &Utf8LineIndex) -> TsNode {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
     use super::*;
 
     #[test]

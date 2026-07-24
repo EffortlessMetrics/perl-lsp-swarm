@@ -4,6 +4,10 @@
 //! the parser to its absolute limits. These tests are designed to ensure
 //! the parser remains stable and performs reasonably even with pathological
 //! inputs that might occur in real-world scenarios or adversarial inputs.
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 
 use perl_parser::Parser;
 use std::sync::{Arc, Mutex};

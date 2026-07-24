@@ -3,6 +3,10 @@
 //! This test suite validates parser performance under extreme stress conditions,
 //! including massive data structures, pathological patterns, resource exhaustion,
 //! and concurrent parsing scenarios.
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 
 use perl_parser::{Node, NodeKind, Parser};
 use std::sync::{Arc, Mutex};

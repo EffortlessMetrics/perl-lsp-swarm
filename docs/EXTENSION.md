@@ -35,16 +35,21 @@ The Marketplace package is designed to work with `PATH`, `serverPath`, or runtim
 | `perl-lsp.autoDownload` | `true` | Download `perl-lsp` automatically when it is not bundled, configured, or on `PATH`. |
 | `perl-lsp.downloadBaseUrl` | `""` | Override the download host for internal mirrors. |
 | `perl-lsp.trace.server` | `"off"` | LSP trace level: `off`, `messages`, or `verbose`. |
-| `perl-lsp.enableDiagnostics` | `true` | Enable server diagnostics. |
 | `perl-lsp.enableSemanticTokens` | `true` | Enable semantic token highlighting. |
 | `perl-lsp.enableFormatting` | `true` | Enable formatting integration. |
 | `perl-lsp.formatOnSave` | `false` | Request formatting on save. |
-| `perl-lsp.enableRefactoring` | `true` | Enable server-supplied refactoring code actions where supported. |
 | `perl-lsp.perltidyConfig` | `""` | Path to a `.perltidyrc` compatibility file. Native formatting is the default path. |
 | `perl-lsp.includePaths` | `["lib", "local/lib/perl5"]` | Additional Perl include paths passed to the server. |
 | `perl-lsp.enableTestIntegration` | `true` | Enable test integration for `.t` and runnable `.pl` files. |
 | `perl-lsp.autoPopulateNewFiles` | `true` | Auto-populate new `.pm` files with a `package` declaration and new `.t` files with `Test::More` boilerplate. Set to `false` to disable. |
 | `perl-lsp.featureProfile` | `"auto"` | Forward a concrete feature profile to `perl-lsp` when needed. |
+| `perl-lsp.disabledFeatures` | `[]` | Array of LSP feature IDs to disable (e.g. `["lsp.hover", "lsp.semantic_tokens"]`). See the feature catalog via `perllsp --features-json`. |
+| `perl-lsp.aiCompletion.enabled` | `false` | Enable AI-assisted inline completion. |
+| `perl-lsp.critic.enabled` | `true` | Enable Perl::Critic diagnostics. |
+| `perl-lsp.critic.engine` | `"native"` | Critic engine: `native` (Rust-native) or `legacy` (shells out to `perlcritic`). |
+| `perl-lsp.critic.severity` | `3` | Minimum critic severity to report (1 = least severe, 5 = most severe). |
+
+For the complete settings inventory (including deprecated `perl-lsp.perlcritic.*` settings, AI completion streaming, MCP servers, Linux libc selection, and update intervals), see [CONFIG.md](reference/CONFIG.md) and the VS Code Settings UI.
 
 ## What Ships Today
 
@@ -60,7 +65,7 @@ The extension is a thin client for `perl-lsp`, so the exact feature surface depe
 - Runtime download with checksum verification
 - Debugger registration for `perl-dap`
 
-Refactoring is exposed through server-backed code actions when available. The extension no longer advertises placeholder command-palette commands for extraction or inlining flows that are not implemented as standalone commands.
+Refactoring is exposed through server-backed code actions when available. The extension also provides standalone commands for `perl-lsp.extractVariable` and `perl-lsp.extractMethod` (see the Commands table below and your editor's keybindings).
 
 ## Commands
 
@@ -72,6 +77,8 @@ Refactoring is exposed through server-backed code actions when available. The ex
 | `Perl: Show Status Menu` | Open the quick status/action menu. |
 | `Perl: Organize Use Statements` | Trigger organize-imports for the active Perl document. |
 | `Perl: Run Tests in Current File` | Run tests for the active `.t` or `.pl` file. |
+| `Perl: Extract Variable` | Extract the selected expression into a new variable (`Shift+Alt+V`). |
+| `Perl: Extract Method` | Extract the selected code into a new subroutine (`Shift+Alt+M`). |
 
 ## Troubleshooting
 

@@ -2,6 +2,10 @@
 //!
 //! Verifies that `VariablesResponseBody` correctly serializes `totalVariables`,
 //! and that the field is omitted (not `null`) when the count is not known.
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 
 use perl_dap::protocol::{ProtocolVariable, VariablesResponseBody};
 

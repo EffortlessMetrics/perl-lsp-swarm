@@ -12,7 +12,9 @@
 //! (the `NodeKind::Regex`/`Match`/`Substitution`/`Transliteration` arms).
 
 use perl_parser_core::Parser;
-use perl_parser_core::hir::{DynamicBoundaryKind, HirFile, HirItem, HirKind, lower_ast};
+use perl_parser_core::hir::{
+    DynamicBoundaryKind, HirFile, HirItem, HirKind, RegexTargetKind, lower_ast,
+};
 use perl_tdd_support::must_some;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -267,5 +269,124 @@ fn regex_op_shells_have_valid_source_ranges() -> TestResult {
         item.range,
     );
     assert_eq!(item.anchor.node_kind, "Substitution", "anchor node_kind should be 'Substitution'");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Target-descriptor classification (#4848 Slice 2): the bound `expr` operand
+// classifies as a statically known lvalue `Place` or an arbitrary
+// `Expression`, purely from its AST shape.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bare_variable_match_target_classifies_as_place() -> TestResult {
+    let file = lower_source("$x =~ /f/;\n");
+    let m = must_some(file.items.iter().find_map(|item| match &item.kind {
+        HirKind::MatchExpr(m) => Some(m),
+        _ => None,
+    }));
+    assert_eq!(m.target_kind, RegexTargetKind::Place);
+    assert_eq!(m.target_ast_kind, "Variable");
+    Ok(())
+}
+
+#[test]
+fn element_subscript_substitution_target_classifies_as_place() -> TestResult {
+    let file = lower_source("$h{k} =~ s/a/b/;\n");
+    let s = must_some(file.items.iter().find_map(|item| match &item.kind {
+        HirKind::SubstitutionExpr(s) => Some(s),
+        _ => None,
+    }));
+    assert_eq!(s.target_kind, RegexTargetKind::Place);
+    assert_eq!(s.target_ast_kind, "Binary");
+    Ok(())
+}
+
+#[test]
+fn function_call_match_target_classifies_as_expression() -> TestResult {
+    let file = lower_source("foo() =~ /f/;\n");
+    let m = must_some(file.items.iter().find_map(|item| match &item.kind {
+        HirKind::MatchExpr(m) => Some(m),
+        _ => None,
+    }));
+    assert_eq!(m.target_kind, RegexTargetKind::Expression);
+    assert_eq!(m.target_ast_kind, "FunctionCall");
+    Ok(())
+}
+
+#[test]
+fn method_call_match_target_classifies_as_expression() -> TestResult {
+    let file = lower_source("$obj->m =~ /f/;\n");
+    let m = must_some(file.items.iter().find_map(|item| match &item.kind {
+        HirKind::MatchExpr(m) => Some(m),
+        _ => None,
+    }));
+    assert_eq!(m.target_kind, RegexTargetKind::Expression);
+    assert_eq!(m.target_ast_kind, "MethodCall");
+    Ok(())
+}
+
+#[test]
+fn scalar_deref_match_target_classifies_as_expression() -> TestResult {
+    // Per the Slice 2 scope decision: `${}` scalar-deref targets are
+    // `Expression`, not `Place`. `lower_expr_as_place` (the only existing
+    // place-classifier) treats bare `${}` as non-place even for assignment
+    // LHS, and a standalone `${$ref}` produces its own `DerefExpr` HIR item,
+    // like a function call.
+    let file = lower_source("${$r} =~ /f/;\n");
+    let m = must_some(file.items.iter().find_map(|item| match &item.kind {
+        HirKind::MatchExpr(m) => Some(m),
+        _ => None,
+    }));
+    assert_eq!(m.target_kind, RegexTargetKind::Expression);
+    assert_eq!(m.target_ast_kind, "Unary");
+    Ok(())
+}
+
+#[test]
+fn declaration_wrapped_match_target_classifies_as_place() -> TestResult {
+    // A declaration used directly as a target — `(our $AUTOLOAD =~ ...)` — is
+    // still a Place; the `our`/`my`/`local`/`state` wrapper is incidental.
+    // Real CPAN shape (Moo/HandleMoose/FakeMetaClass.pm), covered as a corpus
+    // fixture in tests/fix_unclosed_paren_decl_as_expr.rs.
+    let file = lower_source("(our $AUTOLOAD =~ /([^:]+)$/);\n");
+    let m = must_some(file.items.iter().find_map(|item| match &item.kind {
+        HirKind::MatchExpr(m) => Some(m),
+        _ => None,
+    }));
+    assert_eq!(m.target_kind, RegexTargetKind::Place);
+    assert_eq!(m.target_ast_kind, "Variable");
+    Ok(())
+}
+
+#[test]
+fn declaration_wrapped_substitution_target_classifies_as_place() -> TestResult {
+    let file = lower_source("(my $copy =~ s/foo/bar/);\n");
+    let s = must_some(file.items.iter().find_map(|item| match &item.kind {
+        HirKind::SubstitutionExpr(s) => Some(s),
+        _ => None,
+    }));
+    assert_eq!(s.target_kind, RegexTargetKind::Place);
+    assert_eq!(s.target_ast_kind, "Variable");
+    Ok(())
+}
+
+#[test]
+fn non_scalar_variable_match_target_classifies_as_expression() -> TestResult {
+    // `=~`/`!~` bind scalar lvalues, so a non-scalar variable target (`@a`/`%h`)
+    // scalarizes rather than naming a scalar place — it is an Expression, not a
+    // Place. Mirrors the `$`-sigil restriction in `is_element_subscript`.
+    for src in ["@a =~ /f/;\n", "%h =~ /f/;\n"] {
+        let file = lower_source(src);
+        let m = must_some(file.items.iter().find_map(|item| match &item.kind {
+            HirKind::MatchExpr(m) => Some(m),
+            _ => None,
+        }));
+        assert_eq!(
+            m.target_kind,
+            RegexTargetKind::Expression,
+            "non-scalar variable target should be Expression for {src:?}"
+        );
+    }
     Ok(())
 }

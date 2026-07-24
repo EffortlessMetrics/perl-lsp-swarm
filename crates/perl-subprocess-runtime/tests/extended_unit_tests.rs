@@ -8,6 +8,7 @@
 
 use perl_subprocess_runtime::mock::{CommandInvocation, MockResponse, MockSubprocessRuntime};
 use perl_subprocess_runtime::{SubprocessError, SubprocessOutput, SubprocessRuntime};
+use perl_tdd_support::must;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -339,7 +340,7 @@ fn mock_runtime_concurrent_clear_invocations() -> Result<(), Box<dyn std::error:
     let clear_thread = thread::spawn(move || {
         thread::sleep(std::time::Duration::from_millis(10));
         rt.clear_invocations();
-        *cl.lock().unwrap() = true;
+        *must(cl.lock()) = true;
     });
 
     // Add invocations concurrently
@@ -350,7 +351,7 @@ fn mock_runtime_concurrent_clear_invocations() -> Result<(), Box<dyn std::error:
     clear_thread.join().map_err(|_| "thread panicked")?;
 
     // After clear, should be empty (timing dependent but testing the capability)
-    if *cleared.lock().unwrap() {
+    if *must(cleared.lock()) {
         // Clear was called, invocations might be empty or have some recent ones
         let count = runtime.invocations().len();
         // Should be much less than 100

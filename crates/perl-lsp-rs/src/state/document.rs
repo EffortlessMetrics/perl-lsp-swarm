@@ -1320,6 +1320,11 @@ pub struct ClientCapabilities {
     /// When true, the server may advertise `CodeActionOptions.documentation` in
     /// `codeActionProvider`.
     pub code_action_documentation_support: bool,
+    /// Supports the LSP 3.16 `CodeAction.disabled` field.
+    ///
+    /// Parsed from `capabilities.textDocument.codeAction/disabledSupport`.
+    /// Disabled placeholders must only be emitted when this is true.
+    pub code_action_disabled_support: bool,
     /// Supports the LSP 3.18 `CodeActionTag.LLMGenerated` tag.
     ///
     /// Parsed from `capabilities.textDocument.codeAction.tagSupport.valueSet`.

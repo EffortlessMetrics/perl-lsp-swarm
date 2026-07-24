@@ -2775,6 +2775,12 @@ pub enum HirKind {
     SubstitutionExpr(SubstitutionExpr),
     /// Transliteration-operation shell (`$str =~ tr/search/replace/` or `y///`).
     TransliterationExpr(TransliterationExpr),
+    /// `try { ... } catch (...) { ... } finally { ... }` shell.
+    TryExpr(TryExpr),
+    /// `class Name :isa(Parent) { ... }` declaration shell (Perl 5.38+).
+    ClassDecl(ClassDecl),
+    /// `defer { ... }` shell (Perl 5.36+ experimental, stable in 5.40).
+    DeferExpr(DeferExpr),
 }
 
 impl HirKind {
@@ -2787,7 +2793,9 @@ impl HirKind {
         "BlockShell",
         "BranchShell",
         "CallExpr",
+        "ClassDecl",
         "ControlTransfer",
+        "DeferExpr",
         "DerefExpr",
         "DynamicBoundary",
         "IndirectCallExpr",
@@ -2803,6 +2811,7 @@ impl HirKind {
         "SubDecl",
         "SubstitutionExpr",
         "TransliterationExpr",
+        "TryExpr",
         "UseDecl",
         "VariableDecl",
     ];
@@ -2983,6 +2992,12 @@ pub struct MatchExpr {
     pub has_embedded_code: bool,
     /// Whether the binding operator was `!~` (negated match).
     pub negated: bool,
+    /// Whether the bound `expr` operand is a statically known lvalue place
+    /// (`Place`) or an arbitrary expression (`Expression`).
+    pub target_kind: RegexTargetKind,
+    /// Parser AST kind name for the bound `expr` operand (e.g. `"Variable"`,
+    /// `"FunctionCall"`), preserved for PIR target resolution.
+    pub target_ast_kind: &'static str,
 }
 
 /// Substitution-operation shell payload (`$str =~ s/pattern/replacement/`).
@@ -3001,6 +3016,12 @@ pub struct SubstitutionExpr {
     pub has_embedded_code: bool,
     /// Whether the binding operator was `!~` (negated match).
     pub negated: bool,
+    /// Whether the bound `expr` operand is a statically known lvalue place
+    /// (`Place`) or an arbitrary expression (`Expression`).
+    pub target_kind: RegexTargetKind,
+    /// Parser AST kind name for the bound `expr` operand (e.g. `"Variable"`,
+    /// `"FunctionCall"`), preserved for PIR target resolution.
+    pub target_ast_kind: &'static str,
 }
 
 /// Transliteration-operation shell payload (`$str =~ tr/search/replace/` or `y///`).
@@ -3015,7 +3036,58 @@ pub struct TransliterationExpr {
     pub modifiers: String,
     /// Whether the binding operator was `!~` (negated match).
     pub negated: bool,
+    /// Whether the bound `expr` operand is a statically known lvalue place
+    /// (`Place`) or an arbitrary expression (`Expression`).
+    pub target_kind: RegexTargetKind,
+    /// Parser AST kind name for the bound `expr` operand (e.g. `"Variable"`,
+    /// `"FunctionCall"`), preserved for PIR target resolution.
+    pub target_ast_kind: &'static str,
 }
+
+/// Try/catch/finally shell payload (`try { ... } catch (...) { ... } finally { ... }`,
+/// Syntax::Keyword::Try style / `use feature 'try'`).
+///
+/// The `try` body, each `catch` handler body, and the `finally` body (when
+/// present) are all traversed via the AST's own child iteration (the same
+/// mechanism `Eval`/`Do` use), so nested statements still lower to their own
+/// HIR items; this shell only records the static shape of the construct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TryExpr {
+    /// Number of parsed `catch` clauses.
+    pub catch_count: usize,
+    /// Whether a `finally` block is present.
+    pub has_finally: bool,
+}
+
+/// Class declaration shell payload (`class Name :isa(Parent) { ... }`, Perl
+/// 5.38+ with `use feature 'class'`).
+///
+/// The class body is traversed via `visit_children`, so methods/fields inside
+/// it still lower to their own HIR items. First slice only: no dedicated
+/// `Class` scope frame or package-stash slot is recorded yet (unlike
+/// [`PackageDecl`]); see the lowerer arm for follow-up notes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ClassDecl {
+    /// Class name.
+    pub name: String,
+    /// Precise class-name source range, when available.
+    pub name_range: Option<SourceLocation>,
+    /// Parent class names from `:isa(Parent)` attributes.
+    pub parents: Vec<String>,
+}
+
+/// Defer-block shell payload (`defer { ... }`, Perl 5.36+ experimental,
+/// stable in 5.40).
+///
+/// First-slice marker only: the parser always parses a full block as the
+/// deferred body, and that block is traversed via `visit_children` and earns
+/// its own [`BlockShell`] and scope frame, so this shell currently carries no
+/// fields beyond the anchor itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DeferExpr {}
 
 /// Literal expression shell payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3068,6 +3140,27 @@ pub enum DerefOperandKind {
     /// A string literal supplies an explicit symbolic name.
     StringLiteral,
     /// A computed expression supplies the target at runtime.
+    Expression,
+}
+
+/// Whether a `=~`/`!~`-bound `expr` operand (Match/Substitution/
+/// Transliteration) is a statically known lvalue place or an arbitrary
+/// expression.
+///
+/// Classified purely from the parser AST shape of the bound `expr` node
+/// (`hir::lower::classify_regex_target`) — never from runtime evaluation.
+/// `${ $ref }` scalar-deref targets classify as `Expression`, not `Place`:
+/// `lower_expr_as_place` (the only existing place-classifier) treats bare
+/// `${}` as non-place even for assignment LHS, and a standalone `${$ref}`
+/// produces its own `DerefExpr` HIR item, like a function call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RegexTargetKind {
+    /// A statically named lvalue place: a bare variable (`$x`) or a singular
+    /// element subscript (`$h{k}`, `$a[0]`, `$obj->{k}`).
+    Place,
+    /// An arbitrary expression the operator binds to (e.g. `foo() =~ ...`,
+    /// `${$ref} =~ ...`), preserved as a syntactic shape without evaluating it.
     Expression,
 }
 

@@ -71,6 +71,19 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "policy_checks": {"lanes": ["pr_smoke"]},
     "workflow_audit": {"lanes": ["pr_smoke"]},
     "nested_lock_check": {"lanes": ["pr_smoke"]},
+    "agent_context_coverage": {"lanes": ["merge_gate_shards"]},
+
+    # commit-tier staged-tree hygiene (local pre-commit; not CI)
+    "staged_tree_identity": {"lanes": ["commit_checks"]},
+    "whitespace_check": {"lanes": ["commit_checks"]},
+    "conflict_markers_staged": {"lanes": ["commit_checks"]},
+    "staged_exec_mode_policy": {"lanes": ["commit_checks"]},
+    "staged_config_syntax": {"lanes": ["commit_checks"]},
+    "forbidden_machine_paths": {"lanes": ["commit_checks"]},
+    "staged_oversized_or_binary": {"lanes": ["commit_checks"]},
+    "changie_fragment_staged": {"lanes": ["commit_checks"]},
+    "rustfmt_staged": {"lanes": ["commit_checks"]},
+    "from_raw_staged": {"lanes": ["commit_checks"]},
 
     # release-adjacent gates
     "docs_build": {"lanes": ["docs_gate"]},

@@ -266,6 +266,10 @@ impl LspServer {
                     .pointer("/capabilities/textDocument/codeAction/documentationSupport")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
+                caps.code_action_disabled_support = params
+                    .pointer("/capabilities/textDocument/codeAction/disabledSupport")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 caps.code_action_llm_generated_tag_support = params
                     .pointer("/capabilities/textDocument/codeAction/tagSupport/valueSet")
                     .and_then(Value::as_array)
@@ -840,6 +844,10 @@ mod init_options_tests {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
     use super::{apply_disabled_feature_id, is_jetbrains_client, is_opencode_client};
     use crate::LspServer;
     use crate::protocol::capabilities::BuildFlags;
@@ -1379,6 +1387,27 @@ mod tests {
         let _ = server.handle_initialize(Some(params));
 
         assert!(server.client_capabilities.lock().code_action_documentation_support);
+    }
+
+    #[test]
+    fn initialize_parses_code_action_disabled_support() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "textDocument": {
+                    "codeAction": {
+                        "disabledSupport": true
+                    }
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+
+        if !server.client_capabilities.lock().code_action_disabled_support {
+            return Err("disabledSupport capability was not parsed".into());
+        }
+        Ok(())
     }
 
     #[test]

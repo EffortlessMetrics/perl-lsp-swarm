@@ -173,10 +173,7 @@ fn test_exact_failure_class_taxonomy_in_artifact() -> TestResult {
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
 
     // Builder will add explicit failure_class field. Red test asserts it exists.
-    let failure_class = payload.get("failure_class").and_then(Value::as_str).or_else(|| {
-        // If builder hasn't added it yet, red test will fail here.
-        None
-    });
+    let failure_class = payload.get("failure_class").and_then(Value::as_str);
 
     if let Some(class) = failure_class {
         assert_eq!(
@@ -185,7 +182,9 @@ fn test_exact_failure_class_taxonomy_in_artifact() -> TestResult {
         );
     } else {
         // Red TDD: this test documents that the builder must add failure_class field.
-        panic!("receipt must have failure_class field; builder will add it");
+        return Err(
+            anyhow::anyhow!("receipt must have failure_class field; builder will add it").into()
+        );
     }
 
     Ok(())

@@ -1,5 +1,8 @@
 //! Integration tests for the POD and RELATIONS fact classes (11/11 coverage).
-#![allow(clippy::unwrap_used)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 
 use std::path::PathBuf;
 

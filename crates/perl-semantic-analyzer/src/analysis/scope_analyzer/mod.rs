@@ -87,6 +87,9 @@ pub enum IssueKind {
     UninitializedVariable,
     /// Capture variable (`$1`, `$2`, etc.) used with no preceding regex match in scope.
     CaptureVarWithoutRegexMatch,
+    /// A feature-gated keyword (e.g. `say`) was used without the enabling
+    /// `use feature '...'` / `use vX.Y` pragma active at that offset.
+    FeatureNotEnabled,
 }
 
 /// A single scope-analysis finding with location and human-readable description.
@@ -383,6 +386,15 @@ pub(super) struct AnalysisContext<'a> {
     pragma_map: &'a [(Range<usize>, PragmaState)],
     pragma_cursor: RefCell<PragmaQueryCursor>,
     imported_barewords: HashSet<String>,
+    /// Names of subroutines defined anywhere in this file. Used to suppress the
+    /// feature-gate diagnostic when a user has shadowed a feature-gated keyword
+    /// with their own `sub` (e.g. `sub say { ... } say(...)`).
+    defined_subs: HashSet<String>,
+    /// Whether a top-level `use vX.Y` / `use N.NNN` version pragma is declared.
+    /// When one is, the feature-gate diagnostic (e.g. for `say`) defers to the
+    /// version-compatibility lint (`PL900`), which owns the version-declared case
+    /// with a more specific message — avoiding a duplicate diagnostic (#2584).
+    has_declared_version: bool,
     line_starts: RefCell<Option<Vec<usize>>>,
     /// Current package name, updated as `package` statements are traversed.
     current_package: RefCell<String>,
@@ -409,6 +421,8 @@ impl<'a> AnalysisContext<'a> {
             pragma_map,
             pragma_cursor: RefCell::new(PragmaQueryCursor::new()),
             imported_barewords: collect_imported_barewords(ast),
+            defined_subs: collect_defined_subs(ast),
+            has_declared_version: has_declared_perl_version(ast),
             line_starts: RefCell::new(None),
             current_package: RefCell::new("main".to_string()),
             package_change_generation: Cell::new(0),
@@ -422,6 +436,24 @@ impl<'a> AnalysisContext<'a> {
 
     fn has_imported_bareword(&self, name: &str) -> bool {
         self.imported_barewords.contains(name)
+    }
+
+    /// Whether a `sub` named `name` is defined in the package that an unqualified
+    /// call at the current position would resolve to. An unqualified name resolves
+    /// against the active package; an explicitly-qualified name (`Foo::bar`) is
+    /// matched directly. Keeps a `sub say` in one package from suppressing the
+    /// feature gate for `say` in a different package of the same file (#4892).
+    fn has_defined_sub(&self, name: &str) -> bool {
+        if name.contains("::") {
+            self.defined_subs.contains(name)
+        } else {
+            let pkg = self.current_package.borrow();
+            self.defined_subs.contains(&format!("{}::{}", pkg.as_str(), name))
+        }
+    }
+
+    fn has_declared_version(&self) -> bool {
+        self.has_declared_version
     }
 
     fn get_line(&self, offset: usize) -> usize {
@@ -693,6 +725,7 @@ impl ScopeAnalyzer {
                     ancestors,
                     issues,
                     context,
+                    &pragma_state,
                     strict_vars_mode,
                 );
             }
@@ -1504,6 +1537,17 @@ impl ScopeAnalyzer {
                         issue.variable_name
                     )
                 }
+                IssueKind::FeatureNotEnabled => {
+                    // Resolve the enabling `feature` name from the keyword rather
+                    // than assuming they match — they coincide for `say` but not
+                    // for e.g. `given`/`when` (feature `switch`).
+                    let feature =
+                        feature_for_keyword(&issue.variable_name).unwrap_or(&issue.variable_name);
+                    format!(
+                        "Enable '{}' with `use feature '{}'` or a `use vX.Y` bundle",
+                        issue.variable_name, feature
+                    )
+                }
             })
             .collect()
     }
@@ -1717,6 +1761,103 @@ fn collect_imported_barewords(ast: &Node) -> HashSet<String> {
     let mut imported = HashSet::new();
     visit(ast, &mut imported, false);
     imported
+}
+
+/// Collect the names of all subroutines defined anywhere in the file.
+///
+/// Used to suppress the feature-gate diagnostic when a user has defined their
+/// own sub with the same name as a feature-gated keyword (e.g. `sub say { ... }`),
+/// in which case `say(...)` is a call to the user sub, not the builtin.
+fn collect_defined_subs(ast: &Node) -> HashSet<String> {
+    // Store each sub as a **package-qualified** name (`main::foo`, `Foo::bar`) so
+    // an unqualified call in package P is only suppressed by P's own `sub`, not by
+    // a same-named sub in a different package of the same file (review #4892): e.g.
+    // `package Other; sub say {} package main; say "x";` must still flag `main::say`.
+    fn qualify(current_pkg: &str, name: &str) -> String {
+        if name.contains("::") {
+            // Already explicitly qualified (`sub Foo::bar {}`) — package-independent.
+            name.to_string()
+        } else {
+            format!("{current_pkg}::{name}")
+        }
+    }
+    fn inner(stmt: &Node) -> &Node {
+        if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
+            expression.as_ref()
+        } else {
+            stmt
+        }
+    }
+    fn visit(node: &Node, current_pkg: &str, subs: &mut HashSet<String>) {
+        match &node.kind {
+            // A statement list threads the active package across siblings: a
+            // statement-form `package Foo;` rebinds it for everything that follows,
+            // matching Perl's file-scoped package semantics.
+            NodeKind::Program { statements } | NodeKind::Block { statements } => {
+                let mut pkg = current_pkg.to_string();
+                for stmt in statements {
+                    if let NodeKind::Package { name, block: None, .. } = &inner(stmt).kind {
+                        pkg = name.clone();
+                    }
+                    visit(stmt, &pkg, subs);
+                }
+            }
+            // Block-form `package Foo { ... }` scopes the package to its block only.
+            NodeKind::Package { name, block: Some(block), .. } => {
+                visit(block, name, subs);
+            }
+            NodeKind::Subroutine { name: Some(name), .. } => {
+                subs.insert(qualify(current_pkg, name));
+                for child in node.children() {
+                    visit(child, current_pkg, subs);
+                }
+            }
+            _ => {
+                for child in node.children() {
+                    visit(child, current_pkg, subs);
+                }
+            }
+        }
+    }
+    let mut subs = HashSet::new();
+    // A file with no `package` statement is in `main`.
+    visit(ast, "main", &mut subs);
+    subs
+}
+
+/// Map a feature-gated keyword to the `feature` pragma name that enables it.
+///
+/// Currently only `say` (issue #2584 criterion 2). `state` is a distinct
+/// declaration-node path and is intentionally not gated here — tracked as a
+/// follow-up. Version bundles (`use v5.10`/`use v5.36`) enable the underlying
+/// feature and are resolved by `PragmaState::has_feature`, so they need no
+/// entry here.
+pub fn feature_for_keyword(name: &str) -> Option<&'static str> {
+    match name {
+        "say" => Some("say"),
+        _ => None,
+    }
+}
+
+/// Whether the file declares a top-level Perl version pragma (`use vX.Y` /
+/// `use N.NNN`).
+///
+/// When one is present, the `version_compat` lint (`PL900`) owns feature-gate
+/// diagnostics for that file with a version-specific message (e.g. "`say`
+/// requires Perl v5.10+; declared version is v5.8"), so the scope analyzer's
+/// feature gate must stand down to avoid emitting a second, redundant warning
+/// on the same construct (#2584 review). The bare-`say`-with-no-version case —
+/// which `version_compat` deliberately skips as ambiguous — remains the scope
+/// analyzer's to flag. Mirrors `version_compat`'s top-level `Program`-statement
+/// scan so the two lints partition the space exactly.
+fn has_declared_perl_version(ast: &Node) -> bool {
+    let NodeKind::Program { statements } = &ast.kind else {
+        return false;
+    };
+    statements.iter().any(|stmt| {
+        matches!(&stmt.kind, NodeKind::Use { module, .. }
+            if crate::pragma_tracker::parse_perl_version(module).is_some())
+    })
 }
 
 /// Returns true if `name` (without sigil) is a numbered capture variable.
@@ -1986,6 +2127,10 @@ fn is_filehandle(name: &str) -> bool {
 // ============================================================================
 #[cfg(test)]
 mod tests_our_redecl {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
     use super::{IssueKind, ScopeAnalyzer, ScopeIssue};
     use crate::Parser;
     use crate::pragma_tracker::PragmaTracker;
@@ -2101,8 +2246,168 @@ mod tests_our_redecl {
 // only, never the blanket `all` marker — see `uninitialized_warning_suppressed`
 // for why (matching `all` would produce false-negatives on re-enable sequences).
 // ============================================================================
+// ============================================================================
+// Feature-gated keyword diagnostics (issue #2584, criterion 2).
+//
+// A feature-gated bareword such as `say` is only valid when the enabling
+// `feature` is active at that offset — `use feature 'say'`, or a version bundle
+// like `use v5.10`/`use v5.36` that includes it. The pragma model already
+// resolves bundle→feature membership via `PragmaState::has_feature`, so the
+// scope analyzer just gates the `say` FunctionCall on it. Method calls
+// (`$o->say`) and autoquoted hash keys (`say => 1`) are structurally different
+// nodes and are never gated; an explicit import or a user-defined `sub say`
+// suppresses the gate. `state` (a declaration node) is deliberately out of
+// scope for this slice.
+// ============================================================================
+#[cfg(test)]
+mod tests_feature_keyword_gate {
+    use super::{IssueKind, ScopeAnalyzer, ScopeIssue};
+    use crate::Parser;
+    use crate::pragma_tracker::PragmaTracker;
+    use perl_tdd_support::must;
+
+    fn analyze(code: &str) -> Vec<ScopeIssue> {
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let pragma_map = PragmaTracker::build(&ast);
+        ScopeAnalyzer::new().analyze(&ast, code, &pragma_map)
+    }
+
+    fn feature_gate_issues<'a>(issues: &'a [ScopeIssue], name: &str) -> Vec<&'a ScopeIssue> {
+        issues
+            .iter()
+            .filter(|i| i.kind == IssueKind::FeatureNotEnabled && i.variable_name == name)
+            .collect()
+    }
+
+    /// Control + acceptance: `say` with no enabling pragma is flagged.
+    #[test]
+    fn say_without_feature_is_flagged() {
+        let issues = analyze("say \"hello\";\n");
+        assert!(
+            !feature_gate_issues(&issues, "say").is_empty(),
+            "say without `use feature 'say'` must be flagged; got: {issues:?}"
+        );
+    }
+
+    /// Acceptance (2): `use feature 'say'` enables `say`.
+    #[test]
+    fn say_with_use_feature_say_is_clean() {
+        let issues = analyze("use feature 'say';\nsay \"hello\";\n");
+        assert!(
+            feature_gate_issues(&issues, "say").is_empty(),
+            "`use feature 'say'` must enable say; got: {issues:?}"
+        );
+    }
+
+    /// Version bundles enable the feature: `use v5.36` includes `say`.
+    #[test]
+    fn say_with_use_v5_36_bundle_is_clean() {
+        let issues = analyze("use v5.36;\nsay \"hello\";\n");
+        assert!(
+            feature_gate_issues(&issues, "say").is_empty(),
+            "`use v5.36` bundle must enable say; got: {issues:?}"
+        );
+    }
+
+    /// `use v5.10` is the classic say-enabling bundle.
+    #[test]
+    fn say_with_use_v5_10_bundle_is_clean() {
+        let issues = analyze("use v5.10;\nsay \"hello\";\n");
+        assert!(
+            feature_gate_issues(&issues, "say").is_empty(),
+            "`use v5.10` bundle must enable say; got: {issues:?}"
+        );
+    }
+
+    /// False-positive guard: a method call `$o->say(...)` is not the builtin.
+    #[test]
+    fn method_call_say_not_flagged() {
+        let issues = analyze("my $o = shift;\n$o->say(\"hi\");\n");
+        assert!(
+            feature_gate_issues(&issues, "say").is_empty(),
+            "method-call say must not be flagged; got: {issues:?}"
+        );
+    }
+
+    /// False-positive guard: `say => 1` autoquotes to a hash key, not a call.
+    #[test]
+    fn say_hash_key_not_flagged() {
+        let issues = analyze("my %h = (say => 1);\n");
+        assert!(
+            feature_gate_issues(&issues, "say").is_empty(),
+            "autoquoted `say =>` key must not be flagged; got: {issues:?}"
+        );
+    }
+
+    /// False-positive guard: a user-defined `sub say` shadows the builtin.
+    #[test]
+    fn user_defined_sub_say_not_flagged() {
+        let issues = analyze("sub say { return 1; }\nsay();\n");
+        assert!(
+            feature_gate_issues(&issues, "say").is_empty(),
+            "call to user-defined `sub say` must not be flagged; got: {issues:?}"
+        );
+    }
+
+    /// De-duplication guard (#2584 review): when a version pragma is declared but
+    /// too low to enable `say` (`use v5.8;`), the scope-analyzer gate stands down
+    /// so the `version_compat` lint (`PL900`) owns the diagnostic — otherwise the
+    /// same `say` would carry two warnings. `version_compat` lives in
+    /// `perl-lsp-rs-core`, so here we only assert our gate emits nothing.
+    #[test]
+    fn say_with_low_version_declared_defers_to_version_compat() {
+        let issues = analyze("use v5.8;\nsay \"hi\";\n");
+        assert!(
+            feature_gate_issues(&issues, "say").is_empty(),
+            "with a version declared, the scope-analyzer say gate must defer to version_compat; got: {issues:?}"
+        );
+    }
+
+    /// The bare case — no version *and* no feature — is the gap `version_compat`
+    /// skips (undeclared version is ambiguous), so it stays the scope analyzer's
+    /// to flag even after the version-deferral guard above.
+    #[test]
+    fn say_with_no_version_still_flagged() {
+        let issues = analyze("use strict;\nsay \"hi\";\n");
+        assert!(
+            !feature_gate_issues(&issues, "say").is_empty(),
+            "bare say with no version pragma must still be flagged; got: {issues:?}"
+        );
+    }
+
+    /// Package-aware shadowing (#4892 review): a `sub say` in one package must NOT
+    /// suppress the feature gate for `say` in a different package of the same file —
+    /// the unqualified call resolves against the active package (`main`), which has
+    /// no `say`, so the diagnostic still fires.
+    #[test]
+    fn say_not_suppressed_by_other_package_sub() {
+        let issues = analyze("package Other;\nsub say { return 1; }\npackage main;\nsay \"x\";\n");
+        assert!(
+            !feature_gate_issues(&issues, "say").is_empty(),
+            "Other::say must not suppress the main-package say gate; got: {issues:?}"
+        );
+    }
+
+    /// Control for the above: a `sub say` in the *same* package as the call still
+    /// suppresses the gate.
+    #[test]
+    fn say_suppressed_by_same_package_sub() {
+        let issues = analyze("package Foo;\nsub say { return 1; }\nsay \"x\";\n");
+        assert!(
+            feature_gate_issues(&issues, "say").is_empty(),
+            "same-package sub say must suppress the gate; got: {issues:?}"
+        );
+    }
+}
+
+// ============================================================================
 #[cfg(test)]
 mod tests_uninitialized_warning_gate {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
     use super::{IssueKind, ScopeAnalyzer, ScopeIssue};
     use crate::Parser;
     use crate::pragma_tracker::PragmaTracker;

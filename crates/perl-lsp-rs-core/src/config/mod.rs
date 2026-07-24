@@ -630,7 +630,7 @@ const NATIVE_CRITIC_PROFILE_VALID_OPTIONS: &str = "recommended, strict";
 /// `Prepend` (the default) mirrors Perl's own behaviour: paths earlier in the
 /// search order shadow later ones, so PERL5LIB paths take priority over any
 /// project-level `include_paths`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Perl5LibPrecedence {
     /// PERL5LIB entries are placed *before* `include_paths` (default).

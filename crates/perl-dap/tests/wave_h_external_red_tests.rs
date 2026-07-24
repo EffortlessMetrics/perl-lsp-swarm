@@ -7,7 +7,10 @@
 //! until the collapse is properly implemented.
 //!
 //! Run with: `cargo test -p perl-dap --test wave_h_external_red_tests`
-
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 #![allow(unused_imports)]
 
 use anyhow::Result;

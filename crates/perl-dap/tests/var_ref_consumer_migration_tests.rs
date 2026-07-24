@@ -11,6 +11,10 @@
 //! - **DAP-2: Graceful None handling** — Invalid refs (0, -1, gaps) produce honest DAP responses
 //! - **DAP-4: Backward compat** — Encoded wire values match old formula for canonical frame_ids
 //! - **DAP-5: Saturation safety** — No panics on extreme inputs (i32::MAX, etc.)
+#![expect(
+    clippy::unwrap_used,
+    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+)]
 
 use perl_dap::{DapMessage, DebugAdapter};
 use serde_json::{Value, json};
