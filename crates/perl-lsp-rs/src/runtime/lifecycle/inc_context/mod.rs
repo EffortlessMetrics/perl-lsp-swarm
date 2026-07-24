@@ -110,8 +110,8 @@ impl EffectiveIncContext {
 /// the module-completion roots and the workspace-symbol reachability filter.
 /// Building it is not free — it takes the `workspace_folders` lock twice, parses
 /// `PERL5LIB`, and scans the document source for `use lib`/`no lib` operations.
-/// Letting each consumer build its own repeated all of that work on every
-/// keystroke; sharing one assembly per request is the fix for #1684.
+/// Letting each consumer build its own meant repeating all of that work on
+/// every keystroke; sharing one assembly per request is the fix for #1684.
 ///
 /// This holder binds the `(uri, text, offset)` triple once and memoizes the
 /// result, so every consumer on the request shares a single computation. It

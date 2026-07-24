@@ -3197,6 +3197,68 @@ mod tests {
         Ok(())
     }
 
+    /// A request that needs no `@INC` view must assemble none at all.
+    ///
+    /// The holder is deliberately lazy: at a plain identifier position (not a
+    /// `use`/`require` line) the workspace pass has nothing to filter, and on the
+    /// AST-less fallback path `module_completion_roots` is never called. Pins the
+    /// zero-build case so a future change to the `is_use_module_context` gating
+    /// cannot silently restore eager assembly — a regression that would still
+    /// satisfy every "built at most once" assertion.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn no_inc_context_is_assembled_when_no_consumer_needs_one()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::runtime::routing::IndexAccessMode;
+        use perl_parser::workspace_index::IndexCoordinator;
+        use std::sync::Arc;
+        use tempfile::TempDir;
+        use url::Url;
+
+        let temp = TempDir::new()?;
+        let workspace = temp.path().join("workspace");
+        let doc_path = workspace.join("bin").join("app.pl");
+        std::fs::create_dir_all(doc_path.parent().ok_or("missing doc parent")?)?;
+
+        let workspace_uri =
+            Url::from_file_path(&workspace).map_err(|_| "bad workspace uri")?.to_string();
+        let doc_uri = Url::from_file_path(&doc_path).map_err(|_| "bad doc uri")?.to_string();
+        let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+        config.include_paths = vec!["lib".to_string()];
+        config.use_system_inc = false;
+
+        let server = LspServer::default();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(workspace_uri)
+                .with_path(workspace.clone())
+                .with_effective_workspace_config(config),
+        );
+
+        let coordinator = Arc::new(IndexCoordinator::new());
+        coordinator.transition_to_ready(1, 1);
+
+        // A plain identifier position: neither a module-import context nor a
+        // use-module context, so the reachability filter has nothing to gate on.
+        let doc_text = "my $x = cr";
+        let probe = crate::runtime::lifecycle::inc_context::inc_context_build_probe();
+        let inc_context = RequestIncContext::new(&server, &doc_uri, doc_text, doc_text.len());
+
+        let mut completions = Vec::new();
+        server.add_runtime_workspace_completions(
+            &mut completions,
+            &inc_context,
+            &IndexAccessMode::Full(&coordinator),
+            500,
+        );
+
+        assert_eq!(
+            probe.count(),
+            0,
+            "a request with no @INC consumer must not assemble a context at all"
+        );
+        Ok(())
+    }
+
     /// Reading the roots through a shared request context must produce exactly
     /// what the standalone entry point produces — the #1684 change is a
     /// computation-sharing change, not a semantic one.
