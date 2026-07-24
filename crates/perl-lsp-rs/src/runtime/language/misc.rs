@@ -710,6 +710,16 @@ impl LspServer {
             return Err(crate::protocol::method_not_advertised());
         }
 
+        let progress = self.try_begin_request_progress("code-lens", "Resolving code lenses");
+        let result = self.handle_code_lens_inner(params);
+        self.end_request_progress(&progress);
+        result
+    }
+
+    fn handle_code_lens_inner(
+        &self,
+        params: Option<Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(params) = params {
             let uri = req_uri(&params)?;
             let cap = code_lens_cap();

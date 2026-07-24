@@ -587,6 +587,7 @@ impl LspServer {
         params: Option<Value>,
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        let progress = self.try_begin_request_progress("references", "Finding references");
         let trace_context = Self::references_decision_trace_context(params.as_ref())?;
         let (
             result,
@@ -598,6 +599,7 @@ impl LspServer {
             source_backed_attempt,
             fallback_receipt,
         ) = self.handle_references_inner(params, request_id)?;
+        self.end_request_progress(&progress);
         self.record_references_provider_decision_trace(
             trace_context.as_ref(),
             result.as_ref(),

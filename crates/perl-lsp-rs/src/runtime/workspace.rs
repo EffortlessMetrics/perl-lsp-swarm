@@ -354,6 +354,8 @@ impl LspServer {
             return Err(crate::protocol::method_not_advertised());
         }
 
+        let progress = self.try_begin_request_progress("workspace-symbol", "Searching workspace symbols");
+
         let query = params
             .as_ref()
             .and_then(|p| p.get("query"))
@@ -468,7 +470,9 @@ impl LspServer {
         }
 
         // Fallback/degraded path: search open documents only
-        self.search_open_documents_for_symbols(query, cap)
+        let result = self.search_open_documents_for_symbols(query, cap);
+        self.end_request_progress(&progress);
+        result
     }
 
     /// Apply the shared provider-readiness policy before consulting the index.

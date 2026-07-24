@@ -279,6 +279,31 @@ impl LspServer {
         self.notify("$/progress", params)
     }
 
+    /// Begin a per-request workDoneProgress bar.
+    ///
+    /// Returns a token string if the client supports progress, or `None` if it
+    /// doesn't. The caller is responsible for calling `end_request_progress`
+    /// when the work is done.
+    pub fn try_begin_request_progress(&self, prefix: &str, title: &str) -> Option<String> {
+        let id = self.next_request_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let token = format!("{prefix}-{id}");
+        if self.create_work_done_progress(&token).is_ok() {
+            let _ = self.report_progress_begin(&token, title, None);
+            Some(token)
+        } else {
+            None
+        }
+    }
+
+    /// End a per-request workDoneProgress bar started by `try_begin_request_progress`.
+    ///
+    /// Safe to call with `None` (no-op).
+    pub fn end_request_progress(&self, token: &Option<String>) {
+        if let Some(tok) = token {
+            let _ = self.report_progress_end(tok, None);
+        }
+    }
+
     /// Send telemetry event notification
     ///
     /// Sends a `telemetry/event` notification with arbitrary data.
