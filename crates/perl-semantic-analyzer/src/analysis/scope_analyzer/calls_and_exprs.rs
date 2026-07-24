@@ -42,8 +42,14 @@ pub(super) fn handle_function_call<'a>(
     // different node kinds and never reach here, so no extra guard is needed for
     // them; an explicitly imported symbol (`use Foo qw(say)`) or a user-defined
     // sub of the same name suppresses the gate.
+    //
+    // When the file declares a version pragma (`use vX.Y`), the `version_compat`
+    // lint (`PL900`) owns this diagnostic with a version-specific message, so the
+    // gate stands down there to avoid a duplicate warning on the same `say`; the
+    // bare-`say`-with-no-version case (which `version_compat` skips) stays ours.
     if let Some(feature) = feature_for_keyword(name) {
         if !pragma_state.has_feature(feature)
+            && !context.has_declared_version()
             && !context.has_imported_bareword(name)
             && !context.has_defined_sub(name)
         {

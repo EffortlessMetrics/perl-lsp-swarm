@@ -390,6 +390,11 @@ pub(super) struct AnalysisContext<'a> {
     /// feature-gate diagnostic when a user has shadowed a feature-gated keyword
     /// with their own `sub` (e.g. `sub say { ... } say(...)`).
     defined_subs: HashSet<String>,
+    /// Whether a top-level `use vX.Y` / `use N.NNN` version pragma is declared.
+    /// When one is, the feature-gate diagnostic (e.g. for `say`) defers to the
+    /// version-compatibility lint (`PL900`), which owns the version-declared case
+    /// with a more specific message — avoiding a duplicate diagnostic (#2584).
+    has_declared_version: bool,
     line_starts: RefCell<Option<Vec<usize>>>,
     /// Current package name, updated as `package` statements are traversed.
     current_package: RefCell<String>,
@@ -417,6 +422,7 @@ impl<'a> AnalysisContext<'a> {
             pragma_cursor: RefCell::new(PragmaQueryCursor::new()),
             imported_barewords: collect_imported_barewords(ast),
             defined_subs: collect_defined_subs(ast),
+            has_declared_version: has_declared_perl_version(ast),
             line_starts: RefCell::new(None),
             current_package: RefCell::new("main".to_string()),
             package_change_generation: Cell::new(0),
@@ -434,6 +440,10 @@ impl<'a> AnalysisContext<'a> {
 
     fn has_defined_sub(&self, name: &str) -> bool {
         self.defined_subs.contains(name)
+    }
+
+    fn has_declared_version(&self) -> bool {
+        self.has_declared_version
     }
 
     fn get_line(&self, offset: usize) -> usize {
@@ -1762,6 +1772,27 @@ pub(super) fn feature_for_keyword(name: &str) -> Option<&'static str> {
     }
 }
 
+/// Whether the file declares a top-level Perl version pragma (`use vX.Y` /
+/// `use N.NNN`).
+///
+/// When one is present, the `version_compat` lint (`PL900`) owns feature-gate
+/// diagnostics for that file with a version-specific message (e.g. "`say`
+/// requires Perl v5.10+; declared version is v5.8"), so the scope analyzer's
+/// feature gate must stand down to avoid emitting a second, redundant warning
+/// on the same construct (#2584 review). The bare-`say`-with-no-version case —
+/// which `version_compat` deliberately skips as ambiguous — remains the scope
+/// analyzer's to flag. Mirrors `version_compat`'s top-level `Program`-statement
+/// scan so the two lints partition the space exactly.
+fn has_declared_perl_version(ast: &Node) -> bool {
+    let NodeKind::Program { statements } = &ast.kind else {
+        return false;
+    };
+    statements.iter().any(|stmt| {
+        matches!(&stmt.kind, NodeKind::Use { module, .. }
+            if crate::pragma_tracker::parse_perl_version(module).is_some())
+    })
+}
+
 /// Returns true if `name` (without sigil) is a numbered capture variable.
 ///
 /// Capture variables are `$1`, `$2`, ..., `$9`, `$10`, `$11`, etc.
@@ -2248,6 +2279,32 @@ mod tests_feature_keyword_gate {
         assert!(
             feature_gate_issues(&issues, "say").is_empty(),
             "call to user-defined `sub say` must not be flagged; got: {issues:?}"
+        );
+    }
+
+    /// De-duplication guard (#2584 review): when a version pragma is declared but
+    /// too low to enable `say` (`use v5.8;`), the scope-analyzer gate stands down
+    /// so the `version_compat` lint (`PL900`) owns the diagnostic — otherwise the
+    /// same `say` would carry two warnings. `version_compat` lives in
+    /// `perl-lsp-rs-core`, so here we only assert our gate emits nothing.
+    #[test]
+    fn say_with_low_version_declared_defers_to_version_compat() {
+        let issues = analyze("use v5.8;\nsay \"hi\";\n");
+        assert!(
+            feature_gate_issues(&issues, "say").is_empty(),
+            "with a version declared, the scope-analyzer say gate must defer to version_compat; got: {issues:?}"
+        );
+    }
+
+    /// The bare case — no version *and* no feature — is the gap `version_compat`
+    /// skips (undeclared version is ambiguous), so it stays the scope analyzer's
+    /// to flag even after the version-deferral guard above.
+    #[test]
+    fn say_with_no_version_still_flagged() {
+        let issues = analyze("use strict;\nsay \"hi\";\n");
+        assert!(
+            !feature_gate_issues(&issues, "say").is_empty(),
+            "bare say with no version pragma must still be flagged; got: {issues:?}"
         );
     }
 }
