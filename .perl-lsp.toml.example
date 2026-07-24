@@ -41,9 +41,9 @@
 # include_paths = ["lib", "local/lib/perl5"]
 
 # ── [diagnostics] ────────────────────────────────────────────────────────────
-# Linting settings. Critic diagnostics are opt-in. With the default legacy
-# engine they require perlcritic installed; with [critic].engine = "native"
-# they use the Rust-native critic registry.
+# Linting settings. Critic diagnostics are enabled by default (perlcritic = true).
+# With the default native engine ([critic].engine = "native") they use the
+# Rust-native critic registry; set engine = "legacy" to shell out to perlcritic.
 
 [diagnostics]
 
