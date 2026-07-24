@@ -285,6 +285,10 @@ pub enum PirDynamicBoundaryKind {
     DoExpression,
     /// `AUTOLOAD`-driven dynamic dispatch.
     Autoload,
+    /// A regex/match/substitution embeds runtime-evaluated code — either an
+    /// inline `(?{...})`/`(??{...})` pattern block, or (for substitution) an
+    /// `e`/`ee` modifier that evaluates the replacement string as Perl code.
+    EmbeddedRegexCode,
     /// Unclassified dynamic boundary.
     Unknown,
 }
@@ -304,8 +308,180 @@ impl PirDynamicBoundaryKind {
             Self::EvalExpression => "EvalExpression",
             Self::DoExpression => "DoExpression",
             Self::Autoload => "Autoload",
+            Self::EmbeddedRegexCode => "EmbeddedRegexCode",
             Self::Unknown => "Unknown",
         }
+    }
+}
+
+/// How a regex/match/substitution/transliteration operation's target is
+/// modeled by PIR v0.
+///
+/// Slice 1 always constructs [`Unknown`](Self::Unknown): today's HIR regex
+/// shells (`RegexExpr`/`MatchExpr`/`SubstitutionExpr`/`TransliterationExpr`)
+/// carry no target/place field, and bare-variable targets (e.g. the `$x` in
+/// `$x =~ /pat/`) are not HIR items at all — so PIR cannot resolve a target
+/// without a HIR-side enrichment. The other variants are kept so the enum is
+/// stable across slices, but only `Unknown` is constructed in Slice 1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PirRegexTarget {
+    /// The implicit `$_` topic variable (no explicit `=~`/`!~` binding).
+    DefaultTopic,
+    /// A statically named lvalue place. `kind` is the parser AST kind name,
+    /// preserved for documentation; a later slice resolves place identity.
+    Place {
+        /// Parser AST kind name for the place expression.
+        kind: &'static str,
+    },
+    /// An arbitrary expression the operator binds to (e.g. `foo() =~ ...`),
+    /// preserved as a syntactic shape without evaluating it.
+    Expression {
+        /// Parser AST kind name for the target expression.
+        kind: &'static str,
+    },
+    /// Target has not been resolved. Slice 1 always constructs this variant.
+    Unknown,
+}
+
+impl PirRegexTarget {
+    /// Stable name used in receipts and snapshots.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::DefaultTopic => "DefaultTopic",
+            Self::Place { .. } => "Place",
+            Self::Expression { .. } => "Expression",
+            Self::Unknown => "Unknown",
+        }
+    }
+}
+
+/// How a match/substitution/transliteration operation accesses its target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PirTargetAccess {
+    /// Operator mutates its target in place (default `s///`, `tr///`/`y///`).
+    Mutate,
+    /// Operator returns a mutated copy and leaves the target untouched (the
+    /// `/r` modifier).
+    MutateCopy,
+    /// Operator only reads its target without mutation (a plain `=~ /pat/`
+    /// or `!~ /pat/` match).
+    ReadOnly,
+}
+
+impl PirTargetAccess {
+    /// Stable name used in receipts and snapshots.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Mutate => "Mutate",
+            Self::MutateCopy => "MutateCopy",
+            Self::ReadOnly => "ReadOnly",
+        }
+    }
+}
+
+/// Normalized, order-independent regex/match/substitution/transliteration
+/// modifier set.
+///
+/// Built from the verbatim modifier string the HIR shell exposes
+/// (`RegexExpr`/`MatchExpr`/`SubstitutionExpr`/`TransliterationExpr::modifiers`).
+/// Recognized Perl modifier characters each get a dedicated flag; anything
+/// else is preserved in `unknown` rather than silently dropped, and `raw`
+/// keeps the exact source text for receipts that want it verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct PirRegexModifiers {
+    /// `/g` — global match/substitution.
+    pub g: bool,
+    /// `/i` — case-insensitive.
+    pub i: bool,
+    /// `/m` — multi-line `^`/`$`.
+    pub m: bool,
+    /// `/s` — regex/match/substitution: single-line mode, `.` also matches
+    /// newline. `tr///` reuses the same character with an unrelated meaning
+    /// (squeeze runs of the same translated character); the op-family
+    /// disambiguates.
+    pub s: bool,
+    /// `/x` — extended (whitespace/comments ignored in the pattern).
+    pub x: bool,
+    /// `/o` — compile pattern once (legacy; a no-op under modern `perl`s).
+    pub o: bool,
+    /// `/a` — ASCII-restricted character classes.
+    pub a: bool,
+    /// `/l` — locale-dependent character semantics.
+    pub l: bool,
+    /// `/u` — Unicode character semantics.
+    pub u: bool,
+    /// `/p` — preserve `${^PREMATCH}`/`${^MATCH}`/`${^POSTMATCH}`.
+    pub p: bool,
+    /// `/n` — non-capturing groups by default.
+    pub n: bool,
+    /// `/c` — meaning depends on the operator family: for `m//`/`s///` it
+    /// keeps `pos()` unchanged after a failed `/g` match; for `tr///` it
+    /// complements the SEARCHLIST. PIR v0 stores presence uninterpreted and
+    /// lets the op-family (`Match`/`Substitution` vs `Transliteration`)
+    /// disambiguate.
+    pub c: bool,
+    /// `/d` — `tr///`-only: delete input characters that have no
+    /// REPLACEMENTLIST counterpart. Not a `s///` modifier (`s///`'s
+    /// evaluate-replacement modifier is `/e`/`/ee`; see [`e`](Self::e) /
+    /// [`ee`](Self::ee)). PIR v0 stores presence uninterpreted.
+    pub d: bool,
+    /// `/r` — return a modified copy instead of mutating in place.
+    pub r: bool,
+    /// `/e` (`s///`) — evaluate the replacement as Perl code. Also present at
+    /// most once even when `/ee` is used; see [`ee`](Self::ee).
+    pub e: bool,
+    /// Whether `e` appeared more than once (`/ee`), i.e. the replacement is
+    /// evaluated as Perl code twice. Only meaningful when [`e`](Self::e) is
+    /// also `true`; the modifier string is the only place this distinction is
+    /// visible, so `parse` counts `e` occurrences rather than treating it as
+    /// a plain flag.
+    pub ee: bool,
+    /// Modifier characters the parser preserved but this struct does not
+    /// model as a dedicated flag.
+    pub unknown: Vec<char>,
+    /// Verbatim modifier text exactly as the HIR shell exposed it.
+    pub raw: String,
+}
+
+impl PirRegexModifiers {
+    /// Parse a verbatim modifier string into a normalized, order-independent
+    /// set. Unrecognized characters are preserved in `unknown` rather than
+    /// dropped.
+    #[must_use]
+    pub fn parse(raw: &str) -> Self {
+        let mut modifiers = Self { raw: raw.to_string(), ..Self::default() };
+        for ch in raw.chars() {
+            match ch {
+                'g' => modifiers.g = true,
+                'i' => modifiers.i = true,
+                'm' => modifiers.m = true,
+                's' => modifiers.s = true,
+                'x' => modifiers.x = true,
+                'o' => modifiers.o = true,
+                'a' => modifiers.a = true,
+                'l' => modifiers.l = true,
+                'u' => modifiers.u = true,
+                'p' => modifiers.p = true,
+                'n' => modifiers.n = true,
+                'c' => modifiers.c = true,
+                'd' => modifiers.d = true,
+                'r' => modifiers.r = true,
+                'e' => {
+                    if modifiers.e {
+                        modifiers.ee = true;
+                    } else {
+                        modifiers.e = true;
+                    }
+                }
+                other => modifiers.unknown.push(other),
+            }
+        }
+        modifiers
     }
 }
 
@@ -407,6 +583,64 @@ pub enum PirOperation {
         /// Short human-readable reason for the boundary.
         reason: String,
     },
+    /// A regex literal (`qr/.../` or a value-position regex literal), from
+    /// `HirKind::RegexExpr`. Does not evaluate the pattern.
+    RegexLiteral {
+        /// Normalized modifier set.
+        modifiers: Box<PirRegexModifiers>,
+        /// Whether the pattern contains embedded code (`(?{...})`/`(??{...})`).
+        /// See the node's `dynamic_boundary` link for the boundary itself.
+        embedded_code: bool,
+    },
+    /// A `=~`/`!~` match operation (`HirKind::MatchExpr`). Does not evaluate
+    /// the pattern or its target.
+    Match {
+        /// Match target. Slice 1 always constructs `Unknown`.
+        target: PirRegexTarget,
+        /// How the operation accesses its target. A match reads its target
+        /// without reassigning it, so this is always `ReadOnly`.
+        access: PirTargetAccess,
+        /// Normalized modifier set.
+        modifiers: Box<PirRegexModifiers>,
+        /// Whether the binding operator was `!~` (negated match).
+        negated: bool,
+        /// Whether the pattern embeds runtime-evaluated code (`(?{...})`/
+        /// `(??{...})`). Mirrors the node's `dynamic_boundary` link (kept as a
+        /// direct flag for parity with `Substitution`/`RegexLiteral` so generic
+        /// consumers need not special-case `Match`).
+        embedded_code: bool,
+    },
+    /// A `s///` substitution operation (`HirKind::SubstitutionExpr`). Does
+    /// not evaluate the pattern, replacement, or target.
+    Substitution {
+        /// Substitution target. Slice 1 always constructs `Unknown`.
+        target: PirRegexTarget,
+        /// Mutate-in-place vs. mutate-a-copy (`/r`), derived only from the
+        /// modifier set.
+        access: PirTargetAccess,
+        /// Normalized modifier set.
+        modifiers: Box<PirRegexModifiers>,
+        /// Whether the binding operator was `!~` (negated match).
+        negated: bool,
+        /// Whether the substitution embeds runtime-evaluated code — either
+        /// an inline `(?{...})` pattern block or an `e`/`ee` modifier. See
+        /// the node's `dynamic_boundary` link for the boundary itself.
+        embedded_code: bool,
+    },
+    /// A `tr///`/`y///` transliteration operation
+    /// (`HirKind::TransliterationExpr`). Does not evaluate the search/replace
+    /// sets or the target.
+    Transliteration {
+        /// Transliteration target. Slice 1 always constructs `Unknown`.
+        target: PirRegexTarget,
+        /// Mutate-in-place vs. mutate-a-copy (`/r`), derived only from the
+        /// modifier set.
+        access: PirTargetAccess,
+        /// Normalized modifier set.
+        modifiers: Box<PirRegexModifiers>,
+        /// Whether the binding operator was `!~` (negated match).
+        negated: bool,
+    },
 }
 
 impl PirOperation {
@@ -429,6 +663,10 @@ impl PirOperation {
             Self::Loop { .. } => "Loop",
             Self::Return => "Return",
             Self::DynamicBoundary { .. } => "DynamicBoundary",
+            Self::RegexLiteral { .. } => "RegexLiteral",
+            Self::Match { .. } => "Match",
+            Self::Substitution { .. } => "Substitution",
+            Self::Transliteration { .. } => "Transliteration",
         }
     }
 
@@ -446,12 +684,16 @@ impl PirOperation {
         "LexicalWrite",
         "Literal",
         "Loop",
+        "Match",
         "MethodCall",
         "Modify",
+        "RegexLiteral",
         "Return",
         "StashModify",
         "StashRead",
         "StashWrite",
+        "Substitution",
+        "Transliteration",
     ];
 }
 
@@ -705,12 +947,16 @@ mod tests {
             "LexicalWrite",
             "Literal",
             "Loop",
+            "Match",
             "MethodCall",
             "Modify",
+            "RegexLiteral",
             "Return",
             "StashModify",
             "StashRead",
             "StashWrite",
+            "Substitution",
+            "Transliteration",
         ];
         let actual: Vec<_> = PirOperation::ALL_OPERATION_NAMES.to_vec();
         assert_eq!(actual, expected);
@@ -832,6 +1078,7 @@ mod tests {
         assert_eq!(PirDynamicBoundaryKind::EvalExpression.name(), "EvalExpression");
         assert_eq!(PirDynamicBoundaryKind::DoExpression.name(), "DoExpression");
         assert_eq!(PirDynamicBoundaryKind::Autoload.name(), "Autoload");
+        assert_eq!(PirDynamicBoundaryKind::EmbeddedRegexCode.name(), "EmbeddedRegexCode");
         assert_eq!(PirDynamicBoundaryKind::Unknown.name(), "Unknown");
     }
 
@@ -1018,5 +1265,101 @@ mod tests {
     #[test]
     fn pir_receiver_dynamic() {
         assert_eq!(format!("{:?}", PirReceiver::Dynamic), "Dynamic");
+    }
+
+    #[test]
+    fn pir_regex_target_has_stable_names() {
+        assert_eq!(PirRegexTarget::DefaultTopic.name(), "DefaultTopic");
+        assert_eq!(PirRegexTarget::Place { kind: "Variable" }.name(), "Place");
+        assert_eq!(PirRegexTarget::Expression { kind: "CallExpr" }.name(), "Expression");
+        assert_eq!(PirRegexTarget::Unknown.name(), "Unknown");
+    }
+
+    #[test]
+    fn pir_target_access_has_stable_names() {
+        assert_eq!(PirTargetAccess::Mutate.name(), "Mutate");
+        assert_eq!(PirTargetAccess::MutateCopy.name(), "MutateCopy");
+        assert_eq!(PirTargetAccess::ReadOnly.name(), "ReadOnly");
+    }
+
+    #[test]
+    fn pir_regex_modifiers_parse_known_flags() {
+        let modifiers = PirRegexModifiers::parse("gi");
+        assert!(modifiers.g);
+        assert!(modifiers.i);
+        assert!(!modifiers.m);
+        assert!(modifiers.unknown.is_empty());
+        assert_eq!(modifiers.raw, "gi");
+    }
+
+    #[test]
+    fn pir_regex_modifiers_parse_distinguishes_e_from_ee() {
+        let single = PirRegexModifiers::parse("e");
+        assert!(single.e);
+        assert!(!single.ee);
+
+        let double = PirRegexModifiers::parse("ee");
+        assert!(double.e);
+        assert!(double.ee);
+    }
+
+    #[test]
+    fn pir_regex_modifiers_parse_preserves_unknown_chars() {
+        let modifiers = PirRegexModifiers::parse("gz");
+        assert!(modifiers.g);
+        assert_eq!(modifiers.unknown, vec!['z']);
+        assert_eq!(modifiers.raw, "gz");
+    }
+
+    #[test]
+    fn pir_regex_modifiers_default_is_empty() {
+        let modifiers = PirRegexModifiers::default();
+        assert!(!modifiers.g && !modifiers.i && !modifiers.r && !modifiers.e);
+        assert!(modifiers.unknown.is_empty());
+        assert_eq!(modifiers.raw, "");
+    }
+
+    #[test]
+    fn pir_operation_regex_literal_name() {
+        let op = PirOperation::RegexLiteral {
+            modifiers: Box::new(PirRegexModifiers::parse("i")),
+            embedded_code: false,
+        };
+        assert_eq!(op.name(), "RegexLiteral");
+    }
+
+    #[test]
+    fn pir_operation_match_name() {
+        let op = PirOperation::Match {
+            target: PirRegexTarget::Unknown,
+            access: PirTargetAccess::ReadOnly,
+            modifiers: Box::new(PirRegexModifiers::default()),
+            negated: false,
+            embedded_code: false,
+        };
+        assert_eq!(op.name(), "Match");
+    }
+
+    #[test]
+    fn pir_operation_substitution_name() {
+        let op = PirOperation::Substitution {
+            target: PirRegexTarget::Unknown,
+            access: PirTargetAccess::Mutate,
+            modifiers: Box::new(PirRegexModifiers::default()),
+            negated: false,
+            embedded_code: false,
+        };
+        assert_eq!(op.name(), "Substitution");
+    }
+
+    #[test]
+    fn pir_operation_transliteration_name() {
+        let op = PirOperation::Transliteration {
+            target: PirRegexTarget::Unknown,
+            access: PirTargetAccess::Mutate,
+            modifiers: Box::new(PirRegexModifiers::default()),
+            negated: false,
+        };
+        assert_eq!(op.name(), "Transliteration");
     }
 }
