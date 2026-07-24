@@ -261,6 +261,10 @@ pub struct LspArgs {
     #[arg(long, conflicts_with_all = ["check", "check_project"])]
     pub doctor: Option<Option<String>>,
 
+    /// Output machine-readable JSON (currently affects --doctor only)
+    #[arg(long)]
+    pub json: bool,
+
     /// Generate shell completions (bash, zsh, fish, powershell, pwsh)
     #[arg(long)]
     pub completion: Option<String>,
@@ -404,6 +408,8 @@ pub enum LaunchAction {
     Doctor {
         /// Directory to inspect (defaults to ".").
         dir: String,
+        /// Output JSON instead of human-readable text.
+        json: bool,
     },
     /// Generate shell completions for a given shell.
     Completion {
@@ -626,7 +632,7 @@ where
                 LaunchAction::CheckProject { dir }
             } else if let Some(maybe_dir) = parsed_args.doctor {
                 let dir = maybe_dir.unwrap_or_else(|| ".".to_string());
-                LaunchAction::Doctor { dir }
+                LaunchAction::Doctor { dir, json: parsed_args.json }
             } else if let Some(raw_shell) = parsed_args.completion {
                 let shell = normalize_completion_shell(&raw_shell).ok_or_else(|| {
                     LaunchParseError::InvalidShell { raw_shell: raw_shell.clone() }
@@ -804,6 +810,9 @@ pub fn help_text() -> String {
     out.push_str("  --check <files...>   Validate Perl files and report parse errors\n");
     out.push_str("  --check-project [dir] Scan project directory for parsability report\n");
     out.push_str("  --doctor [dir]       Explain Perl path, config, and effective @INC roots\n");
+    out.push_str(
+        "  --json               Machine-readable JSON output (currently affects --doctor)\n",
+    );
     out.push_str("  --perltidy-compat-report <profile>\n");
     out.push_str("                       Report native formatter compatibility for .perltidyrc\n");
     out.push_str("  --perlcritic-compat-report <profile>\n");
@@ -876,7 +885,7 @@ const BASH_COMPLETION: &str = r#"_perl_lsp() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    opts="--stdio --mcp --socket --port --log --health --info --check --check-project --doctor --version --features-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help"
+    opts="--stdio --mcp --socket --port --log --health --info --check --check-project --doctor --json --version --features-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help"
 
     case "${prev}" in
         --port)
@@ -1424,13 +1433,19 @@ mod tests {
     #[test]
     fn parse_doctor_no_dir_defaults_to_dot() {
         let plan = must(parse_args(["perl-lsp", "--doctor"]));
-        assert_eq!(plan.action, LaunchAction::Doctor { dir: ".".to_string() });
+        assert_eq!(plan.action, LaunchAction::Doctor { dir: ".".to_string(), json: false });
     }
 
     #[test]
     fn parse_doctor_with_dir() {
         let plan = must(parse_args(["perl-lsp", "--doctor", "app/"]));
-        assert_eq!(plan.action, LaunchAction::Doctor { dir: "app/".to_string() });
+        assert_eq!(plan.action, LaunchAction::Doctor { dir: "app/".to_string(), json: false });
+    }
+
+    #[test]
+    fn parse_doctor_json_flag() {
+        let plan = must(parse_args(["perl-lsp", "--doctor", "--json"]));
+        assert_eq!(plan.action, LaunchAction::Doctor { dir: ".".to_string(), json: true });
     }
 
     #[test]

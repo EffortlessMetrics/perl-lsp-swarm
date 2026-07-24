@@ -80,7 +80,7 @@ where
         }
         LaunchAction::Check => run_check(&command_name, &launch_plan.files),
         LaunchAction::CheckProject { ref dir } => check_project::run_check_project(dir),
-        LaunchAction::Doctor { ref dir } => doctor::run_doctor(dir),
+        LaunchAction::Doctor { ref dir, json } => doctor::run_doctor(dir, json),
         LaunchAction::Completion { ref shell } => {
             if let Some(script) = shell_completion(shell) {
                 print!("{}", render_shell_completion(script, &command_name));
