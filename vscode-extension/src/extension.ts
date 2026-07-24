@@ -866,9 +866,7 @@ async function finishStartupAfterActivation(
       outputChannel.error(`[update-check] Error: ${msg}`);
     });
   } else {
-    outputChannel.info(
-      '[update-check] Skipped background update check in untrusted workspace.',
-    );
+    outputChannel.info('[update-check] Skipped background update check in untrusted workspace.');
   }
 
   // First-run onboarding: show welcome notification once per installation.
@@ -915,7 +913,7 @@ async function finishStartupAfterActivation(
 export function diagnoseConfiguredServerPath(
   userPath: string | undefined,
   pathExists: boolean,
-  channel: vscode.OutputChannel,
+  channel: vscode.LogOutputChannel,
 ): string | null {
   if (!userPath || pathExists) {
     return null;
@@ -1729,9 +1727,7 @@ async function reinstallServerBinary(
   languageClientLifecycle?.setServerPathOverride(downloadedPath);
 
   if (wasRunning) {
-    outputChannel.info(
-      '[reinstall] restarting language client with the freshly installed binary',
-    );
+    outputChannel.info('[reinstall] restarting language client with the freshly installed binary');
     try {
       await restartServer(context);
     } catch {
@@ -1786,9 +1782,7 @@ export function handleClientStateChange(event: StateChangeEvent): void {
       'Try restarting the server (Command Palette: "Perl: Restart Server") or run the Health Check.',
   };
 
-  outputChannel?.info(
-    '[lifecycle] Perl Language Server stopped unexpectedly (mid-session crash).',
-  );
+  outputChannel?.info('[lifecycle] Perl Language Server stopped unexpectedly (mid-session crash).');
 
   // If the prior run was stable long enough, treat this crash as a new
   // episode and reset the auto-restart budget so transient crashes don't
@@ -1826,9 +1820,7 @@ async function handleUnexpectedServerStop(): Promise<void> {
       outputChannel?.show();
     }
     if (!context) {
-      outputChannel?.info(
-        '[lifecycle] Cannot auto-restart: extension context is not available.',
-      );
+      outputChannel?.info('[lifecycle] Cannot auto-restart: extension context is not available.');
       return;
     }
     try {
