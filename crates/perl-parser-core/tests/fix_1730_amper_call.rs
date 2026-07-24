@@ -6,8 +6,8 @@
 // consumers (linter, debugger, goto-definition) can distinguish the two forms.
 
 mod cpan_test_helpers;
+use cpan_test_helpers::*;
 
-use cpan_test_helpers::{assert_clean_parse, parse};
 use perl_parser_core::NodeKind;
 
 // ── helpers ─────────────────────────────────────────────────────────────────
