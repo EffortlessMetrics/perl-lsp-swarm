@@ -241,6 +241,16 @@ fn walk_security_node(
             walk_security_node(right, diagnostics, signal_shadowed);
             signal_shadowed
         }
+        NodeKind::ArraySlice { target, indices } => {
+            walk_security_node(target, diagnostics, signal_shadowed);
+            walk_security_node(indices, diagnostics, signal_shadowed);
+            signal_shadowed
+        }
+        NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
+            walk_security_node(target, diagnostics, signal_shadowed);
+            walk_security_node(keys, diagnostics, signal_shadowed);
+            signal_shadowed
+        }
         NodeKind::Ternary { condition, then_expr, else_expr } => {
             walk_security_node(condition, diagnostics, signal_shadowed);
             walk_security_node(then_expr, diagnostics, signal_shadowed);
@@ -399,15 +409,22 @@ fn signal_table_display(access: &SignalTableAccess) -> &'static str {
 
 /// Extract the signal-handler key if the node targets `$SIG{__DIE__}` or `$SIG{__WARN__}`.
 fn signal_handler_name(node: &Node) -> Option<SignalHandlerTarget> {
-    let NodeKind::Binary { op, left, right } = &node.kind else {
-        return None;
-    };
-
-    if op != "{}" {
-        return None;
+    match &node.kind {
+        NodeKind::Binary { op, left, right } if op == "{}" => {
+            signal_handler_from_hash_and_key(left, right)
+        }
+        NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
+            signal_handler_from_hash_and_key(target, keys)
+        }
+        _ => None,
     }
+}
 
-    let access = match &left.kind {
+fn signal_handler_from_hash_and_key(
+    hash_expr: &Node,
+    key_expr: &Node,
+) -> Option<SignalHandlerTarget> {
+    let access = match &hash_expr.kind {
         NodeKind::Variable { sigil, name } if (sigil == "$" || sigil == "%") && name == "SIG" => {
             SignalTableAccess::Bare
         }
@@ -419,14 +436,18 @@ fn signal_handler_name(node: &Node) -> Option<SignalHandlerTarget> {
         _ => return None,
     };
 
-    match &right.kind {
+    signal_name_from_key(key_expr).map(|signal_name| SignalHandlerTarget { access, signal_name })
+}
+
+fn signal_name_from_key(node: &Node) -> Option<String> {
+    match &node.kind {
         NodeKind::Identifier { name } if name == "__DIE__" || name == "__WARN__" => {
-            Some(SignalHandlerTarget { access, signal_name: name.to_string() })
+            Some(name.clone())
         }
         NodeKind::String { value, .. } => {
             let trimmed = value.trim_matches(['"', '\'']);
             if trimmed == "__DIE__" || trimmed == "__WARN__" {
-                Some(SignalHandlerTarget { access, signal_name: trimmed.to_string() })
+                Some(trimmed.to_string())
             } else {
                 None
             }

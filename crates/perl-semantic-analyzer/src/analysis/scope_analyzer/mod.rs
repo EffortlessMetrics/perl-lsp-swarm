@@ -999,9 +999,8 @@ impl ScopeAnalyzer {
         // Bridge this so strict-vars and usage tracking resolve against the declared hash.
         if sigil == "@"
             && let Some(parent) = ancestors.last()
-            && let NodeKind::Binary { op, left, .. } = &parent.kind
-            && op == "{}"
-            && std::ptr::eq(left.as_ref(), node)
+            && let NodeKind::HashSlice { target, .. } = &parent.kind
+            && std::ptr::eq(target.as_ref(), node)
         {
             return Some(("%", name));
         }
@@ -1426,6 +1425,12 @@ impl ScopeAnalyzer {
                         return true;
                     }
                 }
+                // Hash/key-value slice keys: @hash{...} or %hash{...}
+                NodeKind::HashSlice { keys, .. } | NodeKind::KeyValueSlice { keys, .. } => {
+                    if std::ptr::eq(keys.as_ref(), current) {
+                        return true;
+                    }
+                }
                 // Arrow-deref hash subscript/slice: $ref->{key}, $obj->method()->{key},
                 // $a->{b}{c}, $ref->%{key}
                 // Anchor on `node`, not `current`: only direct simple keys are auto-quoted,
@@ -1454,6 +1459,13 @@ impl ScopeAnalyzer {
                             if op == "{}" && std::ptr::eq(right.as_ref(), parent) {
                                 return true;
                             }
+                        }
+                        // ArrayLiteral used as keys in a slice: @hash{@keys} or %hash{@keys}
+                        if matches!(&grandparent.kind,
+                            NodeKind::HashSlice { keys, .. } | NodeKind::KeyValueSlice { keys, .. }
+                            if std::ptr::eq(keys.as_ref(), parent))
+                        {
+                            return true;
                         }
                     }
                 }

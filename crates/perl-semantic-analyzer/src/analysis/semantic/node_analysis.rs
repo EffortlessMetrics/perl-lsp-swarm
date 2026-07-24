@@ -425,6 +425,16 @@ impl SemanticAnalyzer {
                 self.analyze_node(right, scope_id);
             }
 
+            NodeKind::ArraySlice { target, indices } => {
+                self.analyze_node(target, scope_id);
+                self.analyze_node(indices, scope_id);
+            }
+
+            NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
+                self.analyze_node(target, scope_id);
+                self.analyze_node(keys, scope_id);
+            }
+
             NodeKind::Assignment { lhs, rhs, .. } => {
                 self.analyze_node(lhs, scope_id);
                 self.analyze_node(rhs, scope_id);

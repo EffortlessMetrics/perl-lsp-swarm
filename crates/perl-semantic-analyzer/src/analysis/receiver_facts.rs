@@ -188,6 +188,12 @@ pub fn infer_receiver_fact(
         NodeKind::Binary { op, left, right } if op == "[]" || op == "->[]" => {
             array_receiver_fact(receiver, left, right, context)
         }
+        NodeKind::ArraySlice { target, indices } => {
+            array_receiver_fact(receiver, target, indices, context)
+        }
+        NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
+            hash_receiver_fact(receiver, target, keys, context)
+        }
         NodeKind::MethodCall { .. } => ReceiverFact::unknown(
             receiver,
             "receiver is itself a method call and requires completion-chain evidence",

@@ -216,6 +216,9 @@ impl NodeKind {
             | NodeKind::VariableWithAttributes { .. }
             | NodeKind::Assignment { .. }
             | NodeKind::Binary { .. }
+            | NodeKind::ArraySlice { .. }
+            | NodeKind::HashSlice { .. }
+            | NodeKind::KeyValueSlice { .. }
             | NodeKind::Ternary { .. }
             | NodeKind::Unary { .. }
             | NodeKind::Diamond
@@ -360,7 +363,10 @@ impl NodeKind {
                 recovery = false,
                 bp = true
             ),
-            NodeKind::Binary { .. } => flags!(
+            NodeKind::Binary { .. }
+            | NodeKind::ArraySlice { .. }
+            | NodeKind::HashSlice { .. }
+            | NodeKind::KeyValueSlice { .. } => flags!(
                 exec = true,
                 scope = false,
                 decl = false,

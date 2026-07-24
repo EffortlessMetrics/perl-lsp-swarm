@@ -786,6 +786,19 @@ impl TypeInferenceEngine {
             NodeKind::Binary { left, op, right } if op == "[]" || op == "->[]" => {
                 self.array_index_expr_fact(left, right, env)
             }
+            // Array slice (@arr[1,3,5]) returns a list of array elements
+            NodeKind::ArraySlice { .. } => {
+                TypeFact::new(PerlType::Array(Box::new(PerlType::Any)), Confidence::Low)
+            }
+            // Hash slice (@hash{@keys}) returns a list of hash values
+            NodeKind::HashSlice { .. } => {
+                TypeFact::new(PerlType::Array(Box::new(PerlType::Any)), Confidence::Low)
+            }
+            // Key-value slice (%hash{@keys}) returns an interleaved key-value list
+            NodeKind::KeyValueSlice { .. } => TypeFact::new(
+                PerlType::Hash { key: Box::new(PerlType::Any), value: Box::new(PerlType::Any) },
+                Confidence::Low,
+            ),
             _ => self
                 .infer_node(node, env)
                 .map_or_else(|_| TypeFact::unknown(), |ty| TypeFact::new(ty, Confidence::Low)),

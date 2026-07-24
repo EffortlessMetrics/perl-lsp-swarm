@@ -450,6 +450,18 @@ impl Node {
                 format!("({} {} {})", op_name, left.to_sexp(), right.to_sexp())
             }
 
+            NodeKind::ArraySlice { target, indices } => {
+                format!("(array_slice {} {})", target.to_sexp(), indices.to_sexp())
+            }
+
+            NodeKind::HashSlice { target, keys } => {
+                format!("(hash_slice {} {})", target.to_sexp(), keys.to_sexp())
+            }
+
+            NodeKind::KeyValueSlice { target, keys } => {
+                format!("(key_value_slice {} {})", target.to_sexp(), keys.to_sexp())
+            }
+
             NodeKind::Ternary { condition, then_expr, else_expr } => {
                 format!(
                     "(ternary {} {} {})",
@@ -1038,6 +1050,14 @@ impl Node {
                 f(left);
                 f(right);
             }
+            NodeKind::ArraySlice { target, indices } => {
+                f(target);
+                f(indices);
+            }
+            NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
+                f(target);
+                f(keys);
+            }
             NodeKind::Ternary { condition, then_expr, else_expr } => {
                 f(condition);
                 f(then_expr);
@@ -1309,6 +1329,14 @@ impl Node {
             NodeKind::Binary { left, right, .. } => {
                 emit!(FieldId::LEFT, left);
                 emit!(FieldId::RIGHT, right);
+            }
+            NodeKind::ArraySlice { target, indices } => {
+                emit!(FieldId::TARGET, target);
+                emit!(FieldId::ELEMENTS, indices);
+            }
+            NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
+                emit!(FieldId::TARGET, target);
+                emit!(FieldId::KEY, keys);
             }
             NodeKind::Ternary { condition, then_expr, else_expr } => {
                 emit!(FieldId::CONDITION, condition);
@@ -1880,6 +1908,39 @@ pub enum NodeKind {
         left: Box<Node>,
         /// Right operand
         right: Box<Node>,
+    },
+
+    /// Array slice: `@arr[1, 3, 5]` — returns a list of array elements.
+    ///
+    /// Distinct from scalar element access (`$arr[idx]`, which stays `Binary { op: "[]" }`)
+    /// in that the `@` sigil signals list context and multiple indices.
+    ArraySlice {
+        /// Target array expression (typically `Variable { sigil: "@", .. }` or a dereference)
+        target: Box<Node>,
+        /// Index expression (single index or `ArrayLiteral` for multiple indices)
+        indices: Box<Node>,
+    },
+
+    /// Hash slice: `@hash{qw(a b c)}` — returns a list of hash values.
+    ///
+    /// The `@` sigil means the result is a list of values for the given keys.
+    /// The underlying storage is the `%hash` variable (not `@hash`).
+    HashSlice {
+        /// Target hash expression (typically `Variable { sigil: "@", .. }` or a dereference)
+        target: Box<Node>,
+        /// Key expression
+        keys: Box<Node>,
+    },
+
+    /// Key-value slice: `%hash{qw(a b)}` — returns an interleaved list of key-value pairs.
+    ///
+    /// The `%` sigil means the result preserves key-value pairing, suitable for
+    /// constructing hash subsets or passing to functions expecting key-value lists.
+    KeyValueSlice {
+        /// Target hash expression (typically `Variable { sigil: "%", .. }` or a dereference)
+        target: Box<Node>,
+        /// Key expression
+        keys: Box<Node>,
     },
 
     /// Ternary conditional expression for Perl parsing workflow logic
@@ -2528,6 +2589,9 @@ impl NodeKind {
             NodeKind::VariableWithAttributes { .. } => "VariableWithAttributes",
             NodeKind::Assignment { .. } => "Assignment",
             NodeKind::Binary { .. } => "Binary",
+            NodeKind::ArraySlice { .. } => "ArraySlice",
+            NodeKind::HashSlice { .. } => "HashSlice",
+            NodeKind::KeyValueSlice { .. } => "KeyValueSlice",
             NodeKind::Ternary { .. } => "Ternary",
             NodeKind::Unary { .. } => "Unary",
             NodeKind::Diamond => "Diamond",
@@ -2619,6 +2683,9 @@ impl NodeKind {
             | NodeKind::FunctionCall { .. }
             | NodeKind::Match { .. }
             | NodeKind::PhaseBlock { .. } => None,
+            NodeKind::ArraySlice { .. } => Some("array_slice"),
+            NodeKind::HashSlice { .. } => Some("hash_slice"),
+            NodeKind::KeyValueSlice { .. } => Some("key_value_slice"),
             NodeKind::NestedVariableList { .. } => Some("nested_variable_list"),
             NodeKind::Variable { .. } => Some("variable"),
             NodeKind::VariableWithAttributes { .. } => Some("variable_with_attributes"),
@@ -2735,7 +2802,10 @@ impl NodeKind {
             NodeKind::PhaseBlock { phase, .. } => phase.clone(),
             // Every variant with a runtime-derived grammar name is covered
             // above; the exhaustive match is the drift guard for this table.
-            NodeKind::NestedVariableList { .. }
+            NodeKind::ArraySlice { .. }
+            | NodeKind::HashSlice { .. }
+            | NodeKind::KeyValueSlice { .. }
+            | NodeKind::NestedVariableList { .. }
             | NodeKind::Variable { .. }
             | NodeKind::VariableWithAttributes { .. }
             | NodeKind::Ternary { .. }
@@ -3076,6 +3146,15 @@ mod tests {
                 op: String::new(),
                 left: Box::new(dummy_node()),
                 right: Box::new(dummy_node()),
+            },
+            NodeKind::ArraySlice {
+                target: Box::new(dummy_node()),
+                indices: Box::new(dummy_node()),
+            },
+            NodeKind::HashSlice { target: Box::new(dummy_node()), keys: Box::new(dummy_node()) },
+            NodeKind::KeyValueSlice {
+                target: Box::new(dummy_node()),
+                keys: Box::new(dummy_node()),
             },
             NodeKind::Ternary {
                 condition: Box::new(dummy_node()),

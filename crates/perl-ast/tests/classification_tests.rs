@@ -73,7 +73,7 @@ fn recovery_implies_not_safe_for_breakpoint() {
 // ────────────────────────────────────────────────────────
 
 /// The exact set of variant names that must be safe_for_breakpoint=TRUE
-/// per the plan-reviewer corrected table (41 variants after ratification).
+/// per the plan-reviewer corrected table (44 variants after #1713 adds ArraySlice/HashSlice/KeyValueSlice).
 /// Use and No removed (compile-time pragma/unimport; not runtime-breakable).
 const SAFE_FOR_BREAKPOINT_TRUE: &[&str] = &[
     "ExpressionStatement",
@@ -81,6 +81,9 @@ const SAFE_FOR_BREAKPOINT_TRUE: &[&str] = &[
     "VariableListDeclaration",
     "Assignment",
     "Binary",
+    "ArraySlice",
+    "HashSlice",
+    "KeyValueSlice",
     "Ternary",
     "Unary",
     "Diamond",
@@ -185,9 +188,9 @@ fn safe_for_breakpoint_exact_false_set() {
 }
 
 #[test]
-fn safe_for_breakpoint_covers_all_70_variants() {
+fn safe_for_breakpoint_covers_all_73_variants() {
     // Every variant must appear in exactly one of the two lists.
-    // After ratification: 41 in TRUE, 29 in FALSE = 70 total variants (per acceptance.md)
+    // After #1713: 44 in TRUE, 29 in FALSE = 73 total variants
     for kind in all_variants() {
         let name = kind.kind_name();
         let in_true = SAFE_FOR_BREAKPOINT_TRUE.contains(&name);

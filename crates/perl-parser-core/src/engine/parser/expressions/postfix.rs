@@ -61,7 +61,7 @@ impl<'a> Parser<'a> {
             if self.peek_kind() == Some(TokenKind::LeftBrace) {
                 if let NodeKind::Variable { sigil, .. } = &expr.kind {
                     if sigil == "@" || sigil == "%" {
-                        // Hash/array slice: @hash{...} or %hash{...}
+                        let is_at = sigil == "@";
                         self.tokens.next()?; // consume {
                         let key = self.parse_hash_subscript_key()?;
                         self.expect_closing_delimiter(TokenKind::RightBrace)?;
@@ -70,14 +70,12 @@ impl<'a> Parser<'a> {
                         let end = self.previous_position();
 
                         record_postfix_layer()?;
-                        expr = Node::new(
-                            NodeKind::Binary {
-                                op: "{}".to_string(),
-                                left: Box::new(expr),
-                                right: Box::new(key),
-                            },
-                            SourceLocation { start, end },
-                        );
+                        let kind = if is_at {
+                            NodeKind::HashSlice { target: Box::new(expr), keys: Box::new(key) }
+                        } else {
+                            NodeKind::KeyValueSlice { target: Box::new(expr), keys: Box::new(key) }
+                        };
+                        expr = Node::new(kind, SourceLocation { start, end });
                         continue;
                     }
                 }
@@ -426,6 +424,11 @@ impl<'a> Parser<'a> {
                             continue;
                         }
                     }
+                    // Detect array slices: @arr[...] or @{$aref}[...]
+                    let is_array_slice =
+                        matches!(&expr.kind, NodeKind::Variable { sigil, .. } if sigil == "@")
+                            || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "@{}");
+
                     // Array indexing - can be a single index or slice with multiple indices
                     self.tokens.next()?; // consume [
 
@@ -470,16 +473,22 @@ impl<'a> Parser<'a> {
                     let start = expr.location.start;
                     let end = self.previous_position();
 
-                    // Represent as binary subscript operation
                     record_postfix_layer()?;
-                    expr = Node::new(
-                        NodeKind::Binary {
-                            op: "[]".to_string(),
-                            left: Box::new(expr),
-                            right: Box::new(index),
-                        },
-                        SourceLocation { start, end },
-                    );
+                    if is_array_slice {
+                        expr = Node::new(
+                            NodeKind::ArraySlice { target: Box::new(expr), indices: Box::new(index) },
+                            SourceLocation { start, end },
+                        );
+                    } else {
+                        expr = Node::new(
+                            NodeKind::Binary {
+                                op: "[]".to_string(),
+                                left: Box::new(expr),
+                                right: Box::new(index),
+                            },
+                            SourceLocation { start, end },
+                        );
+                    }
                 }
 
                 Some(TokenKind::LeftBrace) => {
