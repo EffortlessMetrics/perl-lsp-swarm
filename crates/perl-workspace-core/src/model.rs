@@ -217,6 +217,9 @@ impl ProjectModel {
 
         let replaced_file_id = self.file_by_path(&relative_path).map(|file| file.file_id.clone());
         let existed = replaced_file_id.is_some();
+        let replaced_packages = replaced_file_id
+            .as_ref()
+            .map(|previous_file_id| self.package_names_for_file(previous_file_id));
         if let Some(previous_file_id) = replaced_file_id {
             self.remove_owned_facts(&previous_file_id, &relative_path);
         }
@@ -247,7 +250,11 @@ impl ProjectModel {
 
         let mut delta = ProjectDelta::empty();
         if existed {
-            delta.changed_files.push(file_id);
+            delta.changed_files.push(file_id.clone());
+            if let Some(package_names) = replaced_packages {
+                delta.invalidated_files =
+                    self.dependents_for_removed_packages(&package_names, &file_id);
+            }
         } else {
             delta.added_files.push(file_id);
         }
@@ -275,6 +282,7 @@ impl ProjectModel {
         if self.file(file_id).is_none() {
             return Ok(delta);
         }
+        let removed_packages = self.package_names_for_file(file_id);
         let removed_path = relative_path;
         if let Some(path) = &removed_path {
             self.remove_owned_facts(file_id, path);
@@ -283,9 +291,7 @@ impl ProjectModel {
             self.shard_states.remove(path);
         }
         delta.removed_files.push(file_id.clone());
-        if let Some(path) = removed_path {
-            delta.invalidated_files = self.dependents_for_target(&path, file_id);
-        }
+        delta.invalidated_files = self.dependents_for_removed_packages(&removed_packages, file_id);
         self.sort_for_determinism();
         Ok(delta)
     }
@@ -315,10 +321,25 @@ impl ProjectModel {
         }
     }
 
-    fn dependents_for_target(&self, target: &str, removed: &FileId) -> Vec<FileId> {
+    fn package_names_for_file(&self, file_id: &FileId) -> BTreeSet<String> {
+        self.packages
+            .iter()
+            .filter(|package| &package.file_id == file_id)
+            .map(|package| package.name.clone())
+            .collect()
+    }
+
+    fn dependents_for_removed_packages(
+        &self,
+        removed_packages: &BTreeSet<String>,
+        excluded: &FileId,
+    ) -> Vec<FileId> {
+        if removed_packages.is_empty() {
+            return Vec::new();
+        }
         let mut dependents = BTreeSet::new();
         for relation in &self.relations {
-            if relation.target == target && &relation.file_id != removed {
+            if &relation.file_id != excluded && removed_packages.contains(&relation.target) {
                 dependents.insert(relation.file_id.clone());
             }
         }

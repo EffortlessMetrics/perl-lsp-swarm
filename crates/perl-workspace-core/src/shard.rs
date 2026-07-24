@@ -285,7 +285,7 @@ pub struct ProjectDelta {
     pub changed_files: Vec<FileId>,
     /// Files removed from the model.
     pub removed_files: Vec<FileId>,
-    /// Files whose declared relations depend on a changed or removed file path.
+    /// Files whose declared relations target a package removed or replaced in this delta.
     pub invalidated_files: Vec<FileId>,
 }
 

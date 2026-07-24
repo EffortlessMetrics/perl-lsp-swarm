@@ -2,8 +2,9 @@ use std::error::Error;
 use std::io;
 
 use perl_workspace_core::{
-    CompileEffectFacts, Digest, FactClasses, FileId, FileRecord, FileRole, ModelLimitation,
-    ParseStatus, ProjectFactShard, ProjectModel, ShardError,
+    CompileEffectFacts, Confidence, Digest, FactClasses, FileId, FileRecord, FileRole,
+    ModelLimitation, PackageId, PackageRecord, ParseStatus, ProjectFactShard, ProjectModel,
+    RelationFact, RelationKind, ShardError, SourceRange,
 };
 
 fn require(condition: bool, message: &str) -> Result<(), Box<dyn Error>> {
@@ -26,6 +27,26 @@ fn shard(path: &str, source: &str, generation: u64) -> ProjectFactShard {
         ProjectFactShard::empty(file(path, source), generation, "test-builder", FactClasses::all());
     shard.source_len_bytes = u32::try_from(source.len()).unwrap_or(u32::MAX);
     shard
+}
+
+fn package_record(file_id: &FileId, name: &str) -> PackageRecord {
+    PackageRecord {
+        package_id: PackageId::new(file_id, name, 0),
+        name: name.to_string(),
+        file_id: file_id.clone(),
+        declaration_range: SourceRange {
+            start_byte: 0,
+            end_byte: 1,
+            start_line: 0,
+            start_column_utf8: 0,
+            end_line: 0,
+            end_column_utf8: 0,
+        },
+        version: None,
+        parents: Vec::new(),
+        roles: Vec::new(),
+        confidence: Confidence::High,
+    }
 }
 
 #[test]
@@ -131,6 +152,54 @@ fn fingerprint_and_snapshot_identity_are_deterministic() -> Result<(), Box<dyn E
         model_a.snapshot_identity()? == model_b.snapshot_identity()?,
         "equivalent models produced different snapshot identities",
     )
+}
+
+#[test]
+fn remove_and_replace_invalidate_relation_dependents_by_package_name() -> Result<(), Box<dyn Error>>
+{
+    let mut model = ProjectModel::empty(".", FactClasses::all());
+
+    let mut base = shard("lib/Base.pm", "package Base;\n", 1);
+    let base_id = base.file.file_id.clone();
+    base.packages.push(package_record(&base_id, "Base"));
+    base.populated |= FactClasses::SYMBOLS;
+    model.insert_or_replace(base)?;
+
+    let mut consumer = shard("lib/Consumer.pm", "package Consumer;\nuse Base;\n", 1);
+    let consumer_id = consumer.file.file_id.clone();
+    consumer.packages.push(package_record(&consumer_id, "Consumer"));
+    consumer.relations.push(RelationFact {
+        kind: RelationKind::Uses,
+        source: "lib/Consumer.pm".to_string(),
+        target: "Base".to_string(),
+        file_id: consumer_id.clone(),
+        confidence: Confidence::High,
+    });
+    consumer.populated |= FactClasses::SYMBOLS | FactClasses::RELATIONS;
+    model.insert_or_replace(consumer)?;
+
+    let removed = model.remove_file(&base_id, 1)?;
+    require(
+        removed.invalidated_files == vec![consumer_id.clone()],
+        "removal did not invalidate files that use a removed package",
+    )?;
+
+    let mut base_v2 = shard("lib/Base.pm", "package Base;\nsub run {}\n", 2);
+    let base_v2_id = base_v2.file.file_id.clone();
+    base_v2.packages.push(package_record(&base_v2_id, "Base"));
+    base_v2.populated |= FactClasses::SYMBOLS;
+    model.insert_or_replace(base_v2)?;
+
+    let mut base_v3 = shard("lib/Base.pm", "package Base;\nsub run {}\n", 3);
+    let base_v3_id = base_v3.file.file_id.clone();
+    base_v3.packages.push(package_record(&base_v3_id, "Base"));
+    base_v3.populated |= FactClasses::SYMBOLS;
+    let replaced = model.insert_or_replace(base_v3)?;
+    require(
+        replaced.invalidated_files == vec![consumer_id],
+        "replacement did not invalidate files that use a replaced package",
+    )?;
+    Ok(())
 }
 
 #[test]
