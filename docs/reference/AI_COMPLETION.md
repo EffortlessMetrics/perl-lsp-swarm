@@ -17,10 +17,13 @@ Code settings UI.
 | `perl-lsp.aiCompletion.enabled` | boolean | `false` | Enable AI-powered inline completions. |
 | `perl-lsp.aiCompletion.streaming.enabled` | boolean | `true` | Enable progressive streaming (ghost text updates as tokens arrive). Requires `aiCompletion.enabled`. |
 
-All other AI parameters (endpoint, model, timeout, rate limits) are
-configured via the LSP server config or the project config file, not VS Code
-settings. The API key is always read from an environment variable -- it is
-never stored in settings.
+Model, timeout, and rate limits are configured via the LSP server config or the
+project config file, not VS Code settings.
+
+`endpoint` and the API-key fields are configured **only** via the LSP server
+config — they are not accepted from `.perl-lsp.toml` (see "Destination and
+credentials" below, and issue #4955). The API key itself is always read from an
+environment variable; it is never stored in settings.
 
 ## Server Configuration Fields
 
@@ -59,10 +62,12 @@ model = "gpt-4o-mini"
 Only the fields you set will override defaults. Omitted fields retain their
 built-in default values.
 
-### Destination and credentials are user-level only
+### Destination and credentials cannot come from `.perl-lsp.toml`
 
 `endpoint`, `api_key_env`, `api_key_header`, and `api_key_prefix` **cannot be set
-from `.perl-lsp.toml`**. They are read only from your own editor/user settings.
+from `.perl-lsp.toml`**. They are read only from the LSP client/server
+configuration channel — `initializationOptions` or `didChangeConfiguration`, as
+documented under "Server Configuration Fields" above.
 
 `.perl-lsp.toml` is checked into a repository, so honouring those fields let a
 cloned project choose both which environment variable was read as a credential
@@ -72,7 +77,17 @@ are not honoured from workspace settings (issue #3729). See issue #4955.
 
 **These keys are silently ignored, not rejected**, because the TOML deserializer
 drops unknown fields. If you set `endpoint` in `.perl-lsp.toml` and requests keep
-going to the default destination, that is why — move it to your user settings.
+going to the default destination, that is why — move it to your client settings.
+
+> **The client-settings channel is not itself fully hardened yet.** Do not read
+> the above as "these values are safe because they come from the user". In
+> VS Code, `perl-lsp.aiCompletion.enabled` is declared `scope: resource`, which
+> means a workspace or folder can set it, and the extension forwards workspace
+> and folder overrides. So a repository still cannot choose the destination or
+> the credential, but it **can still activate AI completion** against whatever
+> endpoint you configured, sending source code without you opting in for that
+> workspace. Tracked as issue #4997 and is a 0.18.0 blocker; issue #4998 covers
+> the same provenance gap for include paths.
 
 ## Environment Variables
 
