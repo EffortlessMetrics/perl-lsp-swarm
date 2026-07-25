@@ -1650,8 +1650,14 @@ pub enum RejectedIncludePathReason {
     /// #3729). Use editor/user settings (`workspace.includePaths`) for
     /// trusted external lib roots instead.
     Absolute,
-    /// Relative entry escapes the workspace root after normalization
-    /// (traversal, or a symlink resolving outside the workspace).
+    /// Relative entry was rejected by `validate_workspace_path`.
+    ///
+    /// Covers every non-absolute rejection, not only containment failures:
+    /// traversal, a symlink resolving outside the workspace, and also
+    /// `WorkspacePathError::InvalidPathCharacters` (null or control bytes),
+    /// which is checked before any containment logic runs. The variant name
+    /// describes the common case; the wrapped string carries the specific
+    /// reason.
     EscapesWorkspace(String),
 }
 
@@ -3213,13 +3219,17 @@ profile = "recommended"
         let temp = tempfile::tempdir()?;
         let mut workspace = WorkspaceConfig::default();
         let mut project = ProjectConfig::default();
-        project.perl.include_paths = vec!["/etc".to_string(), "relative/lib".to_string()];
+        // "/etc" is not absolute on Windows, so the assertion would pass for
+        // the wrong reason there (rejected as a bad relative path, not as an
+        // absolute one). Pick a genuinely absolute path per platform.
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+        project.perl.include_paths = vec![absolute.to_string(), "relative/lib".to_string()];
 
         let rejected = project.apply_to_workspace_config(&mut workspace, temp.path());
 
         assert_eq!(workspace.include_paths, vec!["relative/lib".to_string()]);
         assert_eq!(rejected.len(), 1);
-        assert_eq!(rejected[0].entry, "/etc");
+        assert_eq!(rejected[0].entry, absolute);
         assert_eq!(rejected[0].reason, RejectedIncludePathReason::Absolute);
         Ok(())
     }
@@ -3280,16 +3290,24 @@ profile = "recommended"
     }
 
     #[test]
-    fn apply_to_workspace_config_fails_closed_when_workspace_root_missing() {
-        let missing_root = Path::new("/nonexistent/perl-lsp-swarm-4957-workspace-root");
+    fn apply_to_workspace_config_fails_closed_when_workspace_root_missing() -> TestResult {
+        let missing_root = if cfg!(windows) {
+            Path::new("C:\\nonexistent\\perl-lsp-swarm-4957-workspace-root")
+        } else {
+            Path::new("/nonexistent/perl-lsp-swarm-4957-workspace-root")
+        };
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
         let mut workspace = WorkspaceConfig::default();
         let mut project = ProjectConfig::default();
-        project.perl.include_paths = vec!["relative/lib".to_string(), "/etc".to_string()];
+        project.perl.include_paths = vec!["relative/lib".to_string(), absolute.to_string()];
 
         let rejected = project.apply_to_workspace_config(&mut workspace, missing_root);
 
+        // Fail closed: an unresolvable workspace root rejects everything,
+        // including the otherwise-safe relative entry.
         assert!(workspace.include_paths.is_empty());
         assert_eq!(rejected.len(), 2);
+        Ok(())
     }
 
     #[test]
