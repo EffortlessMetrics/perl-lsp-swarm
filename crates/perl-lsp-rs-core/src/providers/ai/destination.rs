@@ -132,7 +132,7 @@ fn default_resolver(host: &str, port: u16) -> Result<Vec<IpAddr>, DestinationErr
     let authority = format!("{host}:{port}");
     let addrs: Vec<IpAddr> = authority
         .to_socket_addrs()
-        .map_err(|e| DestinationError::UnresolvedHost)?
+        .map_err(|_e| DestinationError::UnresolvedHost)?
         .map(|addr| addr.ip())
         .collect();
     if addrs.is_empty() {
