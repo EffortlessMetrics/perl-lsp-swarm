@@ -279,6 +279,35 @@ impl LspServer {
         self.notify("$/progress", params)
     }
 
+    /// Begin a per-request workDoneProgress bar.
+    ///
+    /// Returns a token string if the client supports progress, or `None` if it
+    /// doesn't. The caller is responsible for calling `end_request_progress`
+    /// when the work is done.
+    pub fn try_begin_request_progress(&self, prefix: &str, title: &str) -> Option<String> {
+        let id = self.next_request_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let token = format!("{prefix}-{id}");
+        if self.create_work_done_progress(&token).is_ok() {
+            if self.report_progress_begin(&token, title, None).is_ok() {
+                Some(token)
+            } else {
+                let _ = self.report_progress_end(&token, None);
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// End a per-request workDoneProgress bar started by `try_begin_request_progress`.
+    ///
+    /// Safe to call with `None` (no-op).
+    pub fn end_request_progress(&self, token: &Option<String>) {
+        if let Some(tok) = token {
+            let _ = self.report_progress_end(tok, None);
+        }
+    }
+
     /// Send telemetry event notification
     ///
     /// Sends a `telemetry/event` notification with arbitrary data.
@@ -334,6 +363,24 @@ impl LspServer {
     /// infrastructure which auto-generates request IDs.
     fn send_request_internal(&self, method: &str, params: Value) -> io::Result<()> {
         self.send_request(method, params).map(|_| ())
+    }
+}
+
+/// RAII guard that ends per-request workDoneProgress on every exit path.
+pub(crate) struct RequestProgressGuard<'a> {
+    server: &'a LspServer,
+    token: Option<String>,
+}
+
+impl<'a> RequestProgressGuard<'a> {
+    pub fn new(server: &'a LspServer, prefix: &str, title: &str) -> Self {
+        Self { server, token: server.try_begin_request_progress(prefix, title) }
+    }
+}
+
+impl Drop for RequestProgressGuard<'_> {
+    fn drop(&mut self) {
+        self.server.end_request_progress(&self.token);
     }
 }
 

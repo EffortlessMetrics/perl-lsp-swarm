@@ -15,6 +15,7 @@ use crate::runtime::readiness::{
 };
 #[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
+use crate::runtime::window::RequestProgressGuard;
 use crate::runtime::workspace_progress::{
     send_index_ready_notification, send_progress_begin, send_progress_create, send_progress_end,
     send_progress_report,
@@ -353,6 +354,9 @@ impl LspServer {
         if !self.advertised_features.lock().workspace_symbol {
             return Err(crate::protocol::method_not_advertised());
         }
+
+        let _progress =
+            RequestProgressGuard::new(self, "workspace-symbol", "Searching workspace symbols");
 
         let query = params
             .as_ref()
