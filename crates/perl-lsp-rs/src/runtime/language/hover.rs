@@ -86,9 +86,7 @@ impl LspServer {
                             .as_str()
                             .to_string()
                     });
-                    if let Ok(mut trace_kind) = self.hover_trace_source_region_kind.lock() {
-                        *trace_kind = source_region_kind.clone();
-                    }
+                    *self.hover_trace_source_region_kind.lock() = source_region_kind.clone();
                     let live_compiler_context = Self::live_hover_compiler_context(
                         uri,
                         text,
@@ -140,9 +138,7 @@ impl LspServer {
                     }
                 }
                 None => {
-                    if let Ok(mut trace_kind) = self.hover_trace_source_region_kind.lock() {
-                        *trace_kind = None;
-                    }
+                    *self.hover_trace_source_region_kind.lock() = None;
                     (HoverExtracted::None, None)
                 }
             };

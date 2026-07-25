@@ -1,6 +1,6 @@
 use super::*;
 use perl_lsp_rs_core::providers::navigation::hover_shadow::{
-    HoverCutoverOutcome, HoverCutoverResult, hover_cutover,
+    hover_cutover, HoverCutoverOutcome, HoverCutoverResult,
 };
 use perl_semantic_facts::ProviderFactSourceKind;
 
@@ -9,7 +9,8 @@ pub(super) struct LiveHoverCompilerContext {
     uri: String,
     symbol: String,
     byte_offset: u32,
-    /// Trace-only metadata from [`perl_parser_core::SourceRegionIndex`].
+    /// Trace-only metadata from [`perl_parser_core::SourceRegionIndex`]; routing in #4967.
+    #[expect(dead_code, reason = "policy:5003-pr1: trace substrate field for upcoming hover routing")]
     source_region_kind: Option<String>,
 }
 
@@ -26,7 +27,12 @@ impl LspServer {
         }
 
         let byte_offset = u32::try_from(offset).ok()?;
-        Some(LiveHoverCompilerContext { uri: uri.to_string(), symbol, byte_offset, source_region_kind })
+        Some(LiveHoverCompilerContext {
+            uri: uri.to_string(),
+            symbol,
+            byte_offset,
+            source_region_kind,
+        })
     }
 
     pub(super) fn try_live_compiler_hover(
@@ -124,8 +130,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preserves_richer_moo_accessor_hover_over_generated_compiler_card()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn preserves_richer_moo_accessor_hover_over_generated_compiler_card(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let legacy = "**Moo/Moose Attribute Accessor**\n\n**Attribute**: `email`\n**Type**: `Str`";
         let compiler =
             "**Symbol** `email` (generated)\n\nSource: framework adapter / framework synthesis";
@@ -138,8 +144,8 @@ mod tests {
     }
 
     #[test]
-    fn uses_compiler_hover_when_it_keeps_accessor_attribution()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn uses_compiler_hover_when_it_keeps_accessor_attribution(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let legacy = "**Moo/Moose Attribute Accessor**\n\n**Attribute**: `email`";
         let compiler = "**Moo/Moose Attribute Accessor**\n\n**Attribute**: `email`";
 

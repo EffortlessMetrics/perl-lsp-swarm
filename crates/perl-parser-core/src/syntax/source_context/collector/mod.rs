@@ -54,7 +54,9 @@ fn collect_lexer_literal_regions(source: &str) -> Vec<SourceRegion> {
 
 fn coalesce_regions(mut regions: Vec<SourceRegion>, source_len: usize) -> Vec<SourceRegion> {
     regions.retain(|region| region.start < region.end && region.end <= source_len);
-    regions.sort_by_key(|region| (region.start, region_precedence(region.kind), usize::MAX - region.end));
+    regions.sort_by_key(|region| {
+        (region.start, region_precedence(region.kind), usize::MAX - region.end)
+    });
     let mut merged: Vec<SourceRegion> = Vec::new();
     for region in regions {
         if let Some(last) = merged.last_mut() {
@@ -99,7 +101,9 @@ mod tests {
         let regions = collect_regions(source);
         let body_offset = source.find("body").expect("body");
         assert!(
-            regions.iter().any(|r| r.kind == SourceRegionKind::Heredoc && r.contains_offset(body_offset)),
+            regions
+                .iter()
+                .any(|r| r.kind == SourceRegionKind::Heredoc && r.contains_offset(body_offset)),
             "expected heredoc region covering body, got: {regions:?}"
         );
     }

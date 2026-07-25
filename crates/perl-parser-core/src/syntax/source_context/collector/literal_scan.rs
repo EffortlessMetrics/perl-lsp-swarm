@@ -125,20 +125,22 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
         }
         '\\' => {
             let after = &rest[1..];
-            let end = after
-                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                .unwrap_or(after.len());
+            let end =
+                after.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(after.len());
             after[..end].to_string()
         }
         _ if first.is_ascii_alphanumeric() || first == '_' => {
-            let end = rest
-                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                .unwrap_or(rest.len());
+            let end =
+                rest.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(rest.len());
             rest[..end].to_string()
         }
         _ => return None,
     };
-    if label.is_empty() { None } else { Some((label, allow_indented)) }
+    if label.is_empty() {
+        None
+    } else {
+        Some((label, allow_indented))
+    }
 }
 
 fn push_region(regions: &mut Vec<SourceRegion>, start: usize, end: usize, kind: SourceRegionKind) {
@@ -225,7 +227,7 @@ fn is_pod_end_marker(line: &str) -> bool {
         .is_some_and(|rest| rest.chars().next().is_none_or(char::is_whitespace))
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct LiteralScanState {
     in_single_quote: bool,
     in_double_quote: bool,
@@ -233,19 +235,6 @@ struct LiteralScanState {
     literal: Option<ActiveLiteral>,
     pending_literal_body_start: Option<usize>,
     escaped: bool,
-}
-
-impl Default for LiteralScanState {
-    fn default() -> Self {
-        Self {
-            in_single_quote: false,
-            in_double_quote: false,
-            in_backtick: false,
-            literal: None,
-            pending_literal_body_start: None,
-            escaped: false,
-        }
-    }
 }
 
 impl LiteralScanState {
@@ -369,6 +358,7 @@ struct ActiveLiteral {
     sections_remaining: usize,
     depth: usize,
     awaiting_section_opener: bool,
+    #[expect(dead_code, reason = "policy:5003-pr1: reserved for regex/string kind dispatch")]
     kind: QuoteLikeLiteralKind,
 }
 

@@ -212,10 +212,7 @@ impl std::fmt::Debug for ParsedSnapshot {
             .field("source", &self.source)
             .field("semantic_analyzer", &cell_state(self.semantic_analyzer.get().is_some()))
             .field("type_environment", &cell_state(self.type_environment.get().is_some()))
-            .field(
-                "source_region_index",
-                &cell_state(self.source_region_index.get().is_some()),
-            )
+            .field("source_region_index", &cell_state(self.source_region_index.get().is_some()))
             .finish()
     }
 }
@@ -1286,8 +1283,8 @@ mod tests {
     /// `analyzer_and_type_env_construction_happens_exactly_once`.
     #[test]
     fn parallel_readers_initialize_oncelock_exactly_once() {
-        use std::sync::Barrier;
         use std::sync::atomic::AtomicUsize;
+        use std::sync::Barrier;
 
         let cell: Arc<OnceLock<Arc<usize>>> = Arc::new(OnceLock::new());
         let builds = Arc::new(AtomicUsize::new(0));

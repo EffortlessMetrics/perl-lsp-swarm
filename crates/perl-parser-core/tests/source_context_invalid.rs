@@ -7,10 +7,7 @@ fn unclosed_double_quote_is_ambiguous_or_non_code() -> Result<(), Box<dyn std::e
     let tail_offset = source.len().saturating_sub(1);
     let kind = index.kind_at_offset(tail_offset);
     assert!(
-        matches!(
-            kind,
-            SourceRegionKind::StringLiteral | SourceRegionKind::RecoveryAmbiguous
-        ),
+        matches!(kind, SourceRegionKind::StringLiteral | SourceRegionKind::RecoveryAmbiguous),
         "unclosed literal should be non-code or recovery, got {kind:?}"
     );
     Ok(())
