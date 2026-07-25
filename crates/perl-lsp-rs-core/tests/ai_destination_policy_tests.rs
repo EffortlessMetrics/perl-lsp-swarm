@@ -8,7 +8,7 @@ use perl_lsp_rs_core::providers::inline_completion::{
     BackendRequest, InlineCompletionBackend, PreparedInlineCompletionContext, StreamChunk,
     StreamControl,
 };
-use perl_tdd_support::must;
+use perl_tdd_support::must_some;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::sync::Arc;
@@ -72,8 +72,10 @@ fn rejects_private_and_metadata_targets_via_injected_resolver() {
         ("https://metadata.example/v1", IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))),
         ("https://[fd00::1]/v1", IpAddr::V6("fd00::1".parse().expect("valid ipv6 literal"))),
     ] {
-        let err =
-            validate_endpoint_with_resolver(url, false, &|_host, _port| Ok(vec![ip])).unwrap_err();
+        let err = validate_endpoint_with_resolver(url, false, &move |_host, _port| {
+            Ok(vec![ip])
+        })
+        .unwrap_err();
         assert!(
             err.to_string().contains("disallowed"),
             "expected disallowed address for {url}, got {err}"
@@ -132,7 +134,7 @@ fn redirect_response_is_not_followed_and_does_not_reach_secondary_host(
     let secondary_hit = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let secondary_hit_worker = Arc::clone(&secondary_hit);
 
-    let redirect_worker = thread::spawn(move || -> Result<(), Box<dyn std::error::Error>> {
+    let redirect_worker = thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send>> {
         let (mut stream, _) = redirect_listener.accept()?;
         let mut request = Vec::new();
         let mut buffer = [0_u8; 1024];
@@ -159,12 +161,13 @@ fn redirect_response_is_not_followed_and_does_not_reach_secondary_host(
         Ok(())
     });
 
-    let secondary_worker = thread::spawn(move || -> Result<(), Box<dyn std::error::Error>> {
-        if let Ok((_, _)) = secondary_listener.accept() {
-            secondary_hit_worker.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-        Ok(())
-    });
+    let secondary_worker =
+        thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send>> {
+            if let Ok((_, _)) = secondary_listener.accept() {
+                secondary_hit_worker.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(())
+        });
 
     let endpoint = format!("http://127.0.0.1:{redirect_port}/v1/chat/completions");
     let provider = OpenAiProvider::new(
@@ -210,7 +213,7 @@ fn stream_rejects_disallowed_endpoint_before_network_io() {
         Arc::new(RateLimiter::new(10.0, 10)),
     );
 
-    let err = must(
+    let err = must_some(
         provider
             .stream(&backend_request(), &mut |_chunk: StreamChunk| StreamControl::Continue)
             .err(),
@@ -238,7 +241,7 @@ fn transport_errors_do_not_echo_api_key() {
         Arc::new(RateLimiter::new(10.0, 10)),
     );
 
-    let err = must(
+    let err = must_some(
         provider
             .stream(&backend_request(), &mut |_chunk: StreamChunk| StreamControl::Continue)
             .err(),
