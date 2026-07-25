@@ -14,6 +14,7 @@ use std::path::Path;
 use lsp_types::Position;
 use perl_module::reference::extract_module_reference as extract_module_reference_at_cursor;
 use perl_module::reference::extract_module_reference_extended as extract_module_reference_extended_at_cursor;
+use perl_position_tracking::offset_to_utf16_line_col;
 
 // Re-export engine utilities
 pub use perl_parser::util::{code_slice, find_data_marker_byte_lexed};
@@ -157,15 +158,7 @@ fn decode_utf16_lossy(bytes: &[u8], little_endian: bool) -> Option<String> {
 /// UTF-8 byte offsets. This function converts a byte position within a line
 /// to the corresponding UTF-16 column position.
 pub fn byte_to_utf16_col(line_text: &str, byte_pos: usize) -> usize {
-    let mut units = 0;
-    for (i, ch) in line_text.char_indices() {
-        if i >= byte_pos {
-            break;
-        }
-        // UTF-16 encoding: chars >= U+10000 use 2 units
-        units += if ch as u32 >= 0x10000 { 2 } else { 1 };
-    }
-    units
+    offset_to_utf16_line_col(line_text, byte_pos).1 as usize
 }
 
 /// Convert a byte offset to a zero-based `(line, column)` LSP position.

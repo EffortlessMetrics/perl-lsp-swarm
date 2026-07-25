@@ -5,6 +5,7 @@
 
 use perl_module::import::{ModuleImportKind, RequireForm, parse_module_import_head};
 use perl_module::path::module_name_to_path;
+use perl_position_tracking::offset_to_utf16_line_col;
 use serde_json::{Value, json};
 use url::Url;
 
@@ -725,9 +726,7 @@ fn current_package_name(text: &str) -> Option<String> {
 }
 
 fn byte_to_utf16_col(line: &str, byte_offset: usize) -> u32 {
-    line.get(..byte_offset)
-        .map(|prefix| prefix.encode_utf16().count() as u32)
-        .unwrap_or(byte_offset as u32)
+    offset_to_utf16_line_col(line, byte_offset).1
 }
 
 fn is_pragma(pkg: &str) -> bool {
