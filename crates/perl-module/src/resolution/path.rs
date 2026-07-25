@@ -15,6 +15,21 @@ use perl_parser_core::path_security::validate_workspace_path;
 ///    - Relative paths are resolved under `root` and validated against traversal.
 ///    - Absolute paths are treated as literal external roots.
 /// 2. Fallback to `root/lib/<module>.pm`.
+///
+/// # Security
+///
+/// `include_paths` entries are treated as literal, unchecked filesystem roots
+/// when absolute — this function does **not** re-validate absolute entries
+/// against the workspace boundary, by design, so that legitimate external lib
+/// roots (e.g. `/opt/company-perl-libs`) configured through a trusted channel
+/// keep working. Callers MUST NOT pass untrusted (e.g. workspace-file-sourced,
+/// `.perl-lsp.toml`) absolute entries into `include_paths` — validate/reject
+/// those before merging into the caller's `include_paths`. Absolute entries
+/// reaching this function are assumed to originate from a trusted source (LSP
+/// client settings), never from `.perl-lsp.toml`. See
+/// `perl_lsp_rs_core::config::ProjectConfig::apply_to_workspace_config`
+/// (issue #4957, precedent: issue #3729) for where that untrusted-channel
+/// sanitization happens.
 #[must_use]
 pub fn resolve_module_path(
     root: &Path,

@@ -1293,7 +1293,15 @@ impl LspServer {
                                 effective_config.update_from_value(init_opts);
                             }
                             if let Some(project_config) = &folder.project_config {
-                                project_config.apply_to_workspace_config(&mut effective_config);
+                                // Re-applying an already-loaded, already-warned-about
+                                // project_config; discard the rejection list rather than
+                                // re-warning on every reconfiguration.
+                                if let Some(folder_path) = folder.path.as_deref() {
+                                    let _ = project_config.apply_to_workspace_config(
+                                        &mut effective_config,
+                                        folder_path,
+                                    );
+                                }
                             }
                             effective_config.update_from_value(perl);
                             folder.effective_workspace_config = effective_config;

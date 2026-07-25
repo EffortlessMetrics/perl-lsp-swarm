@@ -28,7 +28,22 @@ pub(super) fn apply_workspace_configuration_results(
             effective_config.update_from_value(init_opts);
         }
         if let Some(project_config) = &folder.project_config {
-            project_config.apply_to_workspace_config(&mut effective_config);
+            // Re-applying an already-loaded project_config (loaded, validated, and
+            // warned about once in lifecycle/workspace.rs). Discard the rejection
+            // list here rather than re-warning on every reconfiguration.
+            if let Some(folder_path) = folder.path.as_deref() {
+                let _ =
+                    project_config.apply_to_workspace_config(&mut effective_config, folder_path);
+            }
+            // else: folder.path is None. This is not "fail-closed" - it is a
+            // silent no-op that skips the ENTIRE project config, dropping
+            // discovery_extensions, perl5lib toggles and everything else, not
+            // just include_paths validation, with no diagnostic.
+            //
+            // It is unreachable today because path and project_config are set
+            // together in lifecycle/workspace.rs. If that invariant is ever
+            // broken the symptom will be project settings silently not applying,
+            // which is hard to trace back to here.
         }
 
         if let Some(global_settings) = global_settings {

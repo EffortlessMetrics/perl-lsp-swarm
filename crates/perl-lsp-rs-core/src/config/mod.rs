@@ -8,6 +8,7 @@
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use crate::platform::resolve_perl_path_with_toolchain;
+use perl_parser_core::path_security::{WorkspacePathError, validate_workspace_path};
 use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 use std::process::{Command, Output, Stdio};
@@ -1560,9 +1561,85 @@ impl ProjectConfig {
     ///
     /// Only applies list settings when their TOML lists are non-empty, so that
     /// absent keys leave defaults unchanged (distinct from explicit `[]`).
-    pub fn apply_to_workspace_config(&self, config: &mut WorkspaceConfig) {
+    ///
+    /// # Security
+    ///
+    /// `include_paths` entries come from `.perl-lsp.toml`, a file checked into
+    /// the (possibly hostile) cloned workspace — an **untrusted** channel.
+    /// The LSP client-settings channel applied via
+    /// [`WorkspaceConfig::update_from_value`] is NOT validated here; its
+    /// provenance is not distinguished in this slice (see issue #4998 — in
+    /// VS Code `perl-lsp.includePaths` is `scope: resource`, so workspace and
+    /// folder values reach it too). Mirroring the `perlPath` /
+    /// `perlArgs` precedent (issue #3729, see the comment at
+    /// `update_from_value`), this rejects entries that could let a hostile
+    /// project read outside the workspace:
+    ///
+    /// - Absolute entries are always rejected. Legitimate external lib roots
+    ///   must be configured through the LSP client-settings channel, not via
+    ///   workspace-supplied `.perl-lsp.toml`. Note that channel is itself
+    ///   pending provenance hardening (issue #4998); this slice only closes
+    ///   the `.perl-lsp.toml` route.
+    /// - Relative entries that escape the workspace root after normalization
+    ///   (lexical `..` traversal, or a symlink that resolves outside the
+    ///   workspace) are rejected.
+    ///
+    /// Rejected entries are dropped from `config.include_paths` (never
+    /// silently applied) and returned so the caller can surface an actionable
+    /// warning — a bad entry must be debuggable, not just silently ignored.
+    pub fn apply_to_workspace_config(
+        &self,
+        config: &mut WorkspaceConfig,
+        workspace_root: &Path,
+    ) -> Vec<RejectedIncludePath> {
+        let mut rejected = Vec::new();
+        let mut skip_include_paths = false;
         if !self.perl.include_paths.is_empty() {
-            config.include_paths = self.perl.include_paths.clone();
+            // Fail closed: if the workspace root itself cannot be canonicalized
+            // there is nothing to validate containment against, so no entry can
+            // be trusted. Detected once here rather than inferred per-entry, so
+            // the reported reason names the actual cause instead of blaming
+            // each path for "escaping" a root that could not be read.
+            if let Err(err) = std::fs::canonicalize(workspace_root) {
+                // The failure belongs to the workspace root, not to any single
+                // entry, so record it once instead of repeating an identical
+                // warning per configured path.
+                rejected.push(RejectedIncludePath {
+                    entry: workspace_root.display().to_string(),
+                    reason: RejectedIncludePathReason::WorkspaceRootUnavailable(err.to_string()),
+                });
+                // Fail closed for include roots: entries are dropped, not merely
+                // reported, since leaving a previously-set list in place would
+                // let an unvalidated path stay live.
+                //
+                // Scoped deliberately: this is a path-validation failure, not a
+                // failure of the whole project config, so discovery extensions,
+                // skip lists and the perl5lib settings below still apply.
+                config.include_paths.clear();
+                skip_include_paths = true;
+            }
+            let mut valid = Vec::with_capacity(self.perl.include_paths.len());
+            for entry in self.perl.include_paths.iter().filter(|_| !skip_include_paths) {
+                let candidate = Path::new(entry);
+                if candidate.is_absolute() {
+                    rejected.push(RejectedIncludePath {
+                        entry: entry.clone(),
+                        reason: RejectedIncludePathReason::Absolute,
+                    });
+                    continue;
+                }
+                if let Err(err) = validate_workspace_path(candidate, workspace_root) {
+                    rejected.push(RejectedIncludePath {
+                        entry: entry.clone(),
+                        reason: RejectedIncludePathReason::from_path_error(&err),
+                    });
+                    continue;
+                }
+                valid.push(entry.clone());
+            }
+            if !skip_include_paths {
+                config.include_paths = valid;
+            }
         }
         if !self.perl.discovery_extensions.is_empty() {
             config.discovery_extra_extensions =
@@ -1577,6 +1654,158 @@ impl ProjectConfig {
         }
         if let Some(ref prec) = self.perl.perl5lib_precedence {
             config.perl5lib_precedence = prec.clone();
+        }
+        rejected
+    }
+}
+
+/// A `.perl-lsp.toml` `[perl].include_paths` entry rejected during validation.
+///
+/// Rejection happens in [`ProjectConfig::apply_to_workspace_config`]; see its
+/// `# Security` doc comment for the trust-boundary rationale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedIncludePath {
+    /// The raw, as-configured entry string.
+    pub entry: String,
+    /// Why it was rejected.
+    pub reason: RejectedIncludePathReason,
+}
+
+/// Why a `.perl-lsp.toml` `include_paths` entry was rejected.
+///
+/// These categories mirror [`WorkspacePathError`] rather than collapsing into
+/// one bucket: this is a public operational surface (doctor output,
+/// `window/showMessage`), and "escapes the workspace root" is simply false for
+/// an entry containing null bytes or for an unreadable workspace root.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RejectedIncludePathReason {
+    /// Absolute paths are never honoured from workspace-supplied
+    /// `.perl-lsp.toml` (mirrors the perlPath/perlArgs precedent, issue
+    /// #3729). External lib roots must come through the LSP client-settings
+    /// channel instead — which is itself pending provenance hardening under
+    /// issue #4998, so this is a narrower statement than "trusted".
+    Absolute,
+    /// Lexical `..` traversal out of the workspace.
+    Traversal(String),
+    /// Normalizes to a location outside the workspace root.
+    OutsideWorkspace(String),
+    /// A symlink component resolves to a target outside the workspace root.
+    SymlinkOutsideWorkspace(String),
+    /// Null bytes or disallowed control characters. Checked before any
+    /// containment logic, so this is not a containment failure.
+    InvalidCharacters,
+    /// The workspace root itself could not be canonicalized (missing,
+    /// unreadable, or not a directory), so no entry could be validated
+    /// against it. Every entry is rejected — this is the fail-closed case.
+    WorkspaceRootUnavailable(String),
+}
+
+/// Escape control characters in a workspace-controlled string before it reaches
+/// a terminal or an editor message.
+///
+/// `include_paths` entries come from `.perl-lsp.toml`, which a hostile cloned
+/// repository controls. Rendering them raw lets an entry inject ANSI/OSC escape
+/// sequences into `perl-lsp doctor` output and `window/showMessage` — so the
+/// warning *about* a malicious path would itself be the injection vector
+/// (CWE-150).
+///
+/// Note the absolute-path branch of `apply_to_workspace_config` rejects before
+/// `validate_workspace_path` runs, so its `InvalidPathCharacters` check never
+/// sees those entries. Escaping centrally here covers every rejection reason
+/// regardless of which branch produced it.
+fn escape_for_display(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|c| {
+            if c == '\t' || !needs_display_escape(c) {
+                vec![c]
+            } else {
+                format!("\\u{{{:04x}}}", c as u32).chars().collect()
+            }
+        })
+        .collect()
+}
+
+/// Characters that must not reach a terminal or editor message verbatim.
+///
+/// `char::is_control` covers C0, DEL and C1 — which handles ANSI/OSC injection.
+/// It does NOT cover the Unicode bidirectional formatting characters, which are
+/// category `Cf` rather than `Cc`. Those visually reorder surrounding text
+/// without being control codes (the "Trojan Source" class, CVE-2021-42574), so
+/// a rejected entry could still render as a path other than the one configured.
+/// Zero-width characters are included for the same reason: they let two
+/// different entries display identically.
+fn needs_display_escape(c: char) -> bool {
+    if c.is_control() {
+        return true;
+    }
+    matches!(
+        c,
+        // zero-width space/ZWNJ/ZWJ, LRM/RLM
+        '\u{200b}'..='\u{200f}'
+        // LRE, RLE, PDF, LRO, RLO
+        | '\u{202a}'..='\u{202e}'
+        // LRI, RLI, FSI, PDI
+        | '\u{2066}'..='\u{2069}'
+        // zero-width no-break space / BOM
+        | '\u{feff}'
+    )
+}
+
+impl RejectedIncludePath {
+    /// Render a single human-readable line for `window/showMessage` / doctor reports.
+    ///
+    /// The entry is escaped via [`escape_for_display`]; it is workspace-controlled.
+    #[must_use]
+    pub fn render(&self) -> String {
+        let entry = escape_for_display(&self.entry);
+        match &self.reason {
+            RejectedIncludePathReason::Absolute => format!(
+                "'{}': absolute include_paths are not allowed in .perl-lsp.toml \
+                 (workspace-supplied). Configure external lib roots in your own \
+                 editor settings instead; not in a file checked into the repository.",
+                entry
+            ),
+            RejectedIncludePathReason::Traversal(detail) => {
+                format!("'{}': traverses out of the workspace root ({detail})", entry)
+            }
+            RejectedIncludePathReason::OutsideWorkspace(detail) => {
+                format!("'{}': resolves outside the workspace root ({detail})", entry)
+            }
+            RejectedIncludePathReason::SymlinkOutsideWorkspace(detail) => {
+                format!(
+                    "'{}': a symlink in this path resolves outside the workspace root ({detail})",
+                    entry
+                )
+            }
+            RejectedIncludePathReason::InvalidCharacters => {
+                format!("'{}': contains null bytes or disallowed control characters", entry)
+            }
+            RejectedIncludePathReason::WorkspaceRootUnavailable(detail) => {
+                format!(
+                    "'{}': the workspace root could not be resolved, so no include_paths \
+                     entry could be validated ({detail})",
+                    entry
+                )
+            }
+        }
+    }
+}
+
+impl RejectedIncludePathReason {
+    /// Map a [`WorkspacePathError`] onto the matching rejection category.
+    ///
+    /// Kept exhaustive on purpose: a new `WorkspacePathError` variant must be
+    /// classified here rather than silently inheriting a generic bucket.
+    fn from_path_error(err: &WorkspacePathError) -> Self {
+        match err {
+            WorkspacePathError::PathTraversalAttempt(d) => Self::Traversal(d.clone()),
+            WorkspacePathError::PathOutsideWorkspace(d) => Self::OutsideWorkspace(d.clone()),
+            WorkspacePathError::SymlinkOutsideWorkspace(d) => {
+                Self::SymlinkOutsideWorkspace(d.clone())
+            }
+            WorkspacePathError::InvalidPathCharacters => Self::InvalidCharacters,
         }
     }
 }
@@ -3076,40 +3305,256 @@ profile = "recommended"
     }
 
     #[test]
-    fn apply_to_workspace_config_only_overrides_non_empty_include_paths() {
+    fn apply_to_workspace_config_only_overrides_non_empty_include_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
         let mut workspace = WorkspaceConfig::default();
         let baseline_include_paths = workspace.include_paths.clone();
 
         let mut project = ProjectConfig::default();
-        project.apply_to_workspace_config(&mut workspace);
+        project.apply_to_workspace_config(&mut workspace, temp.path());
         assert_eq!(workspace.include_paths, baseline_include_paths);
 
         project.perl.include_paths = vec!["custom/lib".to_string()];
-        project.apply_to_workspace_config(&mut workspace);
+        project.apply_to_workspace_config(&mut workspace, temp.path());
         assert_eq!(workspace.include_paths, vec!["custom/lib"]);
+        Ok(())
     }
 
     #[test]
-    fn apply_to_workspace_config_sets_perl5lib_toggles() {
+    fn apply_to_workspace_config_rejects_absolute_include_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        // "/etc" is not absolute on Windows, so the assertion would pass for
+        // the wrong reason there (rejected as a bad relative path, not as an
+        // absolute one). Pick a genuinely absolute path per platform.
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+        project.perl.include_paths = vec![absolute.to_string(), "relative/lib".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, temp.path());
+
+        assert_eq!(workspace.include_paths, vec!["relative/lib".to_string()]);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, absolute);
+        assert_eq!(rejected[0].reason, RejectedIncludePathReason::Absolute);
+        Ok(())
+    }
+
+    /// Rejected entries are workspace-controlled, so `render` must not emit raw
+    /// control characters into a terminal or an editor message.
+    ///
+    /// The absolute-path branch rejects before `validate_workspace_path` runs,
+    /// so its `InvalidPathCharacters` check never sees these entries — without
+    /// central escaping, a hostile `.perl-lsp.toml` could inject ANSI/OSC
+    /// sequences through the very warning that reports it (CWE-150).
+    #[test]
+    fn render_escapes_control_characters_in_workspace_controlled_entries() {
+        let rejected = RejectedIncludePath {
+            entry: "/etc\u{1b}]0;pwned\u{7}".to_string(),
+            reason: RejectedIncludePathReason::Absolute,
+        };
+
+        let rendered = rejected.render();
+        assert!(
+            !rendered.chars().any(|c| c.is_control() && c != '\t'),
+            "render must not emit raw control characters; got {rendered:?}"
+        );
+        assert!(
+            rendered.contains("\\u{001b}"),
+            "the escape sequence should be shown in printable form; got {rendered:?}"
+        );
+
+        // C1 controls (U+0080-U+009F) are also ANSI-capable, and newline lets a
+        // single entry forge an extra line of output.
+        for (label, raw) in [("C1 CSI", "\u{9b}31m"), ("newline", "a\nFAKE: all good")] {
+            let out = RejectedIncludePath {
+                entry: raw.to_string(),
+                reason: RejectedIncludePathReason::Absolute,
+            }
+            .render();
+            assert!(
+                !out.chars().any(|c| c.is_control() && c != '\t'),
+                "{label} must be escaped; got {out:?}"
+            );
+        }
+
+        // Bidi overrides are NOT control characters by Unicode category but
+        // visually reorder text, so an entry could display as a different path
+        // than the one configured (Trojan Source, CVE-2021-42574).
+        let bidi = RejectedIncludePath {
+            entry: "safe\u{202e}gnp.exe".to_string(),
+            reason: RejectedIncludePathReason::Absolute,
+        }
+        .render();
+        assert!(
+            !bidi.contains('\u{202e}'),
+            "bidi override must not survive rendering; got {bidi:?}"
+        );
+    }
+
+    /// Pin the exact `WorkspacePathError` -> `RejectedIncludePathReason` routing.
+    ///
+    /// `from_path_error` has no wildcard arm, so a new upstream variant is a
+    /// compile error rather than a silent demotion into a generic bucket. This
+    /// test guards the other direction: that the existing variants keep routing
+    /// where they should, which a compile check cannot catch.
+    #[test]
+    fn rejection_reason_maps_each_workspace_path_error_exactly() {
+        use perl_parser_core::path_security::WorkspacePathError;
+
+        assert!(matches!(
+            RejectedIncludePathReason::from_path_error(&WorkspacePathError::PathTraversalAttempt(
+                "d".into()
+            )),
+            RejectedIncludePathReason::Traversal(_)
+        ));
+        assert!(matches!(
+            RejectedIncludePathReason::from_path_error(&WorkspacePathError::PathOutsideWorkspace(
+                "d".into()
+            )),
+            RejectedIncludePathReason::OutsideWorkspace(_)
+        ));
+        assert!(matches!(
+            RejectedIncludePathReason::from_path_error(
+                &WorkspacePathError::SymlinkOutsideWorkspace("d".into())
+            ),
+            RejectedIncludePathReason::SymlinkOutsideWorkspace(_)
+        ));
+        assert!(matches!(
+            RejectedIncludePathReason::from_path_error(&WorkspacePathError::InvalidPathCharacters),
+            RejectedIncludePathReason::InvalidCharacters
+        ));
+    }
+
+    #[test]
+    fn apply_to_workspace_config_rejects_traversal_include_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        project.perl.include_paths = vec!["../../../../etc".to_string(), "vendor/lib".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, temp.path());
+
+        assert_eq!(workspace.include_paths, vec!["vendor/lib".to_string()]);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, "../../../../etc");
+        // "../../../../etc" exists, so it canonicalizes and is correctly
+        // categorised as resolving outside the workspace. `Traversal` is for
+        // lexically-escaping paths that cannot be canonicalized. Exact routing
+        // of every WorkspacePathError variant is pinned by
+        // `rejection_reason_maps_each_workspace_path_error_exactly`.
+        assert!(
+            matches!(rejected[0].reason, RejectedIncludePathReason::OutsideWorkspace(_)),
+            "an existing outside path must route to OutsideWorkspace; got {:?}",
+            rejected[0].reason
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn apply_to_workspace_config_allows_internal_dotdot_that_stays_in_workspace() -> TestResult {
+        // `lib/../lib2` lexically escapes and re-enters, but the net result
+        // stays inside the workspace — must be kept, not over-rejected.
+        let temp = tempfile::tempdir()?;
+        std::fs::create_dir_all(temp.path().join("lib2"))?;
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        project.perl.include_paths = vec!["lib/../lib2".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, temp.path());
+
+        assert_eq!(workspace.include_paths, vec!["lib/../lib2".to_string()]);
+        assert!(rejected.is_empty());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_to_workspace_config_rejects_symlink_escaping_workspace() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace_root = temp.path().join("workspace");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&workspace_root)?;
+        std::fs::create_dir_all(&outside)?;
+        std::os::unix::fs::symlink(&outside, workspace_root.join("escape_link"))?;
+
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        project.perl.include_paths = vec!["escape_link".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, &workspace_root);
+
+        assert!(workspace.include_paths.is_empty());
+        assert_eq!(rejected.len(), 1);
+        assert!(
+            matches!(rejected[0].reason, RejectedIncludePathReason::SymlinkOutsideWorkspace(_)),
+            "symlink escape must route to SymlinkOutsideWorkspace; got {:?}",
+            rejected[0].reason
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn apply_to_workspace_config_fails_closed_when_workspace_root_missing() -> TestResult {
+        let missing_root = if cfg!(windows) {
+            Path::new("C:\\nonexistent\\perl-lsp-swarm-4957-workspace-root")
+        } else {
+            Path::new("/nonexistent/perl-lsp-swarm-4957-workspace-root")
+        };
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        project.perl.include_paths = vec!["relative/lib".to_string(), absolute.to_string()];
+
+        project.perl.discovery_extensions = vec!["pl".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, missing_root);
+
+        // Fail closed for include roots: every entry is dropped, including the
+        // otherwise-safe relative one.
+        assert!(workspace.include_paths.is_empty());
+
+        // Reported once against the root, not repeated per configured entry.
+        assert_eq!(rejected.len(), 1, "root failure is one rejection, got {rejected:?}");
+        assert!(matches!(
+            rejected[0].reason,
+            RejectedIncludePathReason::WorkspaceRootUnavailable(_)
+        ));
+
+        // Scoped: a path-validation failure must not silently discard unrelated
+        // project configuration.
+        assert_eq!(
+            workspace.discovery_extra_extensions,
+            vec!["pl".to_string()],
+            "unrelated project config must still apply when the root is unusable"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn apply_to_workspace_config_sets_perl5lib_toggles() -> TestResult {
+        let temp = tempfile::tempdir()?;
         let mut workspace = WorkspaceConfig::default();
         let mut project = ProjectConfig::default();
         project.perl.use_perl5lib = Some(false);
         project.perl.perl5lib_precedence = Some(Perl5LibPrecedence::Append);
 
-        project.apply_to_workspace_config(&mut workspace);
+        project.apply_to_workspace_config(&mut workspace, temp.path());
 
         assert!(!workspace.use_perl5lib);
         assert!(matches!(workspace.perl5lib_precedence, Perl5LibPrecedence::Append));
+        Ok(())
     }
 
     #[test]
-    fn project_and_client_config_apply_discovery_policy() {
+    fn project_and_client_config_apply_discovery_policy() -> TestResult {
+        let temp = tempfile::tempdir()?;
         let mut workspace = WorkspaceConfig::default();
         let mut project = ProjectConfig::default();
         project.perl.discovery_extensions = vec![".foo".to_string()];
         project.perl.discovery_skipped_dirs = vec!["generated".to_string()];
 
-        project.apply_to_workspace_config(&mut workspace);
+        project.apply_to_workspace_config(&mut workspace, temp.path());
         assert_eq!(workspace.discovery_extra_extensions, vec![".foo"]);
         assert_eq!(workspace.discovery_extra_skipped_dirs, vec!["generated"]);
 
@@ -3121,6 +3566,7 @@ profile = "recommended"
         }));
         assert_eq!(workspace.discovery_extra_extensions, vec![".bar", "BAR"]);
         assert_eq!(workspace.discovery_extra_skipped_dirs, vec!["cache"]);
+        Ok(())
     }
 
     #[test]
@@ -3305,6 +3751,32 @@ profile = "recommended"
         }));
         assert!(config.perl_path.is_none(), "perlPath from workspace must be ignored");
         assert!(config.perl_args.is_empty(), "perlArgs from workspace must be ignored");
+    }
+
+    /// Issue #4957: this slice validates only `.perl-lsp.toml` (see
+    /// `apply_to_workspace_config_rejects_absolute_include_paths`). Absolute
+    /// `include_paths` arriving on the LSP client-settings channel
+    /// (`update_from_value`) are still accepted, and this test pins that
+    /// **current behaviour is unchanged** by the `.perl-lsp.toml` fix.
+    ///
+    /// It is NOT an assertion that the channel is trusted. In VS Code
+    /// `perl-lsp.includePaths` is `scope: resource`, so a committed
+    /// `.vscode/settings.json` reaches this same code path. Hardening that is
+    /// issue #4998; when it lands, this test is expected to change.
+    #[test]
+    fn update_from_value_still_accepts_absolute_include_paths_unchanged_by_this_slice() {
+        let mut config = WorkspaceConfig::default();
+        config.update_from_value(&serde_json::json!({
+            "workspace": {
+                "includePaths": ["/opt/company-perl-libs", "relative/lib"]
+            }
+        }));
+        assert_eq!(
+            config.include_paths,
+            vec!["/opt/company-perl-libs".to_string(), "relative/lib".to_string()],
+            "this slice must not change client-settings channel behaviour; \
+             provenance hardening is issue #4998"
+        );
     }
     #[test]
     fn parse_perl_inc_output_filters_dynamic_hook_entries() {

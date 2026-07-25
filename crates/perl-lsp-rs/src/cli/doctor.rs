@@ -8,7 +8,7 @@
 
 use crate::util::run_command_with_timeout;
 use perl_lsp_rs_core::config::{
-    Perl5LibPrecedence, PerlOracleEnv, WorkspaceConfig, load_project_config,
+    Perl5LibPrecedence, PerlOracleEnv, RejectedIncludePath, WorkspaceConfig, load_project_config,
 };
 use perl_lsp_rs_core::platform::{detect_perlbrew_perl, detect_plenv_perl, resolve_perl_path};
 use perl_parser_core::path_security::{WorkspacePathError, validate_workspace_path};
@@ -100,10 +100,15 @@ struct DoctorReport {
     system_inc: SystemIncReport,
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Serialize)]
 struct ProjectConfigReport {
     status: ProjectConfigStatus,
     include_source: &'static str,
+    /// Human-readable rendering of `.perl-lsp.toml` `include_paths` entries
+    /// rejected during load (absolute, or escaping the workspace root). Empty
+    /// when nothing was rejected. See
+    /// `perl_lsp_rs_core::config::RejectedIncludePath::render`.
+    rejected_include_paths: Vec<String>,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -183,12 +188,17 @@ fn load_workspace_config(
             } else {
                 ".perl-lsp.toml include_paths"
             };
-            project_config.apply_to_workspace_config(workspace_config);
-            Ok(ProjectConfigReport { status: ProjectConfigStatus::Loaded, include_source })
+            let rejected = project_config.apply_to_workspace_config(workspace_config, workspace);
+            Ok(ProjectConfigReport {
+                status: ProjectConfigStatus::Loaded,
+                include_source,
+                rejected_include_paths: rejected.iter().map(RejectedIncludePath::render).collect(),
+            })
         }
         Ok(None) => Ok(ProjectConfigReport {
             status: ProjectConfigStatus::Missing,
             include_source: "default includePaths",
+            rejected_include_paths: Vec::new(),
         }),
         Err(error) => Err(format!("{}: {error}", workspace.join(".perl-lsp.toml").display())),
     }
@@ -498,7 +508,13 @@ fn render_report(report: DoctorReport) -> String {
     out.push_str("perl-lsp doctor\n");
     out.push_str("===============\n\n");
     out.push_str(&format!("Workspace: {}\n", report.workspace.display()));
-    out.push_str(&format!("Project config: {}\n", render_project_config_status(report.config)));
+    out.push_str(&format!("Project config: {}\n", render_project_config_status(&report.config)));
+    if !report.config.rejected_include_paths.is_empty() {
+        out.push_str("Rejected .perl-lsp.toml include_paths entries:\n");
+        for rejected in &report.config.rejected_include_paths {
+            out.push_str(&format!("  - {rejected}\n"));
+        }
+    }
     out.push_str(&format!("Perl: {}\n", render_perl_binary(&report.perl)));
     out.push_str(&format!("Perl version: {}\n", render_perl_version(&report.perl)));
     out.push_str(&format!("perltidy: {}\n", render_tool_report(&report.perltidy)));
@@ -560,7 +576,7 @@ fn render_report(report: DoctorReport) -> String {
     out
 }
 
-fn render_project_config_status(config: ProjectConfigReport) -> &'static str {
+fn render_project_config_status(config: &ProjectConfigReport) -> &'static str {
     match config.status {
         ProjectConfigStatus::Loaded => "loaded .perl-lsp.toml",
         ProjectConfigStatus::Missing => "not found, using defaults",
@@ -1206,6 +1222,46 @@ mod tests {
     }
 
     #[test]
+    fn load_workspace_config_surfaces_rejected_absolute_include_path() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        // "/etc" is not absolute on Windows; there the entry would be rejected
+        // as an unsafe relative path instead, so the test would pass for the
+        // wrong reason. Mirrors the platform handling in
+        // `apply_to_workspace_config_rejects_absolute_include_paths`.
+        let absolute = if cfg!(windows) { r"C:\Windows" } else { "/etc" };
+        std::fs::write(
+            temp.path().join(".perl-lsp.toml"),
+            format!("[perl]\ninclude_paths = [\"{}\", \"lib\"]\n", absolute.escape_default()),
+        )?;
+        let mut workspace_config = WorkspaceConfig::default();
+
+        let report = load_workspace_config(temp.path(), &mut workspace_config)?;
+
+        assert!(matches!(report.status, ProjectConfigStatus::Loaded));
+        assert_eq!(workspace_config.include_paths, vec!["lib".to_string()]);
+        assert_eq!(report.rejected_include_paths.len(), 1);
+        assert!(report.rejected_include_paths[0].contains(absolute));
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_report_prints_rejected_include_paths_section() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let absolute = if cfg!(windows) { r"C:\Windows" } else { "/etc" };
+        std::fs::write(
+            temp.path().join(".perl-lsp.toml"),
+            format!("[perl]\ninclude_paths = [\"{}\"]\n", absolute.escape_default()),
+        )?;
+        let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
+
+        let rendered = render_report(build_doctor_report_struct(dir)?);
+
+        assert!(rendered.contains("Rejected .perl-lsp.toml include_paths entries:"));
+        assert!(rendered.contains(absolute));
+        Ok(())
+    }
+
+    #[test]
     fn doctor_report_rejects_invalid_project_config() -> TestResult {
         let temp = tempfile::tempdir()?;
         std::fs::write(temp.path().join(".perl-lsp.toml"), "[perl\ninclude_paths = [\"lib\"]")?;
@@ -1447,6 +1503,7 @@ mod tests {
             config: ProjectConfigReport {
                 status: ProjectConfigStatus::Missing,
                 include_source: "default includePaths",
+                rejected_include_paths: Vec::new(),
             },
             perl: PerlReport {
                 binary: None,
@@ -1524,13 +1581,15 @@ mod tests {
         let loaded = ProjectConfigReport {
             status: ProjectConfigStatus::Loaded,
             include_source: ".perl-lsp.toml include_paths",
+            rejected_include_paths: Vec::new(),
         };
         let missing = ProjectConfigReport {
             status: ProjectConfigStatus::Missing,
             include_source: "default includePaths",
+            rejected_include_paths: Vec::new(),
         };
-        assert_eq!(render_project_config_status(loaded), "loaded .perl-lsp.toml");
-        assert_eq!(render_project_config_status(missing), "not found, using defaults");
+        assert_eq!(render_project_config_status(&loaded), "loaded .perl-lsp.toml");
+        assert_eq!(render_project_config_status(&missing), "not found, using defaults");
 
         let binary_report = PerlReport {
             binary: Some(PathBuf::from("/usr/bin/perl")),
