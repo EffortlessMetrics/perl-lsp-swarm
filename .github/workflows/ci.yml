@@ -239,6 +239,13 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
           # Fetch full history so ci-scope can diff against the explicit PR-fast base.
           fetch-depth: 0
+          # release_history --verify-git resolves every release tag locally.
+          fetch-tags: true
+
+      - name: Fetch release tags from canonical repo
+        run: |
+          # Release tags live on EffortlessMetrics/perl-lsp; swarm origin has none.
+          git fetch --force --tags https://github.com/EffortlessMetrics/perl-lsp.git '+refs/tags/v*:refs/tags/v*'
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
@@ -367,6 +374,12 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
           # Release-history verification compares every fetched release tag.
           fetch-depth: 0
+          fetch-tags: true
+
+      - name: Fetch release tags from canonical repo
+        run: |
+          # Release tags live on EffortlessMetrics/perl-lsp; swarm origin has none.
+          git fetch --force --tags https://github.com/EffortlessMetrics/perl-lsp.git '+refs/tags/v*:refs/tags/v*'
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
