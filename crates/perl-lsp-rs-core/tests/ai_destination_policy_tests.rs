@@ -188,9 +188,15 @@ fn redirect_response_is_not_followed_and_does_not_reach_secondary_host(
         provider.stream(&backend_request(), &mut |_chunk: StreamChunk| StreamControl::Continue);
     assert!(result.is_err(), "redirect response must not be treated as SSE success");
 
-    redirect_worker.join().expect("redirect worker panicked")?;
+    redirect_worker
+        .join()
+        .expect("redirect worker panicked")
+        .expect("redirect worker failed");
     thread::sleep(Duration::from_millis(100));
-    secondary_worker.join().expect("secondary worker panicked")?;
+    secondary_worker
+        .join()
+        .expect("secondary worker panicked")
+        .expect("secondary worker failed");
 
     assert!(
         !secondary_hit.load(std::sync::atomic::Ordering::SeqCst),
