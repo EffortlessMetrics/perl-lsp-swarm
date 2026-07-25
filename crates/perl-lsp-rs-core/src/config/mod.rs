@@ -1765,7 +1765,7 @@ impl RejectedIncludePath {
             RejectedIncludePathReason::Absolute => format!(
                 "'{}': absolute include_paths are not allowed in .perl-lsp.toml \
                  (workspace-supplied). Configure external lib roots in your own \
-                 editor settings instead — not in a file checked into the repository.",
+                 editor settings instead; not in a file checked into the repository.",
                 entry
             ),
             RejectedIncludePathReason::Traversal(detail) => {
@@ -3366,12 +3366,6 @@ profile = "recommended"
         Ok(())
     }
 
-    /// Pin the exact `WorkspacePathError` -> `RejectedIncludePathReason` routing.
-    ///
-    /// `from_path_error` has no wildcard arm, so a new upstream variant is a
-    /// compile error rather than a silent demotion into a generic bucket. This
-    /// test guards the other direction: that the existing variants keep routing
-    /// where they should, which a compile check cannot catch.
     /// Rejected entries are workspace-controlled, so `render` must not emit raw
     /// control characters into a terminal or an editor message.
     ///
@@ -3424,6 +3418,12 @@ profile = "recommended"
         );
     }
 
+    /// Pin the exact `WorkspacePathError` -> `RejectedIncludePathReason` routing.
+    ///
+    /// `from_path_error` has no wildcard arm, so a new upstream variant is a
+    /// compile error rather than a silent demotion into a generic bucket. This
+    /// test guards the other direction: that the existing variants keep routing
+    /// where they should, which a compile check cannot catch.
     #[test]
     fn rejection_reason_maps_each_workspace_path_error_exactly() {
         use perl_parser_core::path_security::WorkspacePathError;
