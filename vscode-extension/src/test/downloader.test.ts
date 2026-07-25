@@ -38,7 +38,7 @@ interface DownloaderPrivateSurface {
   runEnsureBinary(forceDownload: boolean): Promise<string | null>;
   calculateSHA256(filePath: string): Promise<string>;
   findBinary(dir: string, name: string): string | null;
-  getLatestRelease(): Promise<unknown>;
+  getLatestRelease(timeoutMs?: number): Promise<unknown>;
   getLocalVersion(binaryPath: string): Promise<string | null>;
   downloadWithProgress(): Promise<string>;
   httpGet(...args: never[]): EventEmitter;
@@ -1088,6 +1088,57 @@ describe('BinaryDownloader download stream lifecycle', () => {
     );
     expect(response.pipe).toHaveBeenCalledTimes(1);
     expect(removePartialFile).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Release metadata fetch timeout
+// ---------------------------------------------------------------------------
+describe('BinaryDownloader getLatestRelease timeout', () => {
+  type TestRequest = EventEmitter & {
+    destroy: jest.Mock;
+  };
+  type DownloaderSeams = {
+    getLatestRelease: (timeoutMs?: number) => Promise<unknown>;
+    httpGet: (...args: unknown[]) => TestRequest;
+  };
+
+  let downloader: TestDownloader;
+
+  beforeEach(() => {
+    downloader = new BinaryDownloader(
+      makeContext(),
+      makeOutputChannel(),
+    ) as unknown as TestDownloader;
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'latest';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test('rejects when the release fetch times out', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockReturnValue(request);
+
+    await expect(seams.getLatestRelease(10)).rejects.toThrow(
+      'Release fetch timeout after 0.01 seconds',
+    );
+    expect(request.destroy).toHaveBeenCalledTimes(1);
   });
 });
 

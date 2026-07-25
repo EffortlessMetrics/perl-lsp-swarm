@@ -566,7 +566,7 @@ export class BinaryDownloader {
     );
   }
 
-  private async getLatestRelease(): Promise<Release> {
+  private async getLatestRelease(timeoutMs = 30000): Promise<Release> {
     const config = vscode.workspace.getConfiguration('perl-lsp');
     const channel = config.get<string>('channel', 'latest');
     const versionTag = config.get<string>('versionTag', '');
@@ -591,52 +591,87 @@ export class BinaryDownloader {
 
     return new Promise((resolve, reject) => {
       const isHttps = url.startsWith('https:');
-      const httpModule = isHttps ? https : http;
+      let timedOut = false;
+      let timeout: NodeJS.Timeout | undefined;
 
-      httpModule
-        .get(url, { headers: githubApiHeaders(url) }, (res) => {
-          let data = '';
-          res.on('data', (chunk) => (data += chunk));
-          res.on('end', () => {
-            try {
-              const parsed: unknown = JSON.parse(data);
-              if (
-                parsed &&
-                typeof parsed === 'object' &&
-                !Array.isArray(parsed) &&
-                'message' in parsed
-              ) {
-                const msg = parsed as { message: string };
-                if (msg.message.includes('Not Found')) {
-                  reject(new Error('No releases found'));
-                  return;
-                }
-                reject(new Error(`GitHub API error: ${msg.message}`));
+      const httpConfig = vscode.workspace.getConfiguration('http');
+      const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
+      const options = {
+        headers: githubApiHeaders(url),
+        rejectUnauthorized: proxyStrictSSL,
+      };
+
+      const request = this.httpGet(isHttps, url, options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          if (timedOut) {
+            return;
+          }
+          if (timeout) {
+            clearTimeout(timeout);
+          }
+          try {
+            const parsed: unknown = JSON.parse(data);
+            if (
+              parsed &&
+              typeof parsed === 'object' &&
+              !Array.isArray(parsed) &&
+              'message' in parsed
+            ) {
+              const msg = parsed as { message: string };
+              if (msg.message.includes('Not Found')) {
+                reject(new Error('No releases found'));
                 return;
               }
-              if (Array.isArray(parsed)) {
-                // For stable channel, find first non-prerelease
-                const releases = parsed as Release[];
-                const stableRelease = releases.find((r) => !r.prerelease);
-                if (stableRelease) {
-                  resolve(stableRelease);
-                } else {
-                  const fallbackRelease = releases[0];
-                  if (fallbackRelease) {
-                    resolve(fallbackRelease); // Fall back to latest
-                  } else {
-                    reject(new Error('No releases found'));
-                  }
-                }
-              } else {
-                resolve(parsed as Release);
-              }
-            } catch (e) {
-              reject(e);
+              reject(new Error(`GitHub API error: ${msg.message}`));
+              return;
             }
-          });
-        })
-        .on('error', reject);
+            if (Array.isArray(parsed)) {
+              // For stable channel, find first non-prerelease
+              const releases = parsed as Release[];
+              const stableRelease = releases.find((r) => !r.prerelease);
+              if (stableRelease) {
+                resolve(stableRelease);
+              } else {
+                const fallbackRelease = releases[0];
+                if (fallbackRelease) {
+                  resolve(fallbackRelease); // Fall back to latest
+                } else {
+                  reject(new Error('No releases found'));
+                }
+              }
+            } else {
+              resolve(parsed as Release);
+            }
+          } catch (e) {
+            reject(e);
+          }
+        });
+        res.on('error', (err) => {
+          if (timeout) {
+            clearTimeout(timeout);
+          }
+          if (!timedOut) {
+            reject(err);
+          }
+        });
+      });
+
+      timeout = setTimeout(() => {
+        timedOut = true;
+        request.destroy();
+        reject(new Error(`Release fetch timeout after ${timeoutMs / 1000} seconds`));
+      }, timeoutMs);
+
+      request.on('error', (err) => {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        if (!timedOut) {
+          reject(err);
+        }
+      });
     });
   }
 
