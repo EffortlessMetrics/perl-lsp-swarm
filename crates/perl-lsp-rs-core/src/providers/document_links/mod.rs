@@ -3,7 +3,9 @@
 //! This crate provides document link detection for Perl source files,
 //! identifying `use`, `require` module statements, POD links, and file includes.
 
-use perl_module::import::{ModuleImportKind, RequireForm, parse_module_import_head};
+use perl_module::import::{
+    ModuleImportHead, ModuleImportKind, RequireForm, parse_module_import_head,
+};
 use perl_module::path::module_name_to_path;
 use perl_position_tracking::offset_to_utf16_line_col;
 use serde_json::{Value, json};
@@ -41,6 +43,7 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
         collect_module_runtime_links(uri, i as u32, line, &code, &mut out);
 
         if let Some(import) = parse_module_import_head(line) {
+            let (col_start, col_end) = import_token_utf16_range(line, &import);
             match import.kind {
                 ModuleImportKind::Use => {
                     if !is_pragma(import.token)
@@ -48,8 +51,8 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
                             uri,
                             i as u32,
                             import.token,
-                            import.token_start as u32,
-                            import.token_end as u32,
+                            col_start,
+                            col_end,
                         )
                     {
                         out.push(link);
@@ -65,8 +68,8 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
                                     uri,
                                     i as u32,
                                     &module_name,
-                                    import.token_start as u32,
-                                    import.token_end as u32,
+                                    col_start,
+                                    col_end,
                                 ) {
                                     out.push(link);
                                 }
@@ -76,8 +79,8 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
                             // Quoted file path that is NOT a .pm (e.g. .pl, extensionless) → file link
                             out.push(json!({
                                 "range": {
-                                    "start": {"line": i as u32, "character": import.token_start as u32},
-                                    "end":   {"line": i as u32, "character": import.token_end as u32}
+                                    "start": {"line": i as u32, "character": col_start},
+                                    "end":   {"line": i as u32, "character": col_end}
                                 },
                                 "tooltip": format!("Open {}", import.token),
                                 "data": {
@@ -95,8 +98,8 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
                                     uri,
                                     i as u32,
                                     import.token,
-                                    import.token_start as u32,
-                                    import.token_end as u32,
+                                    col_start,
+                                    col_end,
                                 )
                             {
                                 out.push(link);
@@ -723,6 +726,10 @@ fn current_package_name(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn import_token_utf16_range(line: &str, import: &ModuleImportHead<'_>) -> (u32, u32) {
+    (byte_to_utf16_col(line, import.token_start), byte_to_utf16_col(line, import.token_end))
 }
 
 fn byte_to_utf16_col(line: &str, byte_offset: usize) -> u32 {
