@@ -17,16 +17,16 @@ use super::model::{
     CompileEnvironmentBoundary, CompileEnvironmentBoundaryKind, CompilePhase, CompilePhaseBlock,
     CompileProvenance, ControlTransfer, ControlTransferKind, DeferExpr, DerefAggregateKind,
     DerefExpr, DerefOperandKind, DynamicBoundary, DynamicBoundaryKind, ExportDeclaration,
-    ExportDeclarationKind, GlobSlot, GlobSlotKind, GlobSlotSource, HIR_BODY_MODEL_VERSION,
-    HirBindingId, HirFile, HirId, HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact,
-    IncRootKind, IndirectCallExpr, InheritanceSource, LiteralExpr, LiteralKind, LoopKind,
-    LoopShell, MatchExpr, MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind,
-    ModuleResolutionStatus, PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind,
-    PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable, RecoveryConfidence, RegexExpr,
-    RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence,
-    StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
-    StatementModifierKind, StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr,
-    TransliterationExpr, TryExpr, UseDecl, VariableBinding, VariableDecl,
+    ExportDeclarationKind, GlobSlot, GlobSlotKind, GlobSlotSource, HirBindingId, HirFile, HirId,
+    HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact, IncRootKind, IndirectCallExpr,
+    InheritanceSource, LiteralExpr, LiteralKind, LoopKind, LoopShell, MatchExpr, MethodCallExpr,
+    MethodDecl, ModuleRequest, ModuleRequestKind, ModuleResolutionStatus, PackageDecl,
+    PackageInheritanceEdge, PackageStash, PragmaArgumentKind, PragmaEffect, PragmaStateFact,
+    PrototypeFact, PrototypeTable, RecoveryConfidence, RegexExpr, RegexTargetKind, RequireDecl,
+    ScopeFrame, ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary,
+    StashDynamicBoundaryKind, StashGraph, StashProvenance, StatementModifierKind,
+    StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr, TransliterationExpr, TryExpr,
+    UseDecl, VariableBinding, VariableDecl, HIR_BODY_MODEL_VERSION,
 };
 
 /// Lower a parser AST into first-slice HIR items plus canonical body arenas.
@@ -2340,13 +2340,21 @@ fn static_export_tag_name_from_node(node: &Node) -> Option<String> {
 
 fn clean_export_symbol(value: &str) -> Option<String> {
     let cleaned = value.trim().trim_matches(',').trim_matches('"').trim_matches('\'');
-    if is_export_symbol_name(cleaned) { Some(cleaned.to_string()) } else { None }
+    if is_export_symbol_name(cleaned) {
+        Some(cleaned.to_string())
+    } else {
+        None
+    }
 }
 
 fn clean_export_tag(value: &str) -> Option<String> {
     let cleaned =
         value.trim().trim_matches(',').trim_matches('"').trim_matches('\'').trim_start_matches(':');
-    if is_bareword_like(cleaned) { Some(cleaned.to_string()) } else { None }
+    if is_bareword_like(cleaned) {
+        Some(cleaned.to_string())
+    } else {
+        None
+    }
 }
 
 fn is_export_symbol_name(value: &str) -> bool {
@@ -2471,7 +2479,11 @@ fn static_pragma_args(pragma: &str, args: &[String]) -> Option<(PragmaArgumentKi
         }
     }
 
-    if normalized.is_empty() { None } else { Some((PragmaArgumentKind::Categories, normalized)) }
+    if normalized.is_empty() {
+        None
+    } else {
+        Some((PragmaArgumentKind::Categories, normalized))
+    }
 }
 
 fn static_pragma_arg_items(arg: &str) -> Option<Vec<String>> {
@@ -2490,7 +2502,11 @@ fn static_pragma_arg_items(arg: &str) -> Option<Vec<String>> {
     };
 
     let items = body.split_whitespace().map(clean_static_pragma_arg).collect::<Option<Vec<_>>>()?;
-    if items.is_empty() { None } else { Some(items) }
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
+    }
 }
 
 fn clean_static_pragma_arg(arg: &str) -> Option<String> {
@@ -3337,6 +3353,20 @@ impl<'a> BodyBuilder2<'a> {
                     HirExpr::Call { args: arg_ids, ast_kind: "FunctionCall".to_string() },
                     range,
                 )
+            }
+
+            NodeKind::ArraySlice { target, indices } => {
+                // Mirror FunctionCall: walk target and index operands so variable
+                // reads inside slice expressions reach PIR-A LexicalRead facts.
+                let kind_name = node.kind.kind_name().to_string();
+                let arg_ids = vec![self.lower_expr(target), self.lower_expr(indices)];
+                self.alloc_expr(HirExpr::Call { args: arg_ids, ast_kind: kind_name }, range)
+            }
+
+            NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
+                let kind_name = node.kind.kind_name().to_string();
+                let arg_ids = vec![self.lower_expr(target), self.lower_expr(keys)];
+                self.alloc_expr(HirExpr::Call { args: arg_ids, ast_kind: kind_name }, range)
             }
 
             _ => {
