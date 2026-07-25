@@ -3,6 +3,7 @@ import {
   buildDisabledFeaturesFromConfig,
   buildLanguageClientConfigurationPayload,
   buildPerlCriticConfiguration,
+  buildUserAiCompletionConfigurationPayload,
   buildWorkspaceConfigurationPayload,
   classifyConfigurationChange,
   classifyConfigurationSetting,
@@ -169,5 +170,40 @@ describe('language client configuration', () => {
         affectsConfiguration: (setting: string) => changed.has(setting),
       }),
     ).toEqual(['live', 'reconstruct', 'restart']);
+  });
+
+  test('builds machine-scoped AI completion payload from global settings only', () => {
+    const config = {
+      get: jest.fn(),
+      inspect: jest.fn((key: string) => {
+        if (key === 'aiCompletion.enabled') {
+          return { globalValue: true };
+        }
+        if (key === 'aiCompletion.streaming.enabled') {
+          return { globalValue: false };
+        }
+        return undefined;
+      }),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildUserAiCompletionConfigurationPayload(config)).toEqual({
+      settings: {
+        perl: {
+          aiCompletion: {
+            enabled: true,
+            streaming: { enabled: false },
+          },
+        },
+      },
+    });
+  });
+
+  test('does not emit AI completion payload when machine settings are unset', () => {
+    const config = {
+      get: jest.fn(),
+      inspect: jest.fn(() => undefined),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildUserAiCompletionConfigurationPayload(config)).toBeUndefined();
   });
 });

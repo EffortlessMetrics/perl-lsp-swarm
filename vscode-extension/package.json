@@ -555,7 +555,7 @@
           "perl-lsp.aiCompletion.enabled": {
             "type": "boolean",
             "default": false,
-            "scope": "resource",
+            "scope": "machine",
             "order": 10,
             "description": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the README for configuration.",
             "markdownDescription": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the [README](https://github.com/EffortlessMetrics/perl-lsp/tree/master/vscode-extension#ai-completion) for configuration."
@@ -563,7 +563,7 @@
           "perl-lsp.aiCompletion.streaming.enabled": {
             "type": "boolean",
             "default": true,
-            "scope": "resource",
+            "scope": "machine",
             "order": 20,
             "description": "Enable progressive streaming for AI completions so results appear as they are generated. Requires aiCompletion.enabled to be true.",
             "markdownDescription": "Enable progressive streaming for AI completions so results appear as they are generated. Requires `aiCompletion.enabled` to be true."

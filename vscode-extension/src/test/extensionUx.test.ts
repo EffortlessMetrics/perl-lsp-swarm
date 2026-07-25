@@ -1553,7 +1553,7 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
     expect(update).toHaveBeenCalledWith(
       'aiCompletion.enabled',
       true,
-      vscode.ConfigurationTarget.Workspace,
+      vscode.ConfigurationTarget.Global,
     );
     expect(context.workspaceState.update).toHaveBeenCalledWith(
       'perl-lsp.aiCompletion.firstRunNotificationShown',

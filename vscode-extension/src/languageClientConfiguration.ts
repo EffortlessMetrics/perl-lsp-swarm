@@ -237,10 +237,70 @@ export async function syncLanguageClientConfiguration(
     return;
   }
 
-  await activeClient.sendNotification(
-    'workspace/didChangeConfiguration',
-    buildLanguageClientConfigurationPayload(documentUri),
-  );
+  const payload = buildLanguageClientConfigurationPayload(documentUri);
+  const userAi = buildUserAiCompletionConfigurationPayload();
+  if (!payload && !userAi) {
+    return;
+  }
+
+  const settings: Record<string, unknown> = {};
+  if (payload?.settings && typeof payload.settings === 'object') {
+    Object.assign(settings, payload.settings as Record<string, unknown>);
+  }
+  if (userAi?.settings && typeof userAi.settings === 'object') {
+    const perl = (settings.perl as Record<string, unknown> | undefined) ?? {};
+    const userPerl = userAi.settings as { perl?: Record<string, unknown> };
+    if (userPerl.perl) {
+      Object.assign(perl, userPerl.perl);
+    }
+    settings.perl = perl;
+  }
+
+  await activeClient.sendNotification('workspace/didChangeConfiguration', { settings });
+}
+
+function readMachineScopedBoolean(
+  config: ConfigurationReader,
+  key: string,
+): boolean | undefined {
+  const inspected = config.inspect?.(key) as { globalValue?: unknown } | undefined;
+  return typeof inspected?.globalValue === 'boolean' ? inspected.globalValue : undefined;
+}
+
+export function buildUserAiCompletionConfigurationPayload(
+  config: ConfigurationReader = vscode.workspace.getConfiguration('perl-lsp'),
+): Record<string, unknown> | undefined {
+  const enabled = readMachineScopedBoolean(config, 'aiCompletion.enabled');
+  const streamingEnabled = readMachineScopedBoolean(config, 'aiCompletion.streaming.enabled');
+
+  if (enabled === undefined && streamingEnabled === undefined) {
+    return undefined;
+  }
+
+  const aiCompletion: Record<string, unknown> = {};
+  if (enabled !== undefined) {
+    aiCompletion.enabled = enabled;
+  }
+  if (streamingEnabled !== undefined) {
+    aiCompletion.streaming = { enabled: streamingEnabled };
+  }
+
+  return { settings: { perl: { aiCompletion } } };
+}
+
+export async function syncUserAiCompletionConfiguration(
+  activeClient: Pick<LanguageClient, 'sendNotification'> | undefined,
+): Promise<void> {
+  if (!activeClient) {
+    return;
+  }
+
+  const payload = buildUserAiCompletionConfigurationPayload();
+  if (!payload) {
+    return;
+  }
+
+  await activeClient.sendNotification('workspace/didChangeConfiguration', payload);
 }
 
 export async function syncPerlCriticConfiguration(

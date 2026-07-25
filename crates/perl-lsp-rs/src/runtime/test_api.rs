@@ -8,6 +8,9 @@
 //! outside of test code.
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
+use perl_lsp_rs_core::config::recompute_ai_completion_effective;
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
 use serde_json::Value;
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -730,8 +733,9 @@ impl LspServer {
     /// Avoids direct access to `self.config` from integration tests.
     pub fn test_configure_ai_completion(&self, enabled: bool, fallback: bool) {
         let mut cfg = self.config.lock();
-        cfg.ai_completion.enabled = enabled;
+        cfg.ai_completion.user_enabled = enabled;
         cfg.ai_completion.fallback = fallback;
+        recompute_ai_completion_effective(&mut cfg.ai_completion);
     }
 
     /// Test-only entrypoint for LSP `textDocument/semanticTokens/full`.

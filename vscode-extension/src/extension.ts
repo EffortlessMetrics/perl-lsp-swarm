@@ -108,6 +108,7 @@ import {
   CRITIC_SETTINGS,
   hasExplicitPerlCriticOverrides,
   syncLanguageClientConfiguration,
+  syncUserAiCompletionConfiguration,
   syncPerlCriticConfiguration as syncPerlCriticConfigurationFromConfig,
 } from './languageClientConfiguration';
 export { buildDisabledFeaturesFromConfig } from './languageClientConfiguration';
@@ -711,6 +712,7 @@ export async function activate(context: vscode.ExtensionContext) {
           event.affectsConfiguration('perl-lsp.aiCompletion.streaming.enabled')
         ) {
           refreshStreamingController(client);
+          await syncUserAiCompletionConfiguration(client);
         }
       },
       onRestartRequired: () => promptForClientRefresh(context),
@@ -1137,6 +1139,7 @@ async function finalizeStartedLanguageClient(
   refreshStreamingController(startedClient);
   try {
     await syncLanguageClientConfiguration(startedClient);
+    await syncUserAiCompletionConfiguration(startedClient);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     outputChannel.error(`[configuration] initial synchronization failed: ${message}`);

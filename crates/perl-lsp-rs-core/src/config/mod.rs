@@ -191,7 +191,13 @@ pub struct NextEditConfig {
 /// timeout, error, or when AI is disabled.
 #[derive(Debug, Clone)]
 pub struct AiCompletionConfig {
-    /// Whether AI completions are enabled. Default: false.
+    /// Whether the user explicitly enabled AI completions via the LSP client
+    /// configuration channel. Default: false.
+    pub user_enabled: bool,
+    /// Whether a workspace/project `.perl-lsp.toml` opted out (`enabled = false`).
+    /// Project config may only disable AI, never enable it (issue #4997).
+    pub project_opt_out: bool,
+    /// Effective runtime flag: `user_enabled && !project_opt_out`.
     pub enabled: bool,
     /// Provider type. Currently only "openai_compat" is supported.
     pub provider: String,
@@ -265,15 +271,25 @@ fn is_http_header_name_byte(byte: u8) -> bool {
 /// Streaming sub-configuration for AI completions.
 #[derive(Debug, Clone)]
 pub struct AiStreamingConfig {
-    /// Whether streaming mode is enabled. Default: true.
+    /// Whether the user enabled streaming via the LSP client configuration channel.
+    /// Default: true (streaming is on when AI completions are enabled).
+    pub user_enabled: bool,
+    /// Effective runtime flag, currently mirrors `user_enabled`.
     pub enabled: bool,
     /// Minimum milliseconds between emitted updates. Default: 60.
     pub update_debounce_ms: u64,
 }
 
+pub(crate) fn recompute_ai_completion_effective(ai: &mut AiCompletionConfig) {
+    ai.enabled = ai.user_enabled && !ai.project_opt_out;
+    ai.streaming.enabled = ai.streaming.user_enabled;
+}
+
 impl Default for AiCompletionConfig {
     fn default() -> Self {
         Self {
+            user_enabled: false,
+            project_opt_out: false,
             enabled: false,
             provider: "openai_compat".to_string(),
             endpoint: String::new(),
@@ -293,7 +309,11 @@ impl Default for AiCompletionConfig {
 
 impl Default for AiStreamingConfig {
     fn default() -> Self {
-        Self { enabled: true, update_debounce_ms: 60 }
+        Self {
+            user_enabled: true,
+            enabled: true,
+            update_debounce_ms: 60,
+        }
     }
 }
 
@@ -528,7 +548,7 @@ impl ServerConfig {
 
         if let Some(ai) = settings.get("aiCompletion") {
             if let Some(enabled) = ai.get("enabled").and_then(|v| v.as_bool()) {
-                self.ai_completion.enabled = enabled;
+                self.ai_completion.user_enabled = enabled;
             }
             if let Some(provider) = ai.get("provider").and_then(|v| v.as_str()) {
                 self.ai_completion.provider = provider.to_string();
@@ -575,12 +595,13 @@ impl ServerConfig {
             }
             if let Some(streaming) = ai.get("streaming") {
                 if let Some(enabled) = streaming.get("enabled").and_then(|v| v.as_bool()) {
-                    self.ai_completion.streaming.enabled = enabled;
+                    self.ai_completion.streaming.user_enabled = enabled;
                 }
                 if let Some(debounce) = streaming.get("updateDebounceMs").and_then(|v| v.as_u64()) {
                     self.ai_completion.streaming.update_debounce_ms = debounce;
                 }
             }
+            recompute_ai_completion_effective(&mut self.ai_completion);
         }
     }
 }
@@ -1159,21 +1180,17 @@ pub struct ProjectFeaturesConfig {
 /// endpoint on the first inline-completion request (issue #4955). See the
 /// analogous `perlPath`/`perlArgs` precedent below (issue #3729).
 ///
-/// These four fields are accepted only through the LSP client/server
-/// configuration channel (`ServerConfig::update_from_value`'s `aiCompletion`
-/// block). **This slice does not establish the provenance or authority of that
-/// channel** — `update_from_value` knows only that it received an
-/// `aiCompletion` object, not whether it originated from machine, user,
-/// workspace, or folder settings. Hardening that is issue #4997.
+/// `enabled`, `provider`, and `model` are also not workspace-authoritative
+/// (issue #4997): project config may only opt out (`enabled = false`), never
+/// activate a remote AI backend or override user-owned provider/model choice.
+/// Those settings arrive only through the LSP client configuration channel
+/// (`ServerConfig::update_from_value`'s `aiCompletion` block).
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectAiCompletionConfig {
-    /// Whether AI completions are enabled.
+    /// Opt-out only: when `false`, disables AI completions for this workspace.
+    /// `true` is ignored — a repository cannot turn AI on.
     pub enabled: Option<bool>,
-    /// Provider type.
-    pub provider: Option<String>,
-    /// Model identifier.
-    pub model: Option<String>,
 }
 
 /// `[next_edit]` section of `.perl-lsp.toml`.
@@ -1449,14 +1466,17 @@ impl ProjectConfig {
         if let Some(hints) = self.features.inlay_hints {
             config.inlay_hints_enabled = hints;
         }
-        if let Some(enabled) = self.ai_completion.enabled {
-            config.ai_completion.enabled = enabled;
-        }
-        if let Some(ref provider) = self.ai_completion.provider {
-            config.ai_completion.provider = provider.clone();
-        }
-        if let Some(ref model) = self.ai_completion.model {
-            config.ai_completion.model = model.clone();
+        // Security: project config may only opt out of AI completions, never
+        // enable them or override user-owned provider/model (issue #4997).
+        if self.ai_completion.enabled == Some(false) {
+            config.ai_completion.project_opt_out = true;
+        } else if self.ai_completion.enabled == Some(true) {
+            tracing::warn!(
+                target: "perl_lsp::config",
+                setting = "ai_completion.enabled",
+                "workspace-supplied ai_completion.enabled=true is ignored; \
+                 AI completions require user-level configuration",
+            );
         }
         // Security: do NOT honour workspace-supplied endpoint / api_key_env /
         // api_key_header / api_key_prefix. Allowing a hostile project to pick
@@ -1465,6 +1485,7 @@ impl ProjectConfig {
         // These settings now arrive only via the LSP client/server
         // configuration channel. That channel's own provenance is not
         // established here - see issue #4997.
+        recompute_ai_completion_effective(&mut config.ai_completion);
         if let Some(enabled) = self.next_edit.enabled {
             config.next_edit.enabled = enabled;
         }
@@ -1667,28 +1688,9 @@ pub fn merge_project_configs_for_server(
         |c| c.features.inlay_hints,
     );
 
-    // `[ai_completion]`
-    merge_opt_field(
-        &mut merged.ai_completion.enabled,
-        &mut conflicts,
-        "ai_completion.enabled",
-        folders,
-        |c| c.ai_completion.enabled,
-    );
-    merge_opt_field(
-        &mut merged.ai_completion.provider,
-        &mut conflicts,
-        "ai_completion.provider",
-        folders,
-        |c| c.ai_completion.provider.clone(),
-    );
-    merge_opt_field(
-        &mut merged.ai_completion.model,
-        &mut conflicts,
-        "ai_completion.model",
-        folders,
-        |c| c.ai_completion.model.clone(),
-    );
+    // `[ai_completion]` — project may only opt out (`enabled = false`); never merge
+    // `enabled = true`, `provider`, or `model` (issue #4997).
+    merge_ai_completion_project_opt_out(&mut merged.ai_completion, &mut conflicts, folders);
     // Security: `endpoint` / `api_key_env` / `api_key_header` / `api_key_prefix`
     // are intentionally absent from `ProjectAiCompletionConfig` (issue #4955)
     // and therefore have nothing to merge here.
@@ -1817,6 +1819,57 @@ pub fn merge_project_configs_for_server(
     });
 
     (merged, conflicts)
+}
+
+/// Merge project AI-completion opt-outs across folders.
+///
+/// Workspace/project config may only disable AI (`enabled = false`). Values of
+/// `enabled = true` are ignored and never merged (issue #4997).
+fn merge_ai_completion_project_opt_out(
+    merged: &mut ProjectAiCompletionConfig,
+    conflicts: &mut Vec<MultiRootConfigConflict>,
+    folders: &[(&str, &ProjectConfig)],
+) {
+    let mut saw_false: Vec<(String, String)> = Vec::new();
+    let mut saw_true: Vec<(String, String)> = Vec::new();
+
+    for (name, cfg) in folders {
+        match cfg.ai_completion.enabled {
+            Some(false) => {
+                if !saw_false.iter().any(|(_, v)| v == "false") {
+                    saw_false.push((name.to_string(), "false".to_string()));
+                }
+            }
+            Some(true) => {
+                if !saw_true.iter().any(|(_, v)| v == "true") {
+                    saw_true.push((name.to_string(), "true".to_string()));
+                }
+            }
+            None => {}
+        }
+    }
+
+    if !saw_false.is_empty() && !saw_true.is_empty() {
+        let folders: Vec<String> = saw_false
+            .iter()
+            .chain(saw_true.iter())
+            .map(|(folder, _)| folder.clone())
+            .collect();
+        let values: Vec<String> = saw_false
+            .iter()
+            .chain(saw_true.iter())
+            .map(|(_, value)| value.clone())
+            .collect();
+        conflicts.push(MultiRootConfigConflict {
+            key: "ai_completion.enabled",
+            folders,
+            values,
+        });
+    }
+
+    if !saw_false.is_empty() {
+        merged.enabled = Some(false);
+    }
 }
 
 /// First-set-wins merge for a single `Option<T>` field across folders, recording
@@ -2520,6 +2573,7 @@ profile = "recommended"
         assert_eq!(config.perltidy_extra_args, vec!["-noll".to_string(), "-bar".to_string()]);
         assert_eq!(config.perltidy_timeout_secs, 7);
         assert!(config.ai_completion.enabled);
+        assert!(config.ai_completion.user_enabled);
         assert_eq!(config.ai_completion.provider, "local");
         assert_eq!(config.ai_completion.endpoint, "http://127.0.0.1:11434/v1");
         assert_eq!(config.ai_completion.model, "codellama");
@@ -3659,17 +3713,42 @@ api_key_prefix = "Attacker "
             "workspace-supplied api_key_prefix must not change the effective config",
         );
 
-        // Non-credential, non-destination fields remain workspace-settable.
-        assert!(config.ai_completion.enabled, "workspace-supplied enabled must still apply");
-        assert_eq!(
-            config.ai_completion.provider, "openai",
-            "workspace-supplied provider must still apply",
+        // Workspace cannot activate AI or override user-owned provider/model (#4997).
+        assert!(
+            !config.ai_completion.enabled,
+            "workspace-supplied enabled=true must not activate AI completions",
+        );
+        assert!(
+            !config.ai_completion.user_enabled,
+            "workspace-supplied enabled=true must not set user_enabled",
         );
         assert_eq!(
-            config.ai_completion.model, "gpt-4",
-            "workspace-supplied model must still apply",
+            config.ai_completion.provider, default_config.ai_completion.provider,
+            "workspace-supplied provider must not change the effective config",
+        );
+        assert_eq!(
+            config.ai_completion.model, default_config.ai_completion.model,
+            "workspace-supplied model must not change the effective config",
         );
         Ok(())
+    }
+
+    /// Project config may opt out of AI completions when the user enabled them.
+    #[test]
+    fn project_config_can_opt_out_of_user_enabled_ai_completions() {
+        let mut config = ServerConfig::default();
+        config.update_from_value(&serde_json::json!({
+            "aiCompletion": { "enabled": true }
+        }));
+        assert!(config.ai_completion.user_enabled);
+        assert!(config.ai_completion.enabled);
+
+        let mut project = ProjectConfig::default();
+        project.ai_completion.enabled = Some(false);
+        project.apply_to_server_config(&mut config);
+
+        assert!(config.ai_completion.project_opt_out);
+        assert!(!config.ai_completion.enabled, "project opt-out must disable effective AI");
     }
 
     /// Companion to the regression above: the LSP client/server configuration
