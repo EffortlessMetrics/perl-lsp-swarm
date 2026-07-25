@@ -8,6 +8,7 @@
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use crate::platform::resolve_perl_path_with_toolchain;
+use perl_parser_core::path_security::validate_workspace_path;
 use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 use std::process::{Command, Output, Stdio};
@@ -1561,9 +1562,55 @@ impl ProjectConfig {
     ///
     /// Only applies list settings when their TOML lists are non-empty, so that
     /// absent keys leave defaults unchanged (distinct from explicit `[]`).
-    pub fn apply_to_workspace_config(&self, config: &mut WorkspaceConfig) {
+    ///
+    /// # Security
+    ///
+    /// `include_paths` entries come from `.perl-lsp.toml`, a file checked into
+    /// the (possibly hostile) cloned workspace — an **untrusted** channel,
+    /// unlike the trusted LSP client settings applied via
+    /// [`WorkspaceConfig::update_from_value`]. Mirroring the `perlPath` /
+    /// `perlArgs` precedent (issue #3729, see the comment at
+    /// `update_from_value`), this rejects entries that could let a hostile
+    /// project read outside the workspace:
+    ///
+    /// - Absolute entries are always rejected. Legitimate external lib roots
+    ///   must be configured via trusted editor/user settings
+    ///   (`workspace.includePaths`), not via workspace-supplied
+    ///   `.perl-lsp.toml`.
+    /// - Relative entries that escape the workspace root after normalization
+    ///   (lexical `..` traversal, or a symlink that resolves outside the
+    ///   workspace) are rejected.
+    ///
+    /// Rejected entries are dropped from `config.include_paths` (never
+    /// silently applied) and returned so the caller can surface an actionable
+    /// warning — a bad entry must be debuggable, not just silently ignored.
+    pub fn apply_to_workspace_config(
+        &self,
+        config: &mut WorkspaceConfig,
+        workspace_root: &Path,
+    ) -> Vec<RejectedIncludePath> {
+        let mut rejected = Vec::new();
         if !self.perl.include_paths.is_empty() {
-            config.include_paths = self.perl.include_paths.clone();
+            let mut valid = Vec::with_capacity(self.perl.include_paths.len());
+            for entry in &self.perl.include_paths {
+                let candidate = Path::new(entry);
+                if candidate.is_absolute() {
+                    rejected.push(RejectedIncludePath {
+                        entry: entry.clone(),
+                        reason: RejectedIncludePathReason::Absolute,
+                    });
+                    continue;
+                }
+                if let Err(err) = validate_workspace_path(candidate, workspace_root) {
+                    rejected.push(RejectedIncludePath {
+                        entry: entry.clone(),
+                        reason: RejectedIncludePathReason::EscapesWorkspace(err.to_string()),
+                    });
+                    continue;
+                }
+                valid.push(entry.clone());
+            }
+            config.include_paths = valid;
         }
         if !self.perl.discovery_extensions.is_empty() {
             config.discovery_extra_extensions =
@@ -1578,6 +1625,50 @@ impl ProjectConfig {
         }
         if let Some(ref prec) = self.perl.perl5lib_precedence {
             config.perl5lib_precedence = prec.clone();
+        }
+        rejected
+    }
+}
+
+/// A `.perl-lsp.toml` `[perl].include_paths` entry rejected during validation.
+///
+/// Rejection happens in [`ProjectConfig::apply_to_workspace_config`]; see its
+/// `# Security` doc comment for the trust-boundary rationale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedIncludePath {
+    /// The raw, as-configured entry string.
+    pub entry: String,
+    /// Why it was rejected.
+    pub reason: RejectedIncludePathReason,
+}
+
+/// Why a `.perl-lsp.toml` `include_paths` entry was rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RejectedIncludePathReason {
+    /// Absolute paths are never honoured from workspace-supplied
+    /// `.perl-lsp.toml` (mirrors the perlPath/perlArgs precedent, issue
+    /// #3729). Use editor/user settings (`workspace.includePaths`) for
+    /// trusted external lib roots instead.
+    Absolute,
+    /// Relative entry escapes the workspace root after normalization
+    /// (traversal, or a symlink resolving outside the workspace).
+    EscapesWorkspace(String),
+}
+
+impl RejectedIncludePath {
+    /// Render a single human-readable line for `window/showMessage` / doctor reports.
+    #[must_use]
+    pub fn render(&self) -> String {
+        match &self.reason {
+            RejectedIncludePathReason::Absolute => format!(
+                "'{}': absolute include_paths are not allowed in .perl-lsp.toml \
+                 (workspace-supplied). Configure external lib roots via editor/user \
+                 settings (workspace.includePaths) instead.",
+                self.entry
+            ),
+            RejectedIncludePathReason::EscapesWorkspace(detail) => {
+                format!("'{}': escapes the workspace root ({detail})", self.entry)
+            }
         }
     }
 }
@@ -3102,40 +3193,129 @@ profile = "recommended"
     }
 
     #[test]
-    fn apply_to_workspace_config_only_overrides_non_empty_include_paths() {
+    fn apply_to_workspace_config_only_overrides_non_empty_include_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
         let mut workspace = WorkspaceConfig::default();
         let baseline_include_paths = workspace.include_paths.clone();
 
         let mut project = ProjectConfig::default();
-        project.apply_to_workspace_config(&mut workspace);
+        project.apply_to_workspace_config(&mut workspace, temp.path());
         assert_eq!(workspace.include_paths, baseline_include_paths);
 
         project.perl.include_paths = vec!["custom/lib".to_string()];
-        project.apply_to_workspace_config(&mut workspace);
+        project.apply_to_workspace_config(&mut workspace, temp.path());
         assert_eq!(workspace.include_paths, vec!["custom/lib"]);
+        Ok(())
     }
 
     #[test]
-    fn apply_to_workspace_config_sets_perl5lib_toggles() {
+    fn apply_to_workspace_config_rejects_absolute_include_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        project.perl.include_paths = vec!["/etc".to_string(), "relative/lib".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, temp.path());
+
+        assert_eq!(workspace.include_paths, vec!["relative/lib".to_string()]);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, "/etc");
+        assert_eq!(rejected[0].reason, RejectedIncludePathReason::Absolute);
+        Ok(())
+    }
+
+    #[test]
+    fn apply_to_workspace_config_rejects_traversal_include_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        project.perl.include_paths = vec!["../../../../etc".to_string(), "vendor/lib".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, temp.path());
+
+        assert_eq!(workspace.include_paths, vec!["vendor/lib".to_string()]);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, "../../../../etc");
+        assert!(matches!(rejected[0].reason, RejectedIncludePathReason::EscapesWorkspace(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn apply_to_workspace_config_allows_internal_dotdot_that_stays_in_workspace() -> TestResult {
+        // `lib/../lib2` lexically escapes and re-enters, but the net result
+        // stays inside the workspace — must be kept, not over-rejected.
+        let temp = tempfile::tempdir()?;
+        std::fs::create_dir_all(temp.path().join("lib2"))?;
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        project.perl.include_paths = vec!["lib/../lib2".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, temp.path());
+
+        assert_eq!(workspace.include_paths, vec!["lib/../lib2".to_string()]);
+        assert!(rejected.is_empty());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_to_workspace_config_rejects_symlink_escaping_workspace() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace_root = temp.path().join("workspace");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&workspace_root)?;
+        std::fs::create_dir_all(&outside)?;
+        std::os::unix::fs::symlink(&outside, workspace_root.join("escape_link"))?;
+
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        project.perl.include_paths = vec!["escape_link".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, &workspace_root);
+
+        assert!(workspace.include_paths.is_empty());
+        assert_eq!(rejected.len(), 1);
+        assert!(matches!(rejected[0].reason, RejectedIncludePathReason::EscapesWorkspace(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn apply_to_workspace_config_fails_closed_when_workspace_root_missing() {
+        let missing_root = Path::new("/nonexistent/perl-lsp-swarm-4957-workspace-root");
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        project.perl.include_paths = vec!["relative/lib".to_string(), "/etc".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, missing_root);
+
+        assert!(workspace.include_paths.is_empty());
+        assert_eq!(rejected.len(), 2);
+    }
+
+    #[test]
+    fn apply_to_workspace_config_sets_perl5lib_toggles() -> TestResult {
+        let temp = tempfile::tempdir()?;
         let mut workspace = WorkspaceConfig::default();
         let mut project = ProjectConfig::default();
         project.perl.use_perl5lib = Some(false);
         project.perl.perl5lib_precedence = Some(Perl5LibPrecedence::Append);
 
-        project.apply_to_workspace_config(&mut workspace);
+        project.apply_to_workspace_config(&mut workspace, temp.path());
 
         assert!(!workspace.use_perl5lib);
         assert!(matches!(workspace.perl5lib_precedence, Perl5LibPrecedence::Append));
+        Ok(())
     }
 
     #[test]
-    fn project_and_client_config_apply_discovery_policy() {
+    fn project_and_client_config_apply_discovery_policy() -> TestResult {
+        let temp = tempfile::tempdir()?;
         let mut workspace = WorkspaceConfig::default();
         let mut project = ProjectConfig::default();
         project.perl.discovery_extensions = vec![".foo".to_string()];
         project.perl.discovery_skipped_dirs = vec!["generated".to_string()];
 
-        project.apply_to_workspace_config(&mut workspace);
+        project.apply_to_workspace_config(&mut workspace, temp.path());
         assert_eq!(workspace.discovery_extra_extensions, vec![".foo"]);
         assert_eq!(workspace.discovery_extra_skipped_dirs, vec!["generated"]);
 
@@ -3147,6 +3327,7 @@ profile = "recommended"
         }));
         assert_eq!(workspace.discovery_extra_extensions, vec![".bar", "BAR"]);
         assert_eq!(workspace.discovery_extra_skipped_dirs, vec!["cache"]);
+        Ok(())
     }
 
     #[test]
@@ -3331,6 +3512,27 @@ profile = "recommended"
         }));
         assert!(config.perl_path.is_none(), "perlPath from workspace must be ignored");
         assert!(config.perl_args.is_empty(), "perlArgs from workspace must be ignored");
+    }
+
+    /// Issue #4957: unlike `.perl-lsp.toml` (untrusted, see
+    /// `apply_to_workspace_config_rejects_absolute_include_paths`), absolute
+    /// `include_paths` supplied via trusted LSP client settings
+    /// (`workspace.includePaths` / `update_from_value`) must keep working
+    /// unchanged. This proves the fix narrows the untrusted channel only and
+    /// does not remove the legitimate external-lib-root feature.
+    #[test]
+    fn workspace_config_update_from_value_accepts_absolute_include_paths() {
+        let mut config = WorkspaceConfig::default();
+        config.update_from_value(&serde_json::json!({
+            "workspace": {
+                "includePaths": ["/opt/company-perl-libs", "relative/lib"]
+            }
+        }));
+        assert_eq!(
+            config.include_paths,
+            vec!["/opt/company-perl-libs".to_string(), "relative/lib".to_string()],
+            "trusted client-settings channel must accept absolute include_paths unchanged"
+        );
     }
     #[test]
     fn parse_perl_inc_output_filters_dynamic_hook_entries() {

@@ -160,8 +160,16 @@ impl LspServer {
 
                         // Layer project config on top of the init-options base
                         // already stored in folder.effective_workspace_config.
-                        project_config
-                            .apply_to_workspace_config(&mut folder.effective_workspace_config);
+                        let rejected_include_paths = project_config.apply_to_workspace_config(
+                            &mut folder.effective_workspace_config,
+                            folder_path,
+                        );
+                        if !rejected_include_paths.is_empty() {
+                            self.emit_rejected_include_paths_warning(
+                                folder.display_name(),
+                                &rejected_include_paths,
+                            );
+                        }
 
                         // Defer the server-global sections to the post-loop merge so a
                         // later folder cannot silently clobber an earlier folder's value.
@@ -239,6 +247,35 @@ impl LspServer {
         tracing::warn!(conflicts = %rendered, "Multi-root config conflict; first folder wins");
         if let Err(e) = self.show_message(MessageType::Warning, &user_msg) {
             tracing::warn!(error = %e, "Failed to send showMessage for multi-root config conflict");
+        }
+    }
+
+    /// Emit a `window/showMessage` Warning describing `.perl-lsp.toml`
+    /// `include_paths` entries rejected during load — e.g. absolute paths or
+    /// entries that escape the workspace root (see the `# Security` doc
+    /// comment on [`perl_lsp_rs_core::config::ProjectConfig::apply_to_workspace_config`]).
+    ///
+    /// Only called from the initial-load path (this function) — reconfiguration
+    /// re-application call sites re-apply an already-loaded, already-warned-about
+    /// `project_config` and intentionally do not re-warn, to avoid spamming the
+    /// user on every settings change.
+    fn emit_rejected_include_paths_warning(
+        &self,
+        folder_name: &str,
+        rejected: &[perl_lsp_rs_core::config::RejectedIncludePath],
+    ) {
+        let rendered = rejected
+            .iter()
+            .map(perl_lsp_rs_core::config::RejectedIncludePath::render)
+            .collect::<Vec<_>>()
+            .join("; ");
+        let user_msg = format!(
+            "perl-lsp: {folder_name}'s .perl-lsp.toml has include_paths entries that were \
+             ignored: {rendered}"
+        );
+        tracing::warn!(folder = %folder_name, rejected = %rendered, "Rejected include_paths entries");
+        if let Err(e) = self.show_message(MessageType::Warning, &user_msg) {
+            tracing::warn!(error = %e, "Failed to send showMessage for rejected include_paths");
         }
     }
 }

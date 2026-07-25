@@ -888,6 +888,66 @@ mod tests {
         Ok(())
     }
 
+    /// End-to-end regression for issue #4957: a hostile `.perl-lsp.toml` with
+    /// an absolute `include_paths` entry, loaded through the real production
+    /// ingestion path (`load_project_config` + `apply_to_workspace_config`),
+    /// must not let module resolution read outside the workspace.
+    ///
+    /// This asserts on two structural proofs rather than a single bare
+    /// `resolved.is_none()`, per the issue's ask that "asserting no read
+    /// occurred outside the boundary is stronger than asserting on
+    /// resolution results":
+    /// 1. The sanitized `include_paths` structurally contains no absolute
+    ///    entries at all (proves exclusion from the search space itself).
+    /// 2. Whatever candidate the resolver *does* return is provably contained
+    ///    in the workspace and is not the outside sentinel file.
+    #[test]
+    fn hostile_perl_lsp_toml_absolute_include_path_is_rejected_end_to_end() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let outside_dir = temp.path().join("outside");
+        fs::create_dir_all(&workspace)?;
+        fs::create_dir_all(&outside_dir)?;
+
+        let sentinel = outside_dir.join("Sentinel.pm");
+        fs::write(&sentinel, "package Sentinel; 1;")?;
+
+        // Real .perl-lsp.toml, loaded through the real production entry point --
+        // not a hand-poked config, so this proves the whole ingestion path.
+        let toml_include = outside_dir.to_string_lossy().replace('\\', "\\\\");
+        fs::write(
+            workspace.join(".perl-lsp.toml"),
+            format!("[perl]\ninclude_paths = [\"{toml_include}\"]\n"),
+        )?;
+
+        let project_config = perl_lsp_rs_core::config::load_project_config(&workspace)?
+            .ok_or("expected .perl-lsp.toml to load")?;
+
+        let mut effective_config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+        let rejected = project_config.apply_to_workspace_config(&mut effective_config, &workspace);
+
+        // Structural proof #1: the untrusted absolute entry never enters the
+        // effective search path at all.
+        assert!(
+            !effective_config.include_paths.iter().any(|p| Path::new(p).is_absolute()),
+            "sanitized include_paths must contain no absolute entries from .perl-lsp.toml"
+        );
+        assert_eq!(rejected.len(), 1);
+
+        let server = LspServer::new();
+        *server.root_path.lock() = Some(workspace.clone());
+        *server.workspace_config.lock() = effective_config;
+
+        // Structural proof #2: resolution never selects the sentinel, and any
+        // candidate that IS returned is provably contained in the workspace.
+        let resolved = server.resolve_module_path("Sentinel", None);
+        if let Some(path) = resolved {
+            assert!(path.starts_with(&workspace), "resolved candidate must stay inside workspace");
+            assert_ne!(path, sentinel, "resolved candidate must not be the outside sentinel");
+        }
+        Ok(())
+    }
+
     #[test]
     fn resolve_module_to_path_finds_workspace_module() -> TestResult {
         let temp = tempfile::tempdir()?;

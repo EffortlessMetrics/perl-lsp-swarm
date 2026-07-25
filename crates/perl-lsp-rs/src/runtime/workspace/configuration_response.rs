@@ -28,7 +28,17 @@ pub(super) fn apply_workspace_configuration_results(
             effective_config.update_from_value(init_opts);
         }
         if let Some(project_config) = &folder.project_config {
-            project_config.apply_to_workspace_config(&mut effective_config);
+            // Re-applying an already-loaded project_config (loaded, validated, and
+            // warned about once in lifecycle/workspace.rs). Discard the rejection
+            // list here rather than re-warning on every reconfiguration.
+            if let Some(folder_path) = folder.path.as_deref() {
+                let _ =
+                    project_config.apply_to_workspace_config(&mut effective_config, folder_path);
+            }
+            // else: folder.path is None here only if project_config were also None
+            // (they're set together in lifecycle/workspace.rs), so this arm is
+            // unreachable in practice; skipping is the fail-closed choice if that
+            // invariant is ever violated.
         }
 
         if let Some(global_settings) = global_settings {

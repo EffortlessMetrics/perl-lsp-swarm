@@ -99,6 +99,18 @@ fn candidate_report(
 /// This centralizes the source-labeling and precedence model used by URI
 /// resolution. Callers are still responsible for computing configured include
 /// paths and deciding whether `PERL5LIB` / system `@INC` should participate.
+///
+/// # Security
+///
+/// `include_paths` entries are classified as `ExternalAbsolute` purely by
+/// `Path::is_absolute()` — there is no provenance signal here to distinguish a
+/// trusted absolute root (from LSP client settings) from an untrusted one
+/// (from a workspace-supplied `.perl-lsp.toml`). Callers MUST NOT pass
+/// untrusted absolute entries into `include_paths`; validate/reject those
+/// before merging into the caller's `include_paths`. See
+/// `perl_lsp_rs_core::config::ProjectConfig::apply_to_workspace_config`
+/// (issue #4957, precedent: issue #3729) for where that untrusted-channel
+/// sanitization happens.
 #[must_use]
 pub fn build_effective_inc_roots(
     include_paths: &[String],
@@ -182,6 +194,16 @@ pub enum ModuleUriResolution {
 /// 1. Open document URIs (path-boundary match on relative module path)
 /// 2. Workspace folders + `include_paths` (path-safe filesystem checks)
 /// 3. System `@INC` paths (when `use_system_inc` is true)
+///
+/// # Security
+///
+/// Absolute `include_paths` entries are followed as literal external roots
+/// with no workspace-boundary check (see [`build_effective_inc_roots`]).
+/// Callers MUST NOT pass untrusted (e.g. workspace-file-sourced,
+/// `.perl-lsp.toml`) absolute entries into `include_paths` — validate/reject
+/// those upstream. See
+/// `perl_lsp_rs_core::config::ProjectConfig::apply_to_workspace_config`
+/// (issue #4957, precedent: issue #3729).
 #[must_use]
 pub fn resolve_module_uri(
     module_name: &str,
