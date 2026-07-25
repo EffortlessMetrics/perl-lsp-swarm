@@ -7,7 +7,7 @@ use crate::ast::Node;
 
 // Re-use Diagnostic from tdd_basic to avoid duplication
 use crate::tdd_basic::{Diagnostic, DiagnosticSeverity};
-use crate::test_generator::{CoverageReport, TestExecutionError, TestResults, TestRunner};
+use crate::test_generator::{CoverageReport, TestResults, TestRunner};
 use crate::test_generator::{RefactoringSuggester, RefactoringSuggestion};
 use crate::test_generator::{TestCase, TestFramework, TestGenerator};
 use serde::{Deserialize, Serialize};
@@ -286,11 +286,11 @@ impl TddWorkflow {
 
         let results = match self.runner.run_tests(&file_strings) {
             Ok(results) => results,
-            Err(TestExecutionError::Unsupported { operation, reason }) => {
+            Err(err) => {
                 self.state = WorkflowState::Red;
                 return TddCycleResult {
                     phase: format!("{:?}", WorkflowState::Red),
-                    message: format!("{operation} is unsupported: {reason}"),
+                    message: err.to_string(),
                     actions: vec![],
                 };
             }

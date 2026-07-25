@@ -572,7 +572,6 @@ fn test_generator_with_perf_tests() -> Result<(), Box<dyn std::error::Error>> {
 // test_generator::TestRunner (non-executing; fail-closed)
 // ---------------------------------------------------------------------------
 
-#[allow(deprecated, reason = "tests cover deprecated test_generator::TestRunner")]
 #[test]
 fn gen_test_runner_new() -> Result<(), Box<dyn std::error::Error>> {
     let runner = GenTestRunner::new();
@@ -581,7 +580,6 @@ fn gen_test_runner_new() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[allow(deprecated, reason = "tests cover deprecated test_generator::TestRunner")]
 #[test]
 fn gen_test_runner_with_command() -> Result<(), Box<dyn std::error::Error>> {
     let runner = GenTestRunner::with_command("prove -v -l".to_string());
@@ -590,7 +588,6 @@ fn gen_test_runner_with_command() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[allow(deprecated, reason = "tests cover deprecated test_generator::TestRunner")]
 #[test]
 fn gen_test_runner_watch_disabled() -> Result<(), Box<dyn std::error::Error>> {
     let runner = GenTestRunner::new();
@@ -599,7 +596,6 @@ fn gen_test_runner_watch_disabled() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[allow(deprecated, reason = "tests cover deprecated test_generator::TestRunner")]
 #[test]
 fn gen_test_runner_coverage_disabled() -> Result<(), Box<dyn std::error::Error>> {
     let runner = GenTestRunner::new();
