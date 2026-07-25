@@ -28,6 +28,7 @@ use perl_module::{
     // token_core module
     has_standalone_module_token_boundaries,
     is_module_identifier_char,
+    is_lookup_safe_module_name,
     is_module_token_char,
     // name module
     legacy_package_separator,
@@ -83,6 +84,10 @@ fn test_path_module_functions() {
 
     let file_module = file_path_to_module_name("/home/user/lib/My/Module.pm");
     assert_eq!(file_module, "My::Module");
+
+    assert!(is_lookup_safe_module_name("My::Module"));
+    assert!(!is_lookup_safe_module_name("Foo/Bar"));
+    assert!(!is_lookup_safe_module_name("../../etc/passwd"));
 }
 
 /// Verify token_core functions work end-to-end.

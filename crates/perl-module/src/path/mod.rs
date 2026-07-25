@@ -18,6 +18,29 @@ pub fn module_name_to_path(module_name: &str) -> String {
     format!("{}.pm", normalized.replace("::", "/"))
 }
 
+/// Returns true when `module_name` is safe to map to a relative `.pm` path for @INC probing.
+///
+/// Rejects path-shaped input, traversal segments, sigils, and other values that must not
+/// reach filesystem existence checks.
+#[must_use]
+pub fn is_lookup_safe_module_name(module_name: &str) -> bool {
+    let module = module_name.trim();
+    if module.is_empty() {
+        return false;
+    }
+    if module.chars().any(|ch| ch.is_whitespace() || matches!(ch, '/' | '\\' | '$' | '@' | '%')) {
+        return false;
+    }
+
+    let normalized = normalize_package_separator(module);
+    normalized.split("::").all(|part| {
+        !part.is_empty()
+            && part != ".."
+            && part.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
 /// Convert a module path/key into a module name.
 ///
 /// Handles both `/` and `\\` separators and strips `.pm`/`.pl` suffixes.

@@ -10,6 +10,7 @@ pub use crate::name::normalize_package_separator;
 
 // path module
 pub use crate::path::file_path_to_module_name;
+pub use crate::path::is_lookup_safe_module_name;
 pub use crate::path::module_name_to_path;
 pub use crate::path::module_path_to_name;
 

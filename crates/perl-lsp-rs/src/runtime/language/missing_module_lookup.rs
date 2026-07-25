@@ -5,9 +5,11 @@
 
 use super::super::*;
 use crate::protocol::invalid_params;
+use perl_module::module_name_to_path;
 use perl_module::resolution::{
     IncRoot, IncRootKind, ModuleUriResolution, resolve_module_uri_with_effective_inc,
 };
+use perl_module::is_lookup_safe_module_name;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -59,12 +61,11 @@ impl LspServer {
             &context.effective_roots,
             timeout,
         );
-        let expected_relative_path = expected_module_relative_path(&request.module);
+        let expected_relative_path = module_name_to_path(&request.module);
         let searched_inc_paths = searched_inc_paths(
             &context.effective_roots,
             &workspace_folder_paths,
             &expected_relative_path,
-            &context.root,
         );
         let result = module_lookup_result(
             &request.module,
@@ -163,11 +164,17 @@ struct MissingModuleLookupRequest {
 impl MissingModuleLookupRequest {
     fn from_value(value: &Value) -> Result<Self, JsonRpcError> {
         if let Some(module) = value.as_str() {
+            if !is_lookup_safe_module_name(module) {
+                return Err(invalid_params("Invalid module name for missing-module lookup"));
+            }
             return Ok(Self { module: module.to_string(), doc_uri: None, position: None });
         }
 
         let module = request_module(value)
             .ok_or_else(|| invalid_params("Missing module for missing-module lookup"))?;
+        if !is_lookup_safe_module_name(&module) {
+            return Err(invalid_params("Invalid module name for missing-module lookup"));
+        }
         let doc_uri = request_doc_uri(value);
         let position = request_position(value);
 
@@ -218,15 +225,10 @@ fn extract_module_from_pl701_message(message: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-fn expected_module_relative_path(module: &str) -> String {
-    format!("{}.pm", module.replace("::", "/"))
-}
-
 fn searched_inc_paths(
     roots: &[IncRoot],
     workspace_folder_paths: &[PathBuf],
     relative_path: &str,
-    workspace_root: &Path,
 ) -> Vec<Value> {
     let mut ordered_roots = roots.to_vec();
     ordered_roots.sort_by_key(|root| root.precedence);
@@ -236,10 +238,17 @@ fn searched_inc_paths(
             let candidates = candidate_paths_for_root(root, workspace_folder_paths, relative_path)
                 .into_iter()
                 .map(|path| {
+                    let inside_workspace = path_is_under_workspace_roots(&path, workspace_folder_paths);
+                    let exists = if inside_workspace {
+                        json!(path.is_file())
+                    } else {
+                        Value::Null
+                    };
                     json!({
                         "path": path.display().to_string(),
-                        "exists": path.is_file(),
-                        "inside_workspace": path.starts_with(workspace_root),
+                        "exists": exists,
+                        "inside_workspace": inside_workspace,
+                        "probed": inside_workspace,
                     })
                 })
                 .collect::<Vec<_>>();
@@ -360,7 +369,7 @@ fn missing_module_root_missing_payload(request: &MissingModuleLookupRequest) -> 
         "schema_version": MISSING_MODULE_LOOKUP_SCHEMA_VERSION,
         "command": EXPLAIN_MISSING_MODULE_LOOKUP_COMMAND,
         "requested_module": request.module,
-        "expected_relative_path": expected_module_relative_path(&request.module),
+        "expected_relative_path": module_name_to_path(&request.module),
         "text_document_uri": request.doc_uri,
         "request_position": request.position.map(|(line, character)| json!({
             "line": line,
@@ -393,7 +402,7 @@ fn missing_module_root_missing_payload(request: &MissingModuleLookupRequest) -> 
             "provider": "module_resolution",
             "command": EXPLAIN_MISSING_MODULE_LOOKUP_COMMAND,
             "requested_module": request.module,
-            "expected_relative_path": expected_module_relative_path(&request.module),
+            "expected_relative_path": module_name_to_path(&request.module),
             "result": "workspace_root_missing",
             "workspace_root_class": "none",
             "workspace_root_hash": null,
@@ -403,6 +412,15 @@ fn missing_module_root_missing_payload(request: &MissingModuleLookupRequest) -> 
             "perl5lib_policy": "workspace_root_missing",
             "support_tier_link": "docs/project/status/SUPPORT_TIERS.md#claim-rows",
         },
+    })
+}
+
+fn path_is_under_workspace_roots(path: &Path, workspace_roots: &[PathBuf]) -> bool {
+    workspace_roots.iter().any(|root| {
+        match (path.canonicalize(), root.canonicalize()) {
+            (Ok(canonical_path), Ok(canonical_root)) => canonical_path.starts_with(&canonical_root),
+            _ => path.starts_with(root),
+        }
     })
 }
 
