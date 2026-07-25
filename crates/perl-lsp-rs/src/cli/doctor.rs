@@ -1224,9 +1224,14 @@ mod tests {
     #[test]
     fn load_workspace_config_surfaces_rejected_absolute_include_path() -> TestResult {
         let temp = tempfile::tempdir()?;
+        // "/etc" is not absolute on Windows; there the entry would be rejected
+        // as an unsafe relative path instead, so the test would pass for the
+        // wrong reason. Mirrors the platform handling in
+        // `apply_to_workspace_config_rejects_absolute_include_paths`.
+        let absolute = if cfg!(windows) { r"C:\Windows" } else { "/etc" };
         std::fs::write(
             temp.path().join(".perl-lsp.toml"),
-            "[perl]\ninclude_paths = [\"/etc\", \"lib\"]\n",
+            format!("[perl]\ninclude_paths = [\"{}\", \"lib\"]\n", absolute.escape_default()),
         )?;
         let mut workspace_config = WorkspaceConfig::default();
 
@@ -1235,20 +1240,24 @@ mod tests {
         assert!(matches!(report.status, ProjectConfigStatus::Loaded));
         assert_eq!(workspace_config.include_paths, vec!["lib".to_string()]);
         assert_eq!(report.rejected_include_paths.len(), 1);
-        assert!(report.rejected_include_paths[0].contains("/etc"));
+        assert!(report.rejected_include_paths[0].contains(absolute));
         Ok(())
     }
 
     #[test]
     fn doctor_report_prints_rejected_include_paths_section() -> TestResult {
         let temp = tempfile::tempdir()?;
-        std::fs::write(temp.path().join(".perl-lsp.toml"), "[perl]\ninclude_paths = [\"/etc\"]\n")?;
+        let absolute = if cfg!(windows) { r"C:\Windows" } else { "/etc" };
+        std::fs::write(
+            temp.path().join(".perl-lsp.toml"),
+            format!("[perl]\ninclude_paths = [\"{}\"]\n", absolute.escape_default()),
+        )?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
         let rendered = render_report(build_doctor_report_struct(dir)?);
 
         assert!(rendered.contains("Rejected .perl-lsp.toml include_paths entries:"));
-        assert!(rendered.contains("/etc"));
+        assert!(rendered.contains(absolute));
         Ok(())
     }
 
