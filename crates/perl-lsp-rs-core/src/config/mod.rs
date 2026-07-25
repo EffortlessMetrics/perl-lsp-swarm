@@ -8,7 +8,7 @@
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use crate::platform::resolve_perl_path_with_toolchain;
-use perl_parser_core::path_security::validate_workspace_path;
+use perl_parser_core::path_security::{WorkspacePathError, validate_workspace_path};
 use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 use std::process::{Command, Output, Stdio};
@@ -1595,6 +1595,26 @@ impl ProjectConfig {
     ) -> Vec<RejectedIncludePath> {
         let mut rejected = Vec::new();
         if !self.perl.include_paths.is_empty() {
+            // Fail closed: if the workspace root itself cannot be canonicalized
+            // there is nothing to validate containment against, so no entry can
+            // be trusted. Detected once here rather than inferred per-entry, so
+            // the reported reason names the actual cause instead of blaming
+            // each path for "escaping" a root that could not be read.
+            if let Err(err) = std::fs::canonicalize(workspace_root) {
+                for entry in &self.perl.include_paths {
+                    rejected.push(RejectedIncludePath {
+                        entry: entry.clone(),
+                        reason: RejectedIncludePathReason::WorkspaceRootUnavailable(
+                            err.to_string(),
+                        ),
+                    });
+                }
+                // Fail closed means the entries are dropped, not merely
+                // reported: leaving a previously-set list in place would let
+                // an unvalidated path stay live.
+                config.include_paths.clear();
+                return rejected;
+            }
             let mut valid = Vec::with_capacity(self.perl.include_paths.len());
             for entry in &self.perl.include_paths {
                 let candidate = Path::new(entry);
@@ -1608,7 +1628,7 @@ impl ProjectConfig {
                 if let Err(err) = validate_workspace_path(candidate, workspace_root) {
                     rejected.push(RejectedIncludePath {
                         entry: entry.clone(),
-                        reason: RejectedIncludePathReason::EscapesWorkspace(err.to_string()),
+                        reason: RejectedIncludePathReason::from_path_error(&err),
                     });
                     continue;
                 }
@@ -1647,6 +1667,12 @@ pub struct RejectedIncludePath {
 }
 
 /// Why a `.perl-lsp.toml` `include_paths` entry was rejected.
+///
+/// These categories mirror [`WorkspacePathError`] rather than collapsing into
+/// one bucket: this is a public operational surface (doctor output,
+/// `window/showMessage`), and "escapes the workspace root" is simply false for
+/// an entry containing null bytes or for an unreadable workspace root.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RejectedIncludePathReason {
     /// Absolute paths are never honoured from workspace-supplied
@@ -1655,15 +1681,19 @@ pub enum RejectedIncludePathReason {
     /// channel instead — which is itself pending provenance hardening under
     /// issue #4998, so this is a narrower statement than "trusted".
     Absolute,
-    /// Relative entry was rejected by `validate_workspace_path`.
-    ///
-    /// Covers every non-absolute rejection, not only containment failures:
-    /// traversal, a symlink resolving outside the workspace, and also
-    /// `WorkspacePathError::InvalidPathCharacters` (null or control bytes),
-    /// which is checked before any containment logic runs. The variant name
-    /// describes the common case; the wrapped string carries the specific
-    /// reason.
-    EscapesWorkspace(String),
+    /// Lexical `..` traversal out of the workspace.
+    Traversal(String),
+    /// Normalizes to a location outside the workspace root.
+    OutsideWorkspace(String),
+    /// A symlink component resolves to a target outside the workspace root.
+    SymlinkOutsideWorkspace(String),
+    /// Null bytes or disallowed control characters. Checked before any
+    /// containment logic, so this is not a containment failure.
+    InvalidCharacters,
+    /// The workspace root itself could not be canonicalized (missing,
+    /// unreadable, or not a directory), so no entry could be validated
+    /// against it. Every entry is rejected — this is the fail-closed case.
+    WorkspaceRootUnavailable(String),
 }
 
 impl RejectedIncludePath {
@@ -1677,9 +1707,46 @@ impl RejectedIncludePath {
                  editor settings instead — not in a file checked into the repository.",
                 self.entry
             ),
-            RejectedIncludePathReason::EscapesWorkspace(detail) => {
-                format!("'{}': escapes the workspace root ({detail})", self.entry)
+            RejectedIncludePathReason::Traversal(detail) => {
+                format!("'{}': traverses out of the workspace root ({detail})", self.entry)
             }
+            RejectedIncludePathReason::OutsideWorkspace(detail) => {
+                format!("'{}': resolves outside the workspace root ({detail})", self.entry)
+            }
+            RejectedIncludePathReason::SymlinkOutsideWorkspace(detail) => {
+                format!(
+                    "'{}': a symlink in this path resolves outside the workspace root ({detail})",
+                    self.entry
+                )
+            }
+            RejectedIncludePathReason::InvalidCharacters => {
+                format!("'{}': contains null bytes or disallowed control characters", self.entry)
+            }
+            RejectedIncludePathReason::WorkspaceRootUnavailable(detail) => {
+                format!(
+                    "'{}': the workspace root could not be resolved, so no include_paths \
+                     entry could be validated ({detail})",
+                    self.entry
+                )
+            }
+        }
+    }
+}
+
+impl RejectedIncludePathReason {
+    /// Map a [`WorkspacePathError`] onto the matching rejection category.
+    ///
+    /// Kept exhaustive on purpose: a new `WorkspacePathError` variant must be
+    /// classified here rather than silently inheriting a generic bucket.
+    fn from_path_error(err: &WorkspacePathError) -> Self {
+        match err {
+            WorkspacePathError::PathTraversalAttempt(d) => Self::Traversal(d.clone()),
+            WorkspacePathError::PathOutsideWorkspace(d) => Self::OutsideWorkspace(d.clone()),
+            WorkspacePathError::SymlinkOutsideWorkspace(d) => {
+                Self::SymlinkOutsideWorkspace(d.clone())
+            }
+            WorkspacePathError::InvalidPathCharacters => Self::InvalidCharacters,
+            other => Self::OutsideWorkspace(other.to_string()),
         }
     }
 }
@@ -3251,7 +3318,11 @@ profile = "recommended"
         assert_eq!(workspace.include_paths, vec!["vendor/lib".to_string()]);
         assert_eq!(rejected.len(), 1);
         assert_eq!(rejected[0].entry, "../../../../etc");
-        assert!(matches!(rejected[0].reason, RejectedIncludePathReason::EscapesWorkspace(_)));
+        assert!(matches!(
+            rejected[0].reason,
+            RejectedIncludePathReason::Traversal(_)
+                | RejectedIncludePathReason::OutsideWorkspace(_)
+        ));
         Ok(())
     }
 
@@ -3290,7 +3361,11 @@ profile = "recommended"
 
         assert!(workspace.include_paths.is_empty());
         assert_eq!(rejected.len(), 1);
-        assert!(matches!(rejected[0].reason, RejectedIncludePathReason::EscapesWorkspace(_)));
+        assert!(matches!(
+            rejected[0].reason,
+            RejectedIncludePathReason::SymlinkOutsideWorkspace(_)
+                | RejectedIncludePathReason::OutsideWorkspace(_)
+        ));
         Ok(())
     }
 
