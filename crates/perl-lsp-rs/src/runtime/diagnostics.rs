@@ -3767,4 +3767,101 @@ print \"unreachable\\n\";\n";
             "legacy engine code actions keep the legacy policy code; got: {text}"
         );
     }
+
+    fn native_critic_quickfixes_for_code<'a>(actions: &'a [Value], code: &str) -> Vec<&'a Value> {
+        actions
+            .iter()
+            .filter(|action| {
+                action.get("kind").and_then(Value::as_str) == Some("quickfix")
+                    && action.get("diagnostics").and_then(Value::as_array).is_some_and(|diags| {
+                        diags.iter().any(|diag| {
+                            diag.get("code").and_then(Value::as_str) == Some(code)
+                        })
+                    })
+            })
+            .collect()
+    }
+
+    fn open_native_critic_document(server: &LspServer, uri: &str, text: &str) {
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_native_critic_profile("strict");
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": text,
+                }
+            })))
+            .expect("did_open must succeed");
+    }
+
+    #[test]
+    fn native_critic_shadowed_lexical_suggested_fix_is_not_a_quickfix() {
+        let (server, _buf) = make_server_with_capture();
+        let uri = "file:///native_critic_shadowed_lexical_code_action.pl";
+        let text = "use strict;\nuse warnings;\nmy $value = 1;\n{ my $value = 2; print $value; }\nprint $value;\n";
+        open_native_critic_document(&server, uri, text);
+
+        let result = server
+            .test_handle_code_action(Some(code_action_params(uri)))
+            .expect("code_action must succeed")
+            .unwrap_or_default();
+        let actions = result.as_array().cloned().unwrap_or_default();
+        let quickfixes =
+            native_critic_quickfixes_for_code(&actions, "native.variables.shadowed_lexical");
+
+        assert!(
+            quickfixes.is_empty(),
+            "Suggested shadowed_lexical fixes must not surface as quickfixes; got: {result}"
+        );
+    }
+
+    #[test]
+    fn native_critic_duplicate_parameter_suggested_fix_is_not_a_quickfix() {
+        let (server, _buf) = make_server_with_capture();
+        let uri = "file:///native_critic_duplicate_parameter_code_action.pl";
+        let text = "use strict;\nuse warnings;\nsub helper($arg, $arg) { return $arg; }\n";
+        open_native_critic_document(&server, uri, text);
+
+        let result = server
+            .test_handle_code_action(Some(code_action_params(uri)))
+            .expect("code_action must succeed")
+            .unwrap_or_default();
+        let actions = result.as_array().cloned().unwrap_or_default();
+        let quickfixes =
+            native_critic_quickfixes_for_code(&actions, "native.variables.duplicate_parameter");
+
+        assert!(
+            quickfixes.is_empty(),
+            "Suggested duplicate_parameter fixes must not surface as quickfixes; got: {result}"
+        );
+    }
+
+    #[test]
+    fn native_critic_require_use_strict_safe_fix_remains_a_quickfix() {
+        let (server, _buf) = make_server_with_capture();
+        let uri = "file:///native_critic_require_use_strict_code_action.pl";
+        let text = "my $x = 1;\nprint $x;\n";
+        open_native_critic_document(&server, uri, text);
+
+        let result = server
+            .test_handle_code_action(Some(code_action_params(uri)))
+            .expect("code_action must succeed")
+            .unwrap_or_default();
+        let actions = result.as_array().cloned().unwrap_or_default();
+        let quickfixes =
+            native_critic_quickfixes_for_code(&actions, "native.testing.require_use_strict");
+
+        assert_eq!(
+            quickfixes.len(),
+            1,
+            "Safe require_use_strict fixes must remain one-click quickfixes; got: {result}"
+        );
+        assert!(
+            quickfixes[0].get("edit").is_some(),
+            "require_use_strict quickfix must include a workspace edit: {result}"
+        );
+    }
 }
