@@ -656,10 +656,39 @@ struct SubroutineInfo {
     is_private: bool,
 }
 
-/// Test runner integration for executing Perl tests
+/// Error returned when `test_generator::TestRunner` cannot perform execution work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TestExecutionError {
+    /// The requested operation is not implemented on this non-executing runner.
+    Unsupported {
+        /// Name of the unsupported operation (for example `"run_tests"`).
+        operation: &'static str,
+        /// Human-readable explanation of why the operation is unavailable.
+        reason: &'static str,
+    },
+}
+
+impl std::fmt::Display for TestExecutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported { operation, reason } => {
+                write!(f, "{operation} is unsupported: {reason}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TestExecutionError {}
+
+const RUN_TESTS_UNSUPPORTED: &str = "test_generator::TestRunner does not execute subprocesses; \
+    use perl_tdd_support::test_runner::TestRunner for execution";
+
+/// Test runner integration for test generation workflows.
 ///
-/// Provides functionality for running test suites, watch mode for continuous
-/// testing, and coverage tracking integration.
+/// This type does **not** execute Perl tests. Use [`crate::test_runner::TestRunner`] for
+/// subprocess-backed execution.
+#[deprecated(note = "use perl_tdd_support::test_runner::TestRunner for execution; \
+            test_generator::TestRunner is generation-only until #4972 convergence")]
 pub struct TestRunner {
     /// Command to run tests (e.g., "prove -l")
     test_command: String,
@@ -669,12 +698,14 @@ pub struct TestRunner {
     coverage: bool,
 }
 
+#[allow(deprecated, reason = "deprecated type's own inherent impl")]
 impl Default for TestRunner {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[allow(deprecated, reason = "deprecated type's own inherent impl")]
 impl TestRunner {
     /// Create a new test runner with default settings
     ///
@@ -692,51 +723,44 @@ impl TestRunner {
         Self { test_command: command, watch_mode: false, coverage: false }
     }
 
-    /// Run tests and return results
-    pub fn run_tests(&self, test_files: &[String]) -> TestResults {
-        let mut results = TestResults::default();
-
-        // Build command
-        let mut cmd = self.test_command.clone();
-
-        if self.coverage {
-            cmd = format!("cover -test {}", cmd);
-        }
-
-        for file in test_files {
-            cmd.push(' ');
-            cmd.push_str(file);
-        }
-
-        // Execute tests (simplified - would use std::process::Command in real impl)
-        results.total = test_files.len();
-        results.passed = test_files.len(); // Assume all pass for now
-
-        results
+    /// Configure watch/coverage flags for fail-closed regression tests.
+    #[doc(hidden)]
+    pub fn with_execution_flags_for_tests(watch_mode: bool, coverage: bool) -> Self {
+        Self { test_command: "prove -l".to_string(), watch_mode, coverage }
     }
 
-    /// Run tests in watch mode
-    pub fn watch(&self, _test_files: &[String]) -> Result<(), String> {
-        if !self.watch_mode {
-            return Err("Watch mode not enabled".to_string());
-        }
-
-        // Would implement file watching here
-        Ok(())
-    }
-
-    /// Get test coverage
-    pub fn get_coverage(&self) -> Option<CoverageReport> {
-        if !self.coverage {
-            return None;
-        }
-
-        Some(CoverageReport {
-            line_coverage: 85.0,
-            branch_coverage: 75.0,
-            function_coverage: 90.0,
-            uncovered_lines: vec![],
+    /// Run tests and return results.
+    ///
+    /// Always fails closed: this runner does not spawn subprocesses.
+    pub fn run_tests(&self, _test_files: &[String]) -> Result<TestResults, TestExecutionError> {
+        let _ = &self.test_command;
+        Err(TestExecutionError::Unsupported {
+            operation: "run_tests",
+            reason: RUN_TESTS_UNSUPPORTED,
         })
+    }
+
+    /// Run tests in watch mode.
+    pub fn watch(&self, _test_files: &[String]) -> Result<(), TestExecutionError> {
+        if !self.watch_mode {
+            return Err(TestExecutionError::Unsupported {
+                operation: "watch",
+                reason: "watch mode is not enabled",
+            });
+        }
+
+        Err(TestExecutionError::Unsupported {
+            operation: "watch",
+            reason: "no file watcher is installed",
+        })
+    }
+
+    /// Get test coverage measured by a real test execution.
+    ///
+    /// Returns `None` when coverage was not measured.
+    pub fn get_coverage(&self) -> Option<CoverageReport> {
+        let _ = self.coverage;
+        None
     }
 }
 

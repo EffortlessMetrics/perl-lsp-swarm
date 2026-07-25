@@ -3,6 +3,7 @@
 //! Tests cover: must/must_some/must_err helpers, governance structs,
 //! TDD workflow, test generation, test runner, and refactoring analysis.
 #![allow(clippy::field_reassign_with_default)]
+#![allow(deprecated, reason = "comprehensive tests cover deprecated test_generator::TestRunner")]
 
 use perl_tdd_support::governance::*;
 use perl_tdd_support::tdd_basic::{
@@ -568,23 +569,22 @@ fn test_generator_with_perf_tests() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // ---------------------------------------------------------------------------
-// test_generator::TestRunner (prove runner)
+// test_generator::TestRunner (non-executing; fail-closed)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn gen_test_runner_new() -> Result<(), Box<dyn std::error::Error>> {
     let runner = GenTestRunner::new();
-    let results = runner.run_tests(&[]);
-    assert_eq!(results.total, 0);
-    assert_eq!(results.passed, 0);
+    let result = runner.run_tests(&[]);
+    assert!(result.is_err());
     Ok(())
 }
 
 #[test]
 fn gen_test_runner_with_command() -> Result<(), Box<dyn std::error::Error>> {
     let runner = GenTestRunner::with_command("prove -v -l".to_string());
-    let results = runner.run_tests(&["t/basic.t".to_string()]);
-    assert_eq!(results.total, 1);
+    let result = runner.run_tests(&["t/basic.t".to_string()]);
+    assert!(result.is_err());
     Ok(())
 }
 
@@ -1124,18 +1124,19 @@ fn full_tdd_workflow_get_status() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn full_tdd_workflow_green_then_refactor_cycle() -> Result<(), Box<dyn std::error::Error>> {
+fn full_tdd_workflow_run_tests_fail_closed_then_refactor_cycle()
+-> Result<(), Box<dyn std::error::Error>> {
     use std::path::PathBuf;
 
-    use perl_tdd_support::tdd_workflow::{TddAction, TddConfig, TddWorkflow, WorkflowState};
+    use perl_tdd_support::tdd_workflow::{TddConfig, TddWorkflow, WorkflowState};
 
     let mut wf = TddWorkflow::new(TddConfig::default());
     wf.start_cycle("my_feature");
 
-    let green = wf.run_tests(&[PathBuf::from("t/my_feature.t")]);
-    assert_eq!(green.phase, "Green");
-    assert!(green.actions.iter().any(|action| matches!(action, TddAction::SuggestRefactorings)));
-    assert_eq!(wf.get_status().state, WorkflowState::Green);
+    let red = wf.run_tests(&[PathBuf::from("t/my_feature.t")]);
+    assert_eq!(red.phase, "Red");
+    assert!(!red.message.contains("All tests pass"));
+    assert_eq!(wf.get_status().state, WorkflowState::Red);
 
     let refactor = wf.start_refactor();
     assert_eq!(refactor.phase, "Refactor");

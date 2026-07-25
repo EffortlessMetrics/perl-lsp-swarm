@@ -19,6 +19,7 @@ pub struct TddWorkflow {
     /// Test generator
     generator: TestGenerator,
     /// Test runner
+    #[allow(deprecated, reason = "workflow still wraps generation runner until #4972")]
     runner: TestRunner,
     /// Refactoring suggester
     suggester: RefactoringSuggester,
@@ -124,6 +125,7 @@ pub struct BranchCoverage {
 
 impl TddWorkflow {
     /// Create a new TDD workflow manager with the given configuration
+    #[allow(deprecated, reason = "workflow still wraps generation runner until #4972")]
     pub fn new(config: TddConfig) -> Self {
         let framework = match config.test_framework.as_str() {
             "Test2::V0" => TestFramework::Test2V0,
@@ -282,7 +284,17 @@ impl TddWorkflow {
         let file_strings: Vec<String> =
             test_files.iter().map(|p| p.to_string_lossy().to_string()).collect();
 
-        let results = self.runner.run_tests(&file_strings);
+        let results = match self.runner.run_tests(&file_strings) {
+            Ok(results) => results,
+            Err(err) => {
+                self.state = WorkflowState::Red;
+                return TddCycleResult {
+                    phase: format!("{:?}", WorkflowState::Red),
+                    message: err.to_string(),
+                    actions: vec![],
+                };
+            }
+        };
 
         // Cache results
         for file in test_files {
