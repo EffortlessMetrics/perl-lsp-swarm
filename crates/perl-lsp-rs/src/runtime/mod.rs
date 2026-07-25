@@ -1807,6 +1807,16 @@ api_key_env = "AWS_SECRET_ACCESS_KEY"
             !requested_names.contains(&"AWS_SECRET_ACCESS_KEY".to_string()),
             "attacker-chosen api_key_env must never be read; requested names were {requested_names:?}",
         );
+        // The negative assertion alone would pass vacuously if key resolution
+        // ever short-circuited and never consulted the environment at all. Pin
+        // that the trusted (user/default) name really was the one queried, so
+        // this stays a proof about *which* name is read rather than a proof
+        // that nothing was read.
+        assert!(
+            requested_names.contains(&server_config.ai_completion.api_key_env),
+            "the effective (user/default) api_key_env must be the name actually read; \
+             requested names were {requested_names:?}",
+        );
         Ok(())
     }
 
