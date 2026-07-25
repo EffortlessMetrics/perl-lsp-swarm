@@ -202,10 +202,14 @@ fn deepest_existing_ancestor(path: &Path) -> (Option<PathBuf>, PathBuf) {
             }
             return (Some(ancestor), remainder);
         }
-        let Some(name) = ancestor.file_name().map(std::ffi::OsStr::to_os_string) else {
+        // Use the raw trailing Component rather than file_name(), which returns
+        // None whenever the path terminates in `.` or `..` and would stop the
+        // walk-up before reaching a real, possibly-symlinked ancestor further up
+        // (e.g. `escape/sub/..` where `sub` does not exist but `escape` does).
+        let Some(component) = ancestor.components().next_back() else {
             return (None, path.to_path_buf());
         };
-        trailing.push(name);
+        trailing.push(component.as_os_str().to_os_string());
         if !ancestor.pop() {
             return (None, path.to_path_buf());
         }
@@ -1211,13 +1215,13 @@ mod tests {
     /// later, when the leaf was created on the other side of the symlink.
     #[cfg(unix)]
     #[test]
-    fn escaping_symlink_ancestor_with_missing_leaf_is_rejected() {
-        let workspace = tempfile::tempdir().expect("workspace tempdir");
-        let outside = tempfile::tempdir().expect("outside tempdir");
+    fn escaping_symlink_ancestor_with_missing_leaf_is_rejected() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
 
         // workspace/escape -> /outside   (exists, escapes the workspace)
         let link = workspace.path().join("escape");
-        std::os::unix::fs::symlink(outside.path(), &link).expect("create symlink");
+        std::os::unix::fs::symlink(outside.path(), &link)?;
 
         // Leaf does not exist yet at validation time.
 
@@ -1231,7 +1235,7 @@ mod tests {
         );
 
         // And it must stay rejected once the descendant actually appears.
-        std::fs::create_dir_all(outside.path().join("not-created-yet")).expect("create later");
+        std::fs::create_dir_all(outside.path().join("not-created-yet"))?;
         let after = validate_workspace_path(
             std::path::Path::new("escape/not-created-yet"),
             workspace.path(),
@@ -1240,17 +1244,39 @@ mod tests {
             after.is_err(),
             "must still be rejected after the descendant is created, got {after:?}"
         );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn escaping_symlink_ancestor_survives_trailing_dotdot_with_missing_leaf() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let link = workspace.path().join("escape");
+        std::os::unix::fs::symlink(outside.path(), &link)?;
+
+        // `sub` does not exist on either side; the trailing `..` forces the
+        // deepest-existing-ancestor walk through a ParentDir component before
+        // reaching the real (symlinked) ancestor `escape`.
+        let result =
+            validate_workspace_path(std::path::Path::new("escape/sub/../leak"), workspace.path());
+        assert!(
+            result.is_err(),
+            "a `..` after a nonexistent dir must not bypass the symlink-ancestor check, got {result:?}"
+        );
+        Ok(())
     }
 
     /// The above must not over-reject: a safe relative path whose leaf does not
     /// exist yet (e.g. `vendor/lib/perl5` before `carton install`) stays valid.
     #[test]
-    fn safe_missing_leaf_under_real_ancestor_is_accepted() {
-        let workspace = tempfile::tempdir().expect("workspace tempdir");
-        std::fs::create_dir_all(workspace.path().join("vendor")).expect("create ancestor");
+    fn safe_missing_leaf_under_real_ancestor_is_accepted() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        std::fs::create_dir_all(workspace.path().join("vendor"))?;
 
         let ok =
             validate_workspace_path(std::path::Path::new("vendor/lib/perl5"), workspace.path());
         assert!(ok.is_ok(), "nonexistent-but-contained path must be accepted, got {ok:?}");
+        Ok(())
     }
 }
