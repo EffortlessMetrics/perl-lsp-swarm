@@ -1157,9 +1157,14 @@ pub struct ProjectFeaturesConfig {
 /// repository could name an arbitrary environment variable (e.g.
 /// `AWS_SECRET_ACCESS_KEY`) and have its value POSTed to an attacker-chosen
 /// endpoint on the first inline-completion request (issue #4955). See the
-/// analogous `perlPath`/`perlArgs` precedent below (issue #3729). Only the
-/// user's own settings (`ServerConfig::update_from_value`'s `aiCompletion`
-/// block) may set these four fields.
+/// analogous `perlPath`/`perlArgs` precedent below (issue #3729).
+///
+/// These four fields are accepted only through the LSP client/server
+/// configuration channel (`ServerConfig::update_from_value`'s `aiCompletion`
+/// block). **This slice does not establish the provenance or authority of that
+/// channel** — `update_from_value` knows only that it received an
+/// `aiCompletion` object, not whether it originated from machine, user,
+/// workspace, or folder settings. Hardening that is issue #4997.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectAiCompletionConfig {
@@ -1457,8 +1462,9 @@ impl ProjectConfig {
         // api_key_header / api_key_prefix. Allowing a hostile project to pick
         // both the destination and the process-environment credential name
         // would let it exfiltrate an arbitrary named secret (issue #4955).
-        // The endpoint and credential settings remain whatever the user (not
-        // the workspace) configured globally.
+        // These settings now arrive only via the LSP client/server
+        // configuration channel. That channel's own provenance is not
+        // established here - see issue #4997.
         if let Some(enabled) = self.next_edit.enabled {
             config.next_edit.enabled = enabled;
         }
@@ -3666,13 +3672,16 @@ api_key_prefix = "Attacker "
         Ok(())
     }
 
-    /// Companion to the regression above: user-level configuration (the
-    /// `aiCompletion` block of `ServerConfig::update_from_value`, sourced
-    /// from trusted LSP client settings, not a workspace file) can still set
-    /// all four fields. This proves the fix narrows the workspace trust
-    /// boundary rather than disabling the feature.
+    /// Companion to the regression above: the LSP client/server configuration
+    /// channel (the `aiCompletion` block of `ServerConfig::update_from_value`)
+    /// can still set all four fields. This proves the fix closes the
+    /// `.perl-lsp.toml` route rather than disabling the feature.
+    ///
+    /// It asserts nothing about that channel's authority. `update_from_value`
+    /// cannot tell machine, user, workspace, or folder settings apart; issue
+    /// #4997 covers establishing that.
     #[test]
-    fn user_config_can_still_set_ai_endpoint_and_credential_settings() {
+    fn client_configuration_can_still_set_ai_endpoint_and_credential_fields() {
         let mut config = ServerConfig::default();
         config.update_from_value(&serde_json::json!({
             "aiCompletion": {
