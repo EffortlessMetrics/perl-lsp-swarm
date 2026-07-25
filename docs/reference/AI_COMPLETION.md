@@ -17,13 +17,23 @@ Code settings UI.
 | `perl-lsp.aiCompletion.enabled` | boolean | `false` | Enable AI-powered inline completions. |
 | `perl-lsp.aiCompletion.streaming.enabled` | boolean | `true` | Enable progressive streaming (ghost text updates as tokens arrive). Requires `aiCompletion.enabled`. |
 
-Model, timeout, and rate limits are configured via the LSP server config or the
-project config file, not VS Code settings.
+Where each field can be set:
 
-`endpoint` and the API-key fields are configured **only** via the LSP server
-config — they are not accepted from `.perl-lsp.toml` (see "Destination and
-credentials" below, and issue #4955). The API key itself is always read from an
-environment variable; it is never stored in settings.
+| Channel | Fields it accepts |
+|---------|-------------------|
+| `.perl-lsp.toml` | `enabled`, `provider`, `model` only |
+| LSP client/server configuration | the complete server field set below |
+| Primary VS Code extension | activation and streaming toggles only — no endpoint or credential surface |
+
+`endpoint` and the API-key fields are **not** accepted from `.perl-lsp.toml` (see
+"Destination and credentials" below, and issue #4955). Timeout, rate limits,
+output bounds, and streaming controls are likewise server-configuration fields,
+not project-config fields.
+
+The project-config row is not durable design: issue #4997 is expected to remove
+the remaining project-side AI authority so a repository cannot activate the
+feature at all. The API key itself is always read from an environment variable;
+it is never stored in settings.
 
 ## Server Configuration Fields
 
@@ -77,7 +87,11 @@ are not honoured from workspace settings (issue #3729). See issue #4955.
 
 **These keys are silently ignored, not rejected**, because the TOML deserializer
 drops unknown fields. If you set `endpoint` in `.perl-lsp.toml` and requests keep
-going to the default destination, that is why — move it to your client settings.
+going to the default destination, that is why.
+
+Supply these fields through an LSP client that supports server configuration.
+**The primary VS Code extension currently does not expose that surface** — see
+the known gap below.
 
 > **The client-settings channel is not itself fully hardened yet.** Do not read
 > the above as "these values are safe because they come from the user". In
