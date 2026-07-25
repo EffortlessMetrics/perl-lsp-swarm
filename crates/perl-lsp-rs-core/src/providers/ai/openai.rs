@@ -1,11 +1,12 @@
 //! OpenAI-compatible completion provider.
 
+use super::destination::{credential_may_attach, validate_endpoint};
 use super::prompt::build_fim_prompt;
 use super::rate_limiter::RateLimiter;
 use super::sse::SseParser;
 use crate::config::{
-    DEFAULT_AI_API_KEY_HEADER, DEFAULT_AI_API_KEY_PREFIX, is_safe_http_header_value_part,
-    normalize_ai_api_key_header, normalize_ai_api_key_prefix,
+    is_safe_http_header_value_part, normalize_ai_api_key_header, normalize_ai_api_key_prefix,
+    DEFAULT_AI_API_KEY_HEADER, DEFAULT_AI_API_KEY_PREFIX,
 };
 use crate::providers::inline_completion::{
     BackendError, BackendRequest, InlineCompletionBackend, StreamChunk, StreamControl,
@@ -28,6 +29,8 @@ pub struct OpenAiConfig {
     pub api_key_prefix: Option<String>,
     /// Global timeout in milliseconds.
     pub timeout_ms: u64,
+    /// Allow plain HTTP when the endpoint resolves to loopback only.
+    pub local_model_mode: bool,
 }
 
 /// An OpenAI-compatible completion provider using ureq for HTTP.
@@ -46,6 +49,7 @@ impl OpenAiConfig {
             api_key_header: DEFAULT_AI_API_KEY_HEADER.to_string(),
             api_key_prefix: Some(DEFAULT_AI_API_KEY_PREFIX.to_string()),
             timeout_ms,
+            local_model_mode: false,
         }
     }
 }
@@ -106,6 +110,31 @@ impl OpenAiProvider {
 
     fn uses_responses_api(&self) -> bool {
         self.config.endpoint.contains("/responses")
+    }
+
+    fn sanitize_transport_message(message: &str, api_key: &str) -> String {
+        let mut sanitized = message.to_string();
+        if !api_key.is_empty() {
+            sanitized = sanitized.replace(api_key, "<redacted>");
+        }
+        sanitized
+    }
+
+    fn map_transport_error(message: String, api_key: &str) -> BackendError {
+        let sanitized = Self::sanitize_transport_message(&message, api_key);
+        if sanitized.contains("timed out") || sanitized.contains("timeout") {
+            BackendError::Timeout
+        } else if sanitized.contains("401") || sanitized.contains("403") {
+            BackendError::Auth(sanitized)
+        } else {
+            BackendError::Transport(sanitized)
+        }
+    }
+
+    fn build_http_agent(timeout: std::time::Duration) -> ureq::Agent {
+        let config =
+            ureq::Agent::config_builder().timeout_global(Some(timeout)).max_redirects(0).build();
+        ureq::Agent::new_with_config(config)
     }
 
     fn extract_content_delta(data: &str) -> Option<String> {
@@ -229,8 +258,8 @@ mod tests {
     }
 
     #[test]
-    fn malformed_auth_header_name_falls_back_without_exposing_key()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn malformed_auth_header_name_falls_back_without_exposing_key(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let mut config = OpenAiConfig::new(
             "https://example.test/v1/chat/completions".to_string(),
             "custom-code-model".to_string(),
@@ -246,8 +275,8 @@ mod tests {
     }
 
     #[test]
-    fn malformed_auth_prefix_and_key_do_not_enter_header_text()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn malformed_auth_prefix_and_key_do_not_enter_header_text(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let mut config = OpenAiConfig::new(
             "https://example.test/v1/chat/completions".to_string(),
             "custom-code-model".to_string(),
@@ -286,27 +315,25 @@ impl InlineCompletionBackend for OpenAiProvider {
             return Err(BackendError::RateLimited);
         }
 
+        let approved = validate_endpoint(&self.config.endpoint, self.config.local_model_mode)
+            .map_err(|e| BackendError::Transport(e.to_string()))?;
+        if !credential_may_attach(&approved, &self.config.endpoint) {
+            return Err(BackendError::Transport(
+                "AI endpoint failed credential binding check".to_string(),
+            ));
+        }
+
         let body = self.build_request_body(req);
         let timeout = std::time::Duration::from_millis(req.timeout_ms);
-
-        let config = ureq::Agent::config_builder().timeout_global(Some(timeout)).build();
-        let agent = ureq::Agent::new_with_config(config);
+        let agent = Self::build_http_agent(timeout);
+        let auth_value = self.auth_header_value()?;
 
         let response = agent
             .post(&self.config.endpoint)
-            .header(self.auth_header_name(), self.auth_header_value()?.as_str())
+            .header(self.auth_header_name(), auth_value.as_str())
             .header("Content-Type", "application/json")
             .send_json(&body)
-            .map_err(|e| {
-                let msg = e.to_string();
-                if msg.contains("timed out") || msg.contains("timeout") {
-                    BackendError::Timeout
-                } else if msg.contains("401") || msg.contains("403") {
-                    BackendError::Auth(msg)
-                } else {
-                    BackendError::Transport(msg)
-                }
-            })?;
+            .map_err(|e| Self::map_transport_error(e.to_string(), &self.config.api_key))?;
 
         let reader = BufReader::new(response.into_body().into_reader());
         let mut parser = SseParser::new(reader);
@@ -336,7 +363,7 @@ impl InlineCompletionBackend for OpenAiProvider {
                     break;
                 }
                 Err(e) => {
-                    return Err(BackendError::Transport(e.to_string()));
+                    return Err(Self::map_transport_error(e.to_string(), &self.config.api_key));
                 }
             }
         }
