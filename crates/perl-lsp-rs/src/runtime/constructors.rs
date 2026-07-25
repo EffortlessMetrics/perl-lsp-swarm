@@ -94,6 +94,7 @@ impl LspServer {
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             pull_diagnostics_orchestrator: super::diagnostics::PullDiagnosticsOrchestrator::new(),
             provider_decision_traces: Arc::new(Mutex::new(HashMap::new())),
+            hover_trace_source_region_kind: Arc::new(Mutex::new(None)),
             semantic_tokens_cache: Arc::new(Mutex::new(HashMap::new())),
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
@@ -271,6 +272,7 @@ impl LspServer {
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             pull_diagnostics_orchestrator: super::diagnostics::PullDiagnosticsOrchestrator::new(),
             provider_decision_traces: Arc::new(Mutex::new(HashMap::new())),
+            hover_trace_source_region_kind: Arc::new(Mutex::new(None)),
             semantic_tokens_cache: Arc::new(Mutex::new(HashMap::new())),
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
@@ -389,6 +391,7 @@ impl LspServer {
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             pull_diagnostics_orchestrator: super::diagnostics::PullDiagnosticsOrchestrator::new(),
             provider_decision_traces: Arc::new(Mutex::new(HashMap::new())),
+            hover_trace_source_region_kind: Arc::new(Mutex::new(None)),
             semantic_tokens_cache: Arc::new(Mutex::new(HashMap::new())),
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),

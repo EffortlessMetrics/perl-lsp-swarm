@@ -129,6 +129,10 @@ pub use syntax::qualified_name;
 pub use syntax::quote::{parse_quote_operator_content, parse_qw_words};
 /// Perl source-file classification helpers (previously `perl-source-file`).
 pub use syntax::source_file;
+/// Generation-bound lexical source region index.
+pub use syntax::source_context::{
+    RangeClassification, SourceRegion, SourceRegionIndex, SourceRegionKind,
+};
 /// Text-line cursor and boundary helpers (previously `perl-text-line`).
 pub use syntax::text_line;
 

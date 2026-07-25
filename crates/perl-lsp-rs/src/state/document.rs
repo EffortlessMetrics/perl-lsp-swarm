@@ -175,6 +175,9 @@ pub struct ParsedSnapshot {
     /// until first requested via [`Self::type_environment`]; never populated
     /// for a `Minimal` (AST-less) snapshot.
     type_environment: OnceLock<Arc<crate::type_inference::TypeInferenceEngine>>,
+    /// Lazily-built, generation-owned source region index for non-code
+    /// classification evidence (comments, literals, POD, data sections).
+    source_region_index: OnceLock<Arc<perl_parser_core::SourceRegionIndex>>,
     /// Test-only: counts how many times the [`Self::semantic_analyzer`]
     /// construction closure has actually executed. Proves construction
     /// happens at most once per snapshot -- an `Arc::ptr_eq` identity check
@@ -190,6 +193,10 @@ pub struct ParsedSnapshot {
     /// [`Self::type_environment`].
     #[cfg(test)]
     type_environment_build_count: std::cell::Cell<usize>,
+    /// Test-only counterpart to `semantic_analyzer_build_count` for
+    /// [`Self::source_region_index`].
+    #[cfg(test)]
+    source_region_index_build_count: std::cell::Cell<usize>,
 }
 
 impl std::fmt::Debug for ParsedSnapshot {
@@ -205,6 +212,10 @@ impl std::fmt::Debug for ParsedSnapshot {
             .field("source", &self.source)
             .field("semantic_analyzer", &cell_state(self.semantic_analyzer.get().is_some()))
             .field("type_environment", &cell_state(self.type_environment.get().is_some()))
+            .field(
+                "source_region_index",
+                &cell_state(self.source_region_index.get().is_some()),
+            )
             .finish()
     }
 }
@@ -254,10 +265,13 @@ impl ParsedSnapshot {
             degradation_tier,
             semantic_analyzer: OnceLock::new(),
             type_environment: OnceLock::new(),
+            source_region_index: OnceLock::new(),
             #[cfg(test)]
             semantic_analyzer_build_count: std::cell::Cell::new(0),
             #[cfg(test)]
             type_environment_build_count: std::cell::Cell::new(0),
+            #[cfg(test)]
+            source_region_index_build_count: std::cell::Cell::new(0),
         }
     }
 
@@ -354,6 +368,25 @@ impl ParsedSnapshot {
         })))
     }
 
+    /// The single-file [`perl_parser_core::SourceRegionIndex`] for
+    /// this snapshot's generation, built lazily and exactly once on first
+    /// request and shared (by `Arc`) thereafter.
+    ///
+    /// Unlike [`Self::semantic_analyzer`] / [`Self::type_environment`], this is
+    /// available even when the parse produced no AST — classification is
+    /// source-text-only.
+    pub fn source_region_index(&self) -> Arc<perl_parser_core::SourceRegionIndex> {
+        Arc::clone(self.source_region_index.get_or_init(|| {
+            #[cfg(test)]
+            self.source_region_index_build_count
+                .set(self.source_region_index_build_count.get() + 1);
+            Arc::new(perl_parser_core::SourceRegionIndex::build_with_hash(
+                &self.source,
+                self.content_hash,
+            ))
+        }))
+    }
+
     /// Whether the [`Self::semantic_analyzer`] cell has been materialized.
     ///
     /// Test-only observability for the "a superseded snapshot with no semantic
@@ -388,6 +421,19 @@ impl ParsedSnapshot {
     #[cfg(test)]
     pub(crate) fn type_environment_build_count(&self) -> usize {
         self.type_environment_build_count.get()
+    }
+
+    /// Whether the [`Self::source_region_index`] cell has been materialized.
+    #[cfg(test)]
+    pub(crate) fn source_region_index_initialized(&self) -> bool {
+        self.source_region_index.get().is_some()
+    }
+
+    /// Test-only counterpart to [`Self::semantic_analyzer_build_count`] for
+    /// [`Self::source_region_index`].
+    #[cfg(test)]
+    pub(crate) fn source_region_index_build_count(&self) -> usize {
+        self.source_region_index_build_count.get()
     }
 }
 
@@ -1093,7 +1139,53 @@ mod tests {
         );
     }
 
-    /// A snapshot that is published and then immediately superseded by a newer
+    #[test]
+    fn source_region_index_construction_happens_exactly_once() {
+        let snapshot = snapshot_for("my $x = 1; # comment\n", 0);
+
+        for _ in 0..5 {
+            let _ = snapshot.source_region_index();
+        }
+
+        assert_eq!(
+            snapshot.source_region_index_build_count(),
+            1,
+            "source_region_index must build exactly once per snapshot"
+        );
+    }
+
+    #[test]
+    fn source_region_index_is_generation_bound() {
+        let source = "my $x = 1; # comment\n";
+        let snap0 = snapshot_for(source, 0);
+        let snap1 = snapshot_for("sub other {} # other\n", 1);
+        let idx0 = snap0.source_region_index();
+        let idx1 = snap1.source_region_index();
+        assert!(
+            !Arc::ptr_eq(&idx0, &idx1),
+            "distinct generations must not share one source region index allocation"
+        );
+    }
+
+    #[test]
+    fn superseded_snapshot_without_region_request_stays_lazy() {
+        let mut doc = DocumentState::new("my $x = 1;", 1);
+        let gen0 = doc.current_generation();
+        let snapshot0 = Arc::new(snapshot_for("my $x = 1;", gen0));
+        assert!(doc.publish_parsed_if_current(gen0, Arc::clone(&snapshot0)));
+
+        doc.apply_change(0, 8, 0, 9, "2", 2);
+        let gen1 = doc.current_generation();
+        let snapshot1 = Arc::new(snapshot_for("my $x = 2;", gen1));
+        assert!(doc.publish_parsed_if_current(gen1, snapshot1));
+
+        assert!(
+            !snapshot0.source_region_index_initialized(),
+            "superseded snapshot must not build source region index unless requested"
+        );
+    }
+
+    /// Repeated requests against a single snapshot invoke the underlying
     /// generation, with NO semantic request in between, performs zero semantic
     /// construction: both lazy cells remain unmaterialized. Superseded
     /// generations do not pay the analysis cost.

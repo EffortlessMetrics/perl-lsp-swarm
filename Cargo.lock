@@ -1836,6 +1836,7 @@ dependencies = [
  "perl-tdd-support",
  "perl-token",
  "proptest",
+ "ropey",
  "tempfile",
  "thiserror",
  "tracing-subscriber",

@@ -77,14 +77,28 @@ impl LspServer {
             }
 
             let t_analyze_start = std::time::Instant::now();
-            let (extracted, live_compiler_context) = match locked {
+            let (extracted, live_compiler_context) = match &locked {
                 Some((offset, parsed, text)) => {
-                    let live_compiler_context =
-                        Self::live_hover_compiler_context(uri, &text, offset);
+                    let source_region_kind = parsed.as_ref().map(|snapshot| {
+                        snapshot
+                            .source_region_index()
+                            .kind_at_offset(*offset)
+                            .as_str()
+                            .to_string()
+                    });
+                    if let Ok(mut trace_kind) = self.hover_trace_source_region_kind.lock() {
+                        *trace_kind = source_region_kind.clone();
+                    }
+                    let live_compiler_context = Self::live_hover_compiler_context(
+                        uri,
+                        text,
+                        *offset,
+                        source_region_kind,
+                    );
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                         // Check for `use Module` at this offset first
                         let extracted = if let Some(module_name) =
-                            Self::find_use_module_at_offset(ast, offset)
+                            Self::find_use_module_at_offset(ast, *offset)
                         {
                             // If the module is a known pragma, return pragma docs immediately
                             // without doing module file resolution.
@@ -95,37 +109,42 @@ impl LspServer {
                                     module_name,
                                     text.clone(),
                                     uri.to_string(),
-                                    offset,
+                                    *offset,
                                 )
                             }
                         } else if let Some(module_name) =
-                            Self::find_require_module_at_offset(&text, offset)
+                            Self::find_require_module_at_offset(text, *offset)
                         {
                             HoverExtracted::UseModule(
                                 module_name,
                                 text.clone(),
                                 uri.to_string(),
-                                offset,
+                                *offset,
                             )
                         } else if let Some(module_name) =
-                            Self::find_with_module_at_offset(ast, offset)
+                            Self::find_with_module_at_offset(ast, *offset)
                         {
                             // Check for `with 'Role'` / `extends 'Parent'` at this offset
                             HoverExtracted::UseModule(
                                 module_name,
                                 text.clone(),
                                 uri.to_string(),
-                                offset,
+                                *offset,
                             )
                         } else {
-                            self.extract_symbol_hover(uri, ast, &text, offset, &parsed)
+                            self.extract_symbol_hover(uri, ast, text, *offset, parsed)
                         };
                         (extracted, live_compiler_context)
                     } else {
-                        (Self::extract_token_hover(uri, &text, offset), live_compiler_context)
+                        (Self::extract_token_hover(uri, text, *offset), live_compiler_context)
                     }
                 }
-                None => (HoverExtracted::None, None),
+                None => {
+                    if let Ok(mut trace_kind) = self.hover_trace_source_region_kind.lock() {
+                        *trace_kind = None;
+                    }
+                    (HoverExtracted::None, None)
+                }
             };
             if timing_on {
                 crate::runtime::timing::emit(crate::runtime::timing::TimingSpan::labeled(

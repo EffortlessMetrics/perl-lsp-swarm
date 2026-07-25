@@ -264,6 +264,8 @@ pub struct LspServer {
     /// `perl.explainProviderDecision` can attach these transient per-server
     /// receipts when the caller does not provide a request-local receipt.
     pub(crate) provider_decision_traces: Arc<Mutex<HashMap<String, Value>>>,
+    /// Trace-only hover source-region kind from the latest hover request (PR1 #5003).
+    hover_trace_source_region_kind: Arc<Mutex<Option<String>>>,
     /// Most recent semantic-tokens result per document URI.
     ///
     /// Keyed by document URI, each entry records the `resultId` returned to the

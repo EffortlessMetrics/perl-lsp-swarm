@@ -316,6 +316,13 @@ impl LspServer {
             json!(u64::try_from(shape.result_count).unwrap_or(u64::MAX)),
         );
         receipt.insert("trace_only_no_live_behavior_change".to_string(), json!(true));
+        if provider == "hover" {
+            if let Ok(guard) = self.hover_trace_source_region_kind.lock() {
+                if let Some(kind) = guard.as_ref() {
+                    receipt.insert("source_region_kind".to_string(), json!(kind));
+                }
+            }
+        }
         receipt.insert(
             "claim_boundary".to_string(),
             json!(
