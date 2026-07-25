@@ -713,14 +713,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.16.0] - Skipped (rolled into 0.17.0)
+## [0.16.0] - 2026-06-06
 
 Release notes: [v0.16.0](docs/releases/v0.16.0.md)
 
-Version 0.16.0 was never released as a distinct artifact. The changes below
-were planned for 0.16.0 and shipped as part of [0.17.0] instead. This section
-is retained for historical reference; see `RELEASE_HISTORY.md` for the
-canonical release ledger.
+Released as a distinct artifact: tag `v0.16.0` at
+`b6d9f12b995ad8ad78ca641940bd73e4b1a3c26d`, GitHub Release published
+2026-06-06 with 9 assets, and `perllsp` 0.16.0 on crates.io (2026-06-06, not
+yanked). See `RELEASE_HISTORY.md` for the canonical release ledger.
+
+> A 2026-07-22 audit incorrectly recorded this version as skipped and rolled
+> into 0.17.0. That was retracted on 2026-07-25 after verification against the
+> git tag, the GitHub Releases API, and the crates.io registry. The error is
+> documented in `RELEASE_HISTORY.md` rather than erased, because it was
+> self-reinforcing: it had been written into both this file and the ledger, so
+> the repository corroborated its own mistake.
 
 ### Added
 
@@ -909,6 +916,14 @@ this to a minor version under 0.x semver.
 
 Release notes: [v0.14.0](docs/releases/v0.14.0.md)
 
+> **Release boundary correction.** No `v0.13.4` tag was cut. The previous
+> actual tag is `v0.13.3`, so the valid cumulative comparison is
+> [`v0.13.3...v0.14.0`](https://github.com/EffortlessMetrics/perl-lsp/compare/v0.13.3...v0.14.0).
+> That range includes the source state prepared while the workspace carried
+> version `0.13.4`; it is not a narrow 0.14-only logical ledger.
+>
+> <!-- lineage-correction:0.13 -->
+
 ### Added
 
 - **Rust 1.95 MSRV** — Minimum supported Rust version raised to 1.95.
@@ -955,7 +970,13 @@ Release notes: [v0.14.0](docs/releases/v0.14.0.md)
 
 ## [0.13.4] - 2026-05-07
 
-Release notes: [v0.13.4](docs/releases/v0.13.4.md)
+Release notes: [0.13.4 prepared milestone](docs/releases/v0.13.4.md)
+
+> **Prepared milestone, not a tagged release.** The repository has no
+> `v0.13.4` ref. This section records changes staged while the workspace carried
+> version `0.13.4`; those changes first appear in the later tagged `v0.14.0`
+> tree. Do not infer a standalone asset, package, or compare boundary from this
+> heading.
 
 ### Fixed
 
@@ -1081,9 +1102,14 @@ Release notes: [v0.13.2](docs/releases/v0.13.2.md)
 
 Release notes: [v0.13.1](docs/releases/v0.13.1.md)
 
+> **Release boundary correction.** No final `v0.13.0` tag was cut. The release
+> line moved directly from `v0.13.0-rc1` to `v0.13.1`; use
+> [`v0.13.0-rc1...v0.13.1`](https://github.com/EffortlessMetrics/perl-lsp/compare/v0.13.0-rc1...v0.13.1)
+> for source comparison.
+
 ### Changed
 
-- Hardened public-alpha release channels after the `v0.13.0` launch.
+- Hardened public-alpha release channels after the `v0.13.0-rc1` rehearsal.
 - Decoupled Open VSX publishing from VS Code Marketplace publishing.
 - Clarified release naming: package versions use normal SemVer while product
   posture remains public alpha.
@@ -1094,6 +1120,10 @@ Release notes: [v0.13.1](docs/releases/v0.13.1.md)
 ## [0.13.0-rc1] - 2026-04-30
 
 Release notes: [v0.13.0-rc1](docs/releases/v0.13.0-rc1.md)
+
+> **Historical outcome.** This remained the only `0.13.0` tag. No final
+> `v0.13.0` source boundary was created; the next tagged release was
+> `v0.13.1` on May 1, 2026.
 
 ### Fixed
 
@@ -1117,7 +1147,8 @@ Release notes: [v0.13.0-rc1](docs/releases/v0.13.0-rc1.md)
 
 ### Migration
 
-- **Microcrate collapse complete — migration guide available** — v0.13.0 drops the
+- **Microcrate collapse complete — migration guide available** — The 0.13.0-rc1/0.13
+  train drops the
   published crate count from 132 to 32 across 10+ collapse waves. All ~100 retired
   crate names stop appearing on crates.io after this release; their code lives as
   subfolder modules inside the owning published crate. See
@@ -2141,6 +2172,13 @@ For the detailed receipts behind this release, see [docs/project/CURRENT_STATUS.
 
 Release notes: [v0.11.0](docs/releases/v0.11.0.md) · [GitHub Release](https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.11.0)
 
+> **Tag provenance correction.** The live `v0.11.0` ref is
+> `8dfa68860cdf8fc220b1345d3b943668d1393ad2`; the previously recorded
+> `d22ac7346c832db6b92c41d354eb90099f8b5d53` no longer resolves. The current
+> tagged predecessor is `v0.9.1`, because `0.10.0` was changelog-only and the
+> current `v0.8.5` / `v0.9.1` refs are divergent. Use
+> [`v0.9.1...v0.11.0`](https://github.com/EffortlessMetrics/perl-lsp/compare/v0.9.1...v0.11.0).
+
 This release finalizes the 0.11.0 distribution pipeline across GitHub releases,
 crates.io, and the VS Code extension so the workspace can ship from a single,
 repeatable release flow.
@@ -2255,6 +2293,12 @@ security hardening, crates.io publishing readiness, documentation, and code qual
 
 Release notes: [v0.9.1](docs/releases/v0.9.1.md) (tag only — no GitHub Release)
 
+> **Tag provenance correction.** The live `v0.9.1` ref is
+> `0e52877de7763d8654e0fb6d7afe6a257639e584`; the previously recorded
+> `c82a1604987f315868973a4e5804112e031cec92` no longer resolves. The current
+> tag is on a divergent line from `v0.8.5`, so no forward comparison from
+> `v0.8.5` is claimed.
+
 ### Added
 - **Initial Public Alpha Release**: Substantially complete feature set for early testing.
 - **Enhanced LSP Features**: 99% coverage of LSP 3.18 methods (alpha-validated).
@@ -2326,7 +2370,7 @@ For the full cross-channel release history, see [RELEASE_HISTORY.md](RELEASE_HIS
 
 <!-- Compare ranges -->
 [0.13.2]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.13.1...v0.13.2
-[0.13.1]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.13.0...v0.13.1
+[0.13.1]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.13.0-rc1...v0.13.1
 [0.12.4]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.12.3...v0.12.4
 [0.12.3]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.12.1...v0.12.2

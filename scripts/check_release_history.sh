@@ -89,6 +89,12 @@ done < <(grep '(CL)' RELEASE_HISTORY.md 2>/dev/null || true)
 
 DRIFT_FOUND=0
 
+# Keep the tag-provenance manifest as a persistent release-history gate. This
+# uses the same full-history checkout and fetched tags as the checks below.
+if ! python3 scripts/check_release_tag_provenance.py --verify-git --repo-root "$REPO_ROOT"; then
+    error "Release-tag provenance drift check failed"
+fi
+
 for tag in "${ALL_TAGS[@]}"; do
     # Skip (CL) entries — they have no tag by definition
     if [[ -n "${CL_ONLY_VERSIONS[$tag]:-}" ]]; then
@@ -217,6 +223,22 @@ run_install_surface_check() {
 
 if ! run_install_surface_check; then
     error "Install surface drift check failed"
+fi
+
+# ── Check 6: Verified channel actuals must not regress ─────────────────────────
+
+if ! python3 scripts/check_release_channel_actuals.py; then
+    error "Release-channel actuals drift check failed"
+fi
+
+# ── Check 7: Audited container actuals must not regress ───────────────────────
+
+if ! python3 scripts/check_release_container_actuals.py; then
+    error "Release-container actuals drift check failed"
+fi
+
+if ! python3 scripts/tests/test_release_container_actuals.py; then
+    error "Release-container actuals validator tests failed"
 fi
 
 # ── Exit ──────────────────────────────────────────────────────────────────────
