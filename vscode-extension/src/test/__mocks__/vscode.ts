@@ -166,13 +166,22 @@ export const commands = {
   }),
 };
 
-export const window = {
-  createOutputChannel: jest.fn(() => ({
+function createMockOutputChannel() {
+  const appendLine = jest.fn();
+  return {
     clear: jest.fn(),
-    appendLine: jest.fn(),
+    appendLine,
+    info: jest.fn((message: string) => appendLine(message)),
+    warn: jest.fn((message: string) => appendLine(message)),
+    error: jest.fn((message: string) => appendLine(message)),
+    debug: jest.fn((message: string) => appendLine(message)),
     show: jest.fn(),
     dispose: jest.fn(),
-  })),
+  };
+}
+
+export const window = {
+  createOutputChannel: jest.fn(() => createMockOutputChannel()),
   createStatusBarItem: jest.fn(() => ({
     text: '',
     tooltip: '',

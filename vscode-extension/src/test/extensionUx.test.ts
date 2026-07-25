@@ -96,8 +96,8 @@ function makeContext(version = '0.12.3'): MockContext {
 }
 
 describe('diagnoseConfiguredServerPath (perl-lsp.serverPath validation)', () => {
-  function makeChannel(): MockChannel {
-    return { appendLine: jest.fn() };
+  function makeChannel(): MockChannel & { info: jest.Mock } {
+    return { appendLine: jest.fn(), info: jest.fn() };
   }
 
   test('flags a configured serverPath that does not exist and logs a diagnostic', () => {
@@ -105,12 +105,12 @@ describe('diagnoseConfiguredServerPath (perl-lsp.serverPath validation)', () => 
     const result = diagnoseConfiguredServerPath(
       '/nonexistent/perllsp',
       false,
-      channel as unknown as vscode.OutputChannel,
+      channel as unknown as vscode.LogOutputChannel,
     );
     expect(result).toBe('/nonexistent/perllsp');
-    expect(channel.appendLine).toHaveBeenCalledTimes(1);
-    expect(channel.appendLine.mock.calls[0][0]).toContain('/nonexistent/perllsp');
-    expect(channel.appendLine.mock.calls[0][0]).toContain('does not exist');
+    expect(channel.info).toHaveBeenCalledTimes(1);
+    expect(channel.info.mock.calls[0][0]).toContain('/nonexistent/perllsp');
+    expect(channel.info.mock.calls[0][0]).toContain('does not exist');
   });
 
   test('returns null and stays silent when the configured serverPath exists', () => {
@@ -118,21 +118,21 @@ describe('diagnoseConfiguredServerPath (perl-lsp.serverPath validation)', () => 
     const result = diagnoseConfiguredServerPath(
       '/usr/local/bin/perllsp',
       true,
-      channel as unknown as vscode.OutputChannel,
+      channel as unknown as vscode.LogOutputChannel,
     );
     expect(result).toBeNull();
-    expect(channel.appendLine).not.toHaveBeenCalled();
+    expect(channel.info).not.toHaveBeenCalled();
   });
 
   test('returns null and stays silent when no serverPath is configured', () => {
     const channel = makeChannel();
     expect(
-      diagnoseConfiguredServerPath(undefined, false, channel as unknown as vscode.OutputChannel),
+      diagnoseConfiguredServerPath(undefined, false, channel as unknown as vscode.LogOutputChannel),
     ).toBeNull();
     expect(
-      diagnoseConfiguredServerPath('', false, channel as unknown as vscode.OutputChannel),
+      diagnoseConfiguredServerPath('', false, channel as unknown as vscode.LogOutputChannel),
     ).toBeNull();
-    expect(channel.appendLine).not.toHaveBeenCalled();
+    expect(channel.info).not.toHaveBeenCalled();
   });
 });
 
