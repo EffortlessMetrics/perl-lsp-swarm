@@ -948,6 +948,88 @@ mod tests {
         Ok(())
     }
 
+    /// Sibling of `hostile_perl_lsp_toml_absolute_include_path_is_rejected_end_to_end`
+    /// covering the other untrusted-entry shape from issue #4957: a *relative*
+    /// `include_paths` entry that escapes the workspace via `../` traversal,
+    /// loaded through the real production ingestion path. Absolute and
+    /// traversal entries are rejected by different branches in
+    /// `apply_to_workspace_config` (an upfront `is_absolute()` check vs.
+    /// `validate_workspace_path`), so covering only one shape end-to-end would
+    /// leave the other branch's real-world wiring unverified.
+    #[test]
+    fn hostile_perl_lsp_toml_traversal_include_path_is_rejected_end_to_end() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let outside_dir = temp.path().join("outside");
+        fs::create_dir_all(&workspace)?;
+        fs::create_dir_all(&outside_dir)?;
+
+        let sentinel = outside_dir.join("Sentinel.pm");
+        fs::write(&sentinel, "package Sentinel; 1;")?;
+
+        // Real .perl-lsp.toml with a lexical-traversal entry that nets outside
+        // the workspace root, loaded through the real production entry point.
+        fs::write(workspace.join(".perl-lsp.toml"), "[perl]\ninclude_paths = [\"../outside\"]\n")?;
+
+        let project_config = perl_lsp_rs_core::config::load_project_config(&workspace)?
+            .ok_or("expected .perl-lsp.toml to load")?;
+
+        let mut effective_config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+        let rejected = project_config.apply_to_workspace_config(&mut effective_config, &workspace);
+
+        // Structural proof #1: the untrusted traversal entry never enters the
+        // effective search path at all.
+        assert!(
+            !effective_config.include_paths.contains(&"../outside".to_string()),
+            "sanitized include_paths must not contain the traversal entry from .perl-lsp.toml"
+        );
+        assert_eq!(rejected.len(), 1);
+
+        let server = LspServer::new();
+        *server.root_path.lock() = Some(workspace.clone());
+        *server.workspace_config.lock() = effective_config;
+
+        // Structural proof #2: resolution never selects the sentinel, and any
+        // candidate that IS returned is provably contained in the workspace.
+        let resolved = server.resolve_module_path("Sentinel", None);
+        if let Some(path) = resolved {
+            assert!(path.starts_with(&workspace), "resolved candidate must stay inside workspace");
+            assert_ne!(path, sentinel, "resolved candidate must not be the outside sentinel");
+        }
+        Ok(())
+    }
+
+    /// Negative-space regression: a relative `include_paths` entry that has
+    /// not been materialized on disk yet (e.g. `vendor/lib/perl5` before
+    /// Carton/Carmel has installed dependencies) must NOT be rejected. The
+    /// validator falls back to lexical normalization when `canonicalize()`
+    /// fails for a non-existent candidate (see `validate_workspace_path`),
+    /// and that fallback must stay permissive for safe paths -- otherwise
+    /// users would be pushed to work around a false rejection in a less safe
+    /// way (e.g. disabling the check, or using an absolute path via the
+    /// trusted channel unnecessarily).
+    #[test]
+    fn apply_to_workspace_config_accepts_not_yet_installed_relative_include_path() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace)?;
+        // Deliberately do NOT create "vendor/lib/perl5" -- it does not exist yet.
+
+        fs::write(
+            workspace.join(".perl-lsp.toml"),
+            "[perl]\ninclude_paths = [\"vendor/lib/perl5\"]\n",
+        )?;
+
+        let project_config = perl_lsp_rs_core::config::load_project_config(&workspace)?
+            .ok_or("expected .perl-lsp.toml to load")?;
+        let mut effective_config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+        let rejected = project_config.apply_to_workspace_config(&mut effective_config, &workspace);
+
+        assert!(rejected.is_empty(), "a safe, not-yet-existing relative path must not be rejected");
+        assert_eq!(effective_config.include_paths, vec!["vendor/lib/perl5".to_string()]);
+        Ok(())
+    }
+
     #[test]
     fn resolve_module_to_path_finds_workspace_module() -> TestResult {
         let temp = tempfile::tempdir()?;
