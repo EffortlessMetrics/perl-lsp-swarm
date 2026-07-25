@@ -1594,6 +1594,7 @@ impl ProjectConfig {
         workspace_root: &Path,
     ) -> Vec<RejectedIncludePath> {
         let mut rejected = Vec::new();
+        let mut skip_include_paths = false;
         if !self.perl.include_paths.is_empty() {
             // Fail closed: if the workspace root itself cannot be canonicalized
             // there is nothing to validate containment against, so no entry can
@@ -1601,22 +1602,25 @@ impl ProjectConfig {
             // the reported reason names the actual cause instead of blaming
             // each path for "escaping" a root that could not be read.
             if let Err(err) = std::fs::canonicalize(workspace_root) {
-                for entry in &self.perl.include_paths {
-                    rejected.push(RejectedIncludePath {
-                        entry: entry.clone(),
-                        reason: RejectedIncludePathReason::WorkspaceRootUnavailable(
-                            err.to_string(),
-                        ),
-                    });
-                }
-                // Fail closed means the entries are dropped, not merely
-                // reported: leaving a previously-set list in place would let
-                // an unvalidated path stay live.
+                // The failure belongs to the workspace root, not to any single
+                // entry, so record it once instead of repeating an identical
+                // warning per configured path.
+                rejected.push(RejectedIncludePath {
+                    entry: workspace_root.display().to_string(),
+                    reason: RejectedIncludePathReason::WorkspaceRootUnavailable(err.to_string()),
+                });
+                // Fail closed for include roots: entries are dropped, not merely
+                // reported, since leaving a previously-set list in place would
+                // let an unvalidated path stay live.
+                //
+                // Scoped deliberately: this is a path-validation failure, not a
+                // failure of the whole project config, so discovery extensions,
+                // skip lists and the perl5lib settings below still apply.
                 config.include_paths.clear();
-                return rejected;
+                skip_include_paths = true;
             }
             let mut valid = Vec::with_capacity(self.perl.include_paths.len());
-            for entry in &self.perl.include_paths {
+            for entry in self.perl.include_paths.iter().filter(|_| !skip_include_paths) {
                 let candidate = Path::new(entry);
                 if candidate.is_absolute() {
                     rejected.push(RejectedIncludePath {
@@ -1634,7 +1638,9 @@ impl ProjectConfig {
                 }
                 valid.push(entry.clone());
             }
-            config.include_paths = valid;
+            if !skip_include_paths {
+                config.include_paths = valid;
+            }
         }
         if !self.perl.discovery_extensions.is_empty() {
             config.discovery_extra_extensions =
@@ -1746,7 +1752,6 @@ impl RejectedIncludePathReason {
                 Self::SymlinkOutsideWorkspace(d.clone())
             }
             WorkspacePathError::InvalidPathCharacters => Self::InvalidCharacters,
-            other => Self::OutsideWorkspace(other.to_string()),
         }
     }
 }
@@ -3306,6 +3311,40 @@ profile = "recommended"
         Ok(())
     }
 
+    /// Pin the exact `WorkspacePathError` -> `RejectedIncludePathReason` routing.
+    ///
+    /// `from_path_error` has no wildcard arm, so a new upstream variant is a
+    /// compile error rather than a silent demotion into a generic bucket. This
+    /// test guards the other direction: that the existing variants keep routing
+    /// where they should, which a compile check cannot catch.
+    #[test]
+    fn rejection_reason_maps_each_workspace_path_error_exactly() {
+        use perl_parser_core::path_security::WorkspacePathError;
+
+        assert!(matches!(
+            RejectedIncludePathReason::from_path_error(&WorkspacePathError::PathTraversalAttempt(
+                "d".into()
+            )),
+            RejectedIncludePathReason::Traversal(_)
+        ));
+        assert!(matches!(
+            RejectedIncludePathReason::from_path_error(&WorkspacePathError::PathOutsideWorkspace(
+                "d".into()
+            )),
+            RejectedIncludePathReason::OutsideWorkspace(_)
+        ));
+        assert!(matches!(
+            RejectedIncludePathReason::from_path_error(
+                &WorkspacePathError::SymlinkOutsideWorkspace("d".into())
+            ),
+            RejectedIncludePathReason::SymlinkOutsideWorkspace(_)
+        ));
+        assert!(matches!(
+            RejectedIncludePathReason::from_path_error(&WorkspacePathError::InvalidPathCharacters),
+            RejectedIncludePathReason::InvalidCharacters
+        ));
+    }
+
     #[test]
     fn apply_to_workspace_config_rejects_traversal_include_paths() -> TestResult {
         let temp = tempfile::tempdir()?;
@@ -3318,11 +3357,16 @@ profile = "recommended"
         assert_eq!(workspace.include_paths, vec!["vendor/lib".to_string()]);
         assert_eq!(rejected.len(), 1);
         assert_eq!(rejected[0].entry, "../../../../etc");
-        assert!(matches!(
-            rejected[0].reason,
-            RejectedIncludePathReason::Traversal(_)
-                | RejectedIncludePathReason::OutsideWorkspace(_)
-        ));
+        // "../../../../etc" exists, so it canonicalizes and is correctly
+        // categorised as resolving outside the workspace. `Traversal` is for
+        // lexically-escaping paths that cannot be canonicalized. Exact routing
+        // of every WorkspacePathError variant is pinned by
+        // `rejection_reason_maps_each_workspace_path_error_exactly`.
+        assert!(
+            matches!(rejected[0].reason, RejectedIncludePathReason::OutsideWorkspace(_)),
+            "an existing outside path must route to OutsideWorkspace; got {:?}",
+            rejected[0].reason
+        );
         Ok(())
     }
 
@@ -3361,11 +3405,11 @@ profile = "recommended"
 
         assert!(workspace.include_paths.is_empty());
         assert_eq!(rejected.len(), 1);
-        assert!(matches!(
-            rejected[0].reason,
-            RejectedIncludePathReason::SymlinkOutsideWorkspace(_)
-                | RejectedIncludePathReason::OutsideWorkspace(_)
-        ));
+        assert!(
+            matches!(rejected[0].reason, RejectedIncludePathReason::SymlinkOutsideWorkspace(_)),
+            "symlink escape must route to SymlinkOutsideWorkspace; got {:?}",
+            rejected[0].reason
+        );
         Ok(())
     }
 
@@ -3381,12 +3425,28 @@ profile = "recommended"
         let mut project = ProjectConfig::default();
         project.perl.include_paths = vec!["relative/lib".to_string(), absolute.to_string()];
 
+        project.perl.discovery_extensions = vec!["pl".to_string()];
+
         let rejected = project.apply_to_workspace_config(&mut workspace, missing_root);
 
-        // Fail closed: an unresolvable workspace root rejects everything,
-        // including the otherwise-safe relative entry.
+        // Fail closed for include roots: every entry is dropped, including the
+        // otherwise-safe relative one.
         assert!(workspace.include_paths.is_empty());
-        assert_eq!(rejected.len(), 2);
+
+        // Reported once against the root, not repeated per configured entry.
+        assert_eq!(rejected.len(), 1, "root failure is one rejection, got {rejected:?}");
+        assert!(matches!(
+            rejected[0].reason,
+            RejectedIncludePathReason::WorkspaceRootUnavailable(_)
+        ));
+
+        // Scoped: a path-validation failure must not silently discard unrelated
+        // project configuration.
+        assert_eq!(
+            workspace.discovery_extra_extensions,
+            vec!["pl".to_string()],
+            "unrelated project config must still apply when the root is unusable"
+        );
         Ok(())
     }
 
