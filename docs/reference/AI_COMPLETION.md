@@ -134,27 +134,28 @@ For Responses endpoints, the request format uses `"stream": true`,
 ```jsonc
 {
   // Enable the feature
-  "perl-lsp.aiCompletion.enabled": true,
-
-  // Server-side config passed via initializationOptions
-  "perl-lsp.serverConfig": {
-    "aiCompletion": {
-      "enabled": true,
-      "endpoint": "https://api.openai.com/v1/chat/completions",
-      "model": "gpt-4o-mini",
-      "apiKeyEnv": "OPENAI_API_KEY",
-      "timeoutMs": 2000,
-      "maxOutputTokens": 64,
-      "rateLimitRps": 1.0,
-      "maxInflight": 1,
-      "streaming": {
-        "enabled": true,
-        "updateDebounceMs": 60
-      }
-    }
-  }
+  "perl-lsp.aiCompletion.enabled": true
 }
 ```
+
+> **Known gap: there is currently no VS Code setting for `endpoint` or the
+> API-key fields.**
+>
+> Earlier revisions of this document showed a `perl-lsp.serverConfig` block
+> here. **That setting does not exist** — the extension has never contributed
+> it, and its `initializationOptions` carry only `disabledFeatures`. The
+> example was wrong when written.
+>
+> Until a configuration surface is added (issue #4997), the endpoint and
+> credential fields can only be supplied by an LSP client that sends them in
+> `initializationOptions` or `didChangeConfiguration` directly — which the
+> VS Code extension does not currently do. They can no longer be set from
+> `.perl-lsp.toml`, because a checked-in file choosing the credential name and
+> destination is the exfiltration chain closed in issue #4955.
+>
+> If you previously configured `endpoint` via `.perl-lsp.toml`, it will stop
+> taking effect. That is intentional; the replacement surface is tracked in
+> #4997.
 
 Set the API key in your shell profile or VS Code terminal environment:
 
