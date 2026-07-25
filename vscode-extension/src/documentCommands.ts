@@ -41,9 +41,10 @@ export async function runCheckSyntaxCommand(
   const filePath = editor.document.uri.fsPath;
   const config = vscode.workspace.getConfiguration('perl-lsp');
   const includePaths: string[] = config.get('includePaths', ['lib', 'local/lib/perl5']);
+  const externalIncludePaths: string[] = config.get('externalIncludePaths', []);
   const workspaceRoot = vscode.workspace.getWorkspaceFolder(editor.document.uri)?.uri.fsPath;
   const perlArgs: string[] = [];
-  for (const includePath of includePaths) {
+  for (const includePath of [...includePaths, ...externalIncludePaths]) {
     const resolved =
       workspaceRoot && !path.isAbsolute(includePath)
         ? path.join(workspaceRoot, includePath)

@@ -702,10 +702,18 @@ pub enum Perl5LibPrecedence {
 pub struct WorkspaceConfig {
     /// Workspace-root-relative include paths for module resolution.
     ///
-    /// Relative entries are resolved against the workspace root. Absolute
-    /// entries are honored literally as external include roots.
+    /// Only relative entries that remain inside the workspace after
+    /// normalization are accepted from the resource-scoped client-settings
+    /// channel (`perl.workspace.includePaths`). Absolute external roots
+    /// belong in [`Self::external_include_paths`].
     /// Default: `["lib", ".", "local/lib/perl5"]`
     pub include_paths: Vec<String>,
+
+    /// Machine-scoped external include roots (absolute paths).
+    ///
+    /// Populated from `perl.workspace.externalIncludePaths`, which VS Code
+    /// exposes as `perl-lsp.externalIncludePaths` with `scope: machine`.
+    pub external_include_paths: Vec<String>,
 
     /// Additional file extensions accepted during workspace discovery.
     pub discovery_extra_extensions: Vec<String>,
@@ -757,6 +765,7 @@ impl Default for WorkspaceConfig {
     fn default() -> Self {
         Self {
             include_paths: vec!["lib".to_string(), ".".to_string(), "local/lib/perl5".to_string()],
+            external_include_paths: Vec::new(),
             discovery_extra_extensions: Vec::new(),
             discovery_extra_skipped_dirs: Vec::new(),
             use_system_inc: false,
@@ -770,6 +779,92 @@ impl Default for WorkspaceConfig {
             perl5lib_precedence: Perl5LibPrecedence::Prepend,
         }
     }
+}
+
+/// Context for [`WorkspaceConfig::update_from_value_with_context`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WorkspaceConfigUpdateContext<'a> {
+    /// Workspace root used to reject traversal in resource-scoped `includePaths`.
+    pub workspace_root: Option<&'a Path>,
+    /// When `false`, ignore `externalIncludePaths` (folder-scoped client payloads).
+    pub apply_external_include_paths: bool,
+}
+
+/// A resource-scoped `includePaths` entry rejected during client-settings validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedClientIncludePath {
+    /// The raw, as-configured entry string.
+    pub entry: String,
+    /// Why it was rejected.
+    pub reason: RejectedClientIncludePathReason,
+}
+
+/// Why a client-settings `includePaths` entry was rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RejectedClientIncludePathReason {
+    /// Absolute paths must use `externalIncludePaths` (machine scope) instead.
+    Absolute,
+    /// Relative entry failed workspace containment validation.
+    EscapesWorkspace(String),
+}
+
+impl RejectedClientIncludePath {
+    /// Render a single human-readable line for logs and editor notifications.
+    #[must_use]
+    pub fn render(&self) -> String {
+        match &self.reason {
+            RejectedClientIncludePathReason::Absolute => format!(
+                "'{}': absolute paths are not allowed in `perl.workspace.includePaths` \
+                 (workspace-supplied). Move this entry to `perl-lsp.externalIncludePaths` \
+                 in your user settings instead.",
+                self.entry
+            ),
+            RejectedClientIncludePathReason::EscapesWorkspace(detail) => format!(
+                "'{}': escapes the workspace root ({detail})",
+                self.entry
+            ),
+        }
+    }
+}
+
+fn validate_resource_include_path_entry(
+    entry: &str,
+    workspace_root: Option<&Path>,
+) -> Result<(), RejectedClientIncludePathReason> {
+    let trimmed = entry.trim();
+    if trimmed.is_empty() {
+        return Err(RejectedClientIncludePathReason::EscapesWorkspace(
+            "empty include path".to_string(),
+        ));
+    }
+
+    let candidate = Path::new(trimmed);
+    if candidate.is_absolute() {
+        return Err(RejectedClientIncludePathReason::Absolute);
+    }
+
+    if let Some(root) = workspace_root {
+        if let Err(err) = validate_workspace_path(candidate, root) {
+            return Err(RejectedClientIncludePathReason::EscapesWorkspace(err.to_string()));
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_external_include_paths(paths: &[serde_json::Value]) -> Vec<String> {
+    paths
+        .iter()
+        .filter_map(|value| value.as_str())
+        .filter_map(|entry| {
+            let trimmed = entry.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .collect()
 }
 
 fn normalize_include_path(path: &str) -> Option<String> {
@@ -852,18 +947,24 @@ impl WorkspaceConfig {
     /// If `self.use_perl5lib` is `false`, or `perl5lib_paths` is empty, the
     /// returned list contains only `self.include_paths` entries (trimmed and deduplicated).
     pub fn effective_include_paths(&self, perl5lib_paths: &[String]) -> Vec<String> {
+        let configured = dedupe_preserve_order(
+            self.include_paths
+                .iter()
+                .map(String::as_str)
+                .chain(self.external_include_paths.iter().map(String::as_str)),
+        );
         if !self.use_perl5lib || perl5lib_paths.is_empty() {
-            return dedupe_preserve_order(self.include_paths.iter().map(String::as_str));
+            return configured;
         }
         match self.perl5lib_precedence {
             Perl5LibPrecedence::Prepend => dedupe_preserve_order(
                 perl5lib_paths
                     .iter()
                     .map(String::as_str)
-                    .chain(self.include_paths.iter().map(String::as_str)),
+                    .chain(configured.iter().map(String::as_str)),
             ),
             Perl5LibPrecedence::Append => dedupe_preserve_order(
-                self.include_paths
+                configured
                     .iter()
                     .map(String::as_str)
                     .chain(perl5lib_paths.iter().map(String::as_str)),
@@ -910,11 +1011,49 @@ impl WorkspaceConfig {
     }
 
     /// Update workspace configuration from LSP settings.
-    pub fn update_from_value(&mut self, settings: &serde_json::Value) {
+    pub fn update_from_value(&mut self, settings: &serde_json::Value) -> Vec<RejectedClientIncludePath> {
+        self.update_from_value_with_context(
+            settings,
+            WorkspaceConfigUpdateContext {
+                workspace_root: None,
+                apply_external_include_paths: true,
+            },
+        )
+    }
+
+    /// Update workspace configuration from LSP settings with validation context.
+    ///
+    /// Resource-scoped `includePaths` reject absolute entries and any relative
+    /// entry that escapes `workspace_root` when provided. `externalIncludePaths`
+    /// are accepted only when `apply_external_include_paths` is true (global /
+    /// machine channel).
+    pub fn update_from_value_with_context(
+        &mut self,
+        settings: &serde_json::Value,
+        context: WorkspaceConfigUpdateContext<'_>,
+    ) -> Vec<RejectedClientIncludePath> {
+        let mut rejected = Vec::new();
         if let Some(workspace) = settings.get("workspace") {
             if let Some(paths) = workspace.get("includePaths").and_then(|v| v.as_array()) {
-                self.include_paths =
-                    paths.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                let mut valid = Vec::with_capacity(paths.len());
+                for value in paths {
+                    let Some(entry) = value.as_str() else {
+                        continue;
+                    };
+                    match validate_resource_include_path_entry(entry, context.workspace_root) {
+                        Ok(()) => valid.push(entry.to_string()),
+                        Err(reason) => rejected.push(RejectedClientIncludePath {
+                            entry: entry.to_string(),
+                            reason,
+                        }),
+                    }
+                }
+                self.include_paths = valid;
+            }
+            if context.apply_external_include_paths
+                && let Some(paths) = workspace.get("externalIncludePaths").and_then(|v| v.as_array())
+            {
+                self.external_include_paths = parse_external_include_paths(paths);
             }
             if let Some(extensions) = string_array(workspace.get("discoveryExtensions")) {
                 self.discovery_extra_extensions = extensions;
@@ -962,6 +1101,7 @@ impl WorkspaceConfig {
                 }
             }
         }
+        rejected
     }
 
     /// Get system @INC paths (lazily populated).
@@ -3620,6 +3760,103 @@ profile = "recommended"
             "unrelated project config must still apply when the root is unusable"
         );
         Ok(())
+    }
+
+    #[test]
+    fn update_from_value_rejects_absolute_include_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut workspace = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({ "workspace": { "includePaths": [absolute, "lib"] } }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: Some(temp.path()),
+                apply_external_include_paths: true,
+            },
+        );
+
+        assert_eq!(workspace.include_paths, vec!["lib".to_string()]);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, absolute);
+        assert_eq!(rejected[0].reason, RejectedClientIncludePathReason::Absolute);
+        assert!(
+            rejected[0].render().contains("externalIncludePaths"),
+            "rejection message should name externalIncludePaths: {}",
+            rejected[0].render()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn update_from_value_rejects_traversal_include_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut workspace = WorkspaceConfig::default();
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({ "workspace": { "includePaths": ["../../../../etc", "vendor/lib"] } }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: Some(temp.path()),
+                apply_external_include_paths: true,
+            },
+        );
+
+        assert_eq!(workspace.include_paths, vec!["vendor/lib".to_string()]);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, "../../../../etc");
+        assert!(matches!(
+            rejected[0].reason,
+            RejectedClientIncludePathReason::EscapesWorkspace(_)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn update_from_value_accepts_external_include_paths_from_global_channel() {
+        let mut workspace = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({
+                "workspace": {
+                    "includePaths": ["lib"],
+                    "externalIncludePaths": [absolute]
+                }
+            }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: None,
+                apply_external_include_paths: true,
+            },
+        );
+
+        assert!(rejected.is_empty());
+        assert_eq!(workspace.include_paths, vec!["lib".to_string()]);
+        assert_eq!(workspace.external_include_paths, vec![absolute.to_string()]);
+        assert_eq!(
+            workspace.effective_include_paths(&[]),
+            vec!["lib".to_string(), absolute.to_string()]
+        );
+    }
+
+    #[test]
+    fn update_from_value_ignores_external_include_paths_from_folder_channel() {
+        let mut workspace = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({
+                "workspace": {
+                    "externalIncludePaths": [absolute]
+                }
+            }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: None,
+                apply_external_include_paths: false,
+            },
+        );
+
+        assert!(rejected.is_empty());
+        assert!(workspace.external_include_paths.is_empty());
     }
 
     #[test]

@@ -1,5 +1,30 @@
 use crate::runtime::workspace_folder::WorkspaceFolderState;
+use perl_lsp_rs_core::config::WorkspaceConfigUpdateContext;
 use serde_json::Value;
+
+fn apply_workspace_config_layer(
+    config: &mut perl_lsp_rs_core::config::WorkspaceConfig,
+    settings: &Value,
+    folder: &WorkspaceFolderState,
+    apply_external_include_paths: bool,
+) {
+    let rejected = config.update_from_value_with_context(
+        settings,
+        WorkspaceConfigUpdateContext {
+            workspace_root: folder.path.as_deref(),
+            apply_external_include_paths,
+        },
+    );
+    for entry in rejected {
+        tracing::warn!(
+            target: "perl_lsp::config",
+            folder_uri = %folder.uri,
+            entry = %entry.entry,
+            reason = %entry.render(),
+            "rejected client includePaths entry"
+        );
+    }
+}
 
 pub(super) fn apply_workspace_configuration_results(
     folders: &mut [WorkspaceFolderState],
@@ -47,11 +72,21 @@ pub(super) fn apply_workspace_configuration_results(
         }
 
         if let Some(global_settings) = global_settings {
-            effective_config.update_from_value(global_settings);
+            apply_workspace_config_layer(
+                &mut effective_config,
+                global_settings,
+                folder,
+                true,
+            );
         }
 
         if let Some(perl_settings) = results.get(folder_results_start + idx) {
-            effective_config.update_from_value(perl_settings);
+            apply_workspace_config_layer(
+                &mut effective_config,
+                perl_settings,
+                folder,
+                false,
+            );
         } else {
             tracing::warn!(
                 request_id,

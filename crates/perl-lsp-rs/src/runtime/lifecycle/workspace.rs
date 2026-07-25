@@ -705,6 +705,48 @@ include_paths = ["stale_lib"]
     }
 
     #[test]
+    fn handle_client_response_rejects_hostile_absolute_include_paths() {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let folder = temp.path().join("folder");
+        std::fs::create_dir_all(&folder).expect("failed to create folder");
+
+        let uri = url::Url::from_directory_path(&folder)
+            .expect("failed to create uri")
+            .to_string();
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
+                .with_path(folder.clone()),
+        );
+        server.pending_workspace_configuration_requests.lock().insert(
+            ServerRequestId::for_test(12),
+            crate::runtime::PendingWorkspaceConfigurationRequest {
+                folder_uris: vec![uri.clone()],
+                includes_global_item: true,
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        server.handle_client_response(Some(serde_json::json!({
+            "id": 12,
+            "result": [
+                { "workspace": { "useSystemInc": false } },
+                { "workspace": { "includePaths": [absolute, "lib"] } }
+            ]
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let folder_state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        assert_eq!(
+            folder_state.effective_workspace_config.include_paths,
+            vec!["lib".to_string()]
+        );
+        assert!(folder_state.effective_workspace_config.external_include_paths.is_empty());
+    }
+
+    #[test]
     fn handle_client_response_applies_per_folder_workspace_config() {
         let server = LspServer::new();
         let temp = tempfile::tempdir().expect("failed to create temp dir");

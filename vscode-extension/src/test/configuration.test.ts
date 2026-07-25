@@ -756,6 +756,7 @@ describe('package.json contributes', () => {
         'perl-lsp.autoDownload',
         'perl-lsp.updateCheckInterval',
         'perl-lsp.autoUpdate',
+        'perl-lsp.externalIncludePaths',
       ];
       for (const key of machineScoped) {
         expect(getSetting(properties, key).scope).toBe('machine');
