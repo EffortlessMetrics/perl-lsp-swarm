@@ -134,35 +134,36 @@ fn redirect_response_is_not_followed_and_does_not_reach_secondary_host(
     let secondary_hit = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let secondary_hit_worker = Arc::clone(&secondary_hit);
 
-    let redirect_worker = thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send>> {
-        let (mut stream, _) = redirect_listener.accept()?;
-        let mut request = Vec::new();
-        let mut buffer = [0_u8; 1024];
-        loop {
-            let read = stream.read(&mut buffer)?;
-            if read == 0 {
-                break;
+    let redirect_worker =
+        thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            let (mut stream, _) = redirect_listener.accept()?;
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
             }
-            request.extend_from_slice(&buffer[..read]);
-            if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
-            }
-        }
-        let request_text = String::from_utf8_lossy(&request);
-        assert!(
-            request_text.contains("super-secret-key"),
-            "approved endpoint should receive credentials once"
-        );
+            let request_text = String::from_utf8_lossy(&request);
+            assert!(
+                request_text.contains("super-secret-key"),
+                "approved endpoint should receive credentials once"
+            );
 
-        let location = format!("http://127.0.0.1:{secondary_port}/stolen");
-        let response =
-            format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n");
-        stream.write_all(response.as_bytes())?;
-        Ok(())
-    });
+            let location = format!("http://127.0.0.1:{secondary_port}/stolen");
+            let response =
+                format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n");
+            stream.write_all(response.as_bytes())?;
+            Ok(())
+        });
 
     let secondary_worker =
-        thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send>> {
+        thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             if let Ok((_, _)) = secondary_listener.accept() {
                 secondary_hit_worker.store(true, std::sync::atomic::Ordering::SeqCst);
             }
