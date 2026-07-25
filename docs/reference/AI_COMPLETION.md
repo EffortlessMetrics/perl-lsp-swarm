@@ -17,10 +17,23 @@ Code settings UI.
 | `perl-lsp.aiCompletion.enabled` | boolean | `false` | Enable AI-powered inline completions. |
 | `perl-lsp.aiCompletion.streaming.enabled` | boolean | `true` | Enable progressive streaming (ghost text updates as tokens arrive). Requires `aiCompletion.enabled`. |
 
-All other AI parameters (endpoint, model, timeout, rate limits) are
-configured via the LSP server config or the project config file, not VS Code
-settings. The API key is always read from an environment variable -- it is
-never stored in settings.
+Where each field can be set:
+
+| Channel | Fields it accepts |
+|---------|-------------------|
+| `.perl-lsp.toml` | `enabled`, `provider`, `model` only |
+| LSP client/server configuration | the complete server field set below |
+| Primary VS Code extension | activation and streaming toggles only — no endpoint or credential surface |
+
+`endpoint` and the API-key fields are **not** accepted from `.perl-lsp.toml` (see
+"Destination and credentials" below, and issue #4955). Timeout, rate limits,
+output bounds, and streaming controls are likewise server-configuration fields,
+not project-config fields.
+
+The project-config row is not durable design: issue #4997 is expected to remove
+the remaining project-side AI authority so a repository cannot activate the
+feature at all. The API key itself is always read from an environment variable;
+it is never stored in settings.
 
 ## Server Configuration Fields
 
@@ -35,6 +48,8 @@ accepted:
 | `endpoint` | string | `""` (empty) | API endpoint URL (e.g. `https://api.openai.com/v1/chat/completions`). |
 | `model` | string | `"gpt-4o-mini"` | Model identifier sent in the request body. |
 | `apiKeyEnv` | string | `"OPENAI_API_KEY"` | Name of the environment variable containing the API key. |
+| `apiKeyHeader` | string | `"Authorization"` | HTTP header the credential is sent in. Must be a valid header name; an empty or invalid value is ignored and the default is kept. Use e.g. `"x-api-key"` for providers that do not use `Authorization`. |
+| `apiKeyPrefix` | string | `"Bearer"` | Scheme prepended to the key, sent as `<prefix> <key>`. Set to `""` to send the raw key with no prefix — required by providers that expect a bare token. Values containing control characters are ignored. |
 | `timeoutMs` | integer | `1800` | Per-request timeout in milliseconds. |
 | `maxOutputTokens` | integer | `64` | Maximum tokens the model may generate per request. |
 | `rateLimitRps` | float | `1.0` | Maximum requests per second (token-bucket rate). |
@@ -53,13 +68,42 @@ LSP client settings always override them.
 [ai_completion]
 enabled = true
 provider = "openai_compat"
-endpoint = "https://api.openai.com/v1/chat/completions"
 model = "gpt-4o-mini"
-api_key_env = "OPENAI_API_KEY"
 ```
 
 Only the fields you set will override defaults. Omitted fields retain their
 built-in default values.
+
+### Destination and credentials cannot come from `.perl-lsp.toml`
+
+`endpoint`, `api_key_env`, `api_key_header`, and `api_key_prefix` **cannot be set
+from `.perl-lsp.toml`**. They are read only from the LSP client/server
+configuration channel — `initializationOptions` or `didChangeConfiguration`, as
+documented under "Server Configuration Fields" above.
+
+`.perl-lsp.toml` is checked into a repository, so honouring those fields let a
+cloned project choose both which environment variable was read as a credential
+and where it was sent — arbitrary named-secret exfiltration, with your source in
+the request body. They were removed for the same reason `perlPath` and `perlArgs`
+are not honoured from workspace settings (issue #3729). See issue #4955.
+
+**These keys are silently ignored, not rejected**, because the TOML deserializer
+drops unknown fields. If you set `endpoint` in `.perl-lsp.toml` and requests keep
+going to the default destination, that is why.
+
+Supply these fields through an LSP client that supports server configuration.
+**The primary VS Code extension currently does not expose that surface** — see
+the known gap below.
+
+> **The client-settings channel is not itself fully hardened yet.** Do not read
+> the above as "these values are safe because they come from the user". In
+> VS Code, `perl-lsp.aiCompletion.enabled` is declared `scope: resource`, which
+> means a workspace or folder can set it, and the extension forwards workspace
+> and folder overrides. So a repository still cannot choose the destination or
+> the credential, but it **can still activate AI completion** against whatever
+> endpoint you configured, sending source code without you opting in for that
+> workspace. Tracked as issue #4997 and is a 0.18.0 blocker; issue #4998 covers
+> the same provenance gap for include paths.
 
 ## Environment Variables
 
@@ -106,27 +150,28 @@ For Responses endpoints, the request format uses `"stream": true`,
 ```jsonc
 {
   // Enable the feature
-  "perl-lsp.aiCompletion.enabled": true,
-
-  // Server-side config passed via initializationOptions
-  "perl-lsp.serverConfig": {
-    "aiCompletion": {
-      "enabled": true,
-      "endpoint": "https://api.openai.com/v1/chat/completions",
-      "model": "gpt-4o-mini",
-      "apiKeyEnv": "OPENAI_API_KEY",
-      "timeoutMs": 2000,
-      "maxOutputTokens": 64,
-      "rateLimitRps": 1.0,
-      "maxInflight": 1,
-      "streaming": {
-        "enabled": true,
-        "updateDebounceMs": 60
-      }
-    }
-  }
+  "perl-lsp.aiCompletion.enabled": true
 }
 ```
+
+> **Known gap: there is currently no VS Code setting for `endpoint` or the
+> API-key fields.**
+>
+> Earlier revisions of this document showed a `perl-lsp.serverConfig` block
+> here. **That setting does not exist** — the extension has never contributed
+> it, and its `initializationOptions` carry only `disabledFeatures`. The
+> example was wrong when written.
+>
+> Until a configuration surface is added (issue #4997), the endpoint and
+> credential fields can only be supplied by an LSP client that sends them in
+> `initializationOptions` or `didChangeConfiguration` directly — which the
+> VS Code extension does not currently do. They can no longer be set from
+> `.perl-lsp.toml`, because a checked-in file choosing the credential name and
+> destination is the exfiltration chain closed in issue #4955.
+>
+> If you previously configured `endpoint` via `.perl-lsp.toml`, it will stop
+> taking effect. That is intentional; the replacement surface is tracked in
+> #4997.
 
 Set the API key in your shell profile or VS Code terminal environment:
 

