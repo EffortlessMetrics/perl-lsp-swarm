@@ -44,6 +44,12 @@ pub fn find_module_reference(text: &str, cursor_pos: usize) -> Option<ModuleRefe
         return None;
     }
 
+    // Snap to the next valid char boundary. LSP cursors arrive as UTF-16 code-unit
+    // counts and can land mid-codepoint after conversion; snapping is safe because
+    // the keyword scanner iterates char boundaries and won't miss a keyword.
+    let cursor_pos =
+        (cursor_pos..=text.len()).find(|&i| text.is_char_boundary(i)).unwrap_or(text.len());
+
     let (line_start, line_end) = line_bounds_at(text, cursor_pos);
     let line = &text[line_start..line_end];
     let cursor_in_line = cursor_pos.saturating_sub(line_start);
@@ -68,6 +74,9 @@ pub fn find_module_reference_extended(
     if text.is_empty() || cursor_pos > text.len() {
         return None;
     }
+
+    let cursor_pos =
+        (cursor_pos..=text.len()).find(|&i| text.is_char_boundary(i)).unwrap_or(text.len());
 
     let (line_start, line_end) = line_bounds_at(text, cursor_pos);
     let line = &text[line_start..line_end];
@@ -213,28 +222,30 @@ fn find_in_line_for_keyword<'a>(
 ) -> Option<ModuleReference<'a>> {
     let keyword_len = keyword.len();
     let bytes = line.as_bytes();
-    let mut idx = 0usize;
 
-    while idx + keyword_len <= bytes.len() {
+    // Iterate char boundaries so `line[idx..]` is always a valid slice.
+    // Multi-byte chars cannot contain ASCII keyword bytes, so no keyword
+    // occurrence is skipped by stepping in char increments rather than bytes.
+    for (idx, _) in line.char_indices() {
+        if idx + keyword_len > bytes.len() {
+            break;
+        }
+
         if !line[idx..].starts_with(keyword) {
-            idx += 1;
             continue;
         }
 
         if !is_keyword_boundary(bytes, idx, keyword_len) {
-            idx += 1;
             continue;
         }
 
         let after_keyword = idx + keyword_len;
         if after_keyword >= bytes.len() || !bytes[after_keyword].is_ascii_whitespace() {
-            idx += 1;
             continue;
         }
 
         let module_start = skip_ascii_whitespace(bytes, after_keyword);
         if module_start >= bytes.len() {
-            idx += 1;
             continue;
         }
 
@@ -249,8 +260,6 @@ fn find_in_line_for_keyword<'a>(
                 module_end: line_offset + span.end,
             });
         }
-
-        idx += 1;
     }
 
     None
