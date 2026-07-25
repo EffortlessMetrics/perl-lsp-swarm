@@ -506,6 +506,11 @@ where
             find_nodes_recursive(left, predicate, results);
             find_nodes_recursive(right, predicate, results);
         }
+        NodeKind::ChainedComparison { operands, .. } => {
+            for operand in operands {
+                find_nodes_recursive(operand, predicate, results);
+            }
+        }
         NodeKind::ArraySlice { target, indices } => {
             find_nodes_recursive(target, predicate, results);
             find_nodes_recursive(indices, predicate, results);
