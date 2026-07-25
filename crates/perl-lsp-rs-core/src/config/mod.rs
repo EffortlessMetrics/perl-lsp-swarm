@@ -280,7 +280,11 @@ pub struct AiStreamingConfig {
     pub update_debounce_ms: u64,
 }
 
-pub(crate) fn recompute_ai_completion_effective(ai: &mut AiCompletionConfig) {
+/// Recompute effective AI completion flags from user/project inputs.
+///
+/// `enabled` is true only when the user enabled AI and the project did not
+/// opt out. Streaming `enabled` currently mirrors streaming `user_enabled`.
+pub fn recompute_ai_completion_effective(ai: &mut AiCompletionConfig) {
     ai.enabled = ai.user_enabled && !ai.project_opt_out;
     ai.streaming.enabled = ai.streaming.user_enabled;
 }

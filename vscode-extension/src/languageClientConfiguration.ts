@@ -259,10 +259,7 @@ export async function syncLanguageClientConfiguration(
   await activeClient.sendNotification('workspace/didChangeConfiguration', { settings });
 }
 
-function readMachineScopedBoolean(
-  config: ConfigurationReader,
-  key: string,
-): boolean | undefined {
+function readMachineScopedBoolean(config: ConfigurationReader, key: string): boolean | undefined {
   const inspected = config.inspect?.(key) as { globalValue?: unknown } | undefined;
   return typeof inspected?.globalValue === 'boolean' ? inspected.globalValue : undefined;
 }
