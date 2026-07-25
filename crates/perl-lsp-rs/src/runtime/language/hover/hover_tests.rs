@@ -32,8 +32,8 @@ fn pragma_hover_links_external_and_virtual_perldoc() {
 }
 
 #[test]
-fn pod_hover_cache_prunes_at_cap_and_evicts_active_document_path()
--> Result<(), Box<dyn std::error::Error>> {
+fn pod_hover_cache_prunes_at_cap_and_evicts_active_document_path(
+) -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
     let dir = tempfile::tempdir()?;
 
@@ -213,12 +213,11 @@ fn missing_module_hover_mentions_declared_unindexed_dependency() {
         "requires",
         DeclaredDependencySource::Cpanfile,
     )];
-    *server.workspace_folders.lock() = vec![
-        crate::runtime::workspace_folder::WorkspaceFolderState::new(
+    *server.workspace_folders.lock() =
+        vec![crate::runtime::workspace_folder::WorkspaceFolderState::new(
             "file:///workspace".to_string(),
         )
-        .with_effective_workspace_config(config),
-    ];
+        .with_effective_workspace_config(config)];
 
     let hover = server.build_module_hover(
         "JSON::PP",
@@ -256,10 +255,11 @@ fn resolved_module_hover_links_virtual_perldoc() -> Result<(), Box<dyn std::erro
 
     let workspace_uri =
         url::Url::from_directory_path(&root).map_err(|_| "failed to create workspace URI")?;
-    *server.workspace_folders.lock() = vec![
-        crate::runtime::workspace_folder::WorkspaceFolderState::new(workspace_uri.to_string())
-            .with_path(root.clone()),
-    ];
+    *server.workspace_folders.lock() =
+        vec![crate::runtime::workspace_folder::WorkspaceFolderState::new(
+            workspace_uri.to_string(),
+        )
+        .with_path(root.clone())];
     {
         let mut config = server.workspace_config.lock();
         config.include_paths = vec!["lib".to_string()];
@@ -435,6 +435,83 @@ fn hover_token_extraction_works_with_non_ascii_prefix() {
         token, "$bar",
         "byte offset must not be used as char index in hover token extraction"
     );
+}
+
+#[test]
+fn extract_arrow_receiver_ascii_baseline() {
+    let text = "my $obj = Builder->new;\n$obj->prepare();";
+    let method_offset = must_some(text.find("prepare"));
+    assert_eq!(LspServer::extract_arrow_receiver(text, method_offset).as_deref(), Some("$obj"));
+}
+
+#[test]
+fn extract_arrow_receiver_survives_emoji_prefix() {
+    let text = "my $label = \"😀😀😀\";\nmy $obj = Builder->new;\n$obj->m();";
+    let method_offset = must_some(text.find("$obj->m")) + "$obj->".len();
+    assert_eq!(
+        LspServer::extract_arrow_receiver(text, method_offset).as_deref(),
+        Some("$obj"),
+        "byte offset after emoji must not be used as char index"
+    );
+}
+
+#[test]
+fn extract_arrow_receiver_short_method_name_cursor_positions() {
+    let text = "my $obj = Builder->new;\n$obj->m();";
+    let m_offset = must_some(text.find("$obj->m")) + "$obj->".len();
+    assert_eq!(LspServer::extract_arrow_receiver(text, m_offset).as_deref(), Some("$obj"));
+    assert_eq!(LspServer::extract_arrow_receiver(text, m_offset + 1).as_deref(), Some("$obj"));
+}
+
+#[test]
+fn extract_arrow_receiver_long_method_name_cursor_positions() {
+    let text = "my $obj = Builder->new;\n$obj->prepare();";
+    let prepare_offset = must_some(text.find("prepare"));
+    let prepare_len = "prepare".len();
+    for delta in 0..prepare_len {
+        assert_eq!(
+            LspServer::extract_arrow_receiver(text, prepare_offset + delta).as_deref(),
+            Some("$obj"),
+            "cursor at prepare[{delta}] should still resolve $obj"
+        );
+    }
+}
+
+#[test]
+fn extract_arrow_receiver_spaced_arrow() {
+    let text = "my $obj = 1;\n$obj -> method();";
+    let method_offset = must_some(text.find("method"));
+    assert_eq!(LspServer::extract_arrow_receiver(text, method_offset).as_deref(), Some("$obj"));
+}
+
+#[test]
+fn extract_arrow_receiver_qualified_package() {
+    let text = "Package::Name->method();";
+    let method_offset = must_some(text.find("method"));
+    assert_eq!(
+        LspServer::extract_arrow_receiver(text, method_offset).as_deref(),
+        Some("Package::Name")
+    );
+}
+
+#[test]
+fn extract_arrow_receiver_unicode_prefix_does_not_shift_receiver() {
+    let plain = "my $obj = Builder->new;\n$obj->fetch();";
+    let with_emoji = "my $label = \"😀😀😀\";\nmy $obj = Builder->new;\n$obj->fetch();";
+    let plain_offset = must_some(plain.find("fetch"));
+    let emoji_offset = must_some(with_emoji.find("fetch"));
+    assert_eq!(LspServer::extract_arrow_receiver(plain, plain_offset).as_deref(), Some("$obj"));
+    assert_eq!(
+        LspServer::extract_arrow_receiver(with_emoji, emoji_offset).as_deref(),
+        Some("$obj")
+    );
+}
+
+#[test]
+fn extract_arrow_receiver_returns_none_without_arrow() {
+    let text = "my $obj = 1;\n$obj = 2;";
+    let offset = must_some(text.rfind("$obj"));
+    assert!(LspServer::extract_arrow_receiver(text, offset).is_none());
 }
 
 // -- Phase-block hover: strong-oracle unit tests ----------------------------------
@@ -764,8 +841,8 @@ fn method_modifier_hover_escapes_doc_markdown() {
 }
 
 #[test]
-fn hover_off_lock_analysis_emits_lock_hold_and_analyze_timing_spans()
--> Result<(), Box<dyn std::error::Error>> {
+fn hover_off_lock_analysis_emits_lock_hold_and_analyze_timing_spans(
+) -> Result<(), Box<dyn std::error::Error>> {
     // #3396 Phase 4: `handle_hover` grabs the parsed snapshot + text under a
     // brief documents-map lock, then drops the guard before analysis. Proves
     // this measurably: the `lock_hold` span (the brief guarded scope) must be
@@ -826,8 +903,8 @@ fn hover_off_lock_analysis_emits_lock_hold_and_analyze_timing_spans()
 /// initialized cell (via `must_some`-style assertion) rather than merely
 /// under-count.
 #[test]
-fn test_hover_snapshot_analyzer_built_exactly_once_per_generation()
--> Result<(), Box<dyn std::error::Error>> {
+fn test_hover_snapshot_analyzer_built_exactly_once_per_generation(
+) -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     let uri = "file:///hover_build_count_single_gen.pl";
     let text = "my $a = 10;\nmy $b = 20;\nprint $a + $b;\n";
@@ -882,8 +959,8 @@ fn test_hover_snapshot_analyzer_built_exactly_once_per_generation()
 /// of 1 on the NEW generation N+1's own snapshot -- never a shared/global
 /// counter, and never a reused analyzer from the superseded generation.
 #[test]
-fn test_hover_snapshot_analyzer_not_shared_across_generations()
--> Result<(), Box<dyn std::error::Error>> {
+fn test_hover_snapshot_analyzer_not_shared_across_generations(
+) -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     let uri = "file:///hover_build_count_multi_gen.pl";
 

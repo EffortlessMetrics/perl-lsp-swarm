@@ -962,53 +962,65 @@ impl LspServer {
     /// (e.g. `"$dbh"`). Returns `None` when there is no `->` before the token.
     ///
     /// Handles whitespace around `->`, e.g. `$dbh -> prepare`.
+    ///
+    /// Operates in byte space: `offset` is a byte offset into `text`, matching
+    /// `pos16_to_offset` and `get_token_at_position_static`.
     fn extract_arrow_receiver(text: &str, offset: usize) -> Option<String> {
-        let chars: Vec<char> = text.chars().collect();
-        let len = chars.len();
-        if len == 0 {
+        if offset > text.len() {
             return None;
         }
 
-        // Walk to the start of the current token
-        let mut tok_start = offset.min(len.saturating_sub(1));
-        while tok_start > 0
-            && (chars[tok_start - 1].is_alphanumeric() || chars[tok_start - 1] == '_')
-        {
+        let pairs: Vec<(usize, char)> = text.char_indices().collect();
+        if pairs.is_empty() {
+            return None;
+        }
+
+        let is_ident = |ch: char| ch.is_alphanumeric() || ch == '_';
+        let is_receiver_char = |ch: char| is_ident(ch) || ch == '$' || ch == ':';
+
+        let ci = pairs.partition_point(|(b, _)| *b < offset);
+        let ci = ci.min(pairs.len().saturating_sub(1));
+
+        // Walk to the start of the current token (method name).
+        let mut tok_start = ci;
+        while tok_start > 0 && is_ident(pairs[tok_start - 1].1) {
             tok_start -= 1;
         }
 
-        // Skip whitespace before the token
+        // Skip whitespace before the token.
         let mut i = tok_start.saturating_sub(1);
-        while i > 0 && chars[i].is_whitespace() {
+        while i > 0 && pairs[i].1.is_whitespace() {
             i -= 1;
         }
 
         // Expect `>`
-        if chars[i] != '>' {
+        if pairs[i].1 != '>' {
             return None;
         }
-        if i == 0 || chars[i - 1] != '-' {
+        if i == 0 || pairs[i - 1].1 != '-' {
             return None;
         }
 
-        // Skip past `->`
-        i = i.saturating_sub(2); // point before '-'
-        while i > 0 && chars[i].is_whitespace() {
+        // Skip past `->` (point before `-`).
+        i = i.saturating_sub(2);
+        while i > 0 && pairs[i].1.is_whitespace() {
             i -= 1;
         }
 
-        // Collect identifier/variable backwards (include sigil `$`)
-        let rec_end = i + 1;
-        while i > 0
-            && (chars[i - 1].is_alphanumeric()
-                || chars[i - 1] == '_'
-                || chars[i - 1] == '$'
-                || chars[i - 1] == ':')
-        {
+        // Collect identifier/variable backwards (include sigil `$` and `::`).
+        let rec_end_ci = i + 1;
+        while i > 0 && is_receiver_char(pairs[i - 1].1) {
             i -= 1;
         }
-        let rec: String = chars[i..rec_end].iter().collect();
-        if rec.is_empty() { None } else { Some(rec) }
+
+        let start_byte = pairs[i].0;
+        let end_byte = if rec_end_ci < pairs.len() {
+            pairs[rec_end_ci].0
+        } else {
+            text.len()
+        };
+        let rec = &text[start_byte..end_byte];
+        if rec.is_empty() { None } else { Some(rec.to_string()) }
     }
 
     /// Walk the AST to find a `use Module` node whose location spans `offset`.
