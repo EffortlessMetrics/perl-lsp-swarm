@@ -1702,37 +1702,66 @@ pub enum RejectedIncludePathReason {
     WorkspaceRootUnavailable(String),
 }
 
+/// Escape control characters in a workspace-controlled string before it reaches
+/// a terminal or an editor message.
+///
+/// `include_paths` entries come from `.perl-lsp.toml`, which a hostile cloned
+/// repository controls. Rendering them raw lets an entry inject ANSI/OSC escape
+/// sequences into `perl-lsp doctor` output and `window/showMessage` — so the
+/// warning *about* a malicious path would itself be the injection vector
+/// (CWE-150).
+///
+/// Note the absolute-path branch of `apply_to_workspace_config` rejects before
+/// `validate_workspace_path` runs, so its `InvalidPathCharacters` check never
+/// sees those entries. Escaping centrally here covers every rejection reason
+/// regardless of which branch produced it.
+fn escape_for_display(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|c| {
+            if c == '\t' || !c.is_control() {
+                vec![c]
+            } else {
+                format!("\\u{{{:04x}}}", c as u32).chars().collect()
+            }
+        })
+        .collect()
+}
+
 impl RejectedIncludePath {
     /// Render a single human-readable line for `window/showMessage` / doctor reports.
+    ///
+    /// The entry is escaped via [`escape_for_display`]; it is workspace-controlled.
     #[must_use]
     pub fn render(&self) -> String {
+        let entry = escape_for_display(&self.entry);
         match &self.reason {
             RejectedIncludePathReason::Absolute => format!(
                 "'{}': absolute include_paths are not allowed in .perl-lsp.toml \
                  (workspace-supplied). Configure external lib roots in your own \
                  editor settings instead — not in a file checked into the repository.",
-                self.entry
+                entry
             ),
             RejectedIncludePathReason::Traversal(detail) => {
-                format!("'{}': traverses out of the workspace root ({detail})", self.entry)
+                format!("'{}': traverses out of the workspace root ({detail})", entry)
             }
             RejectedIncludePathReason::OutsideWorkspace(detail) => {
-                format!("'{}': resolves outside the workspace root ({detail})", self.entry)
+                format!("'{}': resolves outside the workspace root ({detail})", entry)
             }
             RejectedIncludePathReason::SymlinkOutsideWorkspace(detail) => {
                 format!(
                     "'{}': a symlink in this path resolves outside the workspace root ({detail})",
-                    self.entry
+                    entry
                 )
             }
             RejectedIncludePathReason::InvalidCharacters => {
-                format!("'{}': contains null bytes or disallowed control characters", self.entry)
+                format!("'{}': contains null bytes or disallowed control characters", entry)
             }
             RejectedIncludePathReason::WorkspaceRootUnavailable(detail) => {
                 format!(
                     "'{}': the workspace root could not be resolved, so no include_paths \
                      entry could be validated ({detail})",
-                    self.entry
+                    entry
                 )
             }
         }
@@ -3317,6 +3346,31 @@ profile = "recommended"
     /// compile error rather than a silent demotion into a generic bucket. This
     /// test guards the other direction: that the existing variants keep routing
     /// where they should, which a compile check cannot catch.
+    /// Rejected entries are workspace-controlled, so `render` must not emit raw
+    /// control characters into a terminal or an editor message.
+    ///
+    /// The absolute-path branch rejects before `validate_workspace_path` runs,
+    /// so its `InvalidPathCharacters` check never sees these entries — without
+    /// central escaping, a hostile `.perl-lsp.toml` could inject ANSI/OSC
+    /// sequences through the very warning that reports it (CWE-150).
+    #[test]
+    fn render_escapes_control_characters_in_workspace_controlled_entries() {
+        let rejected = RejectedIncludePath {
+            entry: "/etc\u{1b}]0;pwned\u{7}".to_string(),
+            reason: RejectedIncludePathReason::Absolute,
+        };
+
+        let rendered = rejected.render();
+        assert!(
+            !rendered.chars().any(|c| c.is_control() && c != '\t'),
+            "render must not emit raw control characters; got {rendered:?}"
+        );
+        assert!(
+            rendered.contains("\\u{001b}"),
+            "the escape sequence should be shown in printable form; got {rendered:?}"
+        );
+    }
+
     #[test]
     fn rejection_reason_maps_each_workspace_path_error_exactly() {
         use perl_parser_core::path_security::WorkspacePathError;
