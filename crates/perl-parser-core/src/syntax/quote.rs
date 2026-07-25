@@ -38,6 +38,21 @@ fn strip_match_prefix(text: &str) -> Option<&str> {
     (!delimiter.is_alphabetic()).then_some(stripped)
 }
 
+/// Strip the `tr` or `y` operator prefix from a transliteration token.
+///
+/// Checks `tr` before `y` so a hypothetical `tr` token is never misrouted
+/// through a single-char `t`+`r` path. Returns the input unchanged when
+/// neither prefix is present (e.g. when the caller already stripped it).
+fn strip_transliteration_prefix(text: &str) -> &str {
+    if let Some(s) = text.strip_prefix("tr") {
+        s
+    } else if let Some(s) = text.strip_prefix('y') {
+        s
+    } else {
+        text
+    }
+}
+
 /// Error type for substitution operator parsing failures
 #[derive(Debug, Clone, PartialEq)]
 pub enum SubstitutionError {
@@ -347,14 +362,7 @@ pub fn extract_substitution_parts(text: &str) -> (String, String, String) {
 
 /// Extract search, replace, and modifiers from a transliteration token
 pub fn extract_transliteration_parts(text: &str) -> (String, String, String) {
-    // Skip 'tr' or 'y' prefix
-    let after_op = if let Some(stripped) = text.strip_prefix("tr") {
-        stripped
-    } else if let Some(stripped) = text.strip_prefix('y') {
-        stripped
-    } else {
-        text
-    };
+    let after_op = strip_transliteration_prefix(text);
     let content = skip_paired_replacement_gap(after_op);
 
     // Get delimiter - content must be non-empty to have a delimiter
@@ -450,14 +458,8 @@ pub fn extract_transliteration_parts(text: &str) -> (String, String, String) {
 pub fn extract_transliteration_parts_strict(
     text: &str,
 ) -> Result<(String, String, String), TransliterationError> {
-    // Skip `tr` or `y` prefix, then allow optional whitespace before delimiter.
-    let after_op = if let Some(stripped) = text.strip_prefix("tr") {
-        stripped
-    } else if let Some(stripped) = text.strip_prefix('y') {
-        stripped
-    } else {
-        text
-    };
+    // Strip `tr` or `y` prefix, then allow optional whitespace before delimiter.
+    let after_op = strip_transliteration_prefix(text);
     let content = skip_paired_replacement_gap(after_op);
 
     // Get delimiter.
