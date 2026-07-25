@@ -1097,12 +1097,8 @@ mod tests {
         let call_start = must_some(source.find("printf("));
         // Call node includes the closing ')'
         let call_end = call_start + "printf(\"%s %s %s\", $a)".len();
-        let diagnostics = vec![make_diagnostic(
-            call_start,
-            call_end,
-            "PL405",
-            "`printf` format string has 3 specifiers but 1 argument supplied",
-        )];
+        let diagnostics =
+            vec![make_diagnostic(call_start, call_end, "PL405", "wording is presentation-only")];
 
         let provider = CodeActionsProvider::new(source.to_string());
         let actions = provider.get_code_actions(&ast, (0, source.len()), &diagnostics);

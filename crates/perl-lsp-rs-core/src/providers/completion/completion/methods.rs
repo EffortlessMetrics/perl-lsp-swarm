@@ -422,7 +422,7 @@ pub fn add_method_completions(
                 sort_text: Some(format!("1_{}", name)),
                 filter_text: Some(name.clone()),
                 additional_edits: vec![],
-                text_edit_range: Some((context.prefix_start, context.position)),
+                text_edit_range: Some((context.method_text_edit_start(source), context.position)),
                 commit_characters: None,
                 label_details: None,
             });
@@ -482,7 +482,7 @@ pub fn add_method_completions(
                 sort_text: Some(format!("2_{}", method)),
                 filter_text: Some(method.to_string()),
                 additional_edits,
-                text_edit_range: Some((context.prefix_start, context.position)),
+                text_edit_range: Some((context.method_text_edit_start(source), context.position)),
                 commit_characters: None,
                 label_details: None,
             });
@@ -507,7 +507,10 @@ pub fn add_method_completions(
                     sort_text: Some(format!("9_{}", method)), // Lower priority
                     filter_text: Some(method.to_string()),
                     additional_edits,
-                    text_edit_range: Some((context.prefix_start, context.position)),
+                    text_edit_range: Some((
+                        context.method_text_edit_start(source),
+                        context.position,
+                    )),
                     commit_characters: None,
                     label_details: None,
                 });

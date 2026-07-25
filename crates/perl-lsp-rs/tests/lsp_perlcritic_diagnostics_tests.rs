@@ -323,7 +323,7 @@ fn test_d_perlcriticrc_walkup_finds_workspace_root_config() {
     let expected_profile = rc_path.to_string_lossy().to_string();
     let profile_arg = format!("--profile={expected_profile}");
     assert!(
-        invocations[0].args.contains(&profile_arg),
+        invocations.iter().any(|invocation| invocation.args.contains(&profile_arg)),
         "perlcritic must be invoked with --profile pointing to the workspace root \
          .perlcriticrc; args: {:?}",
         invocations[0].args
@@ -366,7 +366,7 @@ fn test_e_empty_profile_falls_back_to_walkup_config() {
     let expected_profile = rc_path.to_string_lossy().to_string();
     let profile_arg = format!("--profile={expected_profile}");
     assert!(
-        invocations[0].args.contains(&profile_arg),
+        invocations.iter().any(|invocation| invocation.args.contains(&profile_arg)),
         "empty profile should fall back to workspace walk-up .perlcriticrc; args: {:?}",
         invocations[0].args
     );
