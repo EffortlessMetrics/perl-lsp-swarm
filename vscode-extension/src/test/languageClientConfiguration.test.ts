@@ -49,9 +49,7 @@ describe('language client configuration', () => {
         return defaultValue;
       }),
       inspect: jest.fn((key: string) =>
-        key === 'externalIncludePaths'
-          ? { globalValue: ['/opt/perl/lib'] }
-          : undefined,
+        key === 'externalIncludePaths' ? { globalValue: ['/opt/perl/lib'] } : undefined,
       ),
     } as unknown as vscode.WorkspaceConfiguration;
 
@@ -64,9 +62,7 @@ describe('language client configuration', () => {
     const config = {
       get: jest.fn((key: string, defaultValue?: unknown) => defaultValue),
       inspect: jest.fn((key: string) =>
-        key === 'externalIncludePaths'
-          ? { workspaceValue: ['/etc'] }
-          : undefined,
+        key === 'externalIncludePaths' ? { workspaceValue: ['/etc'] } : undefined,
       ),
     } as unknown as vscode.WorkspaceConfiguration;
 
