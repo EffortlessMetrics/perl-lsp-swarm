@@ -18,6 +18,7 @@
 
 mod cpan_test_helpers;
 use cpan_test_helpers::*;
+use perl_tdd_support::must;
 
 use perl_parser_core::syntax::quote::{
     TransliterationError, extract_transliteration_parts, extract_transliteration_parts_strict,
@@ -97,7 +98,7 @@ fn lenient_tr_only_valid_modifiers_pass_through() {
 #[test]
 fn strict_tr_prefix_yields_correct_search_and_replacement() {
     let result = extract_transliteration_parts_strict("tr/a-z/A-Z/");
-    let (search, replacement, _mods) = result.expect("tr/a-z/A-Z/ must parse cleanly");
+    let (search, replacement, _mods) = must(result);
     assert_eq!(search, "a-z");
     assert_eq!(replacement, "A-Z");
 }
@@ -105,17 +106,15 @@ fn strict_tr_prefix_yields_correct_search_and_replacement() {
 #[test]
 fn strict_y_prefix_yields_correct_search_and_replacement() {
     let result = extract_transliteration_parts_strict("y/a-z/A-Z/");
-    let (search, replacement, _mods) = result.expect("y/a-z/A-Z/ must parse cleanly");
+    let (search, replacement, _mods) = must(result);
     assert_eq!(search, "a-z");
     assert_eq!(replacement, "A-Z");
 }
 
 #[test]
 fn strict_tr_and_y_agree_on_body() {
-    let (tr_s, tr_r, tr_m) =
-        extract_transliteration_parts_strict("tr/abc/xyz/ds").expect("tr must succeed");
-    let (y_s, y_r, y_m) =
-        extract_transliteration_parts_strict("y/abc/xyz/ds").expect("y must succeed");
+    let (tr_s, tr_r, tr_m) = must(extract_transliteration_parts_strict("tr/abc/xyz/ds"));
+    let (y_s, y_r, y_m) = must(extract_transliteration_parts_strict("y/abc/xyz/ds"));
     assert_eq!(tr_s, y_s, "strict tr and y search lists must agree");
     assert_eq!(tr_r, y_r, "strict tr and y replacement lists must agree");
     assert_eq!(tr_m, y_m, "strict tr and y modifiers must agree");
@@ -154,7 +153,7 @@ fn strict_missing_replacement_returns_error() {
 fn strict_empty_transliteration_is_valid() {
     let result = extract_transliteration_parts_strict("tr///");
     assert!(result.is_ok(), "tr/// must be valid: {result:?}");
-    let (s, r, m) = result.unwrap();
+    let (s, r, m) = must(result);
     assert_eq!((s.as_str(), r.as_str(), m.as_str()), ("", "", ""));
 }
 
@@ -162,7 +161,7 @@ fn strict_empty_transliteration_is_valid() {
 fn strict_tr_all_valid_modifiers_accepted() {
     let result = extract_transliteration_parts_strict("tr/a/b/cdsr");
     assert!(result.is_ok(), "all valid modifiers must be accepted");
-    let (_s, _r, mods) = result.unwrap();
+    let (_s, _r, mods) = must(result);
     assert_eq!(mods, "cdsr");
 }
 
