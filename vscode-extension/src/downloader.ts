@@ -90,14 +90,14 @@ export async function copyManagedFileWithRetry(
   }
 }
 
-function githubApiHeaders(url: string): Record<string, string> {
+function githubApiHeaders(url: string, includeAuth = true): Record<string, string> {
   const headers: Record<string, string> = {
     'User-Agent': 'vscode-perl-lsp',
     Accept: 'application/vnd.github+json',
   };
 
   const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-  if (token && url.startsWith('https://api.github.com/')) {
+  if (includeAuth && token && url.startsWith('https://api.github.com/')) {
     headers.Authorization = `Bearer ${token}`;
   }
 
@@ -566,7 +566,7 @@ export class BinaryDownloader {
     );
   }
 
-  private async getLatestRelease(): Promise<Release> {
+  private async getLatestRelease(timeoutMs = 30000): Promise<Release> {
     const config = vscode.workspace.getConfiguration('perl-lsp');
     const channel = config.get<string>('channel', 'latest');
     const versionTag = config.get<string>('versionTag', '');
@@ -591,13 +591,36 @@ export class BinaryDownloader {
 
     return new Promise((resolve, reject) => {
       const isHttps = url.startsWith('https:');
-      const httpModule = isHttps ? https : http;
+      let timedOut = false;
+      let timeout: NodeJS.Timeout | undefined;
+      let request: http.ClientRequest | undefined;
 
-      httpModule
-        .get(url, { headers: githubApiHeaders(url) }, (res) => {
+      const httpConfig = vscode.workspace.getConfiguration('http');
+      const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
+      const options = {
+        headers: githubApiHeaders(url, proxyStrictSSL),
+        rejectUnauthorized: proxyStrictSSL,
+      };
+
+      timeout = setTimeout(() => {
+        timedOut = true;
+        if (request) {
+          request.destroy();
+        }
+        reject(new Error(`Release fetch timeout after ${timeoutMs / 1000} seconds`));
+      }, timeoutMs);
+
+      try {
+        request = this.httpGet(isHttps, url, options, (res) => {
           let data = '';
           res.on('data', (chunk) => (data += chunk));
           res.on('end', () => {
+            if (timedOut) {
+              return;
+            }
+            if (timeout) {
+              clearTimeout(timeout);
+            }
             try {
               const parsed: unknown = JSON.parse(data);
               if (
@@ -635,8 +658,30 @@ export class BinaryDownloader {
               reject(e);
             }
           });
-        })
-        .on('error', reject);
+          res.on('error', (err) => {
+            if (timeout) {
+              clearTimeout(timeout);
+            }
+            if (!timedOut) {
+              reject(err);
+            }
+          });
+        });
+
+        request.on('error', (err) => {
+          if (timeout) {
+            clearTimeout(timeout);
+          }
+          if (!timedOut) {
+            reject(err);
+          }
+        });
+      } catch (err) {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        reject(err);
+      }
     });
   }
 
