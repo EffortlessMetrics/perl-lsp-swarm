@@ -105,6 +105,7 @@ let results = runner.run_test("file:///t/basic.t");  // runs with prove/perl, pa
 - The `must` module has `#![allow(clippy::panic)]` since these helpers intentionally panic in tests
 - The crate re-exports core parser types so test files can import from one place
 - `test_generator` contains two parallel implementations: a full one with `TestFramework` enum and `RefactoringSuggester`, and a simplified one in `tdd_basic`
-- `test_runner::TestRunner` requires source+URI at construction; `test_generator::TestRunner` is command-based
+- `test_runner::TestRunner` requires source+URI at construction and executes tests via subprocesses
+- `test_generator::TestRunner` is **generation-only / non-executing** until convergence with #4972; its `run_tests`, `watch`, and `get_coverage` fail closed rather than fabricating results
 - The `governance` module is data-model heavy (serializable structs for CI integration)
 - Used as a `dev-dependency` or test utility across the workspace

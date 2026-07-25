@@ -7,7 +7,7 @@ use crate::ast::Node;
 
 // Re-use Diagnostic from tdd_basic to avoid duplication
 use crate::tdd_basic::{Diagnostic, DiagnosticSeverity};
-use crate::test_generator::{CoverageReport, TestResults, TestRunner};
+use crate::test_generator::{CoverageReport, TestExecutionError, TestResults, TestRunner};
 use crate::test_generator::{RefactoringSuggester, RefactoringSuggestion};
 use crate::test_generator::{TestCase, TestFramework, TestGenerator};
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,7 @@ pub struct TddWorkflow {
     /// Test generator
     generator: TestGenerator,
     /// Test runner
+    #[allow(deprecated, reason = "workflow still wraps generation runner until #4972")]
     runner: TestRunner,
     /// Refactoring suggester
     suggester: RefactoringSuggester,
@@ -124,6 +125,7 @@ pub struct BranchCoverage {
 
 impl TddWorkflow {
     /// Create a new TDD workflow manager with the given configuration
+    #[allow(deprecated, reason = "workflow still wraps generation runner until #4972")]
     pub fn new(config: TddConfig) -> Self {
         let framework = match config.test_framework.as_str() {
             "Test2::V0" => TestFramework::Test2V0,
@@ -282,7 +284,17 @@ impl TddWorkflow {
         let file_strings: Vec<String> =
             test_files.iter().map(|p| p.to_string_lossy().to_string()).collect();
 
-        let results = self.runner.run_tests(&file_strings);
+        let results = match self.runner.run_tests(&file_strings) {
+            Ok(results) => results,
+            Err(TestExecutionError::Unsupported { operation, reason }) => {
+                self.state = WorkflowState::Red;
+                return TddCycleResult {
+                    phase: format!("{:?}", WorkflowState::Red),
+                    message: format!("{operation} is unsupported: {reason}"),
+                    actions: vec![],
+                };
+            }
+        };
 
         // Cache results
         for file in test_files {
