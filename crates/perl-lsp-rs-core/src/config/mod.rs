@@ -1719,13 +1719,39 @@ fn escape_for_display(value: &str) -> String {
     value
         .chars()
         .flat_map(|c| {
-            if c == '\t' || !c.is_control() {
+            if c == '\t' || !needs_display_escape(c) {
                 vec![c]
             } else {
                 format!("\\u{{{:04x}}}", c as u32).chars().collect()
             }
         })
         .collect()
+}
+
+/// Characters that must not reach a terminal or editor message verbatim.
+///
+/// `char::is_control` covers C0, DEL and C1 — which handles ANSI/OSC injection.
+/// It does NOT cover the Unicode bidirectional formatting characters, which are
+/// category `Cf` rather than `Cc`. Those visually reorder surrounding text
+/// without being control codes (the "Trojan Source" class, CVE-2021-42574), so
+/// a rejected entry could still render as a path other than the one configured.
+/// Zero-width characters are included for the same reason: they let two
+/// different entries display identically.
+fn needs_display_escape(c: char) -> bool {
+    if c.is_control() {
+        return true;
+    }
+    matches!(
+        c,
+        // zero-width space/ZWNJ/ZWJ, LRM/RLM
+        '\u{200b}'..='\u{200f}'
+        // LRE, RLE, PDF, LRO, RLO
+        | '\u{202a}'..='\u{202e}'
+        // LRI, RLI, FSI, PDI
+        | '\u{2066}'..='\u{2069}'
+        // zero-width no-break space / BOM
+        | '\u{feff}'
+    )
 }
 
 impl RejectedIncludePath {
@@ -3368,6 +3394,33 @@ profile = "recommended"
         assert!(
             rendered.contains("\\u{001b}"),
             "the escape sequence should be shown in printable form; got {rendered:?}"
+        );
+
+        // C1 controls (U+0080-U+009F) are also ANSI-capable, and newline lets a
+        // single entry forge an extra line of output.
+        for (label, raw) in [("C1 CSI", "\u{9b}31m"), ("newline", "a\nFAKE: all good")] {
+            let out = RejectedIncludePath {
+                entry: raw.to_string(),
+                reason: RejectedIncludePathReason::Absolute,
+            }
+            .render();
+            assert!(
+                !out.chars().any(|c| c.is_control() && c != '\t'),
+                "{label} must be escaped; got {out:?}"
+            );
+        }
+
+        // Bidi overrides are NOT control characters by Unicode category but
+        // visually reorder text, so an entry could display as a different path
+        // than the one configured (Trojan Source, CVE-2021-42574).
+        let bidi = RejectedIncludePath {
+            entry: "safe\u{202e}gnp.exe".to_string(),
+            reason: RejectedIncludePathReason::Absolute,
+        }
+        .render();
+        assert!(
+            !bidi.contains('\u{202e}'),
+            "bidi override must not survive rendering; got {bidi:?}"
         );
     }
 
