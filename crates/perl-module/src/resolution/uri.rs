@@ -103,9 +103,11 @@ fn candidate_report(
 /// # Security
 ///
 /// `include_paths` entries are classified as `ExternalAbsolute` purely by
-/// `Path::is_absolute()` — there is no provenance signal here to distinguish a
-/// trusted absolute root (from LSP client settings) from an untrusted one
-/// (from a workspace-supplied `.perl-lsp.toml`). Callers MUST NOT pass
+/// `Path::is_absolute()` — there is no provenance signal here at all. This
+/// cannot distinguish an absolute root configured by the user from one
+/// supplied by a workspace, whether that workspace supplied it via
+/// `.perl-lsp.toml` or via resource-scoped LSP client settings (issue #4998).
+/// Callers MUST NOT pass
 /// untrusted absolute entries into `include_paths`; validate/reject those
 /// before merging into the caller's `include_paths`. See
 /// `perl_lsp_rs_core::config::ProjectConfig::apply_to_workspace_config`

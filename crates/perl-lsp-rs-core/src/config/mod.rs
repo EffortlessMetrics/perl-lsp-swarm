@@ -1566,17 +1566,21 @@ impl ProjectConfig {
     /// # Security
     ///
     /// `include_paths` entries come from `.perl-lsp.toml`, a file checked into
-    /// the (possibly hostile) cloned workspace — an **untrusted** channel,
-    /// unlike the trusted LSP client settings applied via
-    /// [`WorkspaceConfig::update_from_value`]. Mirroring the `perlPath` /
+    /// the (possibly hostile) cloned workspace — an **untrusted** channel.
+    /// The LSP client-settings channel applied via
+    /// [`WorkspaceConfig::update_from_value`] is NOT validated here; its
+    /// provenance is not distinguished in this slice (see issue #4998 — in
+    /// VS Code `perl-lsp.includePaths` is `scope: resource`, so workspace and
+    /// folder values reach it too). Mirroring the `perlPath` /
     /// `perlArgs` precedent (issue #3729, see the comment at
     /// `update_from_value`), this rejects entries that could let a hostile
     /// project read outside the workspace:
     ///
     /// - Absolute entries are always rejected. Legitimate external lib roots
-    ///   must be configured via trusted editor/user settings
-    ///   (`workspace.includePaths`), not via workspace-supplied
-    ///   `.perl-lsp.toml`.
+    ///   must be configured through the LSP client-settings channel, not via
+    ///   workspace-supplied `.perl-lsp.toml`. Note that channel is itself
+    ///   pending provenance hardening (issue #4998); this slice only closes
+    ///   the `.perl-lsp.toml` route.
     /// - Relative entries that escape the workspace root after normalization
     ///   (lexical `..` traversal, or a symlink that resolves outside the
     ///   workspace) are rejected.
@@ -1647,8 +1651,9 @@ pub struct RejectedIncludePath {
 pub enum RejectedIncludePathReason {
     /// Absolute paths are never honoured from workspace-supplied
     /// `.perl-lsp.toml` (mirrors the perlPath/perlArgs precedent, issue
-    /// #3729). Use editor/user settings (`workspace.includePaths`) for
-    /// trusted external lib roots instead.
+    /// #3729). External lib roots must come through the LSP client-settings
+    /// channel instead — which is itself pending provenance hardening under
+    /// issue #4998, so this is a narrower statement than "trusted".
     Absolute,
     /// Relative entry was rejected by `validate_workspace_path`.
     ///
@@ -1668,8 +1673,8 @@ impl RejectedIncludePath {
         match &self.reason {
             RejectedIncludePathReason::Absolute => format!(
                 "'{}': absolute include_paths are not allowed in .perl-lsp.toml \
-                 (workspace-supplied). Configure external lib roots via editor/user \
-                 settings (workspace.includePaths) instead.",
+                 (workspace-supplied). Configure external lib roots in your own \
+                 editor settings instead — not in a file checked into the repository.",
                 self.entry
             ),
             RejectedIncludePathReason::EscapesWorkspace(detail) => {
@@ -3532,14 +3537,18 @@ profile = "recommended"
         assert!(config.perl_args.is_empty(), "perlArgs from workspace must be ignored");
     }
 
-    /// Issue #4957: unlike `.perl-lsp.toml` (untrusted, see
-    /// `apply_to_workspace_config_rejects_absolute_include_paths`), absolute
-    /// `include_paths` supplied via trusted LSP client settings
-    /// (`workspace.includePaths` / `update_from_value`) must keep working
-    /// unchanged. This proves the fix narrows the untrusted channel only and
-    /// does not remove the legitimate external-lib-root feature.
+    /// Issue #4957: this slice validates only `.perl-lsp.toml` (see
+    /// `apply_to_workspace_config_rejects_absolute_include_paths`). Absolute
+    /// `include_paths` arriving on the LSP client-settings channel
+    /// (`update_from_value`) are still accepted, and this test pins that
+    /// **current behaviour is unchanged** by the `.perl-lsp.toml` fix.
+    ///
+    /// It is NOT an assertion that the channel is trusted. In VS Code
+    /// `perl-lsp.includePaths` is `scope: resource`, so a committed
+    /// `.vscode/settings.json` reaches this same code path. Hardening that is
+    /// issue #4998; when it lands, this test is expected to change.
     #[test]
-    fn workspace_config_update_from_value_accepts_absolute_include_paths() {
+    fn update_from_value_still_accepts_absolute_include_paths_unchanged_by_this_slice() {
         let mut config = WorkspaceConfig::default();
         config.update_from_value(&serde_json::json!({
             "workspace": {
@@ -3549,7 +3558,8 @@ profile = "recommended"
         assert_eq!(
             config.include_paths,
             vec!["/opt/company-perl-libs".to_string(), "relative/lib".to_string()],
-            "trusted client-settings channel must accept absolute include_paths unchanged"
+            "this slice must not change client-settings channel behaviour; \
+             provenance hardening is issue #4998"
         );
     }
     #[test]
