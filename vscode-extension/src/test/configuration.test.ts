@@ -757,6 +757,10 @@ describe('package.json contributes', () => {
         'perl-lsp.updateCheckInterval',
         'perl-lsp.autoUpdate',
         'perl-lsp.externalIncludePaths',
+        'perl-lsp.perltidyConfig',
+        'perl-lsp.critic.engine',
+        'perl-lsp.perlcritic.profile',
+        'perl-lsp.perlcritic.theme',
       ];
       for (const key of machineScoped) {
         expect(getSetting(properties, key).scope).toBe('machine');
@@ -771,17 +775,13 @@ describe('package.json contributes', () => {
         'perl-lsp.enableSemanticTokens',
         'perl-lsp.enableFormatting',
         'perl-lsp.formatOnSave',
-        'perl-lsp.perltidyConfig',
         'perl-lsp.critic.enabled',
-        'perl-lsp.critic.engine',
         'perl-lsp.critic.profile',
         'perl-lsp.critic.severity',
         'perl-lsp.critic.include',
         'perl-lsp.critic.exclude',
         'perl-lsp.perlcritic.enabled',
         'perl-lsp.perlcritic.severity',
-        'perl-lsp.perlcritic.profile',
-        'perl-lsp.perlcritic.theme',
         'perl-lsp.enableTestIntegration',
         'perl-lsp.autoPopulateNewFiles',
       ];
