@@ -53,13 +53,26 @@ LSP client settings always override them.
 [ai_completion]
 enabled = true
 provider = "openai_compat"
-endpoint = "https://api.openai.com/v1/chat/completions"
 model = "gpt-4o-mini"
-api_key_env = "OPENAI_API_KEY"
 ```
 
 Only the fields you set will override defaults. Omitted fields retain their
 built-in default values.
+
+### Destination and credentials are user-level only
+
+`endpoint`, `api_key_env`, `api_key_header`, and `api_key_prefix` **cannot be set
+from `.perl-lsp.toml`**. They are read only from your own editor/user settings.
+
+`.perl-lsp.toml` is checked into a repository, so honouring those fields let a
+cloned project choose both which environment variable was read as a credential
+and where it was sent — arbitrary named-secret exfiltration, with your source in
+the request body. They were removed for the same reason `perlPath` and `perlArgs`
+are not honoured from workspace settings (issue #3729). See issue #4955.
+
+**These keys are silently ignored, not rejected**, because the TOML deserializer
+drops unknown fields. If you set `endpoint` in `.perl-lsp.toml` and requests keep
+going to the default destination, that is why — move it to your user settings.
 
 ## Environment Variables
 
