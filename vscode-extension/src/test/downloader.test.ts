@@ -1098,6 +1098,7 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
   type TestRequest = EventEmitter & {
     destroy: jest.Mock;
   };
+  type TestResponse = EventEmitter;
   type DownloaderSeams = {
     getLatestRelease: (timeoutMs?: number) => Promise<unknown>;
     httpGet: (...args: unknown[]) => TestRequest;
@@ -1139,6 +1140,87 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
       'Release fetch timeout after 0.01 seconds',
     );
     expect(request.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  test('resolves a successful release response and clears the pending timer', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const release = { tag_name: 'v1.2.3', assets: [] };
+    const response = new EventEmitter() as TestResponse;
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit('data', JSON.stringify(release));
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(1000)).resolves.toEqual(release);
+    expect(request.destroy).not.toHaveBeenCalled();
+  });
+
+  test('rejects with the request error before the timeout fires', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    const requestError = Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' });
+    jest.spyOn(seams, 'httpGet').mockImplementation(() => {
+      process.nextTick(() => request.emit('error', requestError));
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(1000)).rejects.toBe(requestError);
+    expect(request.destroy).not.toHaveBeenCalled();
+  });
+
+  test('omits GitHub bearer credentials when proxyStrictSSL is disabled', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = new EventEmitter() as TestResponse;
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    const priorToken = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'latest';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        if (key === 'proxyStrictSSL') {
+          return false;
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+
+    let capturedOptions: { headers?: Record<string, string> } | undefined;
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, options, callback) => {
+      capturedOptions = options as { headers?: Record<string, string> };
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit('data', JSON.stringify({ tag_name: 'v1.2.3', assets: [] }));
+        response.emit('end');
+      });
+      return request;
+    });
+
+    try {
+      await seams.getLatestRelease(1000);
+      expect(capturedOptions?.headers?.Authorization).toBeUndefined();
+    } finally {
+      if (priorToken === undefined) {
+        delete process.env.GITHUB_TOKEN;
+      } else {
+        process.env.GITHUB_TOKEN = priorToken;
+      }
+    }
   });
 });
 
