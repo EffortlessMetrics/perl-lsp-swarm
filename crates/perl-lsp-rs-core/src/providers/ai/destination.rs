@@ -71,7 +71,7 @@ pub fn validate_endpoint_with_resolver(
         return Err(DestinationError::UnresolvedHost);
     }
 
-    let all_loopback = resolved_ips.iter().copied().all(IpAddr::is_loopback);
+    let all_loopback = resolved_ips.iter().copied().all(|ip| ip.is_loopback());
     if host == "localhost" && !all_loopback {
         return Err(DestinationError::LocalhostNotLoopback);
     }
