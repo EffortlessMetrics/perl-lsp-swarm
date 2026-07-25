@@ -686,6 +686,20 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
         // These kinds have NO explicit match arm in lower.rs.  They fall through
         // to `_ => self.visit_children(node, confidence)`.
         // is_explicit_arm=false for all of these.
+        //
+        // AmperCall (`&foo()`, `&Package::sub()`) is structurally identical to
+        // FunctionCall at the HIR level but has no dedicated lower.rs arm yet;
+        // call children (args) are traversed via the `_ => visit_children`
+        // fallthrough.  When a HIR shell is added, the entry here moves to the
+        // "Explicitly lowered" section and lower.rs gains a named arm.
+        "AmperCall" => disp!(
+            false,
+            false,
+            true,
+            false,
+            false,
+            "No first-slice HIR shell yet; args are traversed via fallthrough."
+        ),
         "Binary" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "ArraySlice" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "HashSlice" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
@@ -1051,6 +1065,7 @@ mod tests {
         // All `NotYetModeled` kinds must fall to `_ => visit_children` and must
         // therefore have `traverses_children=true` and `is_intentional=false`.
         for kind in [
+            "AmperCall",
             "Binary",
             "ArraySlice",
             "HashSlice",
