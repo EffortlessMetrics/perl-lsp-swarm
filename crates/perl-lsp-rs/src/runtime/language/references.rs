@@ -10,6 +10,7 @@
 
 use super::super::{byte_to_utf16_col, *};
 use crate::protocol::{JsonRpcError, JsonRpcId, REQUEST_CANCELLED, req_position, req_uri};
+use crate::runtime::window::RequestProgressGuard;
 use crate::state::{reference_search_deadline, references_cap};
 use crate::util::{is_word_boundary, token_under_cursor};
 use std::collections::BinaryHeap;
@@ -587,6 +588,7 @@ impl LspServer {
         params: Option<Value>,
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        let _progress = RequestProgressGuard::new(self, "references", "Finding references");
         let trace_context = Self::references_decision_trace_context(params.as_ref())?;
         let (
             result,

@@ -16,6 +16,7 @@ use crate::protocol::{invalid_params, req_position, req_uri};
 use crate::runtime::readiness::IndexReadinessPolicy;
 #[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
+use crate::runtime::window::RequestProgressGuard;
 use crate::state::{code_lens_cap, code_lens_resolve_deadline, inlay_hints_cap};
 use perl_lsp_rs_core::providers::completion::collect_module_names_from_roots_with_cache;
 use perl_lsp_rs_core::providers::inline_completion::{
@@ -710,6 +711,11 @@ impl LspServer {
             return Err(crate::protocol::method_not_advertised());
         }
 
+        let _progress = RequestProgressGuard::new(self, "code-lens", "Resolving code lenses");
+        self.handle_code_lens_inner(params)
+    }
+
+    fn handle_code_lens_inner(&self, params: Option<Value>) -> Result<Option<Value>, JsonRpcError> {
         if let Some(params) = params {
             let uri = req_uri(&params)?;
             let cap = code_lens_cap();
