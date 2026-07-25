@@ -48,6 +48,8 @@ accepted:
 | `endpoint` | string | `""` (empty) | API endpoint URL (e.g. `https://api.openai.com/v1/chat/completions`). |
 | `model` | string | `"gpt-4o-mini"` | Model identifier sent in the request body. |
 | `apiKeyEnv` | string | `"OPENAI_API_KEY"` | Name of the environment variable containing the API key. |
+| `apiKeyHeader` | string | `"Authorization"` | HTTP header the credential is sent in. Must be a valid header name; an empty or invalid value is ignored and the default is kept. Use e.g. `"x-api-key"` for providers that do not use `Authorization`. |
+| `apiKeyPrefix` | string | `"Bearer"` | Scheme prepended to the key, sent as `<prefix> <key>`. Set to `""` to send the raw key with no prefix — required by providers that expect a bare token. Values containing control characters are ignored. |
 | `timeoutMs` | integer | `1800` | Per-request timeout in milliseconds. |
 | `maxOutputTokens` | integer | `64` | Maximum tokens the model may generate per request. |
 | `rateLimitRps` | float | `1.0` | Maximum requests per second (token-bucket rate). |
