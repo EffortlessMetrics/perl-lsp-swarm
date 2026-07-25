@@ -75,7 +75,7 @@ Cause" sections are the easiest to get started on.
 ## 4. Build and run the test for your crate
 
 Run ONLY the tests for the crate you are changing, not the full workspace — the workspace has
-134 crates and full-workspace runs take minutes. The fast cycle is:
+many workspace members (see [CURRENT_STATUS.md](../project/CURRENT_STATUS.md) for live metrics) and full-workspace runs take minutes. The fast cycle is:
 
 ```bash
 # Build to confirm it compiles
@@ -88,16 +88,16 @@ cargo test -p <crate-name>
 cargo test -p <crate-name> -- test_name_here --exact
 ```
 
-For example, if you are fixing `perl-module-resolution`:
+For example, if you are fixing `perl-module`:
 
 ```bash
-cargo test -p perl-module-resolution
+cargo test -p perl-module
 ```
 
 For LSP crates, use threading flags to avoid flaky results:
 
 ```bash
-RUST_TEST_THREADS=2 cargo test -p perl-lsp -- --test-threads=2
+RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs -- --test-threads=2
 ```
 
 ## 5. Make your change
@@ -147,7 +147,7 @@ type(scope): imperative summary (#NNNN)
 The `(#NNNN)` at the end is the issue number. Required. Examples:
 
 ```
-fix(perl-module-resolution): normalize path separators in use_lib tests (#4154)
+fix(perl-module): normalize path separators in use_lib tests (#4154)
 docs(perl-lsp-semantic-tokens): correct token counts in CLAUDE.md (#4159)
 test(perl-parser): add regression test for postfix deref chain (#4167)
 ```
