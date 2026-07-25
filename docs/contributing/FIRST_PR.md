@@ -75,7 +75,7 @@ Cause" sections are the easiest to get started on.
 ## 4. Build and run the test for your crate
 
 Run ONLY the tests for the crate you are changing, not the full workspace — the workspace has
-47 workspace members and full-workspace runs take minutes. The fast cycle is:
+many workspace members (see [CURRENT_STATUS.md](../project/CURRENT_STATUS.md) for live metrics) and full-workspace runs take minutes. The fast cycle is:
 
 ```bash
 # Build to confirm it compiles
