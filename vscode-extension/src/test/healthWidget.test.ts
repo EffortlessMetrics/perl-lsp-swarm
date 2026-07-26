@@ -349,3 +349,40 @@ describe('HealthWidget — version display', () => {
     expect(item.text).toBe('$(check) perl-lsp v0.12.0');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Crash-restart count reset (#4988)
+// ---------------------------------------------------------------------------
+
+describe('HealthWidget — crash-restart count reset', () => {
+  test('Stopped clears pre-crash file and error counts so restart shows fresh widget', () => {
+    const { item, widget } = makeWidget();
+    widget.setFileCount(500);
+    widget.setErrorCount(7);
+    widget.onStateChange(ClientState.Running);
+    expect(item.text).toBe('$(check) perl-lsp: 500 files | 7 errors');
+
+    widget.onStateChange(ClientState.Stopped);
+    expect(widget.fileCount).toBeUndefined();
+    expect(widget.errorCount).toBe(0);
+
+    widget.onStateChange(ClientState.Running);
+    expect(item.text).toBe('$(check) perl-lsp');
+  });
+
+  test('Stopped resets fileCount accessor to undefined', () => {
+    const { widget } = makeWidget();
+    widget.setFileCount(200);
+    expect(widget.fileCount).toBe(200);
+    widget.onStateChange(ClientState.Stopped);
+    expect(widget.fileCount).toBeUndefined();
+  });
+
+  test('Stopped resets errorCount accessor to zero', () => {
+    const { widget } = makeWidget();
+    widget.setErrorCount(4);
+    expect(widget.errorCount).toBe(4);
+    widget.onStateChange(ClientState.Stopped);
+    expect(widget.errorCount).toBe(0);
+  });
+});

@@ -92,6 +92,8 @@ export class HealthWidget {
       case ClientState.Stopped:
         this._activeTokens.clear();
         this._indexingMessage = undefined;
+        this._fileCount = undefined;
+        this._errorCount = 0;
         this._setMode('stopped');
         break;
     }

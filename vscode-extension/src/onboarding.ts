@@ -390,14 +390,14 @@ export class OnboardingManager {
    * @param serverPath  Path to the LSP binary for the health check.
    */
   async showWelcomeNotification(serverPath: string | null): Promise<void> {
-    await this.markWelcomed();
-
     const selection = await vscode.window.showInformationMessage(
       'Welcome to Perl Language Server! Run a setup health check to verify your environment.',
       'Run Health Check',
       'Show Output',
       'Dismiss',
     );
+
+    await this.markWelcomed();
 
     if (selection === 'Run Health Check') {
       await vscode.commands.executeCommand('perl-lsp.runHealthCheck', serverPath);

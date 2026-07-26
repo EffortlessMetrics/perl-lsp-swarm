@@ -116,6 +116,50 @@ describe('OnboardingManager.markWelcomed', () => {
 });
 
 // ---------------------------------------------------------------------------
+// showWelcomeNotification — ordering (#4988)
+// ---------------------------------------------------------------------------
+
+describe('OnboardingManager.showWelcomeNotification', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test('markWelcomed is called after showInformationMessage resolves, not before', async () => {
+    const ctx = makeContext();
+    const mgr = new OnboardingManager(ctx, makeOutputChannel());
+    const callOrder: string[] = [];
+
+    (vscode.window.showInformationMessage as jest.Mock).mockImplementation(
+      async (..._args: unknown[]) => {
+        callOrder.push('showInformationMessage');
+        return undefined;
+      },
+    );
+
+    (ctx.globalState.update as jest.Mock).mockImplementation(
+      async (_key: string, _value: unknown) => {
+        callOrder.push('markWelcomed');
+      },
+    );
+
+    await mgr.showWelcomeNotification(null);
+
+    expect(callOrder).toEqual(['showInformationMessage', 'markWelcomed']);
+  });
+
+  test('markWelcomed is called even when user dismisses the notification', async () => {
+    const ctx = makeContext();
+    const mgr = new OnboardingManager(ctx, makeOutputChannel());
+
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Dismiss');
+
+    await mgr.showWelcomeNotification(null);
+
+    expect(ctx.globalState.update).toHaveBeenCalledWith('perl-lsp.welcomed', true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // checkPerlInstalled
 // ---------------------------------------------------------------------------
 
