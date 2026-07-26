@@ -77,7 +77,7 @@ impl CallHierarchyProvider {
             NodeKind::MethodCall { method, object, .. } if method == "new" => {
                 self.infer_receiver_package(object, current_package, receiver_packages)
             }
-            NodeKind::FunctionCall { name, .. } => {
+            NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
                 name.rsplit_once("::").map(|(package_name, _)| package_name.to_string())
             }
             _ => None,

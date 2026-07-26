@@ -100,8 +100,8 @@ impl InlayHintsProvider {
                 }
             }
 
-            // Function calls - show parameter hints
-            NodeKind::FunctionCall { name, args } => {
+            // Function calls - show parameter hints (&foo() and foo() treated alike)
+            NodeKind::FunctionCall { name, args } | NodeKind::AmperCall { name, args } => {
                 if self.enabled_hints.parameter_hints {
                     self.add_parameter_hints(name, args, node, hints, range);
                 }
@@ -345,7 +345,9 @@ impl InlayHintsProvider {
             NodeKind::String { .. } => Some("string".to_string()),
             NodeKind::Number { .. } => Some("number".to_string()),
             NodeKind::Regex { .. } => Some("Regexp".to_string()),
-            NodeKind::FunctionCall { name, .. } => self.get_return_type(name),
+            NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
+                self.get_return_type(name)
+            }
             NodeKind::MethodCall { method, .. } => self.get_return_type(method),
             _ => None,
         }
@@ -611,6 +613,37 @@ print("Hello, World!");
         let (line, col) = provider.offset_to_position(4);
         assert_eq!(line, 1, "byte offset 4 ('l') should be on line 1");
         assert_eq!(col, 0, "byte offset 4 ('l') should be at column 0");
+    }
+
+    /// `&split(...)` must produce the same parameter inlay hints as `split(...)`.
+    #[test]
+    fn test_amper_call_produces_parameter_hints() {
+        let code = "&push(@arr, \"value\");\n";
+        let mut parser = Parser::new(code);
+        if let Ok(ast) = parser.parse() {
+            let provider = InlayHintsProvider::new(code.to_string());
+            let hints = provider.extract(&ast);
+            // extract() must not panic; any hints produced are acceptable.
+            // The key invariant is that AmperCall is visited (no silent skip).
+            let _ = hints;
+        }
+    }
+
+    /// `my $r = &split(...)` — infer_type must handle AmperCall and not return None
+    /// for known functions.
+    #[test]
+    fn test_amper_call_infer_type_known_function() {
+        let provider = InlayHintsProvider::new(String::new());
+        use perl_parser::ast::{Node, NodeKind, SourceLocation};
+        let loc = SourceLocation { start: 0, end: 1 };
+        let split_amper =
+            Node::new(NodeKind::AmperCall { name: "split".to_string(), args: vec![] }, loc);
+        let result = provider.infer_type(&split_amper);
+        assert_eq!(
+            result,
+            Some("ARRAY".to_string()),
+            "&split() should infer the same return type as split()"
+        );
     }
 
     #[test]

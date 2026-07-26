@@ -324,7 +324,11 @@ impl LspServer {
 
         fn require_module_name(node: &crate::ast::Node) -> Option<String> {
             let args = match &node.kind {
-                NodeKind::FunctionCall { name, args } if name == "require" => args,
+                NodeKind::FunctionCall { name, args } | NodeKind::AmperCall { name, args }
+                    if name == "require" =>
+                {
+                    args
+                }
                 _ => return None,
             };
             let arg = args.first()?;
@@ -354,8 +358,11 @@ impl LspServer {
                 }
                 _ => return None,
             };
-            let NodeKind::FunctionCall { name, args } = &call_node.kind else {
-                return None;
+            let (name, args) = match &call_node.kind {
+                NodeKind::FunctionCall { name, args } | NodeKind::AmperCall { name, args } => {
+                    (name, args)
+                }
+                _ => return None,
             };
             if !matches!(
                 name.as_str(),
