@@ -1149,6 +1149,58 @@ sub target_func {
         }
     }
 
+    /// `&Pkg::foo()` must not carry a leading `&` in `qualified_name` or `package_name`,
+    /// and a mixed `&Pkg::foo()` + `Pkg::foo()` pair must deduplicate into one outgoing entry.
+    #[test]
+    fn test_outgoing_calls_amper_call_strips_ampersand_from_qualified_name() {
+        let code = r#"
+sub caller {
+    &Pkg::foo();
+    Pkg::foo();
+}
+"#;
+        let mut parser = Parser::new(code);
+        if let Ok(ast) = parser.parse() {
+            let provider =
+                CallHierarchyProvider::new(code.to_string(), "file:///test.pl".to_string());
+            let caller_item = CallHierarchyItem {
+                name: "caller".to_string(),
+                kind: "function".to_string(),
+                uri: "file:///test.pl".to_string(),
+                range: Range {
+                    start: Position { line: 1, character: 0 },
+                    end: Position { line: 4, character: 1 },
+                },
+                selection_range: Range {
+                    start: Position { line: 1, character: 4 },
+                    end: Position { line: 1, character: 10 },
+                },
+                detail: None,
+                package_name: None,
+                qualified_name: None,
+            };
+            let outgoing = provider.outgoing_calls(&ast, &caller_item);
+            // The two call sites (&Pkg::foo() and Pkg::foo()) must merge into one entry.
+            assert_eq!(
+                outgoing.len(),
+                1,
+                "&Pkg::foo() and Pkg::foo() should merge into one outgoing entry"
+            );
+            let entry = &outgoing[0];
+            assert_eq!(entry.from_ranges.len(), 2, "both call sites must be recorded");
+            assert_eq!(
+                entry.to.qualified_name.as_deref(),
+                Some("Pkg::foo"),
+                "qualified_name must not start with '&'"
+            );
+            assert_eq!(
+                entry.to.package_name.as_deref(),
+                Some("Pkg"),
+                "package_name must not start with '&'"
+            );
+        }
+    }
+
     /// `&foo()` inside a sub must appear in outgoing calls.
     #[test]
     fn test_outgoing_calls_amper_call_is_detected() {
