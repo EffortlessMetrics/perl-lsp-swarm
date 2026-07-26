@@ -298,22 +298,7 @@ impl PullDiagnosticsOrchestrator {
         match result {
             Some(Ok(violations)) => {
                 for v in violations {
-                    // Map Perl::Critic severity to LSP severity
-                    let internal_severity = match v.severity {
-                        perl_lsp_rs_core::tooling::perl_critic::Severity::Gentle => {
-                            InternalDiagnosticSeverity::Error
-                        }
-                        perl_lsp_rs_core::tooling::perl_critic::Severity::Stern
-                        | perl_lsp_rs_core::tooling::perl_critic::Severity::Harsh => {
-                            InternalDiagnosticSeverity::Warning
-                        }
-                        perl_lsp_rs_core::tooling::perl_critic::Severity::Cruel => {
-                            InternalDiagnosticSeverity::Information
-                        }
-                        perl_lsp_rs_core::tooling::perl_critic::Severity::Brutal => {
-                            InternalDiagnosticSeverity::Hint
-                        }
-                    };
+                    let internal_severity = critic_severity_to_internal(v.severity);
 
                     let Some((start_byte, end_byte)) = critic_range_to_byte_range(
                         doc_text,
@@ -2048,19 +2033,7 @@ impl LspServer {
         match result {
             Some(Ok(violations)) => {
                 for v in violations {
-                    // Map Perl::Critic severity (1-5) to LSP DiagnosticSeverity:
-                    // 5 -> Error, 4/3 -> Warning, 2 -> Information, 1 -> Hint
-                    let internal_severity = match v.severity {
-                        crate::perl_critic::Severity::Gentle => InternalDiagnosticSeverity::Error,
-                        crate::perl_critic::Severity::Stern
-                        | crate::perl_critic::Severity::Harsh => {
-                            InternalDiagnosticSeverity::Warning
-                        }
-                        crate::perl_critic::Severity::Cruel => {
-                            InternalDiagnosticSeverity::Information
-                        }
-                        crate::perl_critic::Severity::Brutal => InternalDiagnosticSeverity::Hint,
-                    };
+                    let internal_severity = critic_severity_to_internal(v.severity);
 
                     let Some((start_byte, end_byte)) = critic_range_to_byte_range(
                         doc_text,
@@ -2220,12 +2193,12 @@ fn critic_severity_to_internal(
     severity: crate::perl_critic::Severity,
 ) -> InternalDiagnosticSeverity {
     match severity {
-        crate::perl_critic::Severity::Gentle => InternalDiagnosticSeverity::Error,
-        crate::perl_critic::Severity::Stern | crate::perl_critic::Severity::Harsh => {
+        crate::perl_critic::Severity::Brutal => InternalDiagnosticSeverity::Error,
+        crate::perl_critic::Severity::Cruel | crate::perl_critic::Severity::Harsh => {
             InternalDiagnosticSeverity::Warning
         }
-        crate::perl_critic::Severity::Cruel => InternalDiagnosticSeverity::Information,
-        crate::perl_critic::Severity::Brutal => InternalDiagnosticSeverity::Hint,
+        crate::perl_critic::Severity::Stern => InternalDiagnosticSeverity::Information,
+        crate::perl_critic::Severity::Gentle => InternalDiagnosticSeverity::Hint,
     }
 }
 

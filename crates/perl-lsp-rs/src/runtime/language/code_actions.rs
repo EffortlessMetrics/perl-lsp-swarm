@@ -653,11 +653,11 @@ impl LspServer {
                                     "end": {"line": end_line, "character": end_char},
                                 },
                                 "severity": match finding.severity {
-                                    crate::perl_critic::Severity::Gentle => 1, // Error
-                                    crate::perl_critic::Severity::Stern |
+                                    crate::perl_critic::Severity::Brutal => 1, // Error
+                                    crate::perl_critic::Severity::Cruel |
                                     crate::perl_critic::Severity::Harsh => 2, // Warning
-                                    crate::perl_critic::Severity::Cruel => 3, // Information
-                                    crate::perl_critic::Severity::Brutal => 4, // Hint
+                                    crate::perl_critic::Severity::Stern => 3, // Information
+                                    crate::perl_critic::Severity::Gentle => 4, // Hint
                                 },
                                 "code": finding.rule_id.clone(),
                                 "source": "perl-lsp",
@@ -702,11 +702,11 @@ impl LspServer {
                                         "end": {"line": end_line, "character": end_char},
                                     },
                                     "severity": match violation.severity {
-                                        crate::perl_critic::Severity::Gentle => 1, // Error
-                                        crate::perl_critic::Severity::Stern |
+                                        crate::perl_critic::Severity::Brutal => 1, // Error
+                                        crate::perl_critic::Severity::Cruel |
                                         crate::perl_critic::Severity::Harsh => 2, // Warning
-                                        crate::perl_critic::Severity::Cruel => 3, // Information
-                                        crate::perl_critic::Severity::Brutal => 4, // Hint
+                                        crate::perl_critic::Severity::Stern => 3, // Information
+                                        crate::perl_critic::Severity::Gentle => 4, // Hint
                                     },
                                     "code": violation.policy.clone(),
                                     "source": "Perl::Critic",

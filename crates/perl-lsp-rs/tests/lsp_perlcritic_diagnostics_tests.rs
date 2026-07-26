@@ -113,8 +113,11 @@ fn test_a_violations_appear_in_pull_diagnostics_when_enabled() {
     );
 }
 
+/// Perlcritic severity 5 (Gentle, the *least* severe) must map to LSP Hint
+/// (severity value 4, also the least severe).  The mapping was previously
+/// inverted, reporting cosmetic style issues as red ERROR squiggles.
 #[test]
-fn test_a1_severity_five_maps_to_error() {
+fn test_a1_severity_five_maps_to_hint() {
     let server = LspServer::new();
     server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
     server.test_configure_perlcritic(true, 5, None);
@@ -137,10 +140,10 @@ fn test_a1_severity_five_maps_to_error() {
     assert!(
         diags.iter().any(|d| {
             d["code"].as_str() == Some("InputOutput::RequireThreeArgOpen")
-                && d["severity"].as_u64() == Some(1)
+                && d["severity"].as_u64() == Some(4) // Hint — least severe
                 && d["source"].as_str() == Some("perl-lsp-critic")
         }),
-        "expected severity-5 external diagnostic; got: {result}"
+        "severity-5 (Gentle) external violation must map to LSP Hint (4); got: {result}"
     );
     let invocations = runtime.invocations();
     assert_eq!(invocations.len(), 1, "expected one pull invocation; got: {invocations:?}");
@@ -183,8 +186,11 @@ fn test_a_malformed_range_is_dropped_from_pull_diagnostics() {
     );
 }
 
+/// Perlcritic severity 1 (Brutal, the *most* severe) must map to LSP Error
+/// (severity value 1, also the most severe).  The mapping was previously
+/// inverted, reporting serious correctness/security issues as subtle Hints.
 #[test]
-fn test_a2_severity_one_maps_to_hint() {
+fn test_a2_severity_one_maps_to_error() {
     let server = LspServer::new();
     server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
     server.test_configure_perlcritic(true, 1, None);
@@ -209,10 +215,10 @@ fn test_a2_severity_one_maps_to_hint() {
     assert!(
         diags.iter().any(|d| {
             d["code"].as_str() == Some("InputOutput::ProhibitBarewordFileHandles")
-                && d["severity"].as_u64() == Some(4)
+                && d["severity"].as_u64() == Some(1) // Error — most severe
                 && d["source"].as_str() == Some("perl-lsp-critic")
         }),
-        "expected severity-1 external diagnostic; got: {result}"
+        "severity-1 (Brutal) external violation must map to LSP Error (1); got: {result}"
     );
     let invocations = runtime.invocations();
     assert_eq!(invocations.len(), 1, "expected one pull invocation; got: {invocations:?}");
