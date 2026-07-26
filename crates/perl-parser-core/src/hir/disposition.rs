@@ -690,6 +690,7 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
         "ArraySlice" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "HashSlice" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "KeyValueSlice" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
+        "AmperCall" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "ChainedComparison" => {
             disp!(false, false, true, false, false, "No first-slice HIR shell yet.")
         }
@@ -1051,6 +1052,7 @@ mod tests {
         // All `NotYetModeled` kinds must fall to `_ => visit_children` and must
         // therefore have `traverses_children=true` and `is_intentional=false`.
         for kind in [
+            "AmperCall",
             "Binary",
             "ArraySlice",
             "HashSlice",
