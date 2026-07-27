@@ -210,22 +210,10 @@ impl LspServer {
                     push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "comment");
                 }
 
-                // Add heredoc folding ranges from lexer.
-                // The AST NodeKind::Heredoc arm also produces a fold, but its range covers
-                // the opener-through-terminator span which differs from the body-only span
-                // the lexer produces.  The dedup pass below handles overlaps by keying on
-                // exact (startLine, endLine, kind) tuples — overlapping but non-identical
-                // ranges survive as nested folds, which is acceptable.
-                let heredoc_ranges =
-                    crate::folding::FoldingRangeExtractor::extract_heredoc_ranges(&doc.text);
-                for range in heredoc_ranges {
-                    // Use saturating_sub to ensure we're inside the body
-                    let (start_line, _) = self.offset_to_pos16(doc, range.start_offset);
-                    let (end_line, _) =
-                        self.offset_to_pos16(doc, range.end_offset.saturating_sub(1));
-
-                    push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "region");
-                }
+                // NOTE: Heredoc folding is handled by the AST NodeKind::Heredoc arm
+                // in FoldingRangeExtractor::extract. The previous lexer-based
+                // extract_heredoc_ranges produced overlapping-but-non-identical
+                // ranges that caused double-fold chevrons (#5072).
 
                 // Add POD folding ranges (POD is parser trivia — no NodeKind::Pod — so the
                 // AST path cannot fold it).  This scan runs only when the AST is available,

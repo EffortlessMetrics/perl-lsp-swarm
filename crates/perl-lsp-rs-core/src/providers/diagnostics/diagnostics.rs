@@ -334,22 +334,29 @@ impl DiagnosticsProvider {
             });
         }
 
-        // Run scope analysis to detect undeclared/unused/shadowing issues.
-        let pragma_map = PragmaTracker::build(ast);
-        let scope_analyzer = ScopeAnalyzer::new();
-        let scope_issues = scope_analyzer.analyze(ast, source, &pragma_map);
-        diagnostics.extend(scope_issues_to_diagnostics_with_semantics(
-            scope_issues,
-            file_id,
-            semantic_queries,
-        ));
+        // Skip lint/scope analysis when there are blocking parse errors —
+        // the recovered AST is unreliable and produces cascading false
+        // positives. Only parse-error diagnostics are shown in this case.
+        // (#5089)
+        let has_blocking_parse_error = parse_errors.iter().any(|e| e.blocks_clean_parse());
 
-        // Detect heredoc anti-patterns
-        let heredoc_diags = super::heredoc_antipatterns::detect_heredoc_antipatterns(source);
-        diagnostics.extend(heredoc_diags);
+        if !has_blocking_parse_error {
+            // Run scope analysis to detect undeclared/unused/shadowing issues.
+            let pragma_map = PragmaTracker::build(ast);
+            let scope_analyzer = ScopeAnalyzer::new();
+            let scope_issues = scope_analyzer.analyze(ast, source, &pragma_map);
+            diagnostics.extend(scope_issues_to_diagnostics_with_semantics(
+                scope_issues,
+                file_id,
+                semantic_queries,
+            ));
 
-        // Run lint checks
-        check_strict_warnings(ast, &mut diagnostics);
+            // Detect heredoc anti-patterns
+            let heredoc_diags = super::heredoc_antipatterns::detect_heredoc_antipatterns(source);
+            diagnostics.extend(heredoc_diags);
+
+            // Run lint checks
+            check_strict_warnings(ast, &mut diagnostics);
         check_deprecated_syntax(ast, &mut diagnostics);
         let symbol_table = SymbolExtractor::new_with_source(source).extract(ast);
         check_common_mistakes(ast, &symbol_table, &mut diagnostics);
@@ -413,6 +420,7 @@ impl DiagnosticsProvider {
                 );
             }
         }
+        } // end if !has_blocking_parse_error
 
         suppress_unused_imports_for_missing_modules(&mut diagnostics);
 

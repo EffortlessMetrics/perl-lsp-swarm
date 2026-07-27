@@ -3766,23 +3766,29 @@ impl WorkspaceIndex {
         let query_lower = query.to_lowercase();
         let search_idx = self.search_index.read();
         let mut seen: HashSet<(String, usize)> = HashSet::new();
-        let mut results = Vec::new();
-        'outer: for (name_key, symbols) in search_idx.iter() {
-            if name_key.contains(&query_lower) {
-                for sym in symbols {
-                    // Dedup: a symbol may appear under both its bare-name key
-                    // and its qualified-name key; keep only the first occurrence.
-                    let dedup_key = (sym.uri.clone(), sym.range.start.byte);
-                    if seen.insert(dedup_key) {
-                        results.push(sym.clone());
-                        if cap.is_some_and(|c| results.len() >= c) {
-                            break 'outer;
-                        }
-                    }
+        // Collect results with a relevance score for ranking. (#5087)
+        // Match priority: exact > substring > subsequence (fuzzy).
+        let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
+        for (name_key, symbols) in search_idx.iter() {
+            let score = if name_key == &query_lower {
+                3 // exact match
+            } else if name_key.contains(&query_lower) {
+                2 // substring match
+            } else if is_subsequence(&query_lower, name_key) {
+                1 // fuzzy subsequence match
+            } else {
+                continue;
+            };
+            for sym in symbols {
+                let dedup_key = (sym.uri.clone(), sym.range.start.byte);
+                if seen.insert(dedup_key) {
+                    scored.push((score, sym.clone()));
                 }
             }
         }
-        results
+        // Sort by relevance (descending), then by name for stable ordering.
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.cmp(&b.1.name)));
+        scored.into_iter().map(|(_, s)| s).take(cap.unwrap_or(usize::MAX)).collect()
     }
 
     /// Search labeled generated/framework members backed by semantic source anchors.
@@ -12841,4 +12847,19 @@ sub bar { return $greeting; }
             "compute_key",
         );
     }
+}
+
+/// Check if `needle` is a subsequence of `haystack` (fuzzy match).
+/// E.g. "gpn" is a subsequence of "get_page_name". (#5087)
+fn is_subsequence(needle: &str, haystack: &str) -> bool {
+    let mut needle_chars = needle.chars();
+    let mut current = needle_chars.next();
+    for ch in haystack.chars() {
+        match current {
+            Some(target) if ch == target => current = needle_chars.next(),
+            None => return true,
+            _ => {}
+        }
+    }
+    current.is_none()
 }
