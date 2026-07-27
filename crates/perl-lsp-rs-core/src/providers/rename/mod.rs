@@ -273,12 +273,21 @@ impl RenameProvider {
         // matching for references.  This prevents renaming an unrelated bare `$arr`
         // when the user renames `@arr`.  The common case (`my @arr; $arr[0]` with no
         // bare `$arr`) still gets cross-sigil matching. (#5080)
+        //
+        // Scope-aware: only check for a Scalar declaration in the SAME scope
+        // chain (declaration scope + descendant scopes).  A Scalar in a
+        // different subroutine should NOT disable cross-sigil matching for
+        // an unrelated @arr in another scope.
         let has_scalar_decl = self
             .symbol_table
             .symbols
             .get(&old_name)
             .is_some_and(|syms| {
-                syms.iter().any(|s| s.kind == SymbolKind::Variable(VarKind::Scalar))
+                syms.iter().any(|s| {
+                    s.kind == SymbolKind::Variable(VarKind::Scalar)
+                        && (s.scope_id == declaration_scope_id
+                            || descendant_scopes.contains(&s.scope_id))
+                })
             });
         let ref_sigil_compatible = |ref_kind: SymbolKind| {
             if has_scalar_decl && kind == SymbolKind::Variable(VarKind::Array) {
@@ -787,6 +796,51 @@ mod tests {
             elapsed.as_millis() < 10,
             "collect_descendant_scopes on 1000-scope chain took {}ms, expected <10ms",
             elapsed.as_millis()
+        );
+    }
+
+    // --- Cross-sigil rename tests (#5080) ---
+
+    #[test]
+    fn scoped_rename_array_renames_element_access() {
+        // my @arr = (1,2,3); print $arr[0];
+        // Renaming @arr should also rename $arr[0] (element access)
+        let code = "my @arr = (1, 2, 3); print $arr[0];";
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().unwrap();
+        let provider = RenameProvider::new(&ast, code.to_string());
+        // Find the position of @arr declaration
+        let pos = code.find("arr").unwrap();
+        let result = provider.scoped_rename(pos, "data", &RenameOptions::default());
+        assert!(result.is_valid, "rename should be valid: {:?}", result.error);
+        // Should have edits for both @arr declaration and $arr[0] element access
+        assert!(
+            result.edits.len() >= 2,
+            "should rename at least 2 occurrences (declaration + element access), got {}: {:?}",
+            result.edits.len(),
+            result.edits
+        );
+    }
+
+    #[test]
+    fn scoped_rename_array_with_conflicting_scalar_is_conservative() {
+        // my @arr; my $arr; print $arr;
+        // When both @arr and $arr exist in the same scope, renaming @arr
+        // should NOT rename bare $arr (conservative — avoids corruption).
+        let code = "my @arr = (); my $arr = 'x'; print $arr;";
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().unwrap();
+        let provider = RenameProvider::new(&ast, code.to_string());
+        // Rename @arr at its declaration position
+        let pos = code.find("arr").unwrap();
+        let result = provider.scoped_rename(pos, "data", &RenameOptions::default());
+        assert!(result.is_valid, "rename should be valid: {:?}", result.error);
+        // Should only rename the @arr declaration, NOT the $arr declaration or use
+        assert!(
+            result.edits.len() == 1,
+            "should rename only @arr declaration (1 edit), got {}: {:?}",
+            result.edits.len(),
+            result.edits
         );
     }
 }
