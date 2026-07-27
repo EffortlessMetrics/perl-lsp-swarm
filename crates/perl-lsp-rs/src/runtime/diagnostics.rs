@@ -2142,8 +2142,16 @@ fn dedup_overlapping_diagnostics(
         (a.range, a.severity, is_native_critic_code(a.code.as_deref()))
             .cmp(&(b.range, b.severity, is_native_critic_code(b.code.as_deref())))
     });
+    // Only collapse pairs where exactly one is a native-critic code — this
+    // eliminates the native-critic↔built-in-lint overlap (e.g.
+    // native.testing.require_use_strict vs PL100) without collapsing two
+    // distinct PL* codes that happen to share range+severity (e.g. PL100
+    // MissingStrict vs PL101 MissingWarnings, both at (0,0) Warning).
     diagnostics.dedup_by(|a, b| {
-        a.range == b.range && a.severity == b.severity
+        a.range == b.range
+            && a.severity == b.severity
+            && (is_native_critic_code(a.code.as_deref())
+                ^ is_native_critic_code(b.code.as_deref()))
     });
 }
 
@@ -2632,6 +2640,13 @@ mod tests {
             text.contains("PL100"),
             "strict finding should be present (PL100 after dedup); got: {text:?}"
         );
+        // PL101 (MissingWarnings) must survive — the XOR dedup only collapses
+        // native-critic↔PL* pairs, not PL*↔PL* pairs. Both PL100 and PL101
+        // are distinct built-in lints at (0,0) Warning and must both appear.
+        assert!(
+            text.contains("PL101"),
+            "warnings finding should be present (PL101 NOT collapsed with PL100); got: {text:?}"
+        );
         // Verify deduplication: the native strict/warnings diagnostics should NOT
         // duplicate the built-in PL100/PL101 findings.
         assert!(
@@ -2767,9 +2782,13 @@ mod tests {
             !text.contains("native.common.assignment_in_condition"),
             "native exclude should suppress native assignment rule; got: {text:?}"
         );
+        // PL101 (MissingWarnings) is a built-in lint, not a native-critic rule.
+        // The include/exclude filter only affects the native-critic engine.
+        // PL101 fires independently and is NOT collapsed by the XOR dedup
+        // (it's PL* vs PL*, not native vs PL*).
         assert!(
-            !text.contains("PL101"),
-            "native include should suppress non-included warning rule (PL101 absent); got: {text:?}"
+            text.contains("PL101"),
+            "PL101 (built-in MissingWarnings) should be present — not affected by critic filters; got: {text:?}"
         );
     }
 
