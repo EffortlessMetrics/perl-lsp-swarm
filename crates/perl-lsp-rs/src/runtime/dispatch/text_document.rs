@@ -477,7 +477,7 @@ impl LspServer {
             if error.code == crate::protocol::REQUEST_CANCELLED {
                 Err(error)
             } else {
-                tracing::debug!(error = %error, "foldingRange handler error, using empty-params fallback");
+                tracing::warn!(error = %error, "foldingRange handler error, using empty-params fallback");
                 self.on_folding_range(json!({})).map(Some)
             }
         })
