@@ -945,3 +945,114 @@ fn test_hover_snapshot_analyzer_not_shared_across_generations()
 
     Ok(())
 }
+
+// ── extract_arrow_receiver: byte-coordinate correctness ──────────────────
+
+/// Helper: find the byte offset of the first occurrence of `needle` in `text`,
+/// then advance it to point into the middle of the match (simulating a hover
+/// cursor positioned on that word).
+fn offset_of(text: &str, needle: &str) -> usize {
+    text.find(needle).expect("needle not found in text")
+}
+
+#[test]
+fn extract_arrow_receiver_ascii_simple() {
+    let text = "$dbh->prepare";
+    let offset = offset_of(text, "prepare");
+    assert_eq!(
+        LspServer::extract_arrow_receiver(text, offset).as_deref(),
+        Some("$dbh"),
+        "ASCII simple receiver"
+    );
+}
+
+#[test]
+fn extract_arrow_receiver_ascii_with_whitespace_around_arrow() {
+    let text = "$dbh -> prepare";
+    let offset = offset_of(text, "prepare");
+    assert_eq!(
+        LspServer::extract_arrow_receiver(text, offset).as_deref(),
+        Some("$dbh"),
+        "whitespace around -> should still find receiver"
+    );
+}
+
+#[test]
+fn extract_arrow_receiver_package_qualified() {
+    let text = "Package::Name->method";
+    let offset = offset_of(text, "method");
+    assert_eq!(
+        LspServer::extract_arrow_receiver(text, offset).as_deref(),
+        Some("Package::Name"),
+        "package-qualified receiver"
+    );
+}
+
+#[test]
+fn extract_arrow_receiver_no_arrow_returns_none() {
+    let text = "prepare($dbh)";
+    let offset = offset_of(text, "prepare");
+    assert!(
+        LspServer::extract_arrow_receiver(text, offset).is_none(),
+        "no arrow → should return None"
+    );
+}
+
+#[test]
+fn extract_arrow_receiver_unicode_before_cursor_two_byte_char() {
+    // 'é' is U+00E9: 2 UTF-8 bytes but 1 UTF-16 code unit and 1 char.
+    // The byte offset of 'method' is shifted by 1 extra byte due to 'é'.
+    // Before the fix, 'offset' (a byte value) was used as a Vec<char> index,
+    // putting the scan start one char too far right and missing the '->'.
+    let text = "my $café = $obj;\n$obj->method";
+    let offset = offset_of(text, "method");
+    assert_eq!(
+        LspServer::extract_arrow_receiver(text, offset).as_deref(),
+        Some("$obj"),
+        "receiver must be found even when a 2-byte char precedes the cursor"
+    );
+}
+
+#[test]
+fn extract_arrow_receiver_unicode_before_cursor_emoji() {
+    // Emoji is 4 UTF-8 bytes and 2 UTF-16 code units (surrogate pair).
+    // Three emoji = 12 byte shift vs. 3 char shift — amplifies the original bug.
+    let text = "my $x = \"😀😀😀\";\n$obj->m";
+    // hover on the trailing 'm' of '->m'
+    let offset = text.len(); // past the final char but take_while handles this
+    let offset = offset_of(text, "->m") + 2; // byte offset of 'm'
+    assert_eq!(
+        LspServer::extract_arrow_receiver(text, offset).as_deref(),
+        Some("$obj"),
+        "receiver must be found even when emoji precede the cursor"
+    );
+}
+
+#[test]
+fn extract_arrow_receiver_unicode_before_cursor_cjk() {
+    // Each CJK char is 3 UTF-8 bytes; byte offset grows 2× faster than char index.
+    let text = "my $x = \"日本語\";\n$obj->method";
+    let offset = offset_of(text, "method");
+    assert_eq!(
+        LspServer::extract_arrow_receiver(text, offset).as_deref(),
+        Some("$obj"),
+        "receiver must be found even when CJK chars precede the cursor"
+    );
+}
+
+#[test]
+fn extract_arrow_receiver_cursor_at_start_of_method() {
+    // offset points to the very first byte of the method name
+    let text = "$x->m";
+    let offset = offset_of(text, "m");
+    assert_eq!(
+        LspServer::extract_arrow_receiver(text, offset).as_deref(),
+        Some("$x"),
+        "cursor at start of method name should still find receiver"
+    );
+}
+
+#[test]
+fn extract_arrow_receiver_empty_text_returns_none() {
+    assert!(LspServer::extract_arrow_receiver("", 0).is_none(), "empty text must return None");
+}
