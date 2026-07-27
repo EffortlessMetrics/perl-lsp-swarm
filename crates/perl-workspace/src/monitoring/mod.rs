@@ -186,7 +186,7 @@ pub struct IndexPerformanceCaps {
 
 impl Default for IndexPerformanceCaps {
     fn default() -> Self {
-        Self { initial_scan_budget_ms: 500, incremental_budget_ms: 10 }
+        Self { initial_scan_budget_ms: 10_000, incremental_budget_ms: 10 }
     }
 }
 
