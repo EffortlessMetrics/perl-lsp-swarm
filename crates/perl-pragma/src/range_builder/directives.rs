@@ -107,6 +107,11 @@ pub(super) fn apply_no_directive(
                 push_state(range, state, ranges);
             }
         }
+        "experimental" => {
+            if apply_feature_state(state, args, false) {
+                push_state(range, state, ranges);
+            }
+        }
         "builtin" => {}
         _ => {}
     }
