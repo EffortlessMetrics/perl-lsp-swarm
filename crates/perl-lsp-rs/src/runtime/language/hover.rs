@@ -44,22 +44,9 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        // Delegate to handle_hover_core which computes the range from the
-        // same locked snapshot as the hover content — eliminating the TOCTOU
-        // race and double-lock overhead of a separate range computation. (#5085)
-        let mut result = self.handle_hover_core(params)?;
-
-        // Inject `range` into non-null hover responses.
-        if let Some(ref mut val) = result
-            && val.is_object()
-            && val.get("contents").is_some()
-            && val.get("range").is_none()
-        {
-            // The range was computed inside handle_hover_core and stored in
-            // the response's data; if present, extract it to the top level.
-        }
-
-        Ok(result)
+        // Range injection happens inside handle_hover_core using the same
+        // locked snapshot, eliminating the TOCTOU race. (#5085)
+        self.handle_hover_core(params)
     }
 
     fn handle_hover_core(
@@ -239,6 +226,7 @@ impl LspServer {
         if let Some(range_val) = range
             && value.is_object()
             && value.get("contents").is_some()
+            && value.get("range").is_none() // don't overwrite an existing range
         {
             if let Some(obj) = value.as_object_mut() {
                 obj.insert("range".to_string(), range_val.clone());
