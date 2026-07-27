@@ -43,7 +43,7 @@ impl LspServer {
     /// `set_root_uri`), then user `.perl-lsp.toml` / `didChangeConfiguration`.
     /// The profile *path* used for the external adapter is the explicitly
     /// configured `perltidy_profile` when set, else the discovered one.
-    fn build_perltidy_config(&self) -> PerlTidyConfig {
+    pub(crate) fn build_perltidy_config(&self) -> PerlTidyConfig {
         let config = self.config.lock();
         let profile = config
             .perltidy_profile
@@ -67,12 +67,12 @@ impl LspServer {
 }
 
 impl LspServer {
-    fn is_formatting_enabled(&self) -> bool {
+    pub(crate) fn is_formatting_enabled(&self) -> bool {
         let config = self.config.lock();
         config.perltidy_enabled && config.formatting_engine != FormatterMode::Off
     }
 
-    fn formatter_mode(&self) -> FormatterMode {
+    pub(crate) fn formatter_mode(&self) -> FormatterMode {
         self.config.lock().formatting_engine
     }
 
@@ -484,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn build_perltidy_config_uses_discovered_profile_when_unset() {
+    pub(crate) fn build_perltidy_config_uses_discovered_profile_when_unset() {
         let server = LspServer::new();
         server.config.lock().perltidy_profile = None;
         *server.discovered_perltidy_profile.lock() = Some("/ws/.perltidyrc".to_string());
@@ -499,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn build_perltidy_config_prefers_explicit_profile_over_discovered() {
+    pub(crate) fn build_perltidy_config_prefers_explicit_profile_over_discovered() {
         let server = LspServer::new();
         server.config.lock().perltidy_profile = Some("/explicit/.perltidyrc".to_string());
         *server.discovered_perltidy_profile.lock() = Some("/ws/.perltidyrc".to_string());
@@ -514,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn build_perltidy_config_profile_none_when_unset_and_undiscovered() {
+    pub(crate) fn build_perltidy_config_profile_none_when_unset_and_undiscovered() {
         let server = LspServer::new();
         server.config.lock().perltidy_profile = None;
         *server.discovered_perltidy_profile.lock() = None;
@@ -528,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn build_perltidy_config_reads_native_scalars_from_server_config() {
+    pub(crate) fn build_perltidy_config_reads_native_scalars_from_server_config() {
         // The native scalar fields are read straight from the server config,
         // which already reflects defaults + discovered-profile + user config.
         let server = LspServer::new();

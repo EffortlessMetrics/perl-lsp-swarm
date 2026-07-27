@@ -200,61 +200,62 @@ impl LspServer {
     ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(params) = params {
             let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
-            let _reason = params["reason"].as_u64().unwrap_or(1);
 
             tracing::debug!("Document will save wait until: {}", uri);
 
-            let documents = self.documents.lock();
-            if let Some(doc) = self.get_document(&documents, uri) {
-                // Return text edits to be applied before saving
-                // For example: format document, organize imports, etc.
-
-                // Check if we should format on save
-                let config = self.config.lock();
-                if config.test_runner_enabled {
-                    // Using existing config field as example
-                    // Could add format_on_save config option
-                    let formatter = CodeFormatter::new();
-                    let format_options = FormattingOptions {
-                        tab_size: 4,
-                        insert_spaces: true,
-                        trim_trailing_whitespace: Some(true),
-                        insert_final_newline: Some(true),
-                        trim_final_newlines: Some(true),
-                    };
-
-                    if let Ok(edits) = formatter.format_document(&doc.text, &format_options) {
-                        if !edits.is_empty() {
-                            // Convert FormatTextEdit to LSP TextEdit
-                            // The edits already have line/character positions
-                            let lsp_edits: Vec<Value> = edits
-                                .iter()
-                                .map(|edit| {
-                                    json!({
-                                        "range": {
-                                            "start": {
-                                                "line": edit.range.start.line,
-                                                "character": edit.range.start.character
-                                            },
-                                            "end": {
-                                                "line": edit.range.end.line,
-                                                "character": edit.range.end.character
-                                            }
-                                        },
-                                        "newText": edit.new_text
-                                    })
-                                })
-                                .collect();
-
-                            return Ok(Some(json!(lsp_edits)));
-                        }
-                    }
-                }
+            // Phase 1: snapshot text under brief lock, then drop.
+            // Formatting can shell out to perltidy, so we must NOT hold locks
+            // during the format call (#4643 off-lock pattern).
+            if !self.is_formatting_enabled() {
+                return Ok(Some(json!([])));
             }
-        }
+            let text = {
+                let documents = self.documents.lock();
+                match self.get_document(&documents, uri) {
+                    Some(doc) => doc.text.clone(),
+                    None => return Ok(Some(json!([]))),
+                }
+            };
+            // locks dropped here
 
-        // Return empty array if no edits
-        Ok(Some(json!([])))
+            // Phase 2: format off-lock using the user's actual perltidy config.
+            let config = self.build_perltidy_config();
+            let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());
+            let format_options = FormattingOptions {
+                tab_size: 4,
+                insert_spaces: true,
+                trim_trailing_whitespace: Some(true),
+                insert_final_newline: Some(true),
+                trim_final_newlines: Some(true),
+            };
+
+            match formatter.format_document(&text, &format_options) {
+                Ok(edits) if !edits.is_empty() => {
+                    let lsp_edits: Vec<Value> = edits
+                        .iter()
+                        .map(|edit| {
+                            json!({
+                                "range": {
+                                    "start": {
+                                        "line": edit.range.start.line,
+                                        "character": edit.range.start.character
+                                    },
+                                    "end": {
+                                        "line": edit.range.end.line,
+                                        "character": edit.range.end.character
+                                    }
+                                },
+                                "newText": edit.new_text
+                            })
+                        })
+                        .collect();
+                    Ok(Some(json!(lsp_edits)))
+                }
+                _ => Ok(Some(json!([]))),
+            }
+        } else {
+            Ok(Some(json!([])))
+        }
     }
 
     /// Get the end position of a document
