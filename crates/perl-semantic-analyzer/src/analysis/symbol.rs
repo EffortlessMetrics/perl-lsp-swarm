@@ -46,17 +46,6 @@ const UNIVERSAL_METHODS: [&str; 4] = ["can", "isa", "DOES", "VERSION"];
 /// Symbol kind enums used during Index/Analyze workflows.
 pub use perl_symbol::{SymbolKind, VarKind};
 
-/// Returns true if `ref_kind` is a valid accessor for a variable of `decl_kind`.
-/// See rename/mod.rs `sigil_compatible` for the rationale. (#5080)
-fn sigil_compatible_for_references(ref_kind: SymbolKind, decl_kind: SymbolKind) -> bool {
-    match (ref_kind, decl_kind) {
-        (a, b) if a == b => true,
-        (SymbolKind::Variable(VarKind::Scalar), SymbolKind::Variable(VarKind::Array)) => true,
-        (SymbolKind::Variable(VarKind::Scalar), SymbolKind::Variable(VarKind::Hash)) => true,
-        _ => false,
-    }
-}
-
 #[derive(Debug, Clone)]
 /// A symbol definition in Perl code with comprehensive metadata for Index/Navigate workflows.
 ///
@@ -381,11 +370,7 @@ impl SymbolTable {
     pub fn find_references(&self, symbol: &Symbol) -> Vec<&SymbolReference> {
         self.references
             .get(&symbol.name)
-            .map(|refs| {
-                refs.iter()
-                    .filter(|r| sigil_compatible_for_references(r.kind, symbol.kind))
-                    .collect()
-            })
+            .map(|refs| refs.iter().filter(|r| r.kind == symbol.kind).collect())
             .unwrap_or_default()
     }
 }

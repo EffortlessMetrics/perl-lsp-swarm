@@ -268,13 +268,37 @@ impl RenameProvider {
         let descendant_scopes = self.collect_descendant_scopes(declaration_scope_id);
         let shadowing_scopes = self.find_shadowing_scopes(&old_name, kind, &descendant_scopes);
 
+        // Conservative cross-sigil guard: if a Variable(Scalar) declaration of the
+        // same name exists (e.g. `my $arr` alongside `my @arr`), disable cross-sigil
+        // matching for references.  This prevents renaming an unrelated bare `$arr`
+        // when the user renames `@arr`.  The common case (`my @arr; $arr[0]` with no
+        // bare `$arr`) still gets cross-sigil matching. (#5080)
+        let has_scalar_decl = self
+            .symbol_table
+            .symbols
+            .get(&old_name)
+            .is_some_and(|syms| {
+                syms.iter().any(|s| s.kind == SymbolKind::Variable(VarKind::Scalar))
+            });
+        let ref_sigil_compatible = |ref_kind: SymbolKind| {
+            if has_scalar_decl && kind == SymbolKind::Variable(VarKind::Array) {
+                // When a bare $arr coexists with @arr, only match exact kind for
+                // references — don't risk renaming the unrelated scalar.
+                ref_kind == kind
+            } else if has_scalar_decl && kind == SymbolKind::Variable(VarKind::Hash) {
+                ref_kind == kind
+            } else {
+                sigil_compatible(ref_kind, kind)
+            }
+        };
+
         let mut edits = Vec::new();
 
         if let Some(symbols) = self.symbol_table.symbols.get(&old_name) {
             for symbol in symbols {
-                if symbol.scope_id == declaration_scope_id
-                    && sigil_compatible(symbol.kind, kind)
-                {
+                // Declarations must match EXACTLY — renaming @arr should not touch
+                // the declaration of an unrelated $arr.
+                if symbol.scope_id == declaration_scope_id && symbol.kind == kind {
                     edits.push(TextEdit {
                         location: adjust_location_for_sigil(symbol.location, kind),
                         new_text: new_name.to_string(),
@@ -285,7 +309,7 @@ impl RenameProvider {
 
         if let Some(references) = self.symbol_table.references.get(&old_name) {
             for reference in references {
-                if !sigil_compatible(reference.kind, kind) {
+                if !ref_sigil_compatible(reference.kind) {
                     continue;
                 }
                 let ref_scope = reference.scope_id;
