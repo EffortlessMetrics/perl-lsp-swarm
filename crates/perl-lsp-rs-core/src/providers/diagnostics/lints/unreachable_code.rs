@@ -292,7 +292,10 @@ fn is_unconditional_exit(node: &Node) -> bool {
 
 /// Returns true if the function name is one of the known unconditional-exit functions.
 fn is_exit_function(name: &str) -> bool {
-    matches!(name, "die" | "exit" | "croak" | "Carp::croak" | "confess" | "Carp::confess")
+    // Strip CORE:: prefix for uniform coverage — handles CORE::die, CORE::exit,
+    // CORE::exec, CORE::croak, CORE::confess without a parallel list.
+    let bare = name.strip_prefix("CORE::").unwrap_or(name);
+    matches!(bare, "die" | "exit" | "exec" | "croak" | "Carp::croak" | "confess" | "Carp::confess")
 }
 
 /// Visit a `continue { }` block, applying continue-block-specific exit semantics.
@@ -557,5 +560,52 @@ mod tests {
     fn clean_sub_no_pl406() {
         let diags = unreachable_diags("sub f { my $x = 1; my $y = 2; return $x + $y; }");
         assert!(!has_pl406(&diags), "clean sub should not trigger PL406: {diags:?}");
+    }
+
+    // --- exec / CORE::exit terminators (#5063) ---
+
+    #[test]
+    fn exec_then_statement_is_flagged() {
+        let diags = unreachable_diags(r#"exec("perl", "-e", "1"); my $x = 1;"#);
+        assert!(
+            has_pl406(&diags),
+            "statement after exec should be flagged as PL406 (exec never returns): {diags:?}"
+        );
+    }
+
+    #[test]
+    fn exec_paren_less_then_statement_is_flagged() {
+        let diags = unreachable_diags(r#"exec "perl", "-e", "1"; my $x = 1;"#);
+        assert!(
+            has_pl406(&diags),
+            "statement after paren-less exec should be flagged as PL406: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn core_exit_then_statement_is_flagged() {
+        let diags = unreachable_diags("CORE::exit(0); my $x = 1;");
+        assert!(
+            has_pl406(&diags),
+            "statement after CORE::exit should be flagged as PL406: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn core_exec_then_statement_is_flagged() {
+        let diags = unreachable_diags(r#"CORE::exec("perl", "-e", "1"); my $x = 1;"#);
+        assert!(
+            has_pl406(&diags),
+            "statement after CORE::exec should be flagged as PL406: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn exec_or_die_does_not_flag_subsequent() {
+        let diags = unreachable_diags(r#"exec("perl", "-e", "1") or die; my $x = 1;"#);
+        assert!(
+            !has_pl406(&diags),
+            "exec() or die should NOT flag subsequent code (Binary or is not a terminator): {diags:?}"
+        );
     }
 }

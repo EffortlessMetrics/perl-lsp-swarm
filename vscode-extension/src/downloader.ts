@@ -717,7 +717,7 @@ export class BinaryDownloader {
     };
   }
 
-  private async downloadFile(url: string, dest: string, timeoutMs = 30000): Promise<void> {
+  private async downloadFile(url: string, dest: string, timeoutMs = 30000, maxRedirects = 5): Promise<void> {
     return new Promise((resolve, reject) => {
       // Security check: Enforce HTTPS for remote URLs to prevent MITM attacks
       try {
@@ -808,7 +808,11 @@ export class BinaryDownloader {
               reject(new Error('Security violation: Redirect from HTTPS to HTTP prevented'));
               return;
             }
-            this.downloadFile(newUrl, dest, timeoutMs).then(resolve).catch(reject);
+            if (maxRedirects <= 0) {
+              reject(new Error('Too many redirects'));
+              return;
+            }
+            this.downloadFile(newUrl, dest, timeoutMs, maxRedirects - 1).then(resolve).catch(reject);
             return;
           }
         }

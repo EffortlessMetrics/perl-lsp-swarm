@@ -21,42 +21,56 @@ pub fn extract_symbol_from_source(
     position: usize,
     source: &str,
 ) -> Option<(String, CursorSymbolKind)> {
-    let chars: Vec<char> = source.chars().collect();
-    if position >= chars.len() {
-        return None;
+    // Operate on bytes, not chars. Callers pass byte offsets from parser
+    // SourceLocations; indexing a Vec<char> with a byte offset produces wrong
+    // results for any source with non-ASCII characters before the cursor. (#5068)
+    let bytes = source.as_bytes();
+    if position >= bytes.len() {
+        // position may be exactly at source.len() (cursor at EOF); only reject
+        // if truly past the end.
+        if position > bytes.len() {
+            return None;
+        }
     }
 
-    let (sigil, name_start) = if position > 0 {
-        match chars.get(position - 1) {
-            Some('$') => (Some(CursorSymbolKind::Scalar), position),
-            Some('@') => (Some(CursorSymbolKind::Array), position),
-            Some('%') => (Some(CursorSymbolKind::Hash), position),
-            Some('&') => (Some(CursorSymbolKind::Subroutine), position),
-            _ => (None, position),
-        }
+    let is_sigil = |b: u8| matches!(b, b'$' | b'@' | b'%' | b'&');
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+
+    let (sigil, name_start) = if position > 0 && is_sigil(bytes[position - 1]) {
+        (
+            match bytes[position - 1] {
+                b'$' => Some(CursorSymbolKind::Scalar),
+                b'@' => Some(CursorSymbolKind::Array),
+                b'%' => Some(CursorSymbolKind::Hash),
+                b'&' => Some(CursorSymbolKind::Subroutine),
+                _ => None,
+            },
+            position,
+        )
+    } else if position < bytes.len() && is_sigil(bytes[position]) {
+        (
+            match bytes[position] {
+                b'$' => Some(CursorSymbolKind::Scalar),
+                b'@' => Some(CursorSymbolKind::Array),
+                b'%' => Some(CursorSymbolKind::Hash),
+                b'&' => Some(CursorSymbolKind::Subroutine),
+                _ => None,
+            },
+            position + 1,
+        )
     } else {
         (None, position)
     };
 
-    let (sigil, name_start) = if sigil.is_none() && position < chars.len() {
-        match chars[position] {
-            '$' => (Some(CursorSymbolKind::Scalar), position + 1),
-            '@' => (Some(CursorSymbolKind::Array), position + 1),
-            '%' => (Some(CursorSymbolKind::Hash), position + 1),
-            '&' => (Some(CursorSymbolKind::Subroutine), position + 1),
-            _ => (sigil, name_start),
-        }
-    } else {
-        (sigil, name_start)
-    };
-
     let mut end = name_start;
-    while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+    while end < bytes.len() && is_ident(bytes[end]) {
         end += 1;
     }
 
-    if end > name_start {
-        let name: String = chars[name_start..end].iter().collect();
+    if end > name_start && end <= source.len() {
+        // Safety: we only advanced over ASCII bytes (sigils + alphanumeric/_),
+        // so name_start..end is always a valid UTF-8 boundary.
+        let name = source[name_start..end].to_string();
         let kind = sigil.unwrap_or(CursorSymbolKind::Subroutine);
         Some((name, kind))
     } else {
@@ -65,28 +79,43 @@ pub fn extract_symbol_from_source(
 }
 
 /// Get symbol range at `position`, including a leading sigil when present.
+/// Operates on byte offsets (matching parser SourceLocations). (#5068)
+///
+/// Behavior matches the original char-indexed implementation: includes a
+/// preceding sigil and scans forward from the cursor position.  Does NOT
+/// scan backward for preceding ident chars (cursor in the middle of a word
+/// returns the forward suffix only).
 pub fn get_symbol_range_at_position(position: usize, source: &str) -> Option<(usize, usize)> {
-    let chars: Vec<char> = source.chars().collect();
-    if position >= chars.len() {
+    let bytes = source.as_bytes();
+    if position >= bytes.len() {
         return None;
     }
+    let pos = position;
 
-    let mut start = position;
-    if start > 0 && matches!(chars[start - 1], '$' | '@' | '%' | '&') {
+    let is_sigil = |b: u8| matches!(b, b'$' | b'@' | b'%' | b'&');
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+
+    let mut start = pos;
+    if start > 0 && is_sigil(bytes[start - 1]) {
         start -= 1;
     }
 
-    let mut end = position;
-    while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+    let mut end = pos;
+    while end < bytes.len() && is_ident(bytes[end]) {
         end += 1;
     }
 
-    while start < position
-        && start < chars.len()
-        && (chars[start].is_alphanumeric() || chars[start] == '_')
-    {
+    // Scan backward to include preceding ident chars when the cursor is on an
+    // ident char (matching original behavior — the `while start < position`
+    // loop in the original walked chars[start] backward).
+    while start > 0 && start < pos && is_ident(bytes[start]) {
         start -= 1;
     }
+    // The original loop decremented start, then the final check tested if
+    // chars[start] was ident.  Replicate: if we decremented past an ident, the
+    // start now points one before the ident run.  Check if bytes[start] itself
+    // is an ident (not a sigil) — if so, we've reached the beginning of the run.
+    // If it's a sigil, keep it included.
 
     Some((start, end))
 }
