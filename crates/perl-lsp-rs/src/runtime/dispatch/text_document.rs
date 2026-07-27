@@ -176,7 +176,7 @@ impl LspServer {
             if error.code == crate::protocol::REQUEST_CANCELLED {
                 Err(error)
             } else {
-                tracing::debug!(error = %error, "definition handler error, using empty-params fallback");
+                tracing::warn!(error = %error, "definition handler error, using empty-params fallback");
                 self.on_definition(json!({})).map(Some)
             }
         })
@@ -215,7 +215,7 @@ impl LspServer {
             if error.code == crate::protocol::REQUEST_CANCELLED {
                 Err(error)
             } else {
-                tracing::debug!(error = %error, "references handler error, using empty-params fallback");
+                tracing::warn!(error = %error, "references handler error, using empty-params fallback");
                 self.on_references(fallback_params, request_id).map(Some)
             }
         })
