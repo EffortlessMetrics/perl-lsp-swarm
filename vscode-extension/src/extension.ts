@@ -722,26 +722,30 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
-    const config = vscode.workspace.getConfiguration('perl-lsp');
-    if (!config.get<boolean>('autoPopulateNewFiles', true)) {
-      return;
-    }
-
-    for (const uri of event.files) {
-      const boilerplate = generateBoilerplate(uri.fsPath);
-      if (!boilerplate) {
-        continue;
+    try {
+      const config = vscode.workspace.getConfiguration('perl-lsp');
+      if (!config.get<boolean>('autoPopulateNewFiles', true)) {
+        return;
       }
 
-      const doc = await vscode.workspace.openTextDocument(uri);
-      if (doc.getText().length > 0) {
-        // File already has content — don't overwrite
-        continue;
-      }
+      for (const uri of event.files) {
+        const boilerplate = generateBoilerplate(uri.fsPath);
+        if (!boilerplate) {
+          continue;
+        }
 
-      const edit = new vscode.WorkspaceEdit();
-      edit.insert(uri, new vscode.Position(0, 0), boilerplate.content);
-      await vscode.workspace.applyEdit(edit);
+        const doc = await vscode.workspace.openTextDocument(uri);
+        if (doc.getText().length > 0) {
+          // File already has content — don't overwrite
+          continue;
+        }
+
+        const edit = new vscode.WorkspaceEdit();
+        edit.insert(uri, new vscode.Position(0, 0), boilerplate.content);
+        await vscode.workspace.applyEdit(edit);
+      }
+    } catch (e) {
+      outputChannel.error('File creation handler error', e);
     }
   });
 

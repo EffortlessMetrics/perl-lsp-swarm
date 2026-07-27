@@ -60,7 +60,8 @@ export class PerlTestAdapter implements vscode.Disposable {
     this.testController.items.replace([]);
     this.fileItems.clear();
 
-    const files = await vscode.workspace.findFiles('**/*.t', '{**/node_modules/**,**/blib/**}');
+    // Cap at 500 files to prevent extension host freeze on large workspaces (#5110).
+    const files = await vscode.workspace.findFiles('**/*.t', '{**/node_modules/**,**/blib/**}', 500);
     for (const uri of files) {
       await this.discoverFileTests(uri);
     }
