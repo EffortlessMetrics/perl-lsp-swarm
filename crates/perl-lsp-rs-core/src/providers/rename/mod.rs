@@ -109,6 +109,27 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use perl_parser_core::Node;
 use perl_semantic_analyzer::symbol::{ScopeId, SymbolExtractor, SymbolKind, SymbolTable};
+use perl_symbol::VarKind;
+
+/// Returns true if `ref_kind` is a valid accessor for a variable of `decl_kind`.
+///
+/// In Perl, a single variable is accessed via multiple sigils:
+///   - `@arr` (Array) is accessed as `@arr`, `$arr[0]`, `$#arr`, `@arr[0,1]` (Scalar)
+///   - `%h`   (Hash)   is accessed as `%h`, `$h{key}` (Scalar)
+///   - `$x`   (Scalar) is accessed only as `$x`
+///
+/// Without cross-sigil matching, renaming `@arr` leaves `$arr[0]` and `$#arr`
+/// unrenamed → silent code corruption. (#5080)
+fn sigil_compatible(ref_kind: SymbolKind, decl_kind: SymbolKind) -> bool {
+    match (ref_kind, decl_kind) {
+        // Exact match is always compatible.
+        (a, b) if a == b => true,
+        // Array/Hash declarations: Scalar references access elements.
+        (SymbolKind::Variable(VarKind::Scalar), SymbolKind::Variable(VarKind::Array)) => true,
+        (SymbolKind::Variable(VarKind::Scalar), SymbolKind::Variable(VarKind::Hash)) => true,
+        _ => false,
+    }
+}
 
 /// Rename provider
 pub struct RenameProvider {
@@ -251,7 +272,9 @@ impl RenameProvider {
 
         if let Some(symbols) = self.symbol_table.symbols.get(&old_name) {
             for symbol in symbols {
-                if symbol.kind == kind && symbol.scope_id == declaration_scope_id {
+                if symbol.scope_id == declaration_scope_id
+                    && sigil_compatible(symbol.kind, kind)
+                {
                     edits.push(TextEdit {
                         location: adjust_location_for_sigil(symbol.location, kind),
                         new_text: new_name.to_string(),
@@ -262,7 +285,7 @@ impl RenameProvider {
 
         if let Some(references) = self.symbol_table.references.get(&old_name) {
             for reference in references {
-                if reference.kind != kind {
+                if !sigil_compatible(reference.kind, kind) {
                     continue;
                 }
                 let ref_scope = reference.scope_id;
