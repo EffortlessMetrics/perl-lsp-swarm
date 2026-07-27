@@ -861,11 +861,24 @@ impl PullDiagnosticsProvider {
             .collect();
         let tags = to_lsp_tags(&diagnostic.tags);
 
-        // Append the suggestion to the message when present so users see it inline
-        let message = match diagnostic.suggestion {
-            Some(ref suggestion) => format!("{}\nSuggestion: {}", diagnostic.message, suggestion),
-            None => diagnostic.message,
-        };
+        // Append the context_hint and suggestion to the message so users
+        // see actionable remediation inline (#5109). context_hint comes from
+        // the DiagnosticCode metadata (codes/metadata.rs) and provides
+        // targeted fix instructions for each PL* code.
+        let mut message = diagnostic.message.clone();
+        if let Some(code_str) = code.as_ref().and_then(|c| match c {
+            NumberOrString::String(s) => Some(s.as_str()),
+            _ => None,
+        }) {
+            if let Some(dc) = DiagnosticCode::parse_code(code_str)
+                && let Some(hint) = dc.context_hint()
+            {
+                message = format!("{message}\n\n💡 {hint}");
+            }
+        }
+        if let Some(ref suggestion) = diagnostic.suggestion {
+            message = format!("{message}\nSuggestion: {suggestion}");
+        }
 
         let data = code.as_ref().and_then(|c| {
             if let NumberOrString::String(code_str) = c {
