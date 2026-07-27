@@ -295,10 +295,7 @@ fn is_exit_function(name: &str) -> bool {
     // Strip CORE:: prefix for uniform coverage — handles CORE::die, CORE::exit,
     // CORE::exec, CORE::croak, CORE::confess without a parallel list.
     let bare = name.strip_prefix("CORE::").unwrap_or(name);
-    matches!(
-        bare,
-        "die" | "exit" | "exec" | "croak" | "Carp::croak" | "confess" | "Carp::confess"
-    )
+    matches!(bare, "die" | "exit" | "exec" | "croak" | "Carp::croak" | "confess" | "Carp::confess")
 }
 
 /// Visit a `continue { }` block, applying continue-block-specific exit semantics.

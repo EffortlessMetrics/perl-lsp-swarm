@@ -1,8 +1,8 @@
 //! Tests for `require VERSION` pragma handling (#5106).
 #![expect(clippy::panic, reason = "test code")]
 
-use perl_ast::SourceLocation;
 use perl_ast::ast::{Node, NodeKind};
+use perl_ast::SourceLocation;
 use perl_pragma::{PragmaState, PragmaTracker};
 
 fn loc(start: usize, end: usize) -> SourceLocation {
@@ -23,10 +23,7 @@ fn require_node(version: &str) -> Node {
 }
 
 fn program(stmts: Vec<Node>) -> Node {
-    Node {
-        kind: NodeKind::Program { statements: stmts },
-        location: loc(0, 100),
-    }
+    Node { kind: NodeKind::Program { statements: stmts }, location: loc(0, 100) }
 }
 
 fn last_feature_state(ast: &Node) -> PragmaState {

@@ -1172,7 +1172,10 @@ mod tests {
         assert!(err.suggestion().is_none());
         // Display produces a user-friendly message (#5117).
         let s = format!("{err}");
-        assert!(s.contains("argument list") || s.contains("delimiter"), "expected user-friendly message, got: {s}");
+        assert!(
+            s.contains("argument list") || s.contains("delimiter"),
+            "expected user-friendly message, got: {s}"
+        );
     }
 
     #[test]
@@ -1302,8 +1305,6 @@ fn recovered_message(site: &RecoverySite, kind: &RecoveryKind) -> String {
         RecoveryKind::TruncatedChain => {
             format!("Incomplete {site_desc} — expected a continuation")
         }
-        RecoveryKind::InferredSemicolon => {
-            "Inferred a missing semicolon".to_string()
-        }
+        RecoveryKind::InferredSemicolon => "Inferred a missing semicolon".to_string(),
     }
 }

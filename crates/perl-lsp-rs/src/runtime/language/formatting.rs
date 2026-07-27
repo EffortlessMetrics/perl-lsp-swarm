@@ -9,7 +9,7 @@ use crate::convert::{WirePosition, WireRange};
 use crate::features::formatting::{
     CodeFormatter, FormattingError, FormattingOptions, PerlTidyConfig,
 };
-use crate::protocol::{REQUEST_CANCELLED, invalid_params, req_position, req_range, req_uri};
+use crate::protocol::{invalid_params, req_position, req_range, req_uri, REQUEST_CANCELLED};
 use perl_lsp_rs_core::config::FormatterMode;
 
 /// Build a `JsonRpcError` from a `FormattingError`, populating the `data` field
@@ -576,8 +576,8 @@ mod tests {
     }
 
     #[test]
-    fn handle_formatting_produces_edits_after_lock_scope_refactor()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_formatting_produces_edits_after_lock_scope_refactor(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Functional regression: the snapshot-and-release refactor must still
         // produce correct formatting edits. The document text is cloned under
         // the lock, the lock is released, and the formatter runs off-lock.
@@ -627,8 +627,8 @@ mod tests {
         //    the entire formatting call. The poller's try_lock fails while
         //    formatting is active, and `formatting_active` is cleared before
         //    the poller can try again after the lock is released.
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
         use std::thread;
         use std::time::Duration;
 

@@ -3,7 +3,13 @@ use crate::{builtin_import_names, normalized_pragma_token, parse_perl_version, p
 fn is_tracked_pragma_module(module: &str) -> bool {
     matches!(
         module,
-        "strict" | "warnings" | "utf8" | "encoding" | "locale" | "feature" | "builtin"
+        "strict"
+            | "warnings"
+            | "utf8"
+            | "encoding"
+            | "locale"
+            | "feature"
+            | "builtin"
             | "experimental"
     )
 }

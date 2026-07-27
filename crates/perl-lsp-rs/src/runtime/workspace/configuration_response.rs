@@ -116,15 +116,15 @@ mod tests {
     }
 
     #[test]
-    fn refreshes_declared_dependencies_from_folder_metadata()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn refreshes_declared_dependencies_from_folder_metadata(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         std::fs::write(temp.path().join("cpanfile"), "requires 'JSON::PP', '4.16';\n")?;
         let folder_uri = url::Url::from_directory_path(temp.path())
             .map_err(|_| "failed to create folder URI")?
             .to_string();
         let mut folders = vec![
-            WorkspaceFolderState::new(folder_uri.clone()).with_path(temp.path().to_path_buf()),
+            WorkspaceFolderState::new(folder_uri.clone()).with_path(temp.path().to_path_buf())
         ];
         let folder_uris = vec![folder_uri];
         let results = vec![json!({})];

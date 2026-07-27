@@ -29,9 +29,7 @@ fn scope_issues_strict(code: &str) -> Vec<ScopeIssue> {
 }
 
 fn has_undeclared(issues: &[ScopeIssue], var_name: &str) -> bool {
-    issues
-        .iter()
-        .any(|i| i.kind == IssueKind::UndeclaredVariable && i.variable_name == var_name)
+    issues.iter().any(|i| i.kind == IssueKind::UndeclaredVariable && i.variable_name == var_name)
 }
 
 // ---------------------------------------------------------------------------

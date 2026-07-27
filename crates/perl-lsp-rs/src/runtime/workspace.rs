@@ -11,10 +11,10 @@
 use super::*;
 #[cfg(feature = "workspace")]
 use crate::runtime::readiness::{
-    IndexReadinessOutcome, IndexReadinessPolicy, ReadinessMilestone, check_readiness,
+    check_readiness, IndexReadinessOutcome, IndexReadinessPolicy, ReadinessMilestone,
 };
 #[cfg(feature = "workspace")]
-use crate::runtime::routing::{IndexAccessMode, route_index_access};
+use crate::runtime::routing::{route_index_access, IndexAccessMode};
 use crate::runtime::window::RequestProgressGuard;
 use crate::runtime::workspace_progress::{
     send_index_ready_notification, send_progress_begin, send_progress_create, send_progress_end,
@@ -1194,7 +1194,11 @@ pub(crate) fn extract_perl_settings(settings: &Value) -> Option<&Value> {
         }
     }
     // Unwrapped: the settings object itself contains perl config keys directly.
-    if settings.is_object() { Some(settings) } else { None }
+    if settings.is_object() {
+        Some(settings)
+    } else {
+        None
+    }
 }
 
 impl LspServer {
@@ -2844,7 +2848,7 @@ pub(super) fn path_to_module_name(uri: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{LspServer, module_name_appears_in_text};
+    use super::{module_name_appears_in_text, LspServer};
     #[cfg(feature = "workspace")]
     use crate::util::read_text_file_with_encoding;
     #[cfg(feature = "workspace")]
@@ -2908,8 +2912,8 @@ mod tests {
     }
 
     #[test]
-    fn did_change_workspace_folders_clears_pending_workspace_configuration_requests()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn did_change_workspace_folders_clears_pending_workspace_configuration_requests(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let request_id =
             crate::runtime::types::ServerRequestId::new(7).ok_or("valid request id")?;
@@ -2967,8 +2971,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn watched_file_deleted_clears_raw_and_normalized_uri_state()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn watched_file_deleted_clears_raw_and_normalized_uri_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("delete_variant.pm");
@@ -3029,8 +3033,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn bulk_file_watcher_churn_drains_pressure_and_delete_state()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn bulk_file_watcher_churn_drains_pressure_and_delete_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         use crate::runtime::file_watcher_debounce::FileWatcherDebouncer;
         use std::sync::Arc;
         use std::time::{Duration, Instant};
@@ -3148,8 +3152,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn workspace_folder_removal_evicts_open_docs_under_root()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn workspace_folder_removal_evicts_open_docs_under_root(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let dir = tempfile::tempdir()?;
         let removed_root = dir.path().join("removed");
@@ -3235,13 +3239,11 @@ mod tests {
         assert!(!server.parse_cancel_flags.lock().contains_key(&removed_uri));
         assert!(server.parse_cancel_flags.lock().contains_key(&kept_uri));
         assert_eq!(server.stream_sessions().len(), 1);
-        assert!(
-            server
-                .workspace_folders
-                .lock()
-                .iter()
-                .all(|folder| { folder.uri != removed_folder_uri.to_string() })
-        );
+        assert!(server
+            .workspace_folders
+            .lock()
+            .iter()
+            .all(|folder| { folder.uri != removed_folder_uri.to_string() }));
 
         Ok(())
     }
@@ -3266,8 +3268,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn real_indexing_thread_emits_populated_readiness_receipt()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn real_indexing_thread_emits_populated_readiness_receipt(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let source_path = dir.path().join("readiness.pm");
         std::fs::write(&source_path, "package Readiness;\nsub ready { 1 }\n1;\n")?;
@@ -3310,8 +3312,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn workspace_folder_change_during_indexing_triggers_rescan()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn workspace_folder_change_during_indexing_triggers_rescan(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let old_dir = tempfile::tempdir()?;
         let new_dir = tempfile::tempdir()?;
         let old_path = old_dir.path().join("Old.pm");
@@ -3374,8 +3376,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn indexing_slot_handoff_keeps_pending_request_visible_to_completion()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn indexing_slot_handoff_keeps_pending_request_visible_to_completion(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let indexing_in_progress = std::sync::atomic::AtomicBool::new(true);
         let indexing_rescan_pending = std::sync::atomic::AtomicBool::new(false);
         let indexing_transition_lock = parking_lot::Mutex::new(());
@@ -3536,8 +3538,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn readiness_probe_records_pre_index_answer_and_index_milestones()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn readiness_probe_records_pre_index_answer_and_index_milestones(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let active_path = dir.path().join("main.pl");
         let dependency_path = dir.path().join("Dep.pm");
@@ -3649,8 +3651,8 @@ mod tests {
     /// reasonable to index.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_file_with_encoding_handles_odd_length_utf16le()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_file_with_encoding_handles_odd_length_utf16le(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("odd_utf16le.pm");
         // BOM (2 bytes) + 3 payload bytes = odd-length UTF-16 payload.
@@ -3667,8 +3669,8 @@ mod tests {
     /// bytes must not panic or silently truncate.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_file_with_encoding_handles_odd_length_utf16be()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_file_with_encoding_handles_odd_length_utf16be(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("odd_utf16be.pm");
         // BOM (2 bytes) + 3 payload bytes = odd-length UTF-16 payload.
@@ -3708,8 +3710,8 @@ mod tests {
     }
 
     #[test]
-    fn did_change_configuration_preserves_initialization_options_base_layer()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn did_change_configuration_preserves_initialization_options_base_layer(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let temp = tempfile::tempdir()?;
         let folder = temp.path().join("workspace");

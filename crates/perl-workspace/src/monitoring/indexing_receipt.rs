@@ -1,5 +1,5 @@
 use super::EarlyExitReason;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -195,7 +195,7 @@ fn files_per_second_from_elapsed_secs(indexed_files: usize, elapsed_secs: f64) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::{Result, anyhow};
+    use anyhow::{anyhow, Result};
 
     #[test]
     fn receipt_keeps_top_ten_slowest_files_by_total_duration() -> Result<()> {
@@ -227,8 +227,8 @@ mod tests {
     }
 
     #[test]
-    fn record_indexed_file_boundary_discriminator_when_slowest_files_len_exceeds_limit()
-    -> Result<()> {
+    fn record_indexed_file_boundary_discriminator_when_slowest_files_len_exceeds_limit(
+    ) -> Result<()> {
         let mut receipt = WorkspaceIndexingReceipt::default();
         let input_that_hits_boundary = SLOWEST_FILE_LIMIT + 1;
 
