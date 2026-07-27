@@ -114,6 +114,7 @@ fn extract_require_version(args: &[Node]) -> Option<String> {
     match &first.kind {
         NodeKind::Number { value } => Some(value.clone()),
         NodeKind::String { value, .. } => Some(value.clone()),
+        NodeKind::VString { value } => Some(value.clone()),
         NodeKind::Identifier { name } => Some(name.clone()),
         _ => None,
     }
