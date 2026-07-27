@@ -77,6 +77,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use url::Url;
@@ -1324,6 +1325,9 @@ pub struct WorkspaceIndex {
     limits: IndexResourceLimits,
     /// Last resource-limit admission rejection, consumed by the coordinator.
     resource_limit_rejection: Mutex<Option<ResourceKind>>,
+    /// Monotonic write version — bumped on every index mutation so readers
+    /// can detect torn reads across the multiple independent RwLocks. (#5116)
+    write_version: Arc<AtomicU64>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -1737,6 +1741,7 @@ impl WorkspaceIndex {
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
             limits,
             resource_limit_rejection: Mutex::new(None),
+            write_version: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -1796,11 +1801,25 @@ impl WorkspaceIndex {
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
             limits,
             resource_limit_rejection: Mutex::new(None),
+            write_version: Arc::new(AtomicU64::new(0)),
         }
     }
 
     fn record_resource_limit_rejection(&self, kind: ResourceKind) {
         *self.resource_limit_rejection.lock() = Some(kind);
+    }
+
+    /// Bump the write version atomically. Called at the start of every
+    /// index mutation so readers can detect torn reads. (#5116)
+    fn bump_write_version(&self) {
+        self.write_version.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Returns the current write version. Readers capture this before and
+    /// after a multi-lock read; if it changed, the read was torn and should
+    /// be retried. (#5116)
+    pub fn write_version(&self) -> u64 {
+        self.write_version.load(Ordering::SeqCst)
     }
 
     pub(crate) fn take_resource_limit_rejection(&self) -> Option<ResourceKind> {
@@ -1964,6 +1983,7 @@ impl WorkspaceIndex {
         text: String,
         generation: u32,
     ) -> Result<(), String> {
+        self.bump_write_version(); // Signal to readers that a mutation is in progress (#5116)
         let uri_str = uri.to_string();
 
         // Compute content hash for early-exit optimization
@@ -2370,6 +2390,7 @@ impl WorkspaceIndex {
     /// index.remove_file("file:///example.pl");
     /// ```
     pub fn remove_file(&self, uri: &str) {
+        self.bump_write_version();
         let uri_str = Self::normalize_uri(uri);
         let key = DocumentStore::uri_key(&uri_str);
 

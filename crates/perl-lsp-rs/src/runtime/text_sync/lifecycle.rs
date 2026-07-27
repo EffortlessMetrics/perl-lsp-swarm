@@ -173,6 +173,38 @@ impl LspServer {
 
             // Optionally, trigger any post-save hooks here
             // For example: format on save, run tests, etc.
+
+            // Reconcile: if the saved document's index is stale (generation
+            // lag from coalesced parse jobs), re-index it now from the
+            // in-memory text. This prevents permanent index lag where no
+            // async parse ticket ever catches the index up. (#5111)
+            #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+            {
+                let doc_gen = {
+                    let documents = self.documents.lock();
+                    self.get_document(&documents, &normalized_uri)
+                        .map(|d| d.current_generation())
+                };
+                if let Some(doc_gen_val) = doc_gen
+                    && let Some(coordinator) = self.coordinator()
+                {
+                    let index = coordinator.index();
+                    if index.is_index_generation_stale(&normalized_uri, doc_gen_val) {
+                        let documents = self.documents.lock();
+                        if let Some(doc) = self.get_document(&documents, &normalized_uri) {
+                            let text = doc.text.clone();
+                            drop(documents);
+                            if let Ok(url) = url::Url::parse(&normalized_uri) {
+                                tracing::debug!(
+                                    "Reconciling stale index for {} (doc gen {} > indexed gen)",
+                                    normalized_uri, doc_gen_val
+                                );
+                                let _ = index.index_file(url, text);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Ok(())
