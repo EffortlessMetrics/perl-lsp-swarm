@@ -198,62 +198,16 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
-            let _reason = params["reason"].as_u64().unwrap_or(1);
-
-            tracing::debug!("Document will save wait until: {}", uri);
-
-            let documents = self.documents.lock();
-            if let Some(doc) = self.get_document(&documents, uri) {
-                // Return text edits to be applied before saving
-                // For example: format document, organize imports, etc.
-
-                // Check if we should format on save
-                let config = self.config.lock();
-                if config.test_runner_enabled {
-                    // Using existing config field as example
-                    // Could add format_on_save config option
-                    let formatter = CodeFormatter::new();
-                    let format_options = FormattingOptions {
-                        tab_size: 4,
-                        insert_spaces: true,
-                        trim_trailing_whitespace: Some(true),
-                        insert_final_newline: Some(true),
-                        trim_final_newlines: Some(true),
-                    };
-
-                    if let Ok(edits) = formatter.format_document(&doc.text, &format_options) {
-                        if !edits.is_empty() {
-                            // Convert FormatTextEdit to LSP TextEdit
-                            // The edits already have line/character positions
-                            let lsp_edits: Vec<Value> = edits
-                                .iter()
-                                .map(|edit| {
-                                    json!({
-                                        "range": {
-                                            "start": {
-                                                "line": edit.range.start.line,
-                                                "character": edit.range.start.character
-                                            },
-                                            "end": {
-                                                "line": edit.range.end.line,
-                                                "character": edit.range.end.character
-                                            }
-                                        },
-                                        "newText": edit.new_text
-                                    })
-                                })
-                                .collect();
-
-                            return Ok(Some(json!(lsp_edits)));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Return empty array if no edits
+        // Format-on-save is handled by the client sending textDocument/formatting
+        // after willSave (the normal LSP contract), which calls handle_formatting
+        // (already fixed by #4643's off-lock pattern).
+        //
+        // The previous implementation here was dead code: it was gated on
+        // config.test_runner_enabled (an unrelated flag), used CodeFormatter::new()
+        // (ignoring all user perltidy config), hardcoded tab_size/insert_spaces,
+        // and held both documents and config locks across the format call.
+        // (#5076)
+        let _ = params;
         Ok(Some(json!([])))
     }
 
