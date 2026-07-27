@@ -224,6 +224,7 @@ impl LspServer {
     pub(super) fn handle_document_highlight_dispatch(
         &self,
         params: Option<Value>,
+        _request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         self.handle_document_highlight(params)
     }

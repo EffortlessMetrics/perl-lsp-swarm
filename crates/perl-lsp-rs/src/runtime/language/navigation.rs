@@ -1153,6 +1153,14 @@ impl LspServer {
                 let documents = self.documents_guard();
                 if let Some(doc) = self.get_document(&documents, uri) {
                     let offset = self.pos16_to_offset(doc, line, character);
+
+                    // Skip go-to-definition inside comments and POD — the cursor is not
+                    // on a real symbol.  Without this guard the AST resolver may jump to
+                    // an unrelated symbol on the same line.  (#5066)
+                    if perl_lsp_rs_core::providers::rename::is_in_comment(offset, &doc.text) {
+                        return Ok(None);
+                    }
+
                     let radius = 50;
                     let (text_start, text_around) =
                         self.get_text_window_around_offset(&doc.text, offset, radius);
