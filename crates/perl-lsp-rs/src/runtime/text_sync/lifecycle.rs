@@ -180,27 +180,24 @@ impl LspServer {
             // async parse ticket ever catches the index up. (#5111)
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             {
-                let doc_gen = {
+                // Read both generation and text in a SINGLE lock to avoid TOCTOU.
+                let doc_info = {
                     let documents = self.documents.lock();
-                    self.get_document(&documents, &normalized_uri)
-                        .map(|d| d.current_generation())
+                    self.get_document(&documents, &normalized_uri).map(|d| {
+                        (d.current_generation(), d.text.clone())
+                    })
                 };
-                if let Some(doc_gen_val) = doc_gen
+                if let Some((doc_gen_val, text)) = doc_info
                     && let Some(coordinator) = self.coordinator()
                 {
                     let index = coordinator.index();
                     if index.is_index_generation_stale(&normalized_uri, doc_gen_val) {
-                        let documents = self.documents.lock();
-                        if let Some(doc) = self.get_document(&documents, &normalized_uri) {
-                            let text = doc.text.clone();
-                            drop(documents);
-                            if let Ok(url) = url::Url::parse(&normalized_uri) {
-                                tracing::debug!(
-                                    "Reconciling stale index for {} (doc gen {} > indexed gen)",
-                                    normalized_uri, doc_gen_val
-                                );
-                                let _ = index.index_file(url, text);
-                            }
+                        if let Ok(url) = url::Url::parse(&normalized_uri) {
+                            tracing::debug!(
+                                "Reconciling stale index for {} (doc gen {} > indexed gen)",
+                                normalized_uri, doc_gen_val
+                            );
+                            let _ = index.index_file(url, text);
                         }
                     }
                 }

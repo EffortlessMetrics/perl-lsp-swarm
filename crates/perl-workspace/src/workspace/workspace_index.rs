@@ -2794,6 +2794,25 @@ impl WorkspaceIndex {
     /// let _refs = index.find_references("Utils::process_data");
     /// ```
     pub fn find_references(&self, symbol_name: &str) -> Vec<Location> {
+        // Capture write version before reading to detect torn reads (#5116).
+        // If a concurrent index_file_with_generation bumps the version during
+        // our read, the global_references map may have been partially updated.
+        // We retry up to 3 times to get a consistent snapshot.
+        for _ in 0..3 {
+            let v1 = self.write_version();
+            let result = self.find_references_inner(symbol_name);
+            let v2 = self.write_version();
+            if v1 == v2 {
+                return result;
+            }
+            // Torn read — concurrent write happened. Retry.
+            tracing::debug!("Torn read in find_references, retrying");
+        }
+        // Fallback: return whatever the last attempt produced
+        self.find_references_inner(symbol_name)
+    }
+
+    fn find_references_inner(&self, symbol_name: &str) -> Vec<Location> {
         let global_refs = self.global_references.read();
         let mut seen: HashSet<(String, u32, u32, u32, u32)> = HashSet::new();
         let mut locations = Vec::new();
