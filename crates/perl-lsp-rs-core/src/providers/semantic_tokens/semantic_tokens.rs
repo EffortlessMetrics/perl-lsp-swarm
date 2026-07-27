@@ -876,7 +876,28 @@ pub fn collect_semantic_tokens(
                 match name.as_str() {
                     "eval" | "do" | "use" | "no" | "return" | "my" | "our" | "local" | "state"
                     | "next" | "last" | "redo" | "goto" => return true,
-                    _ => ("function", 0),
+                    _ => {
+                        // Narrow the token to just the function name, not the entire
+                        // call expression.  Previously the token spanned the whole call
+                        // (name + args), which caused the arguments to inherit the
+                        // function color and dropped inner string/number/variable tokens
+                        // via overlap removal.  (#5077)
+                        //
+                        // For AmperCall the source is `&name(...)` — the name starts
+                        // one byte after the node start (past the `&`).
+                        let is_amper = matches!(&node.kind, NodeKind::AmperCall { .. });
+                        let name_start = if is_amper { s + 1 } else { s };
+                        let name_end = name_start + name.len();
+                        let (nsl, nsc) = to_pos16(name_start);
+                        let (nel, nec) = to_pos16(name_end);
+                        if nsl == nel {
+                            let nlen = nec.saturating_sub(nsc);
+                            if nlen > 0 {
+                                ast_tokens.push((nsl, nsc, nlen, kind_idx(&leg, "function"), 0));
+                            }
+                        }
+                        return true; // already emitted with narrowed range
+                    }
                 }
             }
             NodeKind::Variable { sigil, name } => {
