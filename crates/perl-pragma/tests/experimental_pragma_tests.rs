@@ -1,4 +1,4 @@
-//! Tests for `use experimental` pragma handling (#5091).
+//! Tests for `require VERSION` pragma handling (#5106).
 #![expect(clippy::panic, reason = "test code")]
 
 use perl_ast::SourceLocation;
@@ -9,25 +9,16 @@ fn loc(start: usize, end: usize) -> SourceLocation {
     SourceLocation { start, end }
 }
 
-fn use_node(module: &str, args: &[&str]) -> Node {
+fn require_node(version: &str) -> Node {
     Node {
-        kind: NodeKind::Use {
-            module: module.to_string(),
-            args: args.iter().map(|s| s.to_string()).collect(),
-            has_filter_risk: false,
+        kind: NodeKind::FunctionCall {
+            name: "require".to_string(),
+            args: vec![Node {
+                kind: NodeKind::Number { value: version.to_string() },
+                location: loc(10, 16),
+            }],
         },
-        location: loc(0, 30),
-    }
-}
-
-fn no_node(module: &str, args: &[&str]) -> Node {
-    Node {
-        kind: NodeKind::No {
-            module: module.to_string(),
-            args: args.iter().map(|s| s.to_string()).collect(),
-            has_filter_risk: false,
-        },
-        location: loc(0, 30),
+        location: loc(0, 17),
     }
 }
 
@@ -44,28 +35,17 @@ fn last_feature_state(ast: &Node) -> PragmaState {
 }
 
 #[test]
-fn use_experimental_class_enables_class_feature() {
-    let ast = program(vec![use_node("experimental", &["'class'"])]);
+fn require_version_enables_strict_and_features() {
+    let ast = program(vec![require_node("5.036")]);
     let state = last_feature_state(&ast);
-    assert!(state.has_feature("class"),
-        "use experimental 'class' should enable the 'class' feature");
+    assert!(state.strict_vars, "require 5.036 should enable strict vars");
+    assert!(state.has_feature("signatures"), "require 5.036 should enable signatures feature");
 }
 
 #[test]
-fn use_experimental_signatures_enables_signatures() {
-    let ast = program(vec![use_node("experimental", &["'signatures'"])]);
+fn require_version_enables_warnings() {
+    let ast = program(vec![require_node("5.038")]);
     let state = last_feature_state(&ast);
-    assert!(state.has_feature("signatures"),
-        "use experimental 'signatures' should enable the 'signatures' feature");
-}
-
-#[test]
-fn no_experimental_disables_feature() {
-    let ast = program(vec![
-        use_node("experimental", &["'class'"]),
-        no_node("experimental", &["'class'"]),
-    ]);
-    let state = last_feature_state(&ast);
-    assert!(!state.has_feature("class"),
-        "no experimental 'class' should disable the feature");
+    assert!(state.strict_vars, "require 5.038 should enable strict vars");
+    assert!(state.has_feature("say"), "require 5.038 should enable say feature");
 }
