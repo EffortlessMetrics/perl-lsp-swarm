@@ -1439,7 +1439,14 @@ impl LspServer {
             }
         }
 
-        // Also update our internal document store if the document is open.
+        // For open documents, do NOT overwrite doc.text or bump doc.version.
+        // The document map is authoritative for open files — the editor's
+        // didChange notifications drive the content. Overwriting from disk
+        // clobbers unsaved user edits and the blind version+1 can cause
+        // subsequent didChange to be silently dropped as stale. (#5112, #5040)
+        //
+        // The workspace index above was already re-indexed from disk, which
+        // is sufficient for cross-file features. The document map stays as-is.
         #[cfg(feature = "workspace")]
         {
             let document_is_open = {
@@ -1448,25 +1455,10 @@ impl LspServer {
             };
 
             if document_is_open {
-                if loaded_content.is_none() {
-                    loaded_content = read_watched_file_content(uri, "document store update");
-                }
-
-                if let Some(content) = loaded_content {
-                    let mut documents = self.documents.lock();
-                    if let Some(doc) = self.get_document_mut(&mut documents, uri) {
-                        doc.text = content;
-                        doc.version += 1;
-                        // Invalidate the cached parse so it is regenerated on
-                        // next access. Bumping the generation (rather than
-                        // reaching into the private `parsed` field) makes
-                        // `current_parsed()` correctly report "no fresh
-                        // parse yet" until a new `ParsedSnapshot` is
-                        // published for this generation -- see
-                        // `state::ParsedSnapshot`.
-                        doc.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    }
-                }
+                tracing::debug!(
+                    "File watcher change for open document {} — skipping in-memory overwrite (document map is authoritative)",
+                    uri
+                );
             }
         }
 
