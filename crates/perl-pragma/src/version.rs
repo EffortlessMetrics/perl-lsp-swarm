@@ -28,28 +28,10 @@ pub fn parse_perl_version(module: &str) -> Option<PerlVersion> {
     let s = module.strip_prefix('v').unwrap_or(module);
     let mut parts = s.splitn(3, '.');
 
-    let first = parts.next()?;
-    let major = parse_version_component(first)?;
+    let major = parse_version_component(parts.next()?)?;
     let minor = match parts.next() {
         Some(part) => parse_version_component(part)?,
-        None => {
-            // No `.` separator — check if this is a decimal version like "5.036001"
-            // where the first digit is the major and the rest encode the minor.
-            // (e.g. 5.036001 → major=5, minor=36, patch=1; we extract major.minor).
-            // This handles the standard Perl decimal version form for `use 5.036001`.
-            if !s.contains('.') && first.len() > 3 {
-                // Parse as: first digit = major, next 3 digits = minor (e.g. 036 → 36)
-                let minor_str = &first[1..4.min(first.len())];
-                let minor_val: u32 = minor_str.parse().ok()?;
-                // Verify the remainder (if any) is numeric — it's the patch level
-                if first.len() > 4 {
-                    let _patch: u32 = first[4..].parse().ok()?;
-                }
-                minor_val
-            } else {
-                0
-            }
-        }
+        None => 0,
     };
 
     Some(PerlVersion::new(major, minor))
