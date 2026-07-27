@@ -720,6 +720,9 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
             false,
             "No standalone HIR literal shell yet; falls through after parser-level v-string classification."
         ),
+        // AmperCall: `&func()` ampersand-sigil call form. No explicit HIR arm in lower.rs;
+        // falls to `_ => visit_children`. Not yet modeled as a distinct HIR shell.
+        "AmperCall" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
 
         // Unknown — caller detects missing entry and fails the gate.
         _ => None,
