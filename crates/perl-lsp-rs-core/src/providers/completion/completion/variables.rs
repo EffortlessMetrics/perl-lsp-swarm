@@ -25,6 +25,14 @@ pub fn add_variable_completions(
     for (name, symbols) in &symbol_table.symbols {
         for symbol in symbols {
             if symbol.kind == kind && name.starts_with(prefix_without_sigil) {
+                // Skip lexical variables declared textually AFTER the cursor
+                // position — they're not yet in scope. (#5073)
+                // 'our' package globals are visible regardless of position.
+                let is_package_global = symbol.declaration.as_deref() == Some("our");
+                if !is_package_global && symbol.location.start > context.position {
+                    continue;
+                }
+
                 let insert_text = format!("{}{}", sigil, name);
 
                 let scope_sort_key =
