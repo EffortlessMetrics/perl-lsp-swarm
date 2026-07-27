@@ -187,3 +187,4 @@ If the reviewer pushes a fix directly to your branch, that is normal. Check and 
 | All commands | [docs/reference/COMMANDS_REFERENCE.md](../reference/COMMANDS_REFERENCE.md) |
 | Coding standards | [CLAUDE.md — Coding Standards](../../CLAUDE.md#coding-standards) |
 | Full contributor guide | [CONTRIBUTING.md](../../CONTRIBUTING.md) |
+| Debug the LSP server | [DEBUGGING_LSP_SERVER.md](DEBUGGING_LSP_SERVER.md) |

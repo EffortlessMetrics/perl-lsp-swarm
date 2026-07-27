@@ -70,24 +70,6 @@ Success: prints `Installed pre-push hook`. The hook runs `just pr-fast` automati
 
 Once all five steps succeed, you're ready to make changes. Before pushing, run `just ready` to combine the workspace doctor with the fast PR gate.
 
-### Setup
-
-```bash
-git clone https://github.com/EffortlessMetrics/perl-lsp.git
-cd perl-lsp
-nix develop          # Recommended: reproducible environment with all tools
-
-# Or without Nix -- just ensure Rust and just are installed:
-# curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-# cargo install just
-```
-
-Install the pre-push git hook so the gate runs automatically before every push:
-
-```bash
-bash scripts/install-githooks.sh
-```
-
 ### Agent Quickstart
 
 If you are contributing from an agentic coding environment, use the repo's bounded build profiles so target directories and caches do not grow inside disposable worktrees:
@@ -118,6 +100,23 @@ nix develop -c just ci-gate
 If your desktop environment does not use Nix, run `just ci-gate` directly.
 For stale toolchains or workspace drift, run `just devex` and `just doctor`.
 
+#### cargo-safe agent profiles
+
+The `just agent-*` commands run through `scripts/cargo-safe`, which sandboxes
+build artefacts to a per-repo devplane cache and guards disk space. Understanding
+its constraints prevents silent failures in constrained environments:
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `DEVPLANE` | `~/.cache/devplane/<repo>` | Root of the isolated build cache (cargo home, target dir, sccache) |
+| `CARGO_BUILD_JOBS` | `2` | Parallel cargo jobs — set higher on machines with more cores |
+| `MIN_FREE_GB` | `40` | Minimum free disk space (GiB); script exits 75 if threshold is not met |
+| `MAX_USED_PCT` | `85` | Maximum disk-used percentage; exits 75 if exceeded |
+| `CARGO_LOCK_WAIT` | `180` | Seconds to wait for the build flock before giving up |
+
+Exit code **75** means the disk-space gate fired — free up space or lower
+`MIN_FREE_GB` for smaller machines (`MIN_FREE_GB=10 just agent-check`).
+
 ### Build and Test
 
 ```bash
@@ -130,6 +129,10 @@ If something looks broken, `just doctor` diagnoses common environment issues (mi
 ```bash
 just doctor
 ```
+
+To debug the LSP server itself — reproduce a parse error, run in socket mode,
+or enable structured logging — see
+[docs/contributing/DEBUGGING_LSP_SERVER.md](docs/contributing/DEBUGGING_LSP_SERVER.md).
 
 ## Project Structure
 
