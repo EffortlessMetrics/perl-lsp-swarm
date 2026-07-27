@@ -44,6 +44,48 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Compute the token range for the `range` field (#5085), then delegate
+        // to handle_hover_core and inject the range into the result.
+        let range = params.as_ref().and_then(|p| {
+            let uri = p["textDocument"]["uri"].as_str()?;
+            let line = p["position"]["line"].as_u64()? as usize;
+            let character = p["position"]["character"].as_u64()? as usize;
+            let documents = self.documents_guard();
+            let doc = self.get_document(&documents, uri)?;
+            let offset = self.pos16_to_offset(doc, line as u32, character as u32);
+            let (start, end) = Self::token_byte_bounds_of(&doc.text, offset);
+            if end > start && end <= doc.text.len() {
+                let (sl, sc) = self.offset_to_pos16(doc, start);
+                let (el, ec) = self.offset_to_pos16(doc, end);
+                Some(json!({
+                    "start": { "line": sl, "character": sc },
+                    "end": { "line": el, "character": ec }
+                }))
+            } else {
+                None
+            }
+        });
+
+        let mut result = self.handle_hover_core(params)?;
+
+        // Inject `range` into non-null hover responses (#5085).
+        if let Some(ref range) = range
+            && let Some(ref mut val) = result
+            && val.is_object()
+            && val.get("contents").is_some()
+        {
+            if let Some(obj) = val.as_object_mut() {
+                obj.insert("range".to_string(), range.clone());
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn handle_hover_core(
+        &self,
+        params: Option<Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(params) = params {
             let uri = req_uri(&params)?;
             let (line, character) = req_position(&params)?;
@@ -844,6 +886,42 @@ impl LspServer {
     /// returned string slice is extracted via `content[start..end]` where both
     /// bounds are also byte offsets. This avoids the byte-as-char-index bug that
     /// occurs when indexing `Vec<char>` with a value from `pos16_to_offset`.
+    /// Compute the byte bounds `(start, end)` of the token at `offset`, including
+    /// a leading sigil if present.  Returns `(offset, offset)` if the cursor is
+    /// not on a token character.  Used for the hover `range` field (#5085).
+    fn token_byte_bounds_of(content: &str, offset: usize) -> (usize, usize) {
+        if offset > content.len() {
+            return (offset, offset);
+        }
+        let is_sigil = |ch: char| ch == '$' || ch == '@' || ch == '%';
+        let is_ident = |ch: char| ch.is_alphanumeric() || ch == '_';
+        let is_token_char = |ch: char| is_ident(ch) || is_sigil(ch);
+
+        let pairs: Vec<(usize, char)> = content.char_indices().collect();
+        if pairs.is_empty() {
+            return (offset, offset);
+        }
+        let ci = pairs.partition_point(|(b, _)| *b < offset);
+        let ci = ci.min(pairs.len().saturating_sub(1));
+        if !is_token_char(pairs[ci].1) {
+            return (offset, offset);
+        }
+        let mut start = ci;
+        while start > 0 && is_token_char(pairs[start - 1].1) {
+            start -= 1;
+        }
+        let mut end = ci;
+        if is_sigil(pairs[end].1) {
+            end += 1;
+        }
+        while end < pairs.len() && is_ident(pairs[end].1) {
+            end += 1;
+        }
+        let start_byte = pairs[start].0;
+        let end_byte = if end < pairs.len() { pairs[end].0 } else { content.len() };
+        (start_byte, end_byte)
+    }
+
     fn get_token_at_position_static(content: &str, offset: usize) -> String {
         if offset > content.len() {
             return String::new();
