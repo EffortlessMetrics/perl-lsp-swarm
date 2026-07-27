@@ -210,7 +210,12 @@ impl LspServer {
                     push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "comment");
                 }
 
-                // Add heredoc folding ranges from lexer
+                // Add heredoc folding ranges from lexer.
+                // The AST NodeKind::Heredoc arm also produces a fold, but its range covers
+                // the opener-through-terminator span which differs from the body-only span
+                // the lexer produces.  The dedup pass below handles overlaps by keying on
+                // exact (startLine, endLine, kind) tuples — overlapping but non-identical
+                // ranges survive as nested folds, which is acceptable.
                 let heredoc_ranges =
                     crate::folding::FoldingRangeExtractor::extract_heredoc_ranges(&doc.text);
                 for range in heredoc_ranges {
@@ -220,6 +225,18 @@ impl LspServer {
                         self.offset_to_pos16(doc, range.end_offset.saturating_sub(1));
 
                     push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "region");
+                }
+
+                // Add POD folding ranges (POD is parser trivia — no NodeKind::Pod — so the
+                // AST path cannot fold it).  This scan runs only when the AST is available,
+                // complementing the existing fallback that runs when it is not.  (#5071)
+                for (pod_start_line, pod_end_line) in extract_pod_ranges(&doc.text) {
+                    push_multiline_folding_range(
+                        &mut lsp_ranges,
+                        pod_start_line,
+                        pod_end_line,
+                        "comment",
+                    );
                 }
 
                 // Add #region/#endregion folding ranges
@@ -385,6 +402,39 @@ fn document_symbols_to_json(
 /// Helper function to convert offset to line number
 fn offset_to_line(content: &str, offset: usize) -> usize {
     content[..offset.min(content.len())].chars().filter(|&c| c == '\n').count()
+}
+
+/// Scan for POD blocks (`=pod`/`=head*`/`=begin` ... `=cut`/`=end`) and return
+/// `(start_line, end_line)` pairs suitable for folding.  POD is parser trivia —
+/// no `NodeKind::Pod` — so the AST folding path cannot cover it.
+fn extract_pod_ranges(text: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut pod_start: Option<usize> = None;
+    for (line_no, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if pod_start.is_none() {
+            if trimmed.starts_with("=pod")
+                || trimmed.starts_with("=head")
+                || trimmed.starts_with("=begin")
+                || trimmed.starts_with("=over")
+                || trimmed.starts_with("=item")
+                || trimmed.starts_with("=encoding")
+                || trimmed.starts_with("=for")
+            {
+                pod_start = Some(line_no);
+            }
+        } else if trimmed.starts_with("=cut") || trimmed.starts_with("=end") {
+            ranges.push((pod_start.take().unwrap(), line_no));
+        }
+    }
+    // Unclosed POD block extends to end of file
+    if let Some(start) = pod_start {
+        let last_line = text.lines().count().saturating_sub(1);
+        if last_line > start {
+            ranges.push((start, last_line));
+        }
+    }
+    ranges
 }
 
 fn push_multiline_folding_range<T>(
@@ -593,6 +643,19 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn handle_folding_range_pod_block_produces_comment_fold() {
+        let source = "=pod\n\nThis is documentation.\n\n=head1 SYNOPSIS\n\n    use Foo;\n\n=cut\nmy $x = 1;\n";
+        let ranges = folding_ranges_for_source(source).unwrap_or_default();
+        assert!(
+            ranges.iter().any(|range| {
+                range.get("kind") == Some(&json!("comment"))
+                    && range.get("startLine") == Some(&json!(0))
+            }),
+            "POD block starting at line 0 should produce a comment fold: {ranges:?}"
+        );
     }
 
     #[test]
