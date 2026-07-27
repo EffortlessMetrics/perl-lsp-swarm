@@ -872,10 +872,17 @@ pub fn collect_semantic_tokens(
                 {
                     return true;
                 }
-                // Skip builtins that should remain as keywords from the lexer pass
+                // Skip builtins that should remain as keywords from the lexer pass,
+                // and synthetic names produced for coderef/deref calls (these don't
+                // start at node.location.start — painting them produces garbage).
                 match name.as_str() {
                     "eval" | "do" | "use" | "no" | "return" | "my" | "our" | "local" | "state"
                     | "next" | "last" | "redo" | "goto" => return true,
+                    // Synthetic FunctionCall names from postfix.rs (coderef invocation)
+                    // and variables.rs (deref).  The name is not a real identifier at
+                    // node.location.start, so narrowing to name.len() bytes paints
+                    // garbage on the receiver.
+                    "->()" | "&{}" | "$" => return true,
                     _ => {
                         // Narrow the token to just the function name, not the entire
                         // call expression.  Previously the token spanned the whole call
