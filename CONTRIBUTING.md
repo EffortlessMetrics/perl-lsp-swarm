@@ -102,9 +102,10 @@ For stale toolchains or workspace drift, run `just devex` and `just doctor`.
 
 #### cargo-safe agent profiles
 
-The `just agent-*` commands run through `scripts/cargo-safe`, which sandboxes
-build artefacts to a per-repo devplane cache and guards disk space. Understanding
-its constraints prevents silent failures in constrained environments:
+The `just agent-check`, `just agent-test`, `just agent-clippy`, and `just agent-pr-fast`
+commands run through `scripts/cargo-safe`, which sandboxes build artefacts to a per-repo
+devplane cache and guards disk space. Understanding its constraints prevents silent failures
+in constrained environments:
 
 | Env var | Default | Effect |
 |---------|---------|--------|
