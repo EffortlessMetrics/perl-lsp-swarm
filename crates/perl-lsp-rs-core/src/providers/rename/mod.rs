@@ -327,10 +327,7 @@ impl RenameProvider {
             return None;
         }
         if let NodeKind::Binary { op, left, .. } = &node.kind {
-            if op == expected_op
-                && offset >= left.location.start
-                && offset <= left.location.end
-            {
+            if op == expected_op && offset >= left.location.start && offset <= left.location.end {
                 if let NodeKind::Variable { sigil, .. } = &left.kind {
                     if sigil == "$" {
                         return Some(());
@@ -813,7 +810,11 @@ mod tests {
         let pos = code.find("arr").unwrap();
         let result = provider.scoped_rename(pos, "data", &RenameOptions::default());
         assert!(result.is_valid, "rename should be valid: {:?}", result.error);
-        assert!(result.edits.len() >= 2, "should rename declaration + element access, got {}", result.edits.len());
+        assert!(
+            result.edits.len() >= 2,
+            "should rename declaration + element access, got {}",
+            result.edits.len()
+        );
     }
 
     #[test]

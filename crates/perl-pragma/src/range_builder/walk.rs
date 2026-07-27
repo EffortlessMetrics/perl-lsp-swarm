@@ -1,5 +1,5 @@
 use super::directives::{apply_no_directive, apply_use_directive};
-use crate::{enable_effective_version_semantics, parse_perl_version, PragmaState};
+use crate::{PragmaState, enable_effective_version_semantics, parse_perl_version};
 use perl_ast::ast::{Node, NodeKind};
 use std::ops::Range;
 

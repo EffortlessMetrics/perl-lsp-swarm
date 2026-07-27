@@ -211,8 +211,8 @@ pub fn is_word_boundary(text: &[u8], pos: usize, word_len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        byte_offset_utf16, extract_symbol_from_source, get_symbol_range_at_position, is_modchar,
-        is_word_boundary, token_under_cursor, CursorSymbolKind,
+        CursorSymbolKind, byte_offset_utf16, extract_symbol_from_source,
+        get_symbol_range_at_position, is_modchar, is_word_boundary, token_under_cursor,
     };
 
     #[test]
@@ -247,8 +247,8 @@ mod tests {
     }
 
     #[test]
-    fn token_under_cursor_returns_none_for_out_of_range_line(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn token_under_cursor_returns_none_for_out_of_range_line()
+    -> Result<(), Box<dyn std::error::Error>> {
         let text = "my $value = 1;\n";
         assert_eq!(token_under_cursor(text, 99, 0), None);
         Ok(())
@@ -320,8 +320,8 @@ mod tests {
     // ── is_modchar ────────────────────────────────────────────────────────────
 
     #[test]
-    fn is_modchar_accepts_alphanumeric_and_colon_and_underscore(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn is_modchar_accepts_alphanumeric_and_colon_and_underscore()
+    -> Result<(), Box<dyn std::error::Error>> {
         assert!(is_modchar(b'a'));
         assert!(is_modchar(b'Z'));
         assert!(is_modchar(b'0'));
@@ -378,8 +378,8 @@ mod tests {
     }
 
     #[test]
-    fn extract_symbol_recognizes_subroutine_sigil_before_name(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn extract_symbol_recognizes_subroutine_sigil_before_name()
+    -> Result<(), Box<dyn std::error::Error>> {
         let source = "&callback";
         let result = extract_symbol_from_source(1, source);
         assert_eq!(result, Some(("callback".to_string(), CursorSymbolKind::Subroutine)));
@@ -422,8 +422,8 @@ mod tests {
     }
 
     #[test]
-    fn extract_symbol_handles_underscore_and_digits_in_name(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn extract_symbol_handles_underscore_and_digits_in_name()
+    -> Result<(), Box<dyn std::error::Error>> {
         let source = "$my_var2";
         let result = extract_symbol_from_source(1, source);
         assert_eq!(result, Some(("my_var2".to_string(), CursorSymbolKind::Scalar)));

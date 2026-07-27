@@ -1,7 +1,7 @@
 use crate::{
-    add_disabled_warning_category, apply_builtin_imports_if_changed, apply_feature_state,
-    conditional_pragma_target, enable_effective_version_semantics, normalized_pragma_token,
-    parse_perl_version, pragma_arg_items, PragmaState,
+    PragmaState, add_disabled_warning_category, apply_builtin_imports_if_changed,
+    apply_feature_state, conditional_pragma_target, enable_effective_version_semantics,
+    normalized_pragma_token, parse_perl_version, pragma_arg_items,
 };
 use std::ops::Range;
 

@@ -183,9 +183,8 @@ impl LspServer {
                 // Read both generation and text in a SINGLE lock to avoid TOCTOU.
                 let doc_info = {
                     let documents = self.documents.lock();
-                    self.get_document(&documents, &normalized_uri).map(|d| {
-                        (d.current_generation(), d.text.clone())
-                    })
+                    self.get_document(&documents, &normalized_uri)
+                        .map(|d| (d.current_generation(), d.text.clone()))
                 };
                 if let Some((doc_gen_val, text)) = doc_info
                     && let Some(coordinator) = self.coordinator()
@@ -195,7 +194,8 @@ impl LspServer {
                         if let Ok(url) = url::Url::parse(&normalized_uri) {
                             tracing::debug!(
                                 "Reconciling stale index for {} (doc gen {} > indexed gen)",
-                                normalized_uri, doc_gen_val
+                                normalized_uri,
+                                doc_gen_val
                             );
                             let _ = index.index_file(url, text);
                         }

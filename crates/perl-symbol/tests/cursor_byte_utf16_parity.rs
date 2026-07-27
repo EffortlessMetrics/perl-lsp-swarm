@@ -2,8 +2,8 @@
 //! UTF-16 line/column behavior.
 
 use perl_symbol::cursor::{
-    byte_offset_utf16, extract_symbol_from_source, get_symbol_range_at_position,
-    token_under_cursor, CursorSymbolKind,
+    CursorSymbolKind, byte_offset_utf16, extract_symbol_from_source, get_symbol_range_at_position,
+    token_under_cursor,
 };
 use perl_tdd_support::must_some;
 

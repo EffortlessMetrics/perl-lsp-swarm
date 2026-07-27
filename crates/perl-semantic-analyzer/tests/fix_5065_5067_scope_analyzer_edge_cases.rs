@@ -11,9 +11,9 @@
     reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
 )]
 
+use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::scope_analyzer::{IssueKind, ScopeAnalyzer, ScopeIssue};
 use perl_semantic_analyzer::pragma_tracker::PragmaTracker;
-use perl_semantic_analyzer::Parser;
 use perl_tdd_support::must;
 
 // ---------------------------------------------------------------------------

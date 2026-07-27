@@ -5,7 +5,7 @@
 use super::super::{byte_to_utf16_col, *};
 use crate::cancellation::RequestCleanupGuard;
 use crate::fallback::text::folding_ranges_from_text;
-use crate::protocol::{req_uri, REQUEST_CANCELLED};
+use crate::protocol::{REQUEST_CANCELLED, req_uri};
 use crate::state::document_symbol_cap;
 use std::sync::OnceLock;
 
@@ -553,8 +553,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn push_multiline_folding_range_boundary_discriminator_end_line_gt_start_line_rejects_equal_input(
-    ) {
+    fn push_multiline_folding_range_boundary_discriminator_end_line_gt_start_line_rejects_equal_input()
+     {
         let mut ranges = Vec::new();
 
         push_multiline_folding_range(&mut ranges, 4, 4, "region");
@@ -563,8 +563,8 @@ mod tests {
     }
 
     #[test]
-    fn push_multiline_folding_range_boundary_discriminator_input_that_hits_the_boundary_end_line_gt_start_line_accepts_multiline_input(
-    ) {
+    fn push_multiline_folding_range_boundary_discriminator_input_that_hits_the_boundary_end_line_gt_start_line_accepts_multiline_input()
+     {
         let mut ranges = Vec::new();
 
         push_multiline_folding_range(&mut ranges, 4, 6, "comment");
@@ -576,15 +576,15 @@ mod tests {
     }
 
     #[test]
-    fn lsp_inclusive_multiline_end_line_boundary_discriminator_lsp_end_line_gt_start_line_rejects_short_span(
-    ) {
+    fn lsp_inclusive_multiline_end_line_boundary_discriminator_lsp_end_line_gt_start_line_rejects_short_span()
+     {
         assert_eq!(lsp_inclusive_multiline_end_line(4, 5), None);
         assert_eq!(lsp_inclusive_multiline_end_line(4, 0), None);
     }
 
     #[test]
-    fn lsp_inclusive_multiline_end_line_boundary_discriminator_input_that_hits_the_boundary_lsp_end_line_gt_start_line_accepts_multiline_span(
-    ) {
+    fn lsp_inclusive_multiline_end_line_boundary_discriminator_input_that_hits_the_boundary_lsp_end_line_gt_start_line_accepts_multiline_span()
+     {
         assert_eq!(
             lsp_inclusive_multiline_end_line(4, 6),
             Some(5),
@@ -612,8 +612,8 @@ mod tests {
     }
 
     #[test]
-    fn handle_folding_range_call_presence_observer_push_multiline_folding_range_data_section_comment(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_folding_range_call_presence_observer_push_multiline_folding_range_data_section_comment()
+    -> Result<(), Box<dyn std::error::Error>> {
         let ranges = folding_ranges_for_source("print \"ok\\n\";\n__DATA__\nalpha\nbeta\n")?;
 
         assert!(
@@ -629,8 +629,8 @@ mod tests {
     }
 
     #[test]
-    fn handle_folding_range_call_presence_observer_push_multiline_folding_range_heredoc_region(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_folding_range_call_presence_observer_push_multiline_folding_range_heredoc_region()
+    -> Result<(), Box<dyn std::error::Error>> {
         let ranges = folding_ranges_for_source("my $text = <<'TXT';\nalpha\nbeta\nTXT\n")?;
 
         assert!(
@@ -659,8 +659,8 @@ mod tests {
     }
 
     #[test]
-    fn handle_folding_range_call_presence_observer_ast_lsp_end_line_gt_start_line(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_folding_range_call_presence_observer_ast_lsp_end_line_gt_start_line()
+    -> Result<(), Box<dyn std::error::Error>> {
         let ranges = folding_ranges_for_source("sub full {\n    my $value = 1;\n}\n")?;
 
         assert!(ranges.iter().any(|range| {

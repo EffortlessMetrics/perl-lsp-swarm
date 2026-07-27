@@ -550,7 +550,7 @@ impl LspServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cancellation::{PerlLspCancellationToken, GLOBAL_CANCELLATION_REGISTRY};
+    use crate::cancellation::{GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken};
 
     /// Static-analysis test: verify that `LSP_TEST_FALLBACKS` is only read
     /// inside `#[cfg(any(test, feature = "test-fallbacks"))]` blocks, never

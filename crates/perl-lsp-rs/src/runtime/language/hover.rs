@@ -49,10 +49,7 @@ impl LspServer {
         self.handle_hover_core(params)
     }
 
-    fn handle_hover_core(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
+    fn handle_hover_core(&self, params: Option<Value>) -> Result<Option<Value>, JsonRpcError> {
         if let Some(params) = params {
             let uri = req_uri(&params)?;
             let (line, character) = req_position(&params)?;
@@ -147,7 +144,11 @@ impl LspServer {
                         };
                         (extracted, live_compiler_context, range)
                     } else {
-                        (Self::extract_token_hover(uri, &text, offset), live_compiler_context, range)
+                        (
+                            Self::extract_token_hover(uri, &text, offset),
+                            live_compiler_context,
+                            range,
+                        )
                     }
                 }
                 None => (HoverExtracted::None, None, None),
@@ -180,12 +181,8 @@ impl LspServer {
                     return Ok(Self::inject_hover_range_opt(hv, &hover_range));
                 }
                 HoverExtracted::PossiblePackage(pkg_name, doc_text, doc_uri, doc_offset) => {
-                    let hv = self.build_module_hover(
-                        &pkg_name,
-                        &doc_text,
-                        &doc_uri,
-                        Some(doc_offset),
-                    );
+                    let hv =
+                        self.build_module_hover(&pkg_name, &doc_text, &doc_uri, Some(doc_offset));
                     return Ok(Self::inject_hover_range_opt(hv, &hover_range));
                 }
                 #[cfg(feature = "workspace")]
@@ -226,7 +223,8 @@ impl LspServer {
         if let Some(range_val) = range
             && value.is_object()
             && value.get("contents").is_some()
-            && value.get("range").is_none() // don't overwrite an existing range
+            && value.get("range").is_none()
+        // don't overwrite an existing range
         {
             if let Some(obj) = value.as_object_mut() {
                 obj.insert("range".to_string(), range_val.clone());
