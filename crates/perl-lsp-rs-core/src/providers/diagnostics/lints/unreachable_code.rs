@@ -292,17 +292,12 @@ fn is_unconditional_exit(node: &Node) -> bool {
 
 /// Returns true if the function name is one of the known unconditional-exit functions.
 fn is_exit_function(name: &str) -> bool {
+    // Strip CORE:: prefix for uniform coverage — handles CORE::die, CORE::exit,
+    // CORE::exec, CORE::croak, CORE::confess without a parallel list.
+    let bare = name.strip_prefix("CORE::").unwrap_or(name);
     matches!(
-        name,
-        "die"
-            | "exit"
-            | "croak"
-            | "Carp::croak"
-            | "confess"
-            | "Carp::confess"
-            | "exec"
-            | "CORE::exec"
-            | "CORE::exit"
+        bare,
+        "die" | "exit" | "exec" | "croak" | "Carp::croak" | "confess" | "Carp::confess"
     )
 }
 
@@ -605,6 +600,15 @@ mod tests {
         assert!(
             has_pl406(&diags),
             "statement after CORE::exec should be flagged as PL406: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn exec_or_die_does_not_flag_subsequent() {
+        let diags = unreachable_diags(r#"exec("perl", "-e", "1") or die; my $x = 1;"#);
+        assert!(
+            !has_pl406(&diags),
+            "exec() or die should NOT flag subsequent code (Binary or is not a terminator): {diags:?}"
         );
     }
 }
