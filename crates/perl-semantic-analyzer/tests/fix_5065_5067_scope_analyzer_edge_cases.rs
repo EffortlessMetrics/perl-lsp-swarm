@@ -115,3 +115,32 @@ fn dollar_colon_use_under_strict() {
         issues
     );
 }
+
+// ---------------------------------------------------------------------------
+// Additional modifier coverage (#5094 review)
+// ---------------------------------------------------------------------------
+
+/// `print $x until my $x = 0;` — the `until` modifier also hoists.
+#[test]
+fn postfix_until_my_hoisted_no_false_positive() {
+    let code = "use strict; use warnings;\nprint $x until my $x = 0;\n";
+    let issues = scope_issues_strict(code);
+    assert!(
+        !has_undeclared(&issues, "$x"),
+        "`print $x until my $x = 0;` should NOT produce UndeclaredVariable (hoisted), got: {:?}",
+        issues
+    );
+}
+
+/// `for` modifier don't declare via `my` in the condition, so this just
+/// verifies no spurious diagnostic.
+#[test]
+fn postfix_for_no_false_positive() {
+    let code = "use strict; use warnings;\nfoo() for (1, 2, 3);\n";
+    let issues = scope_issues_strict(code);
+    assert!(
+        !has_undeclared(&issues, "$x"),
+        "for modifier without my should not produce spurious diagnostics, got: {:?}",
+        issues
+    );
+}
