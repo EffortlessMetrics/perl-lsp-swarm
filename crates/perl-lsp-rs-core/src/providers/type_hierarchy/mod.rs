@@ -400,7 +400,8 @@ impl TypeHierarchyProvider {
         });
 
         // Deeper ancestors (grandparents etc.) that aren't direct parents/roles
-        let ancestor_items = all_ancestors.into_iter()
+        let ancestor_items = all_ancestors
+            .into_iter()
             .filter(|name| !parent_names.contains(name) && !role_names.contains(name))
             .map(|name| TypeHierarchyItem {
                 name,
