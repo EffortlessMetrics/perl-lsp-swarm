@@ -865,8 +865,11 @@ fn assert_blocking_actions_have_repair_contract(receipt: &Value) -> TestResult {
             if value.trim().is_empty() {
                 return Err(format!("blocking action {kind} has empty {field}").into());
             }
-            if matches!(field, "verify" | "receipt") && !value.starts_with("") {
-                return Err(format!("blocking action {kind} {field} must use rtk: {value}").into());
+            if matches!(field, "verify" | "receipt") && !value.starts_with("cargo xtask ") {
+                return Err(format!(
+                    "blocking action {kind} {field} must use a direct cargo xtask command: {value}"
+                )
+                .into());
             }
         }
     }
