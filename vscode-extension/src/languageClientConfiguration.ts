@@ -277,11 +277,7 @@ export function buildUserAiCompletionConfigurationPayload(
   config: ConfigurationReader = vscode.workspace.getConfiguration('perl-lsp'),
 ): Record<string, unknown> {
   const enabled = readMachineScopedBoolean(config, 'aiCompletion.enabled', false);
-  const streamingEnabled = readMachineScopedBoolean(
-    config,
-    'aiCompletion.streaming.enabled',
-    true,
-  );
+  const streamingEnabled = readMachineScopedBoolean(config, 'aiCompletion.streaming.enabled', true);
 
   return {
     settings: {
