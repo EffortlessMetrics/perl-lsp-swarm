@@ -350,23 +350,23 @@ fn build_series_manifest(
     let normalized_manifest = normalize_discovered_tests(discovery, config.profile)?;
     let profile_roots: Vec<String> =
         config.profile.roots().iter().map(|root| (*root).to_string()).collect();
-    let manifest_hash = series_manifest_hash(
-        &config.series_id,
-        &discovery.commit,
-        &config.perl_requested_ref,
-        &config.perl_resolved_ref,
-        discovery.runner,
-        discovery.profile,
-        &profile_roots,
-        &normalized_manifest,
-        &config.preparation_receipt_id,
-        &config.preparation_receipt_digest,
-        &discovery.schema_version,
-        &config.compiler_subject_identity,
-        &config.invocation_identity,
-        &config.capability_identity,
-        &config.environment_identity,
-    );
+    let manifest_hash = series_manifest_hash(&SeriesManifestHashInput {
+        series_id: &config.series_id,
+        repository_commit: &discovery.commit,
+        perl_requested_ref: &config.perl_requested_ref,
+        perl_resolved_ref: &config.perl_resolved_ref,
+        runner: discovery.runner,
+        profile: discovery.profile,
+        roots: &profile_roots,
+        files: &normalized_manifest,
+        preparation_receipt_id: &config.preparation_receipt_id,
+        preparation_receipt_digest: &config.preparation_receipt_digest,
+        harness_schema_version: &discovery.schema_version,
+        compiler_subject_identity: &config.compiler_subject_identity,
+        invocation_identity: &config.invocation_identity,
+        capability_identity: &config.capability_identity,
+        environment_identity: &config.environment_identity,
+    });
 
     Ok(SeriesManifest {
         schema_version: SERIES_MANIFEST_SCHEMA_VERSION.to_string(),
@@ -488,67 +488,69 @@ fn validate_series_manifest(manifest: &SeriesManifest) -> Result<()> {
         bail!("comparison-series harness schema does not match discovery schema");
     }
     let files = normalize_discovered_tests(&discovery, manifest.profile)?;
-    let expected_hash = series_manifest_hash(
-        &manifest.series_id,
-        &manifest.repository_commit,
-        &manifest.perl_requested_ref,
-        &manifest.perl_resolved_ref,
-        manifest.runner,
-        manifest.profile,
-        &manifest.profile_roots,
-        &files,
-        &manifest.preparation_receipt_id,
-        &manifest.preparation_receipt_digest,
-        &manifest.harness_schema_version,
-        &manifest.compiler_subject_identity,
-        &manifest.invocation_identity,
-        &manifest.capability_identity,
-        &manifest.environment_identity,
-    );
+    let expected_hash = series_manifest_hash(&SeriesManifestHashInput {
+        series_id: &manifest.series_id,
+        repository_commit: &manifest.repository_commit,
+        perl_requested_ref: &manifest.perl_requested_ref,
+        perl_resolved_ref: &manifest.perl_resolved_ref,
+        runner: manifest.runner,
+        profile: manifest.profile,
+        roots: &manifest.profile_roots,
+        files: &files,
+        preparation_receipt_id: &manifest.preparation_receipt_id,
+        preparation_receipt_digest: &manifest.preparation_receipt_digest,
+        harness_schema_version: &manifest.harness_schema_version,
+        compiler_subject_identity: &manifest.compiler_subject_identity,
+        invocation_identity: &manifest.invocation_identity,
+        capability_identity: &manifest.capability_identity,
+        environment_identity: &manifest.environment_identity,
+    });
     if manifest.manifest_hash != expected_hash {
         bail!("series manifest hash does not match its identity and file list");
     }
     Ok(())
 }
 
-fn series_manifest_hash(
-    series_id: &str,
-    repository_commit: &str,
-    perl_requested_ref: &str,
-    perl_resolved_ref: &str,
+struct SeriesManifestHashInput<'a> {
+    series_id: &'a str,
+    repository_commit: &'a str,
+    perl_requested_ref: &'a str,
+    perl_resolved_ref: &'a str,
     runner: HarnessRunner,
     profile: HarnessProfile,
-    roots: &[String],
-    files: &[String],
-    preparation_receipt_id: &str,
-    preparation_receipt_digest: &str,
-    harness_schema_version: &str,
-    compiler_subject_identity: &str,
-    invocation_identity: &str,
-    capability_identity: &str,
-    environment_identity: &str,
-) -> String {
+    roots: &'a [String],
+    files: &'a [String],
+    preparation_receipt_id: &'a str,
+    preparation_receipt_digest: &'a str,
+    harness_schema_version: &'a str,
+    compiler_subject_identity: &'a str,
+    invocation_identity: &'a str,
+    capability_identity: &'a str,
+    environment_identity: &'a str,
+}
+
+fn series_manifest_hash(input: &SeriesManifestHashInput<'_>) -> String {
     let mut hasher = Sha256::new();
     for value in [
         SERIES_MANIFEST_SCHEMA_VERSION,
         SERIES_MANIFEST_NORMALIZATION_VERSION,
-        series_id,
-        repository_commit,
-        perl_requested_ref,
-        perl_resolved_ref,
-        runner.as_str(),
-        profile.as_str(),
-        preparation_receipt_id,
-        preparation_receipt_digest,
-        harness_schema_version,
-        compiler_subject_identity,
-        invocation_identity,
-        capability_identity,
-        environment_identity,
+        input.series_id,
+        input.repository_commit,
+        input.perl_requested_ref,
+        input.perl_resolved_ref,
+        input.runner.as_str(),
+        input.profile.as_str(),
+        input.preparation_receipt_id,
+        input.preparation_receipt_digest,
+        input.harness_schema_version,
+        input.compiler_subject_identity,
+        input.invocation_identity,
+        input.capability_identity,
+        input.environment_identity,
     ] {
         hash_manifest_value(&mut hasher, value);
     }
-    for value in roots.iter().chain(files.iter()) {
+    for value in input.roots.iter().chain(input.files.iter()) {
         hash_manifest_value(&mut hasher, value);
     }
     hex_lower(&hasher.finalize())
@@ -733,7 +735,6 @@ pub fn baseline(config: BaselineConfig) -> Result<()> {
     if let Some(series_path) = config.series.as_ref() {
         let series = read_series_manifest(series_path)?;
         validate_series_manifest(&series)?;
-        let baseline_path = baseline_path;
         if config.accept {
             let previous = config
                 .previous_baseline
@@ -1600,6 +1601,7 @@ fn validate_report_against_series(
     Ok(())
 }
 
+#[cfg(test)]
 fn compare_baseline_v2(
     baseline: &CompileBaselineV2,
     report: &RunReport,
