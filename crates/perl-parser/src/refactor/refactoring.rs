@@ -2199,7 +2199,6 @@ sub test {
         assert!(result.success);
 
         let new_code = must(std::fs::read_to_string(&path));
-        println!("New code:\n{}", new_code);
 
         // Inputs: $x, $y (used in range, declared before)
         // Outputs: $z (declared in range, used after)
@@ -2250,7 +2249,6 @@ sub existing {
         assert!(result.success);
 
         let new_code = must(std::fs::read_to_string(&path));
-        println!("New code with placement:\n{}", new_code);
 
         // Check placement: helper should be before 1;
         assert!(new_code.contains("sub helper {"));
@@ -2296,7 +2294,6 @@ sub complex {
 
         assert!(result.success);
         let new_code = must(std::fs::read_to_string(&path));
-        println!("New code complex:\n{}", new_code);
 
         // check if sub created
         assert!(new_code.contains("sub do_math {"));

@@ -108,6 +108,7 @@ import {
   CRITIC_SETTINGS,
   hasExplicitPerlCriticOverrides,
   syncLanguageClientConfiguration,
+  syncUserAiCompletionConfiguration,
   syncPerlCriticConfiguration as syncPerlCriticConfigurationFromConfig,
 } from './languageClientConfiguration';
 export { buildDisabledFeaturesFromConfig } from './languageClientConfiguration';
@@ -482,6 +483,8 @@ export async function copyProviderDecisionReceiptCommand(
 export async function activate(context: vscode.ExtensionContext) {
   languageClientStartupMetrics.markMilestone('activate_entered');
   featureActivationMetrics.beginActivation();
+  // Set activation context so commands are available even without a Perl file open (#UX4.4)
+  vscode.commands.executeCommand('setContext', 'perl-lsp.activated', true);
   // Cache the context so the mid-session crash handler (#4625) can drive an
   // auto-restart without a parameter of its own.
   extensionContext = context;
@@ -714,6 +717,7 @@ export async function activate(context: vscode.ExtensionContext) {
           event.affectsConfiguration('perl-lsp.aiCompletion.streaming.enabled')
         ) {
           refreshStreamingController(client);
+          await syncUserAiCompletionConfiguration(client);
         }
       },
       onRestartRequired: () => promptForClientRefresh(context),
@@ -1532,7 +1536,17 @@ function shouldFormatOnSave(document: vscode.TextDocument): boolean {
   }
 
   const config = vscode.workspace.getConfiguration('perl-lsp', document.uri);
-  return config.get<boolean>('formatOnSave', false);
+  if (!config.get<boolean>('formatOnSave', false)) {
+    return false;
+  }
+
+  // Warn if formatting is attempted while server is still indexing. (UX_GAP_2.4)
+  // The format will likely fail silently — log it so users see why.
+  if (healthWidget?.mode === 'indexing') {
+    outputChannel.debug('[formatOnSave] Server is still indexing — formatting may fail');
+  }
+
+  return true;
 }
 
 async function formatDocumentOnSave(document: vscode.TextDocument): Promise<vscode.TextEdit[]> {

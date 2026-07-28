@@ -1,0 +1,44 @@
+---
+name: "source-command-maintainer-pr-comment"
+description: "Maintainer vision (PR) step 3 — post alignment verdict as PR comment"
+---
+
+# source-command-maintainer-pr-comment
+
+Use this skill when the user asks to run the migrated source command `maintainer-pr-comment`.
+
+## Command Template
+
+# Maintainer PR: Comment
+
+Post your project-fit verdict on the PR and set the sign-off label.
+
+## Steps
+
+1. Post comment on the PR:
+   ```bash
+   gh pr comment <number> --body "$(cat <<'EOF'
+   ## Maintainer Vision Review (PR)
+
+   ### Scope discipline: [CLEAN | DRIFT]
+   <matches spec or list extra files>
+
+   ### Pattern introduction: [NONE | JUSTIFIED | CONCERN]
+   <new patterns and whether they're warranted>
+
+   ### Quality bar: [MET | GAP]
+   <test quality, documentation, consistency>
+
+   ### Verdict: [ALIGNED | SCOPE DRIFT | PATTERN CONCERN | QUALITY GAP]
+   <one sentence>
+
+   ---
+   *Maintainer vision review (PR) — project fit check before deep review.*
+   EOF
+   )"
+   ```
+
+2. Set sign-off label on the PR (verified apply — see `/label-apply-verified`):
+   ```
+   /label-apply-verified pr <number> "maintainer-pr-reviewed"
+   ```

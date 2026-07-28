@@ -237,10 +237,69 @@ export async function syncLanguageClientConfiguration(
     return;
   }
 
-  await activeClient.sendNotification(
-    'workspace/didChangeConfiguration',
-    buildLanguageClientConfigurationPayload(documentUri),
-  );
+  const payload = buildLanguageClientConfigurationPayload(documentUri);
+  const userAi = buildUserAiCompletionConfigurationPayload();
+  if (!payload && !userAi) {
+    return;
+  }
+
+  const settings: Record<string, unknown> = {};
+  if (payload?.settings && typeof payload.settings === 'object') {
+    Object.assign(settings, payload.settings as Record<string, unknown>);
+  }
+  if (userAi?.settings && typeof userAi.settings === 'object') {
+    const perl = (settings.perl as Record<string, unknown> | undefined) ?? {};
+    const userPerl = userAi.settings as { perl?: Record<string, unknown> };
+    if (userPerl.perl) {
+      Object.assign(perl, userPerl.perl);
+    }
+    settings.perl = perl;
+  }
+
+  await activeClient.sendNotification('workspace/didChangeConfiguration', { settings });
+}
+
+/// Read the effective machine-scoped boolean for server sync.
+///
+/// Machine-scoped keys cannot be set from workspace settings, so `get()` is
+/// authoritative — including when the user resets a setting to its default
+/// (`inspect().globalValue` is then `undefined`, but `get()` still returns the
+/// default).
+function readMachineScopedBoolean(
+  config: ConfigurationReader,
+  key: string,
+  defaultValue: boolean,
+): boolean {
+  return config.get<boolean>(key, defaultValue);
+}
+
+export function buildUserAiCompletionConfigurationPayload(
+  config: ConfigurationReader = vscode.workspace.getConfiguration('perl-lsp'),
+): Record<string, unknown> {
+  const enabled = readMachineScopedBoolean(config, 'aiCompletion.enabled', false);
+  const streamingEnabled = readMachineScopedBoolean(config, 'aiCompletion.streaming.enabled', true);
+
+  return {
+    settings: {
+      perl: {
+        aiCompletion: {
+          enabled,
+          streaming: { enabled: streamingEnabled },
+        },
+      },
+    },
+  };
+}
+
+export async function syncUserAiCompletionConfiguration(
+  activeClient: Pick<LanguageClient, 'sendNotification'> | undefined,
+): Promise<void> {
+  if (!activeClient) {
+    return;
+  }
+
+  const payload = buildUserAiCompletionConfigurationPayload();
+  await activeClient.sendNotification('workspace/didChangeConfiguration', payload);
 }
 
 export async function syncPerlCriticConfiguration(

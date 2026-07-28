@@ -304,7 +304,7 @@ export async function suggestAiCompletionIfSupported(
 
   if (choice === 'Enable') {
     try {
-      await config.update('aiCompletion.enabled', true, vscode.ConfigurationTarget.Workspace);
+      await config.update('aiCompletion.enabled', true, vscode.ConfigurationTarget.Global);
       void vscode.window.showInformationMessage('AI-powered inline completions enabled.');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -1,7 +1,7 @@
-//! Xtask automation for tree-sitter-perl
+//! Xtask automation for perl-lsp
 //!
 //! This binary provides custom automation tasks for building, testing,
-//! and maintaining the tree-sitter-perl project.
+//! and maintaining the perl-lsp workspace.
 
 // Task-runner binary — println!/eprintln! are intentional diagnostic output.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
@@ -37,7 +37,7 @@ use types::*;
 
 #[derive(Parser)]
 #[command(name = "xtask")]
-#[command(about = "Custom tasks for tree-sitter-perl")]
+#[command(about = "Custom tasks for perl-lsp")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
