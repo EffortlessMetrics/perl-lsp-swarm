@@ -143,20 +143,20 @@ the current advisory version for this lane.
 ## Running locally
 
 ```bash
-rtk cargo install ripr --version 0.9.0 --locked
-rtk ripr doctor
-rtk cargo xtask ripr-pr --base origin/HEAD --head HEAD
-rtk cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
-rtk cargo xtask ripr-review-comments --base origin/HEAD --head HEAD
-rtk cargo xtask impacted-evidence
-rtk cargo xtask ripr-pr-summary
-rtk cargo xtask ripr-annotations
-rtk cargo xtask quality-gate --mode enforce-new-ripr --ripr-receipt target/receipts/quality/ripr-plus.json --ripr-pr-receipt target/ripr/pr/repo-exposure.json --review-receipt target/ripr/review/comments.json --ripr-base origin/HEAD --ripr-head HEAD --receipt target/receipts/quality/quality-gate-ripr.json --summary target/receipts/quality/quality-gate-ripr.md
-rtk cargo xtask ripr-pr --base origin/HEAD --head HEAD --check
-rtk cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-rtk cargo xtask ripr-review-comments --base origin/HEAD --head HEAD --check
-rtk cargo xtask impacted-evidence --check
-rtk cargo xtask ripr-pr-summary --check
-rtk cargo xtask ripr-annotations --check
-rtk cargo xtask quality-gate --mode enforce-new-ripr --ripr-receipt target/receipts/quality/ripr-plus.json --ripr-pr-receipt target/ripr/pr/repo-exposure.json --review-receipt target/ripr/review/comments.json --ripr-base origin/HEAD --ripr-head HEAD --receipt target/receipts/quality/quality-gate-ripr.json --summary target/receipts/quality/quality-gate-ripr.md --check
+cargo install ripr --version 0.9.0 --locked
+ripr doctor
+cargo xtask ripr-pr --base origin/HEAD --head HEAD
+cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+cargo xtask ripr-review-comments --base origin/HEAD --head HEAD
+cargo xtask impacted-evidence
+cargo xtask ripr-pr-summary
+cargo xtask ripr-annotations
+cargo xtask quality-gate --mode enforce-new-ripr --ripr-receipt target/receipts/quality/ripr-plus.json --ripr-pr-receipt target/ripr/pr/repo-exposure.json --review-receipt target/ripr/review/comments.json --ripr-base origin/HEAD --ripr-head HEAD --receipt target/receipts/quality/quality-gate-ripr.json --summary target/receipts/quality/quality-gate-ripr.md
+cargo xtask ripr-pr --base origin/HEAD --head HEAD --check
+cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
+cargo xtask ripr-review-comments --base origin/HEAD --head HEAD --check
+cargo xtask impacted-evidence --check
+cargo xtask ripr-pr-summary --check
+cargo xtask ripr-annotations --check
+cargo xtask quality-gate --mode enforce-new-ripr --ripr-receipt target/receipts/quality/ripr-plus.json --ripr-pr-receipt target/ripr/pr/repo-exposure.json --review-receipt target/ripr/review/comments.json --ripr-base origin/HEAD --ripr-head HEAD --receipt target/receipts/quality/quality-gate-ripr.json --summary target/receipts/quality/quality-gate-ripr.md --check
 ```

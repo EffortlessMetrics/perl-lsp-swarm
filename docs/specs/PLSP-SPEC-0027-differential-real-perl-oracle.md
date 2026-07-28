@@ -239,12 +239,12 @@ A PR satisfies this spec when:
 Docs-only PRs for this spec may use:
 
 ```bash
-rtk cargo xtask check-active-goal-manifest
-rtk cargo xtask ci-hygiene check-doc-paths docs/specs
-rtk cargo xtask ci-hygiene check-doc-paths docs/project/status
-rtk cargo xtask check-support-claims
-rtk cargo xtask check-provider-confidence-matrix
-rtk git diff --check
+cargo xtask check-active-goal-manifest
+cargo xtask ci-hygiene check-doc-paths docs/specs
+cargo xtask ci-hygiene check-doc-paths docs/project/status
+cargo xtask check-support-claims
+cargo xtask check-provider-confidence-matrix
+git diff --check
 ```
 
 Schema, fixture-manifest, runner, subprocess, provider, parser/corpus,
@@ -254,17 +254,17 @@ changed surface.
 Receipt-schema PRs should also use:
 
 ```bash
-rtk cargo test -p xtask --profile agent --locked oracle_receipt_schema -- --nocapture
-rtk cargo xtask check-oracle-receipt-schema
-rtk powershell -NoProfile -Command 'Get-Content schemas/oracle_receipt.v1.schema.json -Raw | ConvertFrom-Json | Out-Null'
+cargo test -p xtask --profile agent --locked oracle_receipt_schema -- --nocapture
+cargo xtask check-oracle-receipt-schema
+powershell -NoProfile -Command 'Get-Content schemas/oracle_receipt.v1.schema.json -Raw | ConvertFrom-Json | Out-Null'
 ```
 
 Declaration-only fixture-manifest PRs should also use:
 
 ```bash
-rtk cargo test -p xtask --profile agent --locked oracle_fixture_manifest -- --nocapture
-rtk cargo xtask check-oracle-fixture-manifest
-rtk powershell -NoProfile -Command 'Get-Content schemas/oracle_fixture_manifest.v1.schema.json -Raw | ConvertFrom-Json | Out-Null; Get-Content crates/perl-corpus/fixtures/differential_oracle/manifest.json -Raw | ConvertFrom-Json | Out-Null'
+cargo test -p xtask --profile agent --locked oracle_fixture_manifest -- --nocapture
+cargo xtask check-oracle-fixture-manifest
+powershell -NoProfile -Command 'Get-Content schemas/oracle_fixture_manifest.v1.schema.json -Raw | ConvertFrom-Json | Out-Null; Get-Content crates/perl-corpus/fixtures/differential_oracle/manifest.json -Raw | ConvertFrom-Json | Out-Null'
 ```
 
 ## Non-goals

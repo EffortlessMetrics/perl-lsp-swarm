@@ -1,7 +1,17 @@
 use crate::{builtin_import_names, normalized_pragma_token, parse_perl_version, pragma_arg_items};
 
 fn is_tracked_pragma_module(module: &str) -> bool {
-    matches!(module, "strict" | "warnings" | "utf8" | "encoding" | "locale" | "feature" | "builtin")
+    matches!(
+        module,
+        "strict"
+            | "warnings"
+            | "utf8"
+            | "encoding"
+            | "locale"
+            | "feature"
+            | "builtin"
+            | "experimental"
+    )
 }
 
 fn valid_strict_args(args: &[String]) -> bool {
@@ -24,6 +34,7 @@ fn conditional_target_tail_is_valid(module: &str, tail: &[String]) -> bool {
             tail.is_empty() || (tail.len() == 1 && !normalized_pragma_token(&tail[0]).is_empty())
         }
         "feature" => !tail.is_empty(),
+        "experimental" => !tail.is_empty(),
         "builtin" => tail.iter().any(|arg| !builtin_import_names(arg).is_empty()),
         _ => false,
     }

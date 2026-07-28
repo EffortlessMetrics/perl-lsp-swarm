@@ -71,7 +71,9 @@ impl LspServer {
                 });
             }
             "textDocument/documentHighlight" => {
-                self.handle_document_highlight_dispatch(request.params)
+                return self.route_cancellable(id, method, should_respond, |request_id| {
+                    self.handle_document_highlight_dispatch(request.params, request_id)
+                });
             }
             "textDocument/prepareTypeHierarchy"
             | "typeHierarchy/prepare"

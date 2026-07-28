@@ -12,7 +12,7 @@
 - **Additional review cases:** Support `use_module(NAME, VERSION)`, digit-bearing
   later module segments, multiline and spaced quote-like literals, sigil hash keys,
   and all substitution payloads without weakening the static-code boundary.
-- **Verify:** `rtk cargo test -p perl-lsp-rs-core document_links`
+- **Verify:** `cargo test -p perl-lsp-rs-core document_links`
 
 ### Step 2: Implement the provider-local matcher
 
@@ -23,7 +23,7 @@
   consistent with existing provider links; reject comments, dynamic expressions,
   malformed quoting, and unrelated calls. Support multiple calls on one line.
 - **Depends on:** Step 1
-- **Verify:** `rtk cargo test -p perl-lsp-rs-core document_links`
+- **Verify:** `cargo test -p perl-lsp-rs-core document_links`
 
 ### Step 3: Add routed LSP proof
 
@@ -33,24 +33,24 @@
 - **Details:** Prove the request reaches the active provider; do not test the
   dead-code alternate scanner.
 - **Depends on:** Step 2
-- **Verify:** `rtk cargo test -p perl-lsp-rs --test lsp_document_links_test`
+- **Verify:** `cargo test -p perl-lsp-rs --test lsp_document_links_test`
 
 ### Step 4: Run contract and source-exception checks
 
 - **Files:** no additional source files expected.
 - **Verify:**
-  - `rtk cargo test -p perl-lsp-rs-core document_links`
-  - `rtk cargo test -p perl-lsp-rs --test lsp_document_links_test`
-  - `rtk cargo test -p perl-module --test module_import_bdd`
-  - `rtk cargo allow check`
-  - `rtk cargo allow diff --base origin/main`
-  - `rtk cargo fmt --all -- --check`
-  - `rtk cargo clippy -p perl-lsp-rs-core --tests -- -D warnings`
+  - `cargo test -p perl-lsp-rs-core document_links`
+  - `cargo test -p perl-lsp-rs --test lsp_document_links_test`
+  - `cargo test -p perl-module --test module_import_bdd`
+  - `cargo allow check`
+  - `cargo allow diff --base origin/main`
+  - `cargo fmt --all -- --check`
+  - `cargo clippy -p perl-lsp-rs-core --tests -- -D warnings`
 
 ### Step 5: Final verification
 
-- **Verify:** `rtk git diff --check`, focused tests above, relevant package check,
-  `rtk cargo allow check`, then the repository's exact-head PR checks.
+- **Verify:** `git diff --check`, focused tests above, relevant package check,
+  `cargo allow check`, then the repository's exact-head PR checks.
 
 ## Callers and consumers
 

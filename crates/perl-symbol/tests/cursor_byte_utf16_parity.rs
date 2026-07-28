@@ -10,7 +10,8 @@ use perl_tdd_support::must_some;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn char_span(source: &str, start: usize, end: usize) -> String {
-    source.chars().skip(start).take(end - start).collect()
+    // Byte offsets — callers pass byte positions from parser SourceLocations.
+    source.get(start..end).unwrap_or("").to_string()
 }
 
 fn utf16_col_for_byte(line: &str, byte_idx: usize) -> usize {
@@ -29,7 +30,8 @@ fn utf16_col_for_byte(line: &str, byte_idx: usize) -> usize {
 #[test]
 fn byte_cursor_multibyte_prefix_extract_and_range_remain_stable() -> Result<()> {
     let source = "my 😀 $value = 1;";
-    let pos = source.chars().position(|c| c == 'v').ok_or("missing value token")?;
+    // Use BYTE position (callers pass byte offsets from parser SourceLocations).
+    let pos = source.find('v').ok_or("missing value token")?;
 
     let (name, kind) = must_some(extract_symbol_from_source(pos, source));
     let (start, end) = must_some(get_symbol_range_at_position(pos, source));
@@ -43,7 +45,8 @@ fn byte_cursor_multibyte_prefix_extract_and_range_remain_stable() -> Result<()> 
 #[test]
 fn byte_cursor_middle_of_bareword_extracts_suffix_and_range_matches_it() -> Result<()> {
     let source = "compute_value();";
-    let pos = source.chars().position(|c| c == 'v').ok_or("missing v")?;
+    // Use BYTE position (str::find returns byte offset).
+    let pos = source.find('v').ok_or("missing v")?;
 
     let (name, kind) = must_some(extract_symbol_from_source(pos, source));
     let (start, end) = must_some(get_symbol_range_at_position(pos, source));
@@ -102,7 +105,7 @@ fn byte_cursor_double_deref_on_second_sigil_returns_none() {
 #[test]
 fn byte_cursor_double_deref_on_name_returns_scalar_ref_name() -> Result<()> {
     let source = "$$ref";
-    let pos = source.chars().position(|c| c == 'r').ok_or("missing ref")?;
+    let pos = source.find('r').ok_or("missing ref")?;
 
     let (name, kind) = must_some(extract_symbol_from_source(pos, source));
     let (start, end) = must_some(get_symbol_range_at_position(pos, source));
@@ -116,7 +119,7 @@ fn byte_cursor_double_deref_on_name_returns_scalar_ref_name() -> Result<()> {
 #[test]
 fn byte_extract_and_range_symmetry_for_simple_scalar() -> Result<()> {
     let source = "my $count = 0;";
-    let pos = source.chars().position(|c| c == 'c').ok_or("missing count")?;
+    let pos = source.find('c').ok_or("missing count")?;
 
     let (name, _) = must_some(extract_symbol_from_source(pos, source));
     let (start, end) = must_some(get_symbol_range_at_position(pos, source));
@@ -164,7 +167,7 @@ fn utf16_and_source_position_apis_agree_on_symbol_text_after_multibyte_prefix() 
     let utf16_col_on_v = 8;
     let token = must_some(token_under_cursor(&text, 0, utf16_col_on_v));
 
-    let source_pos = line.chars().position(|c| c == 'v').ok_or("missing v")?;
+    let source_pos = line.find('v').ok_or("missing v")?;
     let (start, end) = must_some(get_symbol_range_at_position(source_pos, line));
 
     assert_eq!(token, char_span(line, start, end));

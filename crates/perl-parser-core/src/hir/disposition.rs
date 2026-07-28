@@ -720,6 +720,9 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
             false,
             "No standalone HIR literal shell yet; falls through after parser-level v-string classification."
         ),
+        // AmperCall: `&func()` ampersand-sigil call form. No explicit HIR arm in lower.rs;
+        // falls to `_ => visit_children`. Not yet modeled as a distinct HIR shell.
+        "AmperCall" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
 
         // Unknown — caller detects missing entry and fails the gate.
         _ => None,
@@ -1069,6 +1072,7 @@ mod tests {
             "Untie",
             "DataSection",
             "VString",
+            "AmperCall",
         ] {
             let d = disposition_for(kind).unwrap_or_else(|| panic!("no disposition for {kind}"));
             assert!(!d.emits_items, "{kind} (NotYetModeled) must NOT emit HIR items");
@@ -1136,6 +1140,7 @@ mod tests {
         assert!(hir_kinds_for("Binary").is_empty());
         assert!(hir_kinds_for("NestedVariableList").is_empty());
         assert!(hir_kinds_for("VString").is_empty());
+        assert!(hir_kinds_for("AmperCall").is_empty());
     }
 
     #[test]

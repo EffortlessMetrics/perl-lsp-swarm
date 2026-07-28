@@ -78,6 +78,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use url::Url;
 
@@ -1324,6 +1325,9 @@ pub struct WorkspaceIndex {
     limits: IndexResourceLimits,
     /// Last resource-limit admission rejection, consumed by the coordinator.
     resource_limit_rejection: Mutex<Option<ResourceKind>>,
+    /// Monotonic write version — bumped on every index mutation so readers
+    /// can detect torn reads across the multiple independent RwLocks. (#5116)
+    write_version: Arc<AtomicU64>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -1737,6 +1741,7 @@ impl WorkspaceIndex {
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
             limits,
             resource_limit_rejection: Mutex::new(None),
+            write_version: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -1796,11 +1801,25 @@ impl WorkspaceIndex {
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
             limits,
             resource_limit_rejection: Mutex::new(None),
+            write_version: Arc::new(AtomicU64::new(0)),
         }
     }
 
     fn record_resource_limit_rejection(&self, kind: ResourceKind) {
         *self.resource_limit_rejection.lock() = Some(kind);
+    }
+
+    /// Bump the write version atomically. Called at the start of every
+    /// index mutation so readers can detect torn reads. (#5116)
+    fn bump_write_version(&self) {
+        self.write_version.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Returns the current write version. Readers capture this before and
+    /// after a multi-lock read; if it changed, the read was torn and should
+    /// be retried. (#5116)
+    pub fn write_version(&self) -> u64 {
+        self.write_version.load(Ordering::SeqCst)
     }
 
     pub(crate) fn take_resource_limit_rejection(&self) -> Option<ResourceKind> {
@@ -1964,6 +1983,7 @@ impl WorkspaceIndex {
         text: String,
         generation: u32,
     ) -> Result<(), String> {
+        self.bump_write_version(); // Signal to readers that a mutation is in progress (#5116)
         let uri_str = uri.to_string();
 
         // Compute content hash for early-exit optimization
@@ -2370,6 +2390,7 @@ impl WorkspaceIndex {
     /// index.remove_file("file:///example.pl");
     /// ```
     pub fn remove_file(&self, uri: &str) {
+        self.bump_write_version();
         let uri_str = Self::normalize_uri(uri);
         let key = DocumentStore::uri_key(&uri_str);
 
@@ -2773,6 +2794,25 @@ impl WorkspaceIndex {
     /// let _refs = index.find_references("Utils::process_data");
     /// ```
     pub fn find_references(&self, symbol_name: &str) -> Vec<Location> {
+        // Capture write version before reading to detect torn reads (#5116).
+        // If a concurrent index_file_with_generation bumps the version during
+        // our read, the global_references map may have been partially updated.
+        // We retry up to 3 times to get a consistent snapshot.
+        for _ in 0..3 {
+            let v1 = self.write_version();
+            let result = self.find_references_inner(symbol_name);
+            let v2 = self.write_version();
+            if v1 == v2 {
+                return result;
+            }
+            // Torn read — concurrent write happened. Retry.
+            tracing::debug!("Torn read in find_references, retrying");
+        }
+        // Fallback: return whatever the last attempt produced
+        self.find_references_inner(symbol_name)
+    }
+
+    fn find_references_inner(&self, symbol_name: &str) -> Vec<Location> {
         let global_refs = self.global_references.read();
         let mut seen: HashSet<(String, u32, u32, u32, u32)> = HashSet::new();
         let mut locations = Vec::new();
@@ -3726,23 +3766,29 @@ impl WorkspaceIndex {
         let query_lower = query.to_lowercase();
         let search_idx = self.search_index.read();
         let mut seen: HashSet<(String, usize)> = HashSet::new();
-        let mut results = Vec::new();
-        'outer: for (name_key, symbols) in search_idx.iter() {
-            if name_key.contains(&query_lower) {
-                for sym in symbols {
-                    // Dedup: a symbol may appear under both its bare-name key
-                    // and its qualified-name key; keep only the first occurrence.
-                    let dedup_key = (sym.uri.clone(), sym.range.start.byte);
-                    if seen.insert(dedup_key) {
-                        results.push(sym.clone());
-                        if cap.is_some_and(|c| results.len() >= c) {
-                            break 'outer;
-                        }
-                    }
+        // Collect results with a relevance score for ranking. (#5087)
+        // Match priority: exact > substring > subsequence (fuzzy).
+        let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
+        for (name_key, symbols) in search_idx.iter() {
+            let score = if name_key == &query_lower {
+                3 // exact match
+            } else if name_key.contains(&query_lower) {
+                2 // substring match
+            } else if is_subsequence(&query_lower, name_key) {
+                1 // fuzzy subsequence match
+            } else {
+                continue;
+            };
+            for sym in symbols {
+                let dedup_key = (sym.uri.clone(), sym.range.start.byte);
+                if seen.insert(dedup_key) {
+                    scored.push((score, sym.clone()));
                 }
             }
         }
-        results
+        // Sort by relevance (descending), then by name for stable ordering.
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.cmp(&b.1.name)));
+        scored.into_iter().map(|(_, s)| s).take(cap.unwrap_or(usize::MAX)).collect()
     }
 
     /// Search labeled generated/framework members backed by semantic source anchors.
@@ -12801,4 +12847,19 @@ sub bar { return $greeting; }
             "compute_key",
         );
     }
+}
+
+/// Check if `needle` is a subsequence of `haystack` (fuzzy match).
+/// E.g. "gpn" is a subsequence of "get_page_name". (#5087)
+fn is_subsequence(needle: &str, haystack: &str) -> bool {
+    let mut needle_chars = needle.chars();
+    let mut current = needle_chars.next();
+    for ch in haystack.chars() {
+        match current {
+            Some(target) if ch == target => current = needle_chars.next(),
+            None => return true,
+            _ => {}
+        }
+    }
+    current.is_none()
 }

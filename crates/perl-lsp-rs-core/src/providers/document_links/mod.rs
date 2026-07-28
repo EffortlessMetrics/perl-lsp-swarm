@@ -41,6 +41,8 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
         collect_module_runtime_links(uri, i as u32, line, &code, &mut out);
 
         if let Some(import) = parse_module_import_head(line) {
+            let col_start = byte_to_utf16_col(line, import.token_start);
+            let col_end = byte_to_utf16_col(line, import.token_end);
             match import.kind {
                 ModuleImportKind::Use => {
                     if !is_pragma(import.token)
@@ -48,8 +50,8 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
                             uri,
                             i as u32,
                             import.token,
-                            import.token_start as u32,
-                            import.token_end as u32,
+                            col_start,
+                            col_end,
                         )
                     {
                         out.push(link);
@@ -65,8 +67,8 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
                                     uri,
                                     i as u32,
                                     &module_name,
-                                    import.token_start as u32,
-                                    import.token_end as u32,
+                                    col_start,
+                                    col_end,
                                 ) {
                                     out.push(link);
                                 }
@@ -76,8 +78,8 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
                             // Quoted file path that is NOT a .pm (e.g. .pl, extensionless) → file link
                             out.push(json!({
                                 "range": {
-                                    "start": {"line": i as u32, "character": import.token_start as u32},
-                                    "end":   {"line": i as u32, "character": import.token_end as u32}
+                                    "start": {"line": i as u32, "character": col_start},
+                                    "end":   {"line": i as u32, "character": col_end}
                                 },
                                 "tooltip": format!("Open {}", import.token),
                                 "data": {
@@ -95,8 +97,8 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
                                     uri,
                                     i as u32,
                                     import.token,
-                                    import.token_start as u32,
-                                    import.token_end as u32,
+                                    col_start,
+                                    col_end,
                                 )
                             {
                                 out.push(link);
@@ -1351,5 +1353,96 @@ mod tests {
             links.iter().any(|link| data_str(link, "/data/module") == Some("Foo::Bar")),
             "indented POD-looking text must not suppress code links: {links:#?}"
         );
+    }
+
+    // ── UTF-16 range correctness for use/require ──────────────
+
+    fn utf16_col(line: &str, byte_offset: usize) -> u64 {
+        line.get(..byte_offset).unwrap_or("").encode_utf16().count() as u64
+    }
+
+    #[test]
+    fn use_link_range_is_utf16_safe_with_two_byte_char() -> Result<(), String> {
+        // 'é' is U+00E9, two UTF-8 bytes but one UTF-16 code unit.
+        // Byte offset and UTF-16 column diverge after 'é'.
+        let line = "use café::Bar;";
+        let links = compute_links(uri(), line, &[]);
+        let link = links.first().ok_or_else(|| format!("expected a link, got {links:?}"))?;
+        let token = "café::Bar";
+        let byte_start = line.find(token).ok_or("token not found in line")?;
+        let byte_end = byte_start + token.len();
+        let expected_start = utf16_col(line, byte_start);
+        let expected_end = utf16_col(line, byte_end);
+        let actual_start = link.pointer("/range/start/character").and_then(Value::as_u64);
+        let actual_end = link.pointer("/range/end/character").and_then(Value::as_u64);
+        if actual_start != Some(expected_start) || actual_end != Some(expected_end) {
+            return Err(format!(
+                "use link UTF-16 range wrong: start={actual_start:?} (want {expected_start}), end={actual_end:?} (want {expected_end})"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn require_pm_link_range_is_utf16_safe_with_cjk() -> Result<(), String> {
+        // Each CJK char is 3 UTF-8 bytes but one UTF-16 code unit.
+        let line = r#"require "日本語/Bar.pm";"#;
+        let links = compute_links(uri(), line, &[]);
+        let link = links.first().ok_or_else(|| format!("expected a link, got {links:?}"))?;
+        let token = "日本語/Bar.pm";
+        let byte_start = line.find(token).ok_or("token not found")?;
+        let byte_end = byte_start + token.len();
+        let expected_start = utf16_col(line, byte_start);
+        let expected_end = utf16_col(line, byte_end);
+        let actual_start = link.pointer("/range/start/character").and_then(Value::as_u64);
+        let actual_end = link.pointer("/range/end/character").and_then(Value::as_u64);
+        if actual_start != Some(expected_start) || actual_end != Some(expected_end) {
+            return Err(format!(
+                "require .pm CJK UTF-16 range wrong: start={actual_start:?} (want {expected_start}), end={actual_end:?} (want {expected_end})"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn require_pl_file_link_range_is_utf16_safe_with_emoji() -> Result<(), String> {
+        // Emoji are 4 UTF-8 bytes and 2 UTF-16 code units (surrogate pair).
+        let line = r#"require "plugin-😀.pl";"#;
+        let links = compute_links(uri(), line, &[]);
+        let link = links.first().ok_or_else(|| format!("expected a link, got {links:?}"))?;
+        let token = "plugin-😀.pl";
+        let byte_start = line.find(token).ok_or("token not found")?;
+        let byte_end = byte_start + token.len();
+        let expected_start = utf16_col(line, byte_start);
+        let expected_end = utf16_col(line, byte_end);
+        let actual_start = link.pointer("/range/start/character").and_then(Value::as_u64);
+        let actual_end = link.pointer("/range/end/character").and_then(Value::as_u64);
+        if actual_start != Some(expected_start) || actual_end != Some(expected_end) {
+            return Err(format!(
+                "require .pl emoji UTF-16 range wrong: start={actual_start:?} (want {expected_start}), end={actual_end:?} (want {expected_end})"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn require_module_form_link_range_is_utf16_safe_with_leading_unicode() -> Result<(), String> {
+        // A two-byte char before the module name shifts byte offsets vs UTF-16 columns.
+        let line = "use é::Mod::Bar;";
+        let links = compute_links(uri(), line, &[]);
+        let link = links.first().ok_or_else(|| format!("expected a link, got {links:?}"))?;
+        let token = "é::Mod::Bar";
+        let byte_start = line.find(token).ok_or("token not found")?;
+        let byte_end = byte_start + token.len();
+        let expected_start = utf16_col(line, byte_start);
+        let expected_end = utf16_col(line, byte_end);
+        let actual_start = link.pointer("/range/start/character").and_then(Value::as_u64);
+        let actual_end = link.pointer("/range/end/character").and_then(Value::as_u64);
+        if actual_start != Some(expected_start) || actual_end != Some(expected_end) {
+            return Err(format!(
+                "use leading-unicode UTF-16 range wrong: start={actual_start:?} (want {expected_start}), end={actual_end:?} (want {expected_end})"
+            ));
+        }
+        Ok(())
     }
 }

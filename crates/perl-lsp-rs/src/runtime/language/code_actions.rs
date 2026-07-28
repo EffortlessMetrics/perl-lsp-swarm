@@ -604,18 +604,14 @@ impl LspServer {
                     let registry =
                         crate::perl_critic::NativeCriticRegistry::for_profile(native_profile);
                     for finding in registry.check(&critic_context) {
-                        // Only findings that carry an automatic edit become
-                        // quick-fixes. A finding with no fix, an explicitly
-                        // manual-only fix, or empty edits is diagnostic-only
-                        // guidance — never surface it as an "apply fix" action.
-                        // Checking FixSafety (not just emptiness) keeps the type's
-                        // own safety tier load-bearing: a future ManualOnly fix
-                        // that ships illustrative edits must still be skipped.
+                        // Only findings that carry a Safe automatic edit become
+                        // quick-fixes. Suggested fixes need user confirmation
+                        // (declaration-only renames corrupt references);
+                        // ManualOnly and empty edits are diagnostic-only guidance.
                         let Some(fix) = finding.fix.as_ref() else {
                             continue;
                         };
-                        if fix.safety == crate::perl_critic::FixSafety::ManualOnly
-                            || fix.edits.is_empty()
+                        if fix.safety != crate::perl_critic::FixSafety::Safe || fix.edits.is_empty()
                         {
                             continue;
                         }
@@ -652,13 +648,7 @@ impl LspServer {
                                     "start": {"line": start_line, "character": start_char},
                                     "end": {"line": end_line, "character": end_char},
                                 },
-                                "severity": match finding.severity {
-                                    crate::perl_critic::Severity::Gentle => 1, // Error
-                                    crate::perl_critic::Severity::Stern |
-                                    crate::perl_critic::Severity::Harsh => 2, // Warning
-                                    crate::perl_critic::Severity::Cruel => 3, // Information
-                                    crate::perl_critic::Severity::Brutal => 4, // Hint
-                                },
+                                "severity": finding.severity.to_diagnostic_severity(),
                                 "code": finding.rule_id.clone(),
                                 "source": "perl-lsp",
                                 "message": finding.message.clone(),
@@ -701,13 +691,7 @@ impl LspServer {
                                         "start": {"line": start_line, "character": start_char},
                                         "end": {"line": end_line, "character": end_char},
                                     },
-                                    "severity": match violation.severity {
-                                        crate::perl_critic::Severity::Gentle => 1, // Error
-                                        crate::perl_critic::Severity::Stern |
-                                        crate::perl_critic::Severity::Harsh => 2, // Warning
-                                        crate::perl_critic::Severity::Cruel => 3, // Information
-                                        crate::perl_critic::Severity::Brutal => 4, // Hint
-                                    },
+                                    "severity": violation.severity.to_diagnostic_severity(),
                                     "code": violation.policy.clone(),
                                     "source": "Perl::Critic",
                                     "message": violation.description.clone()

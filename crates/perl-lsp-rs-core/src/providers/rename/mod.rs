@@ -108,19 +108,22 @@ pub use validate::{can_rename_symbol, validate_name};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use perl_parser_core::Node;
+use perl_parser_core::NodeKind;
 use perl_semantic_analyzer::symbol::{ScopeId, SymbolExtractor, SymbolKind, SymbolTable};
+use perl_symbol::VarKind;
 
 /// Rename provider
 pub struct RenameProvider {
     symbol_table: SymbolTable,
     source: String,
+    ast: Option<Node>,
 }
 
 impl RenameProvider {
     /// Create a new rename provider
     pub fn new(ast: &Node, source: String) -> Self {
         let symbol_table = SymbolExtractor::new_with_source(&source).extract(ast);
-        RenameProvider { symbol_table, source }
+        RenameProvider { symbol_table, source, ast: Some(ast.clone()) }
     }
 
     /// Prepare rename at a position (check if rename is possible)
@@ -262,8 +265,28 @@ impl RenameProvider {
 
         if let Some(references) = self.symbol_table.references.get(&old_name) {
             for reference in references {
+                // Check if this reference matches the declaration kind,
+                // or is a valid cross-sigil element access. (#5080, #5107)
+                //
+                // Cross-sigil: $arr[0] (Scalar ref) is an element access of
+                // @arr (Array decl). We use AST context to distinguish
+                // element-access scalars from bare scalars — matching the
+                // documentHighlight provider's find_subscript_parent approach.
                 if reference.kind != kind {
-                    continue;
+                    let is_cross_sigil_eligible = match kind {
+                        SymbolKind::Variable(VarKind::Array) => {
+                            reference.kind == SymbolKind::Variable(VarKind::Scalar)
+                                && self.is_element_access(reference.location.start, "[]")
+                        }
+                        SymbolKind::Variable(VarKind::Hash) => {
+                            reference.kind == SymbolKind::Variable(VarKind::Scalar)
+                                && self.is_element_access(reference.location.start, "{}")
+                        }
+                        _ => false,
+                    };
+                    if !is_cross_sigil_eligible {
+                        continue;
+                    }
                 }
                 let ref_scope = reference.scope_id;
                 let in_scope =
@@ -285,6 +308,39 @@ impl RenameProvider {
         edits.dedup();
 
         RenameResult { edits, is_valid: true, error: None }
+    }
+
+    /// Check if the Variable at `offset` is the left child of a subscript
+    /// operator (`[]` for array element, `{}` for hash element). This
+    /// distinguishes `$arr[0]` (element access of `@arr`) from bare `$arr`
+    /// (unrelated scalar). Uses AST context — same approach as
+    /// documentHighlight's find_subscript_parent. (#5107)
+    fn is_element_access(&self, offset: usize, expected_op: &str) -> bool {
+        let Some(ref ast) = self.ast else { return false };
+        Self::find_subscript_at(ast, offset, expected_op).is_some()
+    }
+
+    /// Recursively walk the AST to find a Binary subscript node whose left
+    /// child (a Variable) contains `offset`.
+    fn find_subscript_at(node: &Node, offset: usize, expected_op: &str) -> Option<()> {
+        if offset < node.location.start || offset > node.location.end {
+            return None;
+        }
+        if let NodeKind::Binary { op, left, .. } = &node.kind {
+            if op == expected_op && offset >= left.location.start && offset <= left.location.end {
+                if let NodeKind::Variable { sigil, .. } = &left.kind {
+                    if sigil == "$" {
+                        return Some(());
+                    }
+                }
+            }
+        }
+        for child in node.children() {
+            if Self::find_subscript_at(child, offset, expected_op).is_some() {
+                return Some(());
+            }
+        }
+        None
     }
 
     /// Find the scope where the symbol at `position` is declared.
@@ -741,5 +797,40 @@ mod tests {
             "collect_descendant_scopes on 1000-scope chain took {}ms, expected <10ms",
             elapsed.as_millis()
         );
+    }
+
+    // --- AST-context-aware cross-sigil rename tests (#5107) ---
+
+    #[test]
+    fn rename_array_renames_element_access_only() {
+        let code = "my @arr = (1, 2, 3); print $arr[0];";
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().unwrap();
+        let provider = RenameProvider::new(&ast, code.to_string());
+        let pos = code.find("arr").unwrap();
+        let result = provider.scoped_rename(pos, "data", &RenameOptions::default());
+        assert!(result.is_valid, "rename should be valid: {:?}", result.error);
+        assert!(
+            result.edits.len() >= 2,
+            "should rename declaration + element access, got {}",
+            result.edits.len()
+        );
+    }
+
+    #[test]
+    fn rename_array_with_bare_scalar_skips_bare() {
+        let code = "my @arr = (); my $arr = 'x'; print $arr; print $arr[0];";
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().unwrap();
+        let provider = RenameProvider::new(&ast, code.to_string());
+        let pos = code.find("arr").unwrap();
+        let result = provider.scoped_rename(pos, "data", &RenameOptions::default());
+        assert!(result.is_valid, "rename should be valid");
+        // bare $arr must NOT be renamed; $arr[0] SHOULD be renamed
+        let bare_pos = code.rfind("print $arr;").unwrap() + 7;
+        let element_pos = code.rfind("$arr[0]").unwrap() + 1;
+        let edit_starts: Vec<usize> = result.edits.iter().map(|e| e.location.start).collect();
+        assert!(!edit_starts.contains(&bare_pos), "bare $arr must NOT be renamed");
+        assert!(edit_starts.contains(&element_pos), "$arr[0] MUST be renamed");
     }
 }

@@ -608,7 +608,17 @@ impl CallHierarchyProvider {
                     }
                 }
             }
-            _ => {}
+            _ => {
+                // Visit children for any node kind not explicitly handled above.
+                // This catches calls inside BEGIN/END/PhaseBlock, Class/Method bodies,
+                // Try/catch/finally, Given/When/Default, StatementModifier, and
+                // other constructs that contain calls but were silently dropped. (#5084)
+                for child in node.children() {
+                    if let Some(result) = f(child) {
+                        return Some(result);
+                    }
+                }
+            }
         }
         None
     }

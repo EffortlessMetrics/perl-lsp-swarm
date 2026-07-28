@@ -544,7 +544,7 @@ pub enum ParseError {
     /// This variant is emitted alongside the partial AST node that was produced
     /// by the recovery. LSP providers iterate `parser.errors()` and count
     /// `Recovered` variants to determine confidence for gating features.
-    #[error("Recovered from {kind:?} at {site:?} (position {location})")]
+    #[error("{}", recovered_message(site, kind))]
     Recovered {
         /// Where in the parse tree the recovery occurred.
         site: RecoverySite,
@@ -1170,9 +1170,12 @@ mod tests {
         assert_eq!(err.location(), Some(42));
         // suggestion() returns None for Recovered.
         assert!(err.suggestion().is_none());
-        // Display works (via thiserror).
+        // Display produces a user-friendly message (#5117).
         let s = format!("{err}");
-        assert!(s.contains("Recovered") || s.contains("position 42"));
+        assert!(
+            s.contains("argument list") || s.contains("delimiter"),
+            "expected user-friendly message, got: {s}"
+        );
     }
 
     #[test]
@@ -1278,5 +1281,30 @@ mod tests {
         for (category, expected) in cases {
             assert_eq!(category.as_str(), expected);
         }
+    }
+}
+
+/// Produce a user-friendly message for a `Recovered` parse error.
+/// Replaces the internal enum-debug names (`InsertedCloser`, `ArgList`, etc.)
+/// with plain-language descriptions. (#5117)
+fn recovered_message(site: &RecoverySite, kind: &RecoveryKind) -> String {
+    let site_desc = match site {
+        RecoverySite::ArgList => "argument list",
+        RecoverySite::ArraySubscript => "array subscript",
+        RecoverySite::HashSubscript => "hash subscript",
+        RecoverySite::PostfixChain => "method chain",
+        RecoverySite::InfixRhs => "expression",
+    };
+    match kind {
+        RecoveryKind::InsertedCloser => {
+            format!("Inferred a missing closing delimiter in {site_desc}")
+        }
+        RecoveryKind::MissingOperand => {
+            format!("Missing operand in {site_desc}")
+        }
+        RecoveryKind::TruncatedChain => {
+            format!("Incomplete {site_desc} — expected a continuation")
+        }
+        RecoveryKind::InferredSemicolon => "Inferred a missing semicolon".to_string(),
     }
 }

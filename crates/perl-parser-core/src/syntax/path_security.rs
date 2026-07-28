@@ -104,13 +104,71 @@ pub fn validate_workspace_path(
 
         canonical
     } else {
-        normalize_path_within_workspace(path, &workspace_canonical).map_err(
-            |error| match error {
-                NormalizePathError::PathTraversalAttempt(message) => {
-                    WorkspacePathError::PathTraversalAttempt(message)
+        // The full candidate does not exist yet (e.g. `vendor/lib/perl5` before
+        // `carton install`), so it cannot be canonicalized as a whole.
+        //
+        // Lexical normalization ALONE is not sufficient here. If an existing
+        // ancestor is a symlink or junction pointing outside the workspace, a
+        // purely lexical check still sees a path that starts inside it:
+        //
+        //     workspace/escape -> /outside      (exists, escapes)
+        //     candidate: escape/not-created-yet (leaf missing)
+        //
+        // That would be accepted, and would resolve outside the workspace the
+        // moment the leaf is created. So canonicalize the deepest ancestor that
+        // *does* exist, verify that real location is inside the workspace, and
+        // only then append the non-existent remainder lexically.
+        let (existing_ancestor, remainder) = deepest_existing_ancestor(&resolved);
+        if let Some(ancestor) = existing_ancestor {
+            let ancestor_canonical =
+                normalize_filesystem_path(ancestor.canonicalize().map_err(|error| {
+                    WorkspacePathError::PathOutsideWorkspace(format!(
+                        "Existing ancestor not accessible: {} ({error})",
+                        ancestor.display()
+                    ))
+                })?);
+            if !ancestor_canonical.starts_with(&workspace_canonical) {
+                if path_has_symlink_component(&ancestor) {
+                    return Err(WorkspacePathError::SymlinkOutsideWorkspace(format!(
+                        "Symlink ancestor resolves outside workspace: {} -> {} (workspace: {})",
+                        ancestor.display(),
+                        ancestor_canonical.display(),
+                        workspace_canonical.display()
+                    )));
                 }
-            },
-        )?
+                return Err(WorkspacePathError::PathOutsideWorkspace(format!(
+                    "Existing ancestor resolves outside workspace: {} (workspace: {})",
+                    ancestor_canonical.display(),
+                    workspace_canonical.display()
+                )));
+            }
+            // Append the not-yet-existing remainder to the verified real
+            // ancestor, still rejecting traversal within it.
+            let mut candidate = ancestor_canonical;
+            for component in remainder.components() {
+                match component {
+                    Component::CurDir => {}
+                    Component::ParentDir => {
+                        if !candidate.pop() {
+                            return Err(WorkspacePathError::PathTraversalAttempt(format!(
+                                "Path traversal beyond workspace: {}",
+                                resolved.display()
+                            )));
+                        }
+                    }
+                    other => candidate.push(other.as_os_str()),
+                }
+            }
+            candidate
+        } else {
+            normalize_path_within_workspace(path, &workspace_canonical).map_err(
+                |error| match error {
+                    NormalizePathError::PathTraversalAttempt(message) => {
+                        WorkspacePathError::PathTraversalAttempt(message)
+                    }
+                },
+            )?
+        }
     };
 
     if !final_path.starts_with(&workspace_canonical) {
@@ -122,6 +180,40 @@ pub fn validate_workspace_path(
     }
 
     Ok(final_path)
+}
+
+/// Split `path` into its deepest existing ancestor and the remaining
+/// (not-yet-existing) suffix.
+///
+/// Used by [`validate_workspace_path`] so a candidate whose leaf does not exist
+/// is still anchored to a *real* location on disk. Without this, an existing
+/// symlink ancestor that escapes the workspace would be invisible to a purely
+/// lexical containment check.
+///
+/// Returns `(None, path)` when no ancestor exists at all.
+fn deepest_existing_ancestor(path: &Path) -> (Option<PathBuf>, PathBuf) {
+    let mut ancestor = path.to_path_buf();
+    let mut trailing: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if ancestor.exists() {
+            let mut remainder = PathBuf::new();
+            for part in trailing.iter().rev() {
+                remainder.push(part);
+            }
+            return (Some(ancestor), remainder);
+        }
+        // Use the raw trailing Component rather than file_name(), which returns
+        // None whenever the path terminates in `.` or `..` and would stop the
+        // walk-up before reaching a real, possibly-symlinked ancestor further up
+        // (e.g. `escape/sub/..` where `sub` does not exist but `escape` does).
+        let Some(component) = ancestor.components().next_back() else {
+            return (None, path.to_path_buf());
+        };
+        trailing.push(component.as_os_str().to_os_string());
+        if !ancestor.pop() {
+            return (None, path.to_path_buf());
+        }
+    }
 }
 
 /// Sanitize and normalize user-provided completion path input.
@@ -1111,5 +1203,80 @@ mod tests {
     fn test_normalize_filesystem_path_strips_verbatim_prefix() {
         let normalized = normalize_filesystem_path(PathBuf::from(r"\\?\C:\workspace\lib\Foo.pm"));
         assert_eq!(normalized, PathBuf::from(r"C:\workspace\lib\Foo.pm"));
+    }
+
+    /// Regression: an existing symlink ancestor that escapes the workspace must
+    /// be rejected even when the candidate's leaf does not exist yet.
+    ///
+    /// Before the deepest-existing-ancestor check, this shape was ACCEPTED:
+    /// the full candidate could not be canonicalized (leaf missing), so
+    /// validation fell back to purely lexical normalization, which sees a path
+    /// that still starts inside the workspace. The escape only materialized
+    /// later, when the leaf was created on the other side of the symlink.
+    #[cfg(unix)]
+    #[test]
+    fn escaping_symlink_ancestor_with_missing_leaf_is_rejected() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+
+        // workspace/escape -> /outside   (exists, escapes the workspace)
+        let link = workspace.path().join("escape");
+        std::os::unix::fs::symlink(outside.path(), &link)?;
+
+        // Leaf does not exist yet at validation time.
+
+        let result = validate_workspace_path(
+            std::path::Path::new("escape/not-created-yet"),
+            workspace.path(),
+        );
+        assert!(
+            result.is_err(),
+            "escaping symlink ancestor must be rejected even with a missing leaf, got {result:?}"
+        );
+
+        // And it must stay rejected once the descendant actually appears.
+        std::fs::create_dir_all(outside.path().join("not-created-yet"))?;
+        let after = validate_workspace_path(
+            std::path::Path::new("escape/not-created-yet"),
+            workspace.path(),
+        );
+        assert!(
+            after.is_err(),
+            "must still be rejected after the descendant is created, got {after:?}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn escaping_symlink_ancestor_survives_trailing_dotdot_with_missing_leaf() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let link = workspace.path().join("escape");
+        std::os::unix::fs::symlink(outside.path(), &link)?;
+
+        // `sub` does not exist on either side; the trailing `..` forces the
+        // deepest-existing-ancestor walk through a ParentDir component before
+        // reaching the real (symlinked) ancestor `escape`.
+        let result =
+            validate_workspace_path(std::path::Path::new("escape/sub/../leak"), workspace.path());
+        assert!(
+            result.is_err(),
+            "a `..` after a nonexistent dir must not bypass the symlink-ancestor check, got {result:?}"
+        );
+        Ok(())
+    }
+
+    /// The above must not over-reject: a safe relative path whose leaf does not
+    /// exist yet (e.g. `vendor/lib/perl5` before `carton install`) stays valid.
+    #[test]
+    fn safe_missing_leaf_under_real_ancestor_is_accepted() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        std::fs::create_dir_all(workspace.path().join("vendor"))?;
+
+        let ok =
+            validate_workspace_path(std::path::Path::new("vendor/lib/perl5"), workspace.path());
+        assert!(ok.is_ok(), "nonexistent-but-contained path must be accepted, got {ok:?}");
+        Ok(())
     }
 }

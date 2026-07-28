@@ -204,19 +204,21 @@ impl VariableParser {
             return Ok(PerlValue::Scalar(unquoted));
         }
 
-        // Check for array reference notation
+        // Check for array reference notation — preserve the address in the
+        // display text so users can at least see the type and identity. (#5086)
+        // Full expansion (fetching children via debugger commands) is a follow-up.
         if array_ref_re().is_some_and(|re| re.is_match(text)) {
-            return Ok(PerlValue::Array(vec![]));
+            return Ok(PerlValue::Scalar(text.to_string()));
         }
 
         // Check for hash reference notation
         if hash_ref_re().is_some_and(|re| re.is_match(text)) {
-            return Ok(PerlValue::Hash(vec![]));
+            return Ok(PerlValue::Scalar(text.to_string()));
         }
 
         // Check for code reference
         if code_ref_re().is_some_and(|re| re.is_match(text)) {
-            return Ok(PerlValue::Code { name: None });
+            return Ok(PerlValue::Scalar(text.to_string()));
         }
 
         // Check for blessed object
@@ -530,12 +532,22 @@ mod tests {
         assert!(matches!(result, Ok(PerlValue::Scalar(s)) if s.contains('\n')));
     }
 
+    // Unexpanded reference notation is preserved verbatim as a scalar so the
+    // user sees the type tag and address (#5086). Returning an empty
+    // `Array`/`Hash` here would render as a container the debugger had
+    // confirmed to be empty, which is a claim we cannot make until the
+    // children are actually fetched. Expansion is follow-up work; until then
+    // these assert the address survives, which is the point of #5086.
+
     #[test]
     fn test_parse_array_reference() {
         let parser = VariableParser::new();
 
         let result = parser.parse_value("ARRAY(0x1234abcd)", 0);
-        assert!(matches!(result, Ok(PerlValue::Array(_))));
+        assert!(
+            matches!(&result, Ok(PerlValue::Scalar(s)) if s == "ARRAY(0x1234abcd)"),
+            "array ref should round-trip type and address, got {result:?}"
+        );
     }
 
     #[test]
@@ -543,7 +555,10 @@ mod tests {
         let parser = VariableParser::new();
 
         let result = parser.parse_value("HASH(0x5678abcd)", 0);
-        assert!(matches!(result, Ok(PerlValue::Hash(_))));
+        assert!(
+            matches!(&result, Ok(PerlValue::Scalar(s)) if s == "HASH(0x5678abcd)"),
+            "hash ref should round-trip type and address, got {result:?}"
+        );
     }
 
     #[test]
@@ -551,7 +566,10 @@ mod tests {
         let parser = VariableParser::new();
 
         let result = parser.parse_value("CODE(0xdeadbeef)", 0);
-        assert!(matches!(result, Ok(PerlValue::Code { name: None })));
+        assert!(
+            matches!(&result, Ok(PerlValue::Scalar(s)) if s == "CODE(0xdeadbeef)"),
+            "code ref should round-trip type and address, got {result:?}"
+        );
     }
 
     #[test]

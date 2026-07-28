@@ -1204,27 +1204,27 @@ Claim boundary
 Proof commands
 
 ```bash
-rtk gh pr list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 100 --json number,title,headRefName,mergeable,isDraft
-rtk gh pr view -R EffortlessMetrics/perl-lsp-swarm 95 --json number,state,mergedAt,mergeCommit,title,url
-rtk git fetch origin main
-rtk git fetch source master:refs/remotes/source/master
-rtk git rev-list --left-right --count origin/main...source/master
-rtk git log --oneline source/master --not origin/main
-rtk gh pr list -R EffortlessMetrics/perl-lsp --state open --limit 100 --json number,title,isDraft,headRefName,updatedAt,url
-rtk cargo test -p perl-lsp-rs-core --profile agent --locked provider_decision -- --nocapture
-rtk cargo test -p perl-lsp-rs --lib live_type_definition_request_exposes --profile agent --locked -- --nocapture
-rtk cargo test -p perl-lsp-rs --test lsp_execute_command_tests test_execute_command_explain_provider_decision_accepts_type_definition --profile agent --locked -- --nocapture
-rtk cargo test -p perl-lsp-rs --test lsp_type_definition_tests --profile agent --locked -- --nocapture
-rtk powershell -NoProfile -Command 'Get-Content schemas/provider_decision.v1.schema.json -Raw | ConvertFrom-Json | Out-Null'
-rtk gh pr view -R EffortlessMetrics/perl-lsp-swarm 279 --json number,title,state,headRefName,mergeStateStatus,url
-rtk gh pr view -R EffortlessMetrics/perl-lsp-swarm 280 --json number,title,state,headRefName,mergeStateStatus,url
-rtk gh pr view -R EffortlessMetrics/perl-lsp-swarm 286 --json number,title,state,headRefName,mergeStateStatus,url
-rtk gh pr view -R EffortlessMetrics/perl-lsp-swarm 287 --json number,title,state,headRefName,mergeStateStatus,url
-rtk gh pr view -R EffortlessMetrics/perl-lsp-swarm 288 --json number,title,state,headRefName,mergeStateStatus,url
-rtk cargo xtask check-active-goal-manifest
-rtk cargo xtask check-support-claims
-rtk cargo xtask check-provider-confidence-matrix
-rtk git diff --check
+gh pr list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 100 --json number,title,headRefName,mergeable,isDraft
+gh pr view -R EffortlessMetrics/perl-lsp-swarm 95 --json number,state,mergedAt,mergeCommit,title,url
+git fetch origin main
+git fetch source master:refs/remotes/source/master
+git rev-list --left-right --count origin/main...source/master
+git log --oneline source/master --not origin/main
+gh pr list -R EffortlessMetrics/perl-lsp --state open --limit 100 --json number,title,isDraft,headRefName,updatedAt,url
+cargo test -p perl-lsp-rs-core --profile agent --locked provider_decision -- --nocapture
+cargo test -p perl-lsp-rs --lib live_type_definition_request_exposes --profile agent --locked -- --nocapture
+cargo test -p perl-lsp-rs --test lsp_execute_command_tests test_execute_command_explain_provider_decision_accepts_type_definition --profile agent --locked -- --nocapture
+cargo test -p perl-lsp-rs --test lsp_type_definition_tests --profile agent --locked -- --nocapture
+powershell -NoProfile -Command 'Get-Content schemas/provider_decision.v1.schema.json -Raw | ConvertFrom-Json | Out-Null'
+gh pr view -R EffortlessMetrics/perl-lsp-swarm 279 --json number,title,state,headRefName,mergeStateStatus,url
+gh pr view -R EffortlessMetrics/perl-lsp-swarm 280 --json number,title,state,headRefName,mergeStateStatus,url
+gh pr view -R EffortlessMetrics/perl-lsp-swarm 286 --json number,title,state,headRefName,mergeStateStatus,url
+gh pr view -R EffortlessMetrics/perl-lsp-swarm 287 --json number,title,state,headRefName,mergeStateStatus,url
+gh pr view -R EffortlessMetrics/perl-lsp-swarm 288 --json number,title,state,headRefName,mergeStateStatus,url
+cargo xtask check-active-goal-manifest
+cargo xtask check-support-claims
+cargo xtask check-provider-confidence-matrix
+git diff --check
 ```
 
 Rollback

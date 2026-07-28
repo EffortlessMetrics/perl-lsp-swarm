@@ -44,6 +44,12 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Range injection happens inside handle_hover_core using the same
+        // locked snapshot, eliminating the TOCTOU race. (#5085)
+        self.handle_hover_core(params)
+    }
+
+    fn handle_hover_core(&self, params: Option<Value>) -> Result<Option<Value>, JsonRpcError> {
         if let Some(params) = params {
             let uri = req_uri(&params)?;
             let (line, character) = req_position(&params)?;
@@ -64,7 +70,23 @@ impl LspServer {
                 let documents = self.documents_guard();
                 self.get_document(&documents, uri).map(|doc| {
                     let offset = self.pos16_to_offset(doc, line, character);
-                    (offset, doc.current_parsed(), doc.text.clone())
+
+                    // Compute the token range for the `range` field from the
+                    // SAME locked snapshot as the hover content — eliminates
+                    // the TOCTOU race of a separate range computation. (#5085)
+                    let (tb_start, tb_end) = Self::token_byte_bounds_of(&doc.text, offset);
+                    let hover_range = if tb_end > tb_start && tb_end <= doc.text.len() {
+                        let (sl, sc) = self.offset_to_pos16(doc, tb_start);
+                        let (el, ec) = self.offset_to_pos16(doc, tb_end);
+                        Some(json!({
+                            "start": { "line": sl, "character": sc },
+                            "end": { "line": el, "character": ec }
+                        }))
+                    } else {
+                        None
+                    };
+
+                    (offset, doc.current_parsed(), doc.text.clone(), hover_range)
                 })
             };
             // documents guard dropped here
@@ -77,8 +99,8 @@ impl LspServer {
             }
 
             let t_analyze_start = std::time::Instant::now();
-            let (extracted, live_compiler_context) = match locked {
-                Some((offset, parsed, text)) => {
+            let (extracted, live_compiler_context, hover_range) = match locked {
+                Some((offset, parsed, text, range)) => {
                     let live_compiler_context =
                         Self::live_hover_compiler_context(uri, &text, offset);
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
@@ -120,12 +142,16 @@ impl LspServer {
                         } else {
                             self.extract_symbol_hover(uri, ast, &text, offset, &parsed)
                         };
-                        (extracted, live_compiler_context)
+                        (extracted, live_compiler_context, range)
                     } else {
-                        (Self::extract_token_hover(uri, &text, offset), live_compiler_context)
+                        (
+                            Self::extract_token_hover(uri, &text, offset),
+                            live_compiler_context,
+                            range,
+                        )
                     }
                 }
-                None => (HoverExtracted::None, None),
+                None => (HoverExtracted::None, None, None),
             };
             if timing_on {
                 crate::runtime::timing::emit(crate::runtime::timing::TimingSpan::labeled(
@@ -141,41 +167,32 @@ impl LspServer {
                     if let Some(compiler_hover) =
                         self.try_live_compiler_hover(Some(&value), live_compiler_context.as_ref())
                     {
-                        return Ok(Some(compiler_hover));
+                        return Self::inject_hover_range(compiler_hover, &hover_range);
                     }
-                    return Ok(Some(value));
+                    return Ok(Self::inject_hover_range_opt(value, &hover_range));
                 }
                 HoverExtracted::UseModule(module_name, doc_text, doc_uri, doc_offset) => {
-                    return Ok(Some(self.build_module_hover(
+                    let hv = self.build_module_hover(
                         &module_name,
                         &doc_text,
                         &doc_uri,
                         Some(doc_offset),
-                    )));
+                    );
+                    return Ok(Self::inject_hover_range_opt(hv, &hover_range));
                 }
                 HoverExtracted::PossiblePackage(pkg_name, doc_text, doc_uri, doc_offset) => {
-                    // Package names with `::` always get module hover (file path + MetaCPAN link).
-                    // For unresolved names this still shows the MetaCPAN link which is more
-                    // useful than the bare-token fallback.
-                    return Ok(Some(self.build_module_hover(
-                        &pkg_name,
-                        &doc_text,
-                        &doc_uri,
-                        Some(doc_offset),
-                    )));
+                    let hv =
+                        self.build_module_hover(&pkg_name, &doc_text, &doc_uri, Some(doc_offset));
+                    return Ok(Self::inject_hover_range_opt(hv, &hover_range));
                 }
                 #[cfg(feature = "workspace")]
                 HoverExtracted::InheritedMethod(receiver_pkg, method_name, doc_uri) => {
                     if !self.workspace_index_stale_for_document(&doc_uri) {
-                        // Wait for the workspace index to finish building before querying it.
-                        // build_inherited_method_hover calls coordinator().index() directly; if the
-                        // index is in IndexState::Building the lookup returns partial/empty results.
-                        // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
                         let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
                         if let Some(hover_value) =
                             self.build_inherited_method_hover(&receiver_pkg, &method_name, &doc_uri)
                         {
-                            return Ok(Some(hover_value));
+                            return Self::inject_hover_range(hover_value, &hover_range);
                         }
                     }
                 }
@@ -185,13 +202,35 @@ impl LspServer {
                     if let Some(compiler_hover) =
                         self.try_live_compiler_hover(None, live_compiler_context.as_ref())
                     {
-                        return Ok(Some(compiler_hover));
+                        return Self::inject_hover_range(compiler_hover, &hover_range);
                     }
                 }
             }
         }
 
         Ok(Some(json!(null)))
+    }
+
+    /// Inject the `range` field into a hover response value. (#5085)
+    fn inject_hover_range(
+        value: Value,
+        range: &Option<Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        Ok(Self::inject_hover_range_opt(value, range))
+    }
+
+    fn inject_hover_range_opt(mut value: Value, range: &Option<Value>) -> Option<Value> {
+        if let Some(range_val) = range
+            && value.is_object()
+            && value.get("contents").is_some()
+            && value.get("range").is_none()
+        // don't overwrite an existing range
+        {
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("range".to_string(), range_val.clone());
+            }
+        }
+        Some(value)
     }
 
     /// Extract hover information from semantic analysis (called off-lock, after
@@ -844,6 +883,42 @@ impl LspServer {
     /// returned string slice is extracted via `content[start..end]` where both
     /// bounds are also byte offsets. This avoids the byte-as-char-index bug that
     /// occurs when indexing `Vec<char>` with a value from `pos16_to_offset`.
+    /// Compute the byte bounds `(start, end)` of the token at `offset`, including
+    /// a leading sigil if present.  Returns `(offset, offset)` if the cursor is
+    /// not on a token character.  Used for the hover `range` field (#5085).
+    fn token_byte_bounds_of(content: &str, offset: usize) -> (usize, usize) {
+        if offset > content.len() {
+            return (offset, offset);
+        }
+        let is_sigil = |ch: char| ch == '$' || ch == '@' || ch == '%';
+        let is_ident = |ch: char| ch.is_alphanumeric() || ch == '_';
+        let is_token_char = |ch: char| is_ident(ch) || is_sigil(ch);
+
+        let pairs: Vec<(usize, char)> = content.char_indices().collect();
+        if pairs.is_empty() {
+            return (offset, offset);
+        }
+        let ci = pairs.partition_point(|(b, _)| *b < offset);
+        let ci = ci.min(pairs.len().saturating_sub(1));
+        if !is_token_char(pairs[ci].1) {
+            return (offset, offset);
+        }
+        let mut start = ci;
+        while start > 0 && is_token_char(pairs[start - 1].1) {
+            start -= 1;
+        }
+        let mut end = ci;
+        if is_sigil(pairs[end].1) {
+            end += 1;
+        }
+        while end < pairs.len() && is_ident(pairs[end].1) {
+            end += 1;
+        }
+        let start_byte = pairs[start].0;
+        let end_byte = if end < pairs.len() { pairs[end].0 } else { content.len() };
+        (start_byte, end_byte)
+    }
+
     fn get_token_at_position_static(content: &str, offset: usize) -> String {
         if offset > content.len() {
             return String::new();
@@ -962,53 +1037,75 @@ impl LspServer {
     /// (e.g. `"$dbh"`). Returns `None` when there is no `->` before the token.
     ///
     /// Handles whitespace around `->`, e.g. `$dbh -> prepare`.
+    ///
+    /// `offset` is a **byte offset** into `text` (as produced by `pos16_to_offset`).
+    /// The scan stays in byte coordinates throughout via `char_indices()`, avoiding
+    /// the indexing error that occurs when multi-byte Unicode characters precede
+    /// the cursor and the byte offset is used as a `Vec<char>` index.
     fn extract_arrow_receiver(text: &str, offset: usize) -> Option<String> {
-        let chars: Vec<char> = text.chars().collect();
-        let len = chars.len();
-        if len == 0 {
+        // Collect (byte_pos, char) pairs for everything strictly before `offset`.
+        // Chars whose start byte is ≥ offset are excluded; this handles the case
+        // where offset lands inside a multi-byte character.
+        let pairs: Vec<(usize, char)> =
+            text.char_indices().take_while(|(bp, _)| *bp < offset).collect();
+
+        if pairs.is_empty() {
             return None;
         }
 
-        // Walk to the start of the current token
-        let mut tok_start = offset.min(len.saturating_sub(1));
-        while tok_start > 0
-            && (chars[tok_start - 1].is_alphanumeric() || chars[tok_start - 1] == '_')
-        {
-            tok_start -= 1;
+        // Walk to the start of the current token (scan backward past identifier chars)
+        let mut tok_start = pairs.len();
+        while tok_start > 0 {
+            let c = pairs[tok_start - 1].1;
+            if c.is_alphanumeric() || c == '_' {
+                tok_start -= 1;
+            } else {
+                break;
+            }
+        }
+
+        // Nothing before the identifier → no `->` is possible
+        if tok_start == 0 {
+            return None;
         }
 
         // Skip whitespace before the token
-        let mut i = tok_start.saturating_sub(1);
-        while i > 0 && chars[i].is_whitespace() {
+        let mut i = tok_start - 1;
+        while i > 0 && pairs[i].1.is_whitespace() {
             i -= 1;
         }
 
         // Expect `>`
-        if chars[i] != '>' {
+        if pairs[i].1 != '>' {
             return None;
         }
-        if i == 0 || chars[i - 1] != '-' {
+        // Expect `-` immediately before `>`
+        if i == 0 || pairs[i - 1].1 != '-' {
+            return None;
+        }
+        // Need at least two positions before `-` to hold any receiver
+        if i < 2 {
             return None;
         }
 
-        // Skip past `->`
-        i = i.saturating_sub(2); // point before '-'
-        while i > 0 && chars[i].is_whitespace() {
+        // Skip past `->` (both are single-byte ASCII, so index arithmetic is safe)
+        i -= 2; // point to the char before '-'
+        while i > 0 && pairs[i].1.is_whitespace() {
             i -= 1;
         }
 
-        // Collect identifier/variable backwards (include sigil `$`)
-        let rec_end = i + 1;
-        while i > 0
-            && (chars[i - 1].is_alphanumeric()
-                || chars[i - 1] == '_'
-                || chars[i - 1] == '$'
-                || chars[i - 1] == ':')
-        {
-            i -= 1;
+        // Collect identifier/variable backwards (include sigil `$`, package sep `:`)
+        let rec_end_byte = pairs[i].0 + pairs[i].1.len_utf8();
+        while i > 0 {
+            let c = pairs[i - 1].1;
+            if c.is_alphanumeric() || c == '_' || c == '$' || c == ':' {
+                i -= 1;
+            } else {
+                break;
+            }
         }
-        let rec: String = chars[i..rec_end].iter().collect();
-        if rec.is_empty() { None } else { Some(rec) }
+        let rec = &text[pairs[i].0..rec_end_byte];
+        if rec.is_empty() { None } else { Some(rec.to_owned()) }
     }
 
     /// Walk the AST to find a `use Module` node whose location spans `offset`.
