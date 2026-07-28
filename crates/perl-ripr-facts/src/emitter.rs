@@ -458,10 +458,8 @@ pub(crate) fn emit_relations_and_discriminators(
     root: &str,
     tests: &[Value],
     _oracles: &[Value],
-) -> (Vec<Value>, Vec<Value>, Vec<Value>, Vec<Value>) {
+) -> (Vec<Value>, Vec<Value>) {
     let mut relations = Vec::new();
-    let mut changed_observables = Vec::new();
-    let mut observed_sinks = Vec::new();
     let mut limitations = Vec::new();
 
     // Collect .pm files from lib/, sorted for deterministic traversal order
@@ -581,42 +579,12 @@ pub(crate) fn emit_relations_and_discriminators(
     // caller's `tests` ordering.
     relations.sort_by(|a, b| a["relation_id"].as_str().cmp(&b["relation_id"].as_str()));
 
-    // Extract concrete discriminators + observed-sink facts from `is(...)` assertions.
-    // Reuses the `t_files` collected above — no second directory walk.
-    for (_file_path, relative_path, _content) in &t_files {
-        let Some(facts) = t_call_facts.get(relative_path.as_str()) else {
-            continue;
-        };
-        for args in &facts.is_args {
-            // `is($got, $expected, $name)` → discriminator "$got == $expected"
-            let discriminator = format!("{} == {}", args.0, args.1);
-            let observable_id = format!("observable:{relative_path}:{}", args.0);
-            changed_observables.push(json!({
-                "observable_id": observable_id,
-                "expression": args.0,
-                "file_id": format!("file:{relative_path}"),
-                "discriminator": discriminator,
-                "confidence": "medium"
-            }));
-
-            // Observed-sink: the oracle observes the `got` value.
-            let sink_id = format!("sink:{relative_path}:{}", args.0);
-            observed_sinks.push(json!({
-                "sink_id": sink_id,
-                "oracle_kind": "exact_return_assertion",
-                "observed_expression": args.0,
-                "file_id": format!("file:{relative_path}"),
-                "confidence": "medium"
-            }));
-        }
-    }
-
     // Deterministic order + dedup: the same unresolvable package referenced by
     // several test files would otherwise push a duplicate limitation per test.
     limitations.sort_by(|a, b| a["limitation_id"].as_str().cmp(&b["limitation_id"].as_str()));
     limitations.dedup_by(|a, b| a["limitation_id"] == b["limitation_id"]);
 
-    (relations, changed_observables, observed_sinks, limitations)
+    (relations, limitations)
 }
 
 /// Collect all `.pm` files under `<root>/lib`. Returns (relative_path, content),
@@ -1827,13 +1795,12 @@ mod tests {
 
         let (tests, _oracles, _provenance, _limitations) =
             emit_tests_and_oracles(root.to_str().unwrap());
-        let (_relations, observables, sinks, _relation_limitations) =
+        let (_relations, _relation_limitations) =
             emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
 
-        assert_eq!(observables.len(), 1, "the indented is() must be emitted");
-        assert_eq!(observables[0]["expression"], "$x");
-        assert_eq!(observables[0]["discriminator"], "$x == 1");
-        assert_eq!(sinks.len(), 1, "the indented is() must produce an observed sink");
+        // Observable/sink emission was removed (#5064) — relations and
+        // limitations are the only consumers. The is() discriminator
+        // extraction still runs as part of relation building.
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1926,7 +1893,7 @@ mod tests {
         // First emit tests, then relations.
         let (tests, _oracles, _provenance, _limitations) =
             emit_tests_and_oracles(root.to_str().unwrap());
-        let (relations, _observables, _sinks, _relation_limitations) =
+        let (relations, _relation_limitations) =
             emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
 
         assert!(!relations.is_empty(), "must find at least one relation between App.pm and App.t");
@@ -1958,7 +1925,7 @@ mod tests {
 
         let (tests, _oracles, _provenance, _limitations) =
             emit_tests_and_oracles(root.to_str().unwrap());
-        let (relations, _observables, _sinks, _relation_limitations) =
+        let (relations, _relation_limitations) =
             emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
 
         assert!(
@@ -1981,17 +1948,10 @@ mod tests {
 
         let (tests, _oracles, _provenance, _limitations) =
             emit_tests_and_oracles(root.to_str().unwrap());
-        let (_relations, observables, sinks, _relation_limitations) =
+        let (_relations, _relation_limitations) =
             emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
 
-        assert!(!observables.is_empty(), "must emit at least one changed-observable from is()");
-        assert!(
-            observables[0]["discriminator"].as_str().unwrap_or("").contains("=="),
-            "discriminator must be a concrete comparison: {:?}",
-            observables[0]["discriminator"]
-        );
-
-        assert!(!sinks.is_empty(), "must emit at least one observed-sink from is()");
+        // Observable/sink emission was removed (#5064).
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2545,7 +2505,7 @@ mod tests {
 
         let (tests, _oracles, _provenance, _limitations) =
             emit_tests_and_oracles(root.to_str().unwrap());
-        let (relations, _observables, _sinks, _relation_limitations) =
+        let (relations, _relation_limitations) =
             emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
 
         assert!(!relations.is_empty(), "must find at least one relation");
@@ -2580,7 +2540,7 @@ mod tests {
 
         let (tests, _oracles, _provenance, _limitations) =
             emit_tests_and_oracles(root.to_str().unwrap());
-        let (relations, _observables, _sinks, _relation_limitations) =
+        let (relations, _relation_limitations) =
             emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
 
         let direct: Vec<_> = relations
@@ -2763,7 +2723,7 @@ mod tests {
 
         let (tests, _oracles, _provenance, _limitations) =
             emit_tests_and_oracles(root.to_str().unwrap());
-        let (relations, _observables, _sinks, _relation_limitations) =
+        let (relations, _relation_limitations) =
             emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
 
         assert!(!relations.is_empty(), "the file_proximity relation is still emitted");
@@ -2807,7 +2767,7 @@ mod tests {
 
         let (tests, _oracles, _provenance, _limitations) =
             emit_tests_and_oracles(root.to_str().unwrap());
-        let (relations, _observables, _sinks, _relation_limitations) =
+        let (relations, _relation_limitations) =
             emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
 
         assert!(
@@ -2833,7 +2793,7 @@ mod tests {
 
         let (tests, _oracles, _provenance, _limitations) =
             emit_tests_and_oracles(root.to_str().unwrap());
-        let (relations, _observables, _sinks, _relation_limitations) =
+        let (relations, _relation_limitations) =
             emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
 
         assert!(!relations.is_empty(), "must still find a file_proximity relation");
@@ -2860,9 +2820,9 @@ mod tests {
 
         let (tests, _oracles, _provenance, _limitations) =
             emit_tests_and_oracles(root.to_str().unwrap());
-        let (relations_1, _observables_1, _sinks_1, _limitations_1) =
+        let (relations_1, _limitations_1) =
             emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
-        let (relations_2, _observables_2, _sinks_2, _limitations_2) =
+        let (relations_2, _limitations_2) =
             emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
 
         assert_eq!(
@@ -2889,7 +2849,7 @@ mod tests {
 
         let (tests, _oracles, _provenance, _limitations) =
             emit_tests_and_oracles(root.to_str().unwrap());
-        let (relations, _observables, _sinks, _relation_limitations) =
+        let (relations, _relation_limitations) =
             emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
 
         assert!(relations.len() >= 3, "expected at least 3 relations, got {}", relations.len());
@@ -2916,7 +2876,7 @@ mod tests {
 
         let (tests, _oracles, _provenance, _limitations) =
             emit_tests_and_oracles(root.to_str().unwrap());
-        let (relations, _observables, _sinks, _relation_limitations) =
+        let (relations, _relation_limitations) =
             emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
         let (_files, owners, _file_provenance, _file_limitations) =
             emit_files_and_owners(root.to_str().unwrap());

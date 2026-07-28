@@ -79,7 +79,7 @@ members = [
     "crates/perl-lsp-ux-tests",
     "crates/perllsp",
     "crates/perl-dap",
-    "crates/perl-dead-code",
+    # (perl-dead-code absorbed into perl-parser::dead_code — Wave 4-Completion)
     # (perl-feature-catalog absorbed into perl-lsp-rs-core::feature_catalog — Wave Final PR B)
     "crates/tree-sitter-perl-c",
     "crates/tree-sitter-perl-rs",
@@ -274,7 +274,6 @@ perl-corpus = { path = "crates/perl-corpus", version = "0.17.0" }
 # workspace/LSP facade crates. Parser leaf crates are allowed for batch facts.
 perl-ripr-facts = { path = "crates/perl-ripr-facts", version = "0.17.0" }
 perl-dap = { path = "crates/perl-dap", version = "0.17.0" }
-perl-dead-code = { path = "crates/perl-dead-code", version = "0.17.0" }
 perl-core-harness-types = { path = "crates/perl-core-harness-types", version = "0.17.0" }
 perl-core-harness = { path = "crates/perl-core-harness", version = "0.17.0" }
 # (perl-feature-catalog absorbed into perl-lsp-rs-core::feature_catalog — Wave Final PR B)
