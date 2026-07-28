@@ -12,9 +12,9 @@ This status tracks parser AST construct coverage for the crate-local HIR baselin
 | `lowered` | 33 | Emits one or more HIR items today. |
 | `dynamic_boundary` | 3 | Emits an explicit dynamic-boundary HIR item for unsupported static truth. |
 | `intentionally_skipped` | 20 | Traversal, metadata, or recovery placeholder; no standalone HIR item expected. |
-| `not_yet_modeled` | 15 | Parser AST construct exists, but HIR has no shell yet. |
+| `not_yet_modeled` | 20 | Parser AST construct exists, but HIR has no shell yet. |
 
-AST kinds tracked: `71`. HIR construct kinds tracked: `25`.
+AST kinds tracked: `76`. HIR construct kinds tracked: `25`.
 
 ## Inventory
 
@@ -29,6 +29,10 @@ AST kinds tracked: `71`. HIR construct kinds tracked: `25`.
 | `VariableWithAttributes` | `intentionally_skipped` | - | Consumed by declaration lowering or recorded as ScopeGraph references. |
 | `Assignment` | `dynamic_boundary` | `DynamicBoundary` | Typeglob assignment with a non-static RHS emits `DynamicBoundary`; other assignments traverse. |
 | `Binary` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
+| `ArraySlice` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
+| `HashSlice` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
+| `KeyValueSlice` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
+| `ChainedComparison` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
 | `Ternary` | `lowered` | `BranchShell` | Ternary expression lowered as a branch shell with both arms present. |
 | `Unary` | `lowered` | `DerefExpr`, `DynamicBoundary` | Aggregate dereferences emit `DerefExpr`; proven-symbolic dereferences (string-literal, `.`-concatenation, or interpolated-string operands) under no-strict-refs additionally emit `DynamicBoundary`; operand always traversed. |
 | `Diamond` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
@@ -72,6 +76,7 @@ AST kinds tracked: `71`. HIR construct kinds tracked: `25`.
 | `Goto` | `lowered` | `ControlTransfer` | Lowered as a control-transfer shell; plain label targets are preserved. |
 | `MethodCall` | `lowered` | `MethodCallExpr` | Lowered as method-call shell. |
 | `FunctionCall` | `lowered` | `CallExpr`, `DynamicBoundary`, `RequireDecl` | `require` calls lower as `RequireDecl`; coderef calls add a dynamic boundary. |
+| `AmperCall` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
 | `IndirectCall` | `lowered` | `IndirectCallExpr` | Lowered as indirect-object call shell. |
 | `Regex` | `lowered` | `RegexExpr`, `DynamicBoundary` | Lowered as regex literal shell; embedded `(?{...})` code emits `DynamicBoundary`. |
 | `Match` | `lowered` | `MatchExpr`, `DynamicBoundary` | Lowered as match-operation shell; bound expression is traversed and embedded `(?{...})` code emits `DynamicBoundary`. |
