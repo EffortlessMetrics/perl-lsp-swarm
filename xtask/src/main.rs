@@ -2456,6 +2456,10 @@ enum PerlCoreHarnessCommand {
         /// Discovery JSON output path.
         #[arg(long)]
         output: Option<PathBuf>,
+
+        /// Resolved upstream Perl ref when the prepared tree has no git metadata.
+        #[arg(long = "perl-ref")]
+        perl_ref: Option<String>,
     },
 
     /// Generate or check the immutable identity manifest for a core series.
@@ -2554,6 +2558,10 @@ enum PerlCoreHarnessCommand {
         /// Prebuilt perl-core-test-runner binary. Defaults to target/agent/perl-core-test-runner.
         #[arg(long)]
         runner_binary: Option<PathBuf>,
+
+        /// Resolved upstream Perl ref when the prepared tree has no git metadata.
+        #[arg(long = "perl-ref")]
+        perl_ref: Option<String>,
     },
 
     /// Render the latest Perl core harness report (future slice).
@@ -4366,13 +4374,21 @@ fn run_cli(cli: Cli) -> Result<()> {
                     output_dir,
                 })
             }
-            PerlCoreHarnessCommand::Discover { perl_tree, host_perl, runner, profile, output } => {
+            PerlCoreHarnessCommand::Discover {
+                perl_tree,
+                host_perl,
+                runner,
+                profile,
+                output,
+                perl_ref,
+            } => {
                 perl_core_harness::discover(perl_core_harness::DiscoverConfig {
                     perl_tree,
                     host_perl,
                     runner,
                     profile,
                     output,
+                    perl_ref,
                 })
             }
             PerlCoreHarnessCommand::SeriesManifest {
@@ -4417,6 +4433,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 tests,
                 output,
                 runner_binary,
+                perl_ref,
             } => perl_core_harness::run_mode(perl_core_harness::RunConfig {
                 perl_tree,
                 host_perl,
@@ -4426,6 +4443,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 tests,
                 output,
                 runner_binary,
+                perl_ref,
             }),
             PerlCoreHarnessCommand::Report => perl_core_harness::report(),
             PerlCoreHarnessCommand::Baseline {
@@ -5353,6 +5371,7 @@ mod tests {
                     tests: Vec::new(),
                     output: None,
                     runner_binary: None,
+                    perl_ref: None,
                 },
                 "requires one or more explicit --test",
             ),
@@ -5383,6 +5402,7 @@ mod tests {
                     runner: perl_core_harness::HarnessRunner::Test,
                     profile: perl_core_harness::HarnessProfile::Base,
                     output: None,
+                    perl_ref: None,
                 },
             },
         })

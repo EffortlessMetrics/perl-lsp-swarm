@@ -171,6 +171,8 @@ pub struct DiscoverConfig {
     pub runner: HarnessRunner,
     pub profile: HarnessProfile,
     pub output: Option<PathBuf>,
+    /// Resolved upstream Perl identity when the prepared tree has no `.git` metadata.
+    pub perl_ref: Option<String>,
 }
 
 /// Configuration for `perl-core-harness prepare`.
@@ -191,6 +193,8 @@ pub struct RunConfig {
     pub tests: Vec<String>,
     pub output: Option<PathBuf>,
     pub runner_binary: Option<PathBuf>,
+    /// Resolved upstream Perl identity when the prepared tree has no `.git` metadata.
+    pub perl_ref: Option<String>,
 }
 
 /// Configuration for `perl-core-harness baseline`.
@@ -304,11 +308,20 @@ pub fn discover(config: DiscoverConfig) -> Result<()> {
     })?;
 
     let tests = parse_dumptests_output(&output.stdout)?;
+    let perl_ref = config
+        .perl_ref
+        .clone()
+        .unwrap_or_else(|| perl_tree_ref(&perl_tree));
+    if perl_ref.trim().is_empty() || perl_ref == "unknown" {
+        bail!(
+            "discovery requires an explicit resolved Perl ref when the prepared tree has no git metadata"
+        );
+    }
     let report = DiscoveryReport {
         schema_version: DISCOVERY_SCHEMA_VERSION.to_string(),
         commit: current_commit(),
         timestamp: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-        perl_ref: perl_tree_ref(&perl_tree),
+        perl_ref,
         prepared_tree: perl_tree.display().to_string(),
         host_perl: config.host_perl.display().to_string(),
         runner: config.runner,
@@ -1176,6 +1189,7 @@ pub fn smoke(config: SmokeConfig) -> Result<()> {
         runner: config.runner,
         profile: config.profile,
         output: Some(discovery_path.clone()),
+        perl_ref: config.perl_ref.clone(),
     })?;
     let discovery = read_discovery_report(&discovery_path)?;
 
@@ -1198,6 +1212,7 @@ pub fn smoke(config: SmokeConfig) -> Result<()> {
             tests: Vec::new(),
             output: Some(report_path.clone()),
             runner_binary: config.runner_binary.clone(),
+            perl_ref: config.perl_ref.clone(),
         });
         if let Err(err) = &run_result {
             if !report_path.is_file() {
@@ -3909,7 +3924,11 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
         schema_version: RUN_REPORT_SCHEMA_VERSION.to_string(),
         commit: current_commit(),
         timestamp: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-        perl_ref: perl_tree_ref(input.perl_tree),
+        perl_ref: input
+            .config
+            .perl_ref
+            .clone()
+            .unwrap_or_else(|| perl_tree_ref(input.perl_tree)),
         prepared_tree: input.perl_tree.display().to_string(),
         run_tree: input.run_tree.display().to_string(),
         host_perl: input.config.host_perl.display().to_string(),
@@ -4132,6 +4151,7 @@ mod tests {
             tests: Vec::new(),
             output: None,
             runner_binary: None,
+            perl_ref: None,
         };
 
         let Err(err) = run_mode(config) else {
@@ -4153,6 +4173,7 @@ mod tests {
             tests: vec!["base/rs.t".into()],
             output: None,
             runner_binary: None,
+            perl_ref: None,
         };
 
         let Err(err) = run_mode(config) else {
@@ -4181,6 +4202,7 @@ mod tests {
             tests: Vec::new(),
             output: None,
             runner_binary: Some(PathBuf::from("runner")),
+            perl_ref: None,
         };
         let discovered = vec![
             DiscoveredTest { path: "base/ok.t".into(), root: "base".into() },
@@ -4265,6 +4287,7 @@ mod tests {
             tests: Vec::new(),
             output: None,
             runner_binary: Some(PathBuf::from("runner")),
+            perl_ref: None,
         };
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let boundary = SemanticBoundaryRecord {
@@ -5522,6 +5545,7 @@ mod tests {
             tests: Vec::new(),
             output: Some(run_path.clone()),
             runner_binary: Some(PathBuf::from("runner")),
+            perl_ref: None,
         };
         let discovered = vec![DiscoveredTest { path: "base/if.t".into(), root: "base".into() }];
         let records = vec![RunnerRecord {
@@ -5792,6 +5816,7 @@ mod tests {
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             output: Some(output.clone()),
+            perl_ref: Some("fake-ref".into()),
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -5799,6 +5824,7 @@ mod tests {
         assert_eq!(report.schema_version, DISCOVERY_SCHEMA_VERSION);
         assert_eq!(report.runner, HarnessRunner::Test);
         assert_eq!(report.profile, HarnessProfile::Base);
+        assert_eq!(report.perl_ref, "fake-ref");
         assert_eq!(report.prepared_tree, perl_tree.canonicalize()?.display().to_string());
         assert_eq!(report.host_perl, "/bin/sh");
         assert_eq!(
@@ -5825,16 +5851,40 @@ mod tests {
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            perl_ref: Some("fake-ref".into()),
         })?;
 
         let raw = fs::read_to_string(output)?;
         let report: RunReport = serde_json::from_str(&raw)?;
+        assert_eq!(report.perl_ref, "fake-ref");
         assert_eq!(report.summary.files_total, 1);
         assert_eq!(report.summary.files_passed, 1);
         assert_eq!(report.summary.files_failed, 0);
         assert_eq!(report.file_results[0].path, "base/ok.t");
         assert_eq!(report.file_results[0].status, RunnerStatus::Pass);
         assert!(!perl_tree.join("t").join("perl").exists(), "source Perl tree must not be mutated");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_rejects_unbound_prepared_tree_identity() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree(temp.path())?;
+        let output = temp.path().join("discovery.json");
+
+        let Err(err) = discover(DiscoverConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            profile: HarnessProfile::Base,
+            output: Some(output),
+            perl_ref: None,
+        }) else {
+            bail!("discovery should reject a prepared tree without a resolved Perl ref");
+        };
+
+        assert!(err.to_string().contains("explicit resolved Perl ref"));
         Ok(())
     }
 
@@ -5855,6 +5905,7 @@ mod tests {
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            perl_ref: Some("fake-ref".into()),
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -5888,6 +5939,7 @@ mod tests {
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            perl_ref: Some("fake-ref".into()),
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -5915,6 +5967,7 @@ mod tests {
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            perl_ref: Some("fake-ref".into()),
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -5949,6 +6002,7 @@ mod tests {
             tests: vec!["base/if.t".into()],
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            perl_ref: Some("fake-ref".into()),
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -5989,6 +6043,7 @@ mod tests {
             ],
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            perl_ref: Some("fake-ref".into()),
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -6332,6 +6387,7 @@ mod tests {
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            perl_ref: Some("fake-ref".into()),
         }) else {
             bail!("failing runner record should fail the harness run");
         };
@@ -6373,6 +6429,7 @@ exit 7
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            perl_ref: Some("fake-ref".into()),
         }) else {
             bail!("nonzero harness status should fail even when runner records pass");
         };
@@ -6409,6 +6466,7 @@ exit 7
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            perl_ref: Some("fake-ref".into()),
         })?;
 
         let raw = fs::read_to_string(output)?;
