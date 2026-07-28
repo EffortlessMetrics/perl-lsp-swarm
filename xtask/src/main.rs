@@ -2457,6 +2457,10 @@ enum PerlCoreHarnessCommand {
         #[arg(long)]
         output: Option<PathBuf>,
 
+        /// Optional diagnostic capture of upstream dumptests output.
+        #[arg(long)]
+        raw_output: Option<PathBuf>,
+
         /// Resolved upstream Perl ref when the prepared tree has no git metadata.
         #[arg(long = "perl-ref")]
         perl_ref: Option<String>,
@@ -2554,6 +2558,10 @@ enum PerlCoreHarnessCommand {
         /// Run report JSON output path.
         #[arg(long)]
         output: Option<PathBuf>,
+
+        /// Optional normalized runner-record JSONL output.
+        #[arg(long)]
+        runner_records_output: Option<PathBuf>,
 
         /// Prebuilt perl-core-test-runner binary. Defaults to target/agent/perl-core-test-runner.
         #[arg(long)]
@@ -4380,17 +4388,17 @@ fn run_cli(cli: Cli) -> Result<()> {
                 runner,
                 profile,
                 output,
+                raw_output,
                 perl_ref,
-            } => {
-                perl_core_harness::discover(perl_core_harness::DiscoverConfig {
-                    perl_tree,
-                    host_perl,
-                    runner,
-                    profile,
-                    output,
-                    perl_ref,
-                })
-            }
+            } => perl_core_harness::discover(perl_core_harness::DiscoverConfig {
+                perl_tree,
+                host_perl,
+                runner,
+                profile,
+                output,
+                raw_output,
+                perl_ref,
+            }),
             PerlCoreHarnessCommand::SeriesManifest {
                 discovery,
                 output,
@@ -4432,6 +4440,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 profile,
                 tests,
                 output,
+                runner_records_output,
                 runner_binary,
                 perl_ref,
             } => perl_core_harness::run_mode(perl_core_harness::RunConfig {
@@ -4442,6 +4451,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 profile,
                 tests,
                 output,
+                runner_records_output,
                 runner_binary,
                 perl_ref,
             }),
@@ -5370,6 +5380,7 @@ mod tests {
                     profile: perl_core_harness::HarnessProfile::Base,
                     tests: Vec::new(),
                     output: None,
+                    runner_records_output: None,
                     runner_binary: None,
                     perl_ref: None,
                 },
@@ -5402,6 +5413,7 @@ mod tests {
                     runner: perl_core_harness::HarnessRunner::Test,
                     profile: perl_core_harness::HarnessProfile::Base,
                     output: None,
+                    raw_output: None,
                     perl_ref: None,
                 },
             },

@@ -171,6 +171,8 @@ pub struct DiscoverConfig {
     pub runner: HarnessRunner,
     pub profile: HarnessProfile,
     pub output: Option<PathBuf>,
+    /// Optional diagnostic capture of the upstream dumptests output.
+    pub raw_output: Option<PathBuf>,
     /// Resolved upstream Perl identity when the prepared tree has no `.git` metadata.
     pub perl_ref: Option<String>,
 }
@@ -195,6 +197,8 @@ pub struct RunConfig {
     pub runner_binary: Option<PathBuf>,
     /// Resolved upstream Perl identity when the prepared tree has no `.git` metadata.
     pub perl_ref: Option<String>,
+    /// Optional normalized runner-record output for durable evidence assembly.
+    pub runner_records_output: Option<PathBuf>,
 }
 
 /// Configuration for `perl-core-harness baseline`.
@@ -306,12 +310,12 @@ pub fn discover(config: DiscoverConfig) -> Result<()> {
     .with_context(|| {
         format!("discovering Perl core tests via {} {}", config.runner, config.profile)
     })?;
+    if let Some(raw_output) = config.raw_output.as_ref() {
+        write_discovery_raw_output(raw_output, &output)?;
+    }
 
     let tests = parse_dumptests_output(&output.stdout)?;
-    let perl_ref = config
-        .perl_ref
-        .clone()
-        .unwrap_or_else(|| perl_tree_ref(&perl_tree));
+    let perl_ref = config.perl_ref.clone().unwrap_or_else(|| perl_tree_ref(&perl_tree));
     if perl_ref.trim().is_empty() || perl_ref == "unknown" {
         bail!(
             "discovery requires an explicit resolved Perl ref when the prepared tree has no git metadata"
@@ -781,6 +785,9 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
     if used_direct_runner {
         records = read_runner_records_or_empty(&context_path)?;
     }
+    if let Some(records_output) = config.runner_records_output.as_ref() {
+        write_runner_records(records_output, &records)?;
+    }
     let report = build_run_report(BuildRunReportInput {
         config: &config,
         perl_tree: &perl_tree,
@@ -1196,6 +1203,7 @@ pub fn smoke(config: SmokeConfig) -> Result<()> {
         profile: config.profile,
         output: Some(discovery_path.clone()),
         perl_ref: config.perl_ref.clone(),
+        raw_output: Some(output_dir.join("discovery.raw.txt")),
     })?;
     let discovery = read_discovery_report(&discovery_path)?;
 
@@ -1219,6 +1227,7 @@ pub fn smoke(config: SmokeConfig) -> Result<()> {
             output: Some(report_path.clone()),
             runner_binary: config.runner_binary.clone(),
             perl_ref: config.perl_ref.clone(),
+            runner_records_output: Some(output_dir.join("runner-records.jsonl")),
         });
         if let Err(err) = &run_result {
             if !report_path.is_file() {
@@ -1487,6 +1496,43 @@ fn invoke_dumptests(
         );
     }
     Ok(output)
+}
+
+fn write_discovery_raw_output(path: &Path, output: &Output) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!("creating discovery raw-output directory {}", parent.display())
+        })?;
+    }
+
+    let mut raw = output.stdout.clone();
+    if !output.stderr.is_empty() {
+        if !raw.is_empty() && !raw.ends_with(b"\n") {
+            raw.push(b'\n');
+        }
+        raw.extend_from_slice(b"--- stderr ---\n");
+        raw.extend_from_slice(&output.stderr);
+    }
+    fs::write(path, raw).with_context(|| format!("writing discovery raw output {}", path.display()))
+}
+
+fn write_runner_records(path: &Path, records: &[RunnerRecord]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!("creating runner-record output directory {}", parent.display())
+        })?;
+    }
+
+    let mut ordered = records.to_vec();
+    ordered
+        .sort_by(|left, right| left.mode.cmp(&right.mode).then_with(|| left.path.cmp(&right.path)));
+    let mut output = String::new();
+    for record in ordered {
+        let line = serde_json::to_string(&record).context("encoding runner record")?;
+        output.push_str(&line);
+        output.push('\n');
+    }
+    fs::write(path, output).with_context(|| format!("writing runner records {}", path.display()))
 }
 
 fn invoke_harness_run(
@@ -3930,11 +3976,7 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
         schema_version: RUN_REPORT_SCHEMA_VERSION.to_string(),
         commit: current_commit(),
         timestamp: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-        perl_ref: input
-            .config
-            .perl_ref
-            .clone()
-            .unwrap_or_else(|| perl_tree_ref(input.perl_tree)),
+        perl_ref: input.config.perl_ref.clone().unwrap_or_else(|| perl_tree_ref(input.perl_tree)),
         prepared_tree: input.perl_tree.display().to_string(),
         run_tree: input.run_tree.display().to_string(),
         host_perl: input.config.host_perl.display().to_string(),
@@ -4158,6 +4200,7 @@ mod tests {
             output: None,
             runner_binary: None,
             perl_ref: None,
+            runner_records_output: None,
         };
 
         let Err(err) = run_mode(config) else {
@@ -4180,6 +4223,7 @@ mod tests {
             output: None,
             runner_binary: None,
             perl_ref: None,
+            runner_records_output: None,
         };
 
         let Err(err) = run_mode(config) else {
@@ -4209,6 +4253,7 @@ mod tests {
             output: None,
             runner_binary: Some(PathBuf::from("runner")),
             perl_ref: None,
+            runner_records_output: None,
         };
         let discovered = vec![
             DiscoveredTest { path: "base/ok.t".into(), root: "base".into() },
@@ -4294,6 +4339,7 @@ mod tests {
             output: None,
             runner_binary: Some(PathBuf::from("runner")),
             perl_ref: None,
+            runner_records_output: None,
         };
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let boundary = SemanticBoundaryRecord {
@@ -5574,6 +5620,7 @@ mod tests {
             output: Some(run_path.clone()),
             runner_binary: Some(PathBuf::from("runner")),
             perl_ref: None,
+            runner_records_output: None,
         };
         let discovered = vec![DiscoveredTest { path: "base/if.t".into(), root: "base".into() }];
         let records = vec![RunnerRecord {
@@ -5587,6 +5634,9 @@ mod tests {
             first_diagnostic: None,
             semantic_boundaries: Vec::new(),
         }];
+        let records_path = temp.path().join("nested").join("records").join("runner.jsonl");
+        write_runner_records(&records_path, &records)?;
+        assert_eq!(read_runner_records(&records_path)?, records);
         let run_tree = temp.path().join("run");
         let report = build_run_report(BuildRunReportInput {
             config: &config,
@@ -5837,6 +5887,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let perl_tree = write_fake_perl_tree(temp.path())?;
         let output = temp.path().join("discovery.json");
+        let raw_output = temp.path().join("discovery.raw.txt");
 
         discover(DiscoverConfig {
             perl_tree: perl_tree.clone(),
@@ -5844,8 +5895,11 @@ mod tests {
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             output: Some(output.clone()),
+            raw_output: Some(raw_output.clone()),
             perl_ref: Some("fake-ref".into()),
         })?;
+
+        assert!(fs::read_to_string(raw_output)?.contains("base/ok.t"));
 
         let raw = fs::read_to_string(output)?;
         let report: DiscoveryReport = serde_json::from_str(&raw)?;
@@ -5869,6 +5923,7 @@ mod tests {
         let perl_tree = write_fake_perl_tree(temp.path())?;
         let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
         let output = temp.path().join("parse-report.json");
+        let runner_records_output = temp.path().join("runner-records.jsonl");
 
         run_mode(RunConfig {
             perl_tree: perl_tree.clone(),
@@ -5880,7 +5935,12 @@ mod tests {
             output: Some(output.clone()),
             runner_binary: Some(runner),
             perl_ref: Some("fake-ref".into()),
+            runner_records_output: Some(runner_records_output.clone()),
         })?;
+
+        let records = read_runner_records(&runner_records_output)?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].path, "base/ok.t");
 
         let raw = fs::read_to_string(output)?;
         let report: RunReport = serde_json::from_str(&raw)?;
@@ -5907,6 +5967,7 @@ mod tests {
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             output: Some(output),
+            raw_output: None,
             perl_ref: None,
         }) else {
             bail!("discovery should reject a prepared tree without a resolved Perl ref");
@@ -5934,6 +5995,7 @@ mod tests {
             output: Some(output.clone()),
             runner_binary: Some(runner),
             perl_ref: Some("fake-ref".into()),
+            runner_records_output: None,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -5968,6 +6030,7 @@ mod tests {
             output: Some(output.clone()),
             runner_binary: Some(runner),
             perl_ref: Some("fake-ref".into()),
+            runner_records_output: None,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -5996,6 +6059,7 @@ mod tests {
             output: Some(output.clone()),
             runner_binary: Some(runner),
             perl_ref: Some("fake-ref".into()),
+            runner_records_output: None,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -6031,6 +6095,7 @@ mod tests {
             output: Some(output.clone()),
             runner_binary: Some(runner),
             perl_ref: Some("fake-ref".into()),
+            runner_records_output: None,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -6072,6 +6137,7 @@ mod tests {
             output: Some(output.clone()),
             runner_binary: Some(runner),
             perl_ref: Some("fake-ref".into()),
+            runner_records_output: None,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -6119,7 +6185,15 @@ mod tests {
             perl_ref: Some("fake-ref".into()),
         })?;
 
-        for file in ["discovery.json", "parse.json", "compile.json", "gap-map.json", "smoke.json"] {
+        for file in [
+            "discovery.json",
+            "discovery.raw.txt",
+            "parse.json",
+            "compile.json",
+            "runner-records.jsonl",
+            "gap-map.json",
+            "smoke.json",
+        ] {
             assert!(output_dir.join(file).is_file(), "{file} should be written");
         }
         let raw = fs::read_to_string(output_dir.join("smoke.json"))?;
@@ -6155,7 +6229,15 @@ mod tests {
             perl_ref: Some("fake-ref".into()),
         })?;
 
-        for file in ["discovery.json", "parse.json", "compile.json", "gap-map.json", "smoke.json"] {
+        for file in [
+            "discovery.json",
+            "discovery.raw.txt",
+            "parse.json",
+            "compile.json",
+            "runner-records.jsonl",
+            "gap-map.json",
+            "smoke.json",
+        ] {
             assert!(output_dir.join(file).is_file(), "{file} should be written");
         }
 
@@ -6198,7 +6280,15 @@ mod tests {
             perl_ref: Some("fake-ref".into()),
         })?;
 
-        for file in ["discovery.json", "parse.json", "compile.json", "gap-map.json", "smoke.json"] {
+        for file in [
+            "discovery.json",
+            "discovery.raw.txt",
+            "parse.json",
+            "compile.json",
+            "runner-records.jsonl",
+            "gap-map.json",
+            "smoke.json",
+        ] {
             assert!(output_dir.join(file).is_file(), "{file} should be written");
         }
 
@@ -6416,6 +6506,7 @@ mod tests {
             output: Some(output.clone()),
             runner_binary: Some(runner),
             perl_ref: Some("fake-ref".into()),
+            runner_records_output: None,
         }) else {
             bail!("failing runner record should fail the harness run");
         };
@@ -6458,6 +6549,7 @@ exit 7
             output: Some(output.clone()),
             runner_binary: Some(runner),
             perl_ref: Some("fake-ref".into()),
+            runner_records_output: None,
         }) else {
             bail!("nonzero harness status should fail even when runner records pass");
         };
@@ -6495,6 +6587,7 @@ exit 7
             output: Some(output.clone()),
             runner_binary: Some(runner),
             perl_ref: Some("fake-ref".into()),
+            runner_records_output: None,
         })?;
 
         let raw = fs::read_to_string(output)?;
