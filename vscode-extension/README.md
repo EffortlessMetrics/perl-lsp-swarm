@@ -20,7 +20,7 @@ A fast, native Perl 5 language server extension. Written in Rust for speed and r
 
 `perl-lsp` uses proof-backed answers where it has fresh, source-backed facts and
 keeps fallback or no-edit behavior where Perl is dynamic, generated, stale,
-ambiguous, or low confidence. See the [editor trust guide](../docs/how-to/EDITOR_TRUST.md)
+ambiguous, or low confidence. See the [editor trust guide](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/how-to/EDITOR_TRUST.md)
 for support-tier boundaries, explanations, previews, and copyable receipts.
 
 ## Features
@@ -93,7 +93,7 @@ alongside the `perl-lsp` release artifacts -- the extension downloads it for you
 there is nothing extra to install. Native debug sessions require a local Perl
 interpreter. The native path does **not** require `Perl::LanguageServer`; that
 module is only needed for legacy bridge-mode workflows. See the
-[debugging guide](../docs/tutorials/DAP_USER_GUIDE.md) for setup steps and
+[debugging guide](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/tutorials/DAP_USER_GUIDE.md) for setup steps and
 the required launch configuration.
 
 ### Test Explorer
@@ -110,15 +110,11 @@ Perl::Critic, and PerlTidy can overlap with perl-lsp features. If you see
 duplicate hover, completion, or formatting results, disable the competing
 feature in one extension and keep the other as the source of truth.
 
-### Walkthrough Media
+### Get Started walkthrough
 
-The extension includes a "Get Started" walkthrough in VS Code. Walkthrough
-media assets and recording notes live in:
-
-- [media/walkthrough/README.md](media/walkthrough/README.md)
-- [media/walkthrough/install-health.svg](media/walkthrough/install-health.svg)
-- [media/walkthrough/find-references.svg](media/walkthrough/find-references.svg)
-- [media/walkthrough/extract-variable.svg](media/walkthrough/extract-variable.svg)
+The extension ships an eight-step **Get Started with Perl LSP** walkthrough.
+Reopen it at any time from the command palette with **Welcome: Open
+Walkthrough**, then pick it from the list.
 
 ## Installation
 
@@ -154,7 +150,7 @@ that detection.
 
 ### Enterprise / offline / air-gapped deployments
 
-The extension downloads the Perl LSP server binary on first activation. If your environment blocks internet access during extension install or uses a strict proxy, see [`INTERNAL_DEPLOYMENT.md`](./INTERNAL_DEPLOYMENT.md) for:
+The extension downloads the Perl LSP server binary on first activation. If your environment blocks internet access during extension install or uses a strict proxy, see [`INTERNAL_DEPLOYMENT.md`](https://github.com/EffortlessMetrics/perl-lsp/blob/master/vscode-extension/INTERNAL_DEPLOYMENT.md) for:
 
 - Pre-downloading the binary and bundling it with your VSIX
 - Using `perl-lsp.serverPath` to point at a shared binary
@@ -238,25 +234,73 @@ Use `Ctrl+Shift+P` (Command Palette) and search "Perl" to see all available comm
 
 ## Commands
 
-Open the command palette (`Ctrl+Shift+P`) and search for "Perl":
+Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
+"Perl". All 35 commands the extension contributes:
 
-| Command                                      | Description                                                                                                                                                    |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Perl: Restart Language Server**            | Restart the language server                                                                                                                                    |
-| **Perl: Open Demo Project**                  | Open a bundled demo project to try features immediately                                                                                                        |
-| **Perl: Show Server Version**                | Display installed perllsp version                                                                                                                              |
-| **Perl: Reinstall Server Binary**            | Re-download the managed binary                                                                                                                                 |
-| **Perl: Organize Use Statements**            | Sort and clean `use` statements                                                                                                                                |
-| **Perl: Run Tests in Current File**          | Run tests in the active `.t` or `.pl` file                                                                                                                     |
-| **Perl LSP: Explain Provider Decision**      | Show why the last provider acted, fell back, or refused                                                                                                        |
-| **Perl LSP: Copy Provider Decision Receipt** | Copy a structured local receipt for issue reports                                                                                                              |
-| **Perl LSP: Show Workspace Trust Report**    | Show workspace roots, module-resolution configuration, index state, support tiers, provider-decision traces, and dynamic-boundary policy in the output channel |
-| **Perl LSP: Explain This Diagnostic**        | Explain PL701/PL109 diagnostics in the output channel when a receipt is available                                                                              |
-| **Perl LSP: Explain Missing Module Lookup**  | Show the current missing-module `@INC` lookup state and setup boundary                                                                                         |
-| **Perl LSP: Preview Safe Delete**            | Preview whether symbol deletion is allowed, blocked, or refused before editing                                                                                 |
-| **Perl LSP: Preview Package Rename**         | Preview package/compiler-backed rename evidence without authorizing an edit                                                                                    |
-| **Perl: Show Output Channel**                | Open the extension output log                                                                                                                                  |
-| **Perl: Show Status Menu**                   | Quick-access menu for all actions                                                                                                                              |
+### Server and setup
+
+| Command                                | Description                                                |
+| -------------------------------------- | ---------------------------------------------------------- |
+| **Perl: Restart Perl Language Server** | Restart the language server                                |
+| **Perl: Open Demo Project**            | Open a bundled demo project to try features immediately    |
+| **Perl: Run Health Check**             | Run the end-to-end health check and report what is working |
+| **Perl: Show Server Version**          | Display the installed `perllsp` version                    |
+| **Perl: Check for Binary Updates**     | Check whether a newer server binary is available           |
+| **Perl: Reinstall Server Binary**      | Re-download the managed server binary                      |
+| **Perl: Open Configuration Guide**     | Open the configuration guide                               |
+| **Perl: Show What's New**              | Show release notes for the installed version               |
+| **Perl: Show Output Channel**          | Open the extension output log                              |
+| **Perl: Show Status Menu**             | Quick-access menu for all actions                          |
+| **Perl: Report Issue**                 | Open a pre-filled issue report                             |
+
+### Editing and refactoring
+
+| Command                            | Description                                 |
+| ---------------------------------- | ------------------------------------------- |
+| **Perl: Format Document**          | Format the active document                  |
+| **Perl: Organize Use Statements**  | Sort and clean `use` statements             |
+| **Perl: Extract Variable**         | Extract the selection into a new variable   |
+| **Perl: Extract Method**           | Extract the selection into a new subroutine |
+| **Perl: Show Refactoring Options** | List refactorings available at the cursor   |
+
+### Testing
+
+| Command                             | Description                                |
+| ----------------------------------- | ------------------------------------------ |
+| **Perl: Run Tests in Current File** | Run tests in the active `.t` or `.pl` file |
+| **Perl: Run Current Test**          | Run the test file currently open           |
+| **Perl: Run Test at Cursor**        | Run only the test at the cursor            |
+| **Perl: Run All Tests**             | Run the whole workspace test suite         |
+
+### Diagnostics and quality
+
+| Command                       | Description                                                                                                              |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| **Perl: Check Syntax**        | Run a `perl -c` syntax check on the active file                                                                          |
+| **Perl: Run Critic**          | Run Perl::Critic over the active file                                                                                    |
+| **Perl: Set Critic Severity** | Choose the minimum Perl::Critic severity to report — `5` reports only the most severe violations, `1` reports everything |
+
+### Navigation and inspection
+
+| Command                              | Description                                    |
+| ------------------------------------ | ---------------------------------------------- |
+| **Perl: Open Module**                | Open a module by name, resolved through `@INC` |
+| **Perl: Show @INC Paths**            | Show the `@INC` paths the server is using      |
+| **Perl: Preview POD**                | Render the POD in the active file              |
+| **Perl: Show Parser AST**            | Show the parser AST for the active file        |
+| **Perl: Create Debug Configuration** | Generate a `launch.json` debug configuration   |
+
+### Explainability and previews
+
+| Command                                      | Description                                                                              |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| **Perl LSP: Explain Provider Decision**      | Show why the last provider acted, fell back, or refused                                  |
+| **Perl LSP: Copy Provider Decision Receipt** | Copy a structured local receipt for issue reports                                        |
+| **Perl LSP: Show Workspace Trust Report**    | Show workspace roots, module resolution, index state, support tiers, and boundary policy |
+| **Perl LSP: Explain This Diagnostic**        | Explain PL701/PL109 diagnostics in the output channel when a receipt is available        |
+| **Perl LSP: Explain Missing Module Lookup**  | Show the current missing-module `@INC` lookup state and setup boundary                   |
+| **Perl LSP: Preview Safe Delete**            | Preview whether symbol deletion is allowed, blocked, or refused before editing           |
+| **Perl LSP: Preview Package Rename**         | Preview package/compiler-backed rename evidence without authorizing an edit              |
 
 ## Compatibility
 
@@ -294,7 +338,7 @@ The `perllsp` binary works with any editor that supports the Language Server Pro
 - Run **Perl LSP: Show Workspace Trust Report** if module paths, Perl binary,
   or setup policy may be involved.
 - For Perl binary, `@INC`, `PERL5LIB`, perldoc, or DAP module-path mismatches,
-  see the [Perl setup troubleshooting guide](../docs/how-to/PERL_SETUP_TROUBLESHOOTING.md).
+  see the [Perl setup troubleshooting guide](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/how-to/PERL_SETUP_TROUBLESHOOTING.md).
 - To suppress false-positive diagnostics, use **Perl LSP: Copy Provider Decision Receipt** and file an issue with the copied receipt so the specific provider can be addressed.
 - File an issue with the copied provider receipt if you see false positives.
 
