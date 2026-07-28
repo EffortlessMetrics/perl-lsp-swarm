@@ -1223,7 +1223,7 @@ fn render_summary(receipt_path: &Path, summary_path: &Path, receipt: &CiRouteRec
 
 fn refresh_command(receipt_path: &Path, summary_path: &Path, receipt: &CiRouteReceipt) -> String {
     let mut command = format!(
-        "rtk cargo xtask ci route --base {} --head {} --receipt {} --summary {}",
+        "cargo xtask ci route --base {} --head {} --receipt {} --summary {}",
         shell_quote(&receipt.base),
         shell_quote(&receipt.head),
         shell_quote(&receipt_path.display().to_string()),
@@ -3916,7 +3916,7 @@ mod tests {
         assert!(summary.contains("`codecov-patch-95`: docs-only change"));
         assert!(
             summary.contains(
-                "rtk cargo xtask ci route --base origin/main --head HEAD --receipt 'target/receipts/ci route.json' --summary 'target/receipts/ci route.md' --changed-file 'docs/release notes.md'"
+                "cargo xtask ci route --base origin/main --head HEAD --receipt 'target/receipts/ci route.json' --summary 'target/receipts/ci route.md' --changed-file 'docs/release notes.md'"
             )
         );
         Ok(())
@@ -3962,7 +3962,7 @@ mod tests {
         assert!(summary.contains("# CI Route Proof Packet"));
         assert!(summary.contains("patch-coverage-xtask-supported-editor-inline-smoke"));
         assert!(summary.contains("supported_editor_inline_smoke"));
-        assert!(summary.contains("rtk cargo xtask ci route --base origin/main --head HEAD"));
+        assert!(summary.contains("cargo xtask ci route --base origin/main --head HEAD"));
         assert!(
             summary.contains("--changed-file xtask/src/tasks/supported_editor_inline_smoke.rs")
         );

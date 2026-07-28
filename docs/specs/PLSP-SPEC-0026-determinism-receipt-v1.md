@@ -186,12 +186,12 @@ A PR satisfies this spec when:
 Docs-only PRs for this spec may use:
 
 ```bash
-rtk cargo xtask check-active-goal-manifest
-rtk cargo xtask ci-hygiene check-doc-paths docs/specs
-rtk cargo xtask ci-hygiene check-doc-paths docs/project/status
-rtk cargo xtask check-support-claims
-rtk cargo xtask check-provider-confidence-matrix
-rtk git diff --check
+cargo xtask check-active-goal-manifest
+cargo xtask ci-hygiene check-doc-paths docs/specs
+cargo xtask ci-hygiene check-doc-paths docs/project/status
+cargo xtask check-support-claims
+cargo xtask check-provider-confidence-matrix
+git diff --check
 ```
 
 Schema or validator PRs must also run focused schema/validator tests. Runtime,

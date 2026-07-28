@@ -1025,7 +1025,7 @@ fn display_path(path: &Path) -> String {
 
 fn coverage_baseline_command(args: &CoverageBaselineArgs, check: bool) -> String {
     let mut command = format!(
-        "rtk cargo xtask coverage-baseline --lcov {} --receipt {} --codecov {}",
+        "cargo xtask coverage-baseline --lcov {} --receipt {} --codecov {}",
         args.lcov.display(),
         args.receipt.display(),
         args.codecov.display()
@@ -1649,7 +1649,7 @@ coverage:
             message.contains("coverage baseline receipt is stale"),
             "unexpected error: {message}"
         );
-        assert!(message.contains("rtk cargo xtask coverage-baseline"));
+        assert!(message.contains("cargo xtask coverage-baseline"));
         assert!(message.contains("--patch-coverage 94.00"));
         assert!(message.contains("--scope workspace-lib-xtask-quality"));
         Ok(())

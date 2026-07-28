@@ -98,7 +98,7 @@ cluster PRs one at a time produces contradictory verdicts and burns N times the 
 ```bash
 for pr in <PR-LIST>; do
   echo "=== PR #$pr ==="
-  rtk gh pr diff $pr --name-only
+  gh pr diff $pr --name-only
 done
 ```
 

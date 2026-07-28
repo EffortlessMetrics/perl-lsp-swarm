@@ -1752,7 +1752,7 @@ fn receipt_freshness_summary(receipt: &Value) -> String {
 
 fn coverage_baseline_command(args: &QualityGateArgs, check: bool) -> String {
     let mut command = format!(
-        "rtk cargo xtask coverage-baseline --lcov target/lcov.info --receipt {} --codecov {}",
+        "cargo xtask coverage-baseline --lcov target/lcov.info --receipt {} --codecov {}",
         args.coverage_receipt.display(),
         args.codecov.display()
     );
@@ -1766,7 +1766,7 @@ fn coverage_baseline_command(args: &QualityGateArgs, check: bool) -> String {
 }
 
 fn quality_gate_command(args: &QualityGateArgs, check: bool, patch: Option<f64>) -> String {
-    let mut command = format!("rtk cargo xtask quality-gate --mode {}", args.mode.as_str());
+    let mut command = format!("cargo xtask quality-gate --mode {}", args.mode.as_str());
     command.push_str(&format!(" --exception-policy {}", args.exception_policy.display()));
     match args.mode {
         QualityGateMode::Enforce => {
@@ -1815,7 +1815,7 @@ fn quality_gate_command(args: &QualityGateArgs, check: bool, patch: Option<f64>)
 
 fn ripr_plus_command(args: &QualityGateArgs, check: bool) -> String {
     let mut command =
-        format!("rtk cargo xtask ripr-plus --receipt {}", args.ripr_receipt.display());
+        format!("cargo xtask ripr-plus --receipt {}", args.ripr_receipt.display());
     if check {
         command.push_str(" --check");
     }
@@ -1824,7 +1824,7 @@ fn ripr_plus_command(args: &QualityGateArgs, check: bool) -> String {
 
 fn ripr_pr_command(args: &QualityGateArgs, check: bool) -> String {
     let mut command =
-        format!("rtk cargo xtask ripr-pr --base {} --head {}", args.ripr_base, args.ripr_head);
+        format!("cargo xtask ripr-pr --base {} --head {}", args.ripr_base, args.ripr_head);
     if check {
         command.push_str(" --check");
     }
@@ -1833,7 +1833,7 @@ fn ripr_pr_command(args: &QualityGateArgs, check: bool) -> String {
 
 fn ripr_review_command(args: &QualityGateArgs, check: bool) -> String {
     let mut command = format!(
-        "rtk cargo xtask ripr-review-comments --base {} --head {}",
+        "cargo xtask ripr-review-comments --base {} --head {}",
         args.ripr_base, args.ripr_head
     );
     if check {

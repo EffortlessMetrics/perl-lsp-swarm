@@ -35,8 +35,8 @@ coverage contexts do not block merge-ready status.
 The repo-wide RIPR+ baseline is generated with:
 
 ```bash
-rtk cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
-rtk cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
+cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
 ```
 
 The receipt is the burn-down inventory source. It keeps the existing
@@ -62,8 +62,8 @@ LSP behavior burn-down by itself.
 The workspace coverage baseline is generated with:
 
 ```bash
-rtk cargo xtask coverage-baseline --lcov target/lcov.info --receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml --patch-base origin/HEAD --scope routed-coverage-packs
-rtk cargo xtask coverage-baseline --lcov target/lcov.info --receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml --patch-base origin/HEAD --scope routed-coverage-packs --check
+cargo xtask coverage-baseline --lcov target/lcov.info --receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml --patch-base origin/HEAD --scope routed-coverage-packs
+cargo xtask coverage-baseline --lcov target/lcov.info --receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml --patch-base origin/HEAD --scope routed-coverage-packs --check
 ```
 
 The receipt keeps patch-gate fields for enforcement and also reports the

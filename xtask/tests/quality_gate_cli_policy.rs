@@ -245,13 +245,13 @@ fn quality_gate_final_enforce_blocks_missing_receipts() -> TestResult {
         "### ripr_pr_receipt_not_current",
         "### ripr_review_receipt_not_current",
         "- repair: `Refresh the LCOV coverage receipt before running the aggregate quality gate.`",
-        "- verify: `rtk cargo xtask quality-gate --mode enforce",
+        "- verify: `cargo xtask quality-gate --mode enforce",
         "--check`",
-        "- receipt: `rtk cargo xtask quality-gate --mode enforce",
-        "rtk cargo xtask coverage-baseline",
-        "rtk cargo xtask ripr-plus",
-        "rtk cargo xtask ripr-pr",
-        "rtk cargo xtask ripr-review-comments",
+        "- receipt: `cargo xtask quality-gate --mode enforce",
+        "cargo xtask coverage-baseline",
+        "cargo xtask ripr-plus",
+        "cargo xtask ripr-pr",
+        "cargo xtask ripr-review-comments",
     ] {
         assert!(
             markdown.contains(required),
@@ -898,7 +898,10 @@ fn assert_repair_contract(action: &Value) -> TestResult {
             .ok_or_else(|| format!("action missing {field}: {action}"))?;
         assert!(!value.trim().is_empty(), "action {field} must be non-empty: {action}");
         if matches!(field, "verify" | "receipt") {
-            assert!(value.starts_with("rtk "), "action {field} must use rtk: {value}");
+            assert!(
+                value.starts_with("cargo xtask "),
+                "action {field} must use a direct cargo xtask command: {value}"
+            );
         }
     }
     Ok(())

@@ -343,7 +343,7 @@ fn quality_gate_cli_blocks_missing_review_guidance_when_new_gaps_exist() -> Test
         "### new_ripr_gap",
         "### ripr_review_receipt_not_current",
         "- repair: `Regenerate and check the RIPR review-guidance receipt for this HEAD",
-        "rtk cargo xtask ripr-review-comments --base origin/HEAD --head HEAD --check",
+        "cargo xtask ripr-review-comments --base origin/HEAD --head HEAD --check",
     ] {
         assert!(
             markdown.contains(required),
@@ -600,7 +600,7 @@ fn quality_gate_cli_blocks_new_ripr_when_required_receipts_are_missing() -> Test
     assert_eq!(pr_action.get("expected_head_sha").and_then(Value::as_str), Some(head.as_str()));
     assert!(
         pr_action.get("verify").and_then(Value::as_str).is_some_and(|verify| verify
-            .starts_with("rtk cargo xtask ripr-pr --base origin/HEAD --head HEAD")
+            .starts_with("cargo xtask ripr-pr --base origin/HEAD --head HEAD")
             && verify.contains("--check")),
         "diff receipt failure must carry focused verify command: {pr_action}"
     );
@@ -865,8 +865,11 @@ fn assert_blocking_actions_have_repair_contract(receipt: &Value) -> TestResult {
             if value.trim().is_empty() {
                 return Err(format!("blocking action {kind} has empty {field}").into());
             }
-            if matches!(field, "verify" | "receipt") && !value.starts_with("rtk ") {
-                return Err(format!("blocking action {kind} {field} must use rtk: {value}").into());
+            if matches!(field, "verify" | "receipt") && !value.starts_with("cargo xtask ") {
+                return Err(format!(
+                    "blocking action {kind} {field} must use a direct cargo xtask command: {value}"
+                )
+                .into());
             }
         }
     }

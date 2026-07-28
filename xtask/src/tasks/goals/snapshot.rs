@@ -605,7 +605,7 @@ status = "active"
 lane = "trust"
 claim_boundary = "boundary text"
 files = ["docs/board.md"]
-commands = ["rtk cargo test"]
+commands = ["cargo test"]
 "#;
         let mut snapshot = SelectionSnapshot {
             repository: "r".to_owned(),
