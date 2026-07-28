@@ -377,13 +377,15 @@ mod tests {
     fn file_scope_pragma_additions_separate_unterminated_shebangs() {
         let source = "#!/usr/bin/perl";
 
-        let strict_action = must_some(add_use_strict_with_offset(source).first());
+        let strict_actions = add_use_strict_with_offset(source);
+        let strict_action = must_some(strict_actions.first());
         let strict = must_some(strict_action.edit.changes.first());
         assert_eq!(strict.location.start, source.len());
         assert_eq!(strict.location.end, source.len());
         assert_eq!(strict.new_text, "\nuse strict;\n");
 
-        let warnings_action = must_some(add_use_warnings_with_offset(source).first());
+        let warnings_actions = add_use_warnings_with_offset(source);
+        let warnings_action = must_some(warnings_actions.first());
         let warnings = must_some(warnings_action.edit.changes.first());
         assert_eq!(warnings.location.start, source.len());
         assert_eq!(warnings.location.end, source.len());
@@ -394,7 +396,8 @@ mod tests {
     fn file_scope_pragma_additions_preserve_terminated_shebangs() {
         let source = "#!/usr/bin/perl\n";
 
-        let strict_action = must_some(add_use_strict_with_offset(source).first());
+        let strict_actions = add_use_strict_with_offset(source);
+        let strict_action = must_some(strict_actions.first());
         let strict = must_some(strict_action.edit.changes.first());
         assert_eq!(strict.location.start, source.len());
         assert_eq!(strict.new_text, "use strict;\n");
