@@ -378,6 +378,12 @@ pub fn series_manifest(config: SeriesManifestConfig) -> Result<()> {
                 existing.series_id
             );
         }
+        if manifest.series_id == existing.series_id {
+            bail!(
+                "a replacement comparison series must declare a new --series-id, not reuse {}",
+                existing.series_id
+            );
+        }
     }
     write_series_manifest(&output_path, &manifest)?;
     tracing::info!(
@@ -5111,6 +5117,28 @@ mod tests {
         };
         if !error.to_string().contains("manifest is immutable") {
             bail!("unexpected immutable manifest error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn series_manifest_rejects_reusing_replaced_series_id() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let discovery_path = temp.path().join("discovery.json");
+        let output_path = temp.path().join("series.json");
+        write_discovery_report(&discovery_path, &sample_discovery_report())?;
+        let mut config = sample_series_config();
+        config.discovery = discovery_path;
+        config.output = Some(output_path.clone());
+        series_manifest(config.clone())?;
+
+        config.replaces_series_id = Some(config.series_id.clone());
+        config.change_reason = Some("reviewed replacement".into());
+        let Err(error) = series_manifest(config) else {
+            bail!("a replacement must not reuse the existing comparison-series ID");
+        };
+        if !error.to_string().contains("must declare a new --series-id") {
+            bail!("unexpected self-replacement error: {error}");
         }
         Ok(())
     }
