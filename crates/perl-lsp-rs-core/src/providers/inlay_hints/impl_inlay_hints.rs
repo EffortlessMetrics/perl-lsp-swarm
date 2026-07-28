@@ -253,15 +253,99 @@ fn collect_user_sub_signatures(ast: &Node) -> HashMap<String, Vec<String>> {
             NodeKind::Subroutine { name: Some(sub_name), signature: Some(sig), .. } => {
                 map.entry(sub_name.clone()).or_insert_with(|| param_names_from_signature_node(sig));
             }
+            NodeKind::Subroutine { name: Some(sub_name), signature: None, body, .. } => {
+                // No formal signature — try to extract params from @_ unpacking. (#5078)
+                // Pattern: my ($a, $b) = @_ or my $self = shift
+                if !map.contains_key(sub_name) {
+                    if let Some(params) = extract_params_from_at_underscore(body) {
+                        map.insert(sub_name.clone(), params);
+                    }
+                }
+            }
             NodeKind::Method { name: method_name, signature: Some(sig), .. } => {
                 map.entry(method_name.clone())
                     .or_insert_with(|| param_names_from_signature_node(sig));
+            }
+            NodeKind::Method { name: method_name, signature: None, body, .. } => {
+                if !map.contains_key(method_name) {
+                    if let Some(params) = extract_params_from_at_underscore(body) {
+                        map.insert(method_name.clone(), params);
+                    }
+                }
             }
             _ => {}
         }
         true
     });
     map
+}
+
+/// Extract parameter names from the dominant `my ($a, $b) = @_` or `my $x = shift`
+/// unpacking idiom in a sub body. (#5078)
+fn extract_params_from_at_underscore(body: &Node) -> Option<Vec<String>> {
+    let NodeKind::Block { statements } = &body.kind else { return None };
+    let first = statements.first()?;
+
+    // Check for: my ($x, $y, ...) = @_
+    if let NodeKind::VariableListDeclaration { variables, initializer, .. } = &first.kind {
+        if let Some(init) = initializer {
+            // Check if initializer is @_ (Variable { sigil: "@", name: "_" })
+            if let NodeKind::Variable { sigil, name } = &init.kind {
+                if sigil == "@" && name == "_" {
+                    let params: Vec<String> = variables
+                        .iter()
+                        .filter_map(|v| {
+                            if let NodeKind::Variable { name, .. } = &v.kind {
+                                // Skip undef slots
+                                if name.is_empty() { return None; }
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if !params.is_empty() {
+                        return Some(params);
+                    }
+                }
+            }
+        }
+    }
+
+    // Check for: my $self = shift (method invocant)
+    if let NodeKind::VariableDeclaration { variable, initializer, .. } = &first.kind {
+        if let Some(init) = initializer {
+            let init_text = format!("{}", init.kind);
+            if init_text.contains("shift") {
+                if let NodeKind::Variable { name, .. } = &variable.kind {
+                    // This is likely a method — self is the invocant.
+                    // Check next statement for more @_ unpacking.
+                    if statements.len() > 1 {
+                        if let NodeKind::VariableListDeclaration { variables, initializer, .. } =
+                            &statements[1].kind
+                        {
+                            if let Some(init2) = initializer {
+                                if let NodeKind::Variable { sigil, name } = &init2.kind {
+                                    if sigil == "@" && name == "_" {
+                                        let mut params = vec![name.as_str().to_string()];
+                                        params.extend(variables.iter().filter_map(|v| {
+                                            if let NodeKind::Variable { name, .. } = &v.kind {
+                                                if name.is_empty() { None } else { Some(name.clone()) }
+                                            } else { None }
+                                        }));
+                                        return Some(params);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return Some(vec![name.clone()]);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Generates inlay hints for function and method parameters.
