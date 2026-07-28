@@ -126,7 +126,20 @@ impl LspServer {
         let mut folders = self.workspace_folders.lock();
 
         if folders.is_empty() {
-            return; // Single-file mode; no workspace root to search
+            // Single-file mode: try to discover .perl-lsp.toml from the
+            // open document's directory. This is a common workflow — opening
+            // a lone .pl file that has a .perl-lsp.toml next to it. (#UX15)
+            if let Some(config) = self.discover_single_file_config() {
+                let mut server_config = self.config.lock();
+                let mut workspace_config = WorkspaceConfig::default();
+                if let Some(init_opts) = self.initialization_options_perl_settings.lock().as_ref() {
+                    workspace_config.update_from_value(init_opts);
+                }
+                config.apply_to_server_config(&mut server_config);
+                config.apply_to_workspace_config(&mut workspace_config);
+                *self.config.lock() = server_config;
+            }
+            return;
         }
 
         // Collect (display_name, project_config) for folders that have a
@@ -222,6 +235,18 @@ impl LspServer {
         // as the highest-precedence layer over TOML-derived folder config.
         drop(folders);
         self.request_workspace_configuration_for_folders();
+    }
+
+    /// In single-file mode, try to discover `.perl-lsp.toml` from the
+    /// directory of the first open document. (#UX15)
+    fn discover_single_file_config(&self) -> Option<perl_lsp_rs_core::config::ProjectConfig> {
+        let documents = self.documents.lock();
+        let uri = documents.keys().next()?.to_string();
+        drop(documents);
+
+        let path = super::super::source_path_from_uri(&uri)?;
+        let dir = std::path::Path::new(&path).parent()?;
+        perl_lsp_rs_core::config::load_project_config(dir).ok().flatten()
     }
 
     /// Emit a `window/showMessage` Warning describing the conflicting
