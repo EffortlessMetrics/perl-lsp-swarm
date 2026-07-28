@@ -412,7 +412,13 @@ fn extract_pod_ranges(text: &str) -> Vec<(usize, usize)> {
                 pod_start = Some(line_no);
             }
         } else if trimmed.starts_with("=cut") || trimmed.starts_with("=end") {
-            ranges.push((pod_start.take().unwrap(), line_no));
+            // `pod_start` is necessarily `Some` in this branch (the `if` above
+            // covers the `None` case), but take it by pattern match rather than
+            // `unwrap()` so a future edit to the branch condition degrades to a
+            // skipped range instead of panicking the server on user input.
+            if let Some(start) = pod_start.take() {
+                ranges.push((start, line_no));
+            }
         }
     }
     // Unclosed POD block extends to end of file

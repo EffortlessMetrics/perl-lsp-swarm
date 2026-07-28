@@ -297,7 +297,9 @@ fn extract_params_from_at_underscore(body: &Node) -> Option<Vec<String>> {
                         .filter_map(|v| {
                             if let NodeKind::Variable { name, .. } = &v.kind {
                                 // Skip undef slots
-                                if name.is_empty() { return None; }
+                                if name.is_empty() {
+                                    return None;
+                                }
                                 Some(name.clone())
                             } else {
                                 None
@@ -321,8 +323,9 @@ fn extract_params_from_at_underscore(body: &Node) -> Option<Vec<String>> {
                     // This is likely a method — self is the invocant.
                     // Check next statement for more @_ unpacking.
                     if statements.len() > 1 {
-                        if let NodeKind::VariableListDeclaration { variables, initializer, .. } =
-                            &statements[1].kind
+                        if let NodeKind::VariableListDeclaration {
+                            variables, initializer, ..
+                        } = &statements[1].kind
                         {
                             if let Some(init2) = initializer {
                                 if let NodeKind::Variable { sigil, name } = &init2.kind {
@@ -330,8 +333,14 @@ fn extract_params_from_at_underscore(body: &Node) -> Option<Vec<String>> {
                                         let mut params = vec![name.as_str().to_string()];
                                         params.extend(variables.iter().filter_map(|v| {
                                             if let NodeKind::Variable { name, .. } = &v.kind {
-                                                if name.is_empty() { None } else { Some(name.clone()) }
-                                            } else { None }
+                                                if name.is_empty() {
+                                                    None
+                                                } else {
+                                                    Some(name.clone())
+                                                }
+                                            } else {
+                                                None
+                                            }
                                         }));
                                         return Some(params);
                                     }
