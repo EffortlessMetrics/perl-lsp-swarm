@@ -1,0 +1,69 @@
+name: Apply residual RTK guidance cleanup
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.ref == 'agent/remove-residual-rtk-guidance' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: agent/remove-residual-rtk-guidance
+          fetch-depth: 0
+      - name: Apply bounded replacements
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            .ci/README-coverage.md
+            .kiro/specs/rc2-semantic-analysis/design.md
+            .spec/4414-parser-layering/checklist.md
+            .spec/4420-wave1-perl-module/checklist.md
+            .spec/agent-context-v1/acceptance.md
+            docs/ci/ripr.md
+            docs/development/LSP_INTERACTIVE_LATENCY_ROLLOUT.md
+            docs/how-to/COVERAGE.md
+            docs/project/TREE_SITTER_INCREMENTAL_CROSSOVER.md
+            docs/project/status/coverage_and_ripr_enforcement.md
+            docs/proposals/PLSP-PROP-0003-spec-governance.md
+            docs/reference/CI_ARCHITECTURE.md
+            docs/reference/CLUSTER_CURATION.md
+            docs/reference/COMMANDS_REFERENCE.md
+            docs/reference/FAILURE_MODES.md
+            docs/reference/LANE_BOUNDARIES.md
+            docs/specs/PLSP-SPEC-0026-determinism-receipt-v1.md
+            docs/specs/PLSP-SPEC-0027-differential-real-perl-oracle.md
+            plans/real-perl-editor-trust/implementation-plan.md
+            plans/spec-governance/implementation-plan.md
+            scripts/ci/test_receipts_to_junit.py
+            xtask/src/tasks/ci_route.rs
+            xtask/src/tasks/goals/snapshot.rs
+            xtask/src/tasks/quality_baseline.rs
+            xtask/src/tasks/quality_gate.rs
+            xtask/tests/quality_gate_cli_policy.rs
+            xtask/tests/quality_gate_patch_coverage_cli_policy.rs
+            xtask/tests/quality_gate_ripr_new_gap_cli_policy.rs
+            xtask/tests/quality_pr_summary_policy.rs
+          )
+          changed=0
+          for file in "${files[@]}"; do
+            if [ -f "$file" ] && grep -q 'rtk ' "$file"; then
+              perl -pi -e 's/rtk //g' "$file"
+              changed=1
+            fi
+          done
+          if [ "$changed" = 0 ]; then
+            exit 0
+          fi
+          git diff --check
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add "${files[@]}"
+          git commit -m 'docs: remove RTK from live guidance and generated commands'
+          git push origin HEAD:agent/remove-residual-rtk-guidance
