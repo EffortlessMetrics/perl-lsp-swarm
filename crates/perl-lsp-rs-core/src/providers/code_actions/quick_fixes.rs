@@ -1084,7 +1084,7 @@ pub fn add_use_warnings_with_offset(source: &str) -> Vec<CodeAction> {
 /// Compute the insertion offset for `use strict`/`use warnings`, skipping
 /// the shebang line if present. Without this, the pragma is inserted before
 /// `#!/usr/bin/perl`, breaking script execution. (#UX_GAP_01)
-pub fn file_scope_pragma_insertion_offset(source: &str) -> usize {
+fn file_scope_pragma_insertion_offset(source: &str) -> usize {
     if source.starts_with("#!") {
         source.find('\n').map(|offset| offset + 1).unwrap_or(source.len())
     } else {
