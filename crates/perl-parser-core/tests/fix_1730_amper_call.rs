@@ -42,6 +42,19 @@ fn amper_call_with_args_produces_amper_call_node() -> TestResult {
 }
 
 #[test]
+fn amper_call_location_includes_parenthesized_arguments() -> TestResult {
+    let source = "&foo(1, 2);";
+    let expr = first_statement_expr(source)?;
+    assert_eq!(expr.location.start, 0);
+    assert_eq!(
+        expr.location.end,
+        source.find(';').ok_or("expected statement terminator")?,
+        "AmperCall location must include its arguments and closing parenthesis"
+    );
+    Ok(())
+}
+
+#[test]
 fn amper_call_without_parens_produces_amper_call_node() -> TestResult {
     // &foo with no parens: forwards caller's @_ verbatim in Perl
     let expr = first_statement_expr("&foo;")?;
