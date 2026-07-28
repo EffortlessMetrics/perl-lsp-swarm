@@ -827,7 +827,9 @@ impl LspServer {
             "tied" => Some(("tied VARIABLE", vec!["VARIABLE"])),
             "dbmopen" => Some(("dbmopen HASH, DBNAME, MODE", vec!["HASH", "DBNAME", "MODE"])),
             "dbmclose" => Some(("dbmclose HASH", vec!["HASH"])),
-            "select" => Some(("select FILEHANDLE", vec!["FILEHANDLE"])),
+            // select has two forms: 1-arg (filehandle) and 4-arg (rbits). (#5082)
+            // We show both and let activeParameter disambiguate.
+            "select" => Some(("select FILEHANDLE | select RBITS, WBITS, EBITS, TIMEOUT", vec!["FILEHANDLE"])),
             "syscall" => Some(("syscall NUMBER, LIST", vec!["NUMBER", "LIST"])),
             "dump" => Some(("dump LABEL", vec!["LABEL"])),
             "prototype" => Some(("prototype FUNCTION", vec!["FUNCTION"])),

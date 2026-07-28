@@ -583,6 +583,36 @@ impl ServerConfig {
                 }
             }
         }
+
+        // Warn on wrong-type values for well-known settings. (#5093)
+        // The and_then(|v| v.as_*) guards above silently ignore type mismatches;
+        // this pass surfaces them so users know their config is being ignored.
+        warn_on_type_mismatch(settings, "inlayHints", "enabled", "boolean");
+        warn_on_type_mismatch(settings, "inlayHints", "parameterHints", "boolean");
+        warn_on_type_mismatch(settings, "inlayHints", "typeHints", "boolean");
+        warn_on_type_mismatch(settings, "testRunner", "enabled", "boolean");
+        warn_on_type_mismatch(settings, "diagnostics", "enabled", "boolean");
+        warn_on_type_mismatch(settings, "critic", "enabled", "boolean");
+        warn_on_type_mismatch(settings, "formatting", "enabled", "boolean");
+    }
+}
+
+/// Log a warning when a config value has the wrong type. (#5093)
+fn warn_on_type_mismatch(settings: &serde_json::Value, section: &str, field: &str, expected: &str) {
+    if let Some(section_val) = settings.get(section)
+        && let Some(field_val) = section_val.get(field)
+    {
+        let is_correct = match expected {
+            "boolean" => field_val.is_boolean(),
+            "string" => field_val.is_string(),
+            "number" => field_val.is_u64() || field_val.is_i64() || field_val.is_f64(),
+            _ => true,
+        };
+        if !is_correct {
+            tracing::warn!(
+                "Config {section}.{field} has wrong type (expected {expected}), ignoring value: {field_val}"
+            );
+        }
     }
 }
 
