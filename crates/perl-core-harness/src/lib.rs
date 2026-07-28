@@ -366,6 +366,8 @@ fn build_series_manifest(
         invocation_identity: &config.invocation_identity,
         capability_identity: &config.capability_identity,
         environment_identity: &config.environment_identity,
+        replaces_series_id: config.replaces_series_id.as_deref(),
+        change_reason: config.change_reason.as_deref(),
     });
 
     Ok(SeriesManifest {
@@ -504,6 +506,8 @@ fn validate_series_manifest(manifest: &SeriesManifest) -> Result<()> {
         invocation_identity: &manifest.invocation_identity,
         capability_identity: &manifest.capability_identity,
         environment_identity: &manifest.environment_identity,
+        replaces_series_id: manifest.replaces_series_id.as_deref(),
+        change_reason: manifest.change_reason.as_deref(),
     });
     if manifest.manifest_hash != expected_hash {
         bail!("series manifest hash does not match its identity and file list");
@@ -527,6 +531,8 @@ struct SeriesManifestHashInput<'a> {
     invocation_identity: &'a str,
     capability_identity: &'a str,
     environment_identity: &'a str,
+    replaces_series_id: Option<&'a str>,
+    change_reason: Option<&'a str>,
 }
 
 fn series_manifest_hash(input: &SeriesManifestHashInput<'_>) -> String {
@@ -553,12 +559,24 @@ fn series_manifest_hash(input: &SeriesManifestHashInput<'_>) -> String {
     for value in input.roots.iter().chain(input.files.iter()) {
         hash_manifest_value(&mut hasher, value);
     }
+    hash_manifest_optional_value(&mut hasher, input.replaces_series_id);
+    hash_manifest_optional_value(&mut hasher, input.change_reason);
     hex_lower(&hasher.finalize())
 }
 
 fn hash_manifest_value(hasher: &mut Sha256, value: &str) {
     hasher.update((value.len() as u64).to_le_bytes());
     hasher.update(value.as_bytes());
+}
+
+fn hash_manifest_optional_value(hasher: &mut Sha256, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            hash_manifest_value(hasher, "some");
+            hash_manifest_value(hasher, value);
+        }
+        None => hash_manifest_value(hasher, "none"),
+    }
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -766,8 +784,21 @@ pub fn baseline(config: BaselineConfig) -> Result<()> {
 
         let baseline = read_compile_baseline_v2(&baseline_path)?;
         let identities = required_v2_identities(&config)?;
-        let comparison =
-            compare_baseline_v2_with_identities(&baseline, &report, &series, Some(&identities));
+        validate_v2_identities_against_series(&identities, &series)?;
+        let retirements = config
+            .boundary_retirements
+            .as_ref()
+            .map(|path| read_boundary_retirements(path))
+            .transpose()?
+            .unwrap_or_default();
+        let comparison = compare_baseline_v2_with_identities(
+            &baseline,
+            &report,
+            &series,
+            Some(&identities),
+            config.accepted_transition_id.as_deref(),
+            &retirements,
+        );
         if !comparison.is_clean() {
             bail_baseline_comparison(&comparison)?;
         }
@@ -1464,6 +1495,8 @@ fn baseline_v2_from_report(
 ) -> Result<CompileBaselineV2> {
     let identities = required_v2_identities(config)?;
     validate_report_against_series(report, series, config.mode)?;
+    validate_v2_identities_against_series(&identities, series)?;
+    ensure_valid_report_shape(report)?;
     let file_membership =
         report.file_results.iter().map(|result| result.path.clone()).collect::<BTreeSet<_>>();
     let expected_membership = series.normalized_manifest.iter().cloned().collect::<BTreeSet<_>>();
@@ -1575,6 +1608,37 @@ fn required_identity(value: Option<&str>, name: &str) -> Result<String> {
     Ok(value.to_string())
 }
 
+fn validate_v2_identities_against_series(
+    identities: &V2Identities,
+    series: &SeriesManifest,
+) -> Result<()> {
+    if identities.compiler_subject_identity != series.compiler_subject_identity
+        || identities.invocation_identity != series.invocation_identity
+        || identities.capability_identity != series.capability_identity
+        || identities.environment_identity != series.environment_identity
+    {
+        bail!("baseline v2 identity inputs do not match the comparison series");
+    }
+    Ok(())
+}
+
+fn ensure_valid_report_shape(report: &RunReport) -> Result<()> {
+    let mut validation = validate_report_bucket_shape(report);
+    validation.extend(validate_semantic_boundary_shape(report));
+    if validation.is_empty() {
+        return Ok(());
+    }
+    let details = validation
+        .iter()
+        .map(|violation| {
+            let path = violation.path.as_deref().unwrap_or("-");
+            format!("{:?} {path}: {}", violation.kind, violation.message)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    bail!("cannot accept baseline with invalid receipt shape:\n{details}");
+}
+
 fn validate_report_against_series(
     report: &RunReport,
     series: &SeriesManifest,
@@ -1607,7 +1671,7 @@ fn compare_baseline_v2(
     report: &RunReport,
     series: &SeriesManifest,
 ) -> BaselineComparison {
-    compare_baseline_v2_with_identities(baseline, report, series, None)
+    compare_baseline_v2_with_identities(baseline, report, series, None, None, &[])
 }
 
 fn compare_baseline_v2_with_identities(
@@ -1615,6 +1679,8 @@ fn compare_baseline_v2_with_identities(
     report: &RunReport,
     series: &SeriesManifest,
     identities: Option<&V2Identities>,
+    transition_id: Option<&str>,
+    retirements: &[BoundaryRetirement],
 ) -> BaselineComparison {
     let mut violations = Vec::new();
     if baseline.schema_version != COMPILE_BASELINE_V2_SCHEMA_VERSION {
@@ -1676,6 +1742,18 @@ fn compare_baseline_v2_with_identities(
             "current identity inputs differ from the v2 baseline measured subject",
         ));
     }
+    if let Some(identities) = identities
+        && (identities.compiler_subject_identity != series.compiler_subject_identity
+            || identities.invocation_identity != series.invocation_identity
+            || identities.capability_identity != series.capability_identity
+            || identities.environment_identity != series.environment_identity)
+    {
+        violations.push(violation(
+            BaselineViolationKind::MeasuredSubjectMismatch,
+            None,
+            "current identity inputs differ from the comparison-series subject",
+        ));
+    }
     let current_membership =
         report.file_results.iter().map(|result| result.path.as_str()).collect::<BTreeSet<_>>();
     let series_membership =
@@ -1718,18 +1796,19 @@ fn compare_baseline_v2_with_identities(
         file_results: baseline.file_results.clone(),
         semantic_boundaries: Some(baseline.semantic_boundaries.clone()),
     };
-    violations.extend(compare_baseline(&legacy, report).violations);
+    let allow_boundary_transition = transition_id.is_some_and(|value| !value.trim().is_empty());
+    violations.extend(compare_baseline(&legacy, report).violations.into_iter().filter(
+        |violation| {
+            !allow_boundary_transition || violation.kind != BaselineViolationKind::SemanticBoundary
+        },
+    ));
     violations.extend(compare_boundary_transition(
-        &legacy_v2_boundary_view(baseline),
+        baseline,
         &report.semantic_boundaries,
-        &[],
-        "baseline-check",
+        retirements,
+        transition_id.unwrap_or(""),
     ));
     BaselineComparison { violations }
-}
-
-fn legacy_v2_boundary_view(baseline: &CompileBaselineV2) -> CompileBaselineV2 {
-    baseline.clone()
 }
 
 fn compare_boundary_transition(
@@ -1738,12 +1817,14 @@ fn compare_boundary_transition(
     retirements: &[BoundaryRetirement],
     transition_id: &str,
 ) -> Vec<BaselineViolation> {
+    let mut sorted_current = current.to_vec();
+    sorted_current.sort_by_key(semantic_boundary_key);
     let previous_by_key = previous
         .semantic_boundaries
         .iter()
         .map(|boundary| (semantic_boundary_key(boundary), boundary))
         .collect::<BTreeMap<_, _>>();
-    let current_by_key = current
+    let current_by_key = sorted_current
         .iter()
         .map(|boundary| (semantic_boundary_key(boundary), boundary))
         .collect::<BTreeMap<_, _>>();
@@ -1766,7 +1847,7 @@ fn compare_boundary_transition(
             ));
         }
     }
-    if previous.semantic_boundaries != current && transition_id.trim().is_empty() {
+    if previous.semantic_boundaries != sorted_current && transition_id.trim().is_empty() {
         violations.push(violation(
             BaselineViolationKind::SemanticBoundary,
             None,
@@ -1801,7 +1882,22 @@ fn compare_boundary_transition(
 }
 
 fn report_digest(report: &RunReport) -> Result<String> {
-    let bytes = serde_json::to_vec(report).context("serializing report for digest")?;
+    let mut stable = report.clone();
+    // These values identify the disposable measurement environment, not the measured
+    // compiler result. Excluding them keeps a fresh replay comparable to its receipt.
+    stable.timestamp.clear();
+    stable.prepared_tree.clear();
+    stable.run_tree.clear();
+    stable.host_perl.clear();
+    stable.file_results.sort_by(|left, right| left.path.cmp(&right.path));
+    stable.failures.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.bucket.cmp(&right.bucket))
+            .then_with(|| left.phase.cmp(&right.phase))
+    });
+    stable.semantic_boundaries.sort_by_key(semantic_boundary_key);
+    let bytes = serde_json::to_vec(&stable).context("serializing stable report for digest")?;
     Ok(hex_lower(&Sha256::digest(bytes)))
 }
 
@@ -1817,6 +1913,12 @@ fn read_compile_baseline_v2(path: &Path) -> Result<CompileBaselineV2> {
     }
     if schema != COMPILE_BASELINE_V2_SCHEMA_VERSION {
         bail!("unsupported compile baseline schema: {schema}");
+    }
+    if !value.as_object().is_some_and(|object| object.contains_key("semantic_boundaries")) {
+        bail!(
+            "{:?}: migrated v2 baseline must declare semantic_boundaries, including an empty list",
+            BaselineViolationKind::MissingBoundaryInventory
+        );
     }
     serde_json::from_value(value)
         .with_context(|| format!("decoding v2 baseline {}", path.display()))
@@ -3609,6 +3711,89 @@ mod tests {
     }
 
     #[test]
+    fn comparison_series_hash_includes_transition_metadata() -> TestResult {
+        let discovery = sample_discovery_report();
+        let first = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut replacement_config = sample_series_config();
+        replacement_config.replaces_series_id = Some(first.series_id.clone());
+        replacement_config.change_reason = Some("reviewed denominator correction".into());
+        let replacement = build_series_manifest(&discovery, &replacement_config, "now".into())?;
+        if first.manifest_hash == replacement.manifest_hash {
+            bail!("series replacement metadata must contribute to the manifest hash");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_binds_identities_to_series() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut config = sample_baseline_v2_config();
+        config.compiler_subject_identity = Some("different-compiler".into());
+        let Err(error) =
+            baseline_v2_from_report(&sample_compile_report(), &series, &config, None, &[])
+        else {
+            bail!("a baseline subject from a different compiler must fail closed");
+        };
+        if !error.to_string().contains("comparison series") {
+            bail!("unexpected identity mismatch error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_requires_report_shape_validation() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut report = sample_compile_report();
+        report.file_results[0].status = RunnerStatus::Fail;
+        let Err(error) =
+            baseline_v2_from_report(&report, &series, &sample_baseline_v2_config(), None, &[])
+        else {
+            bail!("an unbucketed failing file must not be accepted into baseline v2");
+        };
+        if !error.to_string().contains("UnbucketedFailure") {
+            bail!("unexpected report-shape error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn report_digest_ignores_disposable_measurement_metadata() -> TestResult {
+        let report = sample_compile_report();
+        let mut replay = report.clone();
+        replay.timestamp = "different-time".into();
+        replay.prepared_tree = "different-prepared-tree".into();
+        replay.run_tree = "different-run-tree".into();
+        replay.host_perl = "different-host-perl".into();
+        replay.file_results.reverse();
+        replay.failures.reverse();
+        replay.semantic_boundaries.reverse();
+        if report_digest(&report)? != report_digest(&replay)? {
+            bail!("volatile paths, timestamps, and record order changed the report digest");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_rejects_boundary_change_without_transition() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let baseline = baseline_v2_from_report(
+            &sample_compile_report(),
+            &series,
+            &sample_baseline_v2_config(),
+            None,
+            &[],
+        )?;
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+        let comparison = compare_baseline_v2(&baseline, &report, &series);
+        assert_violation(&comparison, BaselineViolationKind::SemanticBoundary);
+        Ok(())
+    }
+
+    #[test]
     fn compile_baseline_v2_requires_reviewed_boundary_retirement() -> TestResult {
         let discovery = sample_discovery_report();
         let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
@@ -3663,6 +3848,34 @@ mod tests {
         };
         if !error.to_string().contains("historical compile baseline v1") {
             bail!("unexpected v1 migration error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_requires_boundary_inventory_field() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("baseline.json");
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let baseline = baseline_v2_from_report(
+            &sample_compile_report(),
+            &series,
+            &sample_baseline_v2_config(),
+            None,
+            &[],
+        )?;
+        let mut value = serde_json::to_value(baseline)?;
+        value
+            .as_object_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("baseline was not an object"))?
+            .remove("semantic_boundaries");
+        fs::write(&path, format!("{}\n", serde_json::to_string(&value)?))?;
+        let Err(error) = read_compile_baseline_v2(&path) else {
+            bail!("a v2 baseline without a boundary inventory must fail closed");
+        };
+        if !error.to_string().contains("MissingBoundaryInventory") {
+            bail!("unexpected missing inventory error: {error}");
         }
         Ok(())
     }
