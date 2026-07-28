@@ -89,7 +89,7 @@ legacy scanner, protocol capability declarations, and unrelated document-link fo
 ## Cargo-allow/source exceptions
 
 N/A - no source exception is needed or authorized. The lane-level proof is
-`rtk cargo allow diff --base origin/main`, which must report no new exception for
-this change. The full `rtk cargo allow check` is also run and its repository-wide
+`cargo allow diff --base origin/main`, which must report no new exception for
+this change. The full `cargo allow check` is also run and its repository-wide
 baseline result is recorded separately; pre-existing ledger debt is not attributed
 to this issue.
