@@ -523,11 +523,11 @@ gh pr view <N> --json statusCheckRollup \
 gh pr view <N> --json mergeStateStatus
 ```
 
-**Do not use `rtk gh pr checks` for merge-readiness decisions.** The `rtk` filter
+**Do not use `gh pr checks` for merge-readiness decisions.** The `rtk` filter
 summarizes individual job conclusions and can drop aggregator failures. PR #7016 showed
 this: `rtk` reported "Passed: 14, Failed: 0" while `CI Gate (Merge-Blocking)` was
 `FAILURE` on the latest SHA. Use raw `statusCheckRollup` queries for merge gates.
-See [FAILURE_MODES.md — rtk gh pr checks Masks Aggregator Failure](FAILURE_MODES.md).
+See [FAILURE_MODES.md — gh pr checks Masks Aggregator Failure](FAILURE_MODES.md).
 
 ### Reconciler Behavior
 
@@ -661,7 +661,7 @@ differing only in `metadata.environment.type` ("local" vs "ci").
 - [OCTOPUS_CLUSTER.md](OCTOPUS_CLUSTER.md) — umbrella system design, vocabulary
 - [FAILURE_MODES.md](FAILURE_MODES.md) — operational failure patterns (Master Bit-Rot
   Cascade, xtask fmt False Cascade, Master Test Panic Blocker, CI Cancellation Cascade,
-  Workflow PR-Only Trigger Observability Gap, rtk Masks Aggregator Failure)
+  Workflow PR-Only Trigger Observability Gap, Masks Aggregator Failure)
 - [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md) — live CI vs `ci-green` label;
   reconciler behavior; merge-readiness query patterns
 - [ORCHESTRATION_DOCTRINE.md](ORCHESTRATION_DOCTRINE.md) — design philosophy behind the

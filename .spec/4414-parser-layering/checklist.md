@@ -270,10 +270,10 @@ The builder should write assertions that verify:
 After implementation and before marking `green-tdd-reviewed`:
 
 ```bash
-rtk cargo test --workspace --lib 2>&1 | grep -E "test result|FAILED"
-rtk cargo clippy --workspace --lib 2>&1 | grep -E "warning|error" | head -10
-rtk cargo xtask fmt --check 2>&1
-rtk gh pr create --title "refactor(parser): remove LSP provider re-exports (#4414)" \
+cargo test --workspace --lib 2>&1 | grep -E "test result|FAILED"
+cargo clippy --workspace --lib 2>&1 | grep -E "warning|error" | head -10
+cargo xtask fmt --check 2>&1
+gh pr create --title "refactor(parser): remove LSP provider re-exports (#4414)" \
   --body "Restores parser as pure leaf crate by removing LSP provider dependencies and re-exports."
 ```
 

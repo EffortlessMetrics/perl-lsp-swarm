@@ -17,7 +17,7 @@ The scheduled/manual coverage lane keeps branch diagnostics on library/unit test
 Generate an HTML coverage report locally:
 
 ```bash
-rtk just coverage
+just coverage
 ```
 
 This will:
@@ -32,7 +32,7 @@ This will:
 Get a quick coverage summary in the terminal:
 
 ```bash
-rtk just coverage-summary
+just coverage-summary
 ```
 
 ### LCOV Format (for CI)
@@ -40,7 +40,7 @@ rtk just coverage-summary
 Generate coverage in LCOV format (compatible with Codecov):
 
 ```bash
-rtk just coverage-lcov
+just coverage-lcov
 ```
 
 This creates `lcov.info` in the project root.
@@ -67,14 +67,14 @@ informational during burn-down.
 Generate the coverage receipt from LCOV before running the patch gate:
 
 ```bash
-rtk cargo xtask coverage-baseline --lcov target/lcov.info --receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml --patch-coverage <patch-percent>
+cargo xtask coverage-baseline --lcov target/lcov.info --receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml --patch-coverage <patch-percent>
 ```
 
 Manual routed diagnostics can derive patch coverage from a diff and the
 route-selected proof-pack LCOV file:
 
 ```bash
-rtk cargo xtask coverage-baseline --lcov target/lcov.info --receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml --patch-base origin/HEAD --scope routed-coverage-packs
+cargo xtask coverage-baseline --lcov target/lcov.info --receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml --patch-base origin/HEAD --scope routed-coverage-packs
 ```
 
 The coverage receipt records both `coverage.patch` and `coverage.project` so
@@ -84,7 +84,7 @@ burn-down number without blocking normal PR flow.
 Then run the patch coverage quality gate:
 
 ```bash
-rtk cargo xtask quality-gate --mode enforce-patch-coverage --coverage-receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml
+cargo xtask quality-gate --mode enforce-patch-coverage --coverage-receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml
 ```
 
 Use `--check` on either command to validate existing receipts instead of rewriting them. A failing patch gate writes JSON and Markdown receipts under `target/receipts/quality/` and names the missing proof:
@@ -219,7 +219,7 @@ The coverage workflow file defines:
 The `just coverage` recipes automatically install `cargo-llvm-cov` if missing. To install manually:
 
 ```bash
-rtk cargo install cargo-llvm-cov --locked
+cargo install cargo-llvm-cov --locked
 ```
 
 ### Coverage report generation fails
@@ -291,7 +291,7 @@ Use coverage to find gaps:
 
 ```bash
 # Generate HTML report
-rtk just coverage
+just coverage
 
 # Open target/coverage/index.html
 # Find uncovered lines (red highlighting)

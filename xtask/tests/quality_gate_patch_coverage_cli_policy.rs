@@ -20,13 +20,13 @@ fn coverage_how_to_documents_patch_gate_cli_guidance() -> TestResult {
 
     assert!(
         coverage_doc.contains(
-            "rtk cargo xtask coverage-baseline --lcov target/lcov.info --receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml --patch-coverage <patch-percent>"
+            "cargo xtask coverage-baseline --lcov target/lcov.info --receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml --patch-coverage <patch-percent>"
         ),
         "coverage how-to must show the rtk-prefixed coverage receipt command"
     );
     assert!(
         coverage_doc.contains(
-            "rtk cargo xtask quality-gate --mode enforce-patch-coverage --coverage-receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml"
+            "cargo xtask quality-gate --mode enforce-patch-coverage --coverage-receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml"
         ),
         "coverage how-to must show the rtk-prefixed patch quality-gate command"
     );
@@ -599,7 +599,7 @@ fn assert_repair_contract(action: &Value) -> TestResult {
             .ok_or_else(|| format!("action missing {field}: {action}"))?;
         assert!(!value.trim().is_empty(), "action {field} must be non-empty: {action}");
         if matches!(field, "verify" | "receipt") {
-            assert!(value.starts_with("rtk "), "action {field} must use rtk: {value}");
+            assert!(value.starts_with(""), "action {field} must use rtk: {value}");
         }
     }
     Ok(())

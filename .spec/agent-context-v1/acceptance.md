@@ -21,11 +21,11 @@
 ## Proof
 
 ```text
-rtk cargo test -p perl-lsp-rs --test lsp_execute_command_tests test_execute_command_agent_context_is_read_only_and_actionable --profile agent --locked -- --nocapture --test-threads=1
-rtk cargo test -p perl-lsp-rs --test lsp_execute_command_tests test_execute_command_capabilities --profile agent --locked -- --nocapture --test-threads=1
-rtk cargo test -p perl-lsp-rs-core --lib test_validate_execute_command_allows_agent_context --profile agent --locked -- --nocapture --test-threads=1
-rtk cargo test -p perl-lsp-rs --lib test_supported_commands_includes_go_to_test --profile agent --locked -- --nocapture --test-threads=1
-rtk git diff --check
+cargo test -p perl-lsp-rs --test lsp_execute_command_tests test_execute_command_agent_context_is_read_only_and_actionable --profile agent --locked -- --nocapture --test-threads=1
+cargo test -p perl-lsp-rs --test lsp_execute_command_tests test_execute_command_capabilities --profile agent --locked -- --nocapture --test-threads=1
+cargo test -p perl-lsp-rs-core --lib test_validate_execute_command_allows_agent_context --profile agent --locked -- --nocapture --test-threads=1
+cargo test -p perl-lsp-rs --lib test_supported_commands_includes_go_to_test --profile agent --locked -- --nocapture --test-threads=1
+git diff --check
 ```
 
 ## Non-goals
