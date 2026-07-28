@@ -2,7 +2,7 @@
 
 This guide covers the `perllsp` / `perl-lsp-rs` binary's built-in debugging
 modes. For debugging Perl programs **via DAP**, see
-[docs/reference/DEBUGGING.md](../reference/DEBUGGING.md) instead.
+[docs/how-to/DEBUGGING.md](../how-to/DEBUGGING.md) instead.
 
 ## Quick-reference
 
@@ -29,8 +29,9 @@ client:
 perllsp --check lib/MyModule.pm t/basic.t
 ```
 
-The output format is JSON when the server was built with the `--json` flag;
-otherwise plain text. Exit code 0 means no errors.
+Output is always plain text (`path: ok` or `path: FAIL - …` with optional
+context lines). Exit code 0 means no errors. (`--json` currently affects
+`--doctor` only, not `--check`.)
 
 ---
 
@@ -116,20 +117,22 @@ the correct binary version is in `$PATH`.
 
 ---
 
-## Connecting from VS Code for manual testing
+## Using a custom binary with VS Code
 
-When the server runs in socket mode you can point VS Code at it directly with
-a `launch.json` configuration, which lets you restart the server independently
-of the editor:
+The VS Code extension always launches `perllsp` over **stdio**; it does not
+connect to a manually started socket server. To point the editor at a locally
+built binary, set `perl-lsp.serverPath` in workspace or user `settings.json`:
 
 ```json
 {
-  "perl.lsp.command": "perllsp",
-  "perl.lsp.args": ["--socket", "--port", "9257"]
+  "perl-lsp.serverPath": "/absolute/path/to/target/debug/perllsp"
 }
 ```
 
-Restart VS Code's language client after starting the server manually.
+Then run **Perl: Restart Language Server** from the command palette.
+
+Socket mode (`--socket --port`) is for manual clients — test harnesses,
+`netcat`, or custom LSP drivers — not for the VS Code language client.
 
 ---
 
@@ -137,5 +140,5 @@ Restart VS Code's language client after starting the server manually.
 
 - `perllsp --help` — full CLI reference
 - [CONTRIBUTING.md](../../CONTRIBUTING.md) — dev environment setup and `just` commands
-- [docs/reference/CI.md](../project/CI.md) — how CI runs LSP integration tests
+- [docs/project/CI.md](../project/CI.md) — how CI runs LSP integration tests
 - [crates/perl-lsp-rs/src/lib.rs](../../crates/perl-lsp-rs/src/lib.rs) — rustdoc overview of transport modes and logging
