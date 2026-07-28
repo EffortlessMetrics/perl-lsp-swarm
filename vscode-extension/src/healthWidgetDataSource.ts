@@ -22,6 +22,7 @@
  */
 
 import type { HealthWidget } from './healthWidget';
+import * as vscode from 'vscode';
 import type { Diagnostic, DiagnosticSeverity, Disposable, Uri } from 'vscode';
 
 /** Telemetry subset of `vscode.languages` used by the data source. */
@@ -99,6 +100,13 @@ export class HealthWidgetDataSource {
     this.disposables.push(
       this.languages.onDidChangeDiagnostics(() => {
         this.refreshErrorCount();
+      }),
+    );
+    // Refresh file count when workspace folders change. (UX polish)
+    this.disposables.push(
+      vscode.workspace.onDidChangeWorkspaceFolders(() => {
+        this.fileCountPromise = undefined;
+        void this.refreshFileCount();
       }),
     );
     this.refreshErrorCount();

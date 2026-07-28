@@ -519,10 +519,10 @@
             "default": "",
             "scope": "resource",
             "order": 43,
-            "deprecationMessage": "Deprecated: reserved legacy UI label with no native equivalent. It will be removed in a future release.",
-            "markdownDeprecationMessage": "**Deprecated:** reserved legacy UI label with no native equivalent. It will be removed in a future release.",
-            "description": "Optional display theme label for PerlCritic settings. Reserved for editor-facing UI organization.",
-            "markdownDescription": "Optional display theme label for PerlCritic settings. Reserved for editor-facing UI organization."
+            "deprecationMessage": "This setting has no effect and will be removed. Use perl-lsp.critic.profile or perl-lsp.critic.theme instead.",
+            "markdownDeprecationMessage": "**No effect.** This setting does nothing — it is a legacy placeholder from an earlier UI design and will be removed. Use `perl-lsp.critic.profile` for Perl::Critic profile selection.",
+            "description": "[No effect] Legacy placeholder — will be removed.",
+            "markdownDescription": "**[No effect]** Legacy placeholder — will be removed. Use `perl-lsp.critic.profile` instead."
           },
           "perl-lsp.enableTestIntegration": {
             "type": "boolean",
