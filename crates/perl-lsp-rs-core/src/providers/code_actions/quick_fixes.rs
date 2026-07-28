@@ -373,6 +373,33 @@ mod tests {
         assert_eq!(edit.new_text, "");
     }
 
+    #[test]
+    fn file_scope_pragma_additions_separate_unterminated_shebangs() {
+        let source = "#!/usr/bin/perl";
+
+        let strict_action = must_some(add_use_strict_with_offset(source).first());
+        let strict = must_some(strict_action.edit.changes.first());
+        assert_eq!(strict.location.start, source.len());
+        assert_eq!(strict.location.end, source.len());
+        assert_eq!(strict.new_text, "\nuse strict;\n");
+
+        let warnings_action = must_some(add_use_warnings_with_offset(source).first());
+        let warnings = must_some(warnings_action.edit.changes.first());
+        assert_eq!(warnings.location.start, source.len());
+        assert_eq!(warnings.location.end, source.len());
+        assert_eq!(warnings.new_text, "\nuse warnings;\n");
+    }
+
+    #[test]
+    fn file_scope_pragma_additions_preserve_terminated_shebangs() {
+        let source = "#!/usr/bin/perl\n";
+
+        let strict_action = must_some(add_use_strict_with_offset(source).first());
+        let strict = must_some(strict_action.edit.changes.first());
+        assert_eq!(strict.location.start, source.len());
+        assert_eq!(strict.new_text, "use strict;\n");
+    }
+
     // --- fix_printf_format_arity ---
 
     #[test]
@@ -1027,7 +1054,7 @@ pub fn add_use_strict_with_offset(source: &str) -> Vec<CodeAction> {
         edit: CodeActionEdit {
             changes: vec![TextEdit {
                 location: SourceLocation { start: offset, end: offset },
-                new_text: "use strict;\n".to_string(),
+                new_text: file_scope_pragma_text(source, "use strict"),
             }],
         },
         is_preferred: true,
@@ -1044,7 +1071,7 @@ pub fn add_use_warnings_with_offset(source: &str) -> Vec<CodeAction> {
         edit: CodeActionEdit {
             changes: vec![TextEdit {
                 location: SourceLocation { start: offset, end: offset },
-                new_text: "use warnings;\n".to_string(),
+                new_text: file_scope_pragma_text(source, "use warnings"),
             }],
         },
         is_preferred: true,
@@ -1060,6 +1087,11 @@ pub fn file_scope_pragma_insertion_offset(source: &str) -> usize {
     } else {
         0
     }
+}
+
+fn file_scope_pragma_text(source: &str, pragma: &str) -> String {
+    let separator = if source.starts_with("#!") && !source.contains('\n') { "\n" } else { "" };
+    format!("{separator}{pragma};\n")
 }
 
 /// Move a phase-scoped `use strict` pragma to file scope.
@@ -1086,7 +1118,7 @@ pub fn move_use_strict_to_file_scope(
                 },
                 TextEdit {
                     location: SourceLocation { start: insert_at, end: insert_at },
-                    new_text: "use strict;\n".to_string(),
+                    new_text: file_scope_pragma_text(source, "use strict"),
                 },
             ],
         },
@@ -1118,7 +1150,7 @@ pub fn move_use_warnings_to_file_scope(
                 },
                 TextEdit {
                     location: SourceLocation { start: insert_at, end: insert_at },
-                    new_text: "use warnings;\n".to_string(),
+                    new_text: file_scope_pragma_text(source, "use warnings"),
                 },
             ],
         },
