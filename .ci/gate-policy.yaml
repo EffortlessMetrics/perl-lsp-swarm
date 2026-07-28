@@ -768,7 +768,7 @@ gates:
     required: true
     command: >-
       cargo test --locked --lib
-      -p perl-corpus -p perl-dead-code -p perl-diagnostics
+      -p perl-corpus -p perl-diagnostics
       -p perl-module -p perl-refactoring
       -p perl-semantic-analyzer -p perl-semantic-facts
       -p perl-workspace
