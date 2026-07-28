@@ -135,6 +135,7 @@ pub struct DiscoveryReport {
 
 /// Immutable identity and denominator for a staged Perl harness comparison series.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SeriesManifest {
     pub schema_version: String,
     pub series_id: String,
@@ -173,6 +174,7 @@ pub struct BoundaryRetirement {
 
 /// Versioned compile baseline bound to one immutable comparison series.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct CompileBaselineV2 {
     pub schema_version: String,
     pub report_schema_version: String,

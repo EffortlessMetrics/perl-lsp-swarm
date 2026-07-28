@@ -2582,35 +2582,35 @@ enum PerlCoreHarnessCommand {
         series: Option<PathBuf>,
 
         /// Prior v2 baseline used to validate an accepted transition.
-        #[arg(long)]
+        #[arg(long, requires = "series")]
         previous_baseline: Option<PathBuf>,
 
         /// JSON receipt describing reviewed semantic-boundary retirements.
-        #[arg(long)]
+        #[arg(long, requires = "series")]
         boundary_retirements: Option<PathBuf>,
 
         /// Measured compiler and harness subject identity for baseline v2.
-        #[arg(long)]
+        #[arg(long, requires = "series")]
         compiler_subject_identity: Option<String>,
 
         /// Measured invocation identity for baseline v2.
-        #[arg(long)]
+        #[arg(long, requires = "series")]
         invocation_identity: Option<String>,
 
         /// Measured capability identity for baseline v2.
-        #[arg(long)]
+        #[arg(long, requires = "series")]
         capability_identity: Option<String>,
 
         /// Measured environment identity for baseline v2.
-        #[arg(long)]
+        #[arg(long, requires = "series")]
         environment_identity: Option<String>,
 
         /// Reviewed transition identity for baseline v2.
-        #[arg(long)]
+        #[arg(long, requires = "series")]
         accepted_transition_id: Option<String>,
 
         /// Durable evidence bundle reference for baseline v2.
-        #[arg(long)]
+        #[arg(long, requires = "series")]
         evidence_bundle: Option<String>,
 
         /// Check the report against the baseline. This is the default when --accept is absent.

@@ -306,6 +306,18 @@ pub fn series_manifest(config: SeriesManifestConfig) -> Result<()> {
         Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
     )?;
     validate_series_manifest(&manifest)?;
+    if output_path.is_file() {
+        let existing = read_series_manifest(&output_path)?;
+        validate_series_manifest(&existing)?;
+        if config.replaces_series_id.as_deref() != Some(existing.series_id.as_str())
+            || config.change_reason.as_deref().is_none_or(|reason| reason.trim().is_empty())
+        {
+            bail!(
+                "comparison-series manifest is immutable; provide --replaces-series-id matching {} and a non-empty --change-reason to replace it",
+                existing.series_id
+            );
+        }
+    }
     write_series_manifest(&output_path, &manifest)?;
     tracing::info!(
         "perl-core-harness: wrote {} comparison series with {} files",
@@ -339,7 +351,7 @@ fn build_series_manifest(
     {
         bail!("series identity fields must not be empty");
     }
-    if discovery.perl_ref != "unknown" && discovery.perl_ref != config.perl_resolved_ref {
+    if discovery.perl_ref != config.perl_resolved_ref {
         bail!(
             "resolved Perl ref {} does not match discovery receipt {}",
             config.perl_resolved_ref,
@@ -556,7 +568,14 @@ fn series_manifest_hash(input: &SeriesManifestHashInput<'_>) -> String {
     ] {
         hash_manifest_value(&mut hasher, value);
     }
-    for value in input.roots.iter().chain(input.files.iter()) {
+    hash_manifest_value(&mut hasher, "profile-roots");
+    hash_manifest_length(&mut hasher, input.roots.len());
+    for value in input.roots {
+        hash_manifest_value(&mut hasher, value);
+    }
+    hash_manifest_value(&mut hasher, "normalized-files");
+    hash_manifest_length(&mut hasher, input.files.len());
+    for value in input.files {
         hash_manifest_value(&mut hasher, value);
     }
     hash_manifest_optional_value(&mut hasher, input.replaces_series_id);
@@ -567,6 +586,10 @@ fn series_manifest_hash(input: &SeriesManifestHashInput<'_>) -> String {
 fn hash_manifest_value(hasher: &mut Sha256, value: &str) {
     hasher.update((value.len() as u64).to_le_bytes());
     hasher.update(value.as_bytes());
+}
+
+fn hash_manifest_length(hasher: &mut Sha256, length: usize) {
+    hasher.update((length as u64).to_le_bytes());
 }
 
 fn hash_manifest_optional_value(hasher: &mut Sha256, value: Option<&str>) {
@@ -749,16 +772,19 @@ pub fn baseline(config: BaselineConfig) -> Result<()> {
         .clone()
         .unwrap_or_else(|| default_baseline_path(config.mode, config.profile));
     let report = read_run_report(&report_path)?;
+    reject_v2_options_without_series(&config)?;
 
     if let Some(series_path) = config.series.as_ref() {
         let series = read_series_manifest(series_path)?;
         validate_series_manifest(&series)?;
         if config.accept {
-            let previous = config
-                .previous_baseline
-                .as_ref()
-                .map(|path| read_compile_baseline_v2(path))
-                .transpose()?;
+            let previous = if let Some(path) = config.previous_baseline.as_ref() {
+                Some(read_compile_baseline_v2(path)?)
+            } else if baseline_path.is_file() {
+                Some(read_compile_baseline_v2(&baseline_path)?)
+            } else {
+                None
+            };
             let retirements = config
                 .boundary_retirements
                 .as_ref()
@@ -1608,6 +1634,24 @@ fn required_identity(value: Option<&str>, name: &str) -> Result<String> {
     Ok(value.to_string())
 }
 
+fn reject_v2_options_without_series(config: &BaselineConfig) -> Result<()> {
+    if config.series.is_some() {
+        return Ok(());
+    }
+    let has_v2_option = config.previous_baseline.is_some()
+        || config.boundary_retirements.is_some()
+        || config.compiler_subject_identity.is_some()
+        || config.invocation_identity.is_some()
+        || config.capability_identity.is_some()
+        || config.environment_identity.is_some()
+        || config.accepted_transition_id.is_some()
+        || config.evidence_bundle.is_some();
+    if has_v2_option {
+        bail!("baseline v2 options require a comparison-series manifest");
+    }
+    Ok(())
+}
+
 fn validate_v2_identities_against_series(
     identities: &V2Identities,
     series: &SeriesManifest,
@@ -1881,14 +1925,24 @@ fn compare_boundary_transition(
     violations
 }
 
+#[derive(serde::Serialize)]
+struct StableRunReportDigest<'a> {
+    schema_version: &'a str,
+    commit: &'a str,
+    perl_ref: &'a str,
+    runner: HarnessRunner,
+    mode: HarnessMode,
+    profile: HarnessProfile,
+    harness_status: Option<i32>,
+    summary: &'a RunSummary,
+    buckets: &'a BTreeMap<String, usize>,
+    file_results: &'a [RunFileResult],
+    failures: &'a [RunFailure],
+    semantic_boundaries: &'a [ObservedSemanticBoundary],
+}
+
 fn report_digest(report: &RunReport) -> Result<String> {
     let mut stable = report.clone();
-    // These values identify the disposable measurement environment, not the measured
-    // compiler result. Excluding them keeps a fresh replay comparable to its receipt.
-    stable.timestamp.clear();
-    stable.prepared_tree.clear();
-    stable.run_tree.clear();
-    stable.host_perl.clear();
     stable.file_results.sort_by(|left, right| left.path.cmp(&right.path));
     stable.failures.sort_by(|left, right| {
         left.path
@@ -1897,7 +1951,25 @@ fn report_digest(report: &RunReport) -> Result<String> {
             .then_with(|| left.phase.cmp(&right.phase))
     });
     stable.semantic_boundaries.sort_by_key(semantic_boundary_key);
-    let bytes = serde_json::to_vec(&stable).context("serializing stable report for digest")?;
+    // Temporary paths, host Perl, and wall-clock timestamps are deliberately absent.
+    // Keep this field-by-field representation explicit so receipt identity does not
+    // depend on the full RunReport envelope or its disposable execution metadata.
+    let digest_input = StableRunReportDigest {
+        schema_version: &stable.schema_version,
+        commit: &stable.commit,
+        perl_ref: &stable.perl_ref,
+        runner: stable.runner,
+        mode: stable.mode,
+        profile: stable.profile,
+        harness_status: stable.harness_status,
+        summary: &stable.summary,
+        buckets: &stable.buckets,
+        file_results: &stable.file_results,
+        failures: &stable.failures,
+        semantic_boundaries: &stable.semantic_boundaries,
+    };
+    let bytes = serde_json::to_vec(&digest_input)
+        .context("serializing stable field-by-field report digest")?;
     Ok(hex_lower(&Sha256::digest(bytes)))
 }
 
@@ -3746,7 +3818,11 @@ mod tests {
         let discovery = sample_discovery_report();
         let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
         let mut report = sample_compile_report();
-        report.file_results[0].status = RunnerStatus::Fail;
+        report
+            .file_results
+            .first_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("sample report has no file results"))?
+            .status = RunnerStatus::Fail;
         let Err(error) =
             baseline_v2_from_report(&report, &series, &sample_baseline_v2_config(), None, &[])
         else {
@@ -3876,6 +3952,93 @@ mod tests {
         };
         if !error.to_string().contains("MissingBoundaryInventory") {
             bail!("unexpected missing inventory error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn public_baseline_rejects_v2_options_without_series() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report_path = temp.path().join("report.json");
+        let baseline_path = temp.path().join("baseline.json");
+        write_run_report(&report_path, &sample_compile_report())?;
+        let mut config = sample_baseline_v2_config();
+        config.report = Some(report_path);
+        config.baseline = Some(baseline_path);
+        let Err(error) = baseline(config) else {
+            bail!("v2 identity options must not silently fall back to baseline v1");
+        };
+        if !error.to_string().contains("require a comparison-series manifest") {
+            bail!("unexpected v2 option error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn public_baseline_requires_transition_for_existing_v2_baseline() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report_path = temp.path().join("report.json");
+        let series_path = temp.path().join("series.json");
+        let baseline_path = temp.path().join("baseline.json");
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        write_series_manifest(&series_path, &series)?;
+
+        let mut previous_report = sample_compile_report();
+        previous_report.semantic_boundaries.push(sample_semantic_boundary());
+        let accepted = baseline_v2_from_report(
+            &previous_report,
+            &series,
+            &sample_baseline_v2_config(),
+            None,
+            &[],
+        )?;
+        write_compile_baseline_v2(&baseline_path, &accepted)?;
+        write_run_report(&report_path, &sample_compile_report())?;
+
+        let mut config = sample_baseline_v2_config();
+        config.report = Some(report_path);
+        config.baseline = Some(baseline_path);
+        config.series = Some(series_path);
+        let Err(error) = baseline(config) else {
+            bail!("overwriting an existing v2 baseline must require transition evidence");
+        };
+        if !error.to_string().contains("accepted-transition-id") {
+            bail!("unexpected transition error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn series_manifest_rejects_unknown_discovery_ref() -> TestResult {
+        let mut discovery = sample_discovery_report();
+        discovery.perl_ref = "unknown".into();
+        let Err(error) = build_series_manifest(&discovery, &sample_series_config(), "now".into())
+        else {
+            bail!("an unknown discovery Perl ref must not become a resolved series identity");
+        };
+        if !error.to_string().contains("does not match discovery receipt") {
+            bail!("unexpected unknown discovery ref error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn series_manifest_does_not_overwrite_without_replacement_identity() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let discovery_path = temp.path().join("discovery.json");
+        let output_path = temp.path().join("series.json");
+        write_discovery_report(&discovery_path, &sample_discovery_report())?;
+        let mut config = sample_series_config();
+        config.discovery = discovery_path;
+        config.output = Some(output_path);
+        series_manifest(config.clone())?;
+
+        let Err(error) = series_manifest(config) else {
+            bail!("existing comparison-series output must not be overwritten silently");
+        };
+        if !error.to_string().contains("manifest is immutable") {
+            bail!("unexpected immutable manifest error: {error}");
         }
         Ok(())
     }
