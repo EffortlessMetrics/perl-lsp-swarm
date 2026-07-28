@@ -97,8 +97,8 @@ body:
     id: logs
     attributes:
       label: Logs (optional)
-      description: Run "Perl LSP: Show Logs" from the VSCode command palette and paste the output here.
-      placeholder: "Run 'Perl LSP: Show Logs' from command palette and paste output here"
+      description: 'Run "Perl: Show Output Channel" from the VS Code command palette and paste the output here. "Perl: Run Health Check" and "Perl LSP: Copy Provider Decision Receipt" are also useful when a provider misbehaves.'
+      placeholder: "Run 'Perl: Show Output Channel' from the command palette and paste the output here"
       render: text
 
   - type: textarea
