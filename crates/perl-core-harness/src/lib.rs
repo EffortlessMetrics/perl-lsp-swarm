@@ -1782,8 +1782,8 @@ fn normalize_public_artifact(kind: EvidenceArtifactKind, source: &[u8]) -> Resul
             report.prepared_tree = "<prepared-tree>".into();
             report.host_perl = "<host-perl>".into();
             report.discovery_report = "normalized/discovery.json".into();
-            report.parse_report = Some("normalized/parse.json".into());
-            report.compile_report = Some("normalized/compile.json".into());
+            report.parse_report = report.parse_report.map(|_| "normalized/parse.json".into());
+            report.compile_report = report.compile_report.map(|_| "normalized/compile.json".into());
             report.gap_map = "normalized/gap-map.json".into();
             encode(&report)
         }
@@ -2082,6 +2082,22 @@ fn validate_evidence_bundle_shape(index: &EvidenceBundleIndex) -> Result<()> {
         {
             bail!("evidence bundle artifact {} has invalid identity metadata", artifact.kind);
         }
+        if artifact.kind == EvidenceArtifactKind::DiscoveryRaw {
+            if artifact.retention != EvidenceRetentionClass::Diagnostic
+                || artifact.visibility != EvidenceVisibility::Private
+                || !artifact.available_at_measurement
+            {
+                bail!("raw discovery evidence must remain private diagnostic provenance");
+            }
+        } else if artifact.retention != EvidenceRetentionClass::Committed
+            || artifact.visibility == EvidenceVisibility::Private
+            || !artifact.available_at_measurement
+        {
+            bail!(
+                "normalized evidence artifact {} has invalid retention or visibility",
+                artifact.kind
+            );
+        }
     }
     if !required.is_subset(&kinds) {
         bail!("evidence bundle is missing one or more required artifacts");
@@ -2111,6 +2127,9 @@ fn validate_evidence_bundle_payload(bundle_dir: &Path, index: &EvidenceBundleInd
             .with_context(|| format!("reading durable evidence artifact {}", path.display()))?;
         if metadata.len() != artifact.size_bytes || digest_file(&path)? != artifact.content_digest {
             bail!("durable evidence artifact {} changed after indexing", artifact.kind);
+        }
+        if artifact.visibility != EvidenceVisibility::Private {
+            validate_public_artifact_bytes(artifact.kind, &fs::read(&path)?)?;
         }
     }
     let series = read_json_artifact::<SeriesManifest>(
@@ -2206,6 +2225,61 @@ fn validate_evidence_bundle_payload(bundle_dir: &Path, index: &EvidenceBundleInd
         EvidenceArtifactKind::Reproduction,
     )?;
     validate_reproduction_against_series(&reproduction, &series)
+}
+
+fn validate_public_artifact_bytes(kind: EvidenceArtifactKind, bytes: &[u8]) -> Result<()> {
+    if kind == EvidenceArtifactKind::RunnerRecords {
+        for line in String::from_utf8_lossy(bytes).lines() {
+            let value: serde_json::Value = serde_json::from_str(line)
+                .with_context(|| format!("decoding public {kind} record"))?;
+            validate_public_json_value(&value)?;
+        }
+        return Ok(());
+    }
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .with_context(|| format!("decoding public {kind} artifact"))?;
+    validate_public_json_value(&value)
+}
+
+fn validate_public_json_value(value: &serde_json::Value) -> Result<()> {
+    match value {
+        serde_json::Value::String(text) => {
+            for token in text.split_whitespace() {
+                let token = token.trim_matches(|character: char| {
+                    matches!(character, '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';')
+                });
+                let windows_absolute = token.len() >= 3
+                    && token.as_bytes().get(1) == Some(&b':')
+                    && token.as_bytes().get(2).is_some_and(|byte| *byte == b'/' || *byte == b'\\');
+                let unix_absolute = token.starts_with('/');
+                let unc_absolute = token.starts_with("\\\\") || token.starts_with("//");
+                let file_url = token.starts_with("file:");
+                if windows_absolute || unix_absolute || unc_absolute || file_url {
+                    bail!("public evidence contains a host filesystem path");
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                validate_public_json_value(value)?;
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for (key, value) in values {
+                let normalized_key = key.to_ascii_lowercase();
+                if (normalized_key.contains("secret")
+                    || normalized_key.contains("password")
+                    || normalized_key.contains("token"))
+                    && !value.is_null()
+                {
+                    bail!("public evidence contains a secret-bearing field: {key}");
+                }
+                validate_public_json_value(value)?;
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+    Ok(())
 }
 
 fn read_json_artifact<T: DeserializeOwned>(
@@ -6878,6 +6952,20 @@ exit 1
             repository_root: None,
             registry_dir: None,
         })?;
+        Ok(())
+    }
+
+    #[test]
+    fn evidence_bundle_rejects_host_paths_in_public_payloads() -> TestResult {
+        let (_temp, config) = evidence_bundle_fixture()?;
+        let mut reproduction: EvidenceReproductionDescriptor =
+            read_json_file(&config.reproduction, "fixture reproduction")?;
+        reproduction.commands = vec![r"cargo run --manifest-path C:\private\Cargo.toml".into()];
+        write_fixture_json(&config.reproduction, &reproduction)?;
+        let error = evidence_bundle_write(config).expect_err("host paths must not be public");
+        if !error.to_string().contains("host filesystem path") {
+            bail!("unexpected public-path validation error: {error}");
+        }
         Ok(())
     }
 
