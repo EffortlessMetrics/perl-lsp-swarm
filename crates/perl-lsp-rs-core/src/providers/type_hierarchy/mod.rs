@@ -368,6 +368,17 @@ impl TypeHierarchyProvider {
         let parents = index.get_parents(&item.name);
         let roles = index.get_roles(&item.name);
 
+        // Recursively collect all ancestors (not just direct parents). (#5083)
+        // Use a visited set to handle diamond/multiple inheritance cycles.
+        let mut all_ancestors: Vec<String> = Vec::new();
+        let mut visited = std::collections::BTreeSet::new();
+        visited.insert(item.name.clone());
+        self.collect_all_ancestors(&item.name, &index, &mut all_ancestors, &mut visited);
+
+        // Direct parents get "Parent Class" detail, deeper ancestors get "Ancestor"
+        let parent_names: std::collections::HashSet<String> = parents.iter().cloned().collect();
+        let role_names: std::collections::HashSet<String> = roles.iter().cloned().collect();
+
         let parent_items = parents.into_iter().map(|name| TypeHierarchyItem {
             name,
             kind: TypeHierarchySymbolKind::Class,
@@ -388,7 +399,42 @@ impl TypeHierarchyProvider {
             data: None,
         });
 
-        parent_items.chain(role_items).collect()
+        // Deeper ancestors (grandparents etc.) that aren't direct parents/roles
+        let ancestor_items = all_ancestors.into_iter()
+            .filter(|name| !parent_names.contains(name) && !role_names.contains(name))
+            .map(|name| TypeHierarchyItem {
+                name,
+                kind: TypeHierarchySymbolKind::Class,
+                uri: "file:///current".to_string(),
+                range: WireRange::default(),
+                selection_range: WireRange::default(),
+                detail: Some("Ancestor".to_string()),
+                data: None,
+            });
+
+        parent_items.chain(role_items).chain(ancestor_items).collect()
+    }
+
+    /// Recursively collect all ancestor packages (parents of parents, etc.). (#5083)
+    fn collect_all_ancestors(
+        &self,
+        package: &str,
+        index: &HierarchyIndex,
+        ancestors: &mut Vec<String>,
+        visited: &mut std::collections::BTreeSet<String>,
+    ) {
+        for parent in index.get_parents(package) {
+            if visited.insert(parent.clone()) {
+                ancestors.push(parent.clone());
+                self.collect_all_ancestors(&parent, index, ancestors, visited);
+            }
+        }
+        for role in index.get_roles(package) {
+            if visited.insert(role.clone()) {
+                ancestors.push(role.clone());
+                self.collect_all_ancestors(&role, index, ancestors, visited);
+            }
+        }
     }
 
     /// Compute the C3 Method Resolution Order (MRO) for a package.
