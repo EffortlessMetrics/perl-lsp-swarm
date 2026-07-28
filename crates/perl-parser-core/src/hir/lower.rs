@@ -3167,6 +3167,15 @@ impl<'a> BodyBuilder2<'a> {
         }
     }
 
+    fn lower_slice_operands(&mut self, node: &Node) -> Vec<HirExprId> {
+        match &node.kind {
+            NodeKind::ArrayLiteral { elements } => {
+                elements.iter().map(|element| self.lower_expr(element)).collect()
+            }
+            _ => vec![self.lower_expr(node)],
+        }
+    }
+
     fn lower_expr(&mut self, node: &Node) -> HirExprId {
         let range = node.location;
 
@@ -3359,13 +3368,15 @@ impl<'a> BodyBuilder2<'a> {
                 // Mirror FunctionCall: walk target and index operands so variable
                 // reads inside slice expressions reach PIR-A LexicalRead facts.
                 let kind_name = node.kind.kind_name().to_string();
-                let arg_ids = vec![self.lower_expr(target), self.lower_expr(indices)];
+                let mut arg_ids = vec![self.lower_expr(target)];
+                arg_ids.extend(self.lower_slice_operands(indices));
                 self.alloc_expr(HirExpr::Call { args: arg_ids, ast_kind: kind_name }, range)
             }
 
             NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
                 let kind_name = node.kind.kind_name().to_string();
-                let arg_ids = vec![self.lower_expr(target), self.lower_expr(keys)];
+                let mut arg_ids = vec![self.lower_expr(target)];
+                arg_ids.extend(self.lower_slice_operands(keys));
                 self.alloc_expr(HirExpr::Call { args: arg_ids, ast_kind: kind_name }, range)
             }
 

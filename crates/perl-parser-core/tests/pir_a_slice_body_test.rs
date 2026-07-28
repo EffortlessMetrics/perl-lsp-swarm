@@ -93,6 +93,27 @@ fn pir_a_key_value_slice_key_produces_read_for_key_var() -> TestResult {
     Ok(())
 }
 
+/// Multi-index and multi-key slices unwrap their parser array wrapper so each
+/// operand contributes its own read fact.
+#[test]
+fn pir_a_multi_operand_slices_produce_reads_for_each_operand() -> TestResult {
+    let graph =
+        parse_and_lower("my @arr; my %h; my @values = @arr[$i, $j]; my @subset = @h{$k1, $k2};");
+
+    for ident in ["i", "j", "k1", "k2"] {
+        assert!(
+            has_read_of(&graph, ident),
+            "slice operand ${ident} must produce a Read; ops: {:?}",
+            graph.nodes.iter().map(|n| n.operation.name()).collect::<Vec<_>>()
+        );
+        assert!(
+            !has_write_of(&graph, ident),
+            "undeclared slice operand ${ident} must not produce a Write"
+        );
+    }
+    Ok(())
+}
+
 /// Slice lowering records the call shell as unsupported, like FunctionCall.
 #[test]
 fn pir_a_array_slice_records_call_as_unsupported() -> TestResult {
