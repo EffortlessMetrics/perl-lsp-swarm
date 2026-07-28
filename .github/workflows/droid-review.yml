@@ -21,47 +21,6 @@ env:
   MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
 
 jobs:
-  fix-residual-rtk-policy:
-    if: github.event.pull_request.head.ref == 'agent/remove-residual-rtk-guidance' && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout cleanup branch
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: agent/remove-residual-rtk-guidance
-          fetch-depth: 0
-      - name: Install pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
-        with:
-          toolchain: 1.95.0
-          components: rustfmt
-      - name: Repair policy contracts and provenance
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 .github/scripts/fix-residual-rtk-policy.py
-          cargo fmt --all -- --check
-          git diff --check
-          if git diff --quiet; then
-            exit 0
-          fi
-          git config user.name EffortlessSteven
-          git config user.email git@effortlesssteven.com
-          git add \
-            docs/project/TREE_SITTER_INCREMENTAL_CROSSOVER.md \
-            docs/reference/CI_ARCHITECTURE.md \
-            docs/reference/FAILURE_MODES.md \
-            xtask/tests/codecov_patch_gate_policy.rs \
-            xtask/tests/quality_gate_cli_policy.rs \
-            xtask/tests/quality_gate_exception_policy.rs \
-            xtask/tests/quality_gate_patch_coverage_cli_policy.rs \
-            xtask/tests/quality_gate_ripr_new_gap_cli_policy.rs \
-            xtask/tests/ripr_new_gap_gate_workflow.rs
-          git commit -m 'test: preserve direct command policy contracts'
-          git push origin HEAD:agent/remove-residual-rtk-guidance
-
   droid-review:
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, em-ci, trusted-pr, review-nano, droid-review]
