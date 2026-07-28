@@ -1037,53 +1037,75 @@ impl LspServer {
     /// (e.g. `"$dbh"`). Returns `None` when there is no `->` before the token.
     ///
     /// Handles whitespace around `->`, e.g. `$dbh -> prepare`.
+    ///
+    /// `offset` is a **byte offset** into `text` (as produced by `pos16_to_offset`).
+    /// The scan stays in byte coordinates throughout via `char_indices()`, avoiding
+    /// the indexing error that occurs when multi-byte Unicode characters precede
+    /// the cursor and the byte offset is used as a `Vec<char>` index.
     fn extract_arrow_receiver(text: &str, offset: usize) -> Option<String> {
-        let chars: Vec<char> = text.chars().collect();
-        let len = chars.len();
-        if len == 0 {
+        // Collect (byte_pos, char) pairs for everything strictly before `offset`.
+        // Chars whose start byte is ≥ offset are excluded; this handles the case
+        // where offset lands inside a multi-byte character.
+        let pairs: Vec<(usize, char)> =
+            text.char_indices().take_while(|(bp, _)| *bp < offset).collect();
+
+        if pairs.is_empty() {
             return None;
         }
 
-        // Walk to the start of the current token
-        let mut tok_start = offset.min(len.saturating_sub(1));
-        while tok_start > 0
-            && (chars[tok_start - 1].is_alphanumeric() || chars[tok_start - 1] == '_')
-        {
-            tok_start -= 1;
+        // Walk to the start of the current token (scan backward past identifier chars)
+        let mut tok_start = pairs.len();
+        while tok_start > 0 {
+            let c = pairs[tok_start - 1].1;
+            if c.is_alphanumeric() || c == '_' {
+                tok_start -= 1;
+            } else {
+                break;
+            }
+        }
+
+        // Nothing before the identifier → no `->` is possible
+        if tok_start == 0 {
+            return None;
         }
 
         // Skip whitespace before the token
-        let mut i = tok_start.saturating_sub(1);
-        while i > 0 && chars[i].is_whitespace() {
+        let mut i = tok_start - 1;
+        while i > 0 && pairs[i].1.is_whitespace() {
             i -= 1;
         }
 
         // Expect `>`
-        if chars[i] != '>' {
+        if pairs[i].1 != '>' {
             return None;
         }
-        if i == 0 || chars[i - 1] != '-' {
+        // Expect `-` immediately before `>`
+        if i == 0 || pairs[i - 1].1 != '-' {
+            return None;
+        }
+        // Need at least two positions before `-` to hold any receiver
+        if i < 2 {
             return None;
         }
 
-        // Skip past `->`
-        i = i.saturating_sub(2); // point before '-'
-        while i > 0 && chars[i].is_whitespace() {
+        // Skip past `->` (both are single-byte ASCII, so index arithmetic is safe)
+        i -= 2; // point to the char before '-'
+        while i > 0 && pairs[i].1.is_whitespace() {
             i -= 1;
         }
 
-        // Collect identifier/variable backwards (include sigil `$`)
-        let rec_end = i + 1;
-        while i > 0
-            && (chars[i - 1].is_alphanumeric()
-                || chars[i - 1] == '_'
-                || chars[i - 1] == '$'
-                || chars[i - 1] == ':')
-        {
-            i -= 1;
+        // Collect identifier/variable backwards (include sigil `$`, package sep `:`)
+        let rec_end_byte = pairs[i].0 + pairs[i].1.len_utf8();
+        while i > 0 {
+            let c = pairs[i - 1].1;
+            if c.is_alphanumeric() || c == '_' || c == '$' || c == ':' {
+                i -= 1;
+            } else {
+                break;
+            }
         }
-        let rec: String = chars[i..rec_end].iter().collect();
-        if rec.is_empty() { None } else { Some(rec) }
+        let rec = &text[pairs[i].0..rec_end_byte];
+        if rec.is_empty() { None } else { Some(rec.to_owned()) }
     }
 
     /// Walk the AST to find a `use Module` node whose location spans `offset`.
