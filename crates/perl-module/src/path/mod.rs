@@ -24,15 +24,17 @@ pub fn module_name_to_path(module_name: &str) -> String {
 /// reach filesystem existence checks.
 #[must_use]
 pub fn is_lookup_safe_module_name(module_name: &str) -> bool {
-    let module = module_name.trim();
-    if module.is_empty() {
+    if module_name.is_empty() {
         return false;
     }
-    if module.chars().any(|ch| ch.is_whitespace() || matches!(ch, '/' | '\\' | '$' | '@' | '%')) {
+    if module_name
+        .chars()
+        .any(|ch| ch.is_whitespace() || matches!(ch, '/' | '\\' | '$' | '@' | '%'))
+    {
         return false;
     }
 
-    let normalized = normalize_package_separator(module);
+    let normalized = normalize_package_separator(module_name);
     normalized.split("::").all(|part| {
         !part.is_empty()
             && part != ".."

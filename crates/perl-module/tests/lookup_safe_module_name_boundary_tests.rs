@@ -18,6 +18,8 @@ fn rejects_empty_and_whitespace() {
     assert_eq!(is_lookup_safe_module_name(""), false);
     assert_eq!(is_lookup_safe_module_name("   "), false);
     assert_eq!(is_lookup_safe_module_name("Foo Bar"), false);
+    assert_eq!(is_lookup_safe_module_name(" Foo"), false);
+    assert_eq!(is_lookup_safe_module_name("Foo "), false);
 }
 
 #[test]

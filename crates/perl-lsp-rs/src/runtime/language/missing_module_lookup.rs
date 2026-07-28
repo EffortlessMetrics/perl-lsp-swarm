@@ -5,11 +5,11 @@
 
 use super::super::*;
 use crate::protocol::invalid_params;
+use perl_module::is_lookup_safe_module_name;
 use perl_module::module_name_to_path;
 use perl_module::resolution::{
     IncRoot, IncRootKind, ModuleUriResolution, resolve_module_uri_with_effective_inc,
 };
-use perl_module::is_lookup_safe_module_name;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -82,7 +82,6 @@ impl LspServer {
             .iter()
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>();
-
         Ok(Some(json!({
             "schema_version": MISSING_MODULE_LOOKUP_SCHEMA_VERSION,
             "command": EXPLAIN_MISSING_MODULE_LOOKUP_COMMAND,
@@ -230,6 +229,7 @@ fn searched_inc_paths(
     workspace_folder_paths: &[PathBuf],
     relative_path: &str,
 ) -> Vec<Value> {
+    let canonical_workspace_roots = canonical_workspace_roots(workspace_folder_paths);
     let mut ordered_roots = roots.to_vec();
     ordered_roots.sort_by_key(|root| root.precedence);
     ordered_roots
@@ -238,12 +238,9 @@ fn searched_inc_paths(
             let candidates = candidate_paths_for_root(root, workspace_folder_paths, relative_path)
                 .into_iter()
                 .map(|path| {
-                    let inside_workspace = path_is_under_workspace_roots(&path, workspace_folder_paths);
-                    let exists = if inside_workspace {
-                        json!(path.is_file())
-                    } else {
-                        Value::Null
-                    };
+                    let inside_workspace =
+                        path_is_under_workspace_roots(&path, &canonical_workspace_roots);
+                    let exists = if inside_workspace { json!(path.is_file()) } else { Value::Null };
                     json!({
                         "path": path.display().to_string(),
                         "exists": exists,
@@ -416,12 +413,15 @@ fn missing_module_root_missing_payload(request: &MissingModuleLookupRequest) -> 
 }
 
 fn path_is_under_workspace_roots(path: &Path, workspace_roots: &[PathBuf]) -> bool {
-    workspace_roots.iter().any(|root| {
-        match (path.canonicalize(), root.canonicalize()) {
-            (Ok(canonical_path), Ok(canonical_root)) => canonical_path.starts_with(&canonical_root),
-            _ => path.starts_with(root),
-        }
-    })
+    let canonical_path = match path.canonicalize() {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+    workspace_roots.iter().any(|root| canonical_path.starts_with(root))
+}
+
+fn canonical_workspace_roots(workspace_roots: &[PathBuf]) -> Vec<PathBuf> {
+    workspace_roots.iter().filter_map(|root| root.canonicalize().ok()).collect()
 }
 
 fn workspace_folder_paths(workspace_folder_uris: &[String], fallback_root: &Path) -> Vec<PathBuf> {

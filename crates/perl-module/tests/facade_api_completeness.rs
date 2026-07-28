@@ -27,8 +27,8 @@ use perl_module::{
     find_standalone_module_token_ranges,
     // token_core module
     has_standalone_module_token_boundaries,
-    is_module_identifier_char,
     is_lookup_safe_module_name,
+    is_module_identifier_char,
     is_module_token_char,
     // name module
     legacy_package_separator,

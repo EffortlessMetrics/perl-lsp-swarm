@@ -7,10 +7,7 @@ use serde_json::{Value, json};
 use std::fs;
 use tempfile::TempDir;
 
-fn setup_server(
-    root_path: Option<String>,
-    initialization_options: Option<Value>,
-) -> LspServer {
+fn setup_server(root_path: Option<String>, initialization_options: Option<Value>) -> LspServer {
     let server = LspServer::new();
 
     let mut init_params = json!({
@@ -57,9 +54,8 @@ fn explain_missing_module(
 }
 
 fn candidate_exists_values(result: &Value) -> Vec<Option<bool>> {
-    let Some(include_paths) = result
-        .pointer("/module_resolution/effective_include_paths")
-        .and_then(Value::as_array)
+    let Some(include_paths) =
+        result.pointer("/module_resolution/effective_include_paths").and_then(Value::as_array)
     else {
         return Vec::new();
     };
@@ -81,7 +77,8 @@ fn candidate_exists_values(result: &Value) -> Vec<Option<bool>> {
 }
 
 #[test]
-fn explain_missing_module_rejects_path_traversal_module() -> Result<(), Box<dyn std::error::Error>> {
+fn explain_missing_module_rejects_path_traversal_module() -> Result<(), Box<dyn std::error::Error>>
+{
     let temp_dir = TempDir::new()?;
     let root_path = temp_dir.path().to_string_lossy().to_string();
     let server = setup_server(Some(root_path), None);
@@ -93,9 +90,7 @@ fn explain_missing_module_rejects_path_traversal_module() -> Result<(), Box<dyn 
         "path traversal module must not return a success payload: {:?}",
         response.result
     );
-    let error = response
-        .error
-        .ok_or("expected invalid_params error for traversal module")?;
+    let error = response.error.ok_or("expected invalid_params error for traversal module")?;
     assert_eq!(error.code, -32602);
     assert!(
         error.message.contains("Invalid module name"),
@@ -119,9 +114,7 @@ fn explain_missing_module_rejects_slash_module() -> Result<(), Box<dyn std::erro
         "slash-shaped module must not return a success payload: {:?}",
         response.result
     );
-    let error = response
-        .error
-        .ok_or("expected invalid_params error for slash module")?;
+    let error = response.error.ok_or("expected invalid_params error for slash module")?;
     assert_eq!(error.code, -32602);
 
     Ok(())
@@ -136,26 +129,19 @@ fn explain_missing_module_exists_only_inside_workspace() -> Result<(), Box<dyn s
     fs::create_dir_all(inside_module_path.parent().ok_or("missing Foo parent dir")?)?;
     fs::write(&inside_module_path, "package Foo::Bar;\n1;\n")?;
 
-    let inside_server = setup_server(
-        Some(workspace_dir.path().to_string_lossy().to_string()),
-        None,
-    );
+    let inside_server =
+        setup_server(Some(workspace_dir.path().to_string_lossy().to_string()), None);
     let inside_response = explain_missing_module(&inside_server, "Foo::Bar")
         .ok_or("expected response for in-workspace module")?;
-    let inside_result = inside_response
-        .result
-        .ok_or("in-workspace module lookup should succeed")?;
+    let inside_result =
+        inside_response.result.ok_or("in-workspace module lookup should succeed")?;
     assert!(
         candidate_exists_values(&inside_result).contains(&Some(true)),
         "in-workspace module should report exists=true for a workspace candidate: {inside_result}"
     );
 
     let outside_module_path = outside_dir.path().join("Oracle").join("Probe.pm");
-    fs::create_dir_all(
-        outside_module_path
-            .parent()
-            .ok_or("missing Oracle parent dir")?,
-    )?;
+    fs::create_dir_all(outside_module_path.parent().ok_or("missing Oracle parent dir")?)?;
     fs::write(&outside_module_path, "package Oracle::Probe;\n1;\n")?;
 
     let outside_include_path = outside_dir.path().to_string_lossy().to_string();
@@ -179,17 +165,10 @@ fn explain_missing_module_exists_only_inside_workspace() -> Result<(), Box<dyn s
         .ok_or("missing effective_include_paths")?
         .iter()
         .flat_map(|entry| {
-            entry
-                .get("candidate_paths")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
+            entry.get("candidate_paths").and_then(Value::as_array).into_iter().flatten()
         })
         .filter(|candidate| {
-            candidate
-                .get("inside_workspace")
-                .and_then(Value::as_bool)
-                .is_some_and(|inside| !inside)
+            candidate.get("inside_workspace").and_then(Value::as_bool).is_some_and(|inside| !inside)
         })
         .collect::<Vec<_>>();
 
