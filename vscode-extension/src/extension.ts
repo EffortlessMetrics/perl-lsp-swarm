@@ -108,6 +108,7 @@ import {
   CRITIC_SETTINGS,
   hasExplicitPerlCriticOverrides,
   syncLanguageClientConfiguration,
+  syncUserAiCompletionConfiguration,
   syncPerlCriticConfiguration as syncPerlCriticConfigurationFromConfig,
 } from './languageClientConfiguration';
 export { buildDisabledFeaturesFromConfig } from './languageClientConfiguration';
@@ -714,6 +715,7 @@ export async function activate(context: vscode.ExtensionContext) {
           event.affectsConfiguration('perl-lsp.aiCompletion.streaming.enabled')
         ) {
           refreshStreamingController(client);
+          await syncUserAiCompletionConfiguration(client);
         }
       },
       onRestartRequired: () => promptForClientRefresh(context),
