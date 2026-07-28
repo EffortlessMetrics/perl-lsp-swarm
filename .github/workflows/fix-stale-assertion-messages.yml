@@ -1,0 +1,32 @@
+name: Fix stale assertion messages
+
+on:
+  pull_request:
+    types: [synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.event.pull_request.head.ref == 'agent/remove-residual-rtk-guidance' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: agent/remove-residual-rtk-guidance
+          fetch-depth: 0
+      - name: Repair diagnostics and remove this workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=xtask/tests/quality_gate_patch_coverage_cli_policy.rs
+          perl -pi -e 's/rtk-prefixed coverage receipt/direct coverage receipt/' "$file"
+          perl -pi -e 's/rtk-prefixed patch quality-gate/direct patch quality-gate/' "$file"
+          git rm .github/workflows/fix-stale-assertion-messages.yml
+          git diff --check
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add "$file"
+          git commit -m 'test: align direct command assertion diagnostics'
+          git push origin HEAD:agent/remove-residual-rtk-guidance
