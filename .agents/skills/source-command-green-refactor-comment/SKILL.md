@@ -1,0 +1,46 @@
+---
+name: "source-command-green-refactor-comment"
+description: "Green refactor step 4 — commit, push, comment on PR with what changed"
+---
+
+# source-command-green-refactor-comment
+
+Use this skill when the user asks to run the migrated source command `green-refactor-comment`.
+
+## Command Template
+
+# Green Refactor: Comment
+
+Commit refactoring, push, set sign-off label, comment on PR.
+
+## Steps
+
+1. Push refactoring commits (should already be committed during simplify step):
+   ```bash
+   git push
+   ```
+
+2. Set sign-off label (verified apply — see `/label-apply-verified`):
+   ```
+   /label-apply-verified pr <number> "green-refactor-reviewed"
+   ```
+
+3. Comment on PR:
+   ```bash
+   gh pr comment <number> --body "$(cat <<'EOF'
+   ## Green Refactor
+
+   ### Changes made
+   <list of refactoring changes with commit refs>
+
+   ### Tests: all passing
+   `cargo test -p <crate>` — <N> tests pass
+
+   ### What improved
+   <brief summary: reduced complexity, better naming, idiomatic patterns, etc.>
+
+   ---
+   *Green refactor — simplify while green, the R in red-green-refactor.*
+   EOF
+   )"
+   ```

@@ -314,11 +314,7 @@ impl Default for AiCompletionConfig {
 
 impl Default for AiStreamingConfig {
     fn default() -> Self {
-        Self {
-            user_enabled: true,
-            enabled: true,
-            update_debounce_ms: 60,
-        }
+        Self { user_enabled: true, enabled: true, update_debounce_ms: 60 }
     }
 }
 
@@ -2110,21 +2106,11 @@ fn merge_ai_completion_project_opt_out(
     }
 
     if !saw_false.is_empty() && !saw_true.is_empty() {
-        let folders: Vec<String> = saw_false
-            .iter()
-            .chain(saw_true.iter())
-            .map(|(folder, _)| folder.clone())
-            .collect();
-        let values: Vec<String> = saw_false
-            .iter()
-            .chain(saw_true.iter())
-            .map(|(_, value)| value.clone())
-            .collect();
-        conflicts.push(MultiRootConfigConflict {
-            key: "ai_completion.enabled",
-            folders,
-            values,
-        });
+        let folders: Vec<String> =
+            saw_false.iter().chain(saw_true.iter()).map(|(folder, _)| folder.clone()).collect();
+        let values: Vec<String> =
+            saw_false.iter().chain(saw_true.iter()).map(|(_, value)| value.clone()).collect();
+        conflicts.push(MultiRootConfigConflict { key: "ai_completion.enabled", folders, values });
     }
 
     if !saw_false.is_empty() {
