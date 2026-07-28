@@ -859,10 +859,19 @@ fn parse_external_include_paths(paths: &[serde_json::Value]) -> Vec<String> {
         .filter_map(|entry| {
             let trimmed = entry.trim();
             if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
+                return None;
             }
+            // Machine-scoped external roots must be absolute. Relative entries belong in
+            // resource-scoped `includePaths` (validated against the workspace root).
+            if !Path::new(trimmed).is_absolute() {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    entry = %trimmed,
+                    "rejected relative perl.workspace.externalIncludePaths entry; use includePaths for workspace-relative roots"
+                );
+                return None;
+            }
+            Some(trimmed.to_string())
         })
         .collect()
 }
@@ -1050,10 +1059,12 @@ impl WorkspaceConfig {
                 }
                 self.include_paths = valid;
             }
-            if context.apply_external_include_paths
-                && let Some(paths) = workspace.get("externalIncludePaths").and_then(|v| v.as_array())
-            {
-                self.external_include_paths = parse_external_include_paths(paths);
+            if context.apply_external_include_paths {
+                if let Some(paths) =
+                    workspace.get("externalIncludePaths").and_then(|v| v.as_array())
+                {
+                    self.external_include_paths = parse_external_include_paths(paths);
+                }
             }
             if let Some(extensions) = string_array(workspace.get("discoveryExtensions")) {
                 self.discovery_extra_extensions = extensions;
@@ -3836,6 +3847,27 @@ profile = "recommended"
             workspace.effective_include_paths(&[]),
             vec!["lib".to_string(), absolute.to_string()]
         );
+    }
+
+    #[test]
+    fn update_from_value_rejects_relative_external_include_paths() {
+        let mut workspace = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({
+                "workspace": {
+                    "externalIncludePaths": ["lib", absolute, ""]
+                }
+            }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: None,
+                apply_external_include_paths: true,
+            },
+        );
+
+        assert!(rejected.is_empty());
+        assert_eq!(workspace.external_include_paths, vec![absolute.to_string()]);
     }
 
     #[test]
