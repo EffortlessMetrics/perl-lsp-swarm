@@ -298,22 +298,7 @@ impl PullDiagnosticsOrchestrator {
         match result {
             Some(Ok(violations)) => {
                 for v in violations {
-                    // Map Perl::Critic severity to LSP severity
-                    let internal_severity = match v.severity {
-                        perl_lsp_rs_core::tooling::perl_critic::Severity::Gentle => {
-                            InternalDiagnosticSeverity::Error
-                        }
-                        perl_lsp_rs_core::tooling::perl_critic::Severity::Stern
-                        | perl_lsp_rs_core::tooling::perl_critic::Severity::Harsh => {
-                            InternalDiagnosticSeverity::Warning
-                        }
-                        perl_lsp_rs_core::tooling::perl_critic::Severity::Cruel => {
-                            InternalDiagnosticSeverity::Information
-                        }
-                        perl_lsp_rs_core::tooling::perl_critic::Severity::Brutal => {
-                            InternalDiagnosticSeverity::Hint
-                        }
-                    };
+                    let internal_severity = critic_severity_to_internal(v.severity);
 
                     let Some((start_byte, end_byte)) = critic_range_to_byte_range(
                         doc_text,
@@ -2056,19 +2041,7 @@ impl LspServer {
         match result {
             Some(Ok(violations)) => {
                 for v in violations {
-                    // Map Perl::Critic severity (1-5) to LSP DiagnosticSeverity:
-                    // 5 -> Error, 4/3 -> Warning, 2 -> Information, 1 -> Hint
-                    let internal_severity = match v.severity {
-                        crate::perl_critic::Severity::Gentle => InternalDiagnosticSeverity::Error,
-                        crate::perl_critic::Severity::Stern
-                        | crate::perl_critic::Severity::Harsh => {
-                            InternalDiagnosticSeverity::Warning
-                        }
-                        crate::perl_critic::Severity::Cruel => {
-                            InternalDiagnosticSeverity::Information
-                        }
-                        crate::perl_critic::Severity::Brutal => InternalDiagnosticSeverity::Hint,
-                    };
+                    let internal_severity = critic_severity_to_internal(v.severity);
 
                     let Some((start_byte, end_byte)) = critic_range_to_byte_range(
                         doc_text,
@@ -2254,7 +2227,17 @@ fn native_finding_to_diagnostic(finding: crate::perl_critic::CriticFinding) -> I
     }
 }
 
-fn critic_severity_to_internal(
+/// Map a Perl::Critic severity onto an internal diagnostic severity.
+///
+/// Perl::Critic scores violations 1 (least severe) to 5 (most severe). The
+/// variant names run the other way -- they are `perlcritic` threshold names --
+/// so `Gentle` is numeric 5 and becomes `Error`, and `Brutal` is numeric 1 and
+/// becomes `Hint`. See `perl_lsp_rs_core::tooling::perl_critic::Severity` for
+/// the full explanation.
+///
+/// This is the only place the perlcritic-to-internal mapping is written for
+/// the runtime diagnostics path; every caller routes through it.
+pub(crate) fn critic_severity_to_internal(
     severity: crate::perl_critic::Severity,
 ) -> InternalDiagnosticSeverity {
     match severity {
@@ -3735,9 +3718,9 @@ print \"unreachable\\n\";\n";
             .filter(|action| {
                 action.get("kind").and_then(Value::as_str) == Some("quickfix")
                     && action.get("diagnostics").and_then(Value::as_array).is_some_and(|diags| {
-                        diags.iter().any(|diag| {
-                            diag.get("code").and_then(Value::as_str) == Some(code)
-                        })
+                        diags
+                            .iter()
+                            .any(|diag| diag.get("code").and_then(Value::as_str) == Some(code))
                     })
             })
             .collect()

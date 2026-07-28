@@ -155,10 +155,10 @@ fn coverage_docs_describe_advisory_patch_policy_without_pr_wiring()
         "rollout doc must mark the older Codecov ladder as historical"
     );
     assert!(
-        coverage_readme.contains("rtk just coverage-summary")
-            && coverage_readme.contains("rtk just coverage-branch-gate")
-            && coverage_readme.contains("rtk just coverage-baseline-refresh"),
-        "coverage README must show rtk-prefixed local coverage policy commands"
+        coverage_readme.contains("just coverage-summary")
+            && coverage_readme.contains("just coverage-branch-gate")
+            && coverage_readme.contains("just coverage-baseline-refresh"),
+        "coverage README must show direct local coverage policy commands"
     );
     assert!(
         coverage_doc.contains("Codecov / Patch 95")

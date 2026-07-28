@@ -173,7 +173,7 @@ fn ripr_docs_describe_unfiltered_ready_for_review_receipt_routing()
 }
 
 #[test]
-fn ripr_docs_use_rtk_for_local_proof_commands() -> Result<(), Box<dyn std::error::Error>> {
+fn ripr_docs_use_direct_local_proof_commands() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let docs = fs::read_to_string(root.join("docs/ci/ripr.md"))?;
     let block = fenced_block_after(&docs, "## Running locally")
@@ -181,7 +181,15 @@ fn ripr_docs_use_rtk_for_local_proof_commands() -> Result<(), Box<dyn std::error
     let commands = block.lines().filter(|line| !line.trim().is_empty()).collect::<Vec<_>>();
     assert!(!commands.is_empty(), "RIPR local proof block must list commands");
     for command in &commands {
-        assert!(command.starts_with("rtk "), "RIPR local proof command must use rtk: {command}");
+        let direct = command.starts_with("cargo install ripr ")
+            || command.starts_with("cargo xtask ")
+            || *command == "ripr doctor";
+        assert!(direct, "RIPR local proof command must be directly executable: {command}");
+        assert_ne!(
+            command.split_whitespace().next(),
+            Some("rtk"),
+            "RIPR local proof command must not use the retired RTK wrapper: {command}"
+        );
         assert!(
             !command.contains("quality-gate --mode enforce "),
             "RIPR local proof commands must not run final enforcement before burn-down: {command}"

@@ -37,7 +37,7 @@ class ReceiptsToJunitTests(unittest.TestCase):
                             {
                                 "gate_name": "coverage",
                                 "status": "fail",
-                                "command": "rtk cargo xtask quality-gate",
+                                "command": "cargo xtask quality-gate",
                                 "exit_code": 1,
                             },
                             {"gate_name": "docs", "status": "skipped"},
@@ -71,7 +71,7 @@ class ReceiptsToJunitTests(unittest.TestCase):
         self.assertIsNotNone(failure)
         assert failure is not None
         self.assertEqual("fail", failure.get("type"))
-        self.assertIn("Command: rtk cargo xtask quality-gate", failure.text or "")
+        self.assertIn("Command: cargo xtask quality-gate", failure.text or "")
         self.assertIn("Exit code: 1", failure.text or "")
         self.assertIsNotNone(docs)
         assert docs is not None
@@ -90,7 +90,7 @@ class ReceiptsToJunitTests(unittest.TestCase):
                         "failure_class": "assertion",
                         "first_failing_test": "inline_completion_context",
                         "panic_location": "crates/perl-lsp-ux-tests/tests/foo.rs:42",
-                        "canonical_repro": "rtk cargo test -p perl-lsp-ux-tests",
+                        "canonical_repro": "cargo test -p perl-lsp-ux-tests",
                         "route": "ux-scenario",
                     }
                 ),
@@ -108,7 +108,7 @@ class ReceiptsToJunitTests(unittest.TestCase):
         assert failure is not None
         self.assertEqual("assertion", failure.get("type"))
         self.assertIn("First failing test: inline_completion_context", failure.text or "")
-        self.assertIn("Canonical repro: rtk cargo test -p perl-lsp-ux-tests", failure.text or "")
+        self.assertIn("Canonical repro: cargo test -p perl-lsp-ux-tests", failure.text or "")
         self.assertIn("Route: ux-scenario", failure.text or "")
 
     def test_missing_input_emits_skipped_testcase(self) -> None:

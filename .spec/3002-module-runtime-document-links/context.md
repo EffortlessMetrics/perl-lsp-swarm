@@ -52,7 +52,7 @@ module resolution, semantic import behavior, completion, or goto-definition.
 
 No production or test source exception is required. The implementation must not add
 `unwrap`, `expect`, panic macros, unchecked indexing, or new lint suppressions. Run
-`rtk cargo allow check` against the final head and record any repository-wide
-baseline debt separately. Run `rtk cargo allow diff --base origin/main` for the
+`cargo allow check` against the final head and record any repository-wide
+baseline debt separately. Run `cargo allow diff --base origin/main` for the
 lane-level comparison; an empty new-entry result is the expected encoding for this
 spec.

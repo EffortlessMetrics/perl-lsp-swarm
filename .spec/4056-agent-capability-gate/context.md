@@ -59,5 +59,5 @@ availability on `workflow-nano`, or the permission scope of
 
 No new Rust source exception is authorized. The policy test uses fallible
 `Result`/`anyhow` checks rather than panic-shaped assertions. Run
-`rtk cargo allow diff --base origin/main` and record any repository-wide
-baseline findings from `rtk cargo allow check` separately.
+`cargo allow diff --base origin/main` and record any repository-wide
+baseline findings from `cargo allow check` separately.

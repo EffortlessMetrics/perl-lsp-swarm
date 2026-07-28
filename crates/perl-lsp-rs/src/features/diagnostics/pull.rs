@@ -1187,12 +1187,7 @@ fn to_lsp_severity(severity: InternalDiagnosticSeverity) -> LspDiagnosticSeverit
 }
 
 fn native_critic_severity_to_lsp(severity: Severity) -> LspDiagnosticSeverity {
-    match severity {
-        Severity::Gentle => LspDiagnosticSeverity::ERROR,
-        Severity::Stern | Severity::Harsh => LspDiagnosticSeverity::WARNING,
-        Severity::Cruel => LspDiagnosticSeverity::INFORMATION,
-        Severity::Brutal => LspDiagnosticSeverity::HINT,
-    }
+    severity.to_diagnostic_severity()
 }
 
 fn to_lsp_tags(tags: &[InternalDiagnosticTag]) -> Option<Vec<LspDiagnosticTag>> {
