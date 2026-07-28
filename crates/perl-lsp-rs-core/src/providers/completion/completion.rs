@@ -1158,12 +1158,15 @@ impl CompletionProvider {
             return None;
         }
 
-        // Check for `->` immediately before the `{` (hashref deref — out of scope).
-        // Use byte comparison to avoid slicing at a non-char-boundary when a multi-byte
-        // character immediately precedes `{`.
-        if brace_pos >= 2 && source.as_bytes().get(brace_pos - 2..brace_pos) == Some(b"->") {
-            return None;
-        }
+        // Check for `->` immediately before the `{` — hashref deref form ($ref->{key}).
+        // Unlike the direct hash form ($hash{key}), the hashref form accesses via a
+        // scalar reference. We handle this by treating `$ref->{` the same as
+        // `$ref{` for key collection — collect_hash_keys_from_source scans both
+        // `%ref = (...)` and `$ref->{key} =` patterns. (#5074)
+        // Previously this returned None (bail-out). Now we fall through and let
+        // the existing key-collection logic serve the hashref case too.
+        let is_hashref = brace_pos >= 2
+            && source.as_bytes().get(brace_pos - 2..brace_pos) == Some(b"->");
 
         // Extract the variable name: scan backward from `{` looking for `$word`.
         let before_brace = before[..brace_pos].trim_end();
@@ -1264,6 +1267,27 @@ impl CompletionProvider {
                     if seen.insert(key_str.clone()) {
                         keys.push(key_str);
                     }
+                }
+            }
+            search_start = abs_pos + 1;
+            if search_start >= source.len() {
+                break;
+            }
+        }
+
+        // Pattern 3: `$ref->{key} =` individual hashref assignment (#5074)
+        let hashref_pat = format!("${varname}->{{");
+        let mut search_start = 0;
+        while let Some(pos) = source[search_start..].find(hashref_pat.as_str()) {
+            let abs_pos = search_start + pos;
+            let after_brace = &source[abs_pos + hashref_pat.len()..];
+            let key_end = after_brace
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(after_brace.len());
+            let key = &after_brace[..key_end];
+            if !key.is_empty() && after_brace[key_end..].trim_start().starts_with('}') {
+                if seen.insert(key.to_string()) {
+                    keys.push(key.to_string());
                 }
             }
             search_start = abs_pos + 1;
