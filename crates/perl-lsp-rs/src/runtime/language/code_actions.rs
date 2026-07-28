@@ -691,7 +691,7 @@ impl LspServer {
                                         "start": {"line": start_line, "character": start_char},
                                         "end": {"line": end_line, "character": end_char},
                                     },
-                                        "severity": violation.severity.to_diagnostic_severity(),
+                                    "severity": violation.severity.to_diagnostic_severity(),
                                     "code": violation.policy.clone(),
                                     "source": "Perl::Critic",
                                     "message": violation.description.clone()
