@@ -436,11 +436,11 @@
               5
             ],
             "enumDescriptions": [
-              "Severity 1 - very permissive",
-              "Severity 2 - permissive",
-              "Severity 3 - balanced default",
-              "Severity 4 - strict",
-              "Severity 5 - very strict"
+              "1 - report everything, down to the least severe (perlcritic --brutal)",
+              "2 - report severity 2 and above (perlcritic --cruel)",
+              "3 - balanced default (perlcritic --harsh)",
+              "4 - report severity 4 and above (perlcritic --stern)",
+              "5 - only the most severe violations (perlcritic --gentle)"
             ],
             "default": 3,
             "scope": "resource",
@@ -490,11 +490,11 @@
               5
             ],
             "enumDescriptions": [
-              "Severity 1 - very permissive",
-              "Severity 2 - permissive",
-              "Severity 3 - balanced default",
-              "Severity 4 - strict",
-              "Severity 5 - very strict"
+              "1 - report everything, down to the least severe (perlcritic --brutal)",
+              "2 - report severity 2 and above (perlcritic --cruel)",
+              "3 - balanced default (perlcritic --harsh)",
+              "4 - report severity 4 and above (perlcritic --stern)",
+              "5 - only the most severe violations (perlcritic --gentle)"
             ],
             "default": 3,
             "scope": "resource",

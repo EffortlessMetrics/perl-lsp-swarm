@@ -392,11 +392,14 @@ export async function setPerlCriticSeverity(
   const resourceUri = vscode.window.activeTextEditor?.document.uri;
   const selection = await vscode.window.showQuickPick(
     [
-      { label: '1', description: 'Very permissive' },
-      { label: '2', description: 'Permissive' },
+      // Lower number == lower reporting threshold == MORE diagnostics.
+      // `severity_enabled` in native_registry.rs is `rule_severity >= config.severity`,
+      // matching perlcritic's own --severity scale (1 = --brutal, 5 = --gentle).
+      { label: '1', description: 'Report everything, down to the least severe' },
+      { label: '2', description: 'Report severity 2 and above' },
       { label: '3', description: 'Balanced default' },
-      { label: '4', description: 'Strict' },
-      { label: '5', description: 'Very strict' },
+      { label: '4', description: 'Report severity 4 and above' },
+      { label: '5', description: 'Only the most severe violations' },
     ],
     {
       placeHolder: 'Choose a Critic severity level',
