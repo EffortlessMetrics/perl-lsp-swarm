@@ -1759,19 +1759,19 @@ export function handleClientStateChange(event: StateChangeEvent): void {
   // the controller state changes only on explicit lifecycle operations.
   healthWidget?.onStateChange(event.newState as unknown as ClientState);
 
-  // Start/stop the watchdog based on client state (#5092)
+  // Note: event.newState / oldState are vscode-languageclient's `State` enum
+  // which shares numeric values with ClientState (Stopped=1, Running=2) but
+  // is a distinct nominal type, so we cast to number for comparison.
   const newStateNum = event.newState as unknown as number;
+  const oldStateNum = event.oldState as unknown as number;
+
+  // Start/stop the watchdog based on client state (#5092)
   if (newStateNum === ClientState.Running) {
     startWatchdog();
   } else if (newStateNum === ClientState.Stopped) {
     stopWatchdog();
   }
 
-  // Note: event.newState / oldState are vscode-languageclient's `State` enum
-  // which shares numeric values with ClientState (Stopped=1, Running=2) but
-  // is a distinct nominal type, so we cast to number for comparison.
-  const newStateNum = event.newState as unknown as number;
-  const oldStateNum = event.oldState as unknown as number;
   if (newStateNum !== ClientState.Stopped || oldStateNum !== ClientState.Running) {
     return;
   }
@@ -1825,7 +1825,7 @@ export function handleClientStateChange(event: StateChangeEvent): void {
 function startWatchdog(): void {
   stopWatchdog();
   watchdogTimer = setInterval(async () => {
-    if (!languageClientLifecycle || !languageClientLifecycle.isRunning()) {
+    if (languageClientLifecycle?.snapshot.state !== 'running') {
       return;
     }
     try {
