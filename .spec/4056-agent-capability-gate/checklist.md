@@ -16,7 +16,7 @@
 - **Change:** Parse the workflow and verify static runner labels, route outputs,
   fork/bot isolation, fallback branches, preserved triggers/permissions/
   concurrency, and non-optional command failure propagation.
-- **Verify:** `rtk cargo test -p xtask --test agent_capability_gate_workflow_policy`
+- **Verify:** `cargo test -p xtask --test agent_capability_gate_workflow_policy`
 
 ### Step 3: Route execution
 
@@ -40,9 +40,9 @@
 
 ### Step 5: Exact-head proof
 
-- **Verify:** focused policy test, `rtk cargo fmt --all -- --check`,
-  `rtk git diff --check`, `rtk cargo allow diff --base origin/main`, relevant
-  `rtk cargo allow check` baseline classification, then exact-head CI and live
+- **Verify:** focused policy test, `cargo fmt --all -- --check`,
+  `git diff --check`, `cargo allow diff --base origin/main`, relevant
+  `cargo allow check` baseline classification, then exact-head CI and live
   runner route evidence.
 
 ## Scope boundary
