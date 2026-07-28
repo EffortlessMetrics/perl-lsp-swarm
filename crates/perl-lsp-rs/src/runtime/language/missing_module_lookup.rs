@@ -413,11 +413,20 @@ fn missing_module_root_missing_payload(request: &MissingModuleLookupRequest) -> 
 }
 
 fn path_is_under_workspace_roots(path: &Path, workspace_roots: &[PathBuf]) -> bool {
-    let canonical_path = match path.canonicalize() {
-        Ok(path) => path,
-        Err(_) => return false,
+    let Some(canonical_path) = canonicalize_nearest_existing_ancestor(path) else {
+        return false;
     };
     workspace_roots.iter().any(|root| canonical_path.starts_with(root))
+}
+
+fn canonicalize_nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
+    let mut candidate = path;
+    loop {
+        if let Ok(canonical_path) = candidate.canonicalize() {
+            return Some(canonical_path);
+        }
+        candidate = candidate.parent()?;
+    }
 }
 
 fn canonical_workspace_roots(workspace_roots: &[PathBuf]) -> Vec<PathBuf> {
