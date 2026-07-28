@@ -291,6 +291,13 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: perl-core-harness-${{ github.sha }}
-          path: target/perl-core/
+          # Keep normalized evidence and bounded diagnostics; disposable Perl
+          # run trees are not evidence and make the artifact unnecessarily huge.
+          path: |
+            target/perl-core/bundles/
+            target/perl-core/series/
+            target/perl-core/baselines/
+            target/perl-core/smoke/
+            target/perl-core/prepare/**/prepare.json
           if-no-files-found: warn
           retention-days: 30
