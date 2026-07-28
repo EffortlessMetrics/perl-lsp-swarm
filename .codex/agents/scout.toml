@@ -14,7 +14,7 @@ confidently wrong wastes the entire pipeline.
 ## The codebase at a glance
 
 - **Parser:** `crates/perl-parser/` (v3 recursive descent), `crates/perl-lexer/` (tokenizer)
-- **LSP server:** `crates/perl-lsp/` (binary), `crates/perl-lsp-*/` (providers, completion, diagnostics, folding, etc.)
+- **LSP server:** `crates/perl-lsp-rs/` (binary), `crates/perl-lsp-*/` (providers, completion, diagnostics, folding, etc.)
 - **DAP server:** `crates/perl-dap/`, `crates/perl-dap-*/`
 - **Module resolution:** `crates/perl-module-*/` (@INC, use/require resolution)
 - **Semantic analysis:** `crates/perl-semantic-analyzer/`

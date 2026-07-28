@@ -1,6 +1,6 @@
 ---
 name: "source-command-control-plane-lock"
-description: "Advisory single-writer lock for control-plane files (.Codex/agents/, .Codex/commands/, AGENTS.md)"
+description: "Advisory single-writer lock for control-plane files (.codex/agents/, .agents/skills/, AGENTS.md)"
 ---
 
 # source-command-control-plane-lock
@@ -13,7 +13,7 @@ Use this skill when the user asks to run the migrated source command `control-pl
 
 Advisory lock that prevents multiple agents from editing control-plane files simultaneously.
 
-**Protected paths:** `.Codex/agents/`, `.Codex/commands/`, `AGENTS.md`
+**Protected paths:** `.codex/agents/`, `.agents/skills/`, `AGENTS.md`
 
 **Lock file:** `.ops-perl-lsp/control-plane.lock`
 
@@ -57,7 +57,7 @@ Clears the lock regardless of who holds it. Use only when an agent crashed and l
 ## Protocol for agents editing control-plane files
 
 1. `scripts/control-plane-lock.sh acquire <agent-id>`
-2. Edit `.Codex/agents/<file>` or `.Codex/commands/<file>` or `AGENTS.md`
+2. Edit `.codex/agents/<file>` or `.agents/skills/<file>` or `AGENTS.md`
 3. `scripts/control-plane-lock.sh release <agent-id>`
 
 If acquire fails, do not retry in a loop. File your safe edits (per-crate AGENTS.md, issue comments) and report contention to the orchestrator.

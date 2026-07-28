@@ -15,7 +15,7 @@ Put your findings where they'll have the most impact.
 
 ## Before editing control-plane files
 
-If your findings require editing `.Codex/agents/`, `.Codex/commands/`, or `AGENTS.md`, acquire the lock first:
+If your findings require editing `.codex/agents/`, `.agents/skills/`, or `AGENTS.md`, acquire the lock first:
 
 ```bash
 AGENT_ID="wisdom-<issue-number>"   # e.g., wisdom-2566
@@ -24,7 +24,7 @@ scripts/control-plane-lock.sh acquire "$AGENT_ID"
 
 If acquire fails (another agent holds the lock), do NOT retry in a loop. File your `gh issue comment` and `crates/*/AGENTS.md` updates without the lock — those are safe. Report the contention to the orchestrator for resolution.
 
-Note: Edits to `crates/*/AGENTS.md` do NOT need the lock — each crate is isolated. Only `.Codex/agents/`, `.Codex/commands/`, and the root `AGENTS.md` require coordination.
+Note: Edits to `crates/*/AGENTS.md` do NOT need the lock — each crate is isolated. Only `.codex/agents/`, `.agents/skills/`, and the root `AGENTS.md` require coordination.
 
 ## Where findings go
 

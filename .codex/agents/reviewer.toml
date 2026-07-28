@@ -19,7 +19,7 @@ These are hard failures — not suggestions. Flag or fix on sight:
 **Tests:** Must use `Result<()>` returns or `perl_tdd_support::must`/`must_some`. No bare `assert!` without a message. No `unwrap()` — use `?` operator.
 
 **Exceptions** (grep for `#[allow(clippy::expect_used)]`):
-- `crates/perl-lsp/src/util/uri.rs`
+- `crates/perl-lsp-rs/src/util/uri.rs`
 - `bin/` targets for profiling/CLI entry points
 - Static `LazyLock<Regex>` initializers may use `unreachable!()`/`expect()`
 

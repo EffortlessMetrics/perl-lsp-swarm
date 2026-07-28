@@ -17,7 +17,7 @@ Create the implementation branch and commit the spec files.
 
 1. Create branch from master:
    ```bash
-   git checkout -b impl/<issue#>-<specslug> origin/master
+   git checkout -b impl/<issue#>-<specslug> origin/main
    ```
 
 2. Create the spec directory:

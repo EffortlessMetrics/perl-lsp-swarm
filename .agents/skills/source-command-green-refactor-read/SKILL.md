@@ -22,7 +22,7 @@ Understand what was built and what can be simplified.
 
 2. Read the full diff:
    ```bash
-   git diff origin/master..HEAD
+   git diff origin/main..HEAD
    ```
 
 3. Read the spec files:

@@ -81,7 +81,7 @@ if [ -n "$git_dir" ] && [ -n "$common_dir" ] && [ "$git_dir" != "$common_dir" ] 
   # git switch <branch> (without -c/-C): block branch-switch form
   if echo "$CMD" | grep -qE 'git +switch( +-[-[:alnum:]]+)* +[^-]'; then
     # Allow -c/-C (create) forms
-    if ! echo "$CMD" | grep -qE 'git +switch +(-c|-C|--create|--force-create)( |$)'; then
+    if ! echo "$CMD" | grep -qE 'git +switch +(-c|-C|--create|--force-create|--orphan)( |$)'; then
       echo "Blocked: 'git switch <branch>' inside a linked worktree changes the worktree's branch." >&2
       echo "Recovery: cd to main checkout first, or use 'git switch -c <new-branch>' to create from current." >&2
       echo "See #4456 for context." >&2

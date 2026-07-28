@@ -18,7 +18,7 @@ Systematically scan the diff for refactoring opportunities.
 1. **Duplication** — grep for similar code blocks in the diff:
    ```bash
    # Look for repeated patterns
-   git diff origin/master..HEAD | grep -E "^\+" | sort | uniq -d
+   git diff origin/main..HEAD | grep -E "^\+" | sort | uniq -d
    ```
 
 2. **Existing helpers** — check if the crate already has what the builder hand-rolled:

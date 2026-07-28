@@ -22,7 +22,7 @@ implementation.
 ## The codebase
 
 - **~30 focused crates with strong boundaries** (post-v0.13.0 collapse from ~135). Changes usually touch 1-2. If your plan touches more, flag it.
-- **Key paths:** Parser `crates/perl-parser/`, LSP `crates/perl-lsp/` + `crates/perl-lsp-*/`, DAP `crates/perl-dap/` + `crates/perl-dap-*/`, module resolution `crates/perl-module-*/`, tooling `xtask/`, features `features.toml`.
+- **Key paths:** Parser `crates/perl-parser/`, LSP `crates/perl-lsp-rs/` + `crates/perl-lsp-*/`, DAP `crates/perl-dap/` + `crates/perl-dap-*/`, module resolution `crates/perl-module-*/`, tooling `xtask/`, features `features.toml`.
 - **Test patterns:** `Result<()>` returns, `perl_tdd_support::must`/`must_some`, `insta` snapshots. Tests live in `crates/<name>/tests/` or inline `#[cfg(test)]`.
 - **Banned in production:** `unwrap()`, `expect()`, `panic!()`, `todo!()`, `dbg!()`.
 - **Verify:** `cargo test -p <crate>`, `cargo xtask fmt`, `cargo clippy -p <crate>`.
@@ -82,7 +82,7 @@ Before finalizing `acceptance.md`, identify the subsystem and copy applicable ro
 |---|---|
 | Touches `crates/perl-dap/` or `crates/perl-lsp-rs/src/dap*` | DAP-1 through DAP-7 (select applicable) |
 | Touches `crates/perl-parser/`, `crates/perl-lexer/`, `crates/perl-parser-core/` | PARSER-1 through PARSER-4 (select applicable) |
-| Touches `crates/perl-lsp/`, `crates/perl-lsp-rs/`, `crates/perl-lsp-*/` | LSP-1 through LSP-4 (select applicable) |
+| Touches `crates/perl-lsp-rs/`, `crates/perl-lsp-*/` | LSP-1 through LSP-4 (select applicable) |
 | Touches `xtask/`, `.ci/`, `.github/workflows/` | COV-1 through COV-4 (select applicable) |
 
 A hazard row may be omitted ONLY when the specific surface is provably not touched. Document the

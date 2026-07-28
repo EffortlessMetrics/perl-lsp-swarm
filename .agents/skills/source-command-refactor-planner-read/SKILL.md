@@ -22,7 +22,7 @@ Understand the builder's implementation and the crate's existing patterns.
 
 2. Read the diff:
    ```bash
-   git diff origin/master..HEAD
+   git diff origin/main..HEAD
    ```
 
 3. Read existing code in the same module for patterns:

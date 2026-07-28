@@ -33,7 +33,7 @@ Merge up to 3 PRs from the candidates identified in step 1.
    - CI checks green on the current HEAD SHA using **latest-per-check filter** (per `feedback_status_check_rollup_stale_entries.md`)
    - No blocking review comments
    - **Review convergence** — `scripts/ci/check-pr-review-convergence <number>` exits `0`
-     (see [.Codex/reference/review-convergence.md](../reference/review-convergence.md)
+     (see [review-convergence.md](../../../.claude/reference/review-convergence.md)
      for the contract). Do not reproduce or modify its query locally. Never
      merge, and never enable/retain auto-merge, while it exits non-zero —
      that means a requested reviewer is still pending on the current HEAD SHA

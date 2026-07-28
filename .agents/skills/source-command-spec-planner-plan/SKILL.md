@@ -25,9 +25,10 @@ Before writing acceptance.md, determine if the issue is **trivial** (all three h
 - No new public API surface
 - Does not touch any protocol handler (LSP/DAP/stdin)
 
-If **non-trivial**: invoke the `spec-builder` workflow (`.Codex/workflows/spec-builder.js`) with
-`{ issue, subsystem, risk }` to populate §Hazards, §Contracts, §API-Shape, §Test-Grid, and §Blast-Radius
-from six parallel haiku angles. Copy the workflow output into acceptance.md verbatim, then add §Behavior.
+If **non-trivial**: populate §Hazards, §Contracts, §API-Shape, §Test-Grid, and §Blast-Radius from
+multiple read-only planning angles before writing acceptance.md. No repository-local spec-builder
+workflow is currently present in this projection; record that capability as unavailable rather than
+invoking a guessed path. Then add §Behavior.
 
 If **trivial**: populate all six sections manually, marking non-applicable rows `N/A — <reason>`.
 
@@ -185,7 +186,7 @@ Before writing §Hazards, identify the subsystem and seed rows from SUBSYSTEM_HA
 |---|---|
 | `crates/perl-dap/` or `dap*` in perl-lsp-rs | DAP-1 through DAP-7 (select applicable) |
 | `crates/perl-parser/`, `crates/perl-lexer/`, `crates/perl-parser-core/` | PARSER-1 through PARSER-4 |
-| `crates/perl-lsp/`, `crates/perl-lsp-rs/`, `crates/perl-lsp-*/` | LSP-1 through LSP-4 |
+| `crates/perl-lsp-rs/`, `crates/perl-lsp-*/` | LSP-1 through LSP-4 |
 | `xtask/`, `.ci/`, `.github/workflows/` | COV-1 through COV-4 |
 
 Fill in the `Surface` field with the specific file:fn. A row may be omitted only when the surface

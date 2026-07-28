@@ -23,8 +23,8 @@ Understand what the builder implemented and identify untested edge cases.
 
 2. Read the builder's diff:
    ```bash
-   git diff origin/master..HEAD --stat
-   git diff origin/master..HEAD
+   git diff origin/main..HEAD --stat
+   git diff origin/main..HEAD
    ```
 
 3. Read the spec files:
