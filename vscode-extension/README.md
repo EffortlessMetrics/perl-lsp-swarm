@@ -239,68 +239,69 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 
 ### Server and setup
 
-| Command | Description |
-| --- | --- |
-| **Perl: Restart Perl Language Server** | Restart the language server |
-| **Perl: Open Demo Project** | Open a bundled demo project to try features immediately |
-| **Perl: Run Health Check** | Run the end-to-end health check and report what is working |
-| **Perl: Show Server Version** | Display the installed `perllsp` version |
-| **Perl: Check for Binary Updates** | Check whether a newer server binary is available |
-| **Perl: Reinstall Server Binary** | Re-download the managed server binary |
-| **Perl: Open Configuration Guide** | Open the configuration guide |
-| **Perl: Show What's New** | Show release notes for the installed version |
-| **Perl: Show Output Channel** | Open the extension output log |
-| **Perl: Show Status Menu** | Quick-access menu for all actions |
-| **Perl: Report Issue** | Open a pre-filled issue report |
+| Command                                | Description                                                |
+| -------------------------------------- | ---------------------------------------------------------- |
+| **Perl: Restart Perl Language Server** | Restart the language server                                |
+| **Perl: Open Demo Project**            | Open a bundled demo project to try features immediately    |
+| **Perl: Run Health Check**             | Run the end-to-end health check and report what is working |
+| **Perl: Show Server Version**          | Display the installed `perllsp` version                    |
+| **Perl: Check for Binary Updates**     | Check whether a newer server binary is available           |
+| **Perl: Reinstall Server Binary**      | Re-download the managed server binary                      |
+| **Perl: Open Configuration Guide**     | Open the configuration guide                               |
+| **Perl: Show What's New**              | Show release notes for the installed version               |
+| **Perl: Show Output Channel**          | Open the extension output log                              |
+| **Perl: Show Status Menu**             | Quick-access menu for all actions                          |
+| **Perl: Report Issue**                 | Open a pre-filled issue report                             |
 
 ### Editing and refactoring
 
-| Command | Description |
-| --- | --- |
-| **Perl: Format Document** | Format the active document |
-| **Perl: Organize Use Statements** | Sort and clean `use` statements |
-| **Perl: Extract Variable** | Extract the selection into a new variable |
-| **Perl: Extract Method** | Extract the selection into a new subroutine |
-| **Perl: Show Refactoring Options** | List refactorings available at the cursor |
+| Command                            | Description                                 |
+| ---------------------------------- | ------------------------------------------- |
+| **Perl: Format Document**          | Format the active document                  |
+| **Perl: Organize Use Statements**  | Sort and clean `use` statements             |
+| **Perl: Extract Variable**         | Extract the selection into a new variable   |
+| **Perl: Extract Method**           | Extract the selection into a new subroutine |
+| **Perl: Show Refactoring Options** | List refactorings available at the cursor   |
 
 ### Testing
 
-| Command | Description |
-| --- | --- |
+| Command                             | Description                                |
+| ----------------------------------- | ------------------------------------------ |
 | **Perl: Run Tests in Current File** | Run tests in the active `.t` or `.pl` file |
-| **Perl: Run Current Test** | Run the test file currently open |
-| **Perl: Run Test at Cursor** | Run only the test at the cursor |
-| **Perl: Run All Tests** | Run the whole workspace test suite |
+| **Perl: Run Current Test**          | Run the test file currently open           |
+| **Perl: Run Test at Cursor**        | Run only the test at the cursor            |
+| **Perl: Run All Tests**             | Run the whole workspace test suite         |
 
 ### Diagnostics and quality
 
-| Command | Description |
-| --- | --- |
-| **Perl: Check Syntax** | Run a `perl -c` syntax check on the active file |
-| **Perl: Run Critic** | Run Perl::Critic over the active file |
+| Command                       | Description                                               |
+| ----------------------------- | --------------------------------------------------------- |
+| **Perl: Check Syntax**        | Run a `perl -c` syntax check on the active file           |
+| **Perl: Run Critic**          | Run Perl::Critic over the active file                     |
 | **Perl: Set Critic Severity** | Set the Perl::Critic severity threshold (1 = most severe) |
 
 ### Navigation and inspection
 
-| Command | Description |
-| --- | --- |
-| **Perl: Open Module** | Open a module by name, resolved through `@INC` |
-| **Perl: Show @INC Paths** | Show the `@INC` paths the server is using |
-| **Perl: Preview POD** | Render the POD in the active file |
-| **Perl: Show Parser AST** | Show the parser AST for the active file |
-| **Perl: Create Debug Configuration** | Generate a `launch.json` debug configuration |
+| Command                              | Description                                    |
+| ------------------------------------ | ---------------------------------------------- |
+| **Perl: Open Module**                | Open a module by name, resolved through `@INC` |
+| **Perl: Show @INC Paths**            | Show the `@INC` paths the server is using      |
+| **Perl: Preview POD**                | Render the POD in the active file              |
+| **Perl: Show Parser AST**            | Show the parser AST for the active file        |
+| **Perl: Create Debug Configuration** | Generate a `launch.json` debug configuration   |
 
 ### Explainability and previews
 
-| Command | Description |
-| --- | --- |
-| **Perl LSP: Explain Provider Decision** | Show why the last provider acted, fell back, or refused |
-| **Perl LSP: Copy Provider Decision Receipt** | Copy a structured local receipt for issue reports |
-| **Perl LSP: Show Workspace Trust Report** | Show workspace roots, module resolution, index state, support tiers, and boundary policy |
-| **Perl LSP: Explain This Diagnostic** | Explain PL701/PL109 diagnostics in the output channel when a receipt is available |
-| **Perl LSP: Explain Missing Module Lookup** | Show the current missing-module `@INC` lookup state and setup boundary |
-| **Perl LSP: Preview Safe Delete** | Preview whether symbol deletion is allowed, blocked, or refused before editing |
-| **Perl LSP: Preview Package Rename** | Preview package/compiler-backed rename evidence without authorizing an edit |
+| Command                                      | Description                                                                              |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| **Perl LSP: Explain Provider Decision**      | Show why the last provider acted, fell back, or refused                                  |
+| **Perl LSP: Copy Provider Decision Receipt** | Copy a structured local receipt for issue reports                                        |
+| **Perl LSP: Show Workspace Trust Report**    | Show workspace roots, module resolution, index state, support tiers, and boundary policy |
+| **Perl LSP: Explain This Diagnostic**        | Explain PL701/PL109 diagnostics in the output channel when a receipt is available        |
+| **Perl LSP: Explain Missing Module Lookup**  | Show the current missing-module `@INC` lookup state and setup boundary                   |
+| **Perl LSP: Preview Safe Delete**            | Preview whether symbol deletion is allowed, blocked, or refused before editing           |
+| **Perl LSP: Preview Package Rename**         | Preview package/compiler-backed rename evidence without authorizing an edit              |
+
 ## Compatibility
 
 The `perllsp` binary works with any editor that supports the Language Server Protocol:

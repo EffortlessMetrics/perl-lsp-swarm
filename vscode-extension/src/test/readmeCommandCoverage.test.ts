@@ -12,52 +12,52 @@ import * as path from 'path';
  * apart again silently.
  */
 describe('README command coverage', () => {
-    const extensionRoot = path.resolve(__dirname, '..', '..');
-    const packageJson = JSON.parse(
-        fs.readFileSync(path.join(extensionRoot, 'package.json'), 'utf8'),
-    ) as {
-        contributes: { commands: Array<{ command: string; title: string; category?: string }> };
-    };
-    const readme = fs.readFileSync(path.join(extensionRoot, 'README.md'), 'utf8');
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(extensionRoot, 'package.json'), 'utf8'),
+  ) as {
+    contributes: { commands: Array<{ command: string; title: string; category?: string }> };
+  };
+  const readme = fs.readFileSync(path.join(extensionRoot, 'README.md'), 'utf8');
 
-    const paletteLabel = (cmd: { title: string; category?: string }): string =>
-        cmd.category ? `${cmd.category}: ${cmd.title}` : cmd.title;
+  const paletteLabel = (cmd: { title: string; category?: string }): string =>
+    cmd.category ? `${cmd.category}: ${cmd.title}` : cmd.title;
 
-    it('documents every contributed command', () => {
-        const missing = packageJson.contributes.commands
-            .map(paletteLabel)
-            .filter((label) => !readme.includes(label));
+  it('documents every contributed command', () => {
+    const missing = packageJson.contributes.commands
+      .map(paletteLabel)
+      .filter((label) => !readme.includes(label));
 
-        expect(missing).toEqual([]);
-    });
+    expect(missing).toEqual([]);
+  });
 
-    it('uses the exact palette label for each documented command', () => {
-        // A label the user cannot find by typing it into the palette is worse
-        // than no label, so compare against the rendered `category: title`
-        // string rather than a substring of it.
-        for (const cmd of packageJson.contributes.commands) {
-            const label = paletteLabel(cmd);
-            expect(readme).toContain(`**${label}**`);
-        }
-    });
+  it('uses the exact palette label for each documented command', () => {
+    // A label the user cannot find by typing it into the palette is worse
+    // than no label, so compare against the rendered `category: title`
+    // string rather than a substring of it.
+    for (const cmd of packageJson.contributes.commands) {
+      const label = paletteLabel(cmd);
+      expect(readme).toContain(`**${label}**`);
+    }
+  });
 
-    it('does not advertise commands the extension does not contribute', () => {
-        const contributed = new Set(packageJson.contributes.commands.map(paletteLabel));
+  it('does not advertise commands the extension does not contribute', () => {
+    const contributed = new Set(packageJson.contributes.commands.map(paletteLabel));
 
-        // Bold entries in the Commands section only -- the rest of the README
-        // legitimately bolds prose.
-        const commandsSection = readme.slice(
-            readme.indexOf('## Commands'),
-            readme.indexOf('## Compatibility'),
-        );
-        expect(commandsSection.length).toBeGreaterThan(0);
+    // Bold entries in the Commands section only -- the rest of the README
+    // legitimately bolds prose.
+    const commandsSection = readme.slice(
+      readme.indexOf('## Commands'),
+      readme.indexOf('## Compatibility'),
+    );
+    expect(commandsSection.length).toBeGreaterThan(0);
 
-        const advertised = [...commandsSection.matchAll(/^\| \*\*(.+?)\*\* \|/gm)]
-            .map((m) => m[1])
-            .filter((label): label is string => label !== undefined);
-        expect(advertised.length).toBeGreaterThan(0);
+    const advertised = [...commandsSection.matchAll(/^\| \*\*(.+?)\*\* \|/gm)]
+      .map((m) => m[1])
+      .filter((label): label is string => label !== undefined);
+    expect(advertised.length).toBeGreaterThan(0);
 
-        const unknown = advertised.filter((label) => !contributed.has(label));
-        expect(unknown).toEqual([]);
-    });
+    const unknown = advertised.filter((label) => !contributed.has(label));
+    expect(unknown).toEqual([]);
+  });
 });
