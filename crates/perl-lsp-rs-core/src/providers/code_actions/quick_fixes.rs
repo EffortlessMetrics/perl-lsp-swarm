@@ -1017,38 +1017,6 @@ pub fn fix_assignment_in_condition(
     actions
 }
 
-/// Add 'use strict' pragma
-pub fn add_use_strict() -> Vec<CodeAction> {
-    vec![CodeAction {
-        title: "Add 'use strict'".to_string(),
-        kind: CodeActionKind::QuickFix,
-        diagnostics: vec![DiagnosticCode::MissingStrict.as_str().to_string()],
-        edit: CodeActionEdit {
-            changes: vec![TextEdit {
-                location: SourceLocation { start: 0, end: 0 },
-                new_text: "use strict;\n".to_string(),
-            }],
-        },
-        is_preferred: true,
-    }]
-}
-
-/// Add 'use warnings' pragma
-pub fn add_use_warnings() -> Vec<CodeAction> {
-    vec![CodeAction {
-        title: "Add 'use warnings'".to_string(),
-        kind: CodeActionKind::QuickFix,
-        diagnostics: vec![DiagnosticCode::MissingWarnings.as_str().to_string()],
-        edit: CodeActionEdit {
-            changes: vec![TextEdit {
-                location: SourceLocation { start: 0, end: 0 },
-                new_text: "use warnings;\n".to_string(),
-            }],
-        },
-        is_preferred: true,
-    }]
-}
-
 fn file_scope_pragma_insertion_offset(source: &str) -> usize {
     if source.starts_with("#!") {
         source.find('\n').map(|offset| offset + 1).unwrap_or(source.len())
