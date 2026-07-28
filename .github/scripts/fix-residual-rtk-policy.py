@@ -67,14 +67,22 @@ replace(
 path = Path("xtask/tests/codecov_patch_gate_policy.rs")
 text = path.read_text(encoding="utf-8")
 for old, new in [
-    ('coverage_readme.contains("rtk just coverage-summary")',
-     'coverage_readme.contains("just coverage-summary")'),
-    ('coverage_readme.contains("rtk just coverage-branch-gate")',
-     'coverage_readme.contains("just coverage-branch-gate")'),
-    ('coverage_readme.contains("rtk just coverage-baseline-refresh")',
-     'coverage_readme.contains("just coverage-baseline-refresh")'),
-    ('"coverage README must show rtk-prefixed local coverage policy commands"',
-     '"coverage README must show direct local coverage policy commands"'),
+    (
+        'coverage_readme.contains("rtk just coverage-summary")',
+        'coverage_readme.contains("just coverage-summary")',
+    ),
+    (
+        'coverage_readme.contains("rtk just coverage-branch-gate")',
+        'coverage_readme.contains("just coverage-branch-gate")',
+    ),
+    (
+        'coverage_readme.contains("rtk just coverage-baseline-refresh")',
+        'coverage_readme.contains("just coverage-baseline-refresh")',
+    ),
+    (
+        '"coverage README must show rtk-prefixed local coverage policy commands"',
+        '"coverage README must show direct local coverage policy commands"',
+    ),
 ]:
     if old not in text:
         raise SystemExit(f"expected coverage policy text not found: {old}")
@@ -126,3 +134,5 @@ fn ripr_docs_use_direct_local_proof_commands() -> Result<(), Box<dyn std::error:
 if old not in text:
     raise SystemExit("expected RIPR local-command policy block was not found")
 path.write_text(text.replace(old, new), encoding="utf-8")
+
+subprocess.run(["cargo", "fmt", "--all"], check=True)
