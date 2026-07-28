@@ -1017,15 +1017,16 @@ pub fn fix_assignment_in_condition(
     actions
 }
 
-/// Add 'use strict' pragma
-pub fn add_use_strict() -> Vec<CodeAction> {
+/// Add 'use strict' pragma, inserting after shebang if present. (#UX_GAP_01)
+pub fn add_use_strict_with_offset(source: &str) -> Vec<CodeAction> {
+    let offset = file_scope_pragma_insertion_offset(source);
     vec![CodeAction {
         title: "Add 'use strict'".to_string(),
         kind: CodeActionKind::QuickFix,
         diagnostics: vec![DiagnosticCode::MissingStrict.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: 0, end: 0 },
+                location: SourceLocation { start: offset, end: offset },
                 new_text: "use strict;\n".to_string(),
             }],
         },
@@ -1033,15 +1034,16 @@ pub fn add_use_strict() -> Vec<CodeAction> {
     }]
 }
 
-/// Add 'use warnings' pragma
-pub fn add_use_warnings() -> Vec<CodeAction> {
+/// Add 'use warnings' pragma, inserting after shebang if present. (#UX_GAP_01)
+pub fn add_use_warnings_with_offset(source: &str) -> Vec<CodeAction> {
+    let offset = file_scope_pragma_insertion_offset(source);
     vec![CodeAction {
         title: "Add 'use warnings'".to_string(),
         kind: CodeActionKind::QuickFix,
         diagnostics: vec![DiagnosticCode::MissingWarnings.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: 0, end: 0 },
+                location: SourceLocation { start: offset, end: offset },
                 new_text: "use warnings;\n".to_string(),
             }],
         },
@@ -1049,7 +1051,10 @@ pub fn add_use_warnings() -> Vec<CodeAction> {
     }]
 }
 
-fn file_scope_pragma_insertion_offset(source: &str) -> usize {
+/// Compute the insertion offset for `use strict`/`use warnings`, skipping
+/// the shebang line if present. Without this, the pragma is inserted before
+/// `#!/usr/bin/perl`, breaking script execution. (#UX_GAP_01)
+pub fn file_scope_pragma_insertion_offset(source: &str) -> usize {
     if source.starts_with("#!") {
         source.find('\n').map(|offset| offset + 1).unwrap_or(source.len())
     } else {

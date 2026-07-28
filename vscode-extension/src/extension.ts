@@ -1770,7 +1770,6 @@ export function handleClientStateChange(event: StateChangeEvent): void {
   // Note: event.newState / oldState are vscode-languageclient's `State` enum
   // which shares numeric values with ClientState (Stopped=1, Running=2) but
   // is a distinct nominal type, so we cast to number for comparison.
-  const newStateNum = event.newState as unknown as number;
   const oldStateNum = event.oldState as unknown as number;
   if (newStateNum !== ClientState.Stopped || oldStateNum !== ClientState.Running) {
     return;
