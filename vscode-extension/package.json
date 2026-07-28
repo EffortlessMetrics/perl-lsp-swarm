@@ -24,14 +24,7 @@
     "perl5",
     "language-server",
     "lsp",
-    "debugger",
-    "refactoring",
-    "code-completion",
-    "diagnostics",
-    "vscodium",
-    "open-vsx",
-    "kilo-code",
-    "kilo code"
+    "debugger"
   ],
   "extensionKind": [
     "workspace"
@@ -1356,14 +1349,14 @@
     "@types/node": "^26.x",
     "@types/tar": "^7.0.87",
     "@types/vscode": "~1.125.0",
-    "@vscode/test-electron": "^2.5.2",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "3.9.2",
     "jest": "^30.4.2",
     "mocha": "^11.7.6",
     "ovsx": "1.0.2",
     "oxfmt": "0.59.0",
     "oxlint": "1.74.0",
-    "oxlint-tsgolint": "0.25.0",
+    "oxlint-tsgolint": "7.0.2001",
     "rolldown": "1.2.0",
     "source-map": "0.8.0",
     "typescript": "^7.0.2",

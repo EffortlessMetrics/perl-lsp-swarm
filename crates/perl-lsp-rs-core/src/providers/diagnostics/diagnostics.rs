@@ -357,69 +357,69 @@ impl DiagnosticsProvider {
 
             // Run lint checks
             check_strict_warnings(ast, &mut diagnostics);
-        check_deprecated_syntax(ast, &mut diagnostics);
-        let symbol_table = SymbolExtractor::new_with_source(source).extract(ast);
-        check_common_mistakes(ast, &symbol_table, &mut diagnostics);
-        check_printf_format(ast, &mut diagnostics);
+            check_deprecated_syntax(ast, &mut diagnostics);
+            let symbol_table = SymbolExtractor::new_with_source(source).extract(ast);
+            check_common_mistakes(ast, &symbol_table, &mut diagnostics);
+            check_printf_format(ast, &mut diagnostics);
 
-        // Package and subroutine diagnostics (PL200, PL201, PL300)
-        check_missing_package_declaration(ast, source, source_path, &mut diagnostics);
-        check_duplicate_package(ast, &mut diagnostics);
-        check_duplicate_subroutine(ast, &mut diagnostics);
+            // Package and subroutine diagnostics (PL200, PL201, PL300)
+            check_missing_package_declaration(ast, source, source_path, &mut diagnostics);
+            check_duplicate_package(ast, &mut diagnostics);
+            check_duplicate_subroutine(ast, &mut diagnostics);
 
-        // Moo/Moose role conflict diagnostics. Cross-file and transitive roles
-        // resolve through the workspace semantic index; under NullSemanticQueries
-        // the resolver returns empty and the lint degrades to same-file analysis.
-        check_role_conflicts(
-            ast,
-            &symbol_table,
-            &|role| semantic_queries.transitive_role_methods(role),
-            &mut diagnostics,
-        );
-        check_goto_labels(ast, &symbol_table, &mut diagnostics);
-        check_loop_control_labels(ast, &symbol_table, &mut diagnostics);
-        check_source_filter_risk(ast, &mut diagnostics);
+            // Moo/Moose role conflict diagnostics. Cross-file and transitive roles
+            // resolve through the workspace semantic index; under NullSemanticQueries
+            // the resolver returns empty and the lint degrades to same-file analysis.
+            check_role_conflicts(
+                ast,
+                &symbol_table,
+                &|role| semantic_queries.transitive_role_methods(role),
+                &mut diagnostics,
+            );
+            check_goto_labels(ast, &symbol_table, &mut diagnostics);
+            check_loop_control_labels(ast, &symbol_table, &mut diagnostics);
+            check_source_filter_risk(ast, &mut diagnostics);
 
-        // Security anti-pattern detection (string eval, two-arg open, backtick exec)
-        check_security(ast, &mut diagnostics);
-        check_ffi_checklib(ast, &mut diagnostics);
-        check_eval_error_flow(ast, &mut diagnostics);
+            // Security anti-pattern detection (string eval, two-arg open, backtick exec)
+            check_security(ast, &mut diagnostics);
+            check_ffi_checklib(ast, &mut diagnostics);
+            check_eval_error_flow(ast, &mut diagnostics);
 
-        // Unused import detection
-        check_unused_imports(ast, source, &mut diagnostics);
+            // Unused import detection
+            check_unused_imports(ast, source, &mut diagnostics);
 
-        // POD coverage for exported subroutines (PL304)
-        check_pod_coverage(ast, source, &mut diagnostics);
+            // POD coverage for exported subroutines (PL304)
+            check_pod_coverage(ast, source, &mut diagnostics);
 
-        // Version compatibility lint (PL900)
-        check_version_compat(ast, &mut diagnostics);
+            // Version compatibility lint (PL900)
+            check_version_compat(ast, &mut diagnostics);
 
-        // Unreachable code detection (PL406)
-        check_unreachable_code(ast, &mut diagnostics);
+            // Unreachable code detection (PL406)
+            check_unreachable_code(ast, &mut diagnostics);
 
-        // Duplicate hash key detection (PL408)
-        check_duplicate_hash_keys(ast, &mut diagnostics);
+            // Duplicate hash key detection (PL408)
+            check_duplicate_hash_keys(ast, &mut diagnostics);
 
-        // Missing module lint (PL701) — only when a resolver is provided
-        if let Some(resolver) = module_resolver {
-            if let Some(search_context) = module_search_context {
-                super::lints::missing_module::check_missing_modules_with_search_context(
-                    ast,
-                    source,
-                    resolver,
-                    search_context,
-                    &mut diagnostics,
-                );
-            } else {
-                super::lints::missing_module::check_missing_modules(
-                    ast,
-                    source,
-                    resolver,
-                    module_search_paths,
-                    &mut diagnostics,
-                );
+            // Missing module lint (PL701) — only when a resolver is provided
+            if let Some(resolver) = module_resolver {
+                if let Some(search_context) = module_search_context {
+                    super::lints::missing_module::check_missing_modules_with_search_context(
+                        ast,
+                        source,
+                        resolver,
+                        search_context,
+                        &mut diagnostics,
+                    );
+                } else {
+                    super::lints::missing_module::check_missing_modules(
+                        ast,
+                        source,
+                        resolver,
+                        module_search_paths,
+                        &mut diagnostics,
+                    );
+                }
             }
-        }
         } // end if !has_blocking_parse_error
 
         suppress_unused_imports_for_missing_modules(&mut diagnostics);

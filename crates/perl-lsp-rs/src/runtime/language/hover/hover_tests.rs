@@ -952,7 +952,7 @@ fn test_hover_snapshot_analyzer_not_shared_across_generations()
 /// then advance it to point into the middle of the match (simulating a hover
 /// cursor positioned on that word).
 fn offset_of(text: &str, needle: &str) -> usize {
-    text.find(needle).expect("needle not found in text")
+    must_some(text.find(needle))
 }
 
 #[test]

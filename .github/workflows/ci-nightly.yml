@@ -124,7 +124,7 @@ jobs:
         cache-on-failure: true
 
     - name: Install just
-      uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b  # v2.83.4
+      uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2.85.2
       with:
         tool: just
 
@@ -622,7 +622,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b  # v2.83.4
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2.85.2
         with:
           tool: just
 
@@ -849,7 +849,7 @@ jobs:
         run: cargo install cargo-public-api --locked --version 0.50.1
 
       - name: Install just
-        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b  # v2.83.4
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2.85.2
         with:
           tool: just
 
@@ -881,7 +881,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b  # v2.83.4
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2.85.2
         with:
           tool: just
 
