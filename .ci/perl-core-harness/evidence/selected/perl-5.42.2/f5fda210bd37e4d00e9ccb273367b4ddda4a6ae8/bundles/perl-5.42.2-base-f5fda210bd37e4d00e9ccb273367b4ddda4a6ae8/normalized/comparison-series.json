@@ -1,0 +1,35 @@
+{
+  "schema_version": "perl_core_harness.comparison_series.v1",
+  "series_id": "selected-base-perl-5.42.2",
+  "profile": "base",
+  "profile_roots": [
+    "base"
+  ],
+  "repository_commit": "f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
+  "perl_requested_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "perl_resolved_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "runner": "test",
+  "normalized_manifest": [
+    "base/cond.t",
+    "base/if.t",
+    "base/lex.t",
+    "base/num.t",
+    "base/pat.t",
+    "base/rs.t",
+    "base/term.t",
+    "base/translate.t",
+    "base/while.t"
+  ],
+  "manifest_hash": "f7eb6465e0f9054e71621b11994822e73d558eb904ad1f003e16244621a94e6a",
+  "preparation_receipt_id": "perl-prepare-b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "preparation_receipt_digest": "bf5027f72f1265704658ebf4faead5570deaee82ecb7f4bcafad07bcaa04fde0",
+  "harness_schema_version": "perl_core_harness.discovery.v1",
+  "compiler_subject_identity": "perl-lsp-swarm:f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8:rustc-1.97.0:perl-core-harness.v1",
+  "invocation_identity": "perl-core-harness:smoke:v1:runner-test:parse-compile",
+  "capability_identity": "linux:perl-core-harness:runner-test:parse-compile",
+  "environment_identity": "ubuntu-24.04:rustc-1.97.0",
+  "normalization_version": "path-normalization.v1",
+  "created_at": "2026-07-28T23:53:57Z",
+  "replaces_series_id": null,
+  "change_reason": "initial pinned selected comparison series"
+}

@@ -1,0 +1,15 @@
+{
+  "commands": [
+    "cargo +1.97.0 run --locked -p xtask -- perl-core-harness discover --profile comp",
+    "cargo +1.97.0 run --locked -p xtask -- perl-core-harness smoke --profile comp --modes parse,compile"
+  ],
+  "compiler_subject_identity": "perl-lsp-swarm:f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8:rustc-1.97.0:perl-core-harness.v1",
+  "deterministic": true,
+  "modes": [
+    "parse",
+    "compile"
+  ],
+  "profile": "comp",
+  "schema_version": "perl_core_harness.evidence_reproduction.v1",
+  "series_id": "selected-comp-perl-5.42.2"
+}

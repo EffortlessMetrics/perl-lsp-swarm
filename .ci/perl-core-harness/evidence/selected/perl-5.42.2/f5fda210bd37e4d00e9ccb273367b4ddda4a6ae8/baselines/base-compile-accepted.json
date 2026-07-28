@@ -1,0 +1,164 @@
+{
+  "schema_version": "perl_core_harness.compile_baseline.v2",
+  "report_schema_version": "perl_core_harness.report.v1",
+  "series_id": "selected-base-perl-5.42.2",
+  "manifest_hash": "f7eb6465e0f9054e71621b11994822e73d558eb904ad1f003e16244621a94e6a",
+  "repository_commit": "f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
+  "perl_resolved_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "preparation_receipt_id": "perl-prepare-b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "compiler_subject_identity": "perl-lsp-swarm:f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8:rustc-1.97.0:perl-core-harness.v1",
+  "invocation_identity": "perl-core-harness:smoke:v1:runner-test:parse-compile",
+  "capability_identity": "linux:perl-core-harness:runner-test:parse-compile",
+  "environment_identity": "ubuntu-24.04:rustc-1.97.0",
+  "source_report_digest": "d4af96a0cbb847d685f2523f0560f78c183eac4dd659dedc5f40dac18ebb9bf6",
+  "accepted_transition_id": null,
+  "evidence_bundle": "perl-5.42.2-base-f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
+  "mode": "compile",
+  "profile": "base",
+  "runner": "test",
+  "file_membership": [
+    "base/cond.t",
+    "base/if.t",
+    "base/lex.t",
+    "base/num.t",
+    "base/pat.t",
+    "base/rs.t",
+    "base/term.t",
+    "base/translate.t",
+    "base/while.t"
+  ],
+  "files_total": 9,
+  "files_passed": 9,
+  "files_failed": 0,
+  "tap_assertions_total": 9,
+  "tap_assertions_passed": 9,
+  "buckets": {},
+  "expected_failures": [],
+  "file_results": [
+    {
+      "path": "base/cond.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/if.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/lex.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/num.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/pat.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/rs.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/term.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/translate.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/while.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    }
+  ],
+  "semantic_boundaries": [
+    {
+      "path": "base/lex.t",
+      "id": "runtime_symbolic_reference",
+      "disposition": "deferred_runtime",
+      "reason": "symbolic reference dereference is deferred to runtime",
+      "source_span": {
+        "start": 2405,
+        "end": 2418
+      },
+      "source_kind": "SymbolicReferenceDeref",
+      "confidence": "conservative",
+      "blocks_compilation": false,
+      "blocks_downstream_static_facts": true,
+      "lock_scope": "none",
+      "owner_workstream": "symbolic_reference_semantics",
+      "supporting_test": "base/lex.t"
+    },
+    {
+      "path": "base/rs.t",
+      "id": "source_locked:base/rs.t:StashGraph",
+      "disposition": "source_locked_compatibility",
+      "reason": "typeglob assignment has a non-static RHS",
+      "source_span": {
+        "start": 4056,
+        "end": 4067
+      },
+      "source_kind": "StashGraph",
+      "confidence": "exact",
+      "blocks_compilation": false,
+      "blocks_downstream_static_facts": true,
+      "lock_scope": "path_and_source",
+      "owner_workstream": "source_locked_compatibility",
+      "supporting_test": "base/rs.t"
+    },
+    {
+      "path": "base/rs.t",
+      "id": "source_locked:base/rs.t:StashGraph",
+      "disposition": "source_locked_compatibility",
+      "reason": "typeglob assignment has a non-static RHS",
+      "source_span": {
+        "start": 5145,
+        "end": 5156
+      },
+      "source_kind": "StashGraph",
+      "confidence": "exact",
+      "blocks_compilation": false,
+      "blocks_downstream_static_facts": true,
+      "lock_scope": "path_and_source",
+      "owner_workstream": "source_locked_compatibility",
+      "supporting_test": "base/rs.t"
+    },
+    {
+      "path": "base/term.t",
+      "id": "source_locked:base/term.t:PhaseBlock",
+      "disposition": "source_locked_compatibility",
+      "reason": "phase block compile-time execution is recorded but not evaluated",
+      "source_span": {
+        "start": 10,
+        "end": 44
+      },
+      "source_kind": "PhaseBlock",
+      "confidence": "exact",
+      "blocks_compilation": false,
+      "blocks_downstream_static_facts": true,
+      "lock_scope": "path_and_source",
+      "owner_workstream": "source_locked_compatibility",
+      "supporting_test": "base/term.t"
+    }
+  ],
+  "boundary_retirements": []
+}

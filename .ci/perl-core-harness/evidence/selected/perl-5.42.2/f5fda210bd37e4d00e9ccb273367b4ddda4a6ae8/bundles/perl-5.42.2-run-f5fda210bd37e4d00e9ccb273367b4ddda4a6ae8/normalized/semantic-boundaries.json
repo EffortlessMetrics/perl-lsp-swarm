@@ -1,0 +1,478 @@
+[
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/cloexec.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/cloexec.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 1463,
+      "start": 1343
+    },
+    "supporting_test": "run/cloexec.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/dtrace.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/dtrace.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 429,
+      "start": 33
+    },
+    "supporting_test": "run/dtrace.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/exit.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/exit.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 125,
+      "start": 66
+    },
+    "supporting_test": "run/exit.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/fresh_perl.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/fresh_perl.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 445,
+      "start": 342
+    },
+    "supporting_test": "run/fresh_perl.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/locale.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/locale.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 166,
+      "start": 9
+    },
+    "supporting_test": "run/locale.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/locale.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/locale.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 559,
+      "start": 402
+    },
+    "supporting_test": "run/locale.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/noswitch.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/noswitch.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 131,
+      "start": 10
+    },
+    "supporting_test": "run/noswitch.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/runenv.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/runenv.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 254,
+      "start": 99
+    },
+    "supporting_test": "run/runenv.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/runenv_hashseed.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/runenv_hashseed.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 2372,
+      "start": 2292
+    },
+    "supporting_test": "run/runenv_hashseed.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/runenv_randseed.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/runenv_randseed.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 90,
+      "start": 10
+    },
+    "supporting_test": "run/runenv_randseed.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/script.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/script.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 126,
+      "start": 10
+    },
+    "supporting_test": "run/script.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/switch-I-and-M.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/switch-I-and-M.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 65,
+      "start": 10
+    },
+    "supporting_test": "run/switch-I-and-M.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/switch0.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/switch0.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 93,
+      "start": 13
+    },
+    "supporting_test": "run/switch0.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/switchC.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/switchC.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 244,
+      "start": 52
+    },
+    "supporting_test": "run/switchC.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/switchDx.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/switchDx.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 120,
+      "start": 12
+    },
+    "supporting_test": "run/switchDx.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/switchF.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/switchF.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 138,
+      "start": 17
+    },
+    "supporting_test": "run/switchF.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/switchF2.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/switchF2.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 90,
+      "start": 10
+    },
+    "supporting_test": "run/switchF2.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/switchI.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/switchI.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 190,
+      "start": 27
+    },
+    "supporting_test": "run/switchI.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/switchM.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/switchM.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 65,
+      "start": 10
+    },
+    "supporting_test": "run/switchM.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/switcha.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/switcha.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 135,
+      "start": 14
+    },
+    "supporting_test": "run/switcha.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/switchd-78586.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/switchd-78586.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 137,
+      "start": 31
+    },
+    "supporting_test": "run/switchd-78586.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/switchd.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/switchd.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 99,
+      "start": 13
+    },
+    "supporting_test": "run/switchd.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/switches.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/switches.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 276,
+      "start": 166
+    },
+    "supporting_test": "run/switches.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/switchn.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/switchn.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 134,
+      "start": 13
+    },
+    "supporting_test": "run/switchn.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/switchp.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/switchp.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 168,
+      "start": 120
+    },
+    "supporting_test": "run/switchp.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/switcht.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/switcht.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 93,
+      "start": 13
+    },
+    "supporting_test": "run/switcht.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/switchx.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/switchx.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 65,
+      "start": 10
+    },
+    "supporting_test": "run/switchx.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:run/todo.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "run/todo.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 205,
+      "start": 9
+    },
+    "supporting_test": "run/todo.t"
+  }
+]

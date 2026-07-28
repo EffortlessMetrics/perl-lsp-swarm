@@ -1,0 +1,1005 @@
+[
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/filter_exception.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/filter_exception.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 70,
+      "start": 11
+    },
+    "supporting_test": "comp/filter_exception.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/filter_exception.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/filter_exception.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 320,
+      "start": 90
+    },
+    "supporting_test": "comp/filter_exception.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/form_scope.t:StashGraph",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/form_scope.t",
+    "reason": "typeglob assignment has a non-static RHS",
+    "source_kind": "StashGraph",
+    "source_span": {
+      "end": 1848,
+      "start": 1822
+    },
+    "supporting_test": "comp/form_scope.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/form_scope.t:StashGraph",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/form_scope.t",
+    "reason": "typeglob assignment has a non-static RHS",
+    "source_kind": "StashGraph",
+    "source_span": {
+      "end": 2291,
+      "start": 2265
+    },
+    "supporting_test": "comp/form_scope.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/form_scope.t:StashGraph",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/form_scope.t",
+    "reason": "typeglob assignment has a non-static RHS",
+    "source_kind": "StashGraph",
+    "source_span": {
+      "end": 2966,
+      "start": 2940
+    },
+    "supporting_test": "comp/form_scope.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/form_scope.t:StashGraph",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/form_scope.t",
+    "reason": "typeglob assignment has a non-static RHS",
+    "source_kind": "StashGraph",
+    "source_span": {
+      "end": 3340,
+      "start": 3314
+    },
+    "supporting_test": "comp/form_scope.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/form_scope.t:StashGraph",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/form_scope.t",
+    "reason": "typeglob assignment has a non-static RHS",
+    "source_kind": "StashGraph",
+    "source_span": {
+      "end": 3705,
+      "start": 3679
+    },
+    "supporting_test": "comp/form_scope.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/form_scope.t:StashGraph",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/form_scope.t",
+    "reason": "typeglob assignment has a non-static RHS",
+    "source_kind": "StashGraph",
+    "source_span": {
+      "end": 3853,
+      "start": 3827
+    },
+    "supporting_test": "comp/form_scope.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/form_scope.t:StashGraph",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/form_scope.t",
+    "reason": "typeglob assignment has a non-static RHS",
+    "source_kind": "StashGraph",
+    "source_span": {
+      "end": 4082,
+      "start": 4055
+    },
+    "supporting_test": "comp/form_scope.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/form_scope.t:StashGraph",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/form_scope.t",
+    "reason": "typeglob assignment has a non-static RHS",
+    "source_kind": "StashGraph",
+    "source_span": {
+      "end": 4310,
+      "start": 4284
+    },
+    "supporting_test": "comp/form_scope.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 115,
+      "start": 46
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 143,
+      "start": 117
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 500,
+      "start": 144
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 608,
+      "start": 564
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 805,
+      "start": 613
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 857,
+      "start": 813
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 951,
+      "start": 859
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 1054,
+      "start": 962
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 2636,
+      "start": 2226
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 2659,
+      "start": 2644
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 3016,
+      "start": 2972
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 3325,
+      "start": 3290
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 3808,
+      "start": 3780
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 6978,
+      "start": 6943
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 7484,
+      "start": 7391
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 7556,
+      "start": 7519
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 7752,
+      "start": 7638
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/hints.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/hints.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 7815,
+      "start": 7789
+    },
+    "supporting_test": "comp/hints.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/line_debug.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/line_debug.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 37,
+      "start": 10
+    },
+    "supporting_test": "comp/line_debug.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "conservative",
+    "disposition": "deferred_runtime",
+    "id": "runtime_symbolic_reference",
+    "lock_scope": "none",
+    "owner_workstream": "symbolic_reference_semantics",
+    "path": "comp/line_debug.t",
+    "reason": "symbolic reference dereference is deferred to runtime",
+    "source_kind": "SymbolicReferenceDeref",
+    "source_span": {
+      "end": 558,
+      "start": 530
+    },
+    "supporting_test": "comp/line_debug.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "conservative",
+    "disposition": "deferred_runtime",
+    "id": "runtime_symbolic_reference",
+    "lock_scope": "none",
+    "owner_workstream": "symbolic_reference_semantics",
+    "path": "comp/line_debug.t",
+    "reason": "symbolic reference dereference is deferred to runtime",
+    "source_kind": "SymbolicReferenceDeref",
+    "source_span": {
+      "end": 617,
+      "start": 589
+    },
+    "supporting_test": "comp/line_debug.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "conservative",
+    "disposition": "deferred_runtime",
+    "id": "runtime_symbolic_reference",
+    "lock_scope": "none",
+    "owner_workstream": "symbolic_reference_semantics",
+    "path": "comp/line_debug.t",
+    "reason": "symbolic reference dereference is deferred to runtime",
+    "source_kind": "SymbolicReferenceDeref",
+    "source_span": {
+      "end": 688,
+      "start": 660
+    },
+    "supporting_test": "comp/line_debug.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "conservative",
+    "disposition": "deferred_runtime",
+    "id": "runtime_symbolic_reference",
+    "lock_scope": "none",
+    "owner_workstream": "symbolic_reference_semantics",
+    "path": "comp/line_debug.t",
+    "reason": "symbolic reference dereference is deferred to runtime",
+    "source_kind": "SymbolicReferenceDeref",
+    "source_span": {
+      "end": 758,
+      "start": 730
+    },
+    "supporting_test": "comp/line_debug.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/our.t:StashGraph",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/our.t",
+    "reason": "AUTOLOAD declaration makes method dispatch dynamic",
+    "source_kind": "StashGraph",
+    "source_span": {
+      "end": 962,
+      "start": 553
+    },
+    "supporting_test": "comp/our.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/parser.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/parser.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 159,
+      "start": 100
+    },
+    "supporting_test": "comp/parser.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/parser.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/parser.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 13560,
+      "start": 13530
+    },
+    "supporting_test": "comp/parser.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/parser.t:SymbolicReferenceDeref",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/parser.t",
+    "reason": "symbolic reference dereference is deferred to runtime",
+    "source_kind": "SymbolicReferenceDeref",
+    "source_span": {
+      "end": 13553,
+      "start": 13537
+    },
+    "supporting_test": "comp/parser.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "conservative",
+    "disposition": "deferred_runtime",
+    "id": "runtime_symbolic_reference",
+    "lock_scope": "none",
+    "owner_workstream": "symbolic_reference_semantics",
+    "path": "comp/parser.t",
+    "reason": "symbolic reference dereference is deferred to runtime",
+    "source_kind": "SymbolicReferenceDeref",
+    "source_span": {
+      "end": 21918,
+      "start": 21904
+    },
+    "supporting_test": "comp/parser.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/parser_run.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/parser_run.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 267,
+      "start": 175
+    },
+    "supporting_test": "comp/parser_run.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/proto.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/proto.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 349,
+      "start": 294
+    },
+    "supporting_test": "comp/proto.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/proto.t:StashGraph",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/proto.t",
+    "reason": "typeglob assignment has a non-static RHS",
+    "source_kind": "StashGraph",
+    "source_span": {
+      "end": 9562,
+      "start": 9541
+    },
+    "supporting_test": "comp/proto.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/proto.t:StashGraph",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/proto.t",
+    "reason": "typeglob assignment has a non-static RHS",
+    "source_kind": "StashGraph",
+    "source_span": {
+      "end": 9680,
+      "start": 9655
+    },
+    "supporting_test": "comp/proto.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/redef.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/redef.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 145,
+      "start": 70
+    },
+    "supporting_test": "comp/redef.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/redef.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/redef.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 1807,
+      "start": 1734
+    },
+    "supporting_test": "comp/redef.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/require.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/require.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 297,
+      "start": 209
+    },
+    "supporting_test": "comp/require.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/require.t:RequireDirective",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/require.t",
+    "reason": "require target is not statically known",
+    "source_kind": "RequireDirective",
+    "source_span": {
+      "end": 1802,
+      "start": 1795
+    },
+    "supporting_test": "comp/require.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/require.t:RequireDirective",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/require.t",
+    "reason": "require target is not statically known",
+    "source_kind": "RequireDirective",
+    "source_span": {
+      "end": 1897,
+      "start": 1890
+    },
+    "supporting_test": "comp/require.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/require.t:RequireDirective",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/require.t",
+    "reason": "require target is not statically known",
+    "source_kind": "RequireDirective",
+    "source_span": {
+      "end": 1993,
+      "start": 1986
+    },
+    "supporting_test": "comp/require.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/require.t:RequireDirective",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/require.t",
+    "reason": "require target is not statically known",
+    "source_kind": "RequireDirective",
+    "source_span": {
+      "end": 2094,
+      "start": 2087
+    },
+    "supporting_test": "comp/require.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/require.t:RequireDirective",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/require.t",
+    "reason": "require target is not statically known",
+    "source_kind": "RequireDirective",
+    "source_span": {
+      "end": 2219,
+      "start": 2212
+    },
+    "supporting_test": "comp/require.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/require.t:RequireDirective",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/require.t",
+    "reason": "require target is not statically known",
+    "source_kind": "RequireDirective",
+    "source_span": {
+      "end": 2325,
+      "start": 2308
+    },
+    "supporting_test": "comp/require.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/require.t:RequireDirective",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/require.t",
+    "reason": "require target is not statically known",
+    "source_kind": "RequireDirective",
+    "source_span": {
+      "end": 2456,
+      "start": 2449
+    },
+    "supporting_test": "comp/require.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/require.t:RequireDirective",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/require.t",
+    "reason": "require target is not statically known",
+    "source_kind": "RequireDirective",
+    "source_span": {
+      "end": 2562,
+      "start": 2555
+    },
+    "supporting_test": "comp/require.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/require.t:RequireDirective",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/require.t",
+    "reason": "require target is not statically known",
+    "source_kind": "RequireDirective",
+    "source_span": {
+      "end": 2716,
+      "start": 2704
+    },
+    "supporting_test": "comp/require.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/require.t:RequireDirective",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/require.t",
+    "reason": "require target is not statically known",
+    "source_kind": "RequireDirective",
+    "source_span": {
+      "end": 2844,
+      "start": 2832
+    },
+    "supporting_test": "comp/require.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/require.t:RequireDirective",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/require.t",
+    "reason": "require target is not statically known",
+    "source_kind": "RequireDirective",
+    "source_span": {
+      "end": 2989,
+      "start": 2977
+    },
+    "supporting_test": "comp/require.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/require.t:RequireDirective",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/require.t",
+    "reason": "require target is not statically known",
+    "source_kind": "RequireDirective",
+    "source_span": {
+      "end": 7180,
+      "start": 7170
+    },
+    "supporting_test": "comp/require.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/require.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/require.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 14555,
+      "start": 11157
+    },
+    "supporting_test": "comp/require.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:comp/use.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "comp/use.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 143,
+      "start": 10
+    },
+    "supporting_test": "comp/use.t"
+  }
+]

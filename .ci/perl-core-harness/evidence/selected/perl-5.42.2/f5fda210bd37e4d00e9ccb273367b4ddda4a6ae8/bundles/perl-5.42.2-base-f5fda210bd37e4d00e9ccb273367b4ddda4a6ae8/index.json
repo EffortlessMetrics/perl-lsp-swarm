@@ -1,0 +1,165 @@
+{
+  "schema_version": "perl_core_harness.evidence_bundle.v1",
+  "bundle_id": "perl-5.42.2-base-f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
+  "bundle_digest": "e180969987b4cc400020c5ad81a650751a700a6566362ffe67296fd8c8696384",
+  "series_id": "selected-base-perl-5.42.2",
+  "manifest_hash": "f7eb6465e0f9054e71621b11994822e73d558eb904ad1f003e16244621a94e6a",
+  "repository_commit": "f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
+  "profile": "base",
+  "runner": "test",
+  "perl_requested_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "perl_resolved_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "preparation_receipt_id": "perl-prepare-b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "preparation_receipt_digest": "bf5027f72f1265704658ebf4faead5570deaee82ecb7f4bcafad07bcaa04fde0",
+  "compiler_subject_identity": "perl-lsp-swarm:f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8:rustc-1.97.0:perl-core-harness.v1",
+  "invocation_identity": "perl-core-harness:smoke:v1:runner-test:parse-compile",
+  "capability_identity": "linux:perl-core-harness:runner-test:parse-compile",
+  "environment_identity": "ubuntu-24.04:rustc-1.97.0",
+  "lineage": {
+    "measurement_sha": "f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
+    "publication_sha": null,
+    "landed_sha": null
+  },
+  "artifacts": [
+    {
+      "kind": "comparison_series",
+      "logical_path": "normalized/comparison-series.json",
+      "content_digest": "c084117fbec124e4a2f27f3afb146fe9ad151d2122d86096f603514417f3604c",
+      "size_bytes": 1448,
+      "retention": "committed",
+      "visibility": "public",
+      "available_at_measurement": true
+    },
+    {
+      "kind": "preparation_receipt",
+      "logical_path": "normalized/preparation-receipt.json",
+      "content_digest": "083ddd26228e10df8c347daf4af7bc0d7edcc0a19066b440d0198040045744ca",
+      "size_bytes": 566,
+      "retention": "committed",
+      "visibility": "public",
+      "available_at_measurement": true
+    },
+    {
+      "kind": "discovery_raw",
+      "logical_path": "diagnostic/discovery-raw.bin",
+      "content_digest": "7f8e49e1a743d9935eb401bec0f76759068fcb84021dc39e0621c60dfa5692d7",
+      "size_bytes": 125,
+      "retention": "diagnostic",
+      "visibility": "private",
+      "available_at_measurement": true
+    },
+    {
+      "kind": "discovery_normalized",
+      "logical_path": "normalized/discovery.json",
+      "content_digest": "58879a3346e9be69cae88c0f0d3b35b9bb3fae0efff7d0f4c53391caec8986d4",
+      "size_bytes": 902,
+      "retention": "committed",
+      "visibility": "public",
+      "available_at_measurement": true
+    },
+    {
+      "kind": "parse_report",
+      "logical_path": "normalized/parse.json",
+      "content_digest": "9b47afdfda6aa8ffb4cba766338f690dd4d8f9b0b653435c9e28700e9d89789c",
+      "size_bytes": 1741,
+      "retention": "committed",
+      "visibility": "public",
+      "available_at_measurement": true
+    },
+    {
+      "kind": "compile_report",
+      "logical_path": "normalized/compile.json",
+      "content_digest": "4c60b34c845ca54b42447157ea2dc11a4a2463708a95933ac7feafb2a79d7cc0",
+      "size_bytes": 3996,
+      "retention": "committed",
+      "visibility": "public",
+      "available_at_measurement": true
+    },
+    {
+      "kind": "runner_records",
+      "logical_path": "normalized/runner-records.jsonl",
+      "content_digest": "829ac981bd459aa1ac8e0cbdae16cab7f5740ed00a48afe9984ae44b8cb6ff39",
+      "size_bytes": 3580,
+      "retention": "committed",
+      "visibility": "public",
+      "available_at_measurement": true
+    },
+    {
+      "kind": "semantic_boundaries",
+      "logical_path": "normalized/semantic-boundaries.json",
+      "content_digest": "54bee9b354792f48de00b086e9ecda0c5cd1881e4ddf3017d991f064c1443a6a",
+      "size_bytes": 2118,
+      "retention": "committed",
+      "visibility": "public",
+      "available_at_measurement": true
+    },
+    {
+      "kind": "gap_map",
+      "logical_path": "normalized/gap-map.json",
+      "content_digest": "9c1c332f869832982302c0dfc7179d3bc379f8aa488a4a7a806914eafffe2c27",
+      "size_bytes": 341,
+      "retention": "committed",
+      "visibility": "public",
+      "available_at_measurement": true
+    },
+    {
+      "kind": "smoke_report",
+      "logical_path": "normalized/smoke.json",
+      "content_digest": "cb2e601587e78b64980fea572264c8492b5657037ce70617fdba409acd0b8bc4",
+      "size_bytes": 920,
+      "retention": "committed",
+      "visibility": "public",
+      "available_at_measurement": true
+    },
+    {
+      "kind": "baseline_candidate",
+      "logical_path": "normalized/baseline-candidate.json",
+      "content_digest": "f5fbbc83a371e876e57d33be091e34f2298ce48ae19cbde0f33d503551a1873e",
+      "size_bytes": 4895,
+      "retention": "committed",
+      "visibility": "public",
+      "available_at_measurement": true
+    },
+    {
+      "kind": "baseline_accepted",
+      "logical_path": "normalized/baseline-accepted.json",
+      "content_digest": "f5fbbc83a371e876e57d33be091e34f2298ce48ae19cbde0f33d503551a1873e",
+      "size_bytes": 4895,
+      "retention": "committed",
+      "visibility": "public",
+      "available_at_measurement": true
+    },
+    {
+      "kind": "reproduction",
+      "logical_path": "normalized/reproduction.json",
+      "content_digest": "87574a2d74a3cb7645441b9a053dce8e6878ab577cd551ef26365347cd446d22",
+      "size_bytes": 543,
+      "retention": "committed",
+      "visibility": "public",
+      "available_at_measurement": true
+    }
+  ],
+  "completeness": {
+    "status": "complete",
+    "required_artifacts": [
+      "comparison_series",
+      "preparation_receipt",
+      "discovery_raw",
+      "discovery_normalized",
+      "parse_report",
+      "compile_report",
+      "runner_records",
+      "semantic_boundaries",
+      "gap_map",
+      "smoke_report",
+      "baseline_candidate",
+      "baseline_accepted",
+      "reproduction"
+    ],
+    "missing_artifacts": [],
+    "normalized_authority": true,
+    "claim_boundary": "selected parse and compile acceptance with explicit semantic-boundary inventory"
+  },
+  "lifecycle": "measurement",
+  "created_at": "2026-07-28T23:53:57Z"
+}

@@ -1,0 +1,70 @@
+[
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "conservative",
+    "disposition": "deferred_runtime",
+    "id": "runtime_symbolic_reference",
+    "lock_scope": "none",
+    "owner_workstream": "symbolic_reference_semantics",
+    "path": "base/lex.t",
+    "reason": "symbolic reference dereference is deferred to runtime",
+    "source_kind": "SymbolicReferenceDeref",
+    "source_span": {
+      "end": 2418,
+      "start": 2405
+    },
+    "supporting_test": "base/lex.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:base/rs.t:StashGraph",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "base/rs.t",
+    "reason": "typeglob assignment has a non-static RHS",
+    "source_kind": "StashGraph",
+    "source_span": {
+      "end": 4067,
+      "start": 4056
+    },
+    "supporting_test": "base/rs.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:base/rs.t:StashGraph",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "base/rs.t",
+    "reason": "typeglob assignment has a non-static RHS",
+    "source_kind": "StashGraph",
+    "source_span": {
+      "end": 5156,
+      "start": 5145
+    },
+    "supporting_test": "base/rs.t"
+  },
+  {
+    "blocks_compilation": false,
+    "blocks_downstream_static_facts": true,
+    "confidence": "exact",
+    "disposition": "source_locked_compatibility",
+    "id": "source_locked:base/term.t:PhaseBlock",
+    "lock_scope": "path_and_source",
+    "owner_workstream": "source_locked_compatibility",
+    "path": "base/term.t",
+    "reason": "phase block compile-time execution is recorded but not evaluated",
+    "source_kind": "PhaseBlock",
+    "source_span": {
+      "end": 44,
+      "start": 10
+    },
+    "supporting_test": "base/term.t"
+  }
+]

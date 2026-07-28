@@ -1,0 +1,30 @@
+{
+  "schema_version": "perl_core_harness.smoke.v1",
+  "timestamp": "2026-07-28T23:54:33Z",
+  "repo_commit": "f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
+  "perl_requested_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "perl_resolved_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "prepared_tree": "<prepared-tree>",
+  "host_perl": "<host-perl>",
+  "runner": "test",
+  "profile": "run",
+  "modes_requested": [
+    "parse",
+    "compile"
+  ],
+  "discovery_report": "normalized/discovery.json",
+  "parse_report": "normalized/parse.json",
+  "compile_report": "normalized/compile.json",
+  "gap_map": "normalized/gap-map.json",
+  "discovery_total": 28,
+  "parse_files_total": 28,
+  "parse_files_passed": 28,
+  "parse_files_failed": 0,
+  "compile_files_total": 28,
+  "compile_files_passed": 28,
+  "compile_files_failed": 0,
+  "parse_buckets": {},
+  "compile_buckets": {},
+  "status": "pass",
+  "structural_failures": []
+}

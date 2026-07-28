@@ -1,0 +1,9 @@
+t/base/cond.t
+t/base/if.t
+t/base/lex.t
+t/base/num.t
+t/base/pat.t
+t/base/rs.t
+t/base/term.t
+t/base/translate.t
+t/base/while.t

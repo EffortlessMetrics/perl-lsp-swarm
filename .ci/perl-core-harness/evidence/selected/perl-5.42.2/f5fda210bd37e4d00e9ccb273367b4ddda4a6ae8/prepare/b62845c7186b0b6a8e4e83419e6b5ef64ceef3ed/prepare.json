@@ -1,0 +1,16 @@
+{
+  "schema_version": "perl_core_harness.prepare.v1",
+  "requested_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "resolved_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "source_url": "https://github.com/Perl/perl5",
+  "source_dir": "target/perl-core/upstream/b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed/source/perl5",
+  "prepared_tree": "target/perl-core/upstream/b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed/perl5",
+  "host_os": "linux",
+  "host_arch": "x86_64",
+  "configure_command": "sh Configure -des -Dusedevel",
+  "test_prep_command": "make test_prep",
+  "status": "pass",
+  "first_error": null,
+  "started_at": "2026-07-28T23:50:14Z",
+  "finished_at": "2026-07-28T23:53:57Z"
+}

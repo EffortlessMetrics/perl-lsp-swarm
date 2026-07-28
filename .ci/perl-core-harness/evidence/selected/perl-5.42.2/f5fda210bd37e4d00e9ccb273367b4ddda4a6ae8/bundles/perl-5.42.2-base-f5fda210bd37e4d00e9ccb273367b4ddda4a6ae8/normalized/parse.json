@@ -1,0 +1,79 @@
+{
+  "schema_version": "perl_core_harness.report.v1",
+  "commit": "f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
+  "timestamp": "2026-07-28T23:54:26Z",
+  "perl_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "prepared_tree": "<prepared-tree>",
+  "run_tree": "<run-tree>",
+  "host_perl": "<host-perl>",
+  "runner": "test",
+  "mode": "parse",
+  "profile": "base",
+  "harness_status": 255,
+  "summary": {
+    "files_total": 9,
+    "files_passed": 9,
+    "files_failed": 0,
+    "tap_assertions_total": 9,
+    "tap_assertions_passed": 9
+  },
+  "buckets": {},
+  "file_results": [
+    {
+      "path": "base/cond.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/if.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/lex.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/num.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/pat.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/rs.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/term.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/translate.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/while.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    }
+  ],
+  "failures": [],
+  "semantic_boundaries": []
+}

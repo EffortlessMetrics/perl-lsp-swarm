@@ -1,0 +1,124 @@
+{
+  "schema_version": "perl_core_harness.discovery.v1",
+  "commit": "f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
+  "timestamp": "2026-07-28T23:54:32Z",
+  "perl_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "prepared_tree": "<prepared-tree>",
+  "host_perl": "<host-perl>",
+  "runner": "test",
+  "profile": "run",
+  "tests": [
+    {
+      "path": "run/cloexec.t",
+      "root": "run"
+    },
+    {
+      "path": "run/dtrace.t",
+      "root": "run"
+    },
+    {
+      "path": "run/exit.t",
+      "root": "run"
+    },
+    {
+      "path": "run/fresh_perl.t",
+      "root": "run"
+    },
+    {
+      "path": "run/locale.t",
+      "root": "run"
+    },
+    {
+      "path": "run/noswitch.t",
+      "root": "run"
+    },
+    {
+      "path": "run/runenv.t",
+      "root": "run"
+    },
+    {
+      "path": "run/runenv_hashseed.t",
+      "root": "run"
+    },
+    {
+      "path": "run/runenv_randseed.t",
+      "root": "run"
+    },
+    {
+      "path": "run/script.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switch-I-and-M.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switch0.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switchC.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switchDx.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switchF.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switchF1.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switchF2.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switchI.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switchM.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switcha.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switchd-78586.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switchd.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switches.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switchn.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switchp.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switcht.t",
+      "root": "run"
+    },
+    {
+      "path": "run/switchx.t",
+      "root": "run"
+    },
+    {
+      "path": "run/todo.t",
+      "root": "run"
+    }
+  ]
+}

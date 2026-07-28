@@ -1,0 +1,30 @@
+{
+  "schema_version": "perl_core_harness.smoke.v1",
+  "timestamp": "2026-07-28T23:54:27Z",
+  "repo_commit": "f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
+  "perl_requested_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "perl_resolved_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "prepared_tree": "/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/target/perl-core/upstream/b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed/perl5",
+  "host_perl": "perl",
+  "runner": "test",
+  "profile": "base",
+  "modes_requested": [
+    "parse",
+    "compile"
+  ],
+  "discovery_report": "target/perl-core/smoke/base/discovery.json",
+  "parse_report": "target/perl-core/smoke/base/parse.json",
+  "compile_report": "target/perl-core/smoke/base/compile.json",
+  "gap_map": "target/perl-core/smoke/base/gap-map.json",
+  "discovery_total": 9,
+  "parse_files_total": 9,
+  "parse_files_passed": 9,
+  "parse_files_failed": 0,
+  "compile_files_total": 9,
+  "compile_files_passed": 9,
+  "compile_files_failed": 0,
+  "parse_buckets": {},
+  "compile_buckets": {},
+  "status": "pass",
+  "structural_failures": []
+}

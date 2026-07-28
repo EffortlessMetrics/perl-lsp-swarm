@@ -1,0 +1,112 @@
+{
+  "schema_version": "perl_core_harness.discovery.v1",
+  "commit": "f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
+  "timestamp": "2026-07-28T23:54:28Z",
+  "perl_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "prepared_tree": "/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/target/perl-core/upstream/b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed/perl5",
+  "host_perl": "perl",
+  "runner": "test",
+  "profile": "comp",
+  "tests": [
+    {
+      "path": "comp/bproto.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/cmdopt.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/colon.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/decl.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/filter_exception.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/final_line_num.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/fold.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/form_scope.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/hints.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/line_debug.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/multiline.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/opsubs.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/our.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/package.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/package_block.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/parser.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/parser_run.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/proto.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/redef.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/require.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/retainedlines.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/term.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/uproto.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/use.t",
+      "root": "comp"
+    },
+    {
+      "path": "comp/utf.t",
+      "root": "comp"
+    }
+  ]
+}

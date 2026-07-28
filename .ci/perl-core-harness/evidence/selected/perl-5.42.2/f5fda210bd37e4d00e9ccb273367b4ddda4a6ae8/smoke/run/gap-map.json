@@ -1,0 +1,15 @@
+{
+  "schema_version": "perl_core_harness.gap_map.v1",
+  "profile": "run",
+  "mode": "parse,compile",
+  "total_files": 56,
+  "passed_files": 56,
+  "failed_files": 0,
+  "buckets": {},
+  "files_by_bucket": {},
+  "first_failure_by_bucket": {},
+  "workstreams": {},
+  "lsp_impact": {},
+  "top_parse_failures": [],
+  "top_compile_failures": []
+}

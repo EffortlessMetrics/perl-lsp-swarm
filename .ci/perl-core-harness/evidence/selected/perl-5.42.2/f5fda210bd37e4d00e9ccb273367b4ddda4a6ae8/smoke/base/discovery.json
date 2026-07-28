@@ -1,0 +1,48 @@
+{
+  "schema_version": "perl_core_harness.discovery.v1",
+  "commit": "f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
+  "timestamp": "2026-07-28T23:53:58Z",
+  "perl_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "prepared_tree": "/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/target/perl-core/upstream/b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed/perl5",
+  "host_perl": "perl",
+  "runner": "test",
+  "profile": "base",
+  "tests": [
+    {
+      "path": "base/cond.t",
+      "root": "base"
+    },
+    {
+      "path": "base/if.t",
+      "root": "base"
+    },
+    {
+      "path": "base/lex.t",
+      "root": "base"
+    },
+    {
+      "path": "base/num.t",
+      "root": "base"
+    },
+    {
+      "path": "base/pat.t",
+      "root": "base"
+    },
+    {
+      "path": "base/rs.t",
+      "root": "base"
+    },
+    {
+      "path": "base/term.t",
+      "root": "base"
+    },
+    {
+      "path": "base/translate.t",
+      "root": "base"
+    },
+    {
+      "path": "base/while.t",
+      "root": "base"
+    }
+  ]
+}

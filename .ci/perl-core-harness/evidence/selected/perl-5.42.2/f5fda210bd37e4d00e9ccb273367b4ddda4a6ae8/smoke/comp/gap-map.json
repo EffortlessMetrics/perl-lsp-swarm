@@ -1,0 +1,66 @@
+{
+  "schema_version": "perl_core_harness.gap_map.v1",
+  "profile": "comp",
+  "mode": "parse,compile",
+  "total_files": 50,
+  "passed_files": 48,
+  "failed_files": 2,
+  "buckets": {
+    "parse_recovery": 2
+  },
+  "files_by_bucket": {
+    "parse_recovery": [
+      "comp/final_line_num.t"
+    ]
+  },
+  "first_failure_by_bucket": {
+    "parse_recovery": {
+      "path": "comp/final_line_num.t",
+      "phase": "parse",
+      "bucket": "parse_recovery",
+      "first_diagnostic": "Missing operand in expression",
+      "workstream": "parser_recovery",
+      "lsp_impact": [
+        "diagnostics",
+        "syntax_tree",
+        "semantic_tokens"
+      ]
+    }
+  },
+  "workstreams": {
+    "parser_recovery": 2
+  },
+  "lsp_impact": {
+    "diagnostics": 2,
+    "semantic_tokens": 2,
+    "syntax_tree": 2
+  },
+  "top_parse_failures": [
+    {
+      "path": "comp/final_line_num.t",
+      "phase": "parse",
+      "bucket": "parse_recovery",
+      "first_diagnostic": "Missing operand in expression",
+      "workstream": "parser_recovery",
+      "lsp_impact": [
+        "diagnostics",
+        "syntax_tree",
+        "semantic_tokens"
+      ]
+    }
+  ],
+  "top_compile_failures": [
+    {
+      "path": "comp/final_line_num.t",
+      "phase": "compile",
+      "bucket": "parse_recovery",
+      "first_diagnostic": "Missing operand in expression",
+      "workstream": "parser_recovery",
+      "lsp_impact": [
+        "diagnostics",
+        "syntax_tree",
+        "semantic_tokens"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,190 @@
+{
+  "schema_version": "perl_core_harness.report.v1",
+  "commit": "f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
+  "timestamp": "2026-07-28T23:54:29Z",
+  "perl_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "prepared_tree": "<prepared-tree>",
+  "run_tree": "<run-tree>",
+  "host_perl": "<host-perl>",
+  "runner": "test",
+  "mode": "parse",
+  "profile": "comp",
+  "harness_status": 255,
+  "summary": {
+    "files_total": 25,
+    "files_passed": 24,
+    "files_failed": 1,
+    "tap_assertions_total": 25,
+    "tap_assertions_passed": 24
+  },
+  "buckets": {
+    "parse_recovery": 1
+  },
+  "file_results": [
+    {
+      "path": "comp/bproto.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/cmdopt.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/colon.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/decl.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/filter_exception.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/final_line_num.t",
+      "status": "fail",
+      "assertions_passed": 0,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/fold.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/form_scope.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/hints.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/line_debug.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/multiline.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/opsubs.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/our.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/package.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/package_block.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/parser.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/parser_run.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/proto.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/redef.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/require.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/retainedlines.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/term.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/uproto.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/use.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "comp/utf.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    }
+  ],
+  "failures": [
+    {
+      "path": "comp/final_line_num.t",
+      "phase": "parse",
+      "bucket": "parse_recovery",
+      "first_diagnostic": "Missing operand in expression",
+      "workstream": "parser_recovery",
+      "lsp_impact": [
+        "diagnostics",
+        "syntax_tree",
+        "semantic_tokens"
+      ]
+    }
+  ],
+  "semantic_boundaries": []
+}

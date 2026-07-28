@@ -1,0 +1,148 @@
+{
+  "schema_version": "perl_core_harness.report.v1",
+  "commit": "f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
+  "timestamp": "2026-07-28T23:54:27Z",
+  "perl_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "prepared_tree": "<prepared-tree>",
+  "run_tree": "<run-tree>",
+  "host_perl": "<host-perl>",
+  "runner": "test",
+  "mode": "compile",
+  "profile": "base",
+  "harness_status": 255,
+  "summary": {
+    "files_total": 9,
+    "files_passed": 9,
+    "files_failed": 0,
+    "tap_assertions_total": 9,
+    "tap_assertions_passed": 9
+  },
+  "buckets": {},
+  "file_results": [
+    {
+      "path": "base/cond.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/if.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/lex.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/num.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/pat.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/rs.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/term.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/translate.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    },
+    {
+      "path": "base/while.t",
+      "status": "pass",
+      "assertions_passed": 1,
+      "assertions_total": 1
+    }
+  ],
+  "failures": [],
+  "semantic_boundaries": [
+    {
+      "path": "base/lex.t",
+      "id": "runtime_symbolic_reference",
+      "disposition": "deferred_runtime",
+      "reason": "symbolic reference dereference is deferred to runtime",
+      "source_span": {
+        "start": 2405,
+        "end": 2418
+      },
+      "source_kind": "SymbolicReferenceDeref",
+      "confidence": "conservative",
+      "blocks_compilation": false,
+      "blocks_downstream_static_facts": true,
+      "lock_scope": "none",
+      "owner_workstream": "symbolic_reference_semantics",
+      "supporting_test": "base/lex.t"
+    },
+    {
+      "path": "base/rs.t",
+      "id": "source_locked:base/rs.t:StashGraph",
+      "disposition": "source_locked_compatibility",
+      "reason": "typeglob assignment has a non-static RHS",
+      "source_span": {
+        "start": 4056,
+        "end": 4067
+      },
+      "source_kind": "StashGraph",
+      "confidence": "exact",
+      "blocks_compilation": false,
+      "blocks_downstream_static_facts": true,
+      "lock_scope": "path_and_source",
+      "owner_workstream": "source_locked_compatibility",
+      "supporting_test": "base/rs.t"
+    },
+    {
+      "path": "base/rs.t",
+      "id": "source_locked:base/rs.t:StashGraph",
+      "disposition": "source_locked_compatibility",
+      "reason": "typeglob assignment has a non-static RHS",
+      "source_span": {
+        "start": 5145,
+        "end": 5156
+      },
+      "source_kind": "StashGraph",
+      "confidence": "exact",
+      "blocks_compilation": false,
+      "blocks_downstream_static_facts": true,
+      "lock_scope": "path_and_source",
+      "owner_workstream": "source_locked_compatibility",
+      "supporting_test": "base/rs.t"
+    },
+    {
+      "path": "base/term.t",
+      "id": "source_locked:base/term.t:PhaseBlock",
+      "disposition": "source_locked_compatibility",
+      "reason": "phase block compile-time execution is recorded but not evaluated",
+      "source_span": {
+        "start": 10,
+        "end": 44
+      },
+      "source_kind": "PhaseBlock",
+      "confidence": "exact",
+      "blocks_compilation": false,
+      "blocks_downstream_static_facts": true,
+      "lock_scope": "path_and_source",
+      "owner_workstream": "source_locked_compatibility",
+      "supporting_test": "base/term.t"
+    }
+  ]
+}
