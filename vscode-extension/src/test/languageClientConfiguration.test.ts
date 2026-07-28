@@ -3,6 +3,7 @@ import {
   buildDisabledFeaturesFromConfig,
   buildLanguageClientConfigurationPayload,
   buildPerlCriticConfiguration,
+  buildUserAiCompletionConfigurationPayload,
   buildWorkspaceConfigurationPayload,
   classifyConfigurationChange,
   classifyConfigurationSetting,
@@ -70,7 +71,15 @@ describe('language client configuration', () => {
     expect(sendNotification).toHaveBeenCalledWith(
       'workspace/didChangeConfiguration',
       expect.objectContaining({
-        settings: { perl: { workspace: { includePaths: ['workspace/lib'] } } },
+        settings: {
+          perl: {
+            aiCompletion: {
+              enabled: false,
+              streaming: { enabled: true },
+            },
+            workspace: { includePaths: ['workspace/lib'] },
+          },
+        },
       }),
     );
   });
@@ -169,5 +178,47 @@ describe('language client configuration', () => {
         affectsConfiguration: (setting: string) => changed.has(setting),
       }),
     ).toEqual(['live', 'reconstruct', 'restart']);
+  });
+
+  test('builds machine-scoped AI completion payload from effective settings', () => {
+    const config = {
+      get: jest.fn((key: string, defaultValue: unknown) => {
+        if (key === 'aiCompletion.enabled') {
+          return true;
+        }
+        if (key === 'aiCompletion.streaming.enabled') {
+          return false;
+        }
+        return defaultValue;
+      }),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildUserAiCompletionConfigurationPayload(config)).toEqual({
+      settings: {
+        perl: {
+          aiCompletion: {
+            enabled: true,
+            streaming: { enabled: false },
+          },
+        },
+      },
+    });
+  });
+
+  test('syncs default-off when machine settings are reset', () => {
+    const config = {
+      get: jest.fn((_key: string, defaultValue: unknown) => defaultValue),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildUserAiCompletionConfigurationPayload(config)).toEqual({
+      settings: {
+        perl: {
+          aiCompletion: {
+            enabled: false,
+            streaming: { enabled: true },
+          },
+        },
+      },
+    });
   });
 });

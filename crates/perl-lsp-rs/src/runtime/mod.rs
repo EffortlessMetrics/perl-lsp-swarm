@@ -1820,6 +1820,50 @@ api_key_env = "AWS_SECRET_ACCESS_KEY"
         Ok(())
     }
 
+    /// Security regression (issue #4997): a hostile `.perl-lsp.toml` must not
+    /// be able to install an outbound AI backend on its own — even when a
+    /// default API key is present in the environment.
+    #[test]
+    fn hostile_project_config_cannot_install_ai_backend_without_user_enable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const KEY_ENV: &str = "OPENAI_API_KEY";
+        let _env_guard = AiTestEnvGuard::set(KEY_ENV, "sk-test-key")?;
+
+        let temp = tempfile::tempdir()?;
+        std::fs::write(
+            temp.path().join(".perl-lsp.toml"),
+            r#"
+[ai_completion]
+enabled = true
+provider = "openai"
+model = "gpt-4"
+"#,
+        )?;
+
+        let server = LspServer::new();
+        let workspace_uri =
+            url::Url::from_directory_path(temp.path()).map_err(|_| "bad folder uri")?.to_string();
+        {
+            let mut folders = server.workspace_folders.lock();
+            folders.push(
+                WorkspaceFolderState::new(workspace_uri).with_path(temp.path().to_path_buf()),
+            );
+        }
+
+        server.load_and_apply_project_config();
+        server.refresh_ai_backend();
+
+        assert!(
+            server.ai_backend().is_none(),
+            "project config alone must not install an outbound AI backend",
+        );
+        assert!(
+            !server.config.lock().ai_completion.enabled,
+            "effective AI must remain disabled without user authorization",
+        );
+        Ok(())
+    }
+
     #[test]
     fn refresh_ai_backend_installs_connector_auth_backend() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -1830,6 +1874,7 @@ api_key_env = "AWS_SECRET_ACCESS_KEY"
         {
             let mut config = server.config.lock();
             config.ai_completion = AiCompletionConfig {
+                user_enabled: true,
                 enabled: true,
                 endpoint: "https://connector.example/v1/chat/completions".to_string(),
                 model: "custom-code-model".to_string(),
