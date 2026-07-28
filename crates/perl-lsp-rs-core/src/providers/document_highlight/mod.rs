@@ -65,12 +65,38 @@ impl DocumentHighlightProvider {
             None => return Vec::new(),
         };
 
+        // Determine the enclosing subroutine's byte span for scope filtering. (#5069)
+        // If the cursor is inside a sub, only highlight occurrences within that
+        // sub's span. If at file scope (no enclosing sub), highlight all.
+        let enclosing_sub_span = self.find_enclosing_sub_span(ast, byte_offset);
+
         // Find all occurrences of this symbol
         let mut highlights = Vec::new();
-        self.collect_highlights(ast, source, &symbol_info, &mut highlights);
+        self.collect_highlights_filtered(ast, source, &symbol_info, enclosing_sub_span, &mut highlights);
 
         // Deduplicate highlights by location, preferring Write over Read
         self.deduplicate_highlights(highlights)
+    }
+
+    /// Find the byte span [start, end] of the enclosing Subroutine node, if any. (#5069)
+    fn find_enclosing_sub_span(&self, ast: &Node, offset: usize) -> Option<(usize, usize)> {
+        fn find_in(node: &Node, offset: usize) -> Option<(usize, usize)> {
+            if offset < node.location.start || offset > node.location.end {
+                return None;
+            }
+            // Check if this node is a Subroutine
+            if matches!(node.kind, NodeKind::Subroutine { .. } | NodeKind::Method { .. }) {
+                return Some((node.location.start, node.location.end));
+            }
+            // Recurse into children
+            for child in node.children() {
+                if let Some(span) = find_in(child, offset) {
+                    return Some(span);
+                }
+            }
+            None
+        }
+        find_in(ast, offset)
     }
 
     /// Deduplicate highlights by location, preferring Write kind over Read
@@ -518,6 +544,68 @@ impl DocumentHighlightProvider {
         highlights: &mut Vec<DocumentHighlight>,
     ) {
         self.collect_highlights_with_parent(node, source, target, highlights, None);
+    }
+
+    /// Collect highlights, filtering to only those within the enclosing sub span. (#5069)
+    fn collect_highlights_filtered(
+        &self,
+        node: &Node,
+        source: &str,
+        target: &SymbolInfo,
+        sub_span: Option<(usize, usize)>,
+        highlights: &mut Vec<DocumentHighlight>,
+    ) {
+        // If we have an enclosing sub, filter candidate nodes to its span.
+        if let Some((sub_start, sub_end)) = sub_span {
+            self.collect_highlights_with_parent_filtered(node, source, target, highlights, None, sub_start, sub_end);
+        } else {
+            // No enclosing sub (file scope) — highlight all, preserving existing behavior.
+            self.collect_highlights_with_parent(node, source, target, highlights, None);
+        }
+    }
+
+    /// Same as collect_highlights_with_parent but skips nodes outside [sub_start, sub_end]. (#5069)
+    fn collect_highlights_with_parent_filtered(
+        &self,
+        node: &Node,
+        source: &str,
+        target: &SymbolInfo,
+        highlights: &mut Vec<DocumentHighlight>,
+        parent: Option<&Node>,
+        sub_start: usize,
+        sub_end: usize,
+    ) {
+        // Check if this node matches our symbol AND is within the enclosing sub
+        if self.node_matches_symbol(node, source, target)
+            && node.location.start >= sub_start
+            && node.location.end <= sub_end
+        {
+            let kind = self.determine_highlight_kind_with_parent(node, parent);
+            highlights.push(DocumentHighlight { location: node.location, kind });
+        }
+
+        // Also check cross-sigil matches (e.g. $arr[0] ↔ @arr) within scope
+        if let NodeKind::Variable { sigil, name } = &node.kind
+            && node.location.start >= sub_start
+            && node.location.end <= sub_end
+        {
+            if let Some(parent_op) = self.find_subscript_parent(node, node.location.start) {
+                let target_sigil_str = target.sigil.as_deref().unwrap_or("");
+                if self.is_cross_sigil_match(sigil, name, target_sigil_str, &target.name, parent) {
+                    let kind = self.determine_highlight_kind_with_parent(node, parent);
+                    highlights.push(DocumentHighlight { location: node.location, kind });
+                }
+            }
+        }
+
+        // Recurse into children
+        if let Some(children) = self.get_children(node) {
+            for child in children {
+                self.collect_highlights_with_parent_filtered(
+                    child, source, target, highlights, Some(node), sub_start, sub_end,
+                );
+            }
+        }
     }
 
     /// Collect all highlights for a symbol with parent context

@@ -1570,17 +1570,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "perl-dead-code"
-version = "0.17.0"
-dependencies = [
- "perl-tdd-support",
- "perl-uri",
- "perl-workspace",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "perl-diagnostics"
 version = "0.17.0"
 dependencies = [

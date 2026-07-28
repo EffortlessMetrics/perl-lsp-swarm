@@ -179,7 +179,7 @@ pub fn build_ripr_facts_packet(
             (Vec::new(), Vec::new(), Vec::new(), Vec::new())
         };
 
-    let (relations, _changed_observables, _observed_sinks, relation_limitations) =
+    let (relations, relation_limitations) =
         emit_relations_and_discriminators(root, &tests, &oracles);
     let has_relation_candidates = !relations.is_empty();
 
