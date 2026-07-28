@@ -519,10 +519,10 @@
             "default": "",
             "scope": "resource",
             "order": 43,
-            "deprecationMessage": "Deprecated: reserved legacy UI label with no native equivalent. It will be removed in a future release.",
-            "markdownDeprecationMessage": "**Deprecated:** reserved legacy UI label with no native equivalent. It will be removed in a future release.",
-            "description": "Optional display theme label for PerlCritic settings. Reserved for editor-facing UI organization.",
-            "markdownDescription": "Optional display theme label for PerlCritic settings. Reserved for editor-facing UI organization."
+            "deprecationMessage": "This setting has no effect and will be removed. Use perl-lsp.critic.profile or perl-lsp.critic.theme instead.",
+            "markdownDeprecationMessage": "**No effect.** This setting does nothing — it is a legacy placeholder from an earlier UI design and will be removed. Use `perl-lsp.critic.profile` for Perl::Critic profile selection.",
+            "description": "[No effect] Legacy placeholder — will be removed.",
+            "markdownDescription": "**[No effect]** Legacy placeholder — will be removed. Use `perl-lsp.critic.profile` instead."
           },
           "perl-lsp.enableTestIntegration": {
             "type": "boolean",
@@ -934,43 +934,43 @@
       {
         "command": "perl-lsp.explainProviderDecision",
         "title": "Explain Provider Decision",
-        "category": "Perl LSP",
+        "category": "Perl",
         "icon": "$(debug)"
       },
       {
         "command": "perl-lsp.previewSafeDelete",
         "title": "Preview Safe Delete",
-        "category": "Perl LSP",
+        "category": "Perl",
         "icon": "$(shield)"
       },
       {
         "command": "perl-lsp.previewPackageRename",
         "title": "Preview Package Rename",
-        "category": "Perl LSP",
+        "category": "Perl",
         "icon": "$(symbol-method)"
       },
       {
         "command": "perl-lsp.copyProviderDecisionReceipt",
         "title": "Copy Provider Decision Receipt",
-        "category": "Perl LSP",
+        "category": "Perl",
         "icon": "$(copy)"
       },
       {
         "command": "perl-lsp.showWorkspaceTrustReport",
         "title": "Show Workspace Trust Report",
-        "category": "Perl LSP",
+        "category": "Perl",
         "icon": "$(checklist)"
       },
       {
         "command": "perl-lsp.explainMissingModuleLookup",
         "title": "Explain Missing Module Lookup",
-        "category": "Perl LSP",
+        "category": "Perl",
         "icon": "$(search)"
       },
       {
         "command": "perl-lsp.explainDiagnostic",
         "title": "Explain This Diagnostic",
-        "category": "Perl LSP",
+        "category": "Perl",
         "icon": "$(comment-discussion)"
       },
       {
@@ -990,19 +990,19 @@
       "commandPalette": [
         {
           "command": "perl-lsp.restart",
-          "when": "editorLangId == perl"
+          "when": "perl-lsp.activated"
         },
         {
           "command": "perl-lsp.showOutput",
-          "when": "editorLangId == perl"
+          "when": "perl-lsp.activated"
         },
         {
           "command": "perl-lsp.showStatusMenu",
-          "when": "editorLangId == perl"
+          "when": "perl-lsp.activated"
         },
         {
           "command": "perl-lsp.reinstall",
-          "when": "editorLangId == perl"
+          "when": "perl-lsp.activated"
         },
         {
           "command": "perl-lsp.organizeImports",
