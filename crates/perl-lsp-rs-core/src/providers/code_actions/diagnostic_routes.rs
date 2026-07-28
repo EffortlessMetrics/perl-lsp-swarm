@@ -79,11 +79,11 @@ fn quick_fixes_for_diagnostic(
         }
         // PL100: Missing use strict
         c if c == DiagnosticCode::MissingStrict.as_str() => {
-            actions.extend(quick_fixes::add_use_strict());
+            actions.extend(quick_fixes::add_use_strict_with_offset(source));
         }
         // PL101: Missing use warnings
         c if c == DiagnosticCode::MissingWarnings.as_str() => {
-            actions.extend(quick_fixes::add_use_warnings());
+            actions.extend(quick_fixes::add_use_warnings_with_offset(source));
         }
         // PL502: Phase-scoped use strict misconception
         c if c == DiagnosticCode::PhaseScopedStrictPragma.as_str() => {
@@ -169,10 +169,10 @@ fn quick_fixes_for_diagnostic(
         }
         // Perl::Critic/native critic policies for missing strict/warnings.
         "TestingAndDebugging::RequireUseStrict" | "native.testing.require_use_strict" => {
-            actions.extend(quick_fixes::add_use_strict());
+            actions.extend(quick_fixes::add_use_strict_with_offset(source));
         }
         "TestingAndDebugging::RequireUseWarnings" | "native.testing.require_use_warnings" => {
-            actions.extend(quick_fixes::add_use_warnings());
+            actions.extend(quick_fixes::add_use_warnings_with_offset(source));
         }
         // Perl::Critic policy alias for unused variables.
         "Variables::ProhibitUnusedVariables" => {
