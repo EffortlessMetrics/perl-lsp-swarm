@@ -6717,6 +6717,18 @@ exit 1
         Ok(())
     }
 
+    fn git_fixture_command(repo: &Path, args: &[&str]) -> TestResult<String> {
+        let output = Command::new("git").current_dir(repo).args(args).output()?;
+        if !output.status.success() {
+            bail!(
+                "git fixture command failed: git {}: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8(output.stdout)?.trim().to_string())
+    }
+
     fn evidence_bundle_fixture() -> TestResult<(tempfile::TempDir, EvidenceBundleWriteConfig)> {
         let temp = tempfile::tempdir()?;
         let source = temp.path().join("source");
@@ -6966,6 +6978,78 @@ exit 1
         if !error.to_string().contains("host filesystem path") {
             bail!("unexpected public-path validation error: {error}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn evidence_bundle_rejects_cross_series_substitution() -> TestResult {
+        let (_temp, config) = evidence_bundle_fixture()?;
+        let mut series: SeriesManifest = read_json_file(&config.series, "fixture series")?;
+        series.series_id = "different-series".into();
+        write_fixture_json(&config.series, &series)?;
+        let error = evidence_bundle_write(config).expect_err("cross-series evidence must fail");
+        if !error.to_string().contains("manifest hash") {
+            bail!("unexpected cross-series validation error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn evidence_bundle_rejects_conflicting_authoritative_bundle() -> TestResult {
+        let (temp, config) = evidence_bundle_fixture()?;
+        evidence_bundle_write(config.clone())?;
+        let mut conflicting = read_evidence_index(&config.output_dir)?;
+        conflicting.bundle_id = "bundle-2".into();
+        conflicting.lifecycle = EvidenceBundleLifecycle::Published;
+        conflicting.lineage.publication_sha = Some("b".repeat(40));
+        let sibling = temp.path().join("bundle-2");
+        write_evidence_index(&sibling, &with_bundle_digest(conflicting)?)?;
+
+        let error = evidence_bundle_check(EvidenceBundleCheckConfig {
+            bundle_dir: config.output_dir,
+            repository_root: None,
+            registry_dir: Some(temp.path().to_path_buf()),
+        })
+        .expect_err("conflicting authoritative bundles must fail closed");
+        if !error.to_string().contains("conflicting authoritative evidence bundle") {
+            bail!("unexpected conflict error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn publication_and_squash_lineage_use_only_evidence_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        git_fixture_command(temp.path(), &["init"])?;
+        git_fixture_command(temp.path(), &["config", "user.email", "test@example.invalid"])?;
+        git_fixture_command(temp.path(), &["config", "user.name", "Evidence Test"])?;
+        fs::write(temp.path().join("compiler.rs"), "measurement\n")?;
+        git_fixture_command(temp.path(), &["add", "."])?;
+        git_fixture_command(temp.path(), &["commit", "-m", "measurement"])?;
+        let measurement = git_fixture_command(temp.path(), &["rev-parse", "HEAD"])?;
+
+        fs::create_dir_all(temp.path().join("evidence"))?;
+        fs::write(temp.path().join("evidence").join("bundle.json"), "{}\n")?;
+        git_fixture_command(temp.path(), &["add", "evidence/bundle.json"])?;
+        git_fixture_command(temp.path(), &["commit", "-m", "publish"])?;
+        let publication = git_fixture_command(temp.path(), &["rev-parse", "HEAD"])?;
+        validate_publication_diff(temp.path(), &measurement, &publication)?;
+
+        fs::write(temp.path().join("compiler.rs"), "measured mutation\n")?;
+        git_fixture_command(temp.path(), &["add", "compiler.rs"])?;
+        git_fixture_command(temp.path(), &["commit", "-m", "invalid code mutation"])?;
+        let invalid_publication = git_fixture_command(temp.path(), &["rev-parse", "HEAD"])?;
+        if validate_publication_diff(temp.path(), &measurement, &invalid_publication).is_ok() {
+            bail!("measured code mutation must invalidate publication lineage");
+        }
+
+        git_fixture_command(temp.path(), &["checkout", "-b", "landed", &measurement])?;
+        fs::create_dir_all(temp.path().join("evidence"))?;
+        fs::write(temp.path().join("evidence").join("bundle.json"), "{}\n")?;
+        git_fixture_command(temp.path(), &["add", "evidence/bundle.json"])?;
+        git_fixture_command(temp.path(), &["commit", "-m", "squash landed"])?;
+        let landed = git_fixture_command(temp.path(), &["rev-parse", "HEAD"])?;
+        validate_landed_lineage(temp.path(), &measurement, &publication, &landed)?;
         Ok(())
     }
 
