@@ -1072,6 +1072,7 @@ mod tests {
             "Untie",
             "DataSection",
             "VString",
+            "AmperCall",
         ] {
             let d = disposition_for(kind).unwrap_or_else(|| panic!("no disposition for {kind}"));
             assert!(!d.emits_items, "{kind} (NotYetModeled) must NOT emit HIR items");
@@ -1139,6 +1140,7 @@ mod tests {
         assert!(hir_kinds_for("Binary").is_empty());
         assert!(hir_kinds_for("NestedVariableList").is_empty());
         assert!(hir_kinds_for("VString").is_empty());
+        assert!(hir_kinds_for("AmperCall").is_empty());
     }
 
     #[test]
