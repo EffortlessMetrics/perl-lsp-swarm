@@ -473,7 +473,14 @@ fn complete_general_context(
     is_cancelled: &dyn Fn() -> bool,
 ) -> CompletionFlow {
     let keyword_set = keywords::keywords();
-    if context.prefix.is_empty() || provider.could_be_keyword(&context.prefix, keyword_set) {
+    // Suppress statement keywords in expression positions to reduce noise.
+    // Statement keywords (package, sub, use, etc.) are only valid at the start
+    // of a statement. When the cursor follows =, [, (, {, comma, or an operator,
+    // we're in expression context and should not offer them. (UX_GAP_02)
+    let in_expression_position = is_in_expression_position(source, context.prefix_start);
+    if !in_expression_position
+        && (context.prefix.is_empty() || provider.could_be_keyword(&context.prefix, keyword_set))
+    {
         keywords::add_keyword_completions(completions, context, keyword_set);
         if is_cancelled() {
             return CompletionFlow::Cancelled;
@@ -692,4 +699,32 @@ mod indirect_helper_tests {
         assert_eq!(parse_indirect_receiver("method ", 6), None);
         assert_eq!(parse_indirect_receiver("method", 6), None);
     }
+}
+
+/// Heuristic: detect if the cursor is in an expression position where statement
+/// keywords (package, sub, use, etc.) would be invalid. Returns true if the
+/// text immediately before the prefix suggests an expression context.
+/// (UX_GAP_02)
+fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
+    if prefix_start == 0 {
+        return false; // start of file — statement position
+    }
+    // Walk backward past whitespace to find the last non-whitespace char
+    let before = &source[..prefix_start];
+    let trimmed = before.trim_end();
+    if trimmed.is_empty() {
+        return false; // blank line — statement position
+    }
+    let last_char = trimmed.chars().last().unwrap();
+    // Expression indicators: assignment, list, operator contexts
+    matches!(
+        last_char,
+        '=' | ',' | ';' | '(' | '[' | '{' | '+' | '-' | '*' | '/' | '%' | '.' | '&' | '|' | '!' | '<' | '>' | '?' | ':' | '~' | '\\'
+    ) && !before.ends_with("=>") // fat comma is a key context, not expression
+    && !before.ends_with("==")
+    && !before.ends_with("!=")
+    && !before.ends_with("<=")
+    && !before.ends_with(">=")
+    && !before.ends_with("=~")
+    && !before.ends_with("//")
 }

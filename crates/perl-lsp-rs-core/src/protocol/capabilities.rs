@@ -36,6 +36,8 @@ pub fn completion_trigger_characters() -> Vec<String> {
         "-".to_string(),
         ">".to_string(),
         ":".to_string(),
+        // String concat operator — triggers completion for chained access. (UX_GAP_03)
+        ".".to_string(),
         // File path completion inside string literals.
         "/".to_string(),
         "\\".to_string(),

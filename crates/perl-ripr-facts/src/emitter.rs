@@ -671,6 +671,14 @@ struct TestCallFacts {
     /// Modules imported by parsed `use` statements in the test file.
     used_modules: std::collections::HashSet<String>,
     /// First two arguments from parser-backed `is(...)` assertions.
+    ///
+    /// Currently read only by this module's tests: #5064 moved the production
+    /// consumer behind `cfg(test)` and left this field written-but-never-read
+    /// in normal builds, which trips the workspace `dead_code` deny. Kept
+    /// populated (rather than deleted) because the `is(...)` argument pairs are
+    /// the input the discriminator work needs; gating it on `cfg(test)` instead
+    /// would cascade `content` and `source_span` into dead code too.
+    #[allow(dead_code, reason = "test-only reader since #5064; retained for discriminator work")]
     is_args: Vec<(String, String)>,
 }
 
