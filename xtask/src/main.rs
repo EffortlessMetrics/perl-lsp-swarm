@@ -2622,6 +2622,113 @@ enum PerlCoreHarnessCommand {
         accept: bool,
     },
 
+    /// Assemble and validate a durable upstream evidence bundle.
+    Bundle {
+        /// Assemble a measurement packet from the declared artifacts.
+        #[arg(long, conflicts_with_all = ["check", "record_landed_lineage"])]
+        write: bool,
+
+        /// Validate an existing measurement, published, or landed packet.
+        #[arg(long, conflicts_with_all = ["write", "record_landed_lineage"])]
+        check: bool,
+
+        /// Record publication and optional landed Git identities.
+        #[arg(long = "record-landed-lineage", conflicts_with_all = ["write", "check"])]
+        record_landed_lineage: bool,
+
+        /// Output bundle directory for --write.
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
+
+        /// Existing bundle directory for --check or --record-landed-lineage.
+        #[arg(long)]
+        bundle_dir: Option<PathBuf>,
+
+        /// Comparison-series manifest.
+        #[arg(long)]
+        series: Option<PathBuf>,
+
+        /// Preparation receipt.
+        #[arg(long)]
+        preparation: Option<PathBuf>,
+
+        /// Raw discovery output retained as diagnostic evidence.
+        #[arg(long)]
+        discovery_raw: Option<PathBuf>,
+
+        /// Normalized discovery report.
+        #[arg(long)]
+        discovery: Option<PathBuf>,
+
+        /// Parse-mode report.
+        #[arg(long)]
+        parse: Option<PathBuf>,
+
+        /// Compile-mode report.
+        #[arg(long)]
+        compile: Option<PathBuf>,
+
+        /// Optional execute-mode report.
+        #[arg(long)]
+        execute: Option<PathBuf>,
+
+        /// Normalized runner JSONL records.
+        #[arg(long)]
+        runner_records: Option<PathBuf>,
+
+        /// Explicit semantic-boundary inventory.
+        #[arg(long)]
+        semantic_boundaries: Option<PathBuf>,
+
+        /// Bucketed gap map.
+        #[arg(long)]
+        gap_map: Option<PathBuf>,
+
+        /// Structural smoke report.
+        #[arg(long)]
+        smoke: Option<PathBuf>,
+
+        /// Candidate baseline-v2 JSON.
+        #[arg(long)]
+        baseline_candidate: Option<PathBuf>,
+
+        /// Accepted baseline-v2 JSON.
+        #[arg(long)]
+        baseline_accepted: Option<PathBuf>,
+
+        /// Deterministic direct-reproduction descriptor.
+        #[arg(long)]
+        reproduction: Option<PathBuf>,
+
+        /// Stable bundle identity.
+        #[arg(long)]
+        bundle_id: Option<String>,
+
+        /// Measurement repository SHA.
+        #[arg(long)]
+        measurement_sha: Option<String>,
+
+        /// Explicit claim boundary for the packet.
+        #[arg(long)]
+        claim_boundary: Option<String>,
+
+        /// Repository root used for Git lineage checks.
+        #[arg(long)]
+        repository_root: Option<PathBuf>,
+
+        /// Optional bundle registry directory used for conflict detection.
+        #[arg(long)]
+        registry_dir: Option<PathBuf>,
+
+        /// Publication repository SHA for --record-landed-lineage.
+        #[arg(long)]
+        publication_sha: Option<String>,
+
+        /// Final landed repository SHA for --record-landed-lineage.
+        #[arg(long)]
+        landed_sha: Option<String>,
+    },
+
     /// Run manual/advisory real-tree discovery + parse/compile smoke receipts.
     Smoke {
         /// Prepared upstream Perl source/build tree.
@@ -4353,6 +4460,106 @@ fn run_cli(cli: Cli) -> Result<()> {
                 accepted_transition_id,
                 evidence_bundle,
             }),
+            PerlCoreHarnessCommand::Bundle {
+                write,
+                check,
+                record_landed_lineage,
+                output_dir,
+                bundle_dir,
+                series,
+                preparation,
+                discovery_raw,
+                discovery,
+                parse,
+                compile,
+                execute,
+                runner_records,
+                semantic_boundaries,
+                gap_map,
+                smoke,
+                baseline_candidate,
+                baseline_accepted,
+                reproduction,
+                bundle_id,
+                measurement_sha,
+                claim_boundary,
+                repository_root,
+                registry_dir,
+                publication_sha,
+                landed_sha,
+            } => {
+                let selected = [write, check, record_landed_lineage]
+                    .into_iter()
+                    .filter(|selected| *selected)
+                    .count();
+                if selected != 1 {
+                    return Err(eyre!(
+                        "perl-core-harness bundle requires exactly one of --write, --check, or --record-landed-lineage"
+                    ));
+                }
+                let required_path = |value: Option<PathBuf>, name: &str| {
+                    value.ok_or_else(|| eyre!("perl-core-harness bundle --{name} is required"))
+                };
+                if write {
+                    perl_core_harness::evidence_bundle_write(
+                        perl_core_harness::EvidenceBundleWriteConfig {
+                            output_dir: required_path(output_dir, "output-dir")?,
+                            bundle_id: bundle_id.ok_or_else(|| {
+                                eyre!("perl-core-harness bundle --bundle-id is required")
+                            })?,
+                            series: required_path(series, "series")?,
+                            preparation: required_path(preparation, "preparation")?,
+                            discovery_raw: required_path(discovery_raw, "discovery-raw")?,
+                            discovery: required_path(discovery, "discovery")?,
+                            parse: required_path(parse, "parse")?,
+                            compile: required_path(compile, "compile")?,
+                            execute,
+                            runner_records: required_path(runner_records, "runner-records")?,
+                            semantic_boundaries: required_path(
+                                semantic_boundaries,
+                                "semantic-boundaries",
+                            )?,
+                            gap_map: required_path(gap_map, "gap-map")?,
+                            smoke: required_path(smoke, "smoke")?,
+                            baseline_candidate: required_path(
+                                baseline_candidate,
+                                "baseline-candidate",
+                            )?,
+                            baseline_accepted: required_path(
+                                baseline_accepted,
+                                "baseline-accepted",
+                            )?,
+                            reproduction: required_path(reproduction, "reproduction")?,
+                            measurement_sha: measurement_sha.ok_or_else(|| {
+                                eyre!("perl-core-harness bundle --measurement-sha is required")
+                            })?,
+                            claim_boundary: claim_boundary.ok_or_else(|| {
+                                eyre!("perl-core-harness bundle --claim-boundary is required")
+                            })?,
+                            repository_root,
+                        },
+                    )
+                } else if check {
+                    perl_core_harness::evidence_bundle_check(
+                        perl_core_harness::EvidenceBundleCheckConfig {
+                            bundle_dir: required_path(bundle_dir, "bundle-dir")?,
+                            repository_root,
+                            registry_dir,
+                        },
+                    )
+                } else {
+                    perl_core_harness::evidence_bundle_record_lineage(
+                        perl_core_harness::EvidenceBundleLineageConfig {
+                            bundle_dir: required_path(bundle_dir, "bundle-dir")?,
+                            publication_sha: publication_sha.ok_or_else(|| {
+                                eyre!("perl-core-harness bundle --publication-sha is required")
+                            })?,
+                            landed_sha,
+                            repository_root,
+                        },
+                    )
+                }
+            }
             PerlCoreHarnessCommand::Smoke {
                 perl_tree,
                 host_perl,

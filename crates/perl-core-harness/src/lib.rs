@@ -13,14 +13,19 @@ use perl_core_harness_types::{
     BaselineComparison, BaselineViolation, BaselineViolationKind, BoundaryRetirement,
     COMPILE_BASELINE_SCHEMA_VERSION, COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaseline,
     CompileBaselineV2, DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport,
-    GAP_MAP_SCHEMA_VERSION, GapMap, ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION,
-    PrepareReceipt, PrepareStatus, RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport,
-    RunSummary, RunnerRecord, RunnerStatus, SERIES_MANIFEST_NORMALIZATION_VERSION,
-    SERIES_MANIFEST_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION, SemanticBoundaryConfidence,
-    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SeriesManifest, SmokeFailureKind,
-    SmokeReport, SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
+    EVIDENCE_BUNDLE_SCHEMA_VERSION, EVIDENCE_REPRODUCTION_SCHEMA_VERSION, EvidenceArtifact,
+    EvidenceArtifactKind, EvidenceBundleCompleteness, EvidenceBundleIndex, EvidenceBundleLifecycle,
+    EvidenceBundleLineage, EvidenceCompleteness, EvidenceReproductionDescriptor,
+    EvidenceRetentionClass, EvidenceVisibility, GAP_MAP_SCHEMA_VERSION, GapMap,
+    ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus,
+    RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunSummary, RunnerRecord,
+    RunnerStatus, SERIES_MANIFEST_NORMALIZATION_VERSION, SERIES_MANIFEST_SCHEMA_VERSION,
+    SMOKE_SCHEMA_VERSION, SemanticBoundaryConfidence, SemanticBoundaryDisposition,
+    SemanticBoundaryLockScope, SeriesManifest, SmokeFailureKind, SmokeReport, SmokeStatus,
+    SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
 };
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
+use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -31,6 +36,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const PERL_SOURCE_URL: &str = "https://github.com/Perl/perl5";
 const EXECUTE_BASE_ALLOWLIST: &[&str] =
     &["base/if.t", "base/cond.t", "base/num.t", "base/pat.t", "base/translate.t", "base/while.t"];
+const EVIDENCE_INDEX_FILENAME: &str = "index.json";
+const EVIDENCE_NORMALIZED_DIR: &str = "normalized";
 static RUN_COPY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn project_root() -> Result<PathBuf> {
@@ -203,6 +210,47 @@ pub struct BaselineConfig {
     pub environment_identity: Option<String>,
     pub accepted_transition_id: Option<String>,
     pub evidence_bundle: Option<String>,
+}
+
+/// Inputs for assembling a content-addressed upstream evidence bundle.
+#[derive(Debug, Clone)]
+pub struct EvidenceBundleWriteConfig {
+    pub output_dir: PathBuf,
+    pub bundle_id: String,
+    pub series: PathBuf,
+    pub preparation: PathBuf,
+    pub discovery_raw: PathBuf,
+    pub discovery: PathBuf,
+    pub parse: PathBuf,
+    pub compile: PathBuf,
+    pub execute: Option<PathBuf>,
+    pub runner_records: PathBuf,
+    pub semantic_boundaries: PathBuf,
+    pub gap_map: PathBuf,
+    pub smoke: PathBuf,
+    pub baseline_candidate: PathBuf,
+    pub baseline_accepted: PathBuf,
+    pub reproduction: PathBuf,
+    pub measurement_sha: String,
+    pub claim_boundary: String,
+    pub repository_root: Option<PathBuf>,
+}
+
+/// Inputs for validating an existing upstream evidence bundle.
+#[derive(Debug, Clone)]
+pub struct EvidenceBundleCheckConfig {
+    pub bundle_dir: PathBuf,
+    pub repository_root: Option<PathBuf>,
+    pub registry_dir: Option<PathBuf>,
+}
+
+/// Inputs for recording publication or landed Git lineage on a bundle.
+#[derive(Debug, Clone)]
+pub struct EvidenceBundleLineageConfig {
+    pub bundle_dir: PathBuf,
+    pub publication_sha: String,
+    pub landed_sha: Option<String>,
+    pub repository_root: Option<PathBuf>,
 }
 
 /// Configuration for generating or checking a comparison-series manifest.
@@ -875,6 +923,240 @@ pub fn baseline(config: BaselineConfig) -> Result<()> {
     Ok(())
 }
 
+/// Assemble a durable, content-addressed evidence bundle for one comparison series.
+pub fn evidence_bundle_write(config: EvidenceBundleWriteConfig) -> Result<()> {
+    validate_bundle_id(&config.bundle_id)?;
+    validate_git_sha(&config.measurement_sha, "measurement SHA")?;
+    if config.claim_boundary.trim().is_empty() {
+        bail!("evidence bundle claim boundary must not be empty");
+    }
+    let series = read_series_manifest(&config.series)?;
+    validate_series_manifest(&series)?;
+    if config.measurement_sha != series.repository_commit {
+        bail!("measurement SHA does not match the comparison-series repository commit");
+    }
+
+    let preparation = read_json_file::<PrepareReceipt>(&config.preparation, "preparation receipt")?;
+    validate_preparation_against_series(&preparation, &series)?;
+    let preparation_digest = digest_file(&config.preparation)?;
+    if preparation_digest != series.preparation_receipt_digest {
+        bail!("preparation receipt digest does not match the comparison series");
+    }
+
+    let discovery = read_discovery_report(&config.discovery)?;
+    validate_discovery_against_series(&discovery, &series)?;
+    let parse_report = read_run_report(&config.parse)?;
+    validate_report_payload_against_series(&parse_report, &series, HarnessMode::Parse)?;
+    let compile_report = read_run_report(&config.compile)?;
+    validate_report_payload_against_series(&compile_report, &series, HarnessMode::Compile)?;
+    ensure_valid_report_shape(&parse_report)?;
+    ensure_valid_report_shape(&compile_report)?;
+
+    let records = read_runner_records(&config.runner_records)?;
+    if records.is_empty() {
+        bail!("runner-record evidence must contain at least one normalized record");
+    }
+    let boundaries = read_json_file::<Vec<ObservedSemanticBoundary>>(
+        &config.semantic_boundaries,
+        "semantic-boundary inventory",
+    )?;
+    if sorted_boundaries(&boundaries) != sorted_boundaries(&compile_report.semantic_boundaries) {
+        bail!("semantic-boundary inventory does not match the compile report");
+    }
+    let gap_map = read_json_file::<GapMap>(&config.gap_map, "gap map")?;
+    validate_gap_map_against_series(&gap_map, &series)?;
+    let smoke = read_json_file::<SmokeReport>(&config.smoke, "smoke report")?;
+    validate_smoke_against_series(&smoke, &series)?;
+
+    let candidate = read_compile_baseline_v2(&config.baseline_candidate)?;
+    let accepted = read_compile_baseline_v2(&config.baseline_accepted)?;
+    validate_baseline_payload_against_series(
+        &candidate,
+        &series,
+        &compile_report,
+        &config.bundle_id,
+        "candidate",
+    )?;
+    validate_baseline_payload_against_series(
+        &accepted,
+        &series,
+        &compile_report,
+        &config.bundle_id,
+        "accepted",
+    )?;
+
+    let reproduction = read_json_file::<EvidenceReproductionDescriptor>(
+        &config.reproduction,
+        "reproduction descriptor",
+    )?;
+    validate_reproduction_against_series(&reproduction, &series)?;
+
+    if config.output_dir.exists() {
+        if config.output_dir.join(EVIDENCE_INDEX_FILENAME).exists() {
+            bail!("evidence bundle output already contains an index; refusing overwrite");
+        }
+    }
+    fs::create_dir_all(config.output_dir.join(EVIDENCE_NORMALIZED_DIR))
+        .with_context(|| format!("creating evidence bundle {}", config.output_dir.display()))?;
+
+    let mut artifacts = Vec::new();
+    add_bundle_artifact(
+        &mut artifacts,
+        &config.output_dir,
+        EvidenceArtifactKind::ComparisonSeries,
+        &config.series,
+        EvidenceRetentionClass::Committed,
+        EvidenceVisibility::Public,
+    )?;
+    add_bundle_artifact(
+        &mut artifacts,
+        &config.output_dir,
+        EvidenceArtifactKind::PreparationReceipt,
+        &config.preparation,
+        EvidenceRetentionClass::Committed,
+        EvidenceVisibility::Public,
+    )?;
+    add_bundle_artifact(
+        &mut artifacts,
+        &config.output_dir,
+        EvidenceArtifactKind::DiscoveryRaw,
+        &config.discovery_raw,
+        EvidenceRetentionClass::Diagnostic,
+        EvidenceVisibility::Private,
+    )?;
+    for (kind, path) in [
+        (EvidenceArtifactKind::DiscoveryNormalized, &config.discovery),
+        (EvidenceArtifactKind::ParseReport, &config.parse),
+        (EvidenceArtifactKind::CompileReport, &config.compile),
+        (EvidenceArtifactKind::RunnerRecords, &config.runner_records),
+        (EvidenceArtifactKind::SemanticBoundaries, &config.semantic_boundaries),
+        (EvidenceArtifactKind::GapMap, &config.gap_map),
+        (EvidenceArtifactKind::SmokeReport, &config.smoke),
+        (EvidenceArtifactKind::BaselineCandidate, &config.baseline_candidate),
+        (EvidenceArtifactKind::BaselineAccepted, &config.baseline_accepted),
+        (EvidenceArtifactKind::Reproduction, &config.reproduction),
+    ] {
+        add_bundle_artifact(
+            &mut artifacts,
+            &config.output_dir,
+            kind,
+            path,
+            EvidenceRetentionClass::Committed,
+            EvidenceVisibility::Public,
+        )?;
+    }
+    if let Some(execute) = config.execute.as_ref() {
+        let report = read_run_report(execute)?;
+        validate_report_payload_against_series(&report, &series, HarnessMode::Execute)?;
+        add_bundle_artifact(
+            &mut artifacts,
+            &config.output_dir,
+            EvidenceArtifactKind::ExecuteReport,
+            execute,
+            EvidenceRetentionClass::Committed,
+            EvidenceVisibility::Public,
+        )?;
+    }
+    artifacts.sort_by_key(|artifact| artifact.kind);
+
+    let index = EvidenceBundleIndex {
+        schema_version: EVIDENCE_BUNDLE_SCHEMA_VERSION.to_string(),
+        bundle_id: config.bundle_id,
+        bundle_digest: String::new(),
+        series_id: series.series_id.clone(),
+        manifest_hash: series.manifest_hash.clone(),
+        repository_commit: series.repository_commit.clone(),
+        profile: series.profile,
+        runner: series.runner,
+        perl_requested_ref: series.perl_requested_ref.clone(),
+        perl_resolved_ref: series.perl_resolved_ref.clone(),
+        preparation_receipt_id: series.preparation_receipt_id.clone(),
+        preparation_receipt_digest: series.preparation_receipt_digest.clone(),
+        compiler_subject_identity: series.compiler_subject_identity.clone(),
+        invocation_identity: series.invocation_identity.clone(),
+        capability_identity: series.capability_identity.clone(),
+        environment_identity: series.environment_identity.clone(),
+        lineage: EvidenceBundleLineage {
+            measurement_sha: config.measurement_sha,
+            publication_sha: None,
+            landed_sha: None,
+        },
+        artifacts,
+        completeness: EvidenceBundleCompleteness {
+            status: EvidenceCompleteness::Complete,
+            required_artifacts: EvidenceArtifactKind::required().to_vec(),
+            missing_artifacts: Vec::new(),
+            normalized_authority: true,
+            claim_boundary: config.claim_boundary,
+        },
+        lifecycle: EvidenceBundleLifecycle::Measurement,
+        created_at: series.created_at,
+    };
+    let index = with_bundle_digest(index)?;
+    write_evidence_index(&config.output_dir, &index)?;
+    validate_evidence_bundle(&EvidenceBundleCheckConfig {
+        bundle_dir: config.output_dir.clone(),
+        repository_root: config.repository_root,
+        registry_dir: config.output_dir.parent().map(Path::to_path_buf),
+    })?;
+    tracing::info!("perl-core-harness: wrote evidence bundle {}", config.output_dir.display());
+    Ok(())
+}
+
+/// Validate a durable upstream evidence bundle and its normalized payload.
+pub fn evidence_bundle_check(config: EvidenceBundleCheckConfig) -> Result<()> {
+    validate_evidence_bundle(&config)
+}
+
+/// Record publication and optional landed Git identities on an evidence bundle.
+pub fn evidence_bundle_record_lineage(config: EvidenceBundleLineageConfig) -> Result<()> {
+    validate_git_sha(&config.publication_sha, "publication SHA")?;
+    if let Some(landed_sha) = config.landed_sha.as_deref() {
+        validate_git_sha(landed_sha, "landed SHA")?;
+    }
+    let index = read_evidence_index(&config.bundle_dir)?;
+    if index.lineage.measurement_sha == config.publication_sha {
+        bail!("measurement and publication identities must be distinct");
+    }
+    if let Some(existing) = index.lineage.publication_sha.as_deref()
+        && existing != config.publication_sha
+    {
+        bail!("evidence bundle publication identity is immutable");
+    }
+    validate_publication_diff(
+        config.repository_root.as_deref().unwrap_or_else(|| Path::new(".")),
+        &index.lineage.measurement_sha,
+        &config.publication_sha,
+    )?;
+    let mut updated = index;
+    updated.lineage.publication_sha = Some(config.publication_sha);
+    if let Some(landed_sha) = config.landed_sha {
+        if updated.lineage.publication_sha.as_deref() == Some(landed_sha.as_str()) {
+            bail!("publication and landed identities must be distinct");
+        }
+        validate_landed_lineage(
+            config.repository_root.as_deref().unwrap_or_else(|| Path::new(".")),
+            &updated.lineage.measurement_sha,
+            updated.lineage.publication_sha.as_deref().ok_or_else(|| {
+                color_eyre::eyre::eyre!("landed evidence bundle is missing publication SHA")
+            })?,
+            &landed_sha,
+        )?;
+        updated.lineage.landed_sha = Some(landed_sha);
+        updated.lifecycle = EvidenceBundleLifecycle::Landed;
+    } else {
+        updated.lifecycle = EvidenceBundleLifecycle::Published;
+    }
+    let updated = with_bundle_digest(updated)?;
+    write_evidence_index(&config.bundle_dir, &updated)?;
+    validate_evidence_bundle(&EvidenceBundleCheckConfig {
+        bundle_dir: config.bundle_dir,
+        repository_root: config.repository_root,
+        registry_dir: None,
+    })?;
+    Ok(())
+}
+
 /// Run a manual real-tree discovery + parse/compile smoke and write receipts.
 pub fn smoke(config: SmokeConfig) -> Result<()> {
     let modes = normalized_smoke_modes(&config.modes)?;
@@ -1367,6 +1649,673 @@ fn default_prepare_receipt_path(perl_ref: &str) -> PathBuf {
 fn default_smoke_dir(profile: HarnessProfile) -> PathBuf {
     let root = project_root().unwrap_or_else(|_| PathBuf::from("."));
     root.join("target").join("perl-core").join("smoke").join(profile.as_str())
+}
+
+fn validate_bundle_id(bundle_id: &str) -> Result<()> {
+    if bundle_id.trim().is_empty()
+        || bundle_id.contains('/')
+        || bundle_id.contains('\\')
+        || bundle_id.contains("..")
+        || bundle_id.chars().any(char::is_whitespace)
+    {
+        bail!("evidence bundle id must be a non-empty safe path component");
+    }
+    Ok(())
+}
+
+fn validate_git_sha(value: &str, name: &str) -> Result<()> {
+    let valid_length = value.len() == 40 || value.len() == 64;
+    if !valid_length || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("{name} must be a full hexadecimal Git object id");
+    }
+    Ok(())
+}
+
+fn read_json_file<T: DeserializeOwned>(path: &Path, label: &str) -> Result<T> {
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("reading {label} {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("decoding {label} {}", path.display()))
+}
+
+fn digest_file(path: &Path) -> Result<String> {
+    let bytes =
+        fs::read(path).with_context(|| format!("reading evidence file {}", path.display()))?;
+    Ok(hex_lower(&Sha256::digest(bytes)))
+}
+
+fn add_bundle_artifact(
+    artifacts: &mut Vec<EvidenceArtifact>,
+    output_dir: &Path,
+    kind: EvidenceArtifactKind,
+    source: &Path,
+    retention: EvidenceRetentionClass,
+    visibility: EvidenceVisibility,
+) -> Result<()> {
+    let source_bytes = fs::read(source)
+        .with_context(|| format!("reading {} evidence {}", kind, source.display()))?;
+    let bytes = if retention == EvidenceRetentionClass::Committed {
+        normalize_public_artifact(kind, &source_bytes)?
+    } else {
+        source_bytes
+    };
+    if bytes.is_empty() {
+        bail!("{} evidence {} is empty", kind, source.display());
+    }
+    let prefix = match retention {
+        EvidenceRetentionClass::Committed => format!("{EVIDENCE_NORMALIZED_DIR}/"),
+        EvidenceRetentionClass::Diagnostic => "diagnostic/".to_string(),
+    };
+    let logical_path = format!("{prefix}{}", kind.filename());
+    validate_logical_artifact_path(&logical_path)?;
+    if retention == EvidenceRetentionClass::Committed {
+        let target = output_dir.join(&logical_path);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("creating normalized evidence directory {}", parent.display())
+            })?;
+        }
+        let same_file = source
+            .canonicalize()
+            .ok()
+            .zip(target.canonicalize().ok())
+            .is_some_and(|(left, right)| left == right);
+        let existing = if target.is_file() {
+            fs::read(&target).with_context(|| {
+                format!("reading existing normalized evidence {}", target.display())
+            })?
+        } else {
+            Vec::new()
+        };
+        if !same_file || bytes != existing {
+            fs::write(&target, &bytes).with_context(|| {
+                format!("writing {} evidence into {}", source.display(), target.display())
+            })?;
+        }
+    }
+    artifacts.push(EvidenceArtifact {
+        kind,
+        logical_path,
+        content_digest: hex_lower(&Sha256::digest(&bytes)),
+        size_bytes: bytes.len() as u64,
+        retention,
+        visibility,
+        available_at_measurement: true,
+    });
+    Ok(())
+}
+
+fn normalize_public_artifact(kind: EvidenceArtifactKind, source: &[u8]) -> Result<Vec<u8>> {
+    fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
+        let json =
+            serde_json::to_string_pretty(value).context("serializing normalized evidence")?;
+        Ok(format!("{json}\n").into_bytes())
+    }
+
+    match kind {
+        EvidenceArtifactKind::PreparationReceipt => {
+            let mut receipt: PrepareReceipt = serde_json::from_slice(source)
+                .context("decoding preparation receipt for public normalization")?;
+            receipt.source_dir = "<source-dir>".into();
+            receipt.prepared_tree = "<prepared-tree>".into();
+            encode(&receipt)
+        }
+        EvidenceArtifactKind::DiscoveryNormalized => {
+            let mut report: DiscoveryReport = serde_json::from_slice(source)
+                .context("decoding discovery report for public normalization")?;
+            report.prepared_tree = "<prepared-tree>".into();
+            report.host_perl = "<host-perl>".into();
+            encode(&report)
+        }
+        EvidenceArtifactKind::ParseReport
+        | EvidenceArtifactKind::CompileReport
+        | EvidenceArtifactKind::ExecuteReport => {
+            let mut report: RunReport = serde_json::from_slice(source)
+                .context("decoding run report for public normalization")?;
+            report.prepared_tree = "<prepared-tree>".into();
+            report.run_tree = "<run-tree>".into();
+            report.host_perl = "<host-perl>".into();
+            encode(&report)
+        }
+        EvidenceArtifactKind::SmokeReport => {
+            let mut report: SmokeReport = serde_json::from_slice(source)
+                .context("decoding smoke report for public normalization")?;
+            report.prepared_tree = "<prepared-tree>".into();
+            report.host_perl = "<host-perl>".into();
+            report.discovery_report = "normalized/discovery.json".into();
+            report.parse_report = Some("normalized/parse.json".into());
+            report.compile_report = Some("normalized/compile.json".into());
+            report.gap_map = "normalized/gap-map.json".into();
+            encode(&report)
+        }
+        _ => Ok(source.to_vec()),
+    }
+}
+
+fn validate_logical_artifact_path(path: &str) -> Result<()> {
+    let candidate = Path::new(path);
+    if path.trim().is_empty()
+        || candidate.is_absolute()
+        || path.contains('\\')
+        || path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || path.contains(':')
+    {
+        bail!("evidence artifact logical path is not a safe bundle-relative path: {path}");
+    }
+    Ok(())
+}
+
+fn validate_preparation_against_series(
+    preparation: &PrepareReceipt,
+    series: &SeriesManifest,
+) -> Result<()> {
+    if preparation.schema_version != PREPARE_SCHEMA_VERSION {
+        bail!("unsupported preparation receipt schema: {}", preparation.schema_version);
+    }
+    if preparation.status != PrepareStatus::Pass
+        || preparation.resolved_ref.as_deref() != Some(series.perl_resolved_ref.as_str())
+        || preparation.requested_ref != series.perl_requested_ref
+    {
+        bail!("preparation receipt does not match the comparison-series identity");
+    }
+    Ok(())
+}
+
+fn validate_discovery_against_series(
+    discovery: &DiscoveryReport,
+    series: &SeriesManifest,
+) -> Result<()> {
+    if discovery.schema_version != DISCOVERY_SCHEMA_VERSION
+        || discovery.commit != series.repository_commit
+        || discovery.perl_ref != series.perl_resolved_ref
+        || discovery.runner != series.runner
+        || discovery.profile != series.profile
+    {
+        bail!("normalized discovery report does not match the comparison-series identity");
+    }
+    let files = normalize_discovered_tests(discovery, series.profile)?;
+    if files != series.normalized_manifest {
+        bail!("normalized discovery membership does not match the comparison-series manifest");
+    }
+    Ok(())
+}
+
+fn validate_report_payload_against_series(
+    report: &RunReport,
+    series: &SeriesManifest,
+    mode: HarnessMode,
+) -> Result<()> {
+    validate_report_against_series(report, series, mode)?;
+    let membership =
+        report.file_results.iter().map(|result| result.path.as_str()).collect::<BTreeSet<_>>();
+    let expected = series.normalized_manifest.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    if membership != expected || report.file_results.len() != series.normalized_manifest.len() {
+        bail!("{} report membership does not exactly match the comparison-series manifest", mode);
+    }
+    Ok(())
+}
+
+fn validate_gap_map_against_series(gap_map: &GapMap, series: &SeriesManifest) -> Result<()> {
+    if gap_map.schema_version != GAP_MAP_SCHEMA_VERSION
+        || gap_map.profile != series.profile
+        || !gap_map.mode.split(',').any(|mode| mode == HarnessMode::Compile.as_str())
+    {
+        bail!("gap map does not cover the declared comparison series and compile mode");
+    }
+    Ok(())
+}
+
+fn validate_smoke_against_series(smoke: &SmokeReport, series: &SeriesManifest) -> Result<()> {
+    if smoke.schema_version != SMOKE_SCHEMA_VERSION
+        || smoke.repo_commit != series.repository_commit
+        || smoke.perl_resolved_ref != series.perl_resolved_ref
+        || smoke.profile != series.profile
+        || smoke.runner != series.runner
+        || smoke.status != SmokeStatus::Pass
+        || !smoke.structural_failures.is_empty()
+    {
+        bail!("smoke report is not a clean structural receipt for the comparison series");
+    }
+    Ok(())
+}
+
+fn validate_baseline_payload_against_series(
+    baseline: &CompileBaselineV2,
+    series: &SeriesManifest,
+    compile_report: &RunReport,
+    bundle_id: &str,
+    label: &str,
+) -> Result<()> {
+    if baseline.schema_version != COMPILE_BASELINE_V2_SCHEMA_VERSION
+        || baseline.report_schema_version != RUN_REPORT_SCHEMA_VERSION
+        || baseline.series_id != series.series_id
+        || baseline.manifest_hash != series.manifest_hash
+        || baseline.repository_commit != series.repository_commit
+        || baseline.perl_resolved_ref != series.perl_resolved_ref
+        || baseline.preparation_receipt_id != series.preparation_receipt_id
+        || baseline.profile != series.profile
+        || baseline.runner != series.runner
+        || baseline.mode != HarnessMode::Compile
+        || baseline.evidence_bundle.as_deref() != Some(bundle_id)
+    {
+        bail!("{label} baseline is not bound to the declared evidence bundle and series");
+    }
+    if baseline.file_membership != series.normalized_manifest
+        || baseline.files_total != series.normalized_manifest.len()
+        || baseline.source_report_digest != report_digest(compile_report)?
+        || sorted_boundaries(&baseline.semantic_boundaries)
+            != sorted_boundaries(&compile_report.semantic_boundaries)
+    {
+        bail!("{label} baseline payload does not match the compile report and denominator");
+    }
+    Ok(())
+}
+
+fn validate_reproduction_against_series(
+    reproduction: &EvidenceReproductionDescriptor,
+    series: &SeriesManifest,
+) -> Result<()> {
+    if reproduction.schema_version != EVIDENCE_REPRODUCTION_SCHEMA_VERSION
+        || reproduction.series_id != series.series_id
+        || reproduction.profile != series.profile
+        || reproduction.compiler_subject_identity != series.compiler_subject_identity
+        || !reproduction.deterministic
+        || reproduction.commands.is_empty()
+        || !reproduction.modes.contains(&HarnessMode::Parse)
+        || !reproduction.modes.contains(&HarnessMode::Compile)
+        || reproduction.commands.iter().any(|command| command.trim().is_empty())
+    {
+        bail!("reproduction descriptor is incomplete or mismatched");
+    }
+    Ok(())
+}
+
+fn sorted_boundaries(boundaries: &[ObservedSemanticBoundary]) -> Vec<ObservedSemanticBoundary> {
+    let mut sorted = boundaries.to_vec();
+    sorted.sort_by_key(semantic_boundary_key);
+    sorted
+}
+
+fn with_bundle_digest(mut index: EvidenceBundleIndex) -> Result<EvidenceBundleIndex> {
+    index.bundle_digest.clear();
+    index.bundle_digest = bundle_digest(&index)?;
+    Ok(index)
+}
+
+fn bundle_digest(index: &EvidenceBundleIndex) -> Result<String> {
+    let mut value =
+        serde_json::to_value(index).context("serializing evidence bundle digest input")?;
+    let object = value.as_object_mut().ok_or_else(|| {
+        color_eyre::eyre::eyre!("evidence bundle index must serialize as an object")
+    })?;
+    object.remove("bundle_digest");
+    let bytes = serde_json::to_vec(&value).context("encoding evidence bundle digest input")?;
+    Ok(hex_lower(&Sha256::digest(bytes)))
+}
+
+fn write_evidence_index(bundle_dir: &Path, index: &EvidenceBundleIndex) -> Result<()> {
+    fs::create_dir_all(bundle_dir)
+        .with_context(|| format!("creating evidence bundle directory {}", bundle_dir.display()))?;
+    let path = bundle_dir.join(EVIDENCE_INDEX_FILENAME);
+    let json = serde_json::to_string_pretty(index).context("serializing evidence bundle index")?;
+    fs::write(&path, format!("{json}\n"))
+        .with_context(|| format!("writing evidence bundle index {}", path.display()))
+}
+
+fn read_evidence_index(bundle_dir: &Path) -> Result<EvidenceBundleIndex> {
+    read_json_file(&bundle_dir.join(EVIDENCE_INDEX_FILENAME), "evidence bundle index")
+}
+
+fn artifact_by_kind(
+    index: &EvidenceBundleIndex,
+    kind: EvidenceArtifactKind,
+) -> Result<&EvidenceArtifact> {
+    index
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == kind)
+        .ok_or_else(|| color_eyre::eyre::eyre!("evidence bundle is missing {kind} artifact"))
+}
+
+fn committed_artifact_path(bundle_dir: &Path, artifact: &EvidenceArtifact) -> Result<PathBuf> {
+    if artifact.retention != EvidenceRetentionClass::Committed {
+        bail!(
+            "artifact {} is external diagnostic evidence, not durable normalized evidence",
+            artifact.kind
+        );
+    }
+    Ok(bundle_dir.join(&artifact.logical_path))
+}
+
+fn validate_evidence_bundle(config: &EvidenceBundleCheckConfig) -> Result<()> {
+    let index = read_evidence_index(&config.bundle_dir)?;
+    validate_evidence_bundle_shape(&index)?;
+    if index.lifecycle == EvidenceBundleLifecycle::Published
+        || index.lifecycle == EvidenceBundleLifecycle::Landed
+    {
+        let repository_root = config.repository_root.as_deref().unwrap_or_else(|| Path::new("."));
+        validate_publication_diff(
+            repository_root,
+            &index.lineage.measurement_sha,
+            index.lineage.publication_sha.as_deref().ok_or_else(|| {
+                color_eyre::eyre::eyre!("published evidence bundle is missing publication SHA")
+            })?,
+        )?;
+        if let Some(landed_sha) = index.lineage.landed_sha.as_deref() {
+            validate_landed_lineage(
+                repository_root,
+                &index.lineage.measurement_sha,
+                index.lineage.publication_sha.as_deref().ok_or_else(|| {
+                    color_eyre::eyre::eyre!("landed evidence bundle is missing publication SHA")
+                })?,
+                landed_sha,
+            )?;
+        }
+    }
+    if let Some(registry_dir) = config.registry_dir.as_deref() {
+        reject_conflicting_authoritative_bundles(registry_dir, &index, &config.bundle_dir)?;
+    }
+    validate_evidence_bundle_payload(&config.bundle_dir, &index)
+}
+
+fn validate_evidence_bundle_shape(index: &EvidenceBundleIndex) -> Result<()> {
+    if index.schema_version != EVIDENCE_BUNDLE_SCHEMA_VERSION {
+        bail!("unsupported evidence bundle schema: {}", index.schema_version);
+    }
+    validate_bundle_id(&index.bundle_id)?;
+    validate_git_sha(&index.lineage.measurement_sha, "measurement SHA")?;
+    if let Some(publication) = index.lineage.publication_sha.as_deref() {
+        validate_git_sha(publication, "publication SHA")?;
+        if publication == index.lineage.measurement_sha {
+            bail!("measurement and publication identities must be distinct");
+        }
+    }
+    if let Some(landed) = index.lineage.landed_sha.as_deref() {
+        validate_git_sha(landed, "landed SHA")?;
+        if Some(landed) == index.lineage.publication_sha.as_deref()
+            || landed == index.lineage.measurement_sha
+        {
+            bail!("measurement, publication, and landed identities must be distinct");
+        }
+    }
+    if index.series_id.trim().is_empty()
+        || index.manifest_hash.trim().is_empty()
+        || index.repository_commit.trim().is_empty()
+        || index.preparation_receipt_id.trim().is_empty()
+        || index.preparation_receipt_digest.trim().is_empty()
+        || index.compiler_subject_identity.trim().is_empty()
+        || index.invocation_identity.trim().is_empty()
+        || index.capability_identity.trim().is_empty()
+        || index.environment_identity.trim().is_empty()
+        || index.created_at.trim().is_empty()
+    {
+        bail!("evidence bundle identity fields must not be empty");
+    }
+    if index.bundle_digest != bundle_digest(index)? {
+        bail!("evidence bundle digest does not match canonical index contents");
+    }
+    let required = EvidenceArtifactKind::required().iter().copied().collect::<BTreeSet<_>>();
+    let declared_required =
+        index.completeness.required_artifacts.iter().copied().collect::<BTreeSet<_>>();
+    if declared_required != required || !index.completeness.missing_artifacts.is_empty() {
+        bail!("evidence bundle required-artifact declaration is incomplete");
+    }
+    if index.completeness.status != EvidenceCompleteness::Complete
+        || !index.completeness.normalized_authority
+        || index.completeness.claim_boundary.trim().is_empty()
+    {
+        bail!("evidence bundle is not complete normalized authority");
+    }
+    let mut kinds = BTreeSet::new();
+    for artifact in &index.artifacts {
+        if !kinds.insert(artifact.kind) {
+            bail!("evidence bundle contains duplicate {} artifact", artifact.kind);
+        }
+        validate_logical_artifact_path(&artifact.logical_path)?;
+        let expected_prefix = match artifact.retention {
+            EvidenceRetentionClass::Committed => format!("{EVIDENCE_NORMALIZED_DIR}/"),
+            EvidenceRetentionClass::Diagnostic => "diagnostic/".to_string(),
+        };
+        if !artifact.logical_path.starts_with(&expected_prefix)
+            || artifact.size_bytes == 0
+            || artifact.content_digest.len() != 64
+            || !artifact.content_digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            bail!("evidence bundle artifact {} has invalid identity metadata", artifact.kind);
+        }
+    }
+    if !required.is_subset(&kinds) {
+        bail!("evidence bundle is missing one or more required artifacts");
+    }
+    let expected_lifecycle =
+        match (index.lineage.publication_sha.is_some(), index.lineage.landed_sha.is_some()) {
+            (false, false) => EvidenceBundleLifecycle::Measurement,
+            (true, false) => EvidenceBundleLifecycle::Published,
+            (true, true) => EvidenceBundleLifecycle::Landed,
+            (false, true) => bail!("landed identity requires a publication identity"),
+        };
+    if index.lifecycle != expected_lifecycle
+        && index.lifecycle != EvidenceBundleLifecycle::Historical
+    {
+        bail!("evidence bundle lifecycle does not match its lineage");
+    }
+    Ok(())
+}
+
+fn validate_evidence_bundle_payload(bundle_dir: &Path, index: &EvidenceBundleIndex) -> Result<()> {
+    for artifact in &index.artifacts {
+        if artifact.retention != EvidenceRetentionClass::Committed {
+            continue;
+        }
+        let path = committed_artifact_path(bundle_dir, artifact)?;
+        let metadata = fs::metadata(&path)
+            .with_context(|| format!("reading durable evidence artifact {}", path.display()))?;
+        if metadata.len() != artifact.size_bytes || digest_file(&path)? != artifact.content_digest {
+            bail!("durable evidence artifact {} changed after indexing", artifact.kind);
+        }
+    }
+    let series = read_json_artifact::<SeriesManifest>(
+        bundle_dir,
+        index,
+        EvidenceArtifactKind::ComparisonSeries,
+    )?;
+    validate_series_manifest(&series)?;
+    if index.lineage.measurement_sha != series.repository_commit
+        || index.series_id != series.series_id
+        || index.manifest_hash != series.manifest_hash
+        || index.repository_commit != series.repository_commit
+        || index.profile != series.profile
+        || index.runner != series.runner
+        || index.perl_requested_ref != series.perl_requested_ref
+        || index.perl_resolved_ref != series.perl_resolved_ref
+        || index.preparation_receipt_id != series.preparation_receipt_id
+        || index.preparation_receipt_digest != series.preparation_receipt_digest
+        || index.compiler_subject_identity != series.compiler_subject_identity
+        || index.invocation_identity != series.invocation_identity
+        || index.capability_identity != series.capability_identity
+        || index.environment_identity != series.environment_identity
+    {
+        bail!("evidence bundle identity does not match its comparison-series manifest");
+    }
+    let preparation = read_json_artifact::<PrepareReceipt>(
+        bundle_dir,
+        index,
+        EvidenceArtifactKind::PreparationReceipt,
+    )?;
+    validate_preparation_against_series(&preparation, &series)?;
+    let discovery = read_json_artifact::<DiscoveryReport>(
+        bundle_dir,
+        index,
+        EvidenceArtifactKind::DiscoveryNormalized,
+    )?;
+    validate_discovery_against_series(&discovery, &series)?;
+    let parse =
+        read_json_artifact::<RunReport>(bundle_dir, index, EvidenceArtifactKind::ParseReport)?;
+    let compile =
+        read_json_artifact::<RunReport>(bundle_dir, index, EvidenceArtifactKind::CompileReport)?;
+    validate_report_payload_against_series(&parse, &series, HarnessMode::Parse)?;
+    validate_report_payload_against_series(&compile, &series, HarnessMode::Compile)?;
+    ensure_valid_report_shape(&parse)?;
+    ensure_valid_report_shape(&compile)?;
+    let records_path = committed_artifact_path(
+        bundle_dir,
+        artifact_by_kind(index, EvidenceArtifactKind::RunnerRecords)?,
+    )?;
+    if read_runner_records(&records_path)?.is_empty() {
+        bail!("durable runner-record evidence is empty");
+    }
+    let boundaries = read_json_artifact::<Vec<ObservedSemanticBoundary>>(
+        bundle_dir,
+        index,
+        EvidenceArtifactKind::SemanticBoundaries,
+    )?;
+    if sorted_boundaries(&boundaries) != sorted_boundaries(&compile.semantic_boundaries) {
+        bail!("durable semantic-boundary inventory does not match compile evidence");
+    }
+    let gap_map = read_json_artifact::<GapMap>(bundle_dir, index, EvidenceArtifactKind::GapMap)?;
+    validate_gap_map_against_series(&gap_map, &series)?;
+    let smoke =
+        read_json_artifact::<SmokeReport>(bundle_dir, index, EvidenceArtifactKind::SmokeReport)?;
+    validate_smoke_against_series(&smoke, &series)?;
+    let candidate = read_json_artifact::<CompileBaselineV2>(
+        bundle_dir,
+        index,
+        EvidenceArtifactKind::BaselineCandidate,
+    )?;
+    let accepted = read_json_artifact::<CompileBaselineV2>(
+        bundle_dir,
+        index,
+        EvidenceArtifactKind::BaselineAccepted,
+    )?;
+    validate_baseline_payload_against_series(
+        &candidate,
+        &series,
+        &compile,
+        &index.bundle_id,
+        "candidate",
+    )?;
+    validate_baseline_payload_against_series(
+        &accepted,
+        &series,
+        &compile,
+        &index.bundle_id,
+        "accepted",
+    )?;
+    let reproduction = read_json_artifact::<EvidenceReproductionDescriptor>(
+        bundle_dir,
+        index,
+        EvidenceArtifactKind::Reproduction,
+    )?;
+    validate_reproduction_against_series(&reproduction, &series)
+}
+
+fn read_json_artifact<T: DeserializeOwned>(
+    bundle_dir: &Path,
+    index: &EvidenceBundleIndex,
+    kind: EvidenceArtifactKind,
+) -> Result<T> {
+    let artifact = artifact_by_kind(index, kind)?;
+    let path = committed_artifact_path(bundle_dir, artifact)?;
+    read_json_file(&path, kind.as_str())
+}
+
+fn validate_logical_publication_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    [
+        ".ci/perl-core-harness/",
+        "target/perl-core/",
+        "evidence/",
+        "docs/project/status/",
+        "docs/compiler/",
+        "docs/compatibility/",
+    ]
+    .iter()
+    .any(|prefix| normalized.starts_with(prefix))
+}
+
+fn validate_publication_paths(paths: &[String]) -> Result<()> {
+    let unexpected = paths
+        .iter()
+        .filter(|path| !validate_logical_publication_path(path))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unexpected.is_empty() {
+        bail!(
+            "measurement-to-publication range contains measured or unapproved paths: {}",
+            unexpected.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn validate_publication_diff(
+    repository_root: &Path,
+    measurement_sha: &str,
+    publication_sha: &str,
+) -> Result<()> {
+    let range = format!("{measurement_sha}..{publication_sha}");
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repository_root)
+        .args(["diff", "--name-only", &range])
+        .output()
+        .with_context(|| format!("checking publication lineage {range}"))?;
+    if !output.status.success() {
+        bail!(
+            "git could not resolve measurement-to-publication range {range}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let paths = String::from_utf8(output.stdout)
+        .context("publication diff contained non-UTF-8 paths")?
+        .lines()
+        .map(str::to_string)
+        .filter(|path| !path.trim().is_empty())
+        .collect::<Vec<_>>();
+    validate_publication_paths(&paths)
+}
+
+fn validate_landed_lineage(
+    repository_root: &Path,
+    measurement_sha: &str,
+    publication_sha: &str,
+    landed_sha: &str,
+) -> Result<()> {
+    // A squash merge need not retain the publication commit as an ancestor, so
+    // validate the tree deltas on both sides instead of requiring ancestry.
+    validate_publication_diff(repository_root, measurement_sha, landed_sha)?;
+    validate_publication_diff(repository_root, publication_sha, landed_sha)
+}
+
+fn reject_conflicting_authoritative_bundles(
+    registry_dir: &Path,
+    current: &EvidenceBundleIndex,
+    current_dir: &Path,
+) -> Result<()> {
+    if !registry_dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(registry_dir)
+        .with_context(|| format!("reading evidence bundle registry {}", registry_dir.display()))?
+    {
+        let entry = entry.context("reading evidence bundle registry entry")?;
+        let path = entry.path();
+        if !path.is_dir() || path == current_dir {
+            continue;
+        }
+        let index_path = path.join(EVIDENCE_INDEX_FILENAME);
+        if !index_path.is_file() {
+            continue;
+        }
+        let other = read_evidence_index(&path)?;
+        if (other.lifecycle == EvidenceBundleLifecycle::Published
+            || other.lifecycle == EvidenceBundleLifecycle::Landed)
+            && other.series_id == current.series_id
+            && other.lineage.measurement_sha == current.lineage.measurement_sha
+        {
+            bail!("conflicting authoritative evidence bundle for series {}", current.series_id);
+        }
+    }
+    Ok(())
 }
 
 fn safe_path_component(value: &str) -> String {
@@ -5661,5 +6610,296 @@ exit 1
         fs::write(&runner, body)?;
         set_executable(&runner)?;
         Ok(runner)
+    }
+
+    fn write_fixture_json<T: serde::Serialize>(path: &Path, value: &T) -> TestResult {
+        fs::write(path, format!("{}\n", serde_json::to_string_pretty(value)?))?;
+        Ok(())
+    }
+
+    fn evidence_bundle_fixture() -> TestResult<(tempfile::TempDir, EvidenceBundleWriteConfig)> {
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("source");
+        fs::create_dir_all(&source)?;
+        let discovery_path = source.join("discovery.json");
+        let preparation_path = source.join("preparation.json");
+        let series_path = source.join("series.json");
+        let parse_path = source.join("parse.json");
+        let compile_path = source.join("compile.json");
+        let raw_path = source.join("discovery.raw");
+        let runner_path = source.join("runner.jsonl");
+        let boundaries_path = source.join("boundaries.json");
+        let gap_path = source.join("gap.json");
+        let smoke_path = source.join("smoke.json");
+        let candidate_path = source.join("candidate.json");
+        let accepted_path = source.join("accepted.json");
+        let reproduction_path = source.join("reproduction.json");
+
+        let measurement_sha = "a".repeat(40);
+        let resolved_ref = "perl-resolved".to_string();
+        let requested_ref = "perl-5.42.2".to_string();
+        let preparation = PrepareReceipt {
+            schema_version: PREPARE_SCHEMA_VERSION.into(),
+            requested_ref: requested_ref.clone(),
+            resolved_ref: Some(resolved_ref.clone()),
+            source_url: PERL_SOURCE_URL.into(),
+            source_dir: "source".into(),
+            prepared_tree: "prepared".into(),
+            host_os: "windows".into(),
+            host_arch: "x86_64".into(),
+            configure_command: "./Configure".into(),
+            test_prep_command: "make test-prep".into(),
+            status: PrepareStatus::Pass,
+            first_error: None,
+            started_at: "2026-07-28T00:00:00Z".into(),
+            finished_at: "2026-07-28T00:01:00Z".into(),
+        };
+        write_prepare_receipt(&preparation_path, &preparation)?;
+        let preparation_digest = digest_file(&preparation_path)?;
+
+        let mut discovery = sample_discovery_report();
+        discovery.commit = measurement_sha.clone();
+        discovery.perl_ref = resolved_ref.clone();
+        write_discovery_report(&discovery_path, &discovery)?;
+        let series_config = SeriesManifestConfig {
+            discovery: discovery_path.clone(),
+            output: Some(series_path.clone()),
+            series_id: "selected-base-perl-5.42.2".into(),
+            profile: HarnessProfile::Base,
+            perl_requested_ref: requested_ref.clone(),
+            perl_resolved_ref: resolved_ref.clone(),
+            preparation_receipt_id: "preparation-1".into(),
+            preparation_receipt_digest: preparation_digest,
+            compiler_subject_identity: "compiler-subject-1".into(),
+            invocation_identity: "invocation-1".into(),
+            capability_identity: "capability-1".into(),
+            environment_identity: "environment-1".into(),
+            replaces_series_id: None,
+            change_reason: None,
+            check: false,
+        };
+        series_manifest(series_config.clone())?;
+
+        let mut parse = sample_parse_report();
+        parse.commit = measurement_sha.clone();
+        parse.perl_ref = resolved_ref.clone();
+        let mut compile = sample_compile_report();
+        compile.commit = measurement_sha.clone();
+        compile.perl_ref = resolved_ref.clone();
+        write_run_report(&parse_path, &parse)?;
+        write_run_report(&compile_path, &compile)?;
+        fs::write(&raw_path, b"raw upstream dumptests output\n")?;
+        let record = RunnerRecord {
+            schema_version: perl_core_harness_types::RUNNER_RECORD_SCHEMA_VERSION.into(),
+            mode: "compile".into(),
+            path: "base/lex.t".into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 1,
+            assertions_total: 1,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
+        };
+        fs::write(&runner_path, format!("{}\n", serde_json::to_string(&record)?))?;
+        write_fixture_json(&boundaries_path, &compile.semantic_boundaries)?;
+        write_fixture_json(
+            &gap_path,
+            &GapMap {
+                schema_version: GAP_MAP_SCHEMA_VERSION.into(),
+                profile: HarnessProfile::Base,
+                mode: "parse,compile".into(),
+                total_files: 4,
+                passed_files: 4,
+                failed_files: 0,
+                buckets: BTreeMap::new(),
+                files_by_bucket: BTreeMap::new(),
+                first_failure_by_bucket: BTreeMap::new(),
+                workstreams: BTreeMap::new(),
+                lsp_impact: BTreeMap::new(),
+                top_parse_failures: Vec::new(),
+                top_compile_failures: Vec::new(),
+            },
+        )?;
+        write_fixture_json(
+            &smoke_path,
+            &SmokeReport {
+                schema_version: SMOKE_SCHEMA_VERSION.into(),
+                timestamp: "2026-07-28T00:02:00Z".into(),
+                repo_commit: measurement_sha.clone(),
+                perl_requested_ref: requested_ref,
+                perl_resolved_ref: resolved_ref,
+                prepared_tree: "prepared".into(),
+                host_perl: "perl".into(),
+                runner: HarnessRunner::Test,
+                profile: HarnessProfile::Base,
+                modes_requested: vec![HarnessMode::Parse, HarnessMode::Compile],
+                discovery_report: discovery_path.display().to_string(),
+                parse_report: Some(parse_path.display().to_string()),
+                compile_report: Some(compile_path.display().to_string()),
+                gap_map: gap_path.display().to_string(),
+                discovery_total: 2,
+                parse_files_total: Some(2),
+                parse_files_passed: Some(2),
+                parse_files_failed: Some(0),
+                compile_files_total: Some(2),
+                compile_files_passed: Some(2),
+                compile_files_failed: Some(0),
+                parse_buckets: Some(BTreeMap::new()),
+                compile_buckets: Some(BTreeMap::new()),
+                status: SmokeStatus::Pass,
+                structural_failures: Vec::new(),
+            },
+        )?;
+
+        let series: SeriesManifest = serde_json::from_str(&fs::read_to_string(&series_path)?)?;
+        let baseline_config = BaselineConfig {
+            mode: HarnessMode::Compile,
+            profile: HarnessProfile::Base,
+            report: None,
+            baseline: None,
+            accept: true,
+            series: Some(series_path.clone()),
+            previous_baseline: None,
+            boundary_retirements: None,
+            compiler_subject_identity: Some(series.compiler_subject_identity.clone()),
+            invocation_identity: Some(series.invocation_identity.clone()),
+            capability_identity: Some(series.capability_identity.clone()),
+            environment_identity: Some(series.environment_identity.clone()),
+            accepted_transition_id: None,
+            evidence_bundle: Some("bundle-1".into()),
+        };
+        let baseline = baseline_v2_from_report(&compile, &series, &baseline_config, None, &[])?;
+        write_compile_baseline_v2(&candidate_path, &baseline)?;
+        write_compile_baseline_v2(&accepted_path, &baseline)?;
+        write_fixture_json(
+            &reproduction_path,
+            &EvidenceReproductionDescriptor {
+                schema_version: EVIDENCE_REPRODUCTION_SCHEMA_VERSION.into(),
+                series_id: series.series_id,
+                profile: HarnessProfile::Base,
+                modes: vec![HarnessMode::Parse, HarnessMode::Compile],
+                commands: vec!["cargo xtask perl-core-harness run --mode compile".into()],
+                compiler_subject_identity: "compiler-subject-1".into(),
+                deterministic: true,
+            },
+        )?;
+
+        let output_dir = temp.path().join("bundle-1");
+        Ok((
+            temp,
+            EvidenceBundleWriteConfig {
+                output_dir,
+                bundle_id: "bundle-1".into(),
+                series: series_path,
+                preparation: preparation_path,
+                discovery_raw: raw_path,
+                discovery: discovery_path,
+                parse: parse_path,
+                compile: compile_path,
+                execute: None,
+                runner_records: runner_path,
+                semantic_boundaries: boundaries_path,
+                gap_map: gap_path,
+                smoke: smoke_path,
+                baseline_candidate: candidate_path,
+                baseline_accepted: accepted_path,
+                reproduction: reproduction_path,
+                measurement_sha,
+                claim_boundary: "parse_compile_acceptance".into(),
+                repository_root: None,
+            },
+        ))
+    }
+
+    #[test]
+    fn evidence_bundle_write_and_check_is_deterministic() -> TestResult {
+        let (temp, config) = evidence_bundle_fixture()?;
+        evidence_bundle_write(config.clone())?;
+        let first = fs::read_to_string(config.output_dir.join(EVIDENCE_INDEX_FILENAME))?;
+        evidence_bundle_check(EvidenceBundleCheckConfig {
+            bundle_dir: config.output_dir.clone(),
+            repository_root: None,
+            registry_dir: None,
+        })?;
+
+        let second_dir = temp.path().join("bundle-2");
+        let second_config = EvidenceBundleWriteConfig { output_dir: second_dir.clone(), ..config };
+        evidence_bundle_write(second_config)?;
+        let second = fs::read_to_string(second_dir.join(EVIDENCE_INDEX_FILENAME))?;
+        if first != second {
+            bail!("identical evidence inputs must produce byte-identical bundle indexes");
+        }
+        if first.contains(temp.path().to_string_lossy().as_ref()) {
+            bail!("durable bundle index leaked a temporary host path");
+        }
+        for artifact in ["preparation-receipt.json", "parse.json", "smoke.json"] {
+            let contents = fs::read_to_string(config.output_dir.join("normalized").join(artifact))?;
+            if contents.contains(temp.path().to_string_lossy().as_ref()) {
+                bail!("durable {artifact} leaked a temporary host path");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn evidence_bundle_remains_valid_after_raw_diagnostic_expiry() -> TestResult {
+        let (_temp, config) = evidence_bundle_fixture()?;
+        evidence_bundle_write(config.clone())?;
+        // Raw diagnostics are retained outside the normalized bundle and may
+        // already be unavailable when the durable packet is revalidated.
+        evidence_bundle_check(EvidenceBundleCheckConfig {
+            bundle_dir: config.output_dir,
+            repository_root: None,
+            registry_dir: None,
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn evidence_bundle_check_rejects_missing_normalized_member() -> TestResult {
+        let (_temp, config) = evidence_bundle_fixture()?;
+        evidence_bundle_write(config.clone())?;
+        fs::remove_file(config.output_dir.join("normalized").join("compile.json"))?;
+        let error = evidence_bundle_check(EvidenceBundleCheckConfig {
+            bundle_dir: config.output_dir,
+            repository_root: None,
+            registry_dir: None,
+        })
+        .expect_err("missing compile evidence must fail closed");
+        if !error.to_string().contains("compile.json") {
+            bail!("missing member error did not identify the durable artifact: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn evidence_bundle_check_rejects_digest_mismatch() -> TestResult {
+        let (_temp, config) = evidence_bundle_fixture()?;
+        evidence_bundle_write(config.clone())?;
+        fs::write(config.output_dir.join("normalized").join("parse.json"), b"{}")?;
+        let error = evidence_bundle_check(EvidenceBundleCheckConfig {
+            bundle_dir: config.output_dir,
+            repository_root: None,
+            registry_dir: None,
+        })
+        .expect_err("changed evidence must fail its digest check");
+        if !error.to_string().contains("changed after indexing") {
+            bail!("digest mismatch error was not explicit: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn publication_lineage_allowlist_rejects_measured_code_changes() -> TestResult {
+        validate_publication_paths(&[
+            ".ci/perl-core-harness/base-series.json".into(),
+            "docs/project/status/compiler.md".into(),
+        ])?;
+        let error = validate_publication_paths(&["crates/perl-parser/src/lib.rs".into()])
+            .expect_err("measured code changes must invalidate publication lineage");
+        if !error.to_string().contains("measured or unapproved") {
+            bail!("publication allowlist error was not explicit: {error}");
+        }
+        Ok(())
     }
 }

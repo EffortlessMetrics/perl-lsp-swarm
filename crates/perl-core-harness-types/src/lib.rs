@@ -19,6 +19,8 @@ pub const RUNNER_RECORD_SCHEMA_VERSION: &str = "perl_core_harness.runner_record.
 pub const COMPARISON_SERIES_SCHEMA_VERSION: &str = "perl_core_harness.comparison_series.v1";
 pub const SERIES_MANIFEST_SCHEMA_VERSION: &str = COMPARISON_SERIES_SCHEMA_VERSION;
 pub const SERIES_MANIFEST_NORMALIZATION_VERSION: &str = "path-normalization.v1";
+pub const EVIDENCE_BUNDLE_SCHEMA_VERSION: &str = "perl_core_harness.evidence_bundle.v1";
+pub const EVIDENCE_REPRODUCTION_SCHEMA_VERSION: &str = "perl_core_harness.evidence_reproduction.v1";
 
 /// Upstream Perl test scheduler to query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
@@ -204,6 +206,262 @@ pub struct CompileBaselineV2 {
     pub file_results: Vec<RunFileResult>,
     pub semantic_boundaries: Vec<ObservedSemanticBoundary>,
     pub boundary_retirements: Vec<BoundaryRetirement>,
+}
+
+/// A durable artifact class referenced by an upstream evidence bundle.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceArtifactKind {
+    /// Immutable comparison-series manifest.
+    ComparisonSeries,
+    /// Preparation receipt for the pinned upstream tree.
+    PreparationReceipt,
+    /// Raw discovery output retained as diagnostic evidence.
+    DiscoveryRaw,
+    /// Normalized discovery report used for authority.
+    DiscoveryNormalized,
+    /// Parse-mode report.
+    ParseReport,
+    /// Compile-mode report.
+    CompileReport,
+    /// Optional execute-mode report.
+    ExecuteReport,
+    /// Normalized upstream runner records.
+    RunnerRecords,
+    /// Explicit semantic-boundary inventory.
+    SemanticBoundaries,
+    /// Bucketed gap map.
+    GapMap,
+    /// Structural smoke report.
+    SmokeReport,
+    /// Candidate baseline before acceptance.
+    BaselineCandidate,
+    /// Accepted baseline.
+    BaselineAccepted,
+    /// Deterministic direct-reproduction descriptor.
+    Reproduction,
+}
+
+impl EvidenceArtifactKind {
+    /// Stable machine-readable name.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ComparisonSeries => "comparison_series",
+            Self::PreparationReceipt => "preparation_receipt",
+            Self::DiscoveryRaw => "discovery_raw",
+            Self::DiscoveryNormalized => "discovery_normalized",
+            Self::ParseReport => "parse_report",
+            Self::CompileReport => "compile_report",
+            Self::ExecuteReport => "execute_report",
+            Self::RunnerRecords => "runner_records",
+            Self::SemanticBoundaries => "semantic_boundaries",
+            Self::GapMap => "gap_map",
+            Self::SmokeReport => "smoke_report",
+            Self::BaselineCandidate => "baseline_candidate",
+            Self::BaselineAccepted => "baseline_accepted",
+            Self::Reproduction => "reproduction",
+        }
+    }
+
+    /// Stable filename used under a bundle's normalized evidence directory.
+    pub const fn filename(self) -> &'static str {
+        match self {
+            Self::ComparisonSeries => "comparison-series.json",
+            Self::PreparationReceipt => "preparation-receipt.json",
+            Self::DiscoveryRaw => "discovery-raw.bin",
+            Self::DiscoveryNormalized => "discovery.json",
+            Self::ParseReport => "parse.json",
+            Self::CompileReport => "compile.json",
+            Self::ExecuteReport => "execute.json",
+            Self::RunnerRecords => "runner-records.jsonl",
+            Self::SemanticBoundaries => "semantic-boundaries.json",
+            Self::GapMap => "gap-map.json",
+            Self::SmokeReport => "smoke.json",
+            Self::BaselineCandidate => "baseline-candidate.json",
+            Self::BaselineAccepted => "baseline-accepted.json",
+            Self::Reproduction => "reproduction.json",
+        }
+    }
+
+    /// Artifacts required for a complete parse/compile acceptance bundle.
+    pub const fn required() -> &'static [Self] {
+        &[
+            Self::ComparisonSeries,
+            Self::PreparationReceipt,
+            Self::DiscoveryRaw,
+            Self::DiscoveryNormalized,
+            Self::ParseReport,
+            Self::CompileReport,
+            Self::RunnerRecords,
+            Self::SemanticBoundaries,
+            Self::GapMap,
+            Self::SmokeReport,
+            Self::BaselineCandidate,
+            Self::BaselineAccepted,
+            Self::Reproduction,
+        ]
+    }
+}
+
+impl fmt::Display for EvidenceArtifactKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Retention class for a bundle artifact.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceRetentionClass {
+    /// Normalized evidence committed with the repository.
+    Committed,
+    /// Large diagnostic output retained outside the repository.
+    Diagnostic,
+}
+
+/// Visibility classification for an evidence artifact.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceVisibility {
+    /// Safe for the normalized public packet.
+    Public,
+    /// Diagnostic evidence that may contain private execution details.
+    Private,
+    /// Redacted before publication.
+    Redacted,
+}
+
+/// Lifecycle state of a bundle's authority.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceBundleLifecycle {
+    /// Measurement packet not yet attached to a publication commit.
+    Measurement,
+    /// Publication identity has been mechanically verified.
+    Published,
+    /// Landed identity has been recorded after merge.
+    Landed,
+    /// Historical packet that is readable but not active authority.
+    Historical,
+}
+
+/// Completeness state for the normalized evidence packet.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceCompleteness {
+    /// All required artifacts and normalized authority are present.
+    Complete,
+    /// One or more required artifacts are missing.
+    Incomplete,
+}
+
+/// One content-addressed artifact entry in an evidence bundle.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceArtifact {
+    /// Artifact class.
+    pub kind: EvidenceArtifactKind,
+    /// Stable bundle-relative path; never a host filesystem path.
+    pub logical_path: String,
+    /// SHA-256 digest of the source bytes.
+    pub content_digest: String,
+    /// Source byte length.
+    pub size_bytes: u64,
+    /// Repository or external retention class.
+    pub retention: EvidenceRetentionClass,
+    /// Public/private/redacted classification.
+    pub visibility: EvidenceVisibility,
+    /// Whether the source was available when the measurement ran.
+    pub available_at_measurement: bool,
+}
+
+/// Completeness and claim boundary attached to a bundle.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceBundleCompleteness {
+    /// Complete or incomplete status.
+    pub status: EvidenceCompleteness,
+    /// Required artifact classes for this bundle.
+    pub required_artifacts: Vec<EvidenceArtifactKind>,
+    /// Required classes absent from the packet.
+    pub missing_artifacts: Vec<EvidenceArtifactKind>,
+    /// Whether normalized evidence is sufficient after raw artifact expiry.
+    pub normalized_authority: bool,
+    /// Explicit claim boundary, such as `parse_compile_acceptance`.
+    pub claim_boundary: String,
+}
+
+/// Separate Git identities for measurement, publication, and landing.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceBundleLineage {
+    /// Repository state whose compiler and harness were executed.
+    pub measurement_sha: String,
+    /// Evidence-only publication state, once verified.
+    pub publication_sha: Option<String>,
+    /// Final merged state, which may be a squash descendant.
+    pub landed_sha: Option<String>,
+}
+
+/// Content-addressed index for one accepted upstream evidence bundle.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceBundleIndex {
+    /// Versioned bundle schema.
+    pub schema_version: String,
+    /// Stable caller-declared bundle identity.
+    pub bundle_id: String,
+    /// Digest of the canonical index contents excluding this field.
+    pub bundle_digest: String,
+    /// Comparison-series identity.
+    pub series_id: String,
+    /// Exact normalized denominator hash.
+    pub manifest_hash: String,
+    /// Repository commit retained by the series.
+    pub repository_commit: String,
+    /// Selected profile and upstream runner.
+    pub profile: HarnessProfile,
+    pub runner: HarnessRunner,
+    /// Requested and resolved Perl identities.
+    pub perl_requested_ref: String,
+    pub perl_resolved_ref: String,
+    /// Preparation identity copied from the series.
+    pub preparation_receipt_id: String,
+    pub preparation_receipt_digest: String,
+    /// Measured subject identities copied from the series.
+    pub compiler_subject_identity: String,
+    pub invocation_identity: String,
+    pub capability_identity: String,
+    pub environment_identity: String,
+    /// Measurement/publication/landing lineage.
+    pub lineage: EvidenceBundleLineage,
+    /// Artifact inventory.
+    pub artifacts: Vec<EvidenceArtifact>,
+    /// Completeness and claim boundary.
+    pub completeness: EvidenceBundleCompleteness,
+    /// Current authority lifecycle.
+    pub lifecycle: EvidenceBundleLifecycle,
+    /// Creation timestamp.
+    pub created_at: String,
+}
+
+/// Deterministic direct-reproduction descriptor stored in a bundle.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceReproductionDescriptor {
+    /// Versioned reproduction schema.
+    pub schema_version: String,
+    /// Series reproduced by the commands.
+    pub series_id: String,
+    /// Profile and modes covered.
+    pub profile: HarnessProfile,
+    pub modes: Vec<HarnessMode>,
+    /// Explicit commands with no reliance on PR prose.
+    pub commands: Vec<String>,
+    /// Subject identity expected by the reproduction.
+    pub compiler_subject_identity: String,
+    /// Whether the commands are deterministic for the declared inputs.
+    pub deterministic: bool,
 }
 
 /// One upstream test discovered by `--dumptests`.
