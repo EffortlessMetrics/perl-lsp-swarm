@@ -900,6 +900,14 @@ impl SymbolExtractor {
                 }
             }
 
+            // Heredocs with interpolation: extract variable references from the
+            // body content, mirroring the String arm. (#5081)
+            NodeKind::Heredoc { content, interpolated, .. } => {
+                if *interpolated {
+                    self.extract_vars_from_string(content, node.location);
+                }
+            }
+
             NodeKind::Use { module, args, .. } => {
                 self.update_framework_context(module, args);
                 if module == "Const::Fast" {
@@ -1148,7 +1156,6 @@ impl SymbolExtractor {
 
             // Leaf nodes - no children to visit
             NodeKind::Number { .. }
-            | NodeKind::Heredoc { .. }
             | NodeKind::Undef
             | NodeKind::Diamond
             | NodeKind::Ellipsis
