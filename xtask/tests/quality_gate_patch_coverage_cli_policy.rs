@@ -22,13 +22,13 @@ fn coverage_how_to_documents_patch_gate_cli_guidance() -> TestResult {
         coverage_doc.contains(
             "cargo xtask coverage-baseline --lcov target/lcov.info --receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml --patch-coverage <patch-percent>"
         ),
-        "coverage how-to must show the rtk-prefixed coverage receipt command"
+        "coverage how-to must show the direct coverage receipt command"
     );
     assert!(
         coverage_doc.contains(
             "cargo xtask quality-gate --mode enforce-patch-coverage --coverage-receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml"
         ),
-        "coverage how-to must show the rtk-prefixed patch quality-gate command"
+        "coverage how-to must show the direct patch quality-gate command"
     );
     assert!(
         coverage_doc.contains("patch_coverage_unknown")
