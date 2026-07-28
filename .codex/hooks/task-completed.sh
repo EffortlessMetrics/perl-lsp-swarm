@@ -35,7 +35,7 @@ elif ! git rev-parse HEAD~1 &>/dev/null 2>&1 && git ls-files -- '*.rs' 2>/dev/nu
 fi
 
 if [[ "${HAS_RS_DIFF}" -eq 1 ]]; then
-  if ! (cargo xtask fmt --check 2>/dev/null || cargo fmt --check 2>/dev/null); then
+  if ! cargo xtask fmt --check 2>/dev/null; then
     echo "Task completion blocked: cargo fmt check failed. Run 'cargo xtask fmt' before marking complete."
     exit 2
   fi
