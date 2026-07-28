@@ -2770,8 +2770,14 @@ impl<'a> PerlLexer<'a> {
 
     #[inline]
     fn unterminated_string_error(&mut self, start: usize) -> Token {
-        // Consume to EOF so the caller receives a single terminal error token.
-        let end = self.input.len();
+        // Line-bounded recovery: consume to end of line (or EOF if no newline).
+        // This allows subsequent declarations to be lexed after an unterminated
+        // string on the same line, instead of losing the entire rest of the file. (#5090)
+        let remaining = &self.input[start..];
+        let end = match remaining.find('\n') {
+            Some(nl_offset) => start + nl_offset, // include the newline in the error token
+            None => self.input.len(),             // single-line file or last line
+        };
         self.position = end;
 
         Token {

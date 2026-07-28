@@ -817,6 +817,15 @@ impl LspServer {
         resolve_code_lens(lens, reference_count)
     }
 
+    /// Count references for a code lens. Uses three fallback tiers:
+    /// 1. Workspace index `count_usages` (cross-file, deduped, authoritative when available)
+    /// 2. Per-document AST `count_references` (single-file, NodeKind-aware)
+    /// 3. Text-based `count_references_text_based` (regex fallback, may over/under-count)
+    ///
+    /// These tiers are NOT semantically equivalent and may produce different counts
+    /// for the same symbol. This is a known limitation tracked in #5079.
+    /// Unifying them requires refactoring the indexing pipeline to guarantee
+    /// synchronous index availability before codeLens resolution.
     fn count_code_lens_references(
         &self,
         symbol_name: &str,
