@@ -172,7 +172,9 @@ impl<R: perl_subprocess_runtime::SubprocessRuntime> FormattingProvider<R> {
         start_line: usize,
         end_line: usize,
     ) -> Result<FormattedDocument, FormattingError> {
-        let text_to_format = lines[start_line..=end_line].join("\n");
+        // Detect line ending to preserve CRLF (#5075)
+        let line_ending = if content.contains("\r\n") { "\r\n" } else { "\n" };
+        let text_to_format = lines[start_line..=end_line].join(line_ending);
         let formatted = self.run_perltidy(&text_to_format, options)?;
 
         if formatted == text_to_format {
@@ -396,9 +398,11 @@ fn whitespace_range_fallback(
         return FormattedDocument { text: content.to_string(), edits: vec![] };
     }
 
-    let text_to_format = lines[start_line..=end_line].join("\n");
+    // Detect line ending to preserve CRLF (#5075)
+    let line_ending = if content.contains("\r\n") { "\r\n" } else { "\n" };
+    let text_to_format = lines[start_line..=end_line].join(line_ending);
     let raw = apply_lsp_whitespace_options(&text_to_format, options);
-    let formatted = raw.trim_end_matches('\n').to_string();
+    let formatted = raw.trim_end_matches(['\r', '\n']).to_string();
     if formatted == text_to_format {
         return FormattedDocument { text: content.to_string(), edits: vec![] };
     }
