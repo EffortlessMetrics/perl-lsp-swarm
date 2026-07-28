@@ -1370,15 +1370,25 @@ impl LspServer {
                     semantic_shadow_receipt,
                 );
 
-                // Snapshot capability flags once before the loop to avoid
-                // acquiring client_capabilities lock per completion item
-                let client_caps = self.client_capabilities.lock();
-                let snippet_support = client_caps.snippet_support;
-                let commit_chars_support = client_caps.completion_commit_characters_support;
-                let label_details_support = client_caps.label_details_support;
-                let item_defaults_data_support =
-                    client_caps.completion_list_item_defaults_data_support;
-                let apply_kind_support = client_caps.completion_list_apply_kind_support;
+                // Snapshot capability flags once and drop the lock immediately
+                // to avoid holding client_capabilities Mutex across the full
+                // completion-item serialization loop. (PERF-7)
+                let (
+                    snippet_support,
+                    commit_chars_support,
+                    label_details_support,
+                    item_defaults_data_support,
+                    apply_kind_support,
+                ) = {
+                    let client_caps = self.client_capabilities.lock();
+                    (
+                        client_caps.snippet_support,
+                        client_caps.completion_commit_characters_support,
+                        client_caps.label_details_support,
+                        client_caps.completion_list_item_defaults_data_support,
+                        client_caps.completion_list_apply_kind_support,
+                    )
+                };
 
                 let items: Vec<Value> = completions
                     .into_iter()
