@@ -2789,12 +2789,12 @@ fn compare_baseline_v2_with_identities(
         file_results: baseline.file_results.clone(),
         semantic_boundaries: Some(baseline.semantic_boundaries.clone()),
     };
-    let allow_boundary_transition = transition_id.is_some_and(|value| !value.trim().is_empty());
-    violations.extend(compare_baseline(&legacy, report).violations.into_iter().filter(
-        |violation| {
-            !allow_boundary_transition || violation.kind != BaselineViolationKind::SemanticBoundary
-        },
-    ));
+    violations.extend(
+        compare_baseline(&legacy, report)
+            .violations
+            .into_iter()
+            .filter(|violation| violation.kind != BaselineViolationKind::SemanticBoundary),
+    );
     violations.extend(compare_boundary_transition(
         baseline,
         &report.semantic_boundaries,
@@ -4815,6 +4815,32 @@ mod tests {
         report.semantic_boundaries.push(sample_semantic_boundary());
         let comparison = compare_baseline_v2(&baseline, &report, &series);
         assert_violation(&comparison, BaselineViolationKind::SemanticBoundary);
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_reports_boundary_change_once_without_transition() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let baseline = baseline_v2_from_report(
+            &sample_compile_report(),
+            &series,
+            &sample_baseline_v2_config(),
+            None,
+            &[],
+        )?;
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+
+        let comparison = compare_baseline_v2(&baseline, &report, &series);
+        let boundary_violations = comparison
+            .violations
+            .iter()
+            .filter(|violation| violation.kind == BaselineViolationKind::SemanticBoundary)
+            .count();
+        if boundary_violations != 1 {
+            bail!("expected one semantic-boundary violation, found {boundary_violations}");
+        }
         Ok(())
     }
 
