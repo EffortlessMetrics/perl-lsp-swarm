@@ -625,12 +625,32 @@ print("Hello, World!");
     /// An ampersand call must not borrow builtin parameter metadata.
     #[test]
     fn test_amper_call_does_not_produce_builtin_parameter_hints() -> anyhow::Result<()> {
-        let code = "&push(@arr, \"value\");\n";
+        let code = "&push(1, 2);\n";
         let mut parser = Parser::new(code);
         let ast = parser.parse()?;
         let provider = InlayHintsProvider::new(code.to_string());
         let hints = provider.extract(&ast);
         assert!(hints.is_empty(), "unresolved ampersand calls must not use builtin metadata");
+
+        let loc = |start, end| perl_parser::ast::SourceLocation { start, end };
+        let builtin_call = Node::new(
+            perl_parser::ast::NodeKind::FunctionCall {
+                name: "push".to_string(),
+                args: vec![
+                    Node::new(
+                        perl_parser::ast::NodeKind::Number { value: "1".to_string() },
+                        loc(5, 6),
+                    ),
+                    Node::new(
+                        perl_parser::ast::NodeKind::Number { value: "2".to_string() },
+                        loc(8, 9),
+                    ),
+                ],
+            },
+            loc(0, 10),
+        );
+        let builtin_hints = provider.extract(&builtin_call);
+        assert!(!builtin_hints.is_empty(), "bare builtin calls must still produce parameter hints");
         Ok(())
     }
 

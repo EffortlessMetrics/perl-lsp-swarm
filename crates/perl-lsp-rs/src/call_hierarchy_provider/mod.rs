@@ -1118,6 +1118,20 @@ sub target_func {
         Ok(())
     }
 
+    #[test]
+    fn test_find_callable_at_position_amper_call() -> anyhow::Result<()> {
+        let code = "&target_func(1, 2);\n";
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let provider = CallHierarchyProvider::new(code.to_string(), "file:///test.pl".to_string());
+        let item = provider
+            .find_callable_at_position(&ast, 2)
+            .ok_or_else(|| anyhow::anyhow!("expected callable at ampersand-call name"))?;
+        assert_eq!(item.name, "target_func");
+        assert_eq!(item.kind, "function");
+        Ok(())
+    }
+
     /// `&target_func()` at the top level must synthesize a file-level caller.
     #[test]
     fn test_incoming_calls_top_level_amper_call_synthesizes_file_caller() -> anyhow::Result<()> {
