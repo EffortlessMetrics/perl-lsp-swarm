@@ -59,25 +59,33 @@ impl<'a> Parser<'a> {
             // a hash slice, not as `@ops_seen` followed by a block.
             // --------------------------------------------------------------------
             if self.peek_kind() == Some(TokenKind::LeftBrace) {
-                if let NodeKind::Variable { sigil, .. } = &expr.kind {
-                    if sigil == "@" || sigil == "%" {
-                        let is_at = sigil == "@";
-                        self.tokens.next()?; // consume {
-                        let key = self.parse_hash_subscript_key()?;
-                        self.expect_closing_delimiter(TokenKind::RightBrace)?;
+                // Mirror the array-slice branch at the LeftBracket arm: accept both
+                // the named-variable form (@hash / %hash) and the deref-unary form
+                // (@{$ref} / @$ref / %{$ref} / %$ref), which both produce
+                // `Unary { op: "@{}" }` / `Unary { op: "%{}" }` nodes.
+                let is_hash_slice =
+                    matches!(&expr.kind, NodeKind::Variable { sigil, .. } if sigil == "@")
+                        || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "@{}");
+                let is_kv_slice =
+                    matches!(&expr.kind, NodeKind::Variable { sigil, .. } if sigil == "%")
+                        || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "%{}");
+                if is_hash_slice || is_kv_slice {
+                    let is_at = is_hash_slice;
+                    self.tokens.next()?; // consume {
+                    let key = self.parse_hash_subscript_key()?;
+                    self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
-                        let start = expr.location.start;
-                        let end = self.previous_position();
+                    let start = expr.location.start;
+                    let end = self.previous_position();
 
-                        record_postfix_layer()?;
-                        let kind = if is_at {
-                            NodeKind::HashSlice { target: Box::new(expr), keys: Box::new(key) }
-                        } else {
-                            NodeKind::KeyValueSlice { target: Box::new(expr), keys: Box::new(key) }
-                        };
-                        expr = Node::new(kind, SourceLocation { start, end });
-                        continue;
-                    }
+                    record_postfix_layer()?;
+                    let kind = if is_at {
+                        NodeKind::HashSlice { target: Box::new(expr), keys: Box::new(key) }
+                    } else {
+                        NodeKind::KeyValueSlice { target: Box::new(expr), keys: Box::new(key) }
+                    };
+                    expr = Node::new(kind, SourceLocation { start, end });
+                    continue;
                 }
             }
 

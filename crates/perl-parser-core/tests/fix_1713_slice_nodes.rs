@@ -156,6 +156,85 @@ fn arrow_array_subscript_still_uses_binary_node() {
     assert!(ks.contains(&"Binary"), "$ref->[0] must remain Binary, got: {ks:?}");
 }
 
+// ── Deref hash-slice forms: @$href{...} / @{$href}{...} / %$href{...} / %{$href}{...} ───
+
+#[test]
+fn deref_hash_slice_unbraced_produces_hash_slice_node() {
+    // @$href{qw(a b)} — unbraced scalar-ref deref then hash subscript
+    let source = r#"my @vals = @$href{qw(a b)};"#;
+    assert_clean_parse(source);
+    let ks = kinds(source);
+    assert!(ks.contains(&"HashSlice"), "expected HashSlice for @$href{{qw(a b)}}, got: {ks:?}");
+    assert!(
+        !ks.contains(&"Binary") || ks.iter().filter(|&&k| k == "Binary").count() == 0,
+        "@$href{{...}} must not produce a Binary node at the slice level, got: {ks:?}"
+    );
+}
+
+#[test]
+fn deref_hash_slice_braced_produces_hash_slice_node() {
+    // @{$href}{qw(a b)} — braced scalar-ref deref then hash subscript
+    let source = r#"my @vals = @{$href}{qw(a b)};"#;
+    assert_clean_parse(source);
+    let ks = kinds(source);
+    assert!(ks.contains(&"HashSlice"), "expected HashSlice for @{{$href}}{{qw(a b)}}, got: {ks:?}");
+}
+
+#[test]
+fn deref_kv_slice_unbraced_produces_key_value_slice_node() {
+    // %$href{qw(a b)} — unbraced scalar-ref deref then key-value slice
+    let source = r#"my %sub = %$href{qw(a b)};"#;
+    assert_clean_parse(source);
+    let ks = kinds(source);
+    assert!(
+        ks.contains(&"KeyValueSlice"),
+        "expected KeyValueSlice for %$href{{qw(a b)}}, got: {ks:?}"
+    );
+}
+
+#[test]
+fn deref_kv_slice_braced_produces_key_value_slice_node() {
+    // %{$href}{qw(a b)} — braced scalar-ref deref then key-value slice
+    let source = r#"my %sub = %{$href}{qw(a b)};"#;
+    assert_clean_parse(source);
+    let ks = kinds(source);
+    assert!(
+        ks.contains(&"KeyValueSlice"),
+        "expected KeyValueSlice for %{{$href}}{{qw(a b)}}, got: {ks:?}"
+    );
+}
+
+#[test]
+fn deref_hash_slice_common_oop_idiom() {
+    // @$self{@fields} — the most common OOP accessor pattern
+    let source = r#"my @vals = @$self{@fields};"#;
+    assert_clean_parse(source);
+    let ks = kinds(source);
+    assert!(ks.contains(&"HashSlice"), "expected HashSlice for @$self{{@fields}}, got: {ks:?}");
+}
+
+#[test]
+fn deref_hash_slice_does_not_affect_arrow_subscript() {
+    // $ref->{key} must remain Binary (not HashSlice) after the deref-slice fix
+    let source = r#"my $v = $ref->{key};"#;
+    assert_clean_parse(source);
+    let ks = kinds(source);
+    assert!(!ks.contains(&"HashSlice"), "$ref->{{key}} must NOT produce HashSlice, got: {ks:?}");
+    assert!(ks.contains(&"Binary"), "$ref->{{key}} must remain Binary, got: {ks:?}");
+}
+
+#[test]
+fn deref_hash_slice_does_not_affect_scalar_element_access() {
+    // $$href{key} (scalar deref element, not a slice) must remain Binary
+    let source = r#"my $v = $$href{key};"#;
+    assert_clean_parse(source);
+    let ks = kinds(source);
+    assert!(
+        !ks.contains(&"HashSlice") && !ks.contains(&"KeyValueSlice"),
+        "$$href{{key}} scalar deref must NOT produce HashSlice/KeyValueSlice, got: {ks:?}"
+    );
+}
+
 // ── Real-world idioms ─────────────────────────────────────────────────────────
 
 #[test]
