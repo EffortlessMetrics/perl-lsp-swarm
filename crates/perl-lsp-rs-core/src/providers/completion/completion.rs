@@ -1163,10 +1163,9 @@ impl CompletionProvider {
         // scalar reference. We handle this by treating `$ref->{` the same as
         // `$ref{` for key collection — collect_hash_keys_from_source scans both
         // `%ref = (...)` and `$ref->{key} =` patterns. (#5074)
-        // Previously this returned None (bail-out). Now we fall through and let
-        // the existing key-collection logic serve the hashref case too.
-        let is_hashref = brace_pos >= 2
-            && source.as_bytes().get(brace_pos - 2..brace_pos) == Some(b"->");
+        // Previously this returned None (bail-out) when `->` was present. That
+        // bail-out is gone, so there is deliberately no `->` test here — both
+        // forms fall through to the same key-collection path below.
 
         // Extract the variable name: scan backward from `{` looking for `$word`.
         let before_brace = before[..brace_pos].trim_end();

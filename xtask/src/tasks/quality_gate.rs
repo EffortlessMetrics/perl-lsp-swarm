@@ -1814,8 +1814,7 @@ fn quality_gate_command(args: &QualityGateArgs, check: bool, patch: Option<f64>)
 }
 
 fn ripr_plus_command(args: &QualityGateArgs, check: bool) -> String {
-    let mut command =
-        format!("cargo xtask ripr-plus --receipt {}", args.ripr_receipt.display());
+    let mut command = format!("cargo xtask ripr-plus --receipt {}", args.ripr_receipt.display());
     if check {
         command.push_str(" --check");
     }
