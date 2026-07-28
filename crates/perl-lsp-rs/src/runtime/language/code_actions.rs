@@ -611,8 +611,7 @@ impl LspServer {
                         let Some(fix) = finding.fix.as_ref() else {
                             continue;
                         };
-                        if fix.safety != crate::perl_critic::FixSafety::Safe
-                            || fix.edits.is_empty()
+                        if fix.safety != crate::perl_critic::FixSafety::Safe || fix.edits.is_empty()
                         {
                             continue;
                         }
@@ -649,13 +648,7 @@ impl LspServer {
                                     "start": {"line": start_line, "character": start_char},
                                     "end": {"line": end_line, "character": end_char},
                                 },
-                                "severity": match finding.severity {
-                                    crate::perl_critic::Severity::Gentle => 1, // Error
-                                    crate::perl_critic::Severity::Stern |
-                                    crate::perl_critic::Severity::Harsh => 2, // Warning
-                                    crate::perl_critic::Severity::Cruel => 3, // Information
-                                    crate::perl_critic::Severity::Brutal => 4, // Hint
-                                },
+                                "severity": finding.severity.to_diagnostic_severity(),
                                 "code": finding.rule_id.clone(),
                                 "source": "perl-lsp",
                                 "message": finding.message.clone(),
@@ -698,13 +691,7 @@ impl LspServer {
                                         "start": {"line": start_line, "character": start_char},
                                         "end": {"line": end_line, "character": end_char},
                                     },
-                                    "severity": match violation.severity {
-                                        crate::perl_critic::Severity::Gentle => 1, // Error
-                                        crate::perl_critic::Severity::Stern |
-                                        crate::perl_critic::Severity::Harsh => 2, // Warning
-                                        crate::perl_critic::Severity::Cruel => 3, // Information
-                                        crate::perl_critic::Severity::Brutal => 4, // Hint
-                                    },
+                                        "severity": violation.severity.to_diagnostic_severity(),
                                     "code": violation.policy.clone(),
                                     "source": "Perl::Critic",
                                     "message": violation.description.clone()
