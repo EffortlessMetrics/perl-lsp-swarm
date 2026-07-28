@@ -38,8 +38,8 @@ For each bot comment / CI failure / review conversation:
 3. **Prove it** — re-run the relevant check/test
 4. **Reply with a machine-readable disposition** — BEFORE resolving,
    post a reply on the thread carrying the canonical format (see
-   [.Codex/reference/review-convergence.md § Disposition-reply
-   convention](../reference/review-convergence.md#disposition-reply-convention-before-calling-resolvereviewthread)):
+   [.claude/reference/review-convergence.md § Disposition-reply
+   convention](../../.claude/reference/review-convergence.md#disposition-reply-convention-before-calling-resolvereviewthread)):
    ```
    Disposition: fixed | refuted | superseded | follow-up
    Evidence: <commit sha + test name>  /  <file:line + why>  /  <superseding head sha + seam>  /  <issue #N + why non-blocking>
@@ -55,7 +55,7 @@ For each bot comment / CI failure / review conversation:
    `check-pr-review-convergence`.
 6. **Verify review convergence** before treating the PR as ready — run the
    canonical review-convergence check (see
-   [.Codex/reference/review-convergence.md](../reference/review-convergence.md)):
+   [.claude/reference/review-convergence.md](../../.claude/reference/review-convergence.md)):
    `scripts/ci/check-pr-review-convergence <N>`. Do not reproduce or modify
    its query locally.
 
@@ -66,7 +66,7 @@ For each bot comment / CI failure / review conversation:
 - **Reply with the canonical disposition** — every thread reply carries `Disposition:` and `Evidence:` per the convention, e.g. `"Disposition: fixed\nEvidence: <commit-sha> + test <name>"` for a title fix (`(#NNN)` added, CI re-run confirms); `"Disposition: refuted\nEvidence: <file:line>: <reasoning>"` for a refute.
 - **Resolve conversations for a reason, never performatively.** Post the
   `Disposition:`/`Evidence:` reply (see
-  [.Codex/reference/review-convergence.md](../reference/review-convergence.md#disposition-reply-convention-before-calling-resolvereviewthread))
+  [.claude/reference/review-convergence.md](../../.claude/reference/review-convergence.md#disposition-reply-convention-before-calling-resolvereviewthread))
   BEFORE calling `resolveReviewThread`. Never resolve a thread just to
   clear it — zero-reply resolution is the resolved-to-clear anti-pattern
   #3647 shipped 6 live P1s through. The `resolved_without_disposition`

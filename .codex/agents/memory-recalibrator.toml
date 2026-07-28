@@ -41,7 +41,7 @@ Don't dispatch if:
 ## What you read
 
 - **`docs/forensics/`** — every file. Look for date-stamped files older than 30 days, calibration percentages without substrate stamps, and references to retired infrastructure.
-- **`C:\Users\steven\.Codex\projects\H--Code-Rust-perl-lsp\memory\feedback_*.md`** — every memory entry. Same staleness signals.
+- **`~/.codex/memories/feedback_*.md`** — operator memory entries outside the repository. Same staleness signals.
 - **`MEMORY.md`** — the memory index. Verify pointer integrity (every entry points to a file that still exists).
 - **`docs/forensics/dispatch-index.toml`** — the prompt-fragment dispatch index. Verify referenced files still exist; flag missing ones.
 - **Current substrate state**: any operator notes in recent sessions about model versions, plan activations, or upstream-research changes.
@@ -171,5 +171,5 @@ You flag for operator decision (higher blast radius or judgment required):
 
 - Substrate state to know about (as of 2026-04-25): Codex 5.5 (replaced 5.4 on 2026-04-24); ChatGPT-Pro + GitHub repo connector for upstream research; Anthropic-mostly downstream (Sonnet for deep-review, Haiku for ladder); GLM/Fireworks/Minimax/OpenCode plans configured but not activated.
 - Known stale calibration candidates as of this agent's creation (2026-04-25): `feedback_research_verifier_roi.md` 6.3% scout-error rate, `feedback_codex_ensemble_pattern.md` ratios, `feedback_deep_review_bug_catch_roi.md` near-100% catch rate. All measured against 5.4-era substrate.
-- Don't recalibrate the agent definitions in `.Codex/agents/` directly — those have a different lifecycle (they're versioned with the methodology, not the substrate). Flag for operator if an agent definition references a stale calibration in its prose.
+- Don't recalibrate the agent definitions in `.codex/agents/` directly — those have a different lifecycle (they're versioned with the methodology, not the substrate). Flag for operator if an agent definition references a stale calibration in its prose.
 - The dispatch index (`docs/forensics/dispatch-index.toml`) is your primary integrity-check target. Every situation_id should point to fragments that exist; every fragment listed should be loadable.'''

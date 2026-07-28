@@ -59,9 +59,10 @@ requires explanation.
 ### When to run the spec-builder workflow
 
 For **non-trivial** issues (new feature, new protocol surface, shared interface change, recurring bug
-class fix): invoke the `spec-builder` workflow (`.Codex/workflows/spec-builder.js`) to populate
-§Hazards, §Contracts, §API-Shape, §Test-Grid, and §Blast-Radius from six parallel haiku angles before
-writing the final acceptance.md. The workflow args are `{ issue, subsystem, risk }`.
+class fix): populate §Hazards, §Contracts, §API-Shape, §Test-Grid, and §Blast-Radius from multiple
+read-only planning angles before writing the final acceptance.md. No repository-local `spec-builder`
+workflow is currently present, so record that capability as unavailable rather than invoking a guessed
+path.
 
 For **trivial** issues (one-line constant, typo, docs-only, fmt fix): populate sections manually and
 mark non-applicable rows N/A with a reason. Running the full workflow is overkill for genuinely small
@@ -102,7 +103,7 @@ Derive the short description from the issue title (lowercase, hyphens, no specia
 2. **Create from main:** `git checkout -b impl/<issue#>-<specslug> origin/main`
 3. **Write spec files on the branch:**
    - `.spec/<issue#>-<specslug>/checklist.md` — ordered implementation steps with exact file paths, signatures, and verify commands. See `docs/reference/SPEC_TEMPLATE.md` for the checklist format.
-   - `.spec/<issue#>-<specslug>/acceptance.md` — ALL six required sections (§Behavior, §Hazards, §Contracts, §API-Shape, §Test-Grid, §Blast-Radius) per `docs/reference/SPEC_TEMPLATE.md`. The spec-builder workflow populates §Hazards through §Blast-Radius for non-trivial issues.
+   - `.spec/<issue#>-<specslug>/acceptance.md` — ALL six required sections (§Behavior, §Hazards, §Contracts, §API-Shape, §Test-Grid, §Blast-Radius) per `docs/reference/SPEC_TEMPLATE.md`. Multiple read-only planning angles populate §Hazards through §Blast-Radius for non-trivial issues.
    - `.spec/<issue#>-<specslug>/context.md` — key decisions, alternatives rejected, prior-art scan result, and links (PARSER_CONTRACTS.md sections, docs/concepts, docs/learnings, related issues).
 4. **Commit:** `git add .spec/ && git commit -m "plan(<crate>): add implementation spec for #<issue>"`
 5. **Push:** `git push -u origin impl/<issue#>-<specslug>`
@@ -142,7 +143,7 @@ The builder checks out the same branch (now with spec + red tests), implements, 
 ```
 1. /spec-planner-read — read the issue, plan-review comments, and any verification comments
 2. /spec-planner-verify — grep/read to confirm all paths, functions, and signatures exist
-3. /spec-planner-plan — produce the ordered implementation checklist + rich acceptance.md (invoke spec-builder workflow for non-trivial issues)
+3. /spec-planner-plan — produce the ordered implementation checklist + rich acceptance.md (use multiple read-only planning angles for non-trivial issues)
 4. /spec-planner-branch — create branch, commit plan, push
 5. /spec-planner-comment — post the checklist as an issue comment with branch name
 6. /agent-wrapup — retrospective and handoff

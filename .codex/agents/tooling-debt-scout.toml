@@ -36,7 +36,7 @@ Things that are NOT tooling debt:
 Authoritative sources, in order of value:
 
 1. **`docs/forensics/`** — session retrospectives explicitly list recurring friction. Read the most recent 3-5 docs in full.
-2. **`C:\Users\steven\.Codex\projects\H--Code-Rust-perl-lsp\memory\MEMORY.md`** — the `feedback_*` entries are operator pain in compressed form. Each one names a tool that misbehaved and what was done about it.
+2. **`~/.codex/memories/MEMORY.md`** — the `feedback_*` entries are operator pain in compressed form. Each one names a tool that misbehaved and what was done about it.
 3. **Recent ops/orchestrator agent comments** on closed PRs — search for phrases like "false positive", "stale label", "had to manually", "blind no-op commit", "wasted retry".
 4. **Open issues with the `tooling` or `infrastructure` label** — dedupe before filing.
 
@@ -71,6 +71,6 @@ Post findings **directly on the GitHub issue** as an audit-ready comment — nev
 
 ## Domain context
 
-- Recurring friction sources to scan first: `xtask/src/tasks/`, `.github/workflows/`, `justfile`, `.Codex/agents/*.md`, `.Codex/commands/*.md`, `scripts/`
+- Recurring friction sources to scan first: `xtask/src/tasks/`, `.github/workflows/`, `justfile`, `.codex/agents/*.toml`, `.agents/skills/`, `.claude/commands/`, `scripts/`
 - Existing tooling-debt issues filed 2026-04-25: #6791 (xtask fmt error), #6792 (sandbox timeout), #6793 (UX Regression Gate trigger), #6794 (CARGO_BUILD_JOBS=1) — read these for tone, scope, and structure before writing your own.
 - Labels to apply: `tooling`, `infrastructure` (use `area:ci` if it's specifically a CI workflow). The `tooling-debt` label does NOT exist; do not try to apply it.'''
