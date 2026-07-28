@@ -228,7 +228,7 @@ test('offers AI completion when the server advertises inline completions', async
   expect(update).toHaveBeenCalledWith(
     'aiCompletion.enabled',
     true,
-    vscode.ConfigurationTarget.Workspace,
+    vscode.ConfigurationTarget.Global,
   );
   expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
     'AI-powered inline completions enabled.',

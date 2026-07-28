@@ -14,14 +14,14 @@ Code settings UI.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `perl-lsp.aiCompletion.enabled` | boolean | `false` | Enable AI-powered inline completions. |
-| `perl-lsp.aiCompletion.streaming.enabled` | boolean | `true` | Enable progressive streaming (ghost text updates as tokens arrive). Requires `aiCompletion.enabled`. |
+| `perl-lsp.aiCompletion.enabled` | boolean | `false` | Enable AI-powered inline completions. **Machine scope** — cannot be set per-workspace in `.vscode/settings.json`. |
+| `perl-lsp.aiCompletion.streaming.enabled` | boolean | `true` | Enable progressive streaming (ghost text updates as tokens arrive). Requires `aiCompletion.enabled`. **Machine scope.** |
 
 Where each field can be set:
 
 | Channel | Fields it accepts |
 |---------|-------------------|
-| `.perl-lsp.toml` | `enabled`, `provider`, `model` only |
+| `.perl-lsp.toml` | `enabled` only (`false` opt-out; `true` is ignored) |
 | LSP client/server configuration | the complete server field set below |
 | Primary VS Code extension | activation and streaming toggles only — no endpoint or credential surface |
 
@@ -30,10 +30,11 @@ Where each field can be set:
 output bounds, and streaming controls are likewise server-configuration fields,
 not project-config fields.
 
-The project-config row is not durable design: issue #4997 is expected to remove
-the remaining project-side AI authority so a repository cannot activate the
-feature at all. The API key itself is always read from an environment variable;
-it is never stored in settings.
+Project configuration is opt-out only: `enabled = false` can disable AI for a
+repository, while `enabled = true`, `provider`, and `model` are ignored. Users
+must enable AI and choose the provider/model through client settings. The API
+key itself is always read from an environment variable; it is never stored in
+settings.
 
 ## Server Configuration Fields
 
@@ -60,19 +61,22 @@ accepted:
 
 ## Project Config File (`.perl-lsp.toml`)
 
-For editor-agnostic, team-wide defaults, add an `[ai_completion]` section to
-`.perl-lsp.toml` at the workspace root. These values serve as the base layer;
-LSP client settings always override them.
+For editor-agnostic, team-wide policy, add an `[ai_completion]` section to
+`.perl-lsp.toml` at the workspace root. The only honoured project field is
+`enabled = false` (opt-out). Enabling AI or choosing provider/model requires
+user/machine client settings.
 
 ```toml
 [ai_completion]
-enabled = true
-provider = "openai_compat"
-model = "gpt-4o-mini"
+# Opt-out only: set enabled = false to disable AI for this repo.
+# enabled = true is ignored — AI must be turned on in user/machine settings.
+enabled = false
 ```
 
 Only the fields you set will override defaults. Omitted fields retain their
-built-in default values.
+built-in default values. `enabled = true`, `provider`, and `model` in
+`.perl-lsp.toml` are **not honoured** (issue #4997); use client settings to
+enable AI and choose provider/model.
 
 ### Destination and credentials cannot come from `.perl-lsp.toml`
 
@@ -95,15 +99,12 @@ Supply these fields through an LSP client that supports server configuration.
 **The primary VS Code extension currently does not expose that surface** — see
 the known gap below.
 
-> **The client-settings channel is not itself fully hardened yet.** Do not read
-> the above as "these values are safe because they come from the user". In
-> VS Code, `perl-lsp.aiCompletion.enabled` is declared `scope: resource`, which
-> means a workspace or folder can set it, and the extension forwards workspace
-> and folder overrides. So a repository still cannot choose the destination or
-> the credential, but it **can still activate AI completion** against whatever
-> endpoint you configured, sending source code without you opting in for that
-> workspace. Tracked as issue #4997 and is a 0.18.0 blocker; issue #4998 covers
-> the same provenance gap for include paths.
+> **Activation is user/machine-scoped.** `perl-lsp.aiCompletion.enabled` and
+> `perl-lsp.aiCompletion.streaming.enabled` are declared `scope: machine` in
+> the VS Code extension, and the server ignores project attempts to enable AI
+> (issue #4997). A repository can still opt out with `[ai_completion] enabled =
+> false` in `.perl-lsp.toml`. Issue #4998 covers the same provenance gap for
+> include paths.
 
 ## Environment Variables
 
