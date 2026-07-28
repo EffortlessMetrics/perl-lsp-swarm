@@ -51,8 +51,8 @@ perllsp --socket --port 8100
 ```
 
 With a TCP connection, the LSP JSON-RPC protocol runs over the socket instead
-of stdin/stdout. The server accepts one client at a time and exits when the
-connection closes.
+of stdin/stdout. The server keeps listening and spawns a handler per accepted
+connection; it does not exit when a client disconnects.
 
 ---
 
@@ -72,8 +72,11 @@ perllsp --socket --port 9257 --log
 
 ### Filter verbosity with `RUST_LOG` / `PERL_LSP_LOG`
 
-Both environment variables set the tracing filter; `PERL_LSP_LOG` takes
-precedence over `RUST_LOG`. The filter syntax is the standard `tracing`
+Both environment variables can enable logging. `PERL_LSP_LOG` is preferred over
+`RUST_LOG` when the runtime selects a default filter, but if `RUST_LOG` is
+already set in the process environment it still wins at subscriber init
+(`EnvFilter::try_from_default_env()`). Use one variable, or unset `RUST_LOG`
+before relying on `PERL_LSP_LOG`. The filter syntax is the standard `tracing`
 subscriber format — crate-level or module-level:
 
 ```bash
