@@ -30,8 +30,8 @@ perllsp --check lib/MyModule.pm t/basic.t
 ```
 
 Output is always plain text (`path: ok` or `path: FAIL - …` with optional
-context lines). Exit code 0 means no errors. (`--json` currently affects
-`--doctor` only, not `--check`.)
+context lines). Exit code 0 means no errors; a non-zero exit indicates one or
+more diagnostics.
 
 ---
 
@@ -132,7 +132,7 @@ built binary, set `perl-lsp.serverPath` in workspace or user `settings.json`:
 }
 ```
 
-Then run **Perl: Restart Language Server** from the command palette.
+Then run **Restart Perl Language Server** from the command palette.
 
 Socket mode (`--socket --port`) is for manual clients — test harnesses,
 `netcat`, or custom LSP drivers — not for the VS Code language client.

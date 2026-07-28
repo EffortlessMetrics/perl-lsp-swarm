@@ -104,12 +104,14 @@ For stale toolchains or workspace drift, run `just devex` and `just doctor`.
 
 The `just agent-check`, `just agent-test`, `just agent-clippy`, and `just agent-pr-fast`
 commands run through `scripts/cargo-safe`, which sandboxes build artefacts to a per-repo
-devplane cache and guards disk space. Understanding its constraints prevents silent failures
-in constrained environments:
+devplane cache. The compile, test, and lint profiles also guard disk space and serialize
+Cargo builds; `agent-pr-fast` invokes `xtask` and receives the isolated cache, but does not
+enter those disk and build-lock guards. Understanding these constraints prevents silent
+failures in constrained environments:
 
 | Env var | Default | Effect |
 |---------|---------|--------|
-| `DEVPLANE` | `~/.cache/devplane/<repo>` | Root of the isolated build cache (cargo home, target dir, sccache) |
+| `DEVPLANE` | `${XDG_CACHE_HOME:-$HOME/.cache}/devplane/<repo>` | Root of the isolated build cache (cargo home, target dir, sccache) |
 | `CARGO_BUILD_JOBS` | `2` | Parallel cargo jobs — set higher on machines with more cores |
 | `MIN_FREE_GB` | `40` | Minimum free disk space (GiB); script exits 75 if threshold is not met |
 | `MAX_USED_PCT` | `85` | Maximum disk-used percentage; exits 75 if exceeded |
