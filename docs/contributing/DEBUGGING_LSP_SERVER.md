@@ -11,7 +11,7 @@ modes. For debugging Perl programs **via DAP**, see
 | Parse a single file, print diagnostics | `perllsp --check path/to/file.pl` |
 | Run in TCP mode for a manual client | `perllsp --socket --port 9257` |
 | Enable structured logging to stderr | `perllsp --stdio --log` |
-| Filter log output (per-crate level) | `RUST_LOG=perl_lsp_rs=debug perllsp --stdio --log` |
+| Filter log output (per-crate level) | `RUST_LOG=perl_lsp=debug perllsp --stdio --log` |
 | Write logs to a rotating file | `PERL_LSP_LOG_FILE=/tmp/perl-lsp.log perllsp --stdio --log` |
 | Check server health and feature state | `perllsp --health` |
 | Print full version and build info | `perllsp --info` |
@@ -83,8 +83,8 @@ subscriber format — crate-level or module-level:
 # Everything at info level
 RUST_LOG=info perllsp --stdio --log
 
-# Debug logs from the LSP server crate only
-RUST_LOG=perl_lsp_rs=debug perllsp --stdio --log
+# Debug logs from the LSP server crate only (lib name is `perl_lsp`)
+RUST_LOG=perl_lsp=debug perllsp --stdio --log
 
 # Debug for providers, trace for the parser
 RUST_LOG=perl_lsp_rs_core::providers=debug,perl_parser=trace perllsp --stdio --log
