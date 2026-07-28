@@ -71,7 +71,15 @@ describe('language client configuration', () => {
     expect(sendNotification).toHaveBeenCalledWith(
       'workspace/didChangeConfiguration',
       expect.objectContaining({
-        settings: { perl: { workspace: { includePaths: ['workspace/lib'] } } },
+        settings: {
+          perl: {
+            aiCompletion: {
+              enabled: false,
+              streaming: { enabled: true },
+            },
+            workspace: { includePaths: ['workspace/lib'] },
+          },
+        },
       }),
     );
   });
