@@ -72,7 +72,13 @@ impl DocumentHighlightProvider {
 
         // Find all occurrences of this symbol
         let mut highlights = Vec::new();
-        self.collect_highlights_filtered(ast, source, &symbol_info, enclosing_sub_span, &mut highlights);
+        self.collect_highlights_filtered(
+            ast,
+            source,
+            &symbol_info,
+            enclosing_sub_span,
+            &mut highlights,
+        );
 
         // Deduplicate highlights by location, preferring Write over Read
         self.deduplicate_highlights(highlights)
@@ -535,16 +541,10 @@ impl DocumentHighlightProvider {
         None
     }
 
-    /// Collect all highlights for a symbol
-    fn collect_highlights(
-        &self,
-        node: &Node,
-        source: &str,
-        target: &SymbolInfo,
-        highlights: &mut Vec<DocumentHighlight>,
-    ) {
-        self.collect_highlights_with_parent(node, source, target, highlights, None);
-    }
+    // `collect_highlights` (a bare wrapper over `collect_highlights_with_parent`)
+    // was removed here: #5069 routed every caller through
+    // `collect_highlights_filtered`, which calls
+    // `collect_highlights_with_parent` directly in its unscoped branch.
 
     /// Collect highlights, filtering to only those within the enclosing sub span. (#5069)
     fn collect_highlights_filtered(
@@ -557,7 +557,9 @@ impl DocumentHighlightProvider {
     ) {
         // If we have an enclosing sub, filter candidate nodes to its span.
         if let Some((sub_start, sub_end)) = sub_span {
-            self.collect_highlights_with_parent_filtered(node, source, target, highlights, None, sub_start, sub_end);
+            self.collect_highlights_with_parent_filtered(
+                node, source, target, highlights, None, sub_start, sub_end,
+            );
         } else {
             // No enclosing sub (file scope) — highlight all, preserving existing behavior.
             self.collect_highlights_with_parent(node, source, target, highlights, None);
@@ -589,7 +591,9 @@ impl DocumentHighlightProvider {
             && node.location.start >= sub_start
             && node.location.end <= sub_end
         {
-            if let Some(parent_op) = self.find_subscript_parent(node, node.location.start) {
+            // Presence of a subscript parent is the gate; the parent node
+            // itself is not needed here.
+            if self.find_subscript_parent(node, node.location.start).is_some() {
                 let target_sigil_str = target.sigil.as_deref().unwrap_or("");
                 if self.is_cross_sigil_match(sigil, name, target_sigil_str, &target.name, parent) {
                     let kind = self.determine_highlight_kind_with_parent(node, parent);
@@ -602,7 +606,13 @@ impl DocumentHighlightProvider {
         if let Some(children) = self.get_children(node) {
             for child in children {
                 self.collect_highlights_with_parent_filtered(
-                    child, source, target, highlights, Some(node), sub_start, sub_end,
+                    child,
+                    source,
+                    target,
+                    highlights,
+                    Some(node),
+                    sub_start,
+                    sub_end,
                 );
             }
         }
