@@ -175,7 +175,11 @@ export class HealthWidget {
         break;
 
       case 'indexing': {
-        const msg = this._indexingMessage ?? 'Indexing\u2026';
+        let msg = this._indexingMessage ?? 'Indexing\u2026';
+        // Show file count and percentage when available (UX_GAP_1.1)
+        if (this._fileCount !== undefined && this._fileCount > 0) {
+          msg = `Indexing\u2026 (${this._fileCount} files)`;
+        }
         this.item.text = `$(sync~spin) perl-lsp: ${msg}`;
         this.item.tooltip = 'Perl Language Server is indexing your workspace (click for options)';
         this.item.backgroundColor = undefined;
