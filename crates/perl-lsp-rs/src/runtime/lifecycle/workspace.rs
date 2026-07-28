@@ -131,13 +131,7 @@ impl LspServer {
             // a lone .pl file that has a .perl-lsp.toml next to it. (#UX15)
             if let Some(config) = self.discover_single_file_config() {
                 let mut server_config = self.config.lock();
-                let mut workspace_config = WorkspaceConfig::default();
-                if let Some(init_opts) = self.initialization_options_perl_settings.lock().as_ref() {
-                    workspace_config.update_from_value(init_opts);
-                }
                 config.apply_to_server_config(&mut server_config);
-                config.apply_to_workspace_config(&mut workspace_config);
-                *self.config.lock() = server_config;
             }
             return;
         }
