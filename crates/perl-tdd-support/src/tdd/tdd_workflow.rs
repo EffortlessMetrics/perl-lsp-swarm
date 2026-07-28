@@ -7,7 +7,9 @@ use crate::ast::Node;
 
 // Re-use Diagnostic from tdd_basic to avoid duplication
 use crate::tdd_basic::{Diagnostic, DiagnosticSeverity};
-use crate::test_generator::{CoverageReport, TestResults, TestRunner};
+#[allow(deprecated, reason = "workflow still wraps generation runner until #4972")]
+use crate::test_generator::TestRunner;
+use crate::test_generator::{CoverageReport, TestResults};
 use crate::test_generator::{RefactoringSuggester, RefactoringSuggestion};
 use crate::test_generator::{TestCase, TestFramework, TestGenerator};
 use serde::{Deserialize, Serialize};
