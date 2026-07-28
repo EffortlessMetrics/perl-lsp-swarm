@@ -66,6 +66,7 @@ export class HealthWidget {
   private _fileCount: number | undefined = undefined;
   private _errorCount = 0;
   private _indexingMessage: string | undefined = undefined;
+  private _indexingPercentage: number | undefined = undefined;
   private _activeTokens = new Set<ProgressToken>();
   private _version: string | undefined = undefined;
 
@@ -92,6 +93,7 @@ export class HealthWidget {
       case ClientState.Stopped:
         this._activeTokens.clear();
         this._indexingMessage = undefined;
+        this._indexingPercentage = undefined;
         this._setMode('stopped');
         break;
     }
@@ -108,12 +110,14 @@ export class HealthWidget {
         if (payload.message !== undefined) {
           this._indexingMessage = payload.message;
         }
+        this._indexingPercentage = payload.percentage;
         this._render();
       }
     } else if (payload.kind === 'end') {
       this._activeTokens.delete(token);
       if (this._activeTokens.size === 0) {
         this._indexingMessage = undefined;
+        this._indexingPercentage = undefined;
         this._setMode('running');
       }
     }
@@ -179,6 +183,9 @@ export class HealthWidget {
         // Show file count and percentage when available (UX_GAP_1.1)
         if (this._fileCount !== undefined && this._fileCount > 0) {
           msg = `Indexing\u2026 (${this._fileCount} files)`;
+        }
+        if (this._indexingPercentage !== undefined && this._indexingPercentage > 0) {
+          msg += ` ${Math.round(this._indexingPercentage)}%`;
         }
         this.item.text = `$(sync~spin) perl-lsp: ${msg}`;
         this.item.tooltip = 'Perl Language Server is indexing your workspace (click for options)';
