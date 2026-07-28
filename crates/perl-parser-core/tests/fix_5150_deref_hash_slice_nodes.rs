@@ -205,7 +205,7 @@ fn deref_hash_slice_with_complex_subscript_ref() {
 // ── Node structure assertions ─────────────────────────────────────────────────
 
 #[test]
-fn at_deref_hash_slice_node_structure() {
+fn at_deref_hash_slice_node_structure() -> Result<(), String> {
     // @$href{qw(a b)} must be HashSlice { target: Unary{"@{}"}, keys: ... }
     let source = r#"@$href{qw(a b)};"#;
     assert_clean_parse(source);
@@ -214,32 +214,41 @@ fn at_deref_hash_slice_node_structure() {
     // drill to the ExpressionStatement's expression
     let stmt = match ast.kind {
         NodeKind::Program { mut statements } if !statements.is_empty() => statements.swap_remove(0),
-        _ => panic!("Expected Program, got: {}", ast.to_sexp()),
+        _ => return Err(format!("Expected Program, got: {}", ast.to_sexp())),
     };
     let expr = match stmt.kind {
         NodeKind::ExpressionStatement { expression } => *expression,
-        other => panic!("Expected ExpressionStatement, got: {}", other.kind_name()),
+        other => return Err(format!("Expected ExpressionStatement, got: {}", other.kind_name())),
     };
 
     match &expr.kind {
         NodeKind::HashSlice { target, .. } => match &target.kind {
             NodeKind::Unary { op, .. } => {
-                assert_eq!(op, "@{}", "Expected @{{}} deref op on HashSlice target; got: {op}");
+                if op != "@{}" {
+                    return Err(format!("Expected @{{}} deref op on HashSlice target; got: {op}"));
+                }
             }
-            _ => panic!(
-                "HashSlice target should be Unary(@{{}}); got: {} (sexp: {})",
-                target.kind.kind_name(),
-                expr.to_sexp()
-            ),
+            _ => {
+                return Err(format!(
+                    "HashSlice target should be Unary(@{{}}); got: {} (sexp: {})",
+                    target.kind.kind_name(),
+                    expr.to_sexp()
+                ));
+            }
         },
         _ => {
-            panic!("Expected HashSlice; got: {} (sexp: {})", expr.kind.kind_name(), expr.to_sexp())
+            return Err(format!(
+                "Expected HashSlice; got: {} (sexp: {})",
+                expr.kind.kind_name(),
+                expr.to_sexp()
+            ));
         }
     }
+    Ok(())
 }
 
 #[test]
-fn pct_deref_key_value_slice_node_structure() {
+fn pct_deref_key_value_slice_node_structure() -> Result<(), String> {
     // %$href{qw(a b)} must be KeyValueSlice { target: Unary{"%{}"}, keys: ... }
     let source = r#"%$href{qw(a b)};"#;
     assert_clean_parse(source);
@@ -247,28 +256,37 @@ fn pct_deref_key_value_slice_node_structure() {
 
     let stmt = match ast.kind {
         NodeKind::Program { mut statements } if !statements.is_empty() => statements.swap_remove(0),
-        _ => panic!("Expected Program, got: {}", ast.to_sexp()),
+        _ => return Err(format!("Expected Program, got: {}", ast.to_sexp())),
     };
     let expr = match stmt.kind {
         NodeKind::ExpressionStatement { expression } => *expression,
-        other => panic!("Expected ExpressionStatement, got: {}", other.kind_name()),
+        other => return Err(format!("Expected ExpressionStatement, got: {}", other.kind_name())),
     };
 
     match &expr.kind {
         NodeKind::KeyValueSlice { target, .. } => match &target.kind {
             NodeKind::Unary { op, .. } => {
-                assert_eq!(op, "%{}", "Expected %{{}} deref op on KeyValueSlice target; got: {op}");
+                if op != "%{}" {
+                    return Err(format!(
+                        "Expected %{{}} deref op on KeyValueSlice target; got: {op}"
+                    ));
+                }
             }
-            _ => panic!(
-                "KeyValueSlice target should be Unary(%{{}}); got: {} (sexp: {})",
-                target.kind.kind_name(),
-                expr.to_sexp()
-            ),
+            _ => {
+                return Err(format!(
+                    "KeyValueSlice target should be Unary(%{{}}); got: {} (sexp: {})",
+                    target.kind.kind_name(),
+                    expr.to_sexp()
+                ));
+            }
         },
-        _ => panic!(
-            "Expected KeyValueSlice; got: {} (sexp: {})",
-            expr.kind.kind_name(),
-            expr.to_sexp()
-        ),
+        _ => {
+            return Err(format!(
+                "Expected KeyValueSlice; got: {} (sexp: {})",
+                expr.kind.kind_name(),
+                expr.to_sexp()
+            ));
+        }
     }
+    Ok(())
 }

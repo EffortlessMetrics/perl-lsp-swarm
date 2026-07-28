@@ -92,14 +92,13 @@ impl<'a> Parser<'a> {
             if let NodeKind::Identifier { name } = &expr.kind {
                 // `caller ++$i` passes a pre-incremented stack level to caller;
                 // do not read it as post-incrementing the `caller` bareword.
-                let next_is_prefix_inc_arg = matches!(
-                    self.peek_kind(),
-                    Some(TokenKind::Increment | TokenKind::Decrement)
-                ) && self.tokens.peek_second().ok().is_some_and(|token| {
-                    token.text.starts_with('$')
-                        || token.text.starts_with('@')
-                        || token.text.starts_with('%')
-                });
+                let next_is_prefix_inc_arg =
+                    matches!(self.peek_kind(), Some(TokenKind::Increment | TokenKind::Decrement))
+                        && self.tokens.peek_second().ok().is_some_and(|token| {
+                            token.text.starts_with('$')
+                                || token.text.starts_with('@')
+                                || token.text.starts_with('%')
+                        });
                 if name == "caller" && next_is_prefix_inc_arg {
                     let start = expr.location.start;
                     let func_name = name.clone();
@@ -433,9 +432,8 @@ impl<'a> Parser<'a> {
                         }
                     }
                     // Detect array slices: @arr[...] or @{$aref}[...]
-                    let is_array_slice =
-                        matches!(&expr.kind, NodeKind::Variable { sigil, .. } if sigil == "@")
-                            || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "@{}");
+                    let is_array_slice = matches!(&expr.kind, NodeKind::Variable { sigil, .. } if sigil == "@")
+                        || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "@{}");
 
                     // Array indexing - can be a single index or slice with multiple indices
                     self.tokens.next()?; // consume [
@@ -484,7 +482,10 @@ impl<'a> Parser<'a> {
                     record_postfix_layer()?;
                     if is_array_slice {
                         expr = Node::new(
-                            NodeKind::ArraySlice { target: Box::new(expr), indices: Box::new(index) },
+                            NodeKind::ArraySlice {
+                                target: Box::new(expr),
+                                indices: Box::new(index),
+                            },
                             SourceLocation { start, end },
                         );
                     } else {
