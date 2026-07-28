@@ -100,13 +100,22 @@ impl InlayHintsProvider {
                 }
             }
 
-            // Function calls - show parameter hints (&foo() and foo() treated alike)
-            NodeKind::FunctionCall { name, args } | NodeKind::AmperCall { name, args } => {
+            // Function calls - show parameter hints for known builtin signatures.
+            NodeKind::FunctionCall { name, args } => {
                 if self.enabled_hints.parameter_hints {
                     self.add_parameter_hints(name, args, node, hints, range);
                 }
 
                 // Visit arguments
+                for arg in args {
+                    self.visit_node(arg, hints, range);
+                }
+            }
+
+            // An ampersand call may target a user-defined subroutine with the
+            // same name as a builtin. Traverse its arguments, but do not apply
+            // builtin metadata without resolving the actual target signature.
+            NodeKind::AmperCall { args, .. } => {
                 for arg in args {
                     self.visit_node(arg, hints, range);
                 }
@@ -345,9 +354,7 @@ impl InlayHintsProvider {
             NodeKind::String { .. } => Some("string".to_string()),
             NodeKind::Number { .. } => Some("number".to_string()),
             NodeKind::Regex { .. } => Some("Regexp".to_string()),
-            NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
-                self.get_return_type(name)
-            }
+            NodeKind::FunctionCall { name, .. } => self.get_return_type(name),
             NodeKind::MethodCall { method, .. } => self.get_return_type(method),
             _ => None,
         }
@@ -615,35 +622,28 @@ print("Hello, World!");
         assert_eq!(col, 0, "byte offset 4 ('l') should be at column 0");
     }
 
-    /// `&split(...)` must produce the same parameter inlay hints as `split(...)`.
+    /// An ampersand call must not borrow builtin parameter metadata.
     #[test]
-    fn test_amper_call_produces_parameter_hints() {
+    fn test_amper_call_does_not_produce_builtin_parameter_hints() -> anyhow::Result<()> {
         let code = "&push(@arr, \"value\");\n";
         let mut parser = Parser::new(code);
-        if let Ok(ast) = parser.parse() {
-            let provider = InlayHintsProvider::new(code.to_string());
-            let hints = provider.extract(&ast);
-            // extract() must not panic; any hints produced are acceptable.
-            // The key invariant is that AmperCall is visited (no silent skip).
-            let _ = hints;
-        }
+        let ast = parser.parse()?;
+        let provider = InlayHintsProvider::new(code.to_string());
+        let hints = provider.extract(&ast);
+        assert!(hints.is_empty(), "unresolved ampersand calls must not use builtin metadata");
+        Ok(())
     }
 
-    /// `my $r = &split(...)` — infer_type must handle AmperCall and not return None
-    /// for known functions.
+    /// An ampersand call must not infer a builtin return type without resolution.
     #[test]
-    fn test_amper_call_infer_type_known_function() {
+    fn test_amper_call_does_not_infer_builtin_type() {
         let provider = InlayHintsProvider::new(String::new());
         use perl_parser::ast::{Node, NodeKind, SourceLocation};
         let loc = SourceLocation { start: 0, end: 1 };
         let split_amper =
             Node::new(NodeKind::AmperCall { name: "split".to_string(), args: vec![] }, loc);
         let result = provider.infer_type(&split_amper);
-        assert_eq!(
-            result,
-            Some("ARRAY".to_string()),
-            "&split() should infer the same return type as split()"
-        );
+        assert_eq!(result, None, "&split() must not use builtin return metadata");
     }
 
     #[test]
