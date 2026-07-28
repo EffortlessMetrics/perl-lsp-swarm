@@ -21,7 +21,7 @@ Where each field can be set:
 
 | Channel | Fields it accepts |
 |---------|-------------------|
-| `.perl-lsp.toml` | `enabled`, `provider`, `model` only |
+| `.perl-lsp.toml` | `enabled` only (`false` opt-out; `true` is ignored) |
 | LSP client/server configuration | the complete server field set below |
 | Primary VS Code extension | activation and streaming toggles only — no endpoint or credential surface |
 
@@ -30,10 +30,11 @@ Where each field can be set:
 output bounds, and streaming controls are likewise server-configuration fields,
 not project-config fields.
 
-The project-config row is not durable design: issue #4997 is expected to remove
-the remaining project-side AI authority so a repository cannot activate the
-feature at all. The API key itself is always read from an environment variable;
-it is never stored in settings.
+Project configuration is opt-out only: `enabled = false` can disable AI for a
+repository, while `enabled = true`, `provider`, and `model` are ignored. Users
+must enable AI and choose the provider/model through client settings. The API
+key itself is always read from an environment variable; it is never stored in
+settings.
 
 ## Server Configuration Fields
 

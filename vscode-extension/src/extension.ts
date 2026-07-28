@@ -1139,7 +1139,6 @@ async function finalizeStartedLanguageClient(
   refreshStreamingController(startedClient);
   try {
     await syncLanguageClientConfiguration(startedClient);
-    await syncUserAiCompletionConfiguration(startedClient);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     outputChannel.error(`[configuration] initial synchronization failed: ${message}`);

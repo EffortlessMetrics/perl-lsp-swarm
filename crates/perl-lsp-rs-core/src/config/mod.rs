@@ -1841,14 +1841,10 @@ fn merge_ai_completion_project_opt_out(
     for (name, cfg) in folders {
         match cfg.ai_completion.enabled {
             Some(false) => {
-                if !saw_false.iter().any(|(_, v)| v == "false") {
-                    saw_false.push((name.to_string(), "false".to_string()));
-                }
+                saw_false.push((name.to_string(), "false".to_string()));
             }
             Some(true) => {
-                if !saw_true.iter().any(|(_, v)| v == "true") {
-                    saw_true.push((name.to_string(), "true".to_string()));
-                }
+                saw_true.push((name.to_string(), "true".to_string()));
             }
             None => {}
         }
@@ -2054,6 +2050,26 @@ mod tests {
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].key, "diagnostics.perlcritic_severity");
         assert_eq!(conflicts[0].folders, vec!["folderA", "folderB", "folderC"]);
+    }
+
+    #[test]
+    fn merge_project_configs_ai_conflict_lists_all_folders_per_value() {
+        let mut a = ProjectConfig::default();
+        a.ai_completion.enabled = Some(false);
+        let mut b = ProjectConfig::default();
+        b.ai_completion.enabled = Some(false);
+        let mut c = ProjectConfig::default();
+        c.ai_completion.enabled = Some(true);
+
+        let inputs: Vec<(&str, &ProjectConfig)> =
+            vec![("folderA", &a), ("folderB", &b), ("folderC", &c)];
+        let (merged, conflicts) = merge_project_configs_for_server(&inputs);
+
+        assert_eq!(merged.ai_completion.enabled, Some(false));
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].key, "ai_completion.enabled");
+        assert_eq!(conflicts[0].folders, vec!["folderA", "folderB", "folderC"]);
+        assert_eq!(conflicts[0].values, vec!["false", "false", "true"]);
     }
 
     #[test]
