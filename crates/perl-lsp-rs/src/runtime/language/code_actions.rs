@@ -604,17 +604,14 @@ impl LspServer {
                     let registry =
                         crate::perl_critic::NativeCriticRegistry::for_profile(native_profile);
                     for finding in registry.check(&critic_context) {
-                        // Only findings that carry an automatic edit become
-                        // quick-fixes. A finding with no fix, an explicitly
-                        // manual-only fix, or empty edits is diagnostic-only
-                        // guidance — never surface it as an "apply fix" action.
-                        // Checking FixSafety (not just emptiness) keeps the type's
-                        // own safety tier load-bearing: a future ManualOnly fix
-                        // that ships illustrative edits must still be skipped.
+                        // Only findings that carry a Safe automatic edit become
+                        // quick-fixes. Suggested fixes need user confirmation
+                        // (declaration-only renames corrupt references);
+                        // ManualOnly and empty edits are diagnostic-only guidance.
                         let Some(fix) = finding.fix.as_ref() else {
                             continue;
                         };
-                        if fix.safety == crate::perl_critic::FixSafety::ManualOnly
+                        if fix.safety != crate::perl_critic::FixSafety::Safe
                             || fix.edits.is_empty()
                         {
                             continue;
