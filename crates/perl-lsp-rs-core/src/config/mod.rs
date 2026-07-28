@@ -1486,9 +1486,11 @@ impl ProjectConfig {
         // api_key_header / api_key_prefix. Allowing a hostile project to pick
         // both the destination and the process-environment credential name
         // would let it exfiltrate an arbitrary named secret (issue #4955).
-        // These settings now arrive only via the LSP client/server
-        // configuration channel. That channel's own provenance is not
-        // established here - see issue #4997.
+        // These settings arrive only via the LSP client/server configuration
+        // channel. Project activation is closed here (#4997); VS Code declares
+        // AI toggles `scope: machine`. Non-VS Code clients that forward
+        // workspace settings into `didChangeConfiguration` remain a residual
+        // provenance gap (documented in AI_COMPLETION.md).
         recompute_ai_completion_effective(&mut config.ai_completion);
         if let Some(enabled) = self.next_edit.enabled {
             config.next_edit.enabled = enabled;
@@ -3670,12 +3672,11 @@ profile = "recommended"
 
     /// Security regression: a workspace-supplied `.perl-lsp.toml` must not be
     /// able to redirect the AI-completion endpoint or select which process
-    /// environment variable is read as a credential (issue #4955). A hostile
-    /// cloned repository could otherwise name an arbitrary secret (e.g.
-    /// `AWS_SECRET_ACCESS_KEY`) and have its value POSTed to an
-    /// attacker-chosen endpoint on the first inline-completion request. Only
-    /// `enabled` / `provider` / `model` are workspace-settable; those do not
-    /// select a network destination or a credential.
+    /// environment variable is read as a credential (issue #4955), and must
+    /// not activate AI or override user-owned `provider` / `model` (issue
+    /// #4997). A hostile cloned repository could otherwise name an arbitrary
+    /// secret (e.g. `AWS_SECRET_ACCESS_KEY`) and have its value POSTed to an
+    /// attacker-chosen endpoint on the first inline-completion request.
     #[test]
     fn workspace_ai_completion_ignores_untrusted_endpoint_and_credential_settings() -> TestResult {
         let temp = tempfile::tempdir()?;
@@ -3757,12 +3758,14 @@ api_key_prefix = "Attacker "
 
     /// Companion to the regression above: the LSP client/server configuration
     /// channel (the `aiCompletion` block of `ServerConfig::update_from_value`)
-    /// can still set all four fields. This proves the fix closes the
+    /// can still set endpoint/credential fields. This proves the fix closes the
     /// `.perl-lsp.toml` route rather than disabling the feature.
     ///
-    /// It asserts nothing about that channel's authority. `update_from_value`
-    /// cannot tell machine, user, workspace, or folder settings apart; issue
-    /// #4997 covers establishing that.
+    /// It asserts nothing about that channel's authority for non-VS Code
+    /// clients. `update_from_value` cannot tell machine, user, workspace, or
+    /// folder settings apart; the VS Code extension closes activation via
+    /// `scope: machine` (#4997), while endpoint/credential user UI remains a
+    /// documented gap.
     #[test]
     fn client_configuration_can_still_set_ai_endpoint_and_credential_fields() {
         let mut config = ServerConfig::default();
