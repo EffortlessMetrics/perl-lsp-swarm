@@ -2751,3 +2751,37 @@ fn import_block_end(source: &str) -> usize {
 
     last_use_end
 }
+
+/// Add 'use strict' pragma, inserting after shebang if present.
+pub fn add_use_strict_with_offset(source: &str) -> Vec<CodeAction> {
+    let offset = file_scope_pragma_insertion_offset(source);
+    vec![CodeAction {
+        title: "Add 'use strict'".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::MissingStrict.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: offset, end: offset },
+                new_text: "use strict;\n".to_string(),
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+/// Add 'use warnings' pragma, inserting after shebang if present.
+pub fn add_use_warnings_with_offset(source: &str) -> Vec<CodeAction> {
+    let offset = file_scope_pragma_insertion_offset(source);
+    vec![CodeAction {
+        title: "Add 'use warnings'".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::MissingWarnings.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: offset, end: offset },
+                new_text: "use warnings;\n".to_string(),
+            }],
+        },
+        is_preferred: true,
+    }]
+}
