@@ -204,19 +204,21 @@ impl VariableParser {
             return Ok(PerlValue::Scalar(unquoted));
         }
 
-        // Check for array reference notation
+        // Check for array reference notation — preserve the address in the
+        // display text so users can at least see the type and identity. (#5086)
+        // Full expansion (fetching children via debugger commands) is a follow-up.
         if array_ref_re().is_some_and(|re| re.is_match(text)) {
-            return Ok(PerlValue::Array(vec![]));
+            return Ok(PerlValue::Scalar(text.to_string()));
         }
 
         // Check for hash reference notation
         if hash_ref_re().is_some_and(|re| re.is_match(text)) {
-            return Ok(PerlValue::Hash(vec![]));
+            return Ok(PerlValue::Scalar(text.to_string()));
         }
 
         // Check for code reference
         if code_ref_re().is_some_and(|re| re.is_match(text)) {
-            return Ok(PerlValue::Code { name: None });
+            return Ok(PerlValue::Scalar(text.to_string()));
         }
 
         // Check for blessed object

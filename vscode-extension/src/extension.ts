@@ -194,7 +194,10 @@ let extensionContext: vscode.ExtensionContext | undefined;
  */
 const MAX_AUTO_RESTART_ATTEMPTS = 3;
 const STABLE_RUN_GRACE_MS = 30_000;
+const WATCHDOG_INTERVAL_MS = 30_000;
+const WATCHDOG_TIMEOUT_MS = 10_000;
 let autoRestartAttempts = 0;
+let watchdogTimer: NodeJS.Timeout | undefined;
 let stableRunningSince: number | undefined;
 let userInitiatedStopPending = false;
 
@@ -1756,6 +1759,14 @@ export function handleClientStateChange(event: StateChangeEvent): void {
   // the controller state changes only on explicit lifecycle operations.
   healthWidget?.onStateChange(event.newState as unknown as ClientState);
 
+  // Start/stop the watchdog based on client state (#5092)
+  const newStateNum = event.newState as unknown as number;
+  if (newStateNum === ClientState.Running) {
+    startWatchdog();
+  } else if (newStateNum === ClientState.Stopped) {
+    stopWatchdog();
+  }
+
   // Note: event.newState / oldState are vscode-languageclient's `State` enum
   // which shares numeric values with ClientState (Stopped=1, Running=2) but
   // is a distinct nominal type, so we cast to number for comparison.
@@ -1806,6 +1817,40 @@ export function handleClientStateChange(event: StateChangeEvent): void {
  * `MAX_AUTO_RESTART_ATTEMPTS` times. Once the budget is exhausted, the toast
  * asks the user to restart manually or run a Health Check.
  */
+/**
+ * Start a periodic liveness watchdog. Every WATCHDOG_INTERVAL_MS, sends a
+ * lightweight workspace/symbol request. If it doesn't respond within
+ * WATCHDOG_TIMEOUT_MS, the server is considered hung and restarted. (#5092)
+ */
+function startWatchdog(): void {
+  stopWatchdog();
+  watchdogTimer = setInterval(async () => {
+    if (!languageClientLifecycle || !languageClientLifecycle.isRunning()) {
+      return;
+    }
+    try {
+      await Promise.race([
+        languageClientLifecycle.client?.sendRequest('workspace/symbol', { query: '' }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('watchdog timeout')), WATCHDOG_TIMEOUT_MS),
+        ),
+      ]);
+    } catch {
+      outputChannel.warn('[watchdog] Server unresponsive — triggering restart');
+      autoRestartAttempts = 0;
+      await handleUnexpectedServerStop();
+    }
+  }, WATCHDOG_INTERVAL_MS);
+}
+
+/** Stop the watchdog timer. */
+function stopWatchdog(): void {
+  if (watchdogTimer) {
+    clearInterval(watchdogTimer);
+    watchdogTimer = undefined;
+  }
+}
+
 async function handleUnexpectedServerStop(): Promise<void> {
   const context = extensionContext;
   const hint =
