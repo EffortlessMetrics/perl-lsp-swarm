@@ -1305,7 +1305,16 @@ impl LspServer {
                             let mut effective_config =
                                 perl_lsp_rs_core::config::WorkspaceConfig::default();
                             if let Some(init_opts) = init_options_perl.as_ref() {
-                                effective_config.update_from_value(init_opts);
+                                let rejected = effective_config.update_from_value(init_opts);
+                                for entry in rejected {
+                                    tracing::warn!(
+                                        target: "perl_lsp::config",
+                                        folder_uri = %folder.uri,
+                                        entry = %entry.entry,
+                                        reason = %entry.render(),
+                                        "rejected initializationOptions includePaths entry"
+                                    );
+                                }
                             }
                             if let Some(project_config) = &folder.project_config {
                                 // Re-applying an already-loaded, already-warned-about

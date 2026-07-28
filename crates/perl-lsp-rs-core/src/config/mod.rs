@@ -861,12 +861,20 @@ fn parse_external_include_paths(paths: &[serde_json::Value]) -> Vec<String> {
             if trimmed.is_empty() {
                 return None;
             }
+            if external_include_path_has_invalid_characters(trimmed) {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    entry = %escape_for_display(trimmed),
+                    "rejected perl.workspace.externalIncludePaths entry with null/control characters"
+                );
+                return None;
+            }
             // Machine-scoped external roots must be absolute. Relative entries belong in
             // resource-scoped `includePaths` (validated against the workspace root).
             if !Path::new(trimmed).is_absolute() {
                 tracing::warn!(
                     target: "perl_lsp::config",
-                    entry = %trimmed,
+                    entry = %escape_for_display(trimmed),
                     "rejected relative perl.workspace.externalIncludePaths entry; use includePaths for workspace-relative roots"
                 );
                 return None;
@@ -874,6 +882,10 @@ fn parse_external_include_paths(paths: &[serde_json::Value]) -> Vec<String> {
             Some(trimmed.to_string())
         })
         .collect()
+}
+
+fn external_include_path_has_invalid_characters(entry: &str) -> bool {
+    entry.chars().any(|c| c == '\0' || (c.is_control() && c != '\t'))
 }
 
 fn normalize_include_path(path: &str) -> Option<String> {

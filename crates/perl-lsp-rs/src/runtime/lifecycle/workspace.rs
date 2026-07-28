@@ -151,7 +151,16 @@ impl LspServer {
                 // layer .perl-lsp.toml on top so project config wins.
                 let mut effective_config = WorkspaceConfig::default();
                 if let Some(init_opts) = self.initialization_options_perl_settings.lock().as_ref() {
-                    effective_config.update_from_value(init_opts);
+                    let rejected = effective_config.update_from_value(init_opts);
+                    for entry in rejected {
+                        tracing::warn!(
+                            target: "perl_lsp::config",
+                            folder_uri = %folder.uri,
+                            entry = %entry.entry,
+                            reason = %entry.render(),
+                            "rejected initializationOptions includePaths entry"
+                        );
+                    }
                 }
                 folder.effective_workspace_config = effective_config;
 
