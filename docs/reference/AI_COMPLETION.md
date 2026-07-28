@@ -60,9 +60,10 @@ accepted:
 
 ## Project Config File (`.perl-lsp.toml`)
 
-For editor-agnostic, team-wide defaults, add an `[ai_completion]` section to
-`.perl-lsp.toml` at the workspace root. These values serve as the base layer;
-LSP client settings always override them.
+For editor-agnostic, team-wide policy, add an `[ai_completion]` section to
+`.perl-lsp.toml` at the workspace root. The only honoured project field is
+`enabled = false` (opt-out). Enabling AI or choosing provider/model requires
+user/machine client settings.
 
 ```toml
 [ai_completion]

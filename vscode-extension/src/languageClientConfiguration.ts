@@ -259,30 +259,40 @@ export async function syncLanguageClientConfiguration(
   await activeClient.sendNotification('workspace/didChangeConfiguration', { settings });
 }
 
-function readMachineScopedBoolean(config: ConfigurationReader, key: string): boolean | undefined {
-  const inspected = config.inspect?.(key) as { globalValue?: unknown } | undefined;
-  return typeof inspected?.globalValue === 'boolean' ? inspected.globalValue : undefined;
+/// Read the effective machine-scoped boolean for server sync.
+///
+/// Machine-scoped keys cannot be set from workspace settings, so `get()` is
+/// authoritative — including when the user resets a setting to its default
+/// (`inspect().globalValue` is then `undefined`, but `get()` still returns the
+/// default).
+function readMachineScopedBoolean(
+  config: ConfigurationReader,
+  key: string,
+  defaultValue: boolean,
+): boolean {
+  return config.get<boolean>(key, defaultValue);
 }
 
 export function buildUserAiCompletionConfigurationPayload(
   config: ConfigurationReader = vscode.workspace.getConfiguration('perl-lsp'),
-): Record<string, unknown> | undefined {
-  const enabled = readMachineScopedBoolean(config, 'aiCompletion.enabled');
-  const streamingEnabled = readMachineScopedBoolean(config, 'aiCompletion.streaming.enabled');
+): Record<string, unknown> {
+  const enabled = readMachineScopedBoolean(config, 'aiCompletion.enabled', false);
+  const streamingEnabled = readMachineScopedBoolean(
+    config,
+    'aiCompletion.streaming.enabled',
+    true,
+  );
 
-  if (enabled === undefined && streamingEnabled === undefined) {
-    return undefined;
-  }
-
-  const aiCompletion: Record<string, unknown> = {};
-  if (enabled !== undefined) {
-    aiCompletion.enabled = enabled;
-  }
-  if (streamingEnabled !== undefined) {
-    aiCompletion.streaming = { enabled: streamingEnabled };
-  }
-
-  return { settings: { perl: { aiCompletion } } };
+  return {
+    settings: {
+      perl: {
+        aiCompletion: {
+          enabled,
+          streaming: { enabled: streamingEnabled },
+        },
+      },
+    },
+  };
 }
 
 export async function syncUserAiCompletionConfiguration(
@@ -293,10 +303,6 @@ export async function syncUserAiCompletionConfiguration(
   }
 
   const payload = buildUserAiCompletionConfigurationPayload();
-  if (!payload) {
-    return;
-  }
-
   await activeClient.sendNotification('workspace/didChangeConfiguration', payload);
 }
 

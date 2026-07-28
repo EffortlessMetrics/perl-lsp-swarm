@@ -1472,9 +1472,7 @@ impl ProjectConfig {
         }
         // Security: project config may only opt out of AI completions, never
         // enable them or override user-owned provider/model (issue #4997).
-        if self.ai_completion.enabled == Some(false) {
-            config.ai_completion.project_opt_out = true;
-        } else if self.ai_completion.enabled == Some(true) {
+        if self.ai_completion.enabled == Some(true) {
             tracing::warn!(
                 target: "perl_lsp::config",
                 setting = "ai_completion.enabled",
@@ -1482,6 +1480,7 @@ impl ProjectConfig {
                  AI completions require user-level configuration",
             );
         }
+        config.ai_completion.project_opt_out = self.ai_completion.enabled == Some(false);
         // Security: do NOT honour workspace-supplied endpoint / api_key_env /
         // api_key_header / api_key_prefix. Allowing a hostile project to pick
         // both the destination and the process-environment credential name
@@ -3754,6 +3753,26 @@ api_key_prefix = "Attacker "
 
         assert!(config.ai_completion.project_opt_out);
         assert!(!config.ai_completion.enabled, "project opt-out must disable effective AI");
+    }
+
+    #[test]
+    fn project_opt_out_clears_when_ai_completion_section_removed() {
+        let mut config = ServerConfig::default();
+        config.update_from_value(&serde_json::json!({
+            "aiCompletion": { "enabled": true }
+        }));
+
+        let mut project = ProjectConfig::default();
+        project.ai_completion.enabled = Some(false);
+        project.apply_to_server_config(&mut config);
+        assert!(config.ai_completion.project_opt_out);
+        assert!(!config.ai_completion.enabled);
+
+        let project_cleared = ProjectConfig::default();
+        project_cleared.apply_to_server_config(&mut config);
+
+        assert!(!config.ai_completion.project_opt_out);
+        assert!(config.ai_completion.enabled);
     }
 
     /// Companion to the regression above: the LSP client/server configuration

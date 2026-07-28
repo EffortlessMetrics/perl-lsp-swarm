@@ -172,17 +172,16 @@ describe('language client configuration', () => {
     ).toEqual(['live', 'reconstruct', 'restart']);
   });
 
-  test('builds machine-scoped AI completion payload from global settings only', () => {
+  test('builds machine-scoped AI completion payload from effective settings', () => {
     const config = {
-      get: jest.fn(),
-      inspect: jest.fn((key: string) => {
+      get: jest.fn((key: string, defaultValue: unknown) => {
         if (key === 'aiCompletion.enabled') {
-          return { globalValue: true };
+          return true;
         }
         if (key === 'aiCompletion.streaming.enabled') {
-          return { globalValue: false };
+          return false;
         }
-        return undefined;
+        return defaultValue;
       }),
     } as unknown as vscode.WorkspaceConfiguration;
 
@@ -198,12 +197,20 @@ describe('language client configuration', () => {
     });
   });
 
-  test('does not emit AI completion payload when machine settings are unset', () => {
+  test('syncs default-off when machine settings are reset', () => {
     const config = {
-      get: jest.fn(),
-      inspect: jest.fn(() => undefined),
+      get: jest.fn((_key: string, defaultValue: unknown) => defaultValue),
     } as unknown as vscode.WorkspaceConfiguration;
 
-    expect(buildUserAiCompletionConfigurationPayload(config)).toBeUndefined();
+    expect(buildUserAiCompletionConfigurationPayload(config)).toEqual({
+      settings: {
+        perl: {
+          aiCompletion: {
+            enabled: false,
+            streaming: { enabled: true },
+          },
+        },
+      },
+    });
   });
 });
