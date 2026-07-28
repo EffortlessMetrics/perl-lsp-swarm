@@ -56,31 +56,28 @@ fn explain_missing_module(
     server.handle_request(execute_request)
 }
 
-fn candidate_exists_values(
-    result: &Value,
-) -> Result<Vec<Option<bool>>, Box<dyn std::error::Error>> {
+fn candidate_exists_values(result: &Value) -> Vec<Option<bool>> {
     let Some(include_paths) = result
         .pointer("/module_resolution/effective_include_paths")
         .and_then(Value::as_array)
     else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
 
-    include_paths
-        .iter()
-        .flat_map(|entry| {
-            entry
-                .get("candidate_paths")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-        })
-        .map(|candidate| match candidate.get("exists") {
-            Some(Value::Bool(value)) => Ok(Some(*value)),
-            Some(Value::Null) | None => Ok(None),
-            Some(other) => Err(format!("unexpected exists payload: {other:?}").into()),
-        })
-        .collect()
+    let mut values = Vec::new();
+    for entry in include_paths {
+        let Some(candidates) = entry.get("candidate_paths").and_then(Value::as_array) else {
+            continue;
+        };
+        for candidate in candidates {
+            match candidate.get("exists") {
+                Some(Value::Bool(value)) => values.push(Some(*value)),
+                Some(Value::Null) | None => values.push(None),
+                Some(other) => panic!("unexpected exists payload: {other:?}"),
+            }
+        }
+    }
+    values
 }
 
 #[test]
@@ -149,7 +146,7 @@ fn explain_missing_module_exists_only_inside_workspace() -> Result<(), Box<dyn s
         .result
         .ok_or("in-workspace module lookup should succeed")?;
     assert!(
-        candidate_exists_values(&inside_result)?.contains(&Some(true)),
+        candidate_exists_values(&inside_result).contains(&Some(true)),
         "in-workspace module should report exists=true for a workspace candidate: {inside_result}"
     );
 
@@ -214,7 +211,7 @@ fn explain_missing_module_exists_only_inside_workspace() -> Result<(), Box<dyn s
     }
 
     assert!(
-        !candidate_exists_values(&outside_result)?.contains(&Some(true)),
+        !candidate_exists_values(&outside_result).contains(&Some(true)),
         "outside-workspace include roots must not report exists=true"
     );
 
