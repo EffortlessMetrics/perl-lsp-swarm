@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  base-smoke:
-    name: Real upstream base+comp+run parse+compile smoke
+  selected-evidence:
+    name: Selected upstream comparison-series evidence
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 
@@ -18,10 +18,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # The repository MSRV remains unchanged. This workflow deliberately measures
+      # the compiler with the installed Rust 1.97 toolchain and records that identity.
       - name: Install Rust toolchain
         run: |
-          rustup toolchain install 1.95.0 --profile minimal --no-self-update
-          rustup default 1.95.0
+          rustup toolchain install 1.97.0 --profile minimal --no-self-update
+          cargo +1.97.0 --version
 
       - name: Install upstream Perl build dependencies
         run: |
@@ -44,94 +46,251 @@ jobs:
           print(f"ref={config['ref']}")
           print(f"profile={config.get('profile', 'base')}")
           print(f"modes={','.join(config.get('modes', ['parse', 'compile']))}")
+          print(f"runner={config.get('runner', 'test')}")
           PY
 
       - name: Prepare upstream Perl tree
         run: |
-          cargo run -p xtask -- perl-core-harness prepare \
+          cargo +1.97.0 run --locked -p xtask -- perl-core-harness prepare \
             --ref "${{ steps.upstream.outputs.ref }}" \
             --output-dir "target/perl-core/upstream/${{ steps.upstream.outputs.ref }}"
 
-      - name: Run base parse+compile smoke
+      - name: Record measured subject identity
+        id: identity
+        shell: bash
         run: |
-          cargo run -p xtask -- perl-core-harness smoke \
-            --perl-tree "target/perl-core/upstream/${{ steps.upstream.outputs.ref }}/perl5" \
-            --host-perl perl \
-            --profile base \
-            --modes "${{ steps.upstream.outputs.modes }}" \
-            --perl-ref "${{ steps.upstream.outputs.ref }}" \
-            --output-dir target/perl-core/smoke/base
+          set -euo pipefail
+          ref="${{ steps.upstream.outputs.ref }}"
+          receipt="target/perl-core/prepare/${ref}/prepare.json"
+          test -s "$receipt"
+          digest="$(sha256sum "$receipt" | awk '{print $1}')"
+          {
+            echo "receipt=$receipt"
+            echo "digest=$digest"
+            echo "preparation_id=perl-prepare-${ref}"
+            echo "compiler_subject_identity=perl-lsp-swarm:${GITHUB_SHA}:rustc-1.97.0:perl-core-harness.v1"
+            echo "invocation_identity=perl-core-harness:smoke:v1:runner-${{ steps.upstream.outputs.runner }}:parse-compile"
+            echo "capability_identity=linux:perl-core-harness:runner-${{ steps.upstream.outputs.runner }}:parse-compile"
+            echo "environment_identity=ubuntu-24.04:rustc-1.97.0"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Run comp parse+compile smoke
+      - name: Build selected comparison series and evidence bundles
+        shell: bash
         run: |
-          cargo run -p xtask -- perl-core-harness smoke \
-            --perl-tree "target/perl-core/upstream/${{ steps.upstream.outputs.ref }}/perl5" \
-            --host-perl perl \
-            --profile comp \
-            --modes "${{ steps.upstream.outputs.modes }}" \
-            --perl-ref "${{ steps.upstream.outputs.ref }}" \
-            --output-dir target/perl-core/smoke/comp
+          set -uo pipefail
+          overall_status=0
+          ref="${{ steps.upstream.outputs.ref }}"
+          modes="${{ steps.upstream.outputs.modes }}"
+          runner="${{ steps.upstream.outputs.runner }}"
+          prepared_tree="target/perl-core/upstream/${ref}/perl5"
+          preparation="${{ steps.identity.outputs.receipt }}"
+          preparation_digest="${{ steps.identity.outputs.digest }}"
+          preparation_id="${{ steps.identity.outputs.preparation_id }}"
+          compiler_subject_identity="${{ steps.identity.outputs.compiler_subject_identity }}"
+          invocation_identity="${{ steps.identity.outputs.invocation_identity }}"
+          capability_identity="${{ steps.identity.outputs.capability_identity }}"
+          environment_identity="${{ steps.identity.outputs.environment_identity }}"
 
-      - name: Run run parse+compile smoke
-        run: |
-          cargo run -p xtask -- perl-core-harness smoke \
-            --perl-tree "target/perl-core/upstream/${{ steps.upstream.outputs.ref }}/perl5" \
-            --host-perl perl \
-            --profile run \
-            --modes "${{ steps.upstream.outputs.modes }}" \
-            --perl-ref "${{ steps.upstream.outputs.ref }}" \
-            --output-dir target/perl-core/smoke/run
-
-      - name: Check upstream compile ratchets
-        run: |
           for profile in base comp run; do
-            cargo run -p xtask -- perl-core-harness baseline \
+            profile_dir="target/perl-core/smoke/${profile}"
+            series="target/perl-core/series/${profile}.json"
+            series_id="selected-${profile}-perl-5.42.2"
+            mkdir -p "$profile_dir" "target/perl-core/series" "target/perl-core/baselines"
+
+            # Discovery is performed before parsing or compiling so the denominator
+            # is frozen into the series manifest before result evidence is accepted.
+            if ! cargo +1.97.0 run --locked -p xtask -- perl-core-harness discover \
+              --perl-tree "$prepared_tree" \
+              --host-perl perl \
+              --runner "$runner" \
+              --profile "$profile" \
+              --perl-ref "$ref" \
+              --output "$profile_dir/discovery.json" \
+              --raw-output "$profile_dir/discovery.raw.txt"; then
+              overall_status=1
+              continue
+            fi
+
+            if ! cargo +1.97.0 run --locked -p xtask -- perl-core-harness series-manifest \
+              --discovery "$profile_dir/discovery.json" \
+              --output "$series" \
+              --series-id "$series_id" \
+              --profile "$profile" \
+              --perl-requested-ref "$ref" \
+              --perl-resolved-ref "$ref" \
+              --preparation-receipt-id "$preparation_id" \
+              --preparation-receipt-digest "$preparation_digest" \
+              --compiler-subject-identity "$compiler_subject_identity" \
+              --invocation-identity "$invocation_identity" \
+              --capability-identity "$capability_identity" \
+              --environment-identity "$environment_identity" \
+              --change-reason "initial pinned selected comparison series"; then
+              overall_status=1
+              continue
+            fi
+
+            if ! cargo +1.97.0 run --locked -p xtask -- perl-core-harness series-manifest \
+              --discovery "$profile_dir/discovery.json" \
+              --output "$series" \
+              --series-id "$series_id" \
+              --profile "$profile" \
+              --perl-requested-ref "$ref" \
+              --perl-resolved-ref "$ref" \
+              --preparation-receipt-id "$preparation_id" \
+              --preparation-receipt-digest "$preparation_digest" \
+              --compiler-subject-identity "$compiler_subject_identity" \
+              --invocation-identity "$invocation_identity" \
+              --capability-identity "$capability_identity" \
+              --environment-identity "$environment_identity" \
+              --change-reason "initial pinned selected comparison series" \
+              --check; then
+              overall_status=1
+              continue
+            fi
+
+            if ! cargo +1.97.0 run --locked -p xtask -- perl-core-harness smoke \
+              --perl-tree "$prepared_tree" \
+              --host-perl perl \
+              --runner "$runner" \
+              --profile "$profile" \
+              --modes "$modes" \
+              --perl-ref "$ref" \
+              --output-dir "$profile_dir"; then
+              # Keep the red receipt and diagnostics for classification, but do not
+              # manufacture a v2 baseline or an accepted bundle from a failed run.
+              overall_status=1
+              continue
+            fi
+
+            boundaries="$profile_dir/semantic-boundaries.json"
+            reproduction="$profile_dir/reproduction.json"
+            candidate="target/perl-core/baselines/${profile}-compile-candidate.json"
+            accepted="target/perl-core/baselines/${profile}-compile-accepted.json"
+            bundle_id="perl-5.42.2-${profile}-${GITHUB_SHA}"
+            bundle="target/perl-core/bundles/${bundle_id}"
+
+            python3 - "$profile_dir/compile.json" "$boundaries" "$reproduction" \
+              "$series_id" "$profile" "$compiler_subject_identity" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          compile_path, boundaries_path, reproduction_path, series_id, profile, subject = sys.argv[1:]
+          compile_report = json.loads(Path(compile_path).read_text())
+          boundaries = compile_report.get("semantic_boundaries", [])
+          Path(boundaries_path).write_text(json.dumps(boundaries, indent=2, sort_keys=True) + "\n")
+          reproduction = {
+              "schema_version": "perl_core_harness.evidence_reproduction.v1",
+              "series_id": series_id,
+              "profile": profile,
+              "modes": ["parse", "compile"],
+              "commands": [
+                  "cargo +1.97.0 run --locked -p xtask -- perl-core-harness discover --profile " + profile,
+                  "cargo +1.97.0 run --locked -p xtask -- perl-core-harness smoke --profile " + profile + " --modes parse,compile",
+              ],
+              "compiler_subject_identity": subject,
+              "deterministic": True,
+          }
+          Path(reproduction_path).write_text(json.dumps(reproduction, indent=2, sort_keys=True) + "\n")
+          PY
+
+            if ! cargo +1.97.0 run --locked -p xtask -- perl-core-harness baseline \
               --mode compile \
               --profile "$profile" \
-              --report "target/perl-core/smoke/$profile/compile.json" \
-              --baseline ".ci/perl-core-harness/upstream-$profile-compile-baseline.json" \
-              --check
+              --report "$profile_dir/compile.json" \
+              --baseline "$candidate" \
+              --series "$series" \
+              --compiler-subject-identity "$compiler_subject_identity" \
+              --invocation-identity "$invocation_identity" \
+              --capability-identity "$capability_identity" \
+              --environment-identity "$environment_identity" \
+              --evidence-bundle "$bundle_id" \
+              --accept; then
+              overall_status=1
+              continue
+            fi
+            cp -- "$candidate" "$accepted"
+
+            if ! cargo +1.97.0 run --locked -p xtask -- perl-core-harness bundle \
+              --write \
+              --output-dir "$bundle" \
+              --bundle-id "$bundle_id" \
+              --measurement-sha "$GITHUB_SHA" \
+              --claim-boundary "selected parse and compile acceptance with explicit semantic-boundary inventory" \
+              --repository-root "$GITHUB_WORKSPACE" \
+              --series "$series" \
+              --preparation "$preparation" \
+              --discovery-raw "$profile_dir/discovery.raw.txt" \
+              --discovery "$profile_dir/discovery.json" \
+              --parse "$profile_dir/parse.json" \
+              --compile "$profile_dir/compile.json" \
+              --runner-records "$profile_dir/runner-records.jsonl" \
+              --semantic-boundaries "$boundaries" \
+              --gap-map "$profile_dir/gap-map.json" \
+              --smoke "$profile_dir/smoke.json" \
+              --baseline-candidate "$candidate" \
+              --baseline-accepted "$accepted" \
+              --reproduction "$reproduction"; then
+              overall_status=1
+              continue
+            fi
+
+            if ! cargo +1.97.0 run --locked -p xtask -- perl-core-harness bundle \
+              --check \
+              --bundle-dir "$bundle" \
+              --repository-root "$GITHUB_WORKSPACE"; then
+              overall_status=1
+            fi
           done
 
-      - name: Summarize receipts
+          exit "$overall_status"
+
+      - name: Summarize selected receipts
         if: always()
         shell: bash
         run: |
           {
-            echo "## Perl core harness advisory smoke"
+            echo "## Perl core harness selected evidence"
             echo
-            echo "- ref: \`${{ steps.upstream.outputs.ref }}\`"
-            echo "- modes: \`${{ steps.upstream.outputs.modes }}\`"
+            echo "- measurement SHA: `${GITHUB_SHA}`"
+            echo "- Perl ref: `${{ steps.upstream.outputs.ref }}`"
+            echo "- Rust toolchain: `1.97.0`"
+            echo "- modes: `${{ steps.upstream.outputs.modes }}`"
+            echo "- accepted claim: selected parse/compile evidence only; execution and general semantic support are not implied"
             echo
             python3 - <<'PY'
           import json
           from pathlib import Path
 
           for profile in ("base", "comp", "run"):
-              path = Path(f"target/perl-core/smoke/{profile}/smoke.json")
+              series_path = Path(f"target/perl-core/series/{profile}.json")
+              smoke_path = Path(f"target/perl-core/smoke/{profile}/smoke.json")
+              bundle_indexes = list(Path("target/perl-core/bundles").glob(f"perl-5.42.2-{profile}-*/index.json"))
               print(f"### `{profile}`")
-              if not path.exists():
-                  print()
+              if series_path.exists():
+                  series = json.loads(series_path.read_text())
+                  print(f"- series: `{series['series_id']}`")
+                  print(f"- manifest files: `{len(series['normalized_manifest'])}`")
+                  print(f"- manifest hash: `{series['manifest_hash']}`")
+              else:
+                  print("- series: not written")
+              if smoke_path.exists():
+                  smoke = json.loads(smoke_path.read_text())
+                  print(f"- smoke status: `{smoke['status']}`")
+                  print(f"- parse: `{smoke.get('parse_files_passed')}/{smoke.get('parse_files_total')}`")
+                  print(f"- compile: `{smoke.get('compile_files_passed')}/{smoke.get('compile_files_total')}`")
+              else:
                   print("- smoke receipt: not written")
-                  print()
-                  continue
-
-              smoke = json.loads(path.read_text())
-              print()
-              print(f"- status: `{smoke['status']}`")
-              print(f"- discovered files: `{smoke['discovery_total']}`")
-              print(f"- parse: `{smoke.get('parse_files_passed')}/{smoke.get('parse_files_total')}`")
-              print(f"- compile: `{smoke.get('compile_files_passed')}/{smoke.get('compile_files_total')}`")
-              print(f"- gap map: `{smoke['gap_map']}`")
+              print(f"- bundle index: `{bundle_indexes[0] if bundle_indexes else 'not written'}`")
               print()
           PY
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload Perl core harness receipts
+      - name: Upload Perl core harness evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: perl-core-harness-${{ github.sha }}
           path: target/perl-core/
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 30
