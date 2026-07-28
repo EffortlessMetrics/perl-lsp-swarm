@@ -748,12 +748,18 @@ mod tests {
         let provider = CodeActionsProvider::new(source.to_string());
         let actions = provider.get_code_actions(&ast, (0, source.len()), &diagnostics);
 
+        // This test exists to prove the `native.variables.unused_parameter`
+        // policy alias reaches `fix_unused_parameter`. It previously pinned
+        // that fix's output as `_$unused`, which is not valid Perl — a
+        // signature parameter must start with `$`, `@` or `%`, so applying the
+        // action produced a syntax error. The routing assertion is the point;
+        // the expected rename is corrected to `$_unused`.
         assert!(actions.iter().any(|action| {
-            action.title == "Rename to '_$unused'"
+            action.title == "Rename to '$_unused'"
                 && action.edit.changes.iter().any(|edit| {
                     edit.location.start == start
                         && edit.location.end == start + "$unused".len()
-                        && edit.new_text == "_$unused"
+                        && edit.new_text == "$_unused"
                 })
         }));
     }

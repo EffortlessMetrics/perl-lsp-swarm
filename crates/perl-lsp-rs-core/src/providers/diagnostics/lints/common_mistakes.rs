@@ -106,11 +106,23 @@ fn check_bareword_filehandle(
         return;
     }
 
+    // Anchor the diagnostic on the bareword handle itself, not on the whole
+    // `open(...)` call, and name the handle in the message.
+    //
+    // Both matter for the PL400 quick fix, which replaces `diagnostic.range`
+    // and recovers the handle name via `message.split('\'').nth(1)`. With a
+    // whole-call range and a name-free message it replaced the entire
+    // statement with `my $fh_fh` — deleting the mode and filename, and naming
+    // a handle (`FH`) that never appeared in the user's file. Narrowed here,
+    // the same edit becomes the intended one:
+    // `open(LOG, ...)` -> `open(my $log_fh, ...)`.
+    let handle_range = (open_args[0].location.start, open_args[0].location.end);
+
     diagnostics.push(Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: handle_range,
         severity: DiagnosticSeverity::Information,
         code: Some(DiagnosticCode::BarewordFilehandle.as_str().to_string()),
-        message: "Use lexical filehandles instead of bareword filehandles".to_string(),
+        message: format!("Use a lexical filehandle instead of bareword filehandle '{name}'"),
         related_information: vec![RelatedInformation {
             location: (node.location.start, node.location.end),
             message:

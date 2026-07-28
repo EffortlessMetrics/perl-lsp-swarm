@@ -127,6 +127,74 @@ mod tests {
     use super::*;
     use perl_tdd_support::must_some;
 
+    /// The unused-parameter fix used to emit `_$x`: the diagnostic message
+    /// carries the sigil, and the old code prefixed the underscore to the
+    /// whole thing. Real perl rejects that outright in a signature —
+    /// "A signature parameter must start with '$', '@' or '%'".
+    #[test]
+    fn unused_parameter_fix_inserts_underscore_after_the_sigil() {
+        let diagnostic = diagnostic_for((10, 17), "Parameter '$unused' is never used");
+        let actions = fix_unused_parameter(&diagnostic);
+
+        let action = actions.first().expect("expected a rename action");
+        let edit = action.edit.changes.first().expect("expected one edit");
+
+        assert_eq!(edit.new_text, "$_unused", "replacement must stay valid Perl");
+        assert!(
+            !edit.new_text.starts_with('_'),
+            "`_$unused` is a syntax error in a signature; got {}",
+            edit.new_text
+        );
+        assert!(action.title.contains("$_unused"), "title should show the real new name");
+    }
+
+    #[test]
+    fn unused_parameter_fix_handles_array_and_hash_sigils() {
+        for (message, expected) in [
+            ("Parameter '@rest' is never used", "@_rest"),
+            ("Parameter '%opts' is never used", "%_opts"),
+        ] {
+            let actions = fix_unused_parameter(&diagnostic_for((0, 5), message));
+            let edit = actions
+                .first()
+                .and_then(|action| action.edit.changes.first())
+                .expect("expected an edit");
+            assert_eq!(edit.new_text, expected);
+        }
+    }
+
+    /// PL400 used to carry a name-free message and a whole-`open(...)` range,
+    /// so this fix replaced the entire statement with `my $fh_fh` — deleting
+    /// the mode and filename and naming a handle absent from the source.
+    /// Without a recoverable name it must now offer nothing rather than guess.
+    #[test]
+    fn bareword_filehandle_fix_declines_when_the_handle_name_is_unknown() {
+        let diagnostic =
+            diagnostic_for((0, 26), "Use lexical filehandles instead of bareword filehandles");
+        assert!(
+            fix_bareword_filehandle(&diagnostic).is_empty(),
+            "must not emit a destructive edit naming an invented handle"
+        );
+    }
+
+    #[test]
+    fn bareword_filehandle_fix_uses_the_named_handle() {
+        let diagnostic =
+            diagnostic_for((5, 8), "Use a lexical filehandle instead of bareword filehandle 'LOG'");
+        let actions = fix_bareword_filehandle(&diagnostic);
+
+        let action = actions.first().expect("expected a replacement action");
+        let edit = action.edit.changes.first().expect("expected one edit");
+
+        assert_eq!(edit.new_text, "my $log_fh");
+        assert_eq!(
+            (edit.location.start, edit.location.end),
+            (5, 8),
+            "edit must stay on the handle token, not the whole open() call"
+        );
+        assert!(action.title.contains("'LOG'"), "title should name the user's handle");
+    }
+
     fn diagnostic_for(range: (usize, usize), message: &str) -> QuickFixDiagnostic {
         QuickFixDiagnostic { range, message: message.to_string(), code: None, metadata: None }
     }
@@ -1017,37 +1085,14 @@ pub fn fix_assignment_in_condition(
     actions
 }
 
-/// Add 'use strict' pragma
-pub fn add_use_strict() -> Vec<CodeAction> {
-    vec![CodeAction {
-        title: "Add 'use strict'".to_string(),
-        kind: CodeActionKind::QuickFix,
-        diagnostics: vec![DiagnosticCode::MissingStrict.as_str().to_string()],
-        edit: CodeActionEdit {
-            changes: vec![TextEdit {
-                location: SourceLocation { start: 0, end: 0 },
-                new_text: "use strict;\n".to_string(),
-            }],
-        },
-        is_preferred: true,
-    }]
-}
-
-/// Add 'use warnings' pragma
-pub fn add_use_warnings() -> Vec<CodeAction> {
-    vec![CodeAction {
-        title: "Add 'use warnings'".to_string(),
-        kind: CodeActionKind::QuickFix,
-        diagnostics: vec![DiagnosticCode::MissingWarnings.as_str().to_string()],
-        edit: CodeActionEdit {
-            changes: vec![TextEdit {
-                location: SourceLocation { start: 0, end: 0 },
-                new_text: "use warnings;\n".to_string(),
-            }],
-        },
-        is_preferred: true,
-    }]
-}
+// `add_use_strict` / `add_use_warnings` were removed here. #5169 replaced them
+// with `add_use_strict_with_offset` / `add_use_warnings_with_offset`, which
+// insert below a `#!` line via `file_scope_pragma_insertion_offset` instead of
+// hardcoding offset 0. Every caller in `diagnostic_routes.rs` moved to the
+// `_with_offset` pair; the originals were left unreferenced, which trips the
+// workspace `dead_code` deny. Deleted rather than allowed: retaining them keeps
+// the pre-#5169 behavior (pragma inserted *above* the shebang) reachable by a
+// future caller.
 
 fn file_scope_pragma_insertion_offset(source: &str) -> usize {
     if source.starts_with("#!") {
@@ -1492,15 +1537,20 @@ pub fn fix_unused_parameter(diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> 
     let mut actions = Vec::new();
 
     if let Some(param_name) = diagnostic.message.split('\'').nth(1) {
-        // Add underscore prefix
+        // The diagnostic message carries the sigil (`Parameter '$unused' is
+        // never used`), so a bare `format!("_{param_name}")` would produce
+        // `_$unused` — not valid Perl, and rejected outright in a signature
+        // ("A signature parameter must start with '$', '@' or '%'"). Insert the
+        // underscore *after* the sigil, exactly as `fix_unused_variable` does.
+        let renamed = mark_intentionally_unused(param_name);
         actions.push(CodeAction {
-            title: format!("Rename to '_{}'", param_name),
+            title: format!("Rename to '{renamed}'"),
             kind: CodeActionKind::QuickFix,
             diagnostics: vec![DiagnosticCode::UnusedParameter.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
                     location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
-                    new_text: format!("_{}", param_name),
+                    new_text: renamed,
                 }],
             },
             is_preferred: true,
@@ -1690,8 +1740,16 @@ pub fn fix_variable_shadowing(diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction
 /// Bareword filehandles (e.g., `open FILE, ...`) are a common Perl anti-pattern.
 /// This fix suggests replacing the bareword with a lexical variable (`my $fh`).
 pub fn fix_bareword_filehandle(diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
-    // Extract filehandle name from message, e.g. "Bareword filehandle 'FILE'"
-    let fh_name = diagnostic.message.split('\'').nth(1).unwrap_or("FH");
+    // Extract the filehandle name from the message, e.g.
+    // "... bareword filehandle 'FILE'".
+    //
+    // No fallback name here on purpose. This edit replaces `diagnostic.range`
+    // wholesale, so guessing a name (the old `unwrap_or("FH")`) meant emitting
+    // a confident, destructive edit naming a handle the user never wrote.
+    // If the name cannot be recovered, offer nothing.
+    let Some(fh_name) = diagnostic.message.split('\'').nth(1) else {
+        return Vec::new();
+    };
     // Derive a lowercase lexical name: FILE -> $file_fh, LOGFILE -> $logfile_fh
     let lexical_name = format!("${}_fh", fh_name.to_lowercase());
 
