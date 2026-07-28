@@ -2290,7 +2290,10 @@ fn validate_public_json_value(value: &serde_json::Value) -> Result<()> {
                 let normalized_key = key.to_ascii_lowercase();
                 if (normalized_key.contains("secret")
                     || normalized_key.contains("password")
-                    || normalized_key.contains("token"))
+                    || normalized_key == "token"
+                    || normalized_key.starts_with("token_")
+                    || normalized_key.ends_with("token")
+                    || normalized_key.contains("_token_"))
                     && !value.is_null()
                 {
                     bail!("public evidence contains a secret-bearing field: {key}");
@@ -7063,6 +7066,23 @@ exit 1
         let error = evidence_bundle_write(config).expect_err("host paths must not be public");
         if !error.to_string().contains("host filesystem path") {
             bail!("unexpected public-path validation error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn public_json_allows_semantic_tokens_but_rejects_secret_tokens() -> TestResult {
+        validate_public_json_value(&serde_json::json!({
+            "lsp_impact": ["diagnostics", "semantic_tokens"],
+            "semantic_tokens": ["variable"],
+        }))?;
+
+        let error = validate_public_json_value(&serde_json::json!({
+            "access_token": "private-value",
+        }))
+        .expect_err("secret-bearing token fields must remain rejected");
+        if !error.to_string().contains("secret-bearing field: access_token") {
+            bail!("unexpected secret-field validation error: {error}");
         }
         Ok(())
     }
