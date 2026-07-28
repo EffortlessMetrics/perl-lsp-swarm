@@ -40,44 +40,51 @@ impl<'a> Parser<'a> {
 
         loop {
             // --------------------------------------------------------------------
-            // Hash/array slice without arrow: @hash{...} or %hash{...}
+            // Hash/array slice without arrow: @hash{...}, %hash{...},
+            // @$href{...}, @{$href}{...}, %$href{...}, %{$href}{...}
             //
             // In Perl, `@hash{...}` and `%hash{...}` are valid hash/array slice
-            // operations that do NOT require an intervening `->`.
+            // operations that do NOT require an intervening `->`.  Deref targets
+            // (`@$href{...}`, `@{$href}{...}`) are semantically identical — the
+            // unbraced/braced sigil-deref both parse as `Unary { op: "@{}" | "%{}" }`.
             //
-            // This must be checked BEFORE the Arrow arm (line 69) because the
-            // Arrow arm's LeftBrace handling (line 295) is only reached when there
-            // is a `->` preceding the `{`. Without this early check, `@hash{...}`
-            // would fall through to the generic hash-element arm at line 428,
-            // which would incorrectly parse `{...}` as a block instead of a subscript.
+            // This must be checked BEFORE the Arrow arm because the Arrow arm's
+            // LeftBrace handling is only reached when there is a `->` preceding
+            // the `{`. Without this early check, `@hash{...}` would fall through
+            // to the generic hash-element arm, which would incorrectly parse `{...}`
+            // as a block instead of a subscript.
             //
             // The condition checks:
             // 1. The next token is `{` (not `->`)
-            // 2. The current expression is a variable with `@` or `%` sigil
+            // 2. The current expression is a variable with `@` or `%` sigil, OR
+            //    a deref Unary with `@{}` or `%{}` op (covers `@$href` / `@{$href}`)
             //
             // Example: `@ops_seen{ map split(/ /), values %ops }` should parse as
             // a hash slice, not as `@ops_seen` followed by a block.
+            // Mirrors the array-slice deref detection at the `[` arm below.
             // --------------------------------------------------------------------
             if self.peek_kind() == Some(TokenKind::LeftBrace) {
-                if let NodeKind::Variable { sigil, .. } = &expr.kind {
-                    if sigil == "@" || sigil == "%" {
-                        let is_at = sigil == "@";
-                        self.tokens.next()?; // consume {
-                        let key = self.parse_hash_subscript_key()?;
-                        self.expect_closing_delimiter(TokenKind::RightBrace)?;
+                let is_at_sigil = matches!(&expr.kind, NodeKind::Variable { sigil, .. } if sigil == "@")
+                    || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "@{}");
+                let is_pct_sigil = matches!(&expr.kind, NodeKind::Variable { sigil, .. } if sigil == "%")
+                    || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "%{}");
 
-                        let start = expr.location.start;
-                        let end = self.previous_position();
+                if is_at_sigil || is_pct_sigil {
+                    self.tokens.next()?; // consume {
+                    let key = self.parse_hash_subscript_key()?;
+                    self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
-                        record_postfix_layer()?;
-                        let kind = if is_at {
-                            NodeKind::HashSlice { target: Box::new(expr), keys: Box::new(key) }
-                        } else {
-                            NodeKind::KeyValueSlice { target: Box::new(expr), keys: Box::new(key) }
-                        };
-                        expr = Node::new(kind, SourceLocation { start, end });
-                        continue;
-                    }
+                    let start = expr.location.start;
+                    let end = self.previous_position();
+
+                    record_postfix_layer()?;
+                    let kind = if is_at_sigil {
+                        NodeKind::HashSlice { target: Box::new(expr), keys: Box::new(key) }
+                    } else {
+                        NodeKind::KeyValueSlice { target: Box::new(expr), keys: Box::new(key) }
+                    };
+                    expr = Node::new(kind, SourceLocation { start, end });
+                    continue;
                 }
             }
 
