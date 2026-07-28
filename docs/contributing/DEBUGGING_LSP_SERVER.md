@@ -108,7 +108,7 @@ The file prefix is derived from the basename of the path you provide.
 ## Checking server health and build info
 
 ```bash
-# Quick health check (outputs JSON-compatible summary)
+# Quick health check (prints plain-text `ok <version>`)
 perllsp --health
 
 # Full build info: version, git tag, feature profile, binary path
