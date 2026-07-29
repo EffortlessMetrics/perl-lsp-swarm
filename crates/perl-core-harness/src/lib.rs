@@ -4154,8 +4154,52 @@ mod tests {
         ) else {
             bail!("a retirement receipt for a stale report must fail closed");
         };
-        if !error.to_string().contains("stale") && !error.to_string().contains("measured subject") {
+        let message = error.to_string();
+        if !message.contains("BoundaryRetirementReceiptMismatch")
+            || !message.contains("base/ok.t")
+            || !message.contains("stale")
+        {
             bail!("unexpected stale retirement error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_rejects_still_present_boundary_retirement() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+        let config = sample_baseline_v2_config();
+        let previous = baseline_v2_from_report(&report, &series, &config, None, &[])?;
+        let mut transition_config = config;
+        transition_config.accepted_transition_id = Some("transition-1".into());
+        let retirement = BoundaryRetirement {
+            schema_version: BOUNDARY_RETIREMENT_SCHEMA_VERSION.into(),
+            path: "base/ok.t".into(),
+            id: "runtime_symbolic_reference".into(),
+            source_start: 4,
+            source_end: 12,
+            series_id: series.series_id.clone(),
+            manifest_hash: series.manifest_hash.clone(),
+            measurement_sha: report.commit.clone(),
+            source_report_digest: report_digest(&report)?,
+            transition_id: "transition-1".into(),
+            replacement_issue: "#5168".into(),
+            evidence_bundle: "bundle-sha256:example".into(),
+        };
+
+        let Err(error) = baseline_v2_from_report(
+            &report,
+            &series,
+            &transition_config,
+            Some(&previous),
+            &[retirement],
+        ) else {
+            bail!("a retirement receipt for a still-present boundary must fail closed");
+        };
+        if !error.to_string().contains("still present") {
+            bail!("unexpected still-present retirement error: {error}");
         }
         Ok(())
     }
