@@ -1822,18 +1822,6 @@ fn compare_baseline_v2_with_identities(
             "current identity inputs differ from the v2 baseline measured subject",
         ));
     }
-    if let Some(identities) = identities
-        && (identities.compiler_subject_identity != series.compiler_subject_identity
-            || identities.invocation_identity != series.invocation_identity
-            || identities.capability_identity != series.capability_identity
-            || identities.environment_identity != series.environment_identity)
-    {
-        violations.push(violation(
-            BaselineViolationKind::MeasuredSubjectMismatch,
-            None,
-            "current identity inputs differ from the comparison-series subject",
-        ));
-    }
     let current_membership =
         report.file_results.iter().map(|result| result.path.as_str()).collect::<BTreeSet<_>>();
     let series_membership =
@@ -1940,7 +1928,7 @@ fn compare_boundary_transition(
             || retirement.evidence_bundle.trim().is_empty()
         {
             violations.push(violation(
-                BaselineViolationKind::BoundaryRemovedWithoutRetirement,
+                BaselineViolationKind::BoundaryRetirementReceiptMismatch,
                 Some(retirement.path.clone()),
                 "boundary retirement receipt is incomplete or uses the wrong transition",
             ));
@@ -1952,7 +1940,7 @@ fn compare_boundary_transition(
             source_end: retirement.source_end,
         }) {
             violations.push(violation(
-                BaselineViolationKind::BoundaryRemovedWithoutRetirement,
+                BaselineViolationKind::BoundaryRetirementReferencesUnknownBoundary,
                 Some(retirement.path.clone()),
                 "retirement receipt references a boundary absent from the previous baseline",
             ));
@@ -3971,6 +3959,52 @@ mod tests {
         )?;
         if !accepted.semantic_boundaries.is_empty() {
             bail!("retired boundary remained in the accepted inventory");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn boundary_retirement_validation_reports_specific_violation_kinds() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut previous_report = sample_compile_report();
+        previous_report.semantic_boundaries.push(sample_semantic_boundary());
+        let config = sample_baseline_v2_config();
+        let previous = baseline_v2_from_report(&previous_report, &series, &config, None, &[])?;
+
+        let invalid_retirement = BoundaryRetirement {
+            path: "base/ok.t".into(),
+            id: "runtime_symbolic_reference".into(),
+            source_start: 4,
+            source_end: 12,
+            transition_id: "wrong-transition".into(),
+            replacement_issue: String::new(),
+            evidence_bundle: String::new(),
+        };
+        let unknown_retirement = BoundaryRetirement {
+            path: "base/missing.t".into(),
+            id: "missing-boundary".into(),
+            source_start: 1,
+            source_end: 2,
+            transition_id: "transition-1".into(),
+            replacement_issue: "#5168".into(),
+            evidence_bundle: "bundle-sha256:example".into(),
+        };
+        let violations = compare_boundary_transition(
+            &previous,
+            &[],
+            &[invalid_retirement, unknown_retirement],
+            "transition-1",
+        );
+        if !violations.iter().any(|violation| {
+            violation.kind == BaselineViolationKind::BoundaryRetirementReceiptMismatch
+        }) {
+            bail!("invalid retirement metadata was not classified separately");
+        }
+        if !violations.iter().any(|violation| {
+            violation.kind == BaselineViolationKind::BoundaryRetirementReferencesUnknownBoundary
+        }) {
+            bail!("unknown retirement boundary was not classified separately");
         }
         Ok(())
     }

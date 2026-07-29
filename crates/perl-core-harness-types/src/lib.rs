@@ -423,6 +423,8 @@ pub enum BaselineViolationKind {
     SemanticBoundary,
     MissingBoundaryInventory,
     BoundaryRemovedWithoutRetirement,
+    BoundaryRetirementReceiptMismatch,
+    BoundaryRetirementReferencesUnknownBoundary,
     MeasuredSubjectMismatch,
     PreparationIdentityMismatch,
 }
