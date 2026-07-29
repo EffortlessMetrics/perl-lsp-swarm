@@ -3,7 +3,7 @@
 //! Validates configured endpoints before outbound requests and ensures credentials
 //! cannot be rebound to a different host/scheme/port via redirects or URL tampering.
 
-use std::net::{IpAddr, Ipv6Addr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use thiserror::Error;
 use url::Url;
 
@@ -16,27 +16,35 @@ pub struct ApprovedDestination {
     pub host: String,
     /// Explicit or default port for the scheme.
     pub port: u16,
-    /// Addresses returned by DNS at validation time.
+    /// Addresses returned by DNS at validation time (IPv4-mapped IPv6 normalized).
     pub resolved_ips: Vec<IpAddr>,
 }
 
 /// Errors raised when an endpoint fails destination policy.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum DestinationError {
+    /// URL failed to parse.
     #[error("invalid endpoint URL: {0}")]
     InvalidUrl(String),
+    /// Scheme is not `http` or `https`.
     #[error("unsupported URL scheme: {0}")]
     UnsupportedScheme(String),
+    /// Parsed URL has no host component.
     #[error("endpoint host is missing")]
     MissingHost,
+    /// Non-loopback destination used plain HTTP.
     #[error("remote AI endpoints must use HTTPS")]
     HttpsRequired,
+    /// Loopback HTTP without `local_model_mode`.
     #[error("plain HTTP to local models requires local_model_mode")]
     LocalHttpDisabled,
+    /// DNS returned no addresses.
     #[error("hostname did not resolve to any address")]
     UnresolvedHost,
+    /// Resolved address is private, link-local, CGNAT, metadata, or transition.
     #[error("destination resolves to a disallowed address")]
     DisallowedAddress,
+    /// `localhost` resolved to a non-loopback address.
     #[error("localhost must resolve to loopback addresses only")]
     LocalhostNotLoopback,
 }
@@ -51,6 +59,7 @@ pub fn validate_endpoint(
     validate_endpoint_with_resolver(url, allow_local_http, &default_resolver)
 }
 
+/// Like [`validate_endpoint`], but with an injectable DNS resolver (tests).
 pub fn validate_endpoint_with_resolver(
     url: &str,
     allow_local_http: bool,
@@ -62,10 +71,11 @@ pub fn validate_endpoint_with_resolver(
         return Err(DestinationError::UnsupportedScheme(scheme));
     }
 
-    let host = parsed.host_str().ok_or(DestinationError::MissingHost)?.to_ascii_lowercase();
+    let host_raw = parsed.host_str().ok_or(DestinationError::MissingHost)?;
+    let host = normalize_host(host_raw);
 
     let port = parsed.port().unwrap_or_else(|| default_port(&scheme));
-    let resolved_ips = resolve(&host, port)?;
+    let resolved_ips: Vec<IpAddr> = resolve(&host, port)?.into_iter().map(normalize_ip).collect();
 
     if resolved_ips.is_empty() {
         return Err(DestinationError::UnresolvedHost);
@@ -103,6 +113,24 @@ pub fn credential_may_attach(approved: &ApprovedDestination, request_url: &str) 
     }
 }
 
+/// Convert IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) to their IPv4 equivalents.
+pub(crate) fn normalize_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        other => other,
+    }
+}
+
+/// Canonicalize host for policy identity: lowercase + strip IPv6 brackets.
+fn normalize_host(host: &str) -> String {
+    let lower = host.to_ascii_lowercase();
+    strip_ipv6_brackets(&lower).to_string()
+}
+
+fn strip_ipv6_brackets(host: &str) -> &str {
+    host.strip_prefix('[').and_then(|inner| inner.strip_suffix(']')).unwrap_or(host)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DestinationIdentity {
     scheme: String,
@@ -116,7 +144,8 @@ fn parse_destination_identity(url: &str) -> Result<DestinationIdentity, Destinat
     if scheme != "http" && scheme != "https" {
         return Err(DestinationError::UnsupportedScheme(scheme));
     }
-    let host = parsed.host_str().ok_or(DestinationError::MissingHost)?.to_ascii_lowercase();
+    let host_raw = parsed.host_str().ok_or(DestinationError::MissingHost)?;
+    let host = normalize_host(host_raw);
     let port = parsed.port().unwrap_or_else(|| default_port(&scheme));
     Ok(DestinationIdentity { scheme, host, port })
 }
@@ -129,11 +158,19 @@ fn default_port(scheme: &str) -> u16 {
 }
 
 fn default_resolver(host: &str, port: u16) -> Result<Vec<IpAddr>, DestinationError> {
+    let host = strip_ipv6_brackets(host);
+    if host.is_empty() {
+        return Err(DestinationError::UnresolvedHost);
+    }
+    // Formatting bare `::1:port` is invalid for to_socket_addrs — parse literals first.
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(vec![normalize_ip(ip)]);
+    }
     let authority = format!("{host}:{port}");
     let addrs: Vec<IpAddr> = authority
         .to_socket_addrs()
         .map_err(|_e| DestinationError::UnresolvedHost)?
-        .map(|addr| addr.ip())
+        .map(|addr| normalize_ip(addr.ip()))
         .collect();
     if addrs.is_empty() {
         return Err(DestinationError::UnresolvedHost);
@@ -142,26 +179,51 @@ fn default_resolver(host: &str, port: u16) -> Result<Vec<IpAddr>, DestinationErr
 }
 
 fn is_disallowed_address(ip: IpAddr) -> bool {
+    let ip = normalize_ip(ip);
     if ip.is_loopback() {
         return false;
     }
 
     match ip {
-        IpAddr::V4(v4) => {
-            v4.is_private()
-                || v4.is_link_local()
-                || v4.is_multicast()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.octets() == [169, 254, 169, 254]
-        }
+        IpAddr::V4(v4) => is_disallowed_ipv4(v4),
         IpAddr::V6(v6) => {
-            v6.is_multicast()
+            if v6.is_multicast()
                 || v6.is_unspecified()
                 || is_ipv6_unique_local(v6)
                 || is_ipv6_link_local(v6)
+                || is_ipv6_site_local(v6)
+                || is_ipv6_6to4(v6)
+                || is_ipv6_nat64(v6)
+                || is_ipv6_ipv4_compatible(v6)
+            {
+                return true;
+            }
+
+            // Defense in depth: if any other embedding form appears, evaluate the
+            // embedded IPv4 against the same private/link-local/CGNAT policy.
+            if let Some(embedded) = embedded_ipv4_from_v6(v6) {
+                return is_disallowed_ipv4(embedded);
+            }
+
+            false
         }
     }
+}
+
+fn is_disallowed_ipv4(v4: Ipv4Addr) -> bool {
+    v4.is_private()
+        || v4.is_link_local()
+        || v4.is_multicast()
+        || v4.is_unspecified()
+        || v4.is_broadcast()
+        || is_cgnat(v4)
+        || v4.octets() == [169, 254, 169, 254]
+}
+
+/// RFC 6598 Carrier-Grade NAT shared address space `100.64.0.0/10`.
+fn is_cgnat(v4: Ipv4Addr) -> bool {
+    let octets = v4.octets();
+    octets[0] == 100 && (octets[1] & 0xc0) == 64
 }
 
 fn is_ipv6_unique_local(ip: Ipv6Addr) -> bool {
@@ -172,11 +234,72 @@ fn is_ipv6_link_local(ip: Ipv6Addr) -> bool {
     ip.octets()[0] == 0xfe && (ip.octets()[1] & 0xc0) == 0x80
 }
 
+/// Deprecated site-local `fec0::/10` (RFC 3879).
+fn is_ipv6_site_local(ip: Ipv6Addr) -> bool {
+    ip.octets()[0] == 0xfe && (ip.octets()[1] & 0xc0) == 0xc0
+}
+
+/// 6to4 transition prefix `2002::/16` (RFC 3056).
+fn is_ipv6_6to4(ip: Ipv6Addr) -> bool {
+    let o = ip.octets();
+    o[0] == 0x20 && o[1] == 0x02
+}
+
+/// NAT64 well-known prefix `64:ff9b::/96` (RFC 6052).
+fn is_ipv6_nat64(ip: Ipv6Addr) -> bool {
+    let o = ip.octets();
+    o[0] == 0x00
+        && o[1] == 0x64
+        && o[2] == 0xff
+        && o[3] == 0x9b
+        && o[4] == 0
+        && o[5] == 0
+        && o[6] == 0
+        && o[7] == 0
+        && o[8] == 0
+        && o[9] == 0
+        && o[10] == 0
+        && o[11] == 0
+}
+
+/// Deprecated IPv4-compatible IPv6 (`::a.b.c.d`), excluding `::` and `::1`.
+fn is_ipv6_ipv4_compatible(ip: Ipv6Addr) -> bool {
+    if ip.to_ipv4_mapped().is_some() {
+        return false;
+    }
+    match ip.to_ipv4() {
+        Some(v4) => !v4.is_unspecified() && !v4.is_loopback(),
+        None => false,
+    }
+}
+
+/// Extract an embedded IPv4 from known transition encodings (defense in depth).
+fn embedded_ipv4_from_v6(v6: Ipv6Addr) -> Option<Ipv4Addr> {
+    let o = v6.octets();
+
+    // 6to4: 2002:V4ADDR::/48 — IPv4 lives in bytes 2..6.
+    if is_ipv6_6to4(v6) {
+        return Some(Ipv4Addr::new(o[2], o[3], o[4], o[5]));
+    }
+
+    // NAT64 well-known prefix — IPv4 lives in the last 4 bytes.
+    if is_ipv6_nat64(v6) {
+        return Some(Ipv4Addr::new(o[12], o[13], o[14], o[15]));
+    }
+
+    if is_ipv6_ipv4_compatible(v6) {
+        return v6.to_ipv4();
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod unit_tests {
     use super::{
-        credential_may_attach, default_resolver, validate_endpoint_with_resolver,
-        ApprovedDestination, DestinationError,
+        ApprovedDestination, DestinationError, credential_may_attach, default_resolver,
+        embedded_ipv4_from_v6, is_disallowed_address, normalize_ip,
+        validate_endpoint_with_resolver,
     };
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -331,5 +454,91 @@ mod unit_tests {
     fn default_resolver_rejects_empty_host() {
         let err = default_resolver("", 443).unwrap_err();
         assert_eq!(err, DestinationError::UnresolvedHost);
+    }
+
+    #[test]
+    fn default_resolver_accepts_ipv6_literal_without_brackets() {
+        let addrs = default_resolver("::1", 11434).expect("ipv6 literal must resolve");
+        assert_eq!(addrs, vec![IpAddr::V6(Ipv6Addr::LOCALHOST)]);
+    }
+
+    #[test]
+    fn normalizes_ipv4_mapped_ipv6() {
+        let mapped = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001));
+        assert_eq!(normalize_ip(mapped), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+    }
+
+    #[test]
+    fn rejects_ipv4_mapped_private_via_normalization() {
+        let mapped = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x0a00, 0x0005));
+        let err = validate_endpoint_with_resolver(
+            "https://evil.example/v1",
+            false,
+            &resolver_with(vec![mapped]),
+        )
+        .unwrap_err();
+        assert_eq!(err, DestinationError::DisallowedAddress);
+    }
+
+    #[test]
+    fn rejects_cgnat_shared_address_space() {
+        let err = validate_endpoint_with_resolver(
+            "https://cgnat.example/v1",
+            false,
+            &resolver_with(vec![IpAddr::V4(Ipv4Addr::new(100, 64, 1, 2))]),
+        )
+        .unwrap_err();
+        assert_eq!(err, DestinationError::DisallowedAddress);
+    }
+
+    #[test]
+    fn rejects_6to4_embedding_private_ipv4() {
+        // 2002:0a00:0001:: embeds 10.0.0.1
+        let sixto4 = IpAddr::V6(Ipv6Addr::new(0x2002, 0x0a00, 0x0001, 0, 0, 0, 0, 0));
+        assert!(is_disallowed_address(sixto4));
+        let err = validate_endpoint_with_resolver(
+            "https://sixto4.example/v1",
+            false,
+            &resolver_with(vec![sixto4]),
+        )
+        .unwrap_err();
+        assert_eq!(err, DestinationError::DisallowedAddress);
+    }
+
+    #[test]
+    fn rejects_nat64_embedding_private_ipv4() {
+        // 64:ff9b::0a00:0001 embeds 10.0.0.1
+        let nat64 = IpAddr::V6(Ipv6Addr::new(0x0064, 0xff9b, 0, 0, 0, 0, 0x0a00, 0x0001));
+        let IpAddr::V6(nat64_v6) = nat64 else {
+            panic!("test fixture is v6");
+        };
+        assert_eq!(embedded_ipv4_from_v6(nat64_v6), Some(Ipv4Addr::new(10, 0, 0, 1)));
+        let err = validate_endpoint_with_resolver(
+            "https://nat64.example/v1",
+            false,
+            &resolver_with(vec![nat64]),
+        )
+        .unwrap_err();
+        assert_eq!(err, DestinationError::DisallowedAddress);
+    }
+
+    #[test]
+    fn rejects_ipv4_compatible_embedding_private() {
+        // ::10.0.0.1
+        let compatible = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0x0a00, 0x0001));
+        assert!(is_disallowed_address(compatible));
+    }
+
+    #[test]
+    fn rejects_site_local_ipv6() {
+        let site_local = IpAddr::V6(Ipv6Addr::new(0xfec0, 0, 0, 0, 0, 0, 0, 1));
+        assert!(is_disallowed_address(site_local));
+    }
+
+    #[test]
+    fn rejects_6to4_even_when_embedded_ipv4_is_public() {
+        // Entire 2002::/16 is disallowed — transition tunneling is an SSRF bypass class.
+        let sixto4 = IpAddr::V6(Ipv6Addr::new(0x2002, 0x5db8, 0xd822, 0, 0, 0, 0, 1));
+        assert!(is_disallowed_address(sixto4));
     }
 }

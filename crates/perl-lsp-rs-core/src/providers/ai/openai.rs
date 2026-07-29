@@ -1,18 +1,21 @@
 //! OpenAI-compatible completion provider.
 
-use super::destination::{credential_may_attach, validate_endpoint};
+use super::destination::{ApprovedDestination, credential_may_attach, validate_endpoint};
 use super::prompt::build_fim_prompt;
 use super::rate_limiter::RateLimiter;
 use super::sse::SseParser;
 use crate::config::{
-    is_safe_http_header_value_part, normalize_ai_api_key_header, normalize_ai_api_key_prefix,
-    DEFAULT_AI_API_KEY_HEADER, DEFAULT_AI_API_KEY_PREFIX,
+    DEFAULT_AI_API_KEY_HEADER, DEFAULT_AI_API_KEY_PREFIX, is_safe_http_header_value_part,
+    normalize_ai_api_key_header, normalize_ai_api_key_prefix,
 };
 use crate::providers::inline_completion::{
     BackendError, BackendRequest, InlineCompletionBackend, StreamChunk, StreamControl,
 };
 use std::io::BufReader;
-use std::sync::Arc;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, OnceLock};
+use ureq::unversioned::resolver::{ResolvedSocketAddrs, Resolver};
+use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
 /// Configuration for the OpenAI-compatible provider.
 #[derive(Debug, Clone)]
@@ -37,6 +40,9 @@ pub struct OpenAiConfig {
 pub struct OpenAiProvider {
     config: OpenAiConfig,
     limiter: Arc<RateLimiter>,
+    /// Destination validated once on first use; subsequent requests only
+    /// re-check credential binding against the URL about to be dispatched.
+    approved: OnceLock<ApprovedDestination>,
 }
 
 impl OpenAiConfig {
@@ -54,10 +60,59 @@ impl OpenAiConfig {
     }
 }
 
+/// ureq resolver that returns only the IPs approved at validation time.
+///
+/// Pins connect-time DNS to the validated address set so a rebinding host
+/// cannot swap a public IP (policy pass) for a private IP at HTTP connect.
+#[derive(Debug)]
+struct PinnedIpResolver {
+    ips: Vec<IpAddr>,
+}
+
+impl Resolver for PinnedIpResolver {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        _config: &ureq::config::Config,
+        _timeout: NextTimeout,
+    ) -> Result<ResolvedSocketAddrs, ureq::Error> {
+        let port = uri
+            .authority()
+            .and_then(|a| a.port_u16())
+            .or_else(|| match uri.scheme_str() {
+                Some("https") => Some(443),
+                Some("http") => Some(80),
+                _ => None,
+            })
+            .ok_or(ureq::Error::HostNotFound)?;
+
+        let mut result = self.empty();
+        for ip in self.ips.iter().take(16) {
+            result.push(SocketAddr::new(*ip, port));
+        }
+        if result.is_empty() {
+            return Err(ureq::Error::HostNotFound);
+        }
+        Ok(result)
+    }
+}
+
 impl OpenAiProvider {
     /// Create a new provider with the given config and rate limiter.
     pub fn new(config: OpenAiConfig, limiter: Arc<RateLimiter>) -> Self {
-        Self { config, limiter }
+        Self { config, limiter, approved: OnceLock::new() }
+    }
+
+    fn approved_destination(&self) -> Result<&ApprovedDestination, BackendError> {
+        if let Some(approved) = self.approved.get() {
+            return Ok(approved);
+        }
+        let validated = validate_endpoint(&self.config.endpoint, self.config.local_model_mode)
+            .map_err(|e| BackendError::Transport(e.to_string()))?;
+        let _ = self.approved.set(validated);
+        self.approved
+            .get()
+            .ok_or_else(|| BackendError::Transport("AI destination approval missing".to_string()))
     }
 
     fn auth_header_name(&self) -> &str {
@@ -131,10 +186,19 @@ impl OpenAiProvider {
         }
     }
 
-    fn build_http_agent(timeout: std::time::Duration) -> ureq::Agent {
+    fn build_http_agent(
+        timeout: std::time::Duration,
+        approved: &ApprovedDestination,
+    ) -> ureq::Agent {
         let config =
             ureq::Agent::config_builder().timeout_global(Some(timeout)).max_redirects(0).build();
-        ureq::Agent::new_with_config(config)
+        // Pin connect-time resolution to the IPs approved by validate_endpoint
+        // so ureq cannot re-resolve DNS and bypass the SSRF allowlist (TOCTOU).
+        ureq::Agent::with_parts(
+            config,
+            DefaultConnector::default(),
+            PinnedIpResolver { ips: approved.resolved_ips.clone() },
+        )
     }
 
     fn extract_content_delta(data: &str) -> Option<String> {
@@ -258,8 +322,8 @@ mod tests {
     }
 
     #[test]
-    fn malformed_auth_header_name_falls_back_without_exposing_key(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn malformed_auth_header_name_falls_back_without_exposing_key()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut config = OpenAiConfig::new(
             "https://example.test/v1/chat/completions".to_string(),
             "custom-code-model".to_string(),
@@ -275,8 +339,8 @@ mod tests {
     }
 
     #[test]
-    fn malformed_auth_prefix_and_key_do_not_enter_header_text(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn malformed_auth_prefix_and_key_do_not_enter_header_text()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut config = OpenAiConfig::new(
             "https://example.test/v1/chat/completions".to_string(),
             "custom-code-model".to_string(),
@@ -315,9 +379,10 @@ impl InlineCompletionBackend for OpenAiProvider {
             return Err(BackendError::RateLimited);
         }
 
-        let approved = validate_endpoint(&self.config.endpoint, self.config.local_model_mode)
-            .map_err(|e| BackendError::Transport(e.to_string()))?;
-        if !credential_may_attach(&approved, &self.config.endpoint) {
+        // Validate once (cached); bind credentials to the URL about to be POSTed.
+        let approved = self.approved_destination()?;
+        let request_url = self.config.endpoint.as_str();
+        if !credential_may_attach(approved, request_url) {
             return Err(BackendError::Transport(
                 "AI endpoint failed credential binding check".to_string(),
             ));
@@ -325,15 +390,25 @@ impl InlineCompletionBackend for OpenAiProvider {
 
         let body = self.build_request_body(req);
         let timeout = std::time::Duration::from_millis(req.timeout_ms);
-        let agent = Self::build_http_agent(timeout);
+        let agent = Self::build_http_agent(timeout, approved);
         let auth_value = self.auth_header_value()?;
 
         let response = agent
-            .post(&self.config.endpoint)
+            .post(request_url)
             .header(self.auth_header_name(), auth_value.as_str())
             .header("Content-Type", "application/json")
             .send_json(&body)
             .map_err(|e| Self::map_transport_error(e.to_string(), &self.config.api_key))?;
+
+        // max_redirects(0) returns 3xx bodies instead of following them; reject
+        // non-2xx so credentials never ride a silent redirect "success".
+        let status = response.status();
+        if !(200..300).contains(&status.as_u16()) {
+            return Err(Self::map_transport_error(
+                format!("unexpected HTTP status {status}"),
+                &self.config.api_key,
+            ));
+        }
 
         let reader = BufReader::new(response.into_body().into_reader());
         let mut parser = SseParser::new(reader);
