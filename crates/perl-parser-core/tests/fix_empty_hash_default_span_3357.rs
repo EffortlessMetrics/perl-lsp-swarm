@@ -12,7 +12,6 @@
 mod cpan_test_helpers;
 use cpan_test_helpers::parse;
 use perl_parser_core::{Node, NodeKind};
-use perl_tdd_support::must_some;
 
 /// Walk the AST; return the first node matching `pred`.
 fn find_node<'a, F>(node: &'a Node, pred: &F) -> Option<&'a Node>
@@ -66,7 +65,8 @@ fn optional_param_empty_hash_default_span_is_not_reversed() {
 }
 
 #[test]
-fn optional_param_empty_hash_default_span_covers_braces() {
+fn optional_param_empty_hash_default_span_covers_braces() -> Result<(), Box<dyn std::error::Error>>
+{
     // The empty `{}` is at bytes 15..17 in `sub f ($opts = {}) { }`
     // (0-indexed: s=0, u=1, b=2, ' '=3, f=4, ' '=5, (=6, $=7, o=8, p=9, t=10, s=11,
     //  ' '=12, ==13, ' '=14, {=15, }=16, )=17, ' '=18, {=19, ' '=20, }=21)
@@ -82,9 +82,12 @@ fn optional_param_empty_hash_default_span_covers_braces() {
     let loc = &default_node.location;
 
     // Slice the source using the span — must not panic (no reversed/out-of-bounds).
-    let sliced = must_some(source.get(loc.start..loc.end));
+    let sliced = source
+        .get(loc.start..loc.end)
+        .ok_or_else(|| format!("span {}..{} is out of bounds for source", loc.start, loc.end))?;
 
     assert_eq!(sliced, "{}", "the HashLiteral span should cover exactly `{{}}`");
+    Ok(())
 }
 
 // ── empty {} in a named parameter with `=` ───────────────────────────────────
