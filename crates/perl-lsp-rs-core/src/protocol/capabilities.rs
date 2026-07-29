@@ -124,6 +124,7 @@ pub fn get_supported_commands() -> Vec<String> {
         "perl.runSubtest".to_string(),
         "perl.debugFile".to_string(),
         "perl.debugTest".to_string(),
+        "perl.debugTests".to_string(),
         "perl.debugTestFile".to_string(),
         "perl.goToTest".to_string(),
         "perl.goToImplementation".to_string(),
@@ -331,6 +332,18 @@ mod tests {
         assert!(
             cmds.iter().any(|c| c == "perl.workspaceTrustReport"),
             "perl.workspaceTrustReport must be in get_supported_commands"
+        );
+    }
+
+    /// Verify that `perl.debugTests` (plural) is advertised alongside
+    /// `perl.debugTest`. Regression guard for issue #5276 — the command was
+    /// dispatched but missing from the advertised capabilities list.
+    #[test]
+    fn debug_tests_plural_command_id_is_registered() {
+        let cmds = get_supported_commands();
+        assert!(
+            cmds.iter().any(|c| c == "perl.debugTests"),
+            "perl.debugTests must be in get_supported_commands"
         );
     }
 
