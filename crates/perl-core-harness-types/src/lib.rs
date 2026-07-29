@@ -22,6 +22,7 @@ pub const SERIES_MANIFEST_NORMALIZATION_VERSION: &str = "path-normalization.v1";
 pub const BOUNDARY_RETIREMENT_SCHEMA_VERSION: &str = "perl_core_harness.boundary_retirement.v1";
 pub const SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION: &str =
     "perl_core_harness.semantic_boundary_registry.v1";
+pub const FAILURE_CLUSTER_SCHEMA_VERSION: &str = "perl_core_harness.failure_cluster.v1";
 
 /// Upstream Perl test scheduler to query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
@@ -646,6 +647,65 @@ pub struct SemanticBoundaryRegistry {
     pub entries: Vec<SemanticBoundaryRegistryEntry>,
 }
 
+/// Normalized, membership-independent root-cause signature for one failure cluster.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailureClusterSignature {
+    pub schema_version: String,
+    pub series_id: String,
+    pub profile: HarnessProfile,
+    pub mode: HarnessMode,
+    pub stage: String,
+    pub bucket: String,
+    pub workstream: String,
+    pub source_shape_fingerprint: String,
+    pub fact_classes: Vec<String>,
+    pub lsp_surfaces: Vec<String>,
+}
+
+/// Deterministically reproducible compiler work cluster derived from one bundle.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailureCluster {
+    pub cluster_id: String,
+    pub signature: FailureClusterSignature,
+    pub affected_files: Vec<String>,
+    pub representative_failure: RunFailure,
+    pub direct_reproduction: String,
+    pub impacted_layer: String,
+    pub fact_classes: Vec<String>,
+    pub lsp_surfaces: Vec<String>,
+    pub occurrence_count: usize,
+    pub exact_series_proof_required: bool,
+}
+
+/// A semantic-boundary debt candidate kept separate from product failures.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailureDebtCandidate {
+    pub path: String,
+    pub id: String,
+    pub disposition: SemanticBoundaryDisposition,
+    pub reason: String,
+    pub owner_workstream: String,
+    pub exact_series_proof_required: bool,
+}
+
+/// Deterministic cluster and debt-candidate report for one evidence bundle.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailureClusterReport {
+    pub schema_version: String,
+    pub bundle_id: String,
+    pub series_id: String,
+    pub manifest_hash: String,
+    pub repository_commit: String,
+    pub profile: HarnessProfile,
+    pub mode: HarnessMode,
+    pub clusters: Vec<FailureCluster>,
+    pub debt_candidates: Vec<FailureDebtCandidate>,
+}
+
 pub fn workstream_for_bucket(bucket: &str) -> &'static str {
     match bucket {
         "parse_recovery" => "parser_recovery",
@@ -713,6 +773,7 @@ mod tests {
                 SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION,
                 "perl_core_harness.semantic_boundary_registry.v1",
             ),
+            (FAILURE_CLUSTER_SCHEMA_VERSION, "perl_core_harness.failure_cluster.v1"),
         ];
         for (actual, expected) in expected {
             if actual != expected {
