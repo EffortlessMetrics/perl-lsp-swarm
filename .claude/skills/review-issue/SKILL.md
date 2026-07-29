@@ -1,12 +1,12 @@
 ---
 name: review-issue
-description: Challenge a researched issue for vision, authority, duplication, and coherent claim boundaries before planning.
+description: Challenge a researched issue for vision, authority, slice boundary, duplication, and coherent claim boundaries before planning.
 user-invocable: false
 ---
 
 # Review issue
 
-Use the vision, authority, and slice-boundary lenses. Test whether the concern is real, current, correctly owned, proportionate, and aligned with the applicable current repository vision and roadmap. That may include real-world Perl-tooling reliability, Perl-specific editor capability, embeddable Rust libraries, corpus-driven development, feature governance, or the development operating system. A clean review is valid.
+Use the vision, authority, slice-boundary, and claim-boundary lenses. Test whether the concern is real, current, correctly owned, proportionate, and aligned with the applicable current repository vision and roadmap. Check explicitly whether it is already solved, duplicated, or superseded, and whether the proposed concern forms one coherent acceptance-and-rollback claim. That may include real-world Perl-tooling reliability, Perl-specific editor capability, embeddable Rust libraries, corpus-driven development, feature governance, or the development operating system. A clean review is valid.
 
 The review may propose narrowing, reframing, or closure. Only an admitted issue integrator applies those durable GitHub updates. A read-only reviewer returns the proposed issue delta and evidence through `READ_ONLY_RESULT`.
 
