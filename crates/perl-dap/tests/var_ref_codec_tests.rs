@@ -62,9 +62,10 @@ fn test_h1_no_collision_scope_vs_evalresult() -> Result<(), Box<dyn std::error::
             );
         }
         _ => {
-            panic!(
+            return Err(format!(
                 "H1 VIOLATION: decode(50_001) returned {decoded:?}, expected Scope(5000, Locals)"
-            );
+            )
+            .into());
         }
     }
 
@@ -80,8 +81,11 @@ fn test_h1_no_collision_scope_vs_evalresult() -> Result<(), Box<dyn std::error::
             );
         }
         _ => {
-            panic!(
-                "H1 VIOLATION: decode(1_000_001) returned {decoded_eval:?}, expected EvalResult{{counter: 1}}"
+            return Err(
+                format!(
+                    "H1 VIOLATION: decode(1_000_001) returned {decoded_eval:?}, expected EvalResult{{counter: 1}}"
+                )
+                .into(),
             );
         }
     }
@@ -333,7 +337,7 @@ fn test_h5_decode_scope_boundary_valid() -> Result<(), Box<dyn std::error::Error
             assert_eq!(frame_id, 90_000, "H5: frame_id should be 90_000");
             assert_eq!(kind, ScopeKind::Locals, "H5: kind should be Locals (disc=1)");
         }
-        _ => panic!("H5: decode(900_001) should return Scope, not {result:?}"),
+        _ => return Err(format!("H5: decode(900_001) should return Scope, not {result:?}").into()),
     }
     Ok(())
 }
@@ -360,7 +364,11 @@ fn test_h5_decode_evalresult_base_valid() -> Result<(), Box<dyn std::error::Erro
         VariableReference::EvalResult { counter } => {
             assert_eq!(counter, 0, "H5: EvalResult at base should have counter=0");
         }
-        _ => panic!("H5: decode(1_000_000) should return EvalResult, not {result:?}"),
+        _ => {
+            return Err(
+                format!("H5: decode(1_000_000) should return EvalResult, not {result:?}").into()
+            );
+        }
     }
     Ok(())
 }
@@ -375,7 +383,11 @@ fn test_h5_decode_child_base_valid() -> Result<(), Box<dyn std::error::Error>> {
             assert_eq!(parent, 0, "H5: Child at base should have parent=0");
             assert_eq!(index, 0, "H5: Child at base should have index=0");
         }
-        _ => panic!("H5: decode(2_000_000_000) should return Child, not {result:?}"),
+        _ => {
+            return Err(
+                format!("H5: decode(2_000_000_000) should return Child, not {result:?}").into()
+            );
+        }
     }
     Ok(())
 }
