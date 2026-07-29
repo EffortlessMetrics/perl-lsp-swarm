@@ -113,6 +113,14 @@ Smoke and baseline validation also reject malformed boundary records (missing
 ownership/proof fields, reversed spans, unknown dispositions, or inconsistent
 source-lock confidence/blocking flags).
 
+Compile-baseline v2 treats its inventory as accepted authority: `unknown`,
+`unsupported`, and compile-blocking boundaries cannot be persisted there. A
+boundary retirement uses `perl_core_harness.boundary_retirement.v1` and must
+bind the prior series ID and manifest hash, the replacement measurement SHA,
+the replacement report digest, a transition ID, an owning issue, and a
+content-addressed evidence-bundle reference. A stale or still-present
+retirement is rejected instead of being counted as debt retirement.
+
 Or run the smoke against a user-supplied prepared upstream Perl tree:
 
 ```bash

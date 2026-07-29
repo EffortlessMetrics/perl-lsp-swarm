@@ -19,6 +19,7 @@ pub const RUNNER_RECORD_SCHEMA_VERSION: &str = "perl_core_harness.runner_record.
 pub const COMPARISON_SERIES_SCHEMA_VERSION: &str = "perl_core_harness.comparison_series.v1";
 pub const SERIES_MANIFEST_SCHEMA_VERSION: &str = COMPARISON_SERIES_SCHEMA_VERSION;
 pub const SERIES_MANIFEST_NORMALIZATION_VERSION: &str = "path-normalization.v1";
+pub const BOUNDARY_RETIREMENT_SCHEMA_VERSION: &str = "perl_core_harness.boundary_retirement.v1";
 
 /// Upstream Perl test scheduler to query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
@@ -164,12 +165,23 @@ pub struct SeriesManifest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct BoundaryRetirement {
+    /// Schema for this retirement receipt.
+    pub schema_version: String,
     pub path: String,
     pub id: String,
     pub source_start: usize,
     pub source_end: usize,
+    /// Comparison series that emitted the retired boundary.
+    pub series_id: String,
+    /// Comparison-series manifest hash identifying the retired boundary's denominator.
+    pub manifest_hash: String,
+    /// Compiler measurement commit used for the replacement run.
+    pub measurement_sha: String,
+    /// Stable digest of the replacement run report.
+    pub source_report_digest: String,
     pub transition_id: String,
     pub replacement_issue: String,
+    /// Content-addressed #5171 evidence bundle reference.
     pub evidence_bundle: String,
 }
 
@@ -615,18 +627,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schema_constants_are_stable() {
-        assert_eq!(DISCOVERY_SCHEMA_VERSION, "perl_core_harness.discovery.v1");
-        assert_eq!(RUN_REPORT_SCHEMA_VERSION, "perl_core_harness.report.v1");
-        assert_eq!(COMPILE_BASELINE_SCHEMA_VERSION, "perl_core_harness.compile_baseline.v1");
-        assert_eq!(COMPILE_BASELINE_V2_SCHEMA_VERSION, "perl_core_harness.compile_baseline.v2");
-        assert_eq!(COMPARISON_SERIES_SCHEMA_VERSION, "perl_core_harness.comparison_series.v1");
-        assert_eq!(SMOKE_SCHEMA_VERSION, "perl_core_harness.smoke.v1");
-        assert_eq!(PREPARE_SCHEMA_VERSION, "perl_core_harness.prepare.v1");
-        assert_eq!(GAP_MAP_SCHEMA_VERSION, "perl_core_harness.gap_map.v1");
-        assert_eq!(RUNNER_RECORD_SCHEMA_VERSION, "perl_core_harness.runner_record.v1");
-        assert_eq!(SERIES_MANIFEST_SCHEMA_VERSION, "perl_core_harness.comparison_series.v1");
-        assert_eq!(SERIES_MANIFEST_NORMALIZATION_VERSION, "path-normalization.v1");
+    fn schema_constants_are_stable() -> Result<(), String> {
+        let expected = [
+            (DISCOVERY_SCHEMA_VERSION, "perl_core_harness.discovery.v1"),
+            (RUN_REPORT_SCHEMA_VERSION, "perl_core_harness.report.v1"),
+            (COMPILE_BASELINE_SCHEMA_VERSION, "perl_core_harness.compile_baseline.v1"),
+            (COMPILE_BASELINE_V2_SCHEMA_VERSION, "perl_core_harness.compile_baseline.v2"),
+            (COMPARISON_SERIES_SCHEMA_VERSION, "perl_core_harness.comparison_series.v1"),
+            (SMOKE_SCHEMA_VERSION, "perl_core_harness.smoke.v1"),
+            (PREPARE_SCHEMA_VERSION, "perl_core_harness.prepare.v1"),
+            (GAP_MAP_SCHEMA_VERSION, "perl_core_harness.gap_map.v1"),
+            (RUNNER_RECORD_SCHEMA_VERSION, "perl_core_harness.runner_record.v1"),
+            (SERIES_MANIFEST_SCHEMA_VERSION, "perl_core_harness.comparison_series.v1"),
+            (SERIES_MANIFEST_NORMALIZATION_VERSION, "path-normalization.v1"),
+            (BOUNDARY_RETIREMENT_SCHEMA_VERSION, "perl_core_harness.boundary_retirement.v1"),
+        ];
+        for (actual, expected) in expected {
+            if actual != expected {
+                return Err(format!("schema constant {actual:?} did not equal {expected:?}"));
+            }
+        }
+        Ok(())
     }
 
     #[test]

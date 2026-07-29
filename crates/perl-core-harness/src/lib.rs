@@ -10,15 +10,16 @@
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness_types::{
-    BaselineComparison, BaselineViolation, BaselineViolationKind, BoundaryRetirement,
-    COMPILE_BASELINE_SCHEMA_VERSION, COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaseline,
-    CompileBaselineV2, DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport,
-    GAP_MAP_SCHEMA_VERSION, GapMap, ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION,
-    PrepareReceipt, PrepareStatus, RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport,
-    RunSummary, RunnerRecord, RunnerStatus, SERIES_MANIFEST_NORMALIZATION_VERSION,
-    SERIES_MANIFEST_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION, SemanticBoundaryConfidence,
-    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SeriesManifest, SmokeFailureKind,
-    SmokeReport, SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
+    BOUNDARY_RETIREMENT_SCHEMA_VERSION, BaselineComparison, BaselineViolation,
+    BaselineViolationKind, BoundaryRetirement, COMPILE_BASELINE_SCHEMA_VERSION,
+    COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaseline, CompileBaselineV2,
+    DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport, GAP_MAP_SCHEMA_VERSION, GapMap,
+    ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus,
+    RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunSummary, RunnerRecord,
+    RunnerStatus, SERIES_MANIFEST_NORMALIZATION_VERSION, SERIES_MANIFEST_SCHEMA_VERSION,
+    SMOKE_SCHEMA_VERSION, SemanticBoundaryConfidence, SemanticBoundaryDisposition,
+    SemanticBoundaryLockScope, SeriesManifest, SmokeFailureKind, SmokeReport, SmokeStatus,
+    SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
 };
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
 use sha2::{Digest, Sha256};
@@ -1556,6 +1557,11 @@ fn baseline_v2_from_report(
     validate_report_against_series(report, series, config.mode)?;
     validate_v2_identities_against_series(&identities, series)?;
     ensure_valid_report_shape(report)?;
+    let accepted_boundary_violations =
+        validate_accepted_semantic_boundary_inventory(&report.semantic_boundaries);
+    if !accepted_boundary_violations.is_empty() {
+        bail_baseline_comparison(&BaselineComparison { violations: accepted_boundary_violations })?;
+    }
     let file_membership =
         report.file_results.iter().map(|result| result.path.clone()).collect::<BTreeSet<_>>();
     let expected_membership = series.normalized_manifest.iter().cloned().collect::<BTreeSet<_>>();
@@ -1580,6 +1586,8 @@ fn baseline_v2_from_report(
             &report.semantic_boundaries,
             retirements,
             transition_id,
+            series,
+            report,
         );
         if !transition_violations.is_empty() {
             bail_baseline_comparison(&BaselineComparison { violations: transition_violations })?;
@@ -1763,6 +1771,8 @@ fn compare_baseline_v2_with_identities(
     retirements: &[BoundaryRetirement],
 ) -> BaselineComparison {
     let mut violations = Vec::new();
+    violations.extend(validate_persisted_boundary_retirements(baseline, Some(series)));
+    violations.extend(validate_accepted_semantic_boundary_inventory(&baseline.semantic_boundaries));
     if baseline.schema_version != COMPILE_BASELINE_V2_SCHEMA_VERSION {
         violations.push(violation(
             BaselineViolationKind::SchemaMismatch,
@@ -1875,6 +1885,8 @@ fn compare_baseline_v2_with_identities(
         &report.semantic_boundaries,
         retirements,
         transition_id.unwrap_or(""),
+        series,
+        report,
     ));
     BaselineComparison { violations }
 }
@@ -1884,6 +1896,8 @@ fn compare_boundary_transition(
     current: &[ObservedSemanticBoundary],
     retirements: &[BoundaryRetirement],
     transition_id: &str,
+    series: &SeriesManifest,
+    report: &RunReport,
 ) -> Vec<BaselineViolation> {
     let mut sorted_current = current.to_vec();
     sorted_current.sort_by_key(semantic_boundary_key);
@@ -1905,6 +1919,7 @@ fn compare_boundary_transition(
             source_end: retirement.source_end,
         })
         .collect::<BTreeSet<_>>();
+    let current_report_digest = report_digest(report);
     let mut violations = Vec::new();
     for key in previous_by_key.keys() {
         if !current_by_key.contains_key(key) && !retirement_keys.contains(key) {
@@ -1923,28 +1938,93 @@ fn compare_boundary_transition(
         ));
     }
     for retirement in retirements {
-        if retirement.transition_id != transition_id
-            || retirement.replacement_issue.trim().is_empty()
-            || retirement.evidence_bundle.trim().is_empty()
-        {
-            violations.push(violation(
-                BaselineViolationKind::BoundaryRetirementReceiptMismatch,
-                Some(retirement.path.clone()),
-                "boundary retirement receipt is incomplete or uses the wrong transition",
-            ));
-        }
-        if !previous_by_key.contains_key(&SemanticBoundaryKey {
+        let retirement_key = SemanticBoundaryKey {
             path: retirement.path.clone(),
             id: retirement.id.clone(),
             source_start: retirement.source_start,
             source_end: retirement.source_end,
-        }) {
+        };
+        let retirement_digest_matches = current_report_digest
+            .as_ref()
+            .is_ok_and(|digest| digest == &retirement.source_report_digest);
+        if retirement.schema_version != BOUNDARY_RETIREMENT_SCHEMA_VERSION
+            || retirement.transition_id != transition_id
+            || retirement.replacement_issue.trim().is_empty()
+            || retirement.evidence_bundle.trim().is_empty()
+            || retirement.series_id != series.series_id
+            || retirement.manifest_hash != series.manifest_hash
+            || retirement.measurement_sha != report.commit
+            || !retirement_digest_matches
+        {
+            let message = if current_report_digest.is_err() {
+                "cannot validate retirement: failed to compute current report digest"
+            } else {
+                "boundary retirement receipt is incomplete, stale, or uses the wrong measured subject"
+            };
+            violations.push(violation(
+                BaselineViolationKind::BoundaryRetirementReceiptMismatch,
+                Some(retirement.path.clone()),
+                message,
+            ));
+        }
+        if !previous_by_key.contains_key(&retirement_key) {
             violations.push(violation(
                 BaselineViolationKind::BoundaryRetirementReferencesUnknownBoundary,
                 Some(retirement.path.clone()),
                 "retirement receipt references a boundary absent from the previous baseline",
             ));
         }
+        if current_by_key.contains_key(&retirement_key) {
+            violations.push(violation(
+                BaselineViolationKind::BoundaryRetirementReceiptMismatch,
+                Some(retirement.path.clone()),
+                "retirement receipt references a boundary still present in the current report",
+            ));
+        }
+    }
+    violations
+}
+
+fn validate_persisted_boundary_retirements(
+    baseline: &CompileBaselineV2,
+    series: Option<&SeriesManifest>,
+) -> Vec<BaselineViolation> {
+    let mut violations = Vec::new();
+    for retirement in &baseline.boundary_retirements {
+        let transition_matches = baseline
+            .accepted_transition_id
+            .as_deref()
+            .is_some_and(|transition_id| transition_id == retirement.transition_id);
+        let series_matches = series.is_none_or(|series| {
+            retirement.series_id == series.series_id
+                && retirement.manifest_hash == series.manifest_hash
+        });
+        if retirement.schema_version != BOUNDARY_RETIREMENT_SCHEMA_VERSION
+            || retirement.path.trim().is_empty()
+            || retirement.id.trim().is_empty()
+            || retirement.source_start >= retirement.source_end
+            || retirement.series_id != baseline.series_id
+            || retirement.manifest_hash != baseline.manifest_hash
+            || retirement.measurement_sha != baseline.repository_commit
+            || retirement.source_report_digest != baseline.source_report_digest
+            || !transition_matches
+            || retirement.replacement_issue.trim().is_empty()
+            || retirement.evidence_bundle.trim().is_empty()
+            || !series_matches
+        {
+            violations.push(violation(
+                BaselineViolationKind::BoundaryRetirementReceiptMismatch,
+                Some(retirement.path.clone()),
+                "persisted boundary retirement does not match the baseline and comparison-series identity",
+            ));
+        }
+    }
+    if !baseline.boundary_retirements.is_empty() && baseline.accepted_transition_id.is_none() {
+        violations.push(violation(
+            BaselineViolationKind::BoundaryRetirementReceiptMismatch,
+            None,
+            "persisted boundary retirements require the baseline accepted transition identity",
+        ));
     }
     violations
 }
@@ -2016,8 +2096,14 @@ fn read_compile_baseline_v2(path: &Path) -> Result<CompileBaselineV2> {
             BaselineViolationKind::MissingBoundaryInventory
         );
     }
-    serde_json::from_value(value)
-        .with_context(|| format!("decoding v2 baseline {}", path.display()))
+    let baseline: CompileBaselineV2 = serde_json::from_value(value)
+        .with_context(|| format!("decoding v2 baseline {}", path.display()))?;
+    let mut violations = validate_persisted_boundary_retirements(&baseline, None);
+    violations.extend(validate_accepted_semantic_boundary_inventory(&baseline.semantic_boundaries));
+    if !violations.is_empty() {
+        bail_baseline_comparison(&BaselineComparison { violations })?;
+    }
+    Ok(baseline)
 }
 
 fn write_compile_baseline_v2(path: &Path, baseline: &CompileBaselineV2) -> Result<()> {
@@ -2576,9 +2662,15 @@ fn collect_smoke_report_failures(
 }
 
 fn validate_semantic_boundary_shape(report: &RunReport) -> Vec<BaselineViolation> {
+    validate_semantic_boundary_inventory(&report.semantic_boundaries)
+}
+
+fn validate_semantic_boundary_inventory(
+    boundaries: &[ObservedSemanticBoundary],
+) -> Vec<BaselineViolation> {
     let mut violations = Vec::new();
     let mut keys = BTreeSet::new();
-    for boundary in &report.semantic_boundaries {
+    for boundary in boundaries {
         let path = Some(boundary.path.clone());
         let mut add = |message: &str| {
             violations.push(violation(
@@ -2653,6 +2745,33 @@ fn validate_semantic_boundary_shape(report: &RunReport) -> Vec<BaselineViolation
                 }
             }
             SemanticBoundaryDisposition::GovernedCompileTimeDynamic => {}
+        }
+    }
+    violations
+}
+
+fn validate_accepted_semantic_boundary_inventory(
+    boundaries: &[ObservedSemanticBoundary],
+) -> Vec<BaselineViolation> {
+    let mut violations = validate_semantic_boundary_inventory(boundaries);
+    for boundary in boundaries {
+        let path = Some(boundary.path.clone());
+        if matches!(
+            boundary.disposition,
+            SemanticBoundaryDisposition::Unknown | SemanticBoundaryDisposition::Unsupported
+        ) {
+            violations.push(violation(
+                BaselineViolationKind::SemanticBoundary,
+                path.clone(),
+                "accepted baseline cannot contain unknown or unsupported semantic boundaries",
+            ));
+        }
+        if boundary.blocks_compilation {
+            violations.push(violation(
+                BaselineViolationKind::SemanticBoundary,
+                path,
+                "accepted baseline cannot contain a compile-blocking semantic boundary",
+            ));
         }
     }
     violations
@@ -3942,10 +4061,15 @@ mod tests {
         }
 
         let retirement = BoundaryRetirement {
+            schema_version: BOUNDARY_RETIREMENT_SCHEMA_VERSION.into(),
             path: "base/ok.t".into(),
             id: "runtime_symbolic_reference".into(),
             source_start: 4,
             source_end: 12,
+            series_id: series.series_id.clone(),
+            manifest_hash: series.manifest_hash.clone(),
+            measurement_sha: current.commit.clone(),
+            source_report_digest: report_digest(&current)?,
             transition_id: "transition-1".into(),
             replacement_issue: "#5168".into(),
             evidence_bundle: "bundle-sha256:example".into(),
@@ -3964,6 +4088,123 @@ mod tests {
     }
 
     #[test]
+    fn compile_baseline_v2_rejects_nonadmissible_accepted_boundaries() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+
+        for (label, disposition, blocks_compilation) in [
+            ("unknown", SemanticBoundaryDisposition::Unknown, true),
+            ("unsupported", SemanticBoundaryDisposition::Unsupported, true),
+            ("compile-blocking", SemanticBoundaryDisposition::DeferredRuntime, true),
+        ] {
+            let mut report = sample_compile_report();
+            let mut boundary = sample_semantic_boundary();
+            boundary.disposition = disposition;
+            boundary.blocks_compilation = blocks_compilation;
+            if matches!(disposition, SemanticBoundaryDisposition::Unknown) {
+                boundary.confidence = SemanticBoundaryConfidence::Unresolved;
+            }
+            if matches!(disposition, SemanticBoundaryDisposition::Unsupported) {
+                boundary.confidence = SemanticBoundaryConfidence::Unresolved;
+            }
+            report.semantic_boundaries.push(boundary);
+
+            let result =
+                baseline_v2_from_report(&report, &series, &sample_baseline_v2_config(), None, &[]);
+            if result.is_ok() {
+                bail!("{label} semantic boundary was accepted into baseline v2");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_rejects_stale_boundary_retirement_receipt() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut previous_report = sample_compile_report();
+        previous_report.semantic_boundaries.push(sample_semantic_boundary());
+        let config = sample_baseline_v2_config();
+        let previous = baseline_v2_from_report(&previous_report, &series, &config, None, &[])?;
+        let current = sample_compile_report();
+        let mut transition_config = config;
+        transition_config.accepted_transition_id = Some("transition-1".into());
+        let mut stale = BoundaryRetirement {
+            schema_version: BOUNDARY_RETIREMENT_SCHEMA_VERSION.into(),
+            path: "base/ok.t".into(),
+            id: "runtime_symbolic_reference".into(),
+            source_start: 4,
+            source_end: 12,
+            series_id: series.series_id.clone(),
+            manifest_hash: series.manifest_hash.clone(),
+            measurement_sha: current.commit.clone(),
+            source_report_digest: report_digest(&current)?,
+            transition_id: "transition-1".into(),
+            replacement_issue: "#5168".into(),
+            evidence_bundle: "bundle-sha256:example".into(),
+        };
+        stale.source_report_digest = "sha256:stale-report".into();
+
+        let Err(error) = baseline_v2_from_report(
+            &current,
+            &series,
+            &transition_config,
+            Some(&previous),
+            &[stale],
+        ) else {
+            bail!("a retirement receipt for a stale report must fail closed");
+        };
+        let message = error.to_string();
+        if !message.contains("BoundaryRetirementReceiptMismatch")
+            || !message.contains("base/ok.t")
+            || !message.contains("stale")
+        {
+            bail!("unexpected stale retirement error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_rejects_still_present_boundary_retirement() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+        let config = sample_baseline_v2_config();
+        let previous = baseline_v2_from_report(&report, &series, &config, None, &[])?;
+        let mut transition_config = config;
+        transition_config.accepted_transition_id = Some("transition-1".into());
+        let retirement = BoundaryRetirement {
+            schema_version: BOUNDARY_RETIREMENT_SCHEMA_VERSION.into(),
+            path: "base/ok.t".into(),
+            id: "runtime_symbolic_reference".into(),
+            source_start: 4,
+            source_end: 12,
+            series_id: series.series_id.clone(),
+            manifest_hash: series.manifest_hash.clone(),
+            measurement_sha: report.commit.clone(),
+            source_report_digest: report_digest(&report)?,
+            transition_id: "transition-1".into(),
+            replacement_issue: "#5168".into(),
+            evidence_bundle: "bundle-sha256:example".into(),
+        };
+
+        let Err(error) = baseline_v2_from_report(
+            &report,
+            &series,
+            &transition_config,
+            Some(&previous),
+            &[retirement],
+        ) else {
+            bail!("a retirement receipt for a still-present boundary must fail closed");
+        };
+        if !error.to_string().contains("still present") {
+            bail!("unexpected still-present retirement error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn boundary_retirement_validation_reports_specific_violation_kinds() -> TestResult {
         let discovery = sample_discovery_report();
         let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
@@ -3973,19 +4214,29 @@ mod tests {
         let previous = baseline_v2_from_report(&previous_report, &series, &config, None, &[])?;
 
         let invalid_retirement = BoundaryRetirement {
+            schema_version: BOUNDARY_RETIREMENT_SCHEMA_VERSION.into(),
             path: "base/ok.t".into(),
             id: "runtime_symbolic_reference".into(),
             source_start: 4,
             source_end: 12,
+            series_id: series.series_id.clone(),
+            manifest_hash: series.manifest_hash.clone(),
+            measurement_sha: previous.repository_commit.clone(),
+            source_report_digest: previous.source_report_digest.clone(),
             transition_id: "wrong-transition".into(),
             replacement_issue: String::new(),
             evidence_bundle: String::new(),
         };
         let unknown_retirement = BoundaryRetirement {
+            schema_version: BOUNDARY_RETIREMENT_SCHEMA_VERSION.into(),
             path: "base/missing.t".into(),
             id: "missing-boundary".into(),
             source_start: 1,
             source_end: 2,
+            series_id: series.series_id.clone(),
+            manifest_hash: series.manifest_hash.clone(),
+            measurement_sha: previous.repository_commit.clone(),
+            source_report_digest: previous.source_report_digest.clone(),
             transition_id: "transition-1".into(),
             replacement_issue: "#5168".into(),
             evidence_bundle: "bundle-sha256:example".into(),
@@ -3995,6 +4246,8 @@ mod tests {
             &[],
             &[invalid_retirement, unknown_retirement],
             "transition-1",
+            &series,
+            &sample_compile_report(),
         );
         if !violations.iter().any(|violation| {
             violation.kind == BaselineViolationKind::BoundaryRetirementReceiptMismatch
@@ -4005,6 +4258,92 @@ mod tests {
             violation.kind == BaselineViolationKind::BoundaryRetirementReferencesUnknownBoundary
         }) {
             bail!("unknown retirement boundary was not classified separately");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_rejects_tampered_persisted_retirement() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("baseline.json");
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut previous_report = sample_compile_report();
+        previous_report.semantic_boundaries.push(sample_semantic_boundary());
+        let config = sample_baseline_v2_config();
+        let previous = baseline_v2_from_report(&previous_report, &series, &config, None, &[])?;
+        let current = sample_compile_report();
+        let mut transition_config = config;
+        transition_config.accepted_transition_id = Some("transition-1".into());
+        let retirement = BoundaryRetirement {
+            schema_version: BOUNDARY_RETIREMENT_SCHEMA_VERSION.into(),
+            path: "base/ok.t".into(),
+            id: "runtime_symbolic_reference".into(),
+            source_start: 4,
+            source_end: 12,
+            series_id: series.series_id.clone(),
+            manifest_hash: series.manifest_hash.clone(),
+            measurement_sha: current.commit.clone(),
+            source_report_digest: report_digest(&current)?,
+            transition_id: "transition-1".into(),
+            replacement_issue: "#5168".into(),
+            evidence_bundle: "bundle-sha256:example".into(),
+        };
+        let accepted = baseline_v2_from_report(
+            &current,
+            &series,
+            &transition_config,
+            Some(&previous),
+            &[retirement],
+        )?;
+        let mut series_tampered = accepted.clone();
+        series_tampered.boundary_retirements[0].series_id = "wrong-series".into();
+        let comparison = compare_baseline_v2_with_identities(
+            &series_tampered,
+            &current,
+            &series,
+            None,
+            Some("transition-1"),
+            &[],
+        );
+        if !comparison.violations.iter().any(|violation| {
+            violation.kind == BaselineViolationKind::BoundaryRetirementReceiptMismatch
+        }) {
+            bail!("series-bound retirement tampering was not rejected during comparison");
+        }
+
+        let mutations = [
+            ("schema_version", serde_json::Value::String("other-schema".into())),
+            ("path", serde_json::Value::String(String::new())),
+            ("id", serde_json::Value::String(String::new())),
+            ("source_start", serde_json::Value::from(12_u64)),
+            ("series_id", serde_json::Value::String("wrong-series".into())),
+            ("manifest_hash", serde_json::Value::String("sha256:wrong".into())),
+            ("measurement_sha", serde_json::Value::String("wrong-measurement".into())),
+            ("source_report_digest", serde_json::Value::String("sha256:tampered".into())),
+            ("transition_id", serde_json::Value::String("wrong-transition".into())),
+            ("replacement_issue", serde_json::Value::String(String::new())),
+            ("evidence_bundle", serde_json::Value::String(String::new())),
+        ];
+        for (field, replacement) in mutations {
+            let mut mutated = serde_json::to_value(&accepted)?;
+            mutated["boundary_retirements"][0][field] = replacement;
+            fs::write(&path, format!("{}\n", serde_json::to_string(&mutated)?))?;
+            if read_compile_baseline_v2(&path).is_ok() {
+                bail!("tampered persisted retirement field {field} was accepted");
+            }
+        }
+
+        let mut value = serde_json::to_value(accepted)?;
+        value["boundary_retirements"][0]["source_report_digest"] =
+            serde_json::Value::String("sha256:tampered".into());
+        fs::write(&path, format!("{}\n", serde_json::to_string(&value)?))?;
+
+        let Err(error) = read_compile_baseline_v2(&path) else {
+            bail!("tampered persisted retirement must fail closed");
+        };
+        if !error.to_string().contains("persisted boundary retirement") {
+            bail!("unexpected persisted retirement error: {error}");
         }
         Ok(())
     }
@@ -4049,6 +4388,36 @@ mod tests {
         };
         if !error.to_string().contains("MissingBoundaryInventory") {
             bail!("unexpected missing inventory error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_reader_rejects_nonadmissible_inventory() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("baseline.json");
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+        let baseline =
+            baseline_v2_from_report(&report, &series, &sample_baseline_v2_config(), None, &[])?;
+        let mut value = serde_json::to_value(baseline)?;
+        let boundary = value
+            .get_mut("semantic_boundaries")
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|boundaries| boundaries.first_mut())
+            .ok_or_else(|| color_eyre::eyre::eyre!("baseline has no boundary inventory"))?;
+        boundary["disposition"] = serde_json::Value::String("unsupported".into());
+        boundary["confidence"] = serde_json::Value::String("unresolved".into());
+        boundary["blocks_compilation"] = serde_json::Value::Bool(true);
+        fs::write(&path, format!("{}\n", serde_json::to_string(&value)?))?;
+
+        let Err(error) = read_compile_baseline_v2(&path) else {
+            bail!("a malformed accepted boundary inventory must fail closed");
+        };
+        if !error.to_string().contains("unknown or unsupported") {
+            bail!("unexpected malformed inventory error: {error}");
         }
         Ok(())
     }
