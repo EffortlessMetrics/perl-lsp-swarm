@@ -2567,11 +2567,11 @@ enum PerlCoreHarnessCommand {
         history: Option<PathBuf>,
 
         /// Merge the current report into persistent history without resolving absent clusters.
-        #[arg(long, conflicts_with = "check-history", requires = "history")]
+        #[arg(long, conflicts_with = "check_history", requires = "history")]
         write_history: bool,
 
         /// Check that persistent history contains the current report without mutation.
-        #[arg(long, conflicts_with = "write-history", requires = "history")]
+        #[arg(long, conflicts_with = "write_history", requires = "history")]
         check_history: bool,
     },
 

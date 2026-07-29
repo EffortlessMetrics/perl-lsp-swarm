@@ -621,6 +621,22 @@ fn validate_cluster_history_shape(history: &FailureClusterHistory) -> Vec<String
                 entry.cluster_id
             ));
         }
+        if entry.presence == FailureClusterHistoryPresence::Resolved
+            && entry.status != FailureClusterHistoryStatus::Resolved
+        {
+            violations.push(format!(
+                "resolved-presence cluster {} has non-resolved status",
+                entry.cluster_id
+            ));
+        }
+        if entry.presence == FailureClusterHistoryPresence::AcceptedDebt
+            && entry.status != FailureClusterHistoryStatus::AcceptedDebt
+        {
+            violations.push(format!(
+                "accepted-debt presence cluster {} has non-debt status",
+                entry.cluster_id
+            ));
+        }
         if entry.status == FailureClusterHistoryStatus::AcceptedDebt
             && entry.accepted_debt_refs.is_empty()
         {
@@ -733,7 +749,11 @@ fn validate_cluster_history_shape(history: &FailureClusterHistory) -> Vec<String
         }
         if entry.status == FailureClusterHistoryStatus::Resolved
             && !entry.transitions.iter().any(|transition| {
-                transition.to_cluster_id.is_none()
+                transition.from_cluster_id == entry.cluster_id
+                    && transition.before_series_id == entry.first_seen_series_id
+                    && transition.before_manifest_hash == entry.first_seen_manifest_hash
+                    && transition.before_bundle_id == entry.first_seen_bundle
+                    && transition.to_cluster_id.is_none()
                     && transition.to_presence == FailureClusterHistoryPresence::Resolved
                     && transition.after_series_id == entry.series_id
                     && transition.after_manifest_hash == entry.manifest_hash
@@ -958,11 +978,13 @@ fn validate_history_against_report(
                 entry.cluster_id
             ));
         }
+        // `absence_since_bundle` records the first absence, not the latest check. A
+        // later bundle may confirm absence without changing that lifecycle boundary.
         if entry.presence == FailureClusterHistoryPresence::AbsentUnresolved
-            && entry.absence_since_bundle.as_deref() != Some(report.bundle_id.as_str())
+            && entry.absence_since_bundle.as_deref().is_none_or(str::is_empty)
         {
             violations
-                .push(format!("absent cluster {} has stale absence bundle", entry.cluster_id));
+                .push(format!("absent cluster {} has no first-absence bundle", entry.cluster_id));
         }
     }
     violations
@@ -6914,6 +6936,19 @@ mod tests {
         assert!(history_after_absence.entries[0].current_affected_files.is_empty());
         assert!(history_after_absence.entries[0].current_stage.is_none());
         assert!(validate_history_against_report(&history_after_absence, &absent_report).is_empty());
+
+        let mut second_absent_report = absent_report;
+        second_absent_report.bundle_id = "bundle-4".into();
+        let history_after_second_absence =
+            merge_cluster_history(history_after_absence, &second_absent_report)?;
+        assert_eq!(
+            history_after_second_absence.entries[0].absence_since_bundle.as_deref(),
+            Some("bundle-3")
+        );
+        assert!(
+            validate_history_against_report(&history_after_second_absence, &second_absent_report)
+                .is_empty()
+        );
         Ok(())
     }
 
@@ -6935,6 +6970,10 @@ mod tests {
         assert!(stale.iter().any(|violation| violation.contains("stale series identity")));
 
         history.entries[0].manifest_hash = cluster_report.manifest_hash.clone();
+        history.entries[0].presence = FailureClusterHistoryPresence::Resolved;
+        let inverse = validate_cluster_history_shape(&history);
+        assert!(inverse.iter().any(|violation| violation.contains("resolved-presence cluster")));
+        history.entries[0].presence = FailureClusterHistoryPresence::Observed;
         history.entries[0].status = FailureClusterHistoryStatus::Resolved;
         history.entries[0].owner_issue = Some("#5175".into());
         let invalid = validate_cluster_history_shape(&history);
@@ -6970,16 +7009,20 @@ mod tests {
         entry.current_stage = None;
         entry.resolution_pr = Some("#5300".into());
         entry.resolution_bundle = Some("bundle-2".into());
+        let cluster_id = entry.cluster_id.clone();
+        let first_seen_series_id = entry.first_seen_series_id.clone();
+        let first_seen_manifest_hash = entry.first_seen_manifest_hash.clone();
+        let first_seen_bundle = entry.first_seen_bundle.clone();
         entry.transitions.push(FailureClusterHistoryTransition {
             transition_id: "transition-1".into(),
-            from_cluster_id: "failure-old".into(),
+            from_cluster_id: cluster_id,
             to_cluster_id: None,
             to_presence: FailureClusterHistoryPresence::Resolved,
             from_stage: "compile_effect".into(),
             to_stage: "general_semantics".into(),
-            before_series_id: "series-1".into(),
-            before_manifest_hash: "manifest-1".into(),
-            before_bundle_id: "bundle-1".into(),
+            before_series_id: first_seen_series_id,
+            before_manifest_hash: first_seen_manifest_hash,
+            before_bundle_id: first_seen_bundle,
             after_series_id: "series-1".into(),
             after_manifest_hash: "manifest-1".into(),
             after_bundle_id: "bundle-2".into(),
