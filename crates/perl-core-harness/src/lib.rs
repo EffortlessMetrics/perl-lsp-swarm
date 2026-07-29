@@ -772,6 +772,12 @@ fn validate_bundle_identity(
     lineage: &LandedLineage,
 ) -> Result<()> {
     let bytes = git_blob_at(root, &lineage.landed_sha, bundle_path)?;
+    let actual_digest = sha256_digest_bytes(&bytes);
+    if actual_digest != lineage.evidence_bundle_digest
+        || actual_digest != entry.observation_bundle_digest
+    {
+        bail!("observation bundle digest does not match landed lineage");
+    }
     let index: EvidenceBundleIndex = read_json_bytes(&bytes, "observation bundle")?;
     if index.schema_version != "perl_core_harness.evidence_bundle.v1"
         || index.bundle_id != lineage.evidence_bundle_id
@@ -8645,7 +8651,6 @@ exit 1
         let baseline_relative = ".ci/perl-core-harness/base-baseline.json";
         let lineage_relative = ".ci/perl-core-harness/base-lineage.json";
         let index_relative = ".ci/perl-core-harness/current-authority.json";
-        let bundle_digest = format!("sha256:{}", "b".repeat(64));
         let measurement_sha = "a".repeat(40);
         fs::write(root.join(boundary_relative), b"[]\n")?;
         fs::write(
@@ -8671,6 +8676,7 @@ exit 1
                 lifecycle: "published".into(),
             })?,
         )?;
+        let bundle_digest = sha256_digest_bytes(&fs::read(root.join(bundle_relative))?);
         fs::write(root.join(report_relative), b"normalized report\n")?;
         fs::write(
             root.join(baseline_relative),
