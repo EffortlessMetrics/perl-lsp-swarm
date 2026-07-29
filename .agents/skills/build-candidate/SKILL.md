@@ -13,29 +13,24 @@ Produce one coherent candidate that satisfies the current claim, is protected by
 
 This flow may begin from reviewed proof, an existing branch, an existing candidate, or a candidate discovered midstream. Do not replay completed work merely to manufacture chronology.
 
-## Orchestration
+Before creating another branch, check whether an equivalent current candidate already implements the same claim. Do not inspect sibling lanes, touched-file overlap, or nearby symbols as a routine ownership check.
 
-Serialized:
+## Candidate boundary
 
-- one integrating writer owns the contested branch, worktree, and semantic mutation surface.
+One claim normally has one current candidate. One writer mutates that candidate branch/worktree at a time.
 
-Parallel where useful:
-
-- current source and consumer verification;
-- test adversary and proof economics;
-- external truth;
-- security, compatibility, parser/compiler, packaging, or production-path lenses.
+Read-only source verification, test adversary work, external truth, and differentiated risk review may run independently when useful. They return evidence to the candidate writer; they do not become rival implementations.
 
 Join into one hardened, simplified, challenged candidate.
 
 ## Procedure
 
-1. Establish or reuse one integrating writer and candidate branch.
+1. Establish or reuse the current candidate branch/worktree and writer.
 2. Run `$build-from-proof` for missing implementation.
 3. Run `$improve-test-suite` against the actual candidate.
 4. Run `$simplify-candidate`; every changed revision returns through affected proof.
 5. Run `$review-candidate`, including candidate-stage vision alignment against current authorities.
-6. Repair ordinary findings through the same writer and repeat affected proof/review.
+6. Repair ordinary findings through the same candidate writer and repeat affected proof/review.
 7. Return the typed candidate disposition to the invoking flow. `CANDIDATE_READY` is the normal handoff for publication/convergence; this flow does not require an unavailable outer endpoint to be installed in order to produce a complete candidate.
 
 ## What this establishes
@@ -53,4 +48,5 @@ Formal fixed-candidate review, current GitHub checks, review-thread convergence,
 - `WEAK_PROOF` → `$prepare-proof`
 - `MATERIAL_SCOPE_OR_AUTHORITY_CHANGE` → return the corrected premise to the invoking flow for issue preparation
 - `NO_BUILD_SUBJECT` → return the no-build disposition for proportional publication/review
+- `WRITER_COLLISION` / `UNSAFE_WORKTREE` → resolve the same-candidate mechanical hazard
 - `BLOCKED` / `NOT_PROVEN` → preserve the exact boundary
