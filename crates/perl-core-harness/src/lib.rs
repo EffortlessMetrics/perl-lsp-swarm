@@ -13,13 +13,14 @@ use perl_core_harness_types::{
     BOUNDARY_RETIREMENT_SCHEMA_VERSION, BaselineComparison, BaselineViolation,
     BaselineViolationKind, BoundaryRetirement, COMPILE_BASELINE_SCHEMA_VERSION,
     COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaseline, CompileBaselineV2,
-    DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport, GAP_MAP_SCHEMA_VERSION, GapMap,
-    ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus,
-    RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunSummary, RunnerRecord,
-    RunnerStatus, SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION, SERIES_MANIFEST_NORMALIZATION_VERSION,
-    SERIES_MANIFEST_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION, SemanticBoundaryConfidence,
-    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SemanticBoundaryRegistry,
-    SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
+    DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport, FAILURE_CLUSTER_SCHEMA_VERSION,
+    FailureCluster, FailureClusterReport, FailureClusterSignature, FailureDebtCandidate,
+    GAP_MAP_SCHEMA_VERSION, GapMap, ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION,
+    PrepareReceipt, PrepareStatus, RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport,
+    RunSummary, RunnerRecord, RunnerStatus, SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION,
+    SERIES_MANIFEST_NORMALIZATION_VERSION, SERIES_MANIFEST_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION,
+    SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
+    SemanticBoundaryRegistry, SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
     SemanticBoundaryReplacementStrategy, SeriesManifest, SmokeFailureKind, SmokeReport,
     SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
 };
@@ -242,6 +243,13 @@ pub struct BoundaryRegistryConfig {
     pub historical: bool,
 }
 
+/// Configuration for `perl-core-harness triage`.
+#[derive(Debug, Clone)]
+pub struct TriageConfig {
+    pub bundle: PathBuf,
+    pub output: PathBuf,
+}
+
 /// Configuration for `perl-core-harness smoke`.
 #[derive(Debug, Clone)]
 pub struct SmokeConfig {
@@ -442,6 +450,278 @@ pub fn boundaries(config: BoundaryRegistryConfig) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Cluster typed failures and separate semantic-boundary debt from product failures.
+pub fn triage(config: TriageConfig) -> Result<()> {
+    let bundle = read_boundary_bundle(&config.bundle)?;
+    let compile_path = bundle_artifact_path(&bundle, "compile_report")?;
+    let raw = fs::read_to_string(&compile_path)
+        .with_context(|| format!("reading compile report {}", compile_path.display()))?;
+    let report: RunReport = serde_json::from_str(&raw)
+        .with_context(|| format!("decoding compile report {}", compile_path.display()))?;
+    validate_bundle_report_identity(&bundle, &report)?;
+    let cluster_report = build_failure_cluster_report(&bundle, &report)?;
+    fs::create_dir_all(&config.output)
+        .with_context(|| format!("creating triage output directory {}", config.output.display()))?;
+    let json =
+        serde_json::to_string_pretty(&cluster_report).context("serializing failure clusters")?;
+    fs::write(config.output.join("failure-clusters.json"), format!("{json}\n"))
+        .context("writing failure-clusters.json")?;
+    fs::write(
+        config.output.join("failure-clusters.md"),
+        render_failure_cluster_markdown(&cluster_report),
+    )
+    .context("writing failure-clusters.md")?;
+    Ok(())
+}
+
+fn bundle_artifact_path(bundle: &BoundaryBundle, kind: &str) -> Result<PathBuf> {
+    let artifact = bundle
+        .index
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == kind)
+        .ok_or_else(|| color_eyre::eyre::eyre!("evidence bundle has no {kind} artifact"))?;
+    validate_public_path(&artifact.logical_path, "evidence bundle artifact")?;
+    let path = bundle.path.parent().unwrap_or_else(|| Path::new(".")).join(&artifact.logical_path);
+    if !path.is_file() {
+        bail!("evidence bundle artifact {} is missing", path.display());
+    }
+    Ok(path)
+}
+
+fn validate_bundle_report_identity(bundle: &BoundaryBundle, report: &RunReport) -> Result<()> {
+    if report.schema_version != RUN_REPORT_SCHEMA_VERSION {
+        bail!("triage requires a v1 run report");
+    }
+    if report.commit != bundle.index.repository_commit
+        || report.perl_ref != bundle.index.perl_resolved_ref
+        || report.profile != bundle.index.profile
+    {
+        bail!("compile report identity does not match evidence bundle");
+    }
+    let mut report_boundaries = report.semantic_boundaries.clone();
+    report_boundaries.sort_by_key(semantic_boundary_key);
+    if report_boundaries != bundle.semantic_boundaries {
+        bail!("compile report semantic-boundary inventory does not match evidence bundle");
+    }
+    Ok(())
+}
+
+fn build_failure_cluster_report(
+    bundle: &BoundaryBundle,
+    report: &RunReport,
+) -> Result<FailureClusterReport> {
+    let mut grouped = BTreeMap::<String, (FailureClusterSignature, Vec<RunFailure>)>::new();
+    for failure in &report.failures {
+        let failure = normalize_failure(failure)?;
+        let signature = failure_signature(bundle, report, &failure)?;
+        let key = serde_json::to_vec(&signature).context("serializing failure signature")?;
+        let cluster_key = hex_lower(&Sha256::digest(key));
+        grouped.entry(cluster_key).or_insert_with(|| (signature, Vec::new())).1.push(failure);
+    }
+
+    let mut clusters = Vec::new();
+    for (cluster_key, (signature, mut failures)) in grouped {
+        failures.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then_with(|| left.phase.cmp(&right.phase))
+                .then_with(|| left.first_diagnostic.cmp(&right.first_diagnostic))
+        });
+        let representative_failure = failures
+            .first()
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("failure cluster has no representative"))?;
+        let mut affected_files =
+            failures.iter().map(|failure| failure.path.clone()).collect::<Vec<_>>();
+        affected_files.sort();
+        affected_files.dedup();
+        let cluster_id = format!("failure-{:.16}", cluster_key);
+        clusters.push(FailureCluster {
+            cluster_id,
+            signature: signature.clone(),
+            affected_files,
+            representative_failure: representative_failure.clone(),
+            direct_reproduction: format!(
+                "bundle={} series={} mode={} profile={} test={}",
+                bundle.index.bundle_id,
+                bundle.index.series_id,
+                report.mode,
+                report.profile,
+                representative_failure.path
+            ),
+            impacted_layer: impacted_layer(&signature.stage, &signature.bucket).into(),
+            fact_classes: signature.fact_classes.clone(),
+            lsp_surfaces: signature.lsp_surfaces.clone(),
+            occurrence_count: failures.len(),
+            exact_series_proof_required: true,
+        });
+    }
+    clusters.sort_by(|left, right| left.cluster_id.cmp(&right.cluster_id));
+
+    let mut debt_candidates = bundle
+        .semantic_boundaries
+        .iter()
+        .map(|boundary| FailureDebtCandidate {
+            path: boundary.path.clone(),
+            id: boundary.id.clone(),
+            disposition: boundary.disposition,
+            reason: boundary.reason.clone(),
+            owner_workstream: boundary.owner_workstream.clone(),
+            exact_series_proof_required: true,
+        })
+        .collect::<Vec<_>>();
+    debt_candidates
+        .sort_by(|left, right| left.path.cmp(&right.path).then_with(|| left.id.cmp(&right.id)));
+    Ok(FailureClusterReport {
+        schema_version: FAILURE_CLUSTER_SCHEMA_VERSION.into(),
+        bundle_id: bundle.index.bundle_id.clone(),
+        series_id: bundle.index.series_id.clone(),
+        manifest_hash: bundle.index.manifest_hash.clone(),
+        repository_commit: bundle.index.repository_commit.clone(),
+        profile: report.profile,
+        mode: report.mode,
+        clusters,
+        debt_candidates,
+    })
+}
+
+fn normalize_failure(failure: &RunFailure) -> Result<RunFailure> {
+    let path = normalize_test_path(&failure.path)
+        .ok_or_else(|| color_eyre::eyre::eyre!("failure path is not a Perl test path"))?;
+    validate_public_path(&path, "failure path")?;
+    let mut normalized = failure.clone();
+    normalized.path = path;
+    normalized.first_diagnostic = normalize_diagnostic(&failure.first_diagnostic);
+    Ok(normalized)
+}
+
+fn normalize_diagnostic(diagnostic: &str) -> String {
+    diagnostic
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .split_whitespace()
+        .map(|token| {
+            let trimmed = token.trim_matches(|character: char| {
+                matches!(character, '"' | '\'' | '(' | ')' | '[' | ']' | ',' | ';')
+            });
+            if trimmed.starts_with('/')
+                || trimmed.contains(":/")
+                || trimmed.contains("\\")
+                || trimmed.split('/').any(|part| {
+                    matches!(part.to_ascii_lowercase().as_str(), "target" | "tmp" | "temp")
+                })
+            {
+                "<host-path>"
+            } else {
+                token
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn failure_signature(
+    bundle: &BoundaryBundle,
+    report: &RunReport,
+    failure: &RunFailure,
+) -> Result<FailureClusterSignature> {
+    let stage = failure_stage(&failure.bucket).ok_or_else(|| {
+        color_eyre::eyre::eyre!("unclassifiable failure bucket {}", failure.bucket)
+    })?;
+    if failure.path.trim().is_empty() || failure.workstream.trim().is_empty() {
+        bail!("failure record lacks a stable path or workstream");
+    }
+    validate_public_path(&failure.path, "failure path")?;
+    let mut fact_classes = failure.lsp_impact.clone();
+    fact_classes.sort();
+    fact_classes.dedup();
+    let lsp_surfaces = fact_classes.clone();
+    let shape_seed =
+        format!("{}|{}|{}|{}", stage, failure.bucket, failure.workstream, fact_classes.join(","));
+    Ok(FailureClusterSignature {
+        schema_version: FAILURE_CLUSTER_SCHEMA_VERSION.into(),
+        series_id: bundle.index.series_id.clone(),
+        profile: report.profile,
+        mode: report.mode,
+        stage: stage.into(),
+        bucket: failure.bucket.clone(),
+        workstream: failure.workstream.clone(),
+        source_shape_fingerprint: format!("shape-{:.16}", hex_lower(&Sha256::digest(shape_seed))),
+        fact_classes,
+        lsp_surfaces,
+    })
+}
+
+fn failure_stage(bucket: &str) -> Option<&'static str> {
+    match bucket {
+        "parse_recovery" | "source_decode" => Some("parse_recovery"),
+        "hir_lowering" => Some("hir_unmodeled"),
+        "compile_effect" => Some("compile_effect"),
+        "scope_pad"
+        | "package_stash"
+        | "pragma_feature"
+        | "module_resolution"
+        | "runtime_value_model"
+        | "runtime_control_flow"
+        | "runtime_io"
+        | "runtime_regex"
+        | "runtime_require_use"
+        | "runtime_test_harness" => Some("compile_effect"),
+        "cli_switch" | "harness_prepare" | "process_timeout" | "process_signal" | "environment" => {
+            Some("harness")
+        }
+        _ => None,
+    }
+}
+
+fn impacted_layer(stage: &str, bucket: &str) -> &'static str {
+    if stage == "harness" {
+        return "harness_or_environment";
+    }
+    match bucket {
+        "parse_recovery" | "source_decode" => "parser",
+        "hir_lowering" => "hir",
+        "compile_effect" | "scope_pad" | "package_stash" | "pragma_feature"
+        | "module_resolution" => "compiler_world",
+        _ => "compiler_semantics",
+    }
+}
+
+fn render_failure_cluster_markdown(report: &FailureClusterReport) -> String {
+    let mut markdown = format!(
+        "# Compiler failure clusters\n\n- Bundle: `{}`\n- Series: `{}`\n- Profile/mode: `{}` / `{}`\n\n",
+        report.bundle_id, report.series_id, report.profile, report.mode
+    );
+    markdown.push_str("## Clusters\n\n");
+    if report.clusters.is_empty() {
+        markdown.push_str("No product failure clusters were observed.\n\n");
+    }
+    for cluster in &report.clusters {
+        markdown.push_str(&format!(
+            "### `{}`\n\n- Stage: `{}`\n- Bucket: `{}`\n- Layer: `{}`\n- Occurrences: {}\n- Files: {}\n- Reproduction: `{}`\n\n",
+            cluster.cluster_id,
+            cluster.signature.stage,
+            cluster.signature.bucket,
+            cluster.impacted_layer,
+            cluster.occurrence_count,
+            cluster.affected_files.join(", "),
+            cluster.direct_reproduction
+        ));
+    }
+    markdown.push_str("## Semantic-boundary debt candidates\n\n");
+    for debt in &report.debt_candidates {
+        markdown.push_str(&format!(
+            "- `{}` `{}` `{}` — {}\n",
+            debt.path,
+            debt.id,
+            enum_label(debt.disposition),
+            debt.reason
+        ));
+    }
+    markdown
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -5511,6 +5791,117 @@ mod tests {
         changed.semantic_boundaries.clear();
         let violations = validate_bundle_against_baseline(&bundle, &changed);
         assert!(violations.iter().any(|violation| violation.contains("inventory")));
+        Ok(())
+    }
+
+    fn sample_boundary_bundle() -> BoundaryBundle {
+        BoundaryBundle {
+            path: PathBuf::from("bundles/bundle-1/index.json"),
+            index: EvidenceBundleIndex {
+                schema_version: "perl_core_harness.evidence_bundle.v1".into(),
+                bundle_id: "bundle-1".into(),
+                series_id: "series-1".into(),
+                manifest_hash: "manifest-1".into(),
+                repository_commit: "abc".into(),
+                profile: HarnessProfile::Base,
+                perl_resolved_ref: "perl-ref".into(),
+                lineage: EvidenceBundleLineage { measurement_sha: "abc".into() },
+                artifacts: Vec::new(),
+                completeness: EvidenceBundleCompleteness {
+                    status: "complete".into(),
+                    normalized_authority: true,
+                },
+                lifecycle: "published".into(),
+            },
+            semantic_boundaries: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn failure_clusters_group_typed_failures_and_keep_debt_separate() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        report.failures = vec![
+            sample_failure("base/lex.t", "parse_recovery"),
+            sample_failure("base/ok.t", "parse_recovery"),
+            sample_failure("base/harness.t", "harness_prepare"),
+            sample_failure("base/hir.t", "hir_lowering"),
+        ];
+        let mut bundle = bundle;
+        bundle.semantic_boundaries.push(sample_semantic_boundary());
+
+        let triage = build_failure_cluster_report(&bundle, &report)?;
+
+        assert_eq!(triage.clusters.len(), 3);
+        assert_eq!(triage.debt_candidates.len(), 1);
+        let parse_cluster = triage
+            .clusters
+            .iter()
+            .find(|cluster| cluster.signature.bucket == "parse_recovery")
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing parse cluster"))?;
+        assert_eq!(parse_cluster.occurrence_count, 2);
+        assert_eq!(parse_cluster.affected_files, vec!["base/lex.t", "base/ok.t"]);
+        let harness_cluster = triage
+            .clusters
+            .iter()
+            .find(|cluster| cluster.signature.bucket == "harness_prepare")
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing harness cluster"))?;
+        assert_eq!(harness_cluster.impacted_layer, "harness_or_environment");
+        let hir_cluster = triage
+            .clusters
+            .iter()
+            .find(|cluster| cluster.signature.bucket == "hir_lowering")
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing HIR cluster"))?;
+        assert_eq!(hir_cluster.signature.stage, "hir_unmodeled");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_cluster_ids_are_stable_when_failure_order_changes() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        report.failures = vec![
+            sample_failure("base/ok.t", "parse_recovery"),
+            sample_failure("base/lex.t", "parse_recovery"),
+        ];
+        let first = build_failure_cluster_report(&bundle, &report)?;
+        report.failures.reverse();
+        let second = build_failure_cluster_report(&bundle, &report)?;
+
+        assert_eq!(serde_json::to_value(&first)?, serde_json::to_value(&second)?);
+        report.failures.push(sample_failure("base/new.t", "parse_recovery"));
+        let with_new_membership = build_failure_cluster_report(&bundle, &report)?;
+        assert_eq!(second.clusters[0].cluster_id, with_new_membership.clusters[0].cluster_id);
+        assert_eq!(with_new_membership.clusters[0].occurrence_count, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn failure_cluster_output_normalizes_host_paths_and_line_endings() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        let mut failure = sample_failure("base\\ok.t", "parse_recovery");
+        failure.first_diagnostic = "C:\\tmp\\perl\\base\\ok.t:1\r\nparse failure".into();
+        report.failures.push(failure);
+
+        let triage = build_failure_cluster_report(&bundle, &report)?;
+        let representative = &triage.clusters[0].representative_failure;
+        assert_eq!(representative.path, "base/ok.t");
+        assert_eq!(representative.first_diagnostic, "<host-path> parse failure");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_cluster_triage_rejects_unknown_buckets() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        report.failures.push(sample_failure("base/lex.t", "unclassified"));
+
+        let error = match build_failure_cluster_report(&bundle, &report) {
+            Ok(_) => return Err(color_eyre::eyre::eyre!("unknown bucket was accepted")),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("unclassifiable failure bucket"));
         Ok(())
     }
 

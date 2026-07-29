@@ -2552,6 +2552,17 @@ enum PerlCoreHarnessCommand {
         historical: bool,
     },
 
+    /// Produce deterministic root-cause clusters from one validated evidence bundle.
+    Triage {
+        /// Durable #5171 evidence-bundle index JSON.
+        #[arg(long)]
+        bundle: PathBuf,
+
+        /// Output directory for failure-clusters.json and failure-clusters.md.
+        #[arg(long)]
+        output: PathBuf,
+    },
+
     /// Run discovered tests in parse, compile, or execute mode (future slice).
     Run {
         /// Harness mode to run.
@@ -4349,6 +4360,9 @@ fn run_cli(cli: Cli) -> Result<()> {
                 report,
                 historical,
             }),
+            PerlCoreHarnessCommand::Triage { bundle, output } => {
+                perl_core_harness::triage(perl_core_harness::TriageConfig { bundle, output })
+            }
             PerlCoreHarnessCommand::Run {
                 mode,
                 perl_tree,
