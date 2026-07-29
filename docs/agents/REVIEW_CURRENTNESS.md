@@ -5,8 +5,10 @@
 Keep three questions distinct:
 
 1. **Candidate evidence:** what the authored PR candidate establishes.
-2. **Base interaction evidence:** whether current `main` changes the same semantic seam or creates a real conflict.
-3. **Integration evidence:** what the merge group or landed squash result establishes.
+2. **Integration-basis evidence:** whether this candidate can be applied and evaluated against the current base or merge group.
+3. **Landed evidence:** what the final squash result establishes after merge.
+
+These are separate subjects. Movement in one does not automatically invalidate the others.
 
 ## Candidate-bound evidence
 
@@ -21,6 +23,8 @@ Examples:
 - production wiring changes invalidate reachability review;
 - material claim, establishment, non-goal, risk, rollback, or review-index changes invalidate claim review even when the Git head is unchanged;
 - an authority or support-boundary change may route back to issue preparation.
+
+Unrelated `main` movement does not change the candidate and therefore does not stale candidate proof or review.
 
 ## Formal-review currentness
 
@@ -51,26 +55,35 @@ This repository squash-merges. Therefore:
 candidate head unchanged
 + material claim unchanged
 + main advances
-+ no merge conflict
-+ no material same-semantic-seam interaction
++ no actual Git conflict
++ no failed required integration proof
 → candidate proof and review remain current
 ```
 
 Do not rebase, update-branch, merge `main`, create empty commits, rerun formal review, or replay full CI merely because the branch is behind.
 
-A merged fix on `main` is a reason to inspect interaction, not automatically a reason to mutate every open candidate. Update the candidate only when the fix materially changes the same semantic seam, resolves an actual conflict, makes the integration result otherwise uninterpretable, or current GitHub branch protection, rulesets, merge queue, or required checks require integration evidence.
+Do not proactively inspect sibling PR implementations, touched-file overlap, or nearby semantic surfaces to predict interactions. The candidate lane normally learns about integration through Git mergeability, an explicit stacked prerequisite, live merge-group policy, or an actual synthetic/hosted combined-tree result.
 
-## Actual conflict or interaction
+A changed integration basis may require fresh integration proof when live policy requires it. It does not by itself require branch mutation or fresh candidate review.
+
+## Actual conflict or integration failure
 
 ```text
 actual merge conflict
-→ resolve conflict
+→ affected lane resolves conflict
 → candidate changed
 → rerun affected proof and specialist review
 → submit fresh formal review for the resulting candidate and claim
 ```
 
-A non-textual same-semantic-seam change on `main` may justify targeted interaction analysis even when Git reports no conflict. Branch mutation is required only when the integration result cannot otherwise be interpreted or current GitHub branch protection, rulesets, merge queue, or required checks require it.
+```text
+combined-tree or merge-group proof fails without a text conflict
+→ report the concrete interaction to the affected lane
+→ repair the smallest coherent candidate
+→ rerun affected proof/review
+```
+
+A lane does not need advance knowledge of another lane's implementation. A direct issue or PR comment is sufficient when a prerequisite or concrete integration finding materially affects it.
 
 ## Affected-only invalidation
 
@@ -82,10 +95,14 @@ After repair or claim revision, rerun supporting evidence dimensions whose seman
 | material claim / establishment / non-goal / risk / rollback / review-index change | claim review plus fresh formal-review record |
 | test-only repair | test review and dependent conclusions plus fresh formal-review record for the new head |
 | local implementation repair | focused behavior proof and changed-seam candidate review plus fresh formal-review record |
+| conflict resolution | conflict-affected proof/review plus fresh formal-review record |
 | owner/consumer change | plan, authority review, proof seam, and fresh formal-review record |
 | external protocol change | external-truth judgment, dependent claims, and fresh formal-review record |
+| integration basis changes but candidate remains unchanged | integration proof only where policy requires it |
 | any head change after formal review | fresh formal-review record; supporting depth remains proportional |
 
 ## Merge boundary
 
-Merge eligibility is determined by current GitHub branch protection, rulesets, merge queue, or required checks, substantive review convergence, and actual mergeability. It must prove that the current head and current material claim match the formal review subject. After squash merge, reconciliation verifies the landed effect on current `main`; it does not pretend the future squash commit could have been reviewed in advance.
+Merge eligibility is determined by current GitHub branch protection, rulesets, merge queue, or required checks, substantive review convergence, actual mergeability, and required integration proof for the selected candidate.
+
+After squash merge, reconciliation verifies the landed effect on current `main`; it does not pretend the future squash commit could have been reviewed in advance.
