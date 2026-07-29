@@ -898,6 +898,30 @@ mod tests {
     }
 
     #[test]
+    fn named_function_call_candidate_excludes_prototyped_subroutine_declaration() {
+        // `sub foo($arg)` has call-shaped parens after the name, but it is a
+        // prototype/signature declaration — not a named call site.
+        let source = "sub foo($arg) {\n    return $arg;\n}\n";
+        assert!(semantic_token_named_function_call_candidate(source).is_none());
+    }
+
+    #[test]
+    fn named_function_call_candidate_scans_past_prototyped_declaration_to_call()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "sub foo($arg) {\n    return $arg;\n}\nbar(1);\n";
+        let candidate = semantic_token_named_function_call_candidate(source)
+            .ok_or("the real bar() call should be detected past the prototyped declaration")?;
+        assert_eq!(candidate.identity, "token:named_function_call:bar:compiler");
+        Ok(())
+    }
+
+    #[test]
+    fn named_function_call_candidate_excludes_method_declaration_prototype() {
+        let source = "method stash($self) {\n    return 1;\n}\n";
+        assert!(semantic_token_named_function_call_candidate(source).is_none());
+    }
+
+    #[test]
     fn filter_encoded_semantic_tokens_by_range_reencodes_retained_range()
     -> Result<(), Box<dyn std::error::Error>> {
         let tokens: Vec<crate::semantic_tokens::EncodedToken> =
@@ -1424,9 +1448,10 @@ fn line_start_variable_declaration_candidate(
 /// contract without changing output.
 ///
 /// Method calls (`->name(`), ampersand calls (`&name(`), sigiled/coderef calls
-/// (`$name(`), and control-flow / declaration keywords that the collector does
-/// NOT classify as `FunctionCall` function tokens are excluded so we never
-/// record a candidate that cannot match a live token. The scan skips Perl line
+/// (`$name(`), control-flow / declaration keywords that the collector does NOT
+/// classify as `FunctionCall` function tokens, and declaration/prototype forms
+/// (`sub name(...)`, `method name(...)`) are excluded so we never record a
+/// candidate that cannot match a live call token. The scan skips Perl line
 /// comments and single/double-quoted strings, so a `name(` inside a comment or
 /// string cannot shadow a later real call and parentheses inside string
 /// arguments are not miscounted. A call whose parentheses do not balance on a
@@ -1530,7 +1555,10 @@ fn first_named_function_call_span(source: &str) -> Option<(usize, usize, usize)>
 
                     if let Some(&(paren_open, '(')) = chars.peek() {
                         let name = &source[run_start..run_end];
-                        if !is_call_prefix_blocker(prev) && !is_non_call_keyword(name) {
+                        if !is_call_prefix_blocker(prev)
+                            && !is_non_call_keyword(name)
+                            && !is_declaration_name_context(source, run_start)
+                        {
                             if let Some(call_end) = string_aware_call_end(source, paren_open) {
                                 return Some((run_start, paren_open, call_end));
                             }
@@ -1607,6 +1635,33 @@ fn string_aware_call_end(source: &str, paren_open: usize) -> Option<usize> {
 /// call, ampersand call, reference-taking).
 fn is_call_prefix_blocker(ch: char) -> bool {
     matches!(ch, '>' | '&' | '$' | '@' | '%' | '\\')
+}
+
+/// True when `name_start` is the identifier in a declaration/prototype form
+/// such as `sub foo($arg)` or `method bar($self)`. Those emit live `function`
+/// tokens for the declaration name, but they are not named *calls*; treating
+/// them as `named_function_call` candidates skews the runtime quality proof.
+fn is_declaration_name_context(source: &str, name_start: usize) -> bool {
+    let Some(before) = source.get(..name_start) else {
+        return false;
+    };
+    let trimmed = before.trim_end_matches(|c: char| c.is_ascii_whitespace());
+    for keyword in ["sub", "method"] {
+        if !trimmed.ends_with(keyword) {
+            continue;
+        }
+        let keyword_start = trimmed.len() - keyword.len();
+        if keyword_start == 0 {
+            return true;
+        }
+        let Some(prev) = trimmed[..keyword_start].chars().next_back() else {
+            return true;
+        };
+        if !is_subroutine_name_char(prev) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Keywords that take a parenthesised form but are NOT emitted as
