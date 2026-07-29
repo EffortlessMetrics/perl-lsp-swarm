@@ -495,6 +495,9 @@ fn validate_bundle_report_identity(bundle: &BoundaryBundle, report: &RunReport) 
     if report.schema_version != RUN_REPORT_SCHEMA_VERSION {
         bail!("triage requires a v1 run report");
     }
+    if report.mode != HarnessMode::Compile {
+        bail!("triage requires a compile report");
+    }
     if report.commit != bundle.index.repository_commit
         || report.perl_ref != bundle.index.perl_resolved_ref
         || report.profile != bundle.index.profile
@@ -564,6 +567,14 @@ fn build_failure_cluster_report(
     let mut debt_candidates = bundle
         .semantic_boundaries
         .iter()
+        .filter(|boundary| {
+            !matches!(
+                boundary.disposition,
+                SemanticBoundaryDisposition::ImplementedStatic
+                    | SemanticBoundaryDisposition::StaticallyClassified
+                    | SemanticBoundaryDisposition::OrdinaryRuntime
+            )
+        })
         .map(|boundary| FailureDebtCandidate {
             path: boundary.path.clone(),
             id: boundary.id.clone(),
@@ -6140,6 +6151,16 @@ mod tests {
         ];
         let mut bundle = bundle;
         bundle.semantic_boundaries.push(sample_semantic_boundary());
+        bundle.semantic_boundaries.push(ObservedSemanticBoundary {
+            disposition: SemanticBoundaryDisposition::ImplementedStatic,
+            id: "implemented_static".into(),
+            ..sample_semantic_boundary()
+        });
+        bundle.semantic_boundaries.push(ObservedSemanticBoundary {
+            disposition: SemanticBoundaryDisposition::OrdinaryRuntime,
+            id: "ordinary_runtime".into(),
+            ..sample_semantic_boundary()
+        });
 
         let triage = build_failure_cluster_report(&bundle, &report)?;
 
@@ -6164,6 +6185,19 @@ mod tests {
             .find(|cluster| cluster.signature.bucket == "hir_lowering")
             .ok_or_else(|| color_eyre::eyre::eyre!("missing HIR cluster"))?;
         assert_eq!(hir_cluster.signature.stage, "hir_unmodeled");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_cluster_triage_rejects_non_compile_reports() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let error = match validate_bundle_report_identity(&bundle, &sample_parse_report()) {
+            Ok(()) => return Err(color_eyre::eyre::eyre!("parse report was accepted by triage")),
+            Err(error) => error,
+        };
+        if !error.to_string().contains("triage requires a compile report") {
+            bail!("unexpected non-compile triage error: {error}");
+        }
         Ok(())
     }
 
