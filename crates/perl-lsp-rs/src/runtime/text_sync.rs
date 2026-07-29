@@ -89,7 +89,7 @@ impl LspServer {
             // Strip UTF-8 BOM if present. Some editors on Windows send the BOM
             // as part of the document text, which shifts all column-0 offsets
             // by one character and produces stray glyph artifacts. (#5207)
-            let text = text_raw.strip_prefix('\u{FEFF}').unwrap_or(text_raw);
+            let text = crate::textdoc::strip_utf8_bom(text_raw);
             let version_i64 =
                 params.pointer("/textDocument/version").and_then(|v| v.as_i64()).unwrap_or(0);
             let version = i32::try_from(version_i64).unwrap_or(0);

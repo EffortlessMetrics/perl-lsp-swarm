@@ -27,6 +27,16 @@ pub struct Doc {
     pub version: i32,
 }
 
+/// Strip a leading UTF-8 BOM (U+FEFF) from editor-supplied text.
+///
+/// Some Windows editors include the BOM in `textDocument/didOpen` and
+/// full-document `didChange` payloads. Keeping it shifts every column-0
+/// offset by one character and produces stray glyph artifacts (#5207).
+#[must_use]
+pub fn strip_utf8_bom(text: &str) -> &str {
+    text.strip_prefix('\u{FEFF}').unwrap_or(text)
+}
+
 /// Position encoding format for LSP compatibility
 ///
 /// LSP uses UTF-16 code units for positions, while Rust strings are UTF-8.
@@ -275,8 +285,8 @@ pub fn apply_changes(doc: &mut Doc, changes: &[TextDocumentContentChangeEvent], 
                 doc.rope.insert(s, &ch.text);
             }
         } else {
-            // Full document replace
-            doc.rope = Rope::from_str(&ch.text);
+            // Full document replace — same BOM normalization as didOpen (#5207)
+            doc.rope = Rope::from_str(strip_utf8_bom(&ch.text));
         }
     }
 }
@@ -284,6 +294,21 @@ pub fn apply_changes(doc: &mut Doc, changes: &[TextDocumentContentChangeEvent], 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Full-document replace must strip a leading UTF-8 BOM so a later
+    /// didChange cannot reintroduce the shift that didOpen already fixed.
+    #[test]
+    fn full_document_replace_strips_utf8_bom() {
+        let mut doc = Doc { rope: Rope::from_str("my $x = 1;\n"), version: 1 };
+        let change = TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: "\u{FEFF}my $x = 2;\n".to_string(),
+        };
+        apply_changes(&mut doc, &[change], PosEnc::Utf16);
+        assert_eq!(doc.rope.to_string(), "my $x = 2;\n");
+        assert!(!doc.rope.to_string().starts_with('\u{FEFF}'));
+    }
 
     /// Regression test: delete emoji via LSP range should work correctly.
     /// This catches both the "rope uses chars" bug and UTF-16 boundary handling.
