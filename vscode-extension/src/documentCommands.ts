@@ -2,10 +2,10 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import * as vscode from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
+import { machineScopedExternalIncludePaths } from './languageClientConfiguration';
 
 type DocumentClient = Pick<LanguageClient, 'sendRequest'>;
 type DocumentOutputChannel = Pick<vscode.OutputChannel, 'appendLine' | 'show'>;
-type AstOutputChannel = Pick<vscode.OutputChannel, 'clear' | 'appendLine' | 'show'>;
 export type ExecFileLike = (
   file: string,
   args: string[],
@@ -41,9 +41,11 @@ export async function runCheckSyntaxCommand(
   const filePath = editor.document.uri.fsPath;
   const config = vscode.workspace.getConfiguration('perl-lsp');
   const includePaths: string[] = config.get('includePaths', ['lib', 'local/lib/perl5']);
+  // Machine scope only — never honor workspace/folder externalIncludePaths (#4998).
+  const externalIncludePaths = machineScopedExternalIncludePaths(config);
   const workspaceRoot = vscode.workspace.getWorkspaceFolder(editor.document.uri)?.uri.fsPath;
   const perlArgs: string[] = [];
-  for (const includePath of includePaths) {
+  for (const includePath of [...includePaths, ...externalIncludePaths]) {
     const resolved =
       workspaceRoot && !path.isAbsolute(includePath)
         ? path.join(workspaceRoot, includePath)

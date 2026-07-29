@@ -415,12 +415,12 @@ describe('perl-lsp trust explanation commands', () => {
     ['perl-lsp.showWorkspaceTrustReport', 'Show Workspace Trust Report'],
     ['perl-lsp.explainMissingModuleLookup', 'Explain Missing Module Lookup'],
     ['perl-lsp.explainDiagnostic', 'Explain This Diagnostic'],
-  ])('%s is declared as a Perl LSP command', (id, title) => {
+  ])('%s is declared as a Perl command', (id, title) => {
     const cmd = pkg.contributes.commands.find((c: CommandContribution) => c.command === id);
     expect(commandIds).toContain(id);
     expect(cmd).toBeDefined();
     expect(cmd.title).toBe(title);
-    expect(cmd.category).toBe('Perl LSP');
+    expect(cmd.category).toBe('Perl');
   });
 
   test.each([
