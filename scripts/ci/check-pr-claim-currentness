@@ -58,7 +58,12 @@ def _fixture_pr() -> tuple[str, str, list[dict[str, Any]]] | None:
         return None
     root = Path(fixture)
     document = json.loads((root / "pr_view.json").read_text(encoding="utf-8"))
-    comments = json.loads((root / "pr_comments.json").read_text(encoding="utf-8"))
+    comments_path = root / "pr_comments.json"
+    comments = (
+        json.loads(comments_path.read_text(encoding="utf-8"))
+        if comments_path.exists()
+        else []
+    )
     if not isinstance(document, dict) or not isinstance(comments, list):
         raise RuntimeError("convergence fixtures must contain one PR object and a comments array")
     return (
