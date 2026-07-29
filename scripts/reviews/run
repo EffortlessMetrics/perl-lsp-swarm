@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # scripts/reviews/run — review-run / verification receipt poster (#3693 R1)
 #
-# Review receipts are bound to both the PR head and the normalized material
-# claim/review index. A claim-body change therefore cannot inherit an older
-# formal disposition merely because the Git head stayed the same.
+# Review receipts bind a formal judgment to both the PR head and the normalized
+# material claim/review index.
 #
-#   review-start → posts one review-run marker with status=running
-#   review-done  → updates that exact marker in place to status=done
+#   review-start → computes or accepts a claim digest and posts status=running
+#   review-done  → REQUIRES the starting digest and updates that exact marker
 #   verify       → posts a verification marker (result=pass|fail)
 #
 # Updating the start receipt is load-bearing: the convergence checker counts
@@ -15,7 +14,7 @@
 #
 # Usage:
 #   scripts/reviews/run review-start --pr <n> --kind <deep|standard> --reviewer <id> [--claim-digest sha] [--repo r] [--head sha] [--dry-run]
-#   scripts/reviews/run review-done  --pr <n> --kind <deep|standard> --reviewer <id> [--claim-digest sha] [--repo r] [--head sha] [--dry-run]
+#   scripts/reviews/run review-done  --pr <n> --kind <deep|standard> --reviewer <id> --claim-digest <starting-sha> [--repo r] [--head sha] [--dry-run]
 #   scripts/reviews/run verify       --pr <n> --verifier <id> --result <pass|fail> [--findings <json>] [--repo r] [--head sha] [--dry-run]
 set -euo pipefail
 
@@ -57,7 +56,11 @@ resolve_repo_head() {
 }
 
 resolve_claim_digest() {
-    [[ "$SUBCMD" == "review-start" || "$SUBCMD" == "review-done" ]] || return 0
+    if [[ "$SUBCMD" == "review-done" ]]; then
+        [[ -n "$CLAIM_DIGEST" ]] || die_usage "review-done requires the --claim-digest captured by review-start"
+        return 0
+    fi
+    [[ "$SUBCMD" == "review-start" ]] || return 0
     if [[ -n "$CLAIM_DIGEST" ]]; then
         return 0
     fi
@@ -71,7 +74,6 @@ resolve_claim_digest() {
 }
 
 render_body() {
-    # $1 marker kind, $2 marker JSON, $3 human preamble
     printf '%s\n\n<!-- %s:v1 %s -->' "$3" "$1" "$2"
 }
 
