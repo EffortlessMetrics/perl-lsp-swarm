@@ -6,7 +6,7 @@ import { BinaryDownloader } from './downloader';
 const SERVER_DEBUG_TEST_COMMAND = 'perl.debugTest';
 export const VSCODE_DEBUG_TEST_COMMAND = 'perl-lsp.debugTest';
 const DEBUGGING_GUIDE_URL =
-  'https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/tutorials/DAP_USER_GUIDE.md';
+  'https://github.com/EffortlessMetrics/perl-lsp/blob/main/docs/tutorials/DAP_USER_GUIDE.md';
 
 export interface DebugTestLaunchTarget {
   label: string;
