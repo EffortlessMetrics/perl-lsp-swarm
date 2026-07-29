@@ -717,7 +717,7 @@ impl<'a> Parser<'a> {
         let start = self.current_position();
         self.tokens.next()?; // consume 'package'
 
-        let (mut name, name_span) = self.parse_package_qualified_name()?;
+        let (name, name_span) = self.parse_package_qualified_name()?;
 
         // Check for optional version number or v-string
         let version = if self.peek_kind() == Some(TokenKind::Number)
