@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
-"""Verify that a completed review-run receipt matches current head and material claim."""
+"""Verify that a trusted completed review receipt matches current head and material claim."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 REVIEWS_DIR = Path(__file__).resolve().parents[1] / "reviews"
 sys.path.insert(0, str(REVIEWS_DIR))
 
-from claim_digest import claim_digest  # noqa: E402
+from claim_digest import claim_digest, normalize_pr_body  # noqa: E402
 
 MARKER = re.compile(r"<!--\s*review-run:v1\s+(\{.*?\})\s*-->", re.DOTALL)
+TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 
 
 def _run(command: list[str]) -> str:
@@ -25,25 +28,110 @@ def _run(command: list[str]) -> str:
     return completed.stdout
 
 
-def _live_pr(pr: str, repo: str | None) -> tuple[str, str, str]:
+def _decode_json_stream(raw: str) -> list[Any]:
+    decoder = json.JSONDecoder()
+    cursor = 0
+    values: list[Any] = []
+    while cursor < len(raw):
+        while cursor < len(raw) and raw[cursor].isspace():
+            cursor += 1
+        if cursor >= len(raw):
+            break
+        value, cursor = decoder.raw_decode(raw, cursor)
+        values.append(value)
+    return values
+
+
+def _flatten_pages(values: list[Any]) -> list[dict[str, Any]]:
+    comments: list[dict[str, Any]] = []
+    for value in values:
+        page = value if isinstance(value, list) else [value]
+        for item in page:
+            if isinstance(item, dict):
+                comments.append(item)
+    return comments
+
+
+def _fixture_pr() -> tuple[str, str, list[dict[str, Any]]] | None:
+    fixture = os.environ.get("CONVERGENCE_TEST_FIXTURE_DIR")
+    if not fixture:
+        return None
+    root = Path(fixture)
+    document = json.loads((root / "pr_view.json").read_text(encoding="utf-8"))
+    comments = json.loads((root / "pr_comments.json").read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or not isinstance(comments, list):
+        raise RuntimeError("convergence fixtures must contain one PR object and a comments array")
+    return (
+        str(document["headRefOid"]),
+        normalize_pr_body(document.get("body")),
+        [item for item in comments if isinstance(item, dict)],
+    )
+
+
+def _live_pr(pr: str, repo: str | None) -> tuple[str, str, list[dict[str, Any]]]:
+    fixture = _fixture_pr()
+    if fixture is not None:
+        return fixture
+
     if not repo:
-        repo = _run(["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]).strip()
+        repo = _run(
+            ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]
+        ).strip()
     raw = _run(["gh", "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body"])
     document = json.loads(raw)
-    comments = _run(["gh", "api", "--paginate", f"repos/{repo}/issues/{pr}/comments", "--jq", ".[].body"])
-    return document["headRefOid"], document.get("body") or "", comments
+    comments_raw = _run(
+        ["gh", "api", "--paginate", f"repos/{repo}/issues/{pr}/comments?per_page=100"]
+    )
+    comments = _flatten_pages(_decode_json_stream(comments_raw))
+    return (
+        str(document["headRefOid"]),
+        normalize_pr_body(document.get("body")),
+        comments,
+    )
 
 
-def _markers(comments: str) -> list[dict[str, object]]:
-    records: list[dict[str, object]] = []
-    for match in MARKER.finditer(comments):
-        try:
-            value = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            records.append(value)
+def _author_metadata(comment: dict[str, Any]) -> tuple[str, str]:
+    user = comment.get("user")
+    author = comment.get("author")
+    login = ""
+    if isinstance(user, dict):
+        login = str(user.get("login") or "")
+    elif isinstance(author, dict):
+        login = str(author.get("login") or "")
+    association = str(
+        comment.get("author_association") or comment.get("authorAssociation") or ""
+    ).upper()
+    return login, association
+
+
+def _markers(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for comment in comments:
+        login, association = _author_metadata(comment)
+        body = normalize_pr_body(comment.get("body"))
+        for match in MARKER.finditer(body):
+            try:
+                value = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(value, dict):
+                continue
+            records.append(
+                {
+                    "marker": value,
+                    "comment_author": login,
+                    "author_association": association,
+                    "trusted": association in TRUSTED_ASSOCIATIONS,
+                }
+            )
     return records
+
+
+def _fixture_comments(path: Path) -> list[dict[str, Any]]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, list):
+        raise RuntimeError("--comments-file must contain a structured JSON comments array")
+    return [item for item in value if isinstance(item, dict)]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -52,38 +140,62 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo", help="owner/repo for live mode")
     parser.add_argument("--head", help="Expected/current head for fixture mode")
     parser.add_argument("--body-file", type=Path, help="PR-body fixture")
-    parser.add_argument("--comments-file", type=Path, help="PR-comments fixture")
+    parser.add_argument(
+        "--comments-file", type=Path, help="Structured PR-comments JSON fixture"
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    fixture_mode = args.body_file is not None or args.comments_file is not None or args.head is not None
+    fixture_mode = (
+        args.body_file is not None or args.comments_file is not None or args.head is not None
+    )
 
     try:
         if fixture_mode:
             if not (args.body_file and args.comments_file and args.head):
-                raise RuntimeError("fixture mode requires --head, --body-file, and --comments-file")
+                raise RuntimeError(
+                    "fixture mode requires --head, --body-file, and --comments-file"
+                )
             head = args.head
             body = args.body_file.read_text(encoding="utf-8")
-            comments = args.comments_file.read_text(encoding="utf-8")
+            comments = _fixture_comments(args.comments_file)
         else:
             if not args.pr:
                 raise RuntimeError("live mode requires a pull-request number")
             head, body, comments = _live_pr(args.pr, args.repo)
-    except (OSError, RuntimeError, json.JSONDecodeError) as error:
+
+        records = _markers(comments)
+        if not records:
+            result = {
+                "result": "not_applicable",
+                "head": head,
+                "claim_digest": None,
+                "matching_receipts": 0,
+                "completed_receipts": 0,
+                "trusted_receipts": 0,
+                "untrusted_receipts": 0,
+            }
+            if args.json:
+                print(json.dumps(result, sort_keys=True))
+            else:
+                print(f"claim review not applicable: no review-run receipt exists at head={head}")
+            return 0
+
+        digest = str(claim_digest(body)["digest"])
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
         print(f"NOT_PROVEN: {error}", file=sys.stderr)
         return 2
 
-    digest = str(claim_digest(body)["digest"])
-    records = _markers(comments)
+    trusted = [record for record in records if record["trusted"]]
     matching = [
         record
-        for record in records
-        if record.get("status") == "done"
-        and record.get("head") == head
-        and record.get("claim_digest") == digest
+        for record in trusted
+        if record["marker"].get("status") == "done"
+        and record["marker"].get("head") == head
+        and record["marker"].get("claim_digest") == digest
     ]
 
     result = {
@@ -91,20 +203,31 @@ def main(argv: list[str] | None = None) -> int:
         "head": head,
         "claim_digest": digest,
         "matching_receipts": len(matching),
-        "completed_receipts": sum(1 for record in records if record.get("status") == "done"),
+        "completed_receipts": sum(
+            1 for record in records if record["marker"].get("status") == "done"
+        ),
+        "trusted_receipts": len(trusted),
+        "untrusted_receipts": len(records) - len(trusted),
+        "matching_authors": sorted(
+            {str(record["comment_author"]) for record in matching if record["comment_author"]}
+        ),
     }
 
     if args.json:
         print(json.dumps(result, sort_keys=True))
     elif matching:
-        print(f"claim review current: head={head} claim_digest={digest}")
+        print(
+            f"claim review current: head={head} claim_digest={digest} "
+            f"trusted_authors={','.join(result['matching_authors'])}"
+        )
     else:
         print(
-            f"NOT_PROVEN: no completed review receipt matches head={head} claim_digest={digest}",
+            "NOT_PROVEN: no trusted completed review receipt matches "
+            f"head={head} claim_digest={digest}",
             file=sys.stderr,
         )
 
-    return 0 if matching else 2
+    return 0 if matching else 1
 
 
 if __name__ == "__main__":
