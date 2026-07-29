@@ -623,17 +623,17 @@ mod tests {
     }
 
     #[test]
-    fn handle_folding_range_call_presence_observer_push_multiline_folding_range_heredoc_region()
+    fn handle_folding_range_heredoc_ast_produces_region_fold()
     -> Result<(), Box<dyn std::error::Error>> {
         let ranges = folding_ranges_for_source("my $text = <<'TXT';\nalpha\nbeta\nTXT\n")?;
 
         assert!(
             ranges.iter().any(|range| {
                 range.get("kind") == Some(&json!("region"))
-                    && range.get("startLine") == Some(&json!(1))
+                    && range.get("startLine") == Some(&json!(0))
                     && range.get("endLine") == Some(&json!(2))
             }),
-            "input that reaches call push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, \"region\")"
+            "AST heredoc extraction must preserve a region fold over the multiline heredoc"
         );
 
         Ok(())
