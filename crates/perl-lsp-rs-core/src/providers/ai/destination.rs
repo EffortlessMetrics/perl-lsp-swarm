@@ -506,11 +506,15 @@ mod unit_tests {
     }
 
     #[test]
-    fn rejects_nat64_embedding_private_ipv4() {
+    fn rejects_nat64_embedding_private_ipv4() -> Result<(), Box<dyn std::error::Error>> {
         // 64:ff9b::0a00:0001 embeds 10.0.0.1
         let nat64 = IpAddr::V6(Ipv6Addr::new(0x0064, 0xff9b, 0, 0, 0, 0, 0x0a00, 0x0001));
         let IpAddr::V6(nat64_v6) = nat64 else {
-            panic!("test fixture is v6");
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "test fixture is not v6",
+            )
+            .into());
         };
         assert_eq!(embedded_ipv4_from_v6(nat64_v6), Some(Ipv4Addr::new(10, 0, 0, 1)));
         let err = validate_endpoint_with_resolver(
@@ -520,6 +524,7 @@ mod unit_tests {
         )
         .unwrap_err();
         assert_eq!(err, DestinationError::DisallowedAddress);
+        Ok(())
     }
 
     #[test]
