@@ -3,7 +3,7 @@ use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_tdd_support::{must, must_some};
 use serde_json::json;
 use std::fs::write;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::Duration;
 use tempfile::{TempDir, tempdir};
 
@@ -44,7 +44,7 @@ fn create_test_script(
 #[test]
 fn test_dap_initialize() {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let response = adapter.handle_request(1, "initialize", None);
@@ -82,7 +82,7 @@ fn test_dap_initialize() {
 #[test]
 fn test_dap_launch_with_invalid_program() {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let _ = adapter.handle_request(1, "initialize", None);
@@ -109,7 +109,7 @@ fn test_dap_launch_with_invalid_program() {
 #[test]
 fn test_dap_launch_missing_arguments() {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     // initialize must be called first (state machine validation added in #1754)
@@ -428,7 +428,7 @@ fn test_dap_pause_no_session() {
 #[test]
 fn test_dap_disconnect_cleans_up_session() {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     // First verify we can disconnect even without active session
@@ -591,7 +591,7 @@ print "Result: $result\n";
         "created DAP lifecycle script must stay on disk while its TempDir is held"
     );
     let mut adapter = DebugAdapter::new();
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     // Initialize

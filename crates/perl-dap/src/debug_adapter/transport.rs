@@ -2,7 +2,7 @@
 
 use super::*;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::TryRecvError;
+use std::sync::mpsc::{TryRecvError, sync_channel};
 
 const EVENT_WRITE_BATCH_MAX: usize = 64;
 const WRITE_FAILURE_THRESHOLD: usize = 3;
@@ -92,8 +92,9 @@ impl DebugAdapter {
         let shared_writer: Arc<Mutex<W>> = Arc::new(Mutex::new(output));
         let event_writer = Arc::clone(&shared_writer);
 
-        // Create channel for asynchronous events.
-        let (tx, rx) = channel::<DapMessage>();
+        // Create bounded channel for asynchronous events. Output events that arrive faster
+        // than the writer thread can drain are dropped with a warning (see dispatch_event).
+        let (tx, rx) = sync_channel::<DapMessage>(EVENT_QUEUE_CAPACITY);
         self.event_sender = Some(tx.clone());
 
         // Clone transport_broken flag to pass to the event handler thread.

@@ -8,7 +8,7 @@ use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::time::{Duration, Instant};
 
 // ─── Public surface ───────────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ impl DapWorkflowSession {
     /// not received within `timeout`.
     pub fn new(timeout: Duration) -> Result<Self, String> {
         let mut adapter = DebugAdapter::new();
-        let (tx, rx) = channel();
+        let (tx, rx) = sync_channel(perl_dap::debug_adapter::sync_utils::EVENT_QUEUE_CAPACITY);
         adapter.set_event_sender(tx);
 
         let mut session = Self { adapter, rx, timeout, seq: 0 };

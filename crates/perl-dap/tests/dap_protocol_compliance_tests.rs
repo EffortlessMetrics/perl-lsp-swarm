@@ -13,7 +13,7 @@
 
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use serde_json::{Value, json};
-use std::sync::mpsc::channel;
+use std::sync::mpsc::sync_channel;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -24,7 +24,7 @@ fn make_adapter() -> DebugAdapter {
 }
 
 fn make_adapter_with_events() -> (DebugAdapter, std::sync::mpsc::Receiver<DapMessage>) {
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     let mut adapter = DebugAdapter::new();
     adapter.set_event_sender(tx);
     (adapter, rx)

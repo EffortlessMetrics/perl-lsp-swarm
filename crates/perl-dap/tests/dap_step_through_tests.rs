@@ -21,7 +21,7 @@
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use serde_json::json;
 use std::fs;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
@@ -33,7 +33,7 @@ fn make_adapter() -> DebugAdapter {
 }
 
 fn make_adapter_with_events() -> (DebugAdapter, Receiver<DapMessage>) {
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     let mut adapter = DebugAdapter::new();
     adapter.set_event_sender(tx);
     (adapter, rx)

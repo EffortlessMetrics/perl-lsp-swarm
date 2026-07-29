@@ -18,7 +18,10 @@ mod parsing;
 mod regexes;
 pub(crate) mod safe_eval;
 mod session;
-mod sync_utils;
+/// Bounded event dispatch utilities: [`dispatch_event`], [`emit_event_safe`], and the global
+/// output-drop counter. Exposed as `pub` for integration-test access to backpressure
+/// regression tests.
+pub mod sync_utils;
 mod transport;
 pub mod var_ref;
 mod variable_cache;
@@ -57,7 +60,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -73,7 +76,7 @@ use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 use patterns::*;
 use safe_eval::validate_safe_expression;
-use sync_utils::{emit_event_safe, lock_or_recover};
+use sync_utils::{dispatch_event, emit_event_safe, lock_or_recover};
 
 #[derive(Debug, Default)]
 struct TerminationState {
@@ -103,8 +106,8 @@ pub struct DebugAdapter {
     breakpoints: BreakpointStore,
     /// Thread ID counter
     thread_counter: Arc<Mutex<i32>>,
-    /// Output channel for sending events to client
-    event_sender: Option<Sender<DapMessage>>,
+    /// Bounded output channel for sending events to client (see `EVENT_QUEUE_CAPACITY`)
+    event_sender: Option<SyncSender<DapMessage>>,
     /// Ensures competing session shutdown paths emit one terminal event per session.
     termination_state: Arc<Mutex<TerminationState>>,
     /// Bounded history of debugger output for stack/variable/evaluate parsing
@@ -227,8 +230,8 @@ impl DebugAdapter {
         }
     }
 
-    /// Set the event sender (primarily for testing)
-    pub fn set_event_sender(&mut self, sender: Sender<DapMessage>) {
+    /// Set the bounded event sender (primarily for testing).
+    pub fn set_event_sender(&mut self, sender: SyncSender<DapMessage>) {
         self.event_sender = Some(sender);
     }
 
@@ -330,12 +333,10 @@ impl DebugAdapter {
         *seq
     }
 
-    /// Send an event to the client
+    /// Send an event to the client via the bounded outbound queue.
     fn send_event(&self, event: &str, body: Option<Value>) {
         if let Some(ref sender) = self.event_sender {
-            let seq = self.next_seq();
-            let msg = DapMessage::Event { seq, event: event.to_string(), body };
-            let _ = sender.send(msg);
+            dispatch_event(sender, &self.seq, event, body);
         }
     }
 

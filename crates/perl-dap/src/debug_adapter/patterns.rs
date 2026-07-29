@@ -8,6 +8,7 @@ pub(super) const DEBUGGER_QUERY_WAIT_MS: u64 = 75;
 pub(super) const DEBUGGER_FRAME_POLL_MS: u64 = 10;
 
 pub(super) const RECENT_OUTPUT_MAX_LINES: usize = 2048;
+pub(super) use super::sync_utils::EVENT_QUEUE_CAPACITY;
 const MAX_DEBUGGER_IDENTIFIER_LEN: usize = 512;
 
 #[derive(Debug, Clone)]
