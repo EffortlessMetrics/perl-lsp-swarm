@@ -27,6 +27,8 @@ pub const FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION: &str =
     "perl_core_harness.failure_cluster_history.v1";
 pub const COMPILER_COMPATIBILITY_SCHEMA_VERSION: &str =
     "perl_core_harness.compiler_compatibility.v1";
+pub const COMPATIBILITY_INPUT_MANIFEST_SCHEMA_VERSION: &str =
+    "perl_core_harness.compiler_compatibility_inputs.v1";
 
 /// Upstream Perl test scheduler to query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
@@ -888,6 +890,29 @@ pub struct CompilerCompatibilityState {
     pub series: Vec<CompilerCompatibilitySeries>,
 }
 
+/// Path manifest consumed by the compatibility status writer/checker.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilityInputManifest {
+    pub schema_version: String,
+    pub repository_commit: String,
+    pub series: Vec<CompatibilityInputSeries>,
+}
+
+/// Receipt paths for one independently identified compatibility series.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilityInputSeries {
+    pub series_manifest: String,
+    pub parse_report: String,
+    pub compile_report: String,
+    pub compile_baseline: String,
+    pub evidence_bundle: String,
+    pub boundary_registry: Option<String>,
+    pub cluster_history: Option<String>,
+    pub execute_report: Option<String>,
+}
+
 pub fn workstream_for_bucket(bucket: &str) -> &'static str {
     match bucket {
         "parse_recovery" => "parser_recovery",
@@ -962,6 +987,10 @@ mod tests {
         assert_eq!(
             COMPILER_COMPATIBILITY_SCHEMA_VERSION,
             "perl_core_harness.compiler_compatibility.v1"
+        );
+        assert_eq!(
+            COMPATIBILITY_INPUT_MANIFEST_SCHEMA_VERSION,
+            "perl_core_harness.compiler_compatibility_inputs.v1"
         );
     }
 

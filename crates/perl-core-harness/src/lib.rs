@@ -11,16 +11,17 @@ use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness_types::{
     BOUNDARY_RETIREMENT_SCHEMA_VERSION, BaselineComparison, BaselineViolation,
-    BaselineViolationKind, BoundaryRetirement, COMPILE_BASELINE_SCHEMA_VERSION,
-    COMPILE_BASELINE_V2_SCHEMA_VERSION, COMPILER_COMPATIBILITY_SCHEMA_VERSION,
-    CompatibilityClusterState, CompatibilityDebtState, CompatibilityRailAvailability,
-    CompatibilityRailState, CompatibilityRunState, CompatibilitySeriesIdentity, CompileBaseline,
-    CompileBaselineV2, CompilerCompatibilitySeries, CompilerCompatibilityState,
-    DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport,
-    FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION, FAILURE_CLUSTER_SCHEMA_VERSION, FailureCluster,
-    FailureClusterHistory, FailureClusterHistoryEntry, FailureClusterHistoryStatus,
-    FailureClusterReport, FailureClusterSignature, FailureDebtCandidate, GAP_MAP_SCHEMA_VERSION,
-    GapMap, ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus,
+    BaselineViolationKind, BoundaryRetirement, COMPATIBILITY_INPUT_MANIFEST_SCHEMA_VERSION,
+    COMPILE_BASELINE_SCHEMA_VERSION, COMPILE_BASELINE_V2_SCHEMA_VERSION,
+    COMPILER_COMPATIBILITY_SCHEMA_VERSION, CompatibilityClusterState, CompatibilityDebtState,
+    CompatibilityInputManifest, CompatibilityRailAvailability, CompatibilityRailState,
+    CompatibilityRunState, CompatibilitySeriesIdentity, CompileBaseline, CompileBaselineV2,
+    CompilerCompatibilitySeries, CompilerCompatibilityState, DISCOVERY_SCHEMA_VERSION,
+    DiscoveredTest, DiscoveryReport, FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
+    FAILURE_CLUSTER_SCHEMA_VERSION, FailureCluster, FailureClusterHistory,
+    FailureClusterHistoryEntry, FailureClusterHistoryStatus, FailureClusterReport,
+    FailureClusterSignature, FailureDebtCandidate, GAP_MAP_SCHEMA_VERSION, GapMap,
+    ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus,
     RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunSummary, RunnerRecord,
     RunnerStatus, SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION, SERIES_MANIFEST_NORMALIZATION_VERSION,
     SERIES_MANIFEST_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION, SemanticBoundaryConfidence,
@@ -276,6 +277,16 @@ pub struct CompatibilitySeriesInput {
 pub struct CompatibilityLoadConfig {
     pub inputs: Vec<CompatibilitySeriesInput>,
     pub repository_commit: String,
+}
+
+/// Configuration for deterministic compiler compatibility status generation.
+#[derive(Debug, Clone)]
+pub struct CompatibilityStatusConfig {
+    pub input_manifest: PathBuf,
+    pub json_output: PathBuf,
+    pub markdown_output: PathBuf,
+    pub write: bool,
+    pub check: bool,
 }
 
 /// Configuration for `perl-core-harness smoke`.
@@ -586,6 +597,135 @@ pub fn load_compatibility_state(
         repository_commit: config.repository_commit,
         series,
     })
+}
+
+/// Generate or check canonical compiler compatibility JSON and Markdown.
+pub fn compatibility_status(config: CompatibilityStatusConfig) -> Result<()> {
+    if config.write == config.check {
+        bail!("compiler compatibility status requires exactly one of --write or --check");
+    }
+    let raw = fs::read_to_string(&config.input_manifest).with_context(|| {
+        format!("reading compatibility input manifest {}", config.input_manifest.display())
+    })?;
+    let manifest: CompatibilityInputManifest = serde_json::from_str(&raw).with_context(|| {
+        format!("decoding compatibility input manifest {}", config.input_manifest.display())
+    })?;
+    if manifest.schema_version != COMPATIBILITY_INPUT_MANIFEST_SCHEMA_VERSION {
+        bail!("unsupported compatibility input manifest schema {}", manifest.schema_version);
+    }
+    if manifest.series.is_empty() {
+        bail!("compatibility input manifest contains no series");
+    }
+    let base = config.input_manifest.parent().unwrap_or_else(|| Path::new("."));
+    let inputs = manifest
+        .series
+        .iter()
+        .map(|input| CompatibilitySeriesInput {
+            series_manifest: manifest_path(base, &input.series_manifest),
+            parse_report: manifest_path(base, &input.parse_report),
+            compile_report: manifest_path(base, &input.compile_report),
+            compile_baseline: manifest_path(base, &input.compile_baseline),
+            evidence_bundle: manifest_path(base, &input.evidence_bundle),
+            boundary_registry: input
+                .boundary_registry
+                .as_deref()
+                .map(|path| manifest_path(base, path)),
+            cluster_history: input.cluster_history.as_deref().map(|path| manifest_path(base, path)),
+            execute_report: input.execute_report.as_deref().map(|path| manifest_path(base, path)),
+        })
+        .collect();
+    let state = load_compatibility_state(CompatibilityLoadConfig {
+        inputs,
+        repository_commit: manifest.repository_commit,
+    })?;
+    let json = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&state).context("serializing compiler compatibility state")?
+    );
+    let markdown = render_compatibility_markdown(&state);
+    if config.write {
+        write_generated_text(&config.json_output, &json, "compatibility JSON")?;
+        write_generated_text(&config.markdown_output, &markdown, "compatibility Markdown")?;
+    } else {
+        check_generated_text(&config.json_output, &json, "compatibility JSON")?;
+        check_generated_text(&config.markdown_output, &markdown, "compatibility Markdown")?;
+    }
+    Ok(())
+}
+
+fn manifest_path(base: &Path, value: &str) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() { path } else { base.join(path) }
+}
+
+fn write_generated_text(path: &Path, content: &str, label: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating {label} directory {}", parent.display()))?;
+    }
+    fs::write(path, content).with_context(|| format!("writing {label} {}", path.display()))
+}
+
+fn check_generated_text(path: &Path, expected: &str, label: &str) -> Result<()> {
+    let actual =
+        fs::read_to_string(path).with_context(|| format!("reading {label} {}", path.display()))?;
+    if actual != expected {
+        bail!("{label} {} is stale; rerun with --write", path.display());
+    }
+    Ok(())
+}
+
+fn render_compatibility_markdown(state: &CompilerCompatibilityState) -> String {
+    let mut markdown = format!(
+        "# Compiler compatibility\n\n- Schema: {}\n- Repository commit: {}\n- Series: {}\n\n",
+        state.schema_version,
+        state.repository_commit,
+        state.series.len()
+    );
+    for series in &state.series {
+        markdown.push_str(&format!(
+            "## Series {}\n\n- Profile: {}\n- Manifest: {}\n- Denominator: {}\n- Perl: {} (requested {})\n- Evidence bundle: {}\n- Measurement SHA: {}\n\n",
+            series.identity.series_id,
+            series.identity.profile,
+            series.identity.manifest_hash,
+            series.identity.denominator,
+            series.identity.perl_resolved_ref,
+            series.identity.perl_requested_ref,
+            series.identity.evidence_bundle_id,
+            series.identity.measurement_sha
+        ));
+        markdown.push_str(&format!(
+            "### Acceptance\n\n- Parse: {}/{} passed, {} failed\n- Compile: {}/{} passed, {} failed\n\n",
+            series.parse.files_passed,
+            series.parse.files_total,
+            series.parse.files_failed,
+            series.compile.files_passed,
+            series.compile.files_total,
+            series.compile.files_failed
+        ));
+        markdown.push_str(&format!(
+            "### Debt and clusters\n\n- Boundaries: {}\n- Source-locked debt: {}\n- Downstream-blocking debt: {}\n- Active clusters: {}\n- Unassigned clusters: {}\n- Cluster history: {}\n\n",
+            series.debt.boundary_count,
+            series.debt.source_locked_count,
+            series.debt.downstream_blocking_count,
+            series.clusters.active_count,
+            series.clusters.unassigned_count,
+            rail_label(&series.debt.history)
+        ));
+        markdown.push_str(&format!(
+            "### Independent rails\n\n- Execution: {}\n- Curated gold: {}\n- Differential oracle: {}\n- EIR: {}\n\nClaim boundary: {}\n\n",
+            rail_label(&series.execution),
+            rail_label(&series.curated_gold),
+            rail_label(&series.differential_oracle),
+            rail_label(&series.eir),
+            series.claim_boundary
+        ));
+    }
+    markdown
+}
+
+fn rail_label(rail: &CompatibilityRailState) -> String {
+    format!("{} ({})", enum_label(rail.availability), rail.reason)
 }
 
 fn load_compatibility_series(
@@ -4721,7 +4861,7 @@ fn perl_tree_ref(perl_tree: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_core_harness_types::FailureClusterHistoryTransition;
+    use perl_core_harness_types::{CompatibilityInputSeries, FailureClusterHistoryTransition};
     use perl_core_harness_types::{
         SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
         SemanticBoundaryRecord, SemanticBoundarySourceSpan,
@@ -6899,6 +7039,39 @@ mod tests {
         assert!(encoded.contains("not_available"));
         let decoded: CompilerCompatibilityState = serde_json::from_str(&encoded)?;
         assert_eq!(decoded, state);
+
+        let input_manifest_path = temp.path().join("inputs.json");
+        let input_manifest = CompatibilityInputManifest {
+            schema_version: COMPATIBILITY_INPUT_MANIFEST_SCHEMA_VERSION.into(),
+            repository_commit: "abc".into(),
+            series: vec![CompatibilityInputSeries {
+                series_manifest: "series.json".into(),
+                parse_report: "parse.json".into(),
+                compile_report: "bundle/normalized/compile.json".into(),
+                compile_baseline: "baseline.json".into(),
+                evidence_bundle: "bundle/index.json".into(),
+                boundary_registry: None,
+                cluster_history: None,
+                execute_report: None,
+            }],
+        };
+        fs::write(&input_manifest_path, serde_json::to_string_pretty(&input_manifest)?)?;
+        let json_output = temp.path().join("status.json");
+        let markdown_output = temp.path().join("status.md");
+        compatibility_status(CompatibilityStatusConfig {
+            input_manifest: input_manifest_path.clone(),
+            json_output: json_output.clone(),
+            markdown_output: markdown_output.clone(),
+            write: true,
+            check: false,
+        })?;
+        compatibility_status(CompatibilityStatusConfig {
+            input_manifest: input_manifest_path,
+            json_output,
+            markdown_output,
+            write: false,
+            check: true,
+        })?;
         Ok(())
     }
 

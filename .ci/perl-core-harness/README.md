@@ -197,6 +197,17 @@ rails are not_available, never zero or pass. The versioned schema is
 schemas/compiler_compatibility.v1.schema.json; rendering and freshness
 checks belong to #4749.
 
+Generate or check the canonical compatibility outputs with the
+compiler-compatibility status command:
+
+    cargo xtask compiler-compatibility status --input .ci/perl-core-harness/compatibility-inputs.v1.json --json target/compiler-compatibility.json --markdown docs/project/status/compiler_compatibility.md --write
+    cargo xtask compiler-compatibility status --input .ci/perl-core-harness/compatibility-inputs.v1.json --json target/compiler-compatibility.json --markdown docs/project/status/compiler_compatibility.md --check
+
+The path manifest is validated by
+schemas/compiler_compatibility_inputs.v1.schema.json. The status writer emits
+one section per series and keeps acceptance, debt, clusters, execution,
+curated-gold, oracle, and EIR claims separate.
+
 Or run the smoke against a user-supplied prepared upstream Perl tree:
 
 ```bash

@@ -1550,6 +1550,13 @@ enum Commands {
         command: PerlCoreHarnessCommand,
     },
 
+    /// Generate or check the typed compiler compatibility ledger.
+    #[command(name = "compiler-compatibility")]
+    CompilerCompatibility {
+        #[command(subcommand)]
+        command: CompilerCompatibilityCommand,
+    },
+
     /// Emit parser-ratchet scaffold receipts.
     ParserRatchet {
         #[command(subcommand)]
@@ -2419,6 +2426,32 @@ enum CpanCorpusCommand {
         /// Local install directory containing CPAN modules
         #[arg(long)]
         install_dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CompilerCompatibilityCommand {
+    /// Generate or check canonical compiler compatibility JSON and Markdown.
+    Status {
+        /// JSON input manifest containing one receipt-path row per series.
+        #[arg(long)]
+        input: PathBuf,
+
+        /// Canonical machine-readable output path.
+        #[arg(long)]
+        json: PathBuf,
+
+        /// Canonical reviewable Markdown output path.
+        #[arg(long)]
+        markdown: PathBuf,
+
+        /// Write canonical outputs.
+        #[arg(long, conflicts_with = "check")]
+        write: bool,
+
+        /// Check outputs without mutation.
+        #[arg(long, conflicts_with = "write")]
+        check: bool,
     },
 }
 
@@ -4306,6 +4339,19 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::TreeSitterIncrementalProof { profile, output } => {
             incremental_proof::run(profile, output)
         }
+        Commands::CompilerCompatibility { command } => match command {
+            CompilerCompatibilityCommand::Status { input, json, markdown, write, check } => {
+                perl_core_harness::compatibility_status(
+                    perl_core_harness::CompatibilityStatusConfig {
+                        input_manifest: input,
+                        json_output: json,
+                        markdown_output: markdown,
+                        write,
+                        check,
+                    },
+                )
+            }
+        },
         Commands::PerlCoreHarness { command } => match command {
             PerlCoreHarnessCommand::Prepare { perl_ref, output_dir } => {
                 perl_core_harness::prepare(perl_core_harness::PrepareConfig {

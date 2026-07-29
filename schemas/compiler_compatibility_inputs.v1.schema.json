@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/schemas/compiler_compatibility_inputs.v1.schema.json",
+  "title": "Compiler compatibility input manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "repository_commit", "series"],
+  "properties": {
+    "schema_version": {
+      "const": "perl_core_harness.compiler_compatibility_inputs.v1"
+    },
+    "repository_commit": {
+      "type": "string",
+      "minLength": 1
+    },
+    "series": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "series_manifest",
+          "parse_report",
+          "compile_report",
+          "compile_baseline",
+          "evidence_bundle",
+          "boundary_registry",
+          "cluster_history",
+          "execute_report"
+        ],
+        "properties": {
+          "series_manifest": {"type": "string", "minLength": 1},
+          "parse_report": {"type": "string", "minLength": 1},
+          "compile_report": {"type": "string", "minLength": 1},
+          "compile_baseline": {"type": "string", "minLength": 1},
+          "evidence_bundle": {"type": "string", "minLength": 1},
+          "boundary_registry": {"type": ["string", "null"]},
+          "cluster_history": {"type": ["string", "null"]},
+          "execute_report": {"type": ["string", "null"]}
+        }
+      }
+    }
+  }
+}
