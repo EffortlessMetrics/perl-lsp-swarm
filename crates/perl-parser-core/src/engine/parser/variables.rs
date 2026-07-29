@@ -879,7 +879,7 @@ impl<'a> Parser<'a> {
 
         // Keywords can be used as variable names with any sigil
         // e.g., %try, $default, @for, &try are all valid Perl.
-        let (name, end) = if next_kind.is_some_and(Self::is_variable_name_kind) {
+        let (name, mut end) = if next_kind.is_some_and(Self::is_variable_name_kind) {
             let name_token = self.tokens.next()?;
             let mut name = name_token.text.to_string();
             let mut end = name_token.end;
@@ -1138,7 +1138,9 @@ impl<'a> Parser<'a> {
         if sigil == "&" {
             let args = if self.peek_kind() == Some(TokenKind::LeftParen) {
                 self.consume_token()?; // consume (
-                self.parse_parenthesized_arg_list()?
+                let args = self.parse_parenthesized_arg_list()?;
+                end = self.previous_position();
+                args
             } else {
                 vec![]
             };

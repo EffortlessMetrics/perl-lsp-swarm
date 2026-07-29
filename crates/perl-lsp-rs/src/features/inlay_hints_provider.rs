@@ -100,13 +100,22 @@ impl InlayHintsProvider {
                 }
             }
 
-            // Function calls - show parameter hints
+            // Function calls - show parameter hints for known builtin signatures.
             NodeKind::FunctionCall { name, args } => {
                 if self.enabled_hints.parameter_hints {
                     self.add_parameter_hints(name, args, node, hints, range);
                 }
 
                 // Visit arguments
+                for arg in args {
+                    self.visit_node(arg, hints, range);
+                }
+            }
+
+            // An ampersand call may target a user-defined subroutine with the
+            // same name as a builtin. Traverse its arguments, but do not apply
+            // builtin metadata without resolving the actual target signature.
+            NodeKind::AmperCall { args, .. } => {
                 for arg in args {
                     self.visit_node(arg, hints, range);
                 }
@@ -611,6 +620,60 @@ print("Hello, World!");
         let (line, col) = provider.offset_to_position(4);
         assert_eq!(line, 1, "byte offset 4 ('l') should be on line 1");
         assert_eq!(col, 0, "byte offset 4 ('l') should be at column 0");
+    }
+
+    /// An ampersand call must not borrow builtin parameter metadata.
+    #[test]
+    fn test_amper_call_does_not_produce_builtin_parameter_hints() -> anyhow::Result<()> {
+        let code = "&push(1, 2);\n";
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let provider = InlayHintsProvider::new(code.to_string());
+        let hints = provider.extract(&ast);
+        assert!(hints.is_empty(), "unresolved ampersand calls must not use builtin metadata");
+
+        let loc = |start, end| perl_parser::ast::SourceLocation { start, end };
+        let builtin_call = Node::new(
+            perl_parser::ast::NodeKind::FunctionCall {
+                name: "push".to_string(),
+                args: vec![
+                    Node::new(
+                        perl_parser::ast::NodeKind::Number { value: "1".to_string() },
+                        loc(5, 6),
+                    ),
+                    Node::new(
+                        perl_parser::ast::NodeKind::Number { value: "2".to_string() },
+                        loc(8, 9),
+                    ),
+                ],
+            },
+            loc(0, 10),
+        );
+        let builtin_hints = provider.extract(&builtin_call);
+        assert!(!builtin_hints.is_empty(), "bare builtin calls must still produce parameter hints");
+        Ok(())
+    }
+
+    /// An ampersand call must not infer a builtin return type without resolution.
+    #[test]
+    fn test_amper_call_does_not_infer_builtin_type() {
+        let provider = InlayHintsProvider::new(String::new());
+        use perl_parser::ast::{Node, NodeKind, SourceLocation};
+        let loc = SourceLocation { start: 0, end: 1 };
+        let split_amper =
+            Node::new(NodeKind::AmperCall { name: "split".to_string(), args: vec![] }, loc);
+        let result = provider.infer_type(&split_amper);
+        assert_eq!(result, None, "&split() must not use builtin return metadata");
+
+        // Positive control: bare FunctionCall{split} must still resolve builtin metadata,
+        // so a regression that blanks all split inference cannot hide behind the AmperCall assert.
+        let split_builtin =
+            Node::new(NodeKind::FunctionCall { name: "split".to_string(), args: vec![] }, loc);
+        let builtin_result = provider.infer_type(&split_builtin);
+        assert!(
+            builtin_result.is_some(),
+            "bare split() FunctionCall must still infer a builtin return type"
+        );
     }
 
     #[test]

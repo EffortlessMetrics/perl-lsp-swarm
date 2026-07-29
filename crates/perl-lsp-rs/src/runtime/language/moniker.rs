@@ -354,8 +354,11 @@ impl LspServer {
                 }
                 _ => return None,
             };
-            let NodeKind::FunctionCall { name, args } = &call_node.kind else {
-                return None;
+            let (name, args) = match &call_node.kind {
+                NodeKind::FunctionCall { name, args } | NodeKind::AmperCall { name, args } => {
+                    (name, args)
+                }
+                _ => return None,
             };
             if !matches!(
                 name.as_str(),

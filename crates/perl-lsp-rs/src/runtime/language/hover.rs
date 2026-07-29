@@ -1287,7 +1287,9 @@ impl LspServer {
                     // Check the inner FunctionCall's args directly — do NOT gate on the outer
                     // ExpressionStatement's location which only spans the keyword.
                     if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-                        if let NodeKind::FunctionCall { name, args } = &expression.kind {
+                        if let NodeKind::FunctionCall { name, args }
+                        | NodeKind::AmperCall { name, args } = &expression.kind
+                        {
                             if matches!(name.as_str(), "with" | "extends") {
                                 for arg in args {
                                     if let Some(role) = Self::role_name_at_offset(arg, offset) {
