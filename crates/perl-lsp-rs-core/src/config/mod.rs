@@ -222,6 +222,8 @@ pub struct AiCompletionConfig {
     pub max_inflight: u32,
     /// Whether to fall back to deterministic completions on AI failure. Default: true.
     pub fallback: bool,
+    /// Allow plain HTTP to loopback-only local model endpoints. Default: false.
+    pub local_model_mode: bool,
     /// Streaming-specific configuration.
     pub streaming: AiStreamingConfig,
 }
@@ -307,6 +309,7 @@ impl Default for AiCompletionConfig {
             rate_limit_rps: 1.0,
             max_inflight: 1,
             fallback: true,
+            local_model_mode: false,
             streaming: AiStreamingConfig::default(),
         }
     }
@@ -593,6 +596,9 @@ impl ServerConfig {
             }
             if let Some(fallback) = ai.get("fallback").and_then(|v| v.as_bool()) {
                 self.ai_completion.fallback = fallback;
+            }
+            if let Some(local_model_mode) = ai.get("localModelMode").and_then(|v| v.as_bool()) {
+                self.ai_completion.local_model_mode = local_model_mode;
             }
             if let Some(streaming) = ai.get("streaming") {
                 if let Some(enabled) = streaming.get("enabled").and_then(|v| v.as_bool()) {

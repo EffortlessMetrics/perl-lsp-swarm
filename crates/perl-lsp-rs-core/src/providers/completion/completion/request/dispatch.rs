@@ -722,11 +722,8 @@ fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
     // Walk backward past whitespace to find the last non-whitespace char
     let before = &source[..prefix_start];
     let trimmed = before.trim_end();
-    if trimmed.is_empty() {
-        return false; // blank line — statement position
-    }
     let Some(last_char) = trimmed.chars().next_back() else {
-        return false;
+        return false; // blank line — statement position
     };
     // Expression indicators: assignment, list, operator contexts
     matches!(
