@@ -1799,6 +1799,30 @@ fn did_open_missing_text_returns_invalid_params() {
     }
 }
 
+/// A BOM supplied by an editor must not become part of the stored document
+/// text, because it would shift every UTF-16 column on the first line.
+#[test]
+fn did_open_strips_utf8_bom_before_storing_document_text() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = LspServer::new();
+    let uri = "file:///bom-editor-text.pl";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "\u{FEFF}my $value = 1;\n"
+        }
+    }))?;
+
+    let documents = server.documents.lock();
+    let document = documents.get(uri).ok_or("document was not stored after didOpen")?;
+    assert_eq!(document.text, "my $value = 1;\n");
+    assert!(!document.text.starts_with('\u{FEFF}'));
+    Ok(())
+}
+
 /// did_open with a missing textDocument.uri field must return INVALID_PARAMS.
 #[test]
 fn did_open_missing_uri_returns_invalid_params() {
