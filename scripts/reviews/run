@@ -1,51 +1,40 @@
 #!/usr/bin/env bash
 # scripts/reviews/run — review-run / verification receipt poster (#3693 R1, FILE 4)
 #
-# Posts the PR-level `<!-- review-run:v1 … -->` and `<!-- verification:v1 … -->`
-# markers the convergence closeout reads. Every receipt is stamped
-# head==the PR's CURRENT headRefOid, so a receipt is bound to the exact push
-# it verified — a receipt from an older head reads as a head mismatch in the
-# closeout (deep_review_receipt_head_match / verification_receipt_head_match),
-# never as stale-green.
+# Review receipts are bound to both the PR head and the normalized material
+# claim/review index. A claim-body change therefore cannot inherit an older
+# formal disposition merely because the Git head stayed the same.
 #
 #   review-start → posts a review-run marker with status=running
 #   review-done  → posts a review-run marker with status=done
 #   verify       → posts a verification marker (result=pass|fail)
 #
-# WRITE-SIDE writer!=verifier enforcement: `verify` REFUSES to post when the
-# verifier equals the PR author or a fix-commit author (the closeout re-checks
-# this READ-SIDE — defense in depth, per enforcement-over-doctrine).
-#
-# ── Usage ────────────────────────────────────────────────────────────────────
-#   scripts/reviews/run review-start --pr <n> --kind <deep|standard> --reviewer <id> [--repo r] [--head sha] [--dry-run]
-#   scripts/reviews/run review-done  --pr <n> --kind <deep|standard> --reviewer <id> [--repo r] [--head sha] [--dry-run]
+# Usage:
+#   scripts/reviews/run review-start --pr <n> --kind <deep|standard> --reviewer <id> [--claim-digest sha] [--repo r] [--head sha] [--dry-run]
+#   scripts/reviews/run review-done  --pr <n> --kind <deep|standard> --reviewer <id> [--claim-digest sha] [--repo r] [--head sha] [--dry-run]
 #   scripts/reviews/run verify       --pr <n> --verifier <id> --result <pass|fail> [--findings <json>] [--repo r] [--head sha] [--dry-run]
-#
-# ── Exit codes ───────────────────────────────────────────────────────────────
-#   0 success (marker posted, or dry-run printed the plan)
-#   2 usage/validation error, writer==verifier refusal, or API error
-#
-# ── Test seam ────────────────────────────────────────────────────────────────
-#   --dry-run prints the marker body and makes NO network call.
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 die_usage() { echo "ERROR: $1" >&2; exit 2; }
 
 [[ $# -ge 1 ]] || die_usage "missing subcommand (review-start|review-done|verify)"
 SUBCMD="$1"; shift
 
-PR="" KIND="" REVIEWER="" VERIFIER="" RESULT="" FINDINGS="0" REPO="" HEAD="" DRY_RUN=0
+PR="" KIND="" REVIEWER="" VERIFIER="" RESULT="" FINDINGS="0" REPO="" HEAD="" CLAIM_DIGEST="" DRY_RUN=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --pr)       PR="${2:-}"; shift 2 ;;
-        --kind)     KIND="${2:-}"; shift 2 ;;
-        --reviewer) REVIEWER="${2:-}"; shift 2 ;;
-        --verifier) VERIFIER="${2:-}"; shift 2 ;;
-        --result)   RESULT="${2:-}"; shift 2 ;;
-        --findings) FINDINGS="${2:-}"; shift 2 ;;
-        --repo)     REPO="${2:-}"; shift 2 ;;
-        --head)     HEAD="${2:-}"; shift 2 ;;
-        --dry-run)  DRY_RUN=1; shift ;;
+        --pr)           PR="${2:-}"; shift 2 ;;
+        --kind)         KIND="${2:-}"; shift 2 ;;
+        --reviewer)     REVIEWER="${2:-}"; shift 2 ;;
+        --verifier)     VERIFIER="${2:-}"; shift 2 ;;
+        --result)       RESULT="${2:-}"; shift 2 ;;
+        --findings)     FINDINGS="${2:-}"; shift 2 ;;
+        --repo)         REPO="${2:-}"; shift 2 ;;
+        --head)         HEAD="${2:-}"; shift 2 ;;
+        --claim-digest) CLAIM_DIGEST="${2:-}"; shift 2 ;;
+        --dry-run)      DRY_RUN=1; shift ;;
         *) die_usage "unknown argument: $1" ;;
     esac
 done
@@ -53,7 +42,6 @@ done
 [[ -n "$PR" ]] || die_usage "--pr is required"
 command -v jq >/dev/null 2>&1 || die_usage "jq not found on PATH"
 
-# Resolve repo + head (live path) — receipts are always stamped at HEAD.
 resolve_repo_head() {
     if [[ "$DRY_RUN" -eq 0 ]]; then
         command -v gh >/dev/null 2>&1 || die_usage "gh not found on PATH (required unless --dry-run)"
@@ -64,13 +52,26 @@ resolve_repo_head() {
     fi
 }
 
+resolve_claim_digest() {
+    [[ "$SUBCMD" == "review-start" || "$SUBCMD" == "review-done" ]] || return 0
+    if [[ -n "$CLAIM_DIGEST" ]]; then
+        return 0
+    fi
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        CLAIM_DIGEST="DRYRUN-CLAIM"
+        return 0
+    fi
+    claim_args=(--pr "$PR")
+    [[ -n "$REPO" ]] && claim_args+=(--repo "$REPO")
+    CLAIM_DIGEST="$("$SCRIPT_DIR/claim-digest" "${claim_args[@]}")" || die_usage "failed to compute material claim digest"
+}
+
 post_pr_comment() {
     local body="$1"
     gh pr comment "$PR" --repo "$REPO" --body "$body"
 }
 
 emit() {
-    # $1 = kind label (review-run|verification), $2 = marker json, $3 = preamble
     local body
     body="$(printf '%s\n\n<!-- %s:v1 %s -->' "$3" "$1" "$2")"
     if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -90,18 +91,17 @@ case "$SUBCMD" in
         [[ "$KIND" == "deep" || "$KIND" == "standard" ]] || die_usage "$SUBCMD requires --kind <deep|standard>"
         [[ -n "$REVIEWER" ]] || die_usage "$SUBCMD requires --reviewer <id>"
         resolve_repo_head
+        resolve_claim_digest
         local_status="running"
         [[ "$SUBCMD" == "review-done" ]] && local_status="done"
-        marker="$(jq -cn --arg kind "$KIND" --arg head "$HEAD" --arg rev "$REVIEWER" --arg st "$local_status" \
-            '{v:1, kind:$kind, head:$head, reviewer:$rev, status:$st}')"
-        emit "review-run" "$marker" "Review pass ($KIND) $local_status by $REVIEWER at head $HEAD."
+        marker="$(jq -cn --arg kind "$KIND" --arg head "$HEAD" --arg claim "$CLAIM_DIGEST" --arg rev "$REVIEWER" --arg st "$local_status" \
+            '{v:1, kind:$kind, head:$head, claim_digest:$claim, reviewer:$rev, status:$st}')"
+        emit "review-run" "$marker" "Review pass ($KIND) $local_status by $REVIEWER at head $HEAD and claim $CLAIM_DIGEST."
         ;;
     verify)
         [[ -n "$VERIFIER" ]] || die_usage "verify requires --verifier <id>"
         [[ "$RESULT" == "pass" || "$RESULT" == "fail" ]] || die_usage "verify requires --result <pass|fail>"
         resolve_repo_head
-        # WRITE-SIDE writer!=verifier: refuse if verifier is the PR author or a
-        # fix-commit author. (Live path only — dry-run skips the lookup.)
         if [[ "$DRY_RUN" -eq 0 ]]; then
             pr_author="$(gh pr view "$PR" --repo "$REPO" --json author --jq '.author.login' 2>/dev/null || echo "")"
             commit_authors="$(gh pr view "$PR" --repo "$REPO" --json commits --jq '[.commits[].authors[].login] | unique | .[]' 2>/dev/null || echo "")"
@@ -117,7 +117,6 @@ case "$SUBCMD" in
                 fi
             done <<< "$commit_authors"
         fi
-        # findings may be a bare int or a json object; normalize to json.
         if [[ "$FINDINGS" =~ ^[0-9]+$ ]]; then findings_json="$FINDINGS"; else findings_json="$(jq -c '.' <<< "$FINDINGS" 2>/dev/null || echo '0')"; fi
         marker="$(jq -cn --arg head "$HEAD" --arg v "$VERIFIER" --argjson f "$findings_json" --arg r "$RESULT" \
             '{v:1, head:$head, verifier:$v, findings:$f, result:$r}')"
