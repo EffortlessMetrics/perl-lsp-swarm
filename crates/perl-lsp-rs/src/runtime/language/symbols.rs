@@ -633,7 +633,7 @@ mod tests {
                     && range.get("startLine") == Some(&json!(1))
                     && range.get("endLine") == Some(&json!(2))
             }),
-            "AST heredoc extraction must preserve a region fold over the multiline heredoc"
+            "AST heredoc extraction must preserve a region fold over the multiline heredoc: {ranges:?}"
         );
 
         Ok(())
