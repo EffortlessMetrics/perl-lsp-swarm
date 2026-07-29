@@ -8,7 +8,7 @@ use perl_lsp_rs_core::providers::inline_completion::{
     BackendRequest, InlineCompletionBackend, PreparedInlineCompletionContext, StreamChunk,
     StreamControl,
 };
-use perl_tdd_support::must_some;
+use perl_tdd_support::{must, must_some};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::sync::Arc;
@@ -253,7 +253,7 @@ fn rejects_ipv6_transition_embeddings_via_injected_resolver() {
         ("ipv4-compatible-private", "::10.0.0.1"),
         ("site-local", "fec0::1"),
     ] {
-        let parsed: IpAddr = ip.parse().unwrap_or_else(|_| panic!("valid literal: {ip}"));
+        let parsed: IpAddr = must(ip.parse());
         let err = validate_endpoint_with_resolver(
             "https://transition.example/v1",
             false,
