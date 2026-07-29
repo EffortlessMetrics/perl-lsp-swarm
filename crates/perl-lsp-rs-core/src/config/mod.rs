@@ -378,7 +378,7 @@ impl ServerConfig {
             if let Some(chained) = inlay.get("chainedHints").and_then(|v| v.as_bool()) {
                 self.inlay_hints_chained_hints = chained;
             }
-            if let Some(max_len) = inlay.get("maxLength").and_then(|v| v.as_u64()) {
+            if let Some(max_len) = inlay.get("maxLength").and_then(as_config_u64) {
                 self.inlay_hints_max_length = max_len as usize;
             }
         }
@@ -514,10 +514,10 @@ impl ServerConfig {
                 }
             }
             // Security: do NOT honour LSP-channel formatting.profile / extraArgs (issue #5001).
-            if let Some(len) = formatting.get("maximumLineLength").and_then(|v| v.as_u64()) {
+            if let Some(len) = formatting.get("maximumLineLength").and_then(as_config_u64) {
                 self.perltidy_maximum_line_length = Some(len as u32);
             }
-            if let Some(indent) = formatting.get("indentColumns").and_then(|v| v.as_u64()) {
+            if let Some(indent) = formatting.get("indentColumns").and_then(as_config_u64) {
                 self.perltidy_indent_columns = Some(indent as u32);
             }
             if let Some(tabs) = formatting.get("tabs").and_then(|v| v.as_bool()) {
@@ -538,11 +538,10 @@ impl ServerConfig {
             if let Some(align) = formatting.get("verticalAlignment").and_then(|v| v.as_bool()) {
                 self.perltidy_vertical_alignment = Some(align);
             }
-            if let Some(block) = formatting.get("blockCommentIndentation").and_then(|v| v.as_u64())
-            {
+            if let Some(block) = formatting.get("blockCommentIndentation").and_then(as_config_u64) {
                 self.perltidy_block_comment_indentation = Some(block as u32);
             }
-            if let Some(timeout) = formatting.get("timeoutSecs").and_then(|v| v.as_u64()) {
+            if let Some(timeout) = formatting.get("timeoutSecs").and_then(as_config_u64) {
                 self.perltidy_timeout_secs = timeout;
             }
         }
@@ -975,6 +974,17 @@ fn string_array(value: Option<&serde_json::Value>) -> Option<Vec<String>> {
     })
 }
 
+/// Parse a JSON numeric value into `u64`, accepting both integer and float forms.
+///
+/// `serde_json::Value::as_u64()` rejects JSON floats (e.g. `4.0`), which some
+/// configuration generators emit. This helper accepts both `4` and `4.0` and
+/// also rejects negative values (all config numeric fields are non-negative).
+fn as_config_u64(value: &serde_json::Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_f64().filter(|f| *f >= 0.0 && f.is_finite()).map(|f| f as u64))
+}
+
 impl WorkspaceConfig {
     /// Parse a `PERL5LIB` environment variable value into a list of paths.
     ///
@@ -1130,7 +1140,7 @@ impl WorkspaceConfig {
             // would let a hostile project execute arbitrary code via the @INC
             // probe (issue #3729). The interpreter / args remain whatever the
             // user (not the workspace) configured globally.
-            if let Some(timeout) = workspace.get("resolutionTimeout").and_then(|v| v.as_u64()) {
+            if let Some(timeout) = workspace.get("resolutionTimeout").and_then(as_config_u64) {
                 self.resolution_timeout_ms = timeout;
             }
             if let Some(use_p5l) = workspace.get("usePerl5lib").and_then(|v| v.as_bool()) {
