@@ -13,7 +13,7 @@ current artifact
 → locally named next skill or material backward route
 ```
 
-The passes are the controls. Permanent personas, lifecycle labels, completion hooks, and tracked stage state are not.
+The passes are the controls. Permanent personas, lifecycle labels, completion hooks, and tracked stage state are not controls.
 
 ## Governing law
 
@@ -152,7 +152,7 @@ Stop only where a concrete hazard or unresolved authority remains:
 - a secret or unsafe release would be published;
 - a durable contract is structurally invalid;
 - substantive review findings remain unresolved;
-- live required GitHub policy blocks merge;
+- current GitHub branch protection, rulesets, merge queue, or required checks block merge;
 - a material product or semantic decision genuinely belongs to the accountable owner.
 
 Everything else normally follows:
