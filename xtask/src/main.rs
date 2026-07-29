@@ -2458,6 +2458,69 @@ enum PerlCoreHarnessCommand {
         output: Option<PathBuf>,
     },
 
+    /// Generate or check the immutable identity manifest for a core series.
+    SeriesManifest {
+        /// Discovery receipt produced for the same pinned Perl tree.
+        #[arg(long)]
+        discovery: PathBuf,
+
+        /// Series manifest JSON to write or check.
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Stable comparison-series identifier.
+        #[arg(long)]
+        series_id: String,
+
+        /// Profile covered by the comparison series.
+        #[arg(long, value_enum)]
+        profile: perl_core_harness::HarnessProfile,
+
+        /// Requested Perl tag or commit.
+        #[arg(long)]
+        perl_requested_ref: String,
+
+        /// Resolved Perl commit recorded by the discovery receipt.
+        #[arg(long)]
+        perl_resolved_ref: String,
+
+        /// Identity of the retained preparation receipt.
+        #[arg(long)]
+        preparation_receipt_id: String,
+
+        /// Digest of the retained preparation receipt.
+        #[arg(long)]
+        preparation_receipt_digest: String,
+
+        /// Compiler and harness subject identity measured by the receipt.
+        #[arg(long)]
+        compiler_subject_identity: String,
+
+        /// Invocation identity for the measured harness command.
+        #[arg(long)]
+        invocation_identity: String,
+
+        /// Capability identity for the measured environment.
+        #[arg(long)]
+        capability_identity: String,
+
+        /// Environment identity for the measured run.
+        #[arg(long)]
+        environment_identity: String,
+
+        /// Prior series identifier when this intentionally replaces a series.
+        #[arg(long)]
+        replaces_series_id: Option<String>,
+
+        /// Reason for creating this series.
+        #[arg(long)]
+        change_reason: Option<String>,
+
+        /// Check the existing manifest instead of writing it.
+        #[arg(long)]
+        check: bool,
+    },
+
     /// Run discovered tests in parse, compile, or execute mode (future slice).
     Run {
         /// Harness mode to run.
@@ -2513,6 +2576,42 @@ enum PerlCoreHarnessCommand {
         /// Checked-in baseline JSON to read or update.
         #[arg(long)]
         baseline: Option<PathBuf>,
+
+        /// Immutable comparison-series manifest. When present, use baseline v2.
+        #[arg(long)]
+        series: Option<PathBuf>,
+
+        /// Prior v2 baseline used to validate an accepted transition.
+        #[arg(long, requires = "series")]
+        previous_baseline: Option<PathBuf>,
+
+        /// JSON receipt describing reviewed semantic-boundary retirements.
+        #[arg(long, requires = "series")]
+        boundary_retirements: Option<PathBuf>,
+
+        /// Measured compiler and harness subject identity for baseline v2.
+        #[arg(long, requires = "series")]
+        compiler_subject_identity: Option<String>,
+
+        /// Measured invocation identity for baseline v2.
+        #[arg(long, requires = "series")]
+        invocation_identity: Option<String>,
+
+        /// Measured capability identity for baseline v2.
+        #[arg(long, requires = "series")]
+        capability_identity: Option<String>,
+
+        /// Measured environment identity for baseline v2.
+        #[arg(long, requires = "series")]
+        environment_identity: Option<String>,
+
+        /// Reviewed transition identity for baseline v2.
+        #[arg(long, requires = "series")]
+        accepted_transition_id: Option<String>,
+
+        /// Durable evidence bundle reference for baseline v2.
+        #[arg(long, requires = "series")]
+        evidence_bundle: Option<String>,
 
         /// Check the report against the baseline. This is the default when --accept is absent.
         #[arg(long, alias = "enforce")]
@@ -4169,6 +4268,39 @@ fn run_cli(cli: Cli) -> Result<()> {
                     output,
                 })
             }
+            PerlCoreHarnessCommand::SeriesManifest {
+                discovery,
+                output,
+                series_id,
+                profile,
+                perl_requested_ref,
+                perl_resolved_ref,
+                preparation_receipt_id,
+                preparation_receipt_digest,
+                compiler_subject_identity,
+                invocation_identity,
+                capability_identity,
+                environment_identity,
+                replaces_series_id,
+                change_reason,
+                check,
+            } => perl_core_harness::series_manifest(perl_core_harness::SeriesManifestConfig {
+                discovery,
+                output,
+                series_id,
+                profile,
+                perl_requested_ref,
+                perl_resolved_ref,
+                preparation_receipt_id,
+                preparation_receipt_digest,
+                compiler_subject_identity,
+                invocation_identity,
+                capability_identity,
+                environment_identity,
+                replaces_series_id,
+                change_reason,
+                check,
+            }),
             PerlCoreHarnessCommand::Run {
                 mode,
                 perl_tree,
@@ -4194,6 +4326,15 @@ fn run_cli(cli: Cli) -> Result<()> {
                 profile,
                 report,
                 baseline,
+                series,
+                previous_baseline,
+                boundary_retirements,
+                compiler_subject_identity,
+                invocation_identity,
+                capability_identity,
+                environment_identity,
+                accepted_transition_id,
+                evidence_bundle,
                 check: _,
                 accept,
             } => perl_core_harness::baseline(perl_core_harness::BaselineConfig {
@@ -4202,6 +4343,15 @@ fn run_cli(cli: Cli) -> Result<()> {
                 report,
                 baseline,
                 accept,
+                series,
+                previous_baseline,
+                boundary_retirements,
+                compiler_subject_identity,
+                invocation_identity,
+                capability_identity,
+                environment_identity,
+                accepted_transition_id,
+                evidence_bundle,
             }),
             PerlCoreHarnessCommand::Smoke {
                 perl_tree,
