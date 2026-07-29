@@ -13,7 +13,7 @@ GitHub is the native interaction and asynchronous handoff layer for the developm
 | Pull request | one coherent acceptance-and-rollback candidate |
 | Draft or ready state | whether broad review is useful now |
 | Review request | visible pending formal judgment |
-| Submitted review | candidate-bound formal judgment |
+| Submitted review | candidate-and-material-claim-bound formal judgment |
 | Inline review thread | one localized finding and its evidence/discussion |
 | Review reply and resolution | supported finding disposition |
 | Checks and artifacts | candidate-bound machine evidence and instrument state |
@@ -84,10 +84,12 @@ Publish ready by default. Draft is an explicit exception for remote-only proof, 
 
 ## Formal review
 
-Formal review uses GitHub's review interface and identifies the candidate reviewed.
+Formal review uses GitHub's review interface and identifies the complete review subject: exact candidate plus normalized material claim/review index.
 
 ```text
 Reviewed candidate: <full head SHA>
+Reviewed material claim: <digest or exact stable representation>
+Reviewed claim summary
 Review lenses used
 REVIEW_CURRENT | REVIEW_FINDINGS_OPEN | REVIEW_NOT_PROVEN
 Material findings with evidence
@@ -95,7 +97,7 @@ What the review establishes
 What remains unproved
 ```
 
-A clean review is valid.
+Use the repository-owned claim-digest/currentness helper where present rather than inventing a second normalization. A clean review is valid.
 
 ## Finding disposition
 
@@ -110,6 +112,6 @@ Thread resolution is not itself evidence.
 
 ## Focused helpers
 
-Repository-owned helpers may centralize difficult factual questions such as candidate identity, complete review-thread enumeration, required-check currentness, and merge preflight.
+Repository-owned helpers may centralize difficult factual questions such as candidate identity, complete review-thread enumeration, required-check currentness, material-claim identity, and merge preflight.
 
 They must not answer which lifecycle stage the PR is in, which agent works next, or which issue should be prioritized.
