@@ -1680,14 +1680,25 @@ impl LspServer {
                     semantic_shadow_receipt,
                 );
 
-                // Convert to JSON format with highly optimized cancellation checks
-                let client_caps = self.client_capabilities.lock();
-                let commit_chars_support = client_caps.completion_commit_characters_support;
-                let snippet_support = client_caps.snippet_support;
-                let label_details_support = client_caps.label_details_support;
-                let item_defaults_data_support =
-                    client_caps.completion_list_item_defaults_data_support;
-                let apply_kind_support = client_caps.completion_list_apply_kind_support;
+                // Convert to JSON format with highly optimized cancellation checks.
+                // Snapshot capability flags and drop the lock before serialization so the
+                // dispatched completion path has the same contention behavior as the direct path.
+                let (
+                    snippet_support,
+                    commit_chars_support,
+                    label_details_support,
+                    item_defaults_data_support,
+                    apply_kind_support,
+                ) = {
+                    let client_caps = self.client_capabilities.lock();
+                    (
+                        client_caps.snippet_support,
+                        client_caps.completion_commit_characters_support,
+                        client_caps.label_details_support,
+                        client_caps.completion_list_item_defaults_data_support,
+                        client_caps.completion_list_apply_kind_support,
+                    )
+                };
 
                 let items: Vec<Value> = completions
                     .into_iter()
