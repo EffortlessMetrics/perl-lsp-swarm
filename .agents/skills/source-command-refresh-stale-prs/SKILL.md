@@ -23,7 +23,7 @@ This migrated command is retained temporarily for compatibility. Its historical 
 4. Mutate the candidate only when:
    - an actual conflict must be resolved;
    - a material same-semantic-seam change changes the integration result;
-   - current branch protection, rulesets, or merge queue requires integration evidence; or
+   - current GitHub branch protection, rulesets, merge queue, or required checks require integration evidence; or
    - the integration result cannot otherwise be interpreted reliably.
 5. Any candidate mutation creates a new head and requires affected proof plus fresh candidate-level formal review.
 6. Report each PR independently. Do not use lifecycle labels as evidence and do not merge from this compatibility wrapper.
