@@ -12,6 +12,7 @@
 mod cpan_test_helpers;
 use cpan_test_helpers::parse;
 use perl_parser_core::{Node, NodeKind};
+use perl_tdd_support::must_some;
 
 /// Walk the AST; return the first node matching `pred`.
 fn find_node<'a, F>(node: &'a Node, pred: &F) -> Option<&'a Node>
@@ -81,9 +82,7 @@ fn optional_param_empty_hash_default_span_covers_braces() {
     let loc = &default_node.location;
 
     // Slice the source using the span — must not panic (no reversed/out-of-bounds).
-    let sliced = source
-        .get(loc.start..loc.end)
-        .unwrap_or_else(|| panic!("span {}..{} is out of bounds for source", loc.start, loc.end));
+    let sliced = must_some(source.get(loc.start..loc.end));
 
     assert_eq!(sliced, "{}", "the HashLiteral span should cover exactly `{{}}`");
 }
