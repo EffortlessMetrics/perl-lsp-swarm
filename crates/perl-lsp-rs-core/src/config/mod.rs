@@ -4180,15 +4180,16 @@ profile = "recommended"
     #[test]
     fn update_from_value_rejects_absolute_include_paths_without_workspace_root() {
         let mut config = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { r"C:\Windows" } else { "/opt/company-perl-libs" };
         let rejected = config.update_from_value(&serde_json::json!({
             "workspace": {
-                "includePaths": ["/opt/company-perl-libs", "relative/lib"]
+                "includePaths": [absolute, "relative/lib"]
             }
         }));
 
         assert_eq!(config.include_paths, vec!["relative/lib".to_string()]);
         assert_eq!(rejected.len(), 1);
-        assert_eq!(rejected[0].entry, "/opt/company-perl-libs");
+        assert_eq!(rejected[0].entry, absolute);
         assert_eq!(rejected[0].reason, RejectedClientIncludePathReason::Absolute);
     }
 
