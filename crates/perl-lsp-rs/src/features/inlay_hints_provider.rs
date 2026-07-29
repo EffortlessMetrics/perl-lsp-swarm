@@ -664,6 +664,16 @@ print("Hello, World!");
             Node::new(NodeKind::AmperCall { name: "split".to_string(), args: vec![] }, loc);
         let result = provider.infer_type(&split_amper);
         assert_eq!(result, None, "&split() must not use builtin return metadata");
+
+        // Positive control: bare FunctionCall{split} must still resolve builtin metadata,
+        // so a regression that blanks all split inference cannot hide behind the AmperCall assert.
+        let split_builtin =
+            Node::new(NodeKind::FunctionCall { name: "split".to_string(), args: vec![] }, loc);
+        let builtin_result = provider.infer_type(&split_builtin);
+        assert!(
+            builtin_result.is_some(),
+            "bare split() FunctionCall must still infer a builtin return type"
+        );
     }
 
     #[test]
