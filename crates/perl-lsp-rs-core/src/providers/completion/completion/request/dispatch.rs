@@ -540,7 +540,10 @@ fn complete_general_context(
 
 #[cfg(test)]
 mod indirect_helper_tests {
-    use super::{indirect_word_end, is_indirect_method_word, parse_indirect_receiver};
+    use super::{
+        indirect_word_end, is_in_expression_position, is_indirect_method_word,
+        parse_indirect_receiver,
+    };
 
     #[test]
     fn is_indirect_method_word_accepts_lowercase_barewords() {
@@ -699,6 +702,13 @@ mod indirect_helper_tests {
         assert_eq!(parse_indirect_receiver("method ", 6), None);
         assert_eq!(parse_indirect_receiver("method", 6), None);
     }
+
+    #[test]
+    fn expression_position_uses_last_non_whitespace_character() {
+        assert!(is_in_expression_position("value = ", 8));
+        assert!(!is_in_expression_position("value ", 6));
+        assert!(!is_in_expression_position("   ", 3));
+    }
 }
 
 /// Heuristic: detect if the cursor is in an expression position where statement
@@ -715,7 +725,9 @@ fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
     if trimmed.is_empty() {
         return false; // blank line — statement position
     }
-    let last_char = trimmed.chars().last().unwrap();
+    let Some(last_char) = trimmed.chars().next_back() else {
+        return false;
+    };
     // Expression indicators: assignment, list, operator contexts
     matches!(
         last_char,
