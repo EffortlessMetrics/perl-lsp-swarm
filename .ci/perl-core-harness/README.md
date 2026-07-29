@@ -121,6 +121,23 @@ the replacement report digest, a transition ID, an owning issue, and a
 content-addressed evidence-bundle reference. A stale or still-present
 retirement is rejected instead of being counted as debt retirement.
 
+The durable ownership mechanism is the versioned
+`.ci/perl-core-harness/semantic-boundary-registry.v1.json` registry. The
+registry validator is intentionally offline and can check one or more accepted
+baseline-v2 receipts plus their durable #5171 bundle indexes:
+
+```bash
+cargo xtask perl-core-harness boundaries \
+  --registry .ci/perl-core-harness/semantic-boundary-registry.v1.json \
+  --baseline path/to/compile-baseline-v2.json \
+  --bundle path/to/evidence-bundle/index.json \
+  --check --report
+```
+
+The empty checked-in registry is a mechanism scaffold. #4753 populates it from
+the first accepted selected inventory. Until then, no current baseline is
+claimed as governed debt merely because its boundaries are not yet registered.
+
 Or run the smoke against a user-supplied prepared upstream Perl tree:
 
 ```bash
