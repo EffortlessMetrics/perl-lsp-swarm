@@ -292,15 +292,15 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 
 ### Explainability and previews
 
-| Command                                      | Description                                                                              |
-| -------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| **Perl LSP: Explain Provider Decision**      | Show why the last provider acted, fell back, or refused                                  |
-| **Perl LSP: Copy Provider Decision Receipt** | Copy a structured local receipt for issue reports                                        |
-| **Perl LSP: Show Workspace Trust Report**    | Show workspace roots, module resolution, index state, support tiers, and boundary policy |
-| **Perl LSP: Explain This Diagnostic**        | Explain PL701/PL109 diagnostics in the output channel when a receipt is available        |
-| **Perl LSP: Explain Missing Module Lookup**  | Show the current missing-module `@INC` lookup state and setup boundary                   |
-| **Perl LSP: Preview Safe Delete**            | Preview whether symbol deletion is allowed, blocked, or refused before editing           |
-| **Perl LSP: Preview Package Rename**         | Preview package/compiler-backed rename evidence without authorizing an edit              |
+| Command                                  | Description                                                                              |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------- |
+| **Perl: Explain Provider Decision**      | Show why the last provider acted, fell back, or refused                                  |
+| **Perl: Copy Provider Decision Receipt** | Copy a structured local receipt for issue reports                                        |
+| **Perl: Show Workspace Trust Report**    | Show workspace roots, module resolution, index state, support tiers, and boundary policy |
+| **Perl: Explain This Diagnostic**        | Explain PL701/PL109 diagnostics in the output channel when a receipt is available        |
+| **Perl: Explain Missing Module Lookup**  | Show the current missing-module `@INC` lookup state and setup boundary                   |
+| **Perl: Preview Safe Delete**            | Preview whether symbol deletion is allowed, blocked, or refused before editing           |
+| **Perl: Preview Package Rename**         | Preview package/compiler-backed rename evidence without authorizing an edit              |
 
 ## Compatibility
 
@@ -333,13 +333,13 @@ The `perllsp` binary works with any editor that supports the Language Server Pro
 
 **Diagnostics too noisy?**
 
-- Run **Perl LSP: Explain This Diagnostic** to see whether the warning is a
+- Run **Perl: Explain This Diagnostic** to see whether the warning is a
   true missing fact, low-confidence evidence, or a dynamic boundary.
-- Run **Perl LSP: Show Workspace Trust Report** if module paths, Perl binary,
+- Run **Perl: Show Workspace Trust Report** if module paths, Perl binary,
   or setup policy may be involved.
 - For Perl binary, `@INC`, `PERL5LIB`, perldoc, or DAP module-path mismatches,
   see the [Perl setup troubleshooting guide](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/how-to/PERL_SETUP_TROUBLESHOOTING.md).
-- To suppress false-positive diagnostics, use **Perl LSP: Copy Provider Decision Receipt** and file an issue with the copied receipt so the specific provider can be addressed.
+- To suppress false-positive diagnostics, use **Perl: Copy Provider Decision Receipt** and file an issue with the copied receipt so the specific provider can be addressed.
 - File an issue with the copied provider receipt if you see false positives.
 
 ## Known Issues
