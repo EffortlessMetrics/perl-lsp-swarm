@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "total_files": 28,
-  "total_bytes": 1498724,
+  "total_bytes": 1498923,
   "files": {
-    "README.md": 24666,
+    "README.md": 24618,
     "package.json": 54483,
     "LICENSE": 1069,
     "language-configuration.json": 1010,
@@ -14,10 +14,9 @@
     ".oxfmtrc.json": 203,
     "syntaxes/perl.tmLanguage.json": 11634,
     "syntaxes/gherkin.tmLanguage.json": 1875,
+    "out/extension.js": 1337370,
     "snippets/perl.json": 12172,
     "snippets/launch.json": 1139,
-    "out/extension.js": 1337123,
-    "assets/demo-project/main.pl": 203,
     "media/walkthrough/welcome.svg": 756,
     "media/walkthrough/verify-perl.svg": 1189,
     "media/walkthrough/try-goto-definition.svg": 1852,
@@ -29,6 +28,7 @@
     "media/walkthrough/debug-first-script.svg": 1778,
     "media/walkthrough/configure-settings.svg": 1935,
     "media/walkthrough/ai-completion.svg": 1624,
+    "assets/demo-project/main.pl": 203,
     "assets/demo-project/lib/Utils.pm": 485,
     "assets/demo-project/lib/Database.pm": 298
   }
