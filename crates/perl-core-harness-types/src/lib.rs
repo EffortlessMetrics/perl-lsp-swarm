@@ -627,19 +627,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schema_constants_are_stable() {
-        assert_eq!(DISCOVERY_SCHEMA_VERSION, "perl_core_harness.discovery.v1");
-        assert_eq!(RUN_REPORT_SCHEMA_VERSION, "perl_core_harness.report.v1");
-        assert_eq!(COMPILE_BASELINE_SCHEMA_VERSION, "perl_core_harness.compile_baseline.v1");
-        assert_eq!(COMPILE_BASELINE_V2_SCHEMA_VERSION, "perl_core_harness.compile_baseline.v2");
-        assert_eq!(COMPARISON_SERIES_SCHEMA_VERSION, "perl_core_harness.comparison_series.v1");
-        assert_eq!(SMOKE_SCHEMA_VERSION, "perl_core_harness.smoke.v1");
-        assert_eq!(PREPARE_SCHEMA_VERSION, "perl_core_harness.prepare.v1");
-        assert_eq!(GAP_MAP_SCHEMA_VERSION, "perl_core_harness.gap_map.v1");
-        assert_eq!(RUNNER_RECORD_SCHEMA_VERSION, "perl_core_harness.runner_record.v1");
-        assert_eq!(SERIES_MANIFEST_SCHEMA_VERSION, "perl_core_harness.comparison_series.v1");
-        assert_eq!(SERIES_MANIFEST_NORMALIZATION_VERSION, "path-normalization.v1");
-        assert_eq!(BOUNDARY_RETIREMENT_SCHEMA_VERSION, "perl_core_harness.boundary_retirement.v1");
+    fn schema_constants_are_stable() -> Result<(), String> {
+        let expected = [
+            (DISCOVERY_SCHEMA_VERSION, "perl_core_harness.discovery.v1"),
+            (RUN_REPORT_SCHEMA_VERSION, "perl_core_harness.report.v1"),
+            (COMPILE_BASELINE_SCHEMA_VERSION, "perl_core_harness.compile_baseline.v1"),
+            (COMPILE_BASELINE_V2_SCHEMA_VERSION, "perl_core_harness.compile_baseline.v2"),
+            (COMPARISON_SERIES_SCHEMA_VERSION, "perl_core_harness.comparison_series.v1"),
+            (SMOKE_SCHEMA_VERSION, "perl_core_harness.smoke.v1"),
+            (PREPARE_SCHEMA_VERSION, "perl_core_harness.prepare.v1"),
+            (GAP_MAP_SCHEMA_VERSION, "perl_core_harness.gap_map.v1"),
+            (RUNNER_RECORD_SCHEMA_VERSION, "perl_core_harness.runner_record.v1"),
+            (SERIES_MANIFEST_SCHEMA_VERSION, "perl_core_harness.comparison_series.v1"),
+            (SERIES_MANIFEST_NORMALIZATION_VERSION, "path-normalization.v1"),
+            (BOUNDARY_RETIREMENT_SCHEMA_VERSION, "perl_core_harness.boundary_retirement.v1"),
+        ];
+        for (actual, expected) in expected {
+            if actual != expected {
+                return Err(format!("schema constant {actual:?} did not equal {expected:?}"));
+            }
+        }
+        Ok(())
     }
 
     #[test]
