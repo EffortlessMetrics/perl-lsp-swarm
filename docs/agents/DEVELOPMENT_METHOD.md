@@ -13,7 +13,7 @@ current artifact
 → locally named next skill or material backward route
 ```
 
-The passes are the controls. Permanent personas, lifecycle labels, completion hooks, and tracked stage state are not controls.
+The passes are the controls. Permanent personas, lifecycle labels, completion hooks, tracked stage state, and lane-coordination systems are not controls.
 
 ## Governing law
 
@@ -53,8 +53,8 @@ The user-facing vocabulary is intentionally small:
 
 | Flow | Outcome |
 | --- | --- |
-| `deliver-goal` | Advance a durable multi-PR outcome one coherent claim at a time |
-| `deliver-pr` | Carry one acceptance-and-rollback claim from current state through reconciliation |
+| `deliver-goal` | Advance a durable multi-PR outcome through distinct coherent claims |
+| `deliver-pr` | Carry one acceptance-and-rollback claim and its current candidate through reconciliation |
 | `prepare-issue` | Research, challenge, vision-check, and plan the concern |
 | `prepare-proof` | Turn settled intent into discriminating executable proof |
 | `build-candidate` | Implement, harden tests, simplify, and challenge the candidate |
@@ -62,13 +62,44 @@ The user-facing vocabulary is intentionally small:
 
 A fresh or resumed session starts with the narrowest applicable public flow. Once inside the loop, each skill names its normal successor and material backward routes. Agents do not run a lifecycle locator between skills.
 
+## Claim and lane independence
+
+The normal multi-PR model is simple:
+
+```text
+one coherent claim
+→ one current candidate
+→ one branch/worktree
+→ one writer mutating that candidate at a time
+→ one PR
+```
+
+Several distinct claims may be active because several ordinary PRs may be active. That does not require a durable frontier, overlap map, file reservation, executor graph, or sibling-lane monitor.
+
+Before creating a candidate, check only whether an equivalent current PR already implements the same claim and whether the issue records an explicit prerequisite. Do not inspect neighbouring worktrees, touched-file overlap, nearby symbols, or another lane's implementation merely to predict coordination.
+
+Each lane owns its own proof, review repair, and integration cleanup:
+
+- if another PR lands and the candidate remains valid, do nothing;
+- behind-only movement on `main` requires no action;
+- an actual Git conflict is resolved by the affected lane, normally the one landing later;
+- an explicit stacked prerequisite is retargeted after its prerequisite lands;
+- an actual combined-tree failure is repaired in the smallest affected candidate;
+- only conflict- or interaction-affected proof and review are refreshed.
+
+Use a direct issue or PR comment when another lane genuinely needs a material fact: a prerequisite changed, a governing ruling changed, one claim superseded another, or a real integration interaction was found. No additional coordination state is needed.
+
+Do not create several competing candidates for one ordinary claim. Parallel alternatives are justified only when comparison itself is necessary to resolve a material uncertainty; normal delivery resumes with one selected candidate.
+
+When a coherent PR is waiting on CI, review, queue state, or auto-merge, leave it in GitHub and advance another distinct claim when useful. A remote-owned wait is not a goal blocker.
+
 ## Durable state and runtime state
 
 Repository and GitHub artifacts hold durable truth:
 
 - issues hold the problem, research trail, corrections, current synthesis, plan, dependencies, and next coherent action;
 - specifications, ADRs, policies, and tests hold durable accepted contracts and proof obligations;
-- branches and worktrees hold mutation;
+- branches and worktrees hold one candidate's mutation;
 - pull requests hold one coherent acceptance-and-rollback candidate;
 - reviews, threads, checks, rulesets, and mergeability hold current integration evidence;
 - merge closeout records what landed, what remains, and what becomes actionable next.
@@ -76,10 +107,10 @@ Repository and GitHub artifacts hold durable truth:
 Runtime state remains ephemeral:
 
 - currently active agents and models;
-- task lists, liveness, retries, and join order;
+- temporary task lists, liveness, and retries;
 - raw logs and provisional reasoning;
 - temporary worktree or command bookkeeping;
-- the current local execution topology.
+- provider-native delegation choices inside the selected claim.
 
 Do not mirror runtime topology or liveness into GitHub.
 
@@ -142,11 +173,13 @@ Review has two distinct modes:
 1. **Mutable candidate challenge:** fixes are expected; inspect correctness, authority, production reachability, compatibility, security, complexity, and claim honesty.
 2. **Fixed-candidate formal review:** bind the judgment to an identified candidate; do not mutate during the judgment; a clean review is valid.
 
+The root may perform a pass directly or delegate focused read-only research, proof, or review inside the selected claim when that changes the evidence surface or reduces elapsed work. Delegation is a runtime choice, not a durable execution topology.
+
 ## Hard stops
 
 Stop only where a concrete hazard or unresolved authority remains:
 
-- two writers would collide on one branch, worktree, or semantic authority;
+- two writers would mutate the same candidate branch/worktree concurrently;
 - destructive cleanup would lose unsalvaged work;
 - repository, branch, or candidate identity cannot be established;
 - a secret or unsafe release would be published;
