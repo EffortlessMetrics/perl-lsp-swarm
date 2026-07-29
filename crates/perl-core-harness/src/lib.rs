@@ -461,6 +461,7 @@ pub fn triage(config: TriageConfig) -> Result<()> {
     let report: RunReport = serde_json::from_str(&raw)
         .with_context(|| format!("decoding compile report {}", compile_path.display()))?;
     validate_bundle_report_identity(&bundle, &report)?;
+    ensure_valid_report_shape(&report)?;
     let cluster_report = build_failure_cluster_report(&bundle, &report)?;
     fs::create_dir_all(&config.output)
         .with_context(|| format!("creating triage output directory {}", config.output.display()))?;
@@ -501,6 +502,7 @@ fn validate_bundle_report_identity(bundle: &BoundaryBundle, report: &RunReport) 
     if report.commit != bundle.index.repository_commit
         || report.perl_ref != bundle.index.perl_resolved_ref
         || report.profile != bundle.index.profile
+        || report.runner != bundle.index.runner
     {
         bail!("compile report identity does not match evidence bundle");
     }
@@ -778,6 +780,7 @@ struct EvidenceBundleIndex {
     manifest_hash: String,
     repository_commit: String,
     profile: HarnessProfile,
+    runner: HarnessRunner,
     perl_resolved_ref: String,
     lineage: EvidenceBundleLineage,
     artifacts: Vec<EvidenceBundleArtifact>,
@@ -6108,6 +6111,7 @@ mod tests {
             manifest_hash: baseline.manifest_hash.clone(),
             repository_commit: baseline.repository_commit.clone(),
             profile: baseline.profile,
+            runner: HarnessRunner::Test,
             perl_resolved_ref: "perl-ref".into(),
             lineage: EvidenceBundleLineage { measurement_sha: "abc".into() },
             artifacts: vec![EvidenceBundleArtifact {
@@ -6151,6 +6155,7 @@ mod tests {
                 manifest_hash: "manifest-1".into(),
                 repository_commit: "abc".into(),
                 profile: HarnessProfile::Base,
+                runner: HarnessRunner::Test,
                 perl_resolved_ref: "perl-ref".into(),
                 lineage: EvidenceBundleLineage { measurement_sha: "abc".into() },
                 artifacts: Vec::new(),
@@ -6232,6 +6237,41 @@ mod tests {
         };
         if !error.to_string().contains("triage requires a compile report") {
             bail!("unexpected non-compile triage error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failure_cluster_triage_rejects_runner_mismatch() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        report.runner = HarnessRunner::Harness;
+        let error = match validate_bundle_report_identity(&bundle, &report) {
+            Ok(()) => return Err(color_eyre::eyre::eyre!("runner mismatch was accepted")),
+            Err(error) => error,
+        };
+        if !error.to_string().contains("identity does not match evidence bundle") {
+            bail!("unexpected runner mismatch error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failure_cluster_triage_rejects_invalid_report_shape() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        let result = report
+            .file_results
+            .first_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("sample compile report has no files"))?;
+        result.status = RunnerStatus::Fail;
+        validate_bundle_report_identity(&bundle, &report)?;
+        let error = match ensure_valid_report_shape(&report) {
+            Ok(()) => return Err(color_eyre::eyre::eyre!("invalid report shape was accepted")),
+            Err(error) => error,
+        };
+        if !error.to_string().contains("failing file has no failure bucket record") {
+            bail!("unexpected invalid report-shape error: {error}");
         }
         Ok(())
     }
