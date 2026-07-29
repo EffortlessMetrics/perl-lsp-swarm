@@ -25,6 +25,8 @@ pub const SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION: &str =
 pub const FAILURE_CLUSTER_SCHEMA_VERSION: &str = "perl_core_harness.failure_cluster.v1";
 pub const FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION: &str =
     "perl_core_harness.failure_cluster_history.v1";
+pub const COMPILER_COMPATIBILITY_SCHEMA_VERSION: &str =
+    "perl_core_harness.compiler_compatibility.v1";
 
 /// Upstream Perl test scheduler to query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
@@ -776,6 +778,116 @@ pub struct FailureClusterHistory {
     pub entries: Vec<FailureClusterHistoryEntry>,
 }
 
+/// Availability of an optional correctness or execution rail.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompatibilityRailAvailability {
+    Available,
+    Partial,
+    NotAvailable,
+    Stale,
+}
+
+/// Explicit state for a rail that may be absent without becoming zero/pass.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilityRailState {
+    pub availability: CompatibilityRailAvailability,
+    pub reason: String,
+    pub schema_version: Option<String>,
+    pub evidence_refs: Vec<String>,
+}
+
+/// Parse or compile acceptance counts for one immutable series.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilityRunState {
+    pub schema_version: String,
+    pub mode: HarnessMode,
+    pub files_total: usize,
+    pub files_passed: usize,
+    pub files_failed: usize,
+    pub tap_assertions_total: usize,
+    pub tap_assertions_passed: usize,
+    pub baseline_schema_version: String,
+    pub report_schema_version: String,
+    pub evidence_bundle_id: String,
+    pub cluster_count: usize,
+}
+
+/// Boundary and accepted-debt counts kept separate from acceptance.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilityDebtState {
+    pub boundary_count: usize,
+    pub source_locked_count: usize,
+    pub downstream_blocking_count: usize,
+    pub by_disposition: BTreeMap<String, usize>,
+    pub by_lock_scope: BTreeMap<String, usize>,
+    pub registry: CompatibilityRailState,
+    pub history: CompatibilityRailState,
+}
+
+/// Active cluster and owner counts for one series.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilityClusterState {
+    pub active_count: usize,
+    pub unassigned_count: usize,
+    pub by_status: BTreeMap<String, usize>,
+    pub history_bundle_id: Option<String>,
+}
+
+/// Identity and evidence lineage for one independently compared series.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilitySeriesIdentity {
+    pub series_id: String,
+    pub profile: HarnessProfile,
+    pub profile_roots: Vec<String>,
+    pub manifest_hash: String,
+    pub denominator: usize,
+    pub repository_commit: String,
+    pub perl_requested_ref: String,
+    pub perl_resolved_ref: String,
+    pub runner: HarnessRunner,
+    pub compiler_subject_identity: String,
+    pub invocation_identity: String,
+    pub capability_identity: String,
+    pub environment_identity: String,
+    pub preparation_receipt_id: String,
+    pub preparation_receipt_digest: String,
+    pub measurement_sha: String,
+    pub publication_sha: Option<String>,
+    pub landed_sha: Option<String>,
+    pub evidence_bundle_id: String,
+}
+
+/// Complete typed compatibility state consumed by generated ledgers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompilerCompatibilitySeries {
+    pub identity: CompatibilitySeriesIdentity,
+    pub parse: CompatibilityRunState,
+    pub compile: CompatibilityRunState,
+    pub debt: CompatibilityDebtState,
+    pub clusters: CompatibilityClusterState,
+    pub execution: CompatibilityRailState,
+    pub curated_gold: CompatibilityRailState,
+    pub differential_oracle: CompatibilityRailState,
+    pub eir: CompatibilityRailState,
+    pub claim_boundary: String,
+}
+
+/// Versioned, series-separated compiler compatibility input state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompilerCompatibilityState {
+    pub schema_version: String,
+    pub repository_commit: String,
+    pub series: Vec<CompilerCompatibilitySeries>,
+}
+
 pub fn workstream_for_bucket(bucket: &str) -> &'static str {
     match bucket {
         "parse_recovery" => "parser_recovery",
@@ -846,6 +958,10 @@ mod tests {
         assert_eq!(
             FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
             "perl_core_harness.failure_cluster_history.v1"
+        );
+        assert_eq!(
+            COMPILER_COMPATIBILITY_SCHEMA_VERSION,
+            "perl_core_harness.compiler_compatibility.v1"
         );
     }
 
