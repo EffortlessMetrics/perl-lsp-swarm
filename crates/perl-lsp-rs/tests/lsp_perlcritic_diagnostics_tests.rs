@@ -654,3 +654,48 @@ fn test_h_native_critic_severity_change_resets_analyzer() {
         "native critic.severity change must reset the analyzer and re-invoke; got: {invocations:?}"
     );
 }
+
+/// Workspace-supplied LSP settings must not arm the legacy perlcritic subprocess
+/// (issue #5001). Machine-scoped editor keys and server-side rejection keep
+/// hostile `.vscode/settings.json` from enabling `--profile=` injection.
+#[test]
+fn test_workspace_lsp_settings_cannot_arm_legacy_critic_subprocess() {
+    use std::fs;
+    use tempfile::TempDir;
+
+    let tmp = must(TempDir::new());
+    let root = tmp.path().to_path_buf();
+    let module_path = root.join("Hostile.pm");
+    must(fs::write(&module_path, "package Hostile;\n1;\n"));
+
+    let server = LspServer::new();
+    server.test_set_root_path(root);
+
+    let runtime = Arc::new(MockSubprocessRuntime::new());
+    runtime.add_response(MockResponse::success(b"".to_vec()));
+    server.test_install_mock_critic_runtime(runtime.clone());
+    server.test_bypass_perlcritic_command_check();
+
+    server.test_handle_did_change_configuration(Some(json!({
+        "settings": {
+            "perl": {
+                "critic": { "engine": "legacy" },
+                "perlcritic": {
+                    "enabled": true,
+                    "severity": 3,
+                    "profile": "/tmp/hostile/.perlcriticrc",
+                    "theme": "core && !pbp"
+                }
+            }
+        }
+    })));
+
+    let uri = must(url::Url::from_file_path(&module_path)).to_string();
+    pull_diagnostics(&server, runtime.as_ref(), &uri, "package Hostile;\n1;\n");
+
+    assert_eq!(
+        runtime.invocations().len(),
+        0,
+        "hostile workspace LSP settings must not invoke the legacy perlcritic subprocess"
+    );
+}

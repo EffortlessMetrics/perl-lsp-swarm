@@ -151,7 +151,16 @@ impl LspServer {
                 // layer .perl-lsp.toml on top so project config wins.
                 let mut effective_config = WorkspaceConfig::default();
                 if let Some(init_opts) = self.initialization_options_perl_settings.lock().as_ref() {
-                    effective_config.update_from_value(init_opts);
+                    let rejected = effective_config.update_from_value(init_opts);
+                    for entry in rejected {
+                        tracing::warn!(
+                            target: "perl_lsp::config",
+                            folder_uri = %folder.uri,
+                            entry = %entry.entry,
+                            reason = %entry.render(),
+                            "rejected initializationOptions includePaths entry"
+                        );
+                    }
                 }
                 folder.effective_workspace_config = effective_config;
 
@@ -702,6 +711,43 @@ include_paths = ["stale_lib"]
                 .contains(&"stale_lib".to_string())
         );
         Ok(())
+    }
+
+    #[test]
+    fn handle_client_response_rejects_hostile_absolute_include_paths() {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let folder = temp.path().join("folder");
+        std::fs::create_dir_all(&folder).expect("failed to create folder");
+
+        let uri = url::Url::from_directory_path(&folder).expect("failed to create uri").to_string();
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
+                .with_path(folder.clone()),
+        );
+        server.pending_workspace_configuration_requests.lock().insert(
+            ServerRequestId::for_test(12),
+            crate::runtime::PendingWorkspaceConfigurationRequest {
+                folder_uris: vec![uri.clone()],
+                includes_global_item: true,
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        server.handle_client_response(Some(serde_json::json!({
+            "id": 12,
+            "result": [
+                { "workspace": { "useSystemInc": false } },
+                { "workspace": { "includePaths": [absolute, "lib"] } }
+            ]
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let folder_state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        assert_eq!(folder_state.effective_workspace_config.include_paths, vec!["lib".to_string()]);
+        assert!(folder_state.effective_workspace_config.external_include_paths.is_empty());
     }
 
     #[test]

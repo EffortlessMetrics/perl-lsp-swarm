@@ -10,10 +10,10 @@ fn print_hash_subscript_not_indirect_call() {
     println!("Code: {}", code);
     println!("S-expr: {}", sexp);
 
-    // This should NOT contain indirect_call
-    if sexp.contains("indirect_call") {
-        panic!("FAIL: print $config{{host}} was misparsed as indirect_call");
-    }
+    assert!(
+        !sexp.contains("indirect_call"),
+        "print $config{{host}} was misparsed as indirect_call"
+    );
 }
 
 #[test]
@@ -26,10 +26,7 @@ fn print_array_subscript_not_indirect_call() {
     println!("Code: {}", code);
     println!("S-expr: {}", sexp);
 
-    // This should NOT contain indirect_call
-    if sexp.contains("indirect_call") {
-        panic!("FAIL: print $array[0] was misparsed as indirect_call");
-    }
+    assert!(!sexp.contains("indirect_call"), "print $array[0] was misparsed as indirect_call");
 }
 
 #[test]

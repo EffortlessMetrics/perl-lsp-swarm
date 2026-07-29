@@ -224,6 +224,7 @@ export const workspace = {
   onDidCreateFiles: jest.fn(() => ({ dispose: jest.fn() })),
   onWillSaveTextDocument: jest.fn(() => ({ dispose: jest.fn() })),
   onDidChangeConfiguration: jest.fn(() => ({ dispose: jest.fn() })),
+  onDidChangeWorkspaceFolders: jest.fn(() => ({ dispose: jest.fn() })),
   getWorkspaceFolder: jest.fn(
     (_uri: unknown) => undefined as { uri: { fsPath: string } } | undefined,
   ),
