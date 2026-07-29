@@ -138,6 +138,26 @@ The empty checked-in registry is a mechanism scaffold. #4753 populates it from
 the first accepted selected inventory. Until then, no current baseline is
 claimed as governed debt merely because its boundaries are not yet registered.
 
+## Failure-cluster triage
+
+The offline triage command consumes one complete, published evidence bundle and
+its compile report. It writes deterministic JSON and Markdown work-cluster
+reports while keeping semantic-boundary debt candidates separate from product
+failures:
+
+```bash
+cargo xtask perl-core-harness triage --bundle path/to/evidence-bundle/index.json --output target/perl-core/triage/base-compile
+```
+
+Cluster IDs are derived from the series-bound, typed failure signature rather
+than file counts, paths outside the selected manifest, timestamps, or free-form
+diagnostic prose. Unknown failure buckets fail closed. The current v1 report
+uses the typed bucket, workstream, LSP-impact, stage, and profile/mode fields
+available in the run receipt; richer parser/HIR/effect fields can be added only
+through an explicit receipt-schema extension. Each cluster carries a direct
+reproduction descriptor and requires exact-series proof before a claimed
+resolution, baseline movement, or boundary retirement is accepted.
+
 Or run the smoke against a user-supplied prepared upstream Perl tree:
 
 ```bash
