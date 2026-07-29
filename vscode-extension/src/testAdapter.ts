@@ -315,21 +315,35 @@ export function parseTapOutput(output: string): {
   total: number;
   passed: number;
   failed: number;
+  skipped: number;
   bailOut: string | null;
 } {
   const lines = output.split('\n');
   let total = 0;
   let passed = 0;
   let failed = 0;
+  let skipped = 0;
   let bailOut: string | null = null;
 
   for (const line of lines) {
     if (/^ok \d+/.test(line)) {
       total++;
-      passed++;
+      // `ok N - desc # SKIP reason` → test was intentionally skipped.
+      if (/\s#\s*SKIP\S*/i.test(line)) {
+        skipped++;
+      } else {
+        passed++;
+      }
     } else if (/^not ok \d+/.test(line)) {
-      total++;
-      failed++;
+      // `not ok N - desc # TODO reason` → a failing TODO test is expected
+      // and must NOT count as a failure per TAP semantics.
+      if (/\s#\s*TODO\S*/i.test(line)) {
+        total++;
+        skipped++;
+      } else {
+        total++;
+        failed++;
+      }
     } else if (/^Bail out!\s*(.*)/.test(line)) {
       bailOut = /^Bail out!\s*(.*)/.exec(line)?.[1] ?? '';
     } else if (/^1\.\.(\d+)/.test(line)) {
@@ -340,7 +354,7 @@ export function parseTapOutput(output: string): {
     }
   }
 
-  return { total, passed, failed, bailOut };
+  return { total, passed, failed, skipped, bailOut };
 }
 
 /** Parse subtest results from verbose prove TAP output. */
