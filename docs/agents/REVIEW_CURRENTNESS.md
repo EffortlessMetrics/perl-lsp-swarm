@@ -58,7 +58,7 @@ candidate head unchanged
 
 Do not rebase, update-branch, merge `main`, create empty commits, rerun formal review, or replay full CI merely because the branch is behind.
 
-A merged fix on `main` is a reason to inspect interaction, not automatically a reason to mutate every open candidate. Update the candidate only when the fix materially changes the same semantic seam, resolves an actual conflict, makes the integration result otherwise uninterpretable, or current GitHub branch protection, rulesets, or merge-queue policy requires the integration evidence.
+A merged fix on `main` is a reason to inspect interaction, not automatically a reason to mutate every open candidate. Update the candidate only when the fix materially changes the same semantic seam, resolves an actual conflict, makes the integration result otherwise uninterpretable, or current GitHub branch protection, rulesets, merge queue, or required checks require integration evidence.
 
 ## Actual conflict or interaction
 
@@ -70,7 +70,7 @@ actual merge conflict
 → submit fresh formal review for the resulting candidate and claim
 ```
 
-A non-textual same-semantic-seam change on `main` may justify targeted interaction analysis even when Git reports no conflict. Branch mutation is required only when the integration result cannot otherwise be interpreted or current GitHub protection, rulesets, or merge-queue policy requires it.
+A non-textual same-semantic-seam change on `main` may justify targeted interaction analysis even when Git reports no conflict. Branch mutation is required only when the integration result cannot otherwise be interpreted or current GitHub branch protection, rulesets, merge queue, or required checks require it.
 
 ## Affected-only invalidation
 
@@ -88,4 +88,4 @@ After repair or claim revision, rerun supporting evidence dimensions whose seman
 
 ## Merge boundary
 
-Merge uses current GitHub protection and required-check policy, substantive review convergence, and actual mergeability. It must prove that the current head and current material claim match the formal review subject. After squash merge, reconciliation verifies the landed effect on current `main`; it does not pretend the future squash commit could have been reviewed in advance.
+Merge eligibility is determined by current GitHub branch protection, rulesets, merge queue, or required checks, substantive review convergence, and actual mergeability. It must prove that the current head and current material claim match the formal review subject. After squash merge, reconciliation verifies the landed effect on current `main`; it does not pretend the future squash commit could have been reviewed in advance.
