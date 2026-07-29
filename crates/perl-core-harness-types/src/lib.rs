@@ -19,6 +19,7 @@ pub const RUNNER_RECORD_SCHEMA_VERSION: &str = "perl_core_harness.runner_record.
 pub const COMPARISON_SERIES_SCHEMA_VERSION: &str = "perl_core_harness.comparison_series.v1";
 pub const SERIES_MANIFEST_SCHEMA_VERSION: &str = COMPARISON_SERIES_SCHEMA_VERSION;
 pub const SERIES_MANIFEST_NORMALIZATION_VERSION: &str = "path-normalization.v1";
+pub const BOUNDARY_RETIREMENT_SCHEMA_VERSION: &str = "perl_core_harness.boundary_retirement.v1";
 
 /// Upstream Perl test scheduler to query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
@@ -162,13 +163,25 @@ pub struct SeriesManifest {
 
 /// A reviewed transition proving that an accepted semantic boundary retired.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct BoundaryRetirement {
+    /// Schema for this retirement receipt.
+    pub schema_version: String,
     pub path: String,
     pub id: String,
     pub source_start: usize,
     pub source_end: usize,
+    /// Comparison series that emitted the retired boundary.
+    pub series_id: String,
+    /// Exact denominator identity for the retired boundary.
+    pub manifest_hash: String,
+    /// Compiler measurement commit used for the replacement run.
+    pub measurement_sha: String,
+    /// Stable digest of the replacement run report.
+    pub source_report_digest: String,
     pub transition_id: String,
     pub replacement_issue: String,
+    /// Content-addressed #5171 evidence bundle reference.
     pub evidence_bundle: String,
 }
 
@@ -624,6 +637,7 @@ mod tests {
         assert_eq!(RUNNER_RECORD_SCHEMA_VERSION, "perl_core_harness.runner_record.v1");
         assert_eq!(SERIES_MANIFEST_SCHEMA_VERSION, "perl_core_harness.comparison_series.v1");
         assert_eq!(SERIES_MANIFEST_NORMALIZATION_VERSION, "path-normalization.v1");
+        assert_eq!(BOUNDARY_RETIREMENT_SCHEMA_VERSION, "perl_core_harness.boundary_retirement.v1");
     }
 
     #[test]
