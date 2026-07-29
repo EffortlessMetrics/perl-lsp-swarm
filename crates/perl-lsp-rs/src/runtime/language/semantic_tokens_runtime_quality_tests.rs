@@ -224,8 +224,8 @@ class TokenGreeter {
 "#;
 
 /// Named-function-call fixture used for a scoped compiler-token receipt.
-/// The whole-call span (`run_pipeline()`, not just the callee name) must match
-/// an existing live parser/HIR `function` token and remain output-neutral. The
+/// The callee-name span (`run_pipeline`, not the argument list) must match an
+/// existing live parser/HIR `function` token and remain output-neutral. The
 /// callee is intentionally undefined so the only `function` token at the call
 /// site is the call itself — no `sub` declaration token competes for the span.
 const NAMED_FUNCTION_CALL_MODULE: &str = r#"use strict;
@@ -598,10 +598,11 @@ fn method_call_name_span(
     Ok((name_start, name_end, line, start, length))
 }
 
-/// Compute the source-backed whole-call span for a bareword function call
-/// `name(...)`, mirroring [`semantic_token_named_function_call_candidate`]: the
-/// span runs from the callee name through the matching close paren on the same
-/// line (the live `function` token covers the entire call expression).
+/// Compute the source-backed callee-name span for a bareword function call
+/// `name(...)`, mirroring [`semantic_token_named_function_call_candidate`].
+/// Parentheses are still balanced so the helper validates the same call shape
+/// as the production detector, but the returned span matches the live token's
+/// name-only range.
 fn named_function_call_span(
     source: &str,
     name: &str,
@@ -626,7 +627,8 @@ fn named_function_call_span(
             _ => {}
         }
     }
-    let name_end = call_end.ok_or("unterminated function call parens in fixture")?;
+    let _call_end = call_end.ok_or("unterminated function call parens in fixture")?;
+    let name_end = name_start + name.len();
 
     let prefix = &source[..name_start];
     let line = u32::try_from(prefix.bytes().filter(|byte| *byte == b'\n').count())?;
@@ -1347,7 +1349,7 @@ fn semantic_tokens_runtime_quality_receipt_proves_source_backed_named_function_c
     assert_eq!(
         call_receipt.get("live_output_parity").and_then(Value::as_bool),
         Some(true),
-        "source-backed named-function-call whole-call span must match existing live function token output"
+        "source-backed named-function-call callee-name span must match existing live function token output"
     );
     assert_eq!(
         call_receipt.get("parity_state").and_then(Value::as_str),
@@ -1410,14 +1412,13 @@ fn semantic_tokens_runtime_quality_receipt_proves_source_backed_named_function_c
 }
 
 #[test]
-fn semantic_tokens_runtime_quality_named_function_call_span_covers_arguments_among_multiple_calls()
+fn semantic_tokens_runtime_quality_named_function_call_name_span_matches_among_multiple_calls()
 -> Result<(), Box<dyn Error>> {
     // ExternalTruth coverage: a file with MORE THAN ONE live `function` token,
     // where the callee has arguments. Proves (1) the live parser/HIR collector
-    // emits the `function` token spanning the entire `configure(1, 2)` call
-    // INCLUDING its arguments, and (2) exactly one of the several live function
-    // tokens matches the detector's whole-call span — the "live-token count > 1"
-    // case the single-call fixtures do not exercise.
+    // emits the `function` token for the `configure` callee and (2) exactly one
+    // of the several live function tokens matches the detector's name span —
+    // the "live-token count > 1" case the single-call fixtures do not exercise.
     let server = create_server();
     let uri = "file:///workspace/lib/TokenMultiCall.pm";
     let src = "use strict;\nuse warnings;\n\nconfigure(1, 2);\nfinalize();\n\n1;\n";
@@ -1429,9 +1430,9 @@ fn semantic_tokens_runtime_quality_named_function_call_span_covers_arguments_amo
     let receipt =
         must_some(must(server.test_semantic_tokens_runtime_quality_receipt(Some(params))));
 
-    // The detector reports the FIRST call, whole-call span including arguments.
+    // The detector reports the FIRST call's callee-name span.
     let (_call_start, _call_end, line, col, len) = named_function_call_span(src, "configure")?;
-    assert_eq!(len, 15, "`configure(1, 2)` is 15 UTF-16 units including its arguments");
+    assert_eq!(len, 9, "`configure` is 9 UTF-16 units");
 
     let function_token_type =
         *crate::semantic_tokens::legend().map.get("function").ok_or("missing function token")?;
@@ -1444,16 +1445,16 @@ fn semantic_tokens_runtime_quality_named_function_call_span_covers_arguments_amo
         "fixture must emit multiple live function tokens (configure + finalize); got {}",
         function_tokens.len()
     );
-    let whole_call_matches = function_tokens
+    let name_span_matches = function_tokens
         .iter()
         .filter(|token| token.line == line && token.start == col && token.length == len)
         .count();
     assert_eq!(
-        whole_call_matches, 1,
-        "exactly one live function token must span the whole `configure(1, 2)` call including its arguments"
+        name_span_matches, 1,
+        "exactly one live function token must span the `configure` callee"
     );
 
-    // The scoped class reaches live-pilot parity on that whole-call span.
+    // The scoped class reaches live-pilot parity on that callee-name span.
     let call_receipt = class_specific_receipt(&receipt, "named_function_call")?;
     assert_eq!(call_receipt.get("live_pilot").and_then(Value::as_bool), Some(true));
     assert_eq!(call_receipt.get("live_token_match_count").and_then(Value::as_u64), Some(1));
