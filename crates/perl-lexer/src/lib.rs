@@ -2664,7 +2664,59 @@ impl<'a> PerlLexer<'a> {
                                 }
                             }
                         }
-                        _ => {}
+                        // Digit variables: $0 (program name), $1..$9 (capture groups), etc.
+                        Some(ch) if ch.is_ascii_digit() => {
+                            self.advance();
+                            parts.push(StringPart::Variable(Arc::from(
+                                &self.input[part_start..self.position],
+                            )));
+                        }
+                        // Control variables: $^W, $^O, $^X, etc.
+                        Some('^') => {
+                            self.advance(); // consume '^'
+                            if self.current_char().is_some_and(|c| c.is_ascii_uppercase()) {
+                                self.advance(); // consume the uppercase letter
+                            }
+                            parts.push(StringPart::Variable(Arc::from(
+                                &self.input[part_start..self.position],
+                            )));
+                        }
+                        // Array-length operator: $#array
+                        Some('#') => {
+                            self.advance(); // consume '#'
+                            while self.current_char().is_some_and(is_perl_identifier_continue) {
+                                self.advance();
+                            }
+                            parts.push(StringPart::Variable(Arc::from(
+                                &self.input[part_start..self.position],
+                            )));
+                        }
+                        // $$ (PID) — only when not followed by an identifier start
+                        Some('$') => {
+                            if !self.peek_char(1).is_some_and(is_perl_identifier_start) {
+                                self.advance(); // consume second '$' for PID
+                                parts.push(StringPart::Variable(Arc::from(
+                                    &self.input[part_start..self.position],
+                                )));
+                            } else {
+                                // $$identifier = scalar deref; treat first '$' as literal
+                                current_literal.push('$');
+                            }
+                        }
+                        // Punctuation special variables: $!, $@, $?, $&, etc.
+                        Some(
+                            '?' | '!' | '@' | '&' | '`' | '\'' | '.' | '/' | '\\' | '|' | '+' | '-'
+                            | '[' | ']' | '~' | '=' | '%' | ',' | '"' | ';' | '>' | '<' | ')' | '(',
+                        ) => {
+                            self.advance(); // consume the special character
+                            parts.push(StringPart::Variable(Arc::from(
+                                &self.input[part_start..self.position],
+                            )));
+                        }
+                        // Unrecognized '$' — treat as literal character
+                        _ => {
+                            current_literal.push('$');
+                        }
                     }
                 }
                 _ => {
