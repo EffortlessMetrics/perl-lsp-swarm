@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "scripts" / "reviews" / "claim_digest.py"
@@ -90,6 +91,17 @@ Revert the squash.
             self.legacy_body(claim="Adds X and Y")
         )["digest"]
         self.assertNotEqual(first, second)
+
+    def test_live_reader_normalizes_null_body_to_empty_text(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        )
+        with patch.object(claim_digest.subprocess, "run", return_value=completed) as run:
+            body = claim_digest._read_live_pr_body("123", "owner/repo")
+
+        self.assertEqual(body, "")
+        command = run.call_args.args[0]
+        self.assertIn('.body // ""', command)
 
     def test_currentness_checker_matches_head_and_claim(self) -> None:
         body = self.body()
