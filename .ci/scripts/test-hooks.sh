@@ -25,7 +25,18 @@ assert_exit() {
   fi
 }
 
-assert_file() {
+assert_exists() {
+  local path="$1" desc="$2"
+  if [[ -f "$path" ]]; then
+    echo "  PASS: $desc"
+    PASS=$(( PASS + 1 ))
+  else
+    echo "  FAIL: $desc — missing: $path" >&2
+    FAIL=$(( FAIL + 1 ))
+  fi
+}
+
+assert_executable() {
   local path="$1" desc="$2"
   if [[ -f "$path" && -x "$path" ]]; then
     echo "  PASS: $desc"
@@ -47,8 +58,10 @@ run_hook() {
 
 echo
 echo "=== Registered safety-hook files ==="
-assert_file "$PRE_TOOL_USE" "pre-tool-use.sh exists and is executable"
-assert_file "$WORKTREE_TEST" "linked-worktree guard test exists and is executable"
+assert_executable "$PRE_TOOL_USE" "pre-tool-use.sh exists and is executable"
+# The fixture is deliberately invoked through bash and therefore needs only to
+# be a tracked regular file, not an independently executable hook surface.
+assert_exists "$WORKTREE_TEST" "linked-worktree guard test exists"
 
 echo
 echo "=== Destructive-command safety ==="
