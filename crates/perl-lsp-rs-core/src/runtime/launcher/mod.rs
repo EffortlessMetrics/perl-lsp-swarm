@@ -864,6 +864,12 @@ pub fn help_text() -> String {
     out.push_str("                       Set eager-indexing tuning value\n");
     out.push_str("  PERL_LSP_FILE_WATCHERS=<bool>\n");
     out.push_str("                       Set file-watcher tuning value\n");
+    out.push_str("  PERL_LSP_TIMING=<mode>\n");
+    out.push_str(
+        "                       Enable phase-1 latency instrumentation (off, spans, json)\n",
+    );
+    out.push_str("  PERL_LSP_INCREMENTAL=1\n");
+    out.push_str("                       Enable incremental reparsing (experimental)\n");
     out.push_str("  RUST_LOG=<filter>    Set tracing filter (e.g. perl_lsp=debug)\n");
     out.push_str("  NO_COLOR=1           Disable colored output\n");
     out
