@@ -783,6 +783,10 @@ pub fn stale_dispositions() -> Vec<&'static str> {
 mod tests {
     use super::*;
 
+    /// Short alias so long test names keep a single-line `-> TestResult` that
+    /// both `use_small_heuristics = "Max"` layouts agree on under `max_width = 100`.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     #[test]
     fn disposition_registry_covers_all_ast_kinds() {
         let missing = missing_dispositions();
@@ -826,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_category_derivation_is_consistent() -> Result<(), Box<dyn std::error::Error>> {
+    fn legacy_category_derivation_is_consistent() -> TestResult {
         // Spot-check key nodes against expected legacy categories.
         let checks: &[(&str, LegacyCategory)] = &[
             ("Package", LegacyCategory::Lowered),
@@ -1002,8 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn intentionally_skipped_kinds_have_correct_multi_axis_flags(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn intentionally_skipped_kinds_have_correct_multi_axis_flags() -> TestResult {
         // `Program` (root wrapper): traversal-only, no items, no side-facts.
         let prog =
             disposition_for("Program").ok_or_else(|| "no disposition for Program".to_string())?;
@@ -1056,8 +1059,7 @@ mod tests {
     }
 
     #[test]
-    fn not_yet_modeled_kinds_have_correct_multi_axis_flags(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn not_yet_modeled_kinds_have_correct_multi_axis_flags() -> TestResult {
         // All `NotYetModeled` kinds must fall to `_ => visit_children` and must
         // therefore have `traverses_children=true` and `is_intentional=false`.
         for kind in [
