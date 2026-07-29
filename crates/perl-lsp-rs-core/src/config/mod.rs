@@ -823,10 +823,9 @@ impl RejectedClientIncludePath {
                  in your user settings instead.",
                 self.entry
             ),
-            RejectedClientIncludePathReason::EscapesWorkspace(detail) => format!(
-                "'{}': escapes the workspace root ({detail})",
-                self.entry
-            ),
+            RejectedClientIncludePathReason::EscapesWorkspace(detail) => {
+                format!("'{}': escapes the workspace root ({detail})", self.entry)
+            }
             RejectedClientIncludePathReason::ExternalRelative => format!(
                 "'{}': relative paths are not allowed in `perl.workspace.externalIncludePaths`; \
                  use `perl.workspace.includePaths` for workspace-relative roots instead.",
@@ -1062,7 +1061,10 @@ impl WorkspaceConfig {
     /// Callers on the global / machine configuration channel must use
     /// [`Self::update_from_value_with_context`] with
     /// `apply_external_include_paths: true`.
-    pub fn update_from_value(&mut self, settings: &serde_json::Value) -> Vec<RejectedClientIncludePath> {
+    pub fn update_from_value(
+        &mut self,
+        settings: &serde_json::Value,
+    ) -> Vec<RejectedClientIncludePath> {
         self.update_from_value_with_context(
             settings,
             WorkspaceConfigUpdateContext {
@@ -1093,10 +1095,8 @@ impl WorkspaceConfig {
                     };
                     match validate_resource_include_path_entry(entry, context.workspace_root) {
                         Ok(()) => valid.push(entry.to_string()),
-                        Err(reason) => rejected.push(RejectedClientIncludePath {
-                            entry: entry.to_string(),
-                            reason,
-                        }),
+                        Err(reason) => rejected
+                            .push(RejectedClientIncludePath { entry: entry.to_string(), reason }),
                     }
                 }
                 self.include_paths = valid;
@@ -3859,10 +3859,7 @@ profile = "recommended"
         assert_eq!(workspace.include_paths, vec!["vendor/lib".to_string()]);
         assert_eq!(rejected.len(), 1);
         assert_eq!(rejected[0].entry, "../../../../etc");
-        assert!(matches!(
-            rejected[0].reason,
-            RejectedClientIncludePathReason::EscapesWorkspace(_)
-        ));
+        assert!(matches!(rejected[0].reason, RejectedClientIncludePathReason::EscapesWorkspace(_)));
         Ok(())
     }
 
@@ -3912,10 +3909,7 @@ profile = "recommended"
 
         assert_eq!(rejected.len(), 1);
         assert_eq!(rejected[0].entry, "lib");
-        assert!(matches!(
-            rejected[0].reason,
-            RejectedClientIncludePathReason::ExternalRelative
-        ));
+        assert!(matches!(rejected[0].reason, RejectedClientIncludePathReason::ExternalRelative));
         assert_eq!(workspace.external_include_paths, vec![absolute.to_string()]);
     }
 
