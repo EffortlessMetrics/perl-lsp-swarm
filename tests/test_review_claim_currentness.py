@@ -39,6 +39,32 @@ Revert the squash.
 {verification}
 """
 
+    def legacy_body(
+        self, claim: str = "Adds X", verification_checked: bool = False
+    ) -> str:
+        checked = "x" if verification_checked else " "
+        return f"""## Lane
+- [x] substrate
+
+## Claim Boundary
+{claim}
+
+## Non-goals
+- Does not add Y.
+
+## Behavior
+- [x] live behavior change
+
+## Changes
+- Adds X through the existing owner.
+
+## Verification
+- [{checked}] focused proof
+
+## Remaining Work
+- Y remains separate.
+"""
+
     def test_non_material_section_does_not_change_digest(self) -> None:
         first = claim_digest.claim_digest(self.body(verification="one"))["digest"]
         second = claim_digest.claim_digest(self.body(verification="two"))["digest"]
@@ -47,6 +73,22 @@ Revert the squash.
     def test_material_claim_change_changes_digest(self) -> None:
         first = claim_digest.claim_digest(self.body(claim="Adds X"))["digest"]
         second = claim_digest.claim_digest(self.body(claim="Adds X and Y"))["digest"]
+        self.assertNotEqual(first, second)
+
+    def test_legacy_template_verification_checkbox_does_not_change_digest(self) -> None:
+        first = claim_digest.claim_digest(
+            self.legacy_body(verification_checked=False)
+        )["digest"]
+        second = claim_digest.claim_digest(
+            self.legacy_body(verification_checked=True)
+        )["digest"]
+        self.assertEqual(first, second)
+
+    def test_legacy_claim_boundary_change_changes_digest(self) -> None:
+        first = claim_digest.claim_digest(self.legacy_body(claim="Adds X"))["digest"]
+        second = claim_digest.claim_digest(
+            self.legacy_body(claim="Adds X and Y")
+        )["digest"]
         self.assertNotEqual(first, second)
 
     def test_currentness_checker_matches_head_and_claim(self) -> None:
