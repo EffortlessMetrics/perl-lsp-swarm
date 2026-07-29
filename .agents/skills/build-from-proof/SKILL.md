@@ -1,6 +1,6 @@
 ---
 name: build-from-proof
-description: Explicit atomic skill for implementing the current reviewed plan and proof through one integrating writer without widening the accepted claim or creating duplicate authority.
+description: Explicit atomic skill for implementing the current reviewed plan and proof through one candidate writer without widening the accepted claim or creating duplicate authority.
 ---
 
 # Build from proof
@@ -11,9 +11,11 @@ Before mutation, confirm:
 
 - controlling issue and claim;
 - current proof and limitations;
-- branch/worktree identity and one-writer ownership;
+- current candidate branch/worktree identity and one-writer ownership;
 - current semantic owner and intended consumers;
-- overlap that constitutes a real claim or writer collision.
+- no equivalent current PR already implements the same claim.
+
+Do not scan sibling worktrees, touched-file overlap, nearby symbols, or unrelated PRs as a routine ownership check.
 
 During implementation:
 
@@ -28,5 +30,5 @@ During implementation:
 - `IMPLEMENTATION_COMPLETE` → `$improve-test-suite`
 - `PROOF_INADEQUATE` → `$prepare-proof`
 - `MATERIAL_PREMISE_CHANGED` → `$prepare-issue`
-- `WRITER_COLLISION` / `UNSAFE_WORKTREE` → stop and resolve the mechanical hazard
+- `WRITER_COLLISION` / `UNSAFE_WORKTREE` → stop and resolve the same-candidate mechanical hazard
 - `NOT_PROVEN` → preserve the missing authority or instrument
