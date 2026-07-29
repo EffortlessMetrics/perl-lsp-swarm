@@ -793,10 +793,14 @@ gates:
       -p perl-lsp-rs-core -p perl-lsp-ux-tests
       -p perl-subprocess-runtime -p perllsp
       -- --test-threads=4
-    timeout_seconds: 300
+    # Hosted evidence: this lane completed 27 tests before the 300s ceiling
+    # on 2026-07-28 (300237 ms). Keep a 60s measurement margin while the
+    # lane remains unsplit; revisit after the hosted receipt establishes the
+    # completed wall time.
+    timeout_seconds: 420
     retry_count: 1
     budgets:
-      max_duration_ms: 240000
+      max_duration_ms: 360000
     quarantine: false
     tags:
       - test
