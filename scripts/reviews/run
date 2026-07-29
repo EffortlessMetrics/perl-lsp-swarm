@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# scripts/reviews/run — review-run / verification receipt poster (#3693 R1, FILE 4)
+# scripts/reviews/run — review-run / verification receipt poster (#3693 R1)
 #
 # Review receipts are bound to both the PR head and the normalized material
 # claim/review index. A claim-body change therefore cannot inherit an older
 # formal disposition merely because the Git head stayed the same.
 #
-#   review-start → posts a review-run marker with status=running
-#   review-done  → posts a review-run marker with status=done
+#   review-start → posts one review-run marker with status=running
+#   review-done  → updates that exact marker in place to status=done
 #   verify       → posts a verification marker (result=pass|fail)
+#
+# Updating the start receipt is load-bearing: the convergence checker counts
+# running markers as in-flight work. Appending a second done marker would leave
+# the historical running marker active forever.
 #
 # Usage:
 #   scripts/reviews/run review-start --pr <n> --kind <deep|standard> --reviewer <id> [--claim-digest sha] [--repo r] [--head sha] [--dry-run]
@@ -66,14 +70,80 @@ resolve_claim_digest() {
     CLAIM_DIGEST="$("$SCRIPT_DIR/claim-digest" "${claim_args[@]}")" || die_usage "failed to compute material claim digest"
 }
 
+render_body() {
+    # $1 marker kind, $2 marker JSON, $3 human preamble
+    printf '%s\n\n<!-- %s:v1 %s -->' "$3" "$1" "$2"
+}
+
 post_pr_comment() {
     local body="$1"
     gh pr comment "$PR" --repo "$REPO" --body "$body"
 }
 
+find_running_review_comment_id() {
+    local running_marker="$1"
+    local needle="<!-- review-run:v1 $running_marker -->"
+    local comments
+    if ! comments="$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" 2>&1)"; then
+        echo "ERROR: failed to list review-run receipts for PR #$PR: $comments" >&2
+        return 2
+    fi
+
+    printf '%s\n' "$comments" | jq -sr --arg needle "$needle" '
+        (((map(if type == "array" then . else [.] end) | add) // []))
+        | [ .[] | select((.body // "") | contains($needle)) | .id ]
+        | last // empty
+    '
+}
+
+update_pr_comment() {
+    local comment_id="$1"
+    local body="$2"
+    gh api -X PATCH "repos/$REPO/issues/comments/$comment_id" --raw-field body="$body"
+}
+
+emit_review_run() {
+    local status="$1"
+    local marker body
+    marker="$(jq -cn --arg kind "$KIND" --arg head "$HEAD" --arg claim "$CLAIM_DIGEST" --arg rev "$REVIEWER" --arg st "$status" \
+        '{v:1, kind:$kind, head:$head, claim_digest:$claim, reviewer:$rev, status:$st}')"
+    body="$(render_body "review-run" "$marker" "Review pass ($KIND) $status by $REVIEWER at head $HEAD and claim $CLAIM_DIGEST.")"
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        action="post"
+        [[ "$status" == "done" ]] && action="update matching running receipt"
+        echo "DRY-RUN $action for PR #$PR at head $HEAD"
+        printf '%s\n' "$body"
+        return 0
+    fi
+
+    if [[ "$status" == "running" ]]; then
+        if ! post_pr_comment "$body" >/dev/null; then
+            echo "ERROR: failed to post review-run receipt to PR #$PR" >&2
+            exit 2
+        fi
+        echo "OK posted running review-run receipt to PR #$PR at head $HEAD and claim $CLAIM_DIGEST"
+        return 0
+    fi
+
+    local running_marker comment_id
+    running_marker="$(jq -cn --arg kind "$KIND" --arg head "$HEAD" --arg claim "$CLAIM_DIGEST" --arg rev "$REVIEWER" \
+        '{v:1, kind:$kind, head:$head, claim_digest:$claim, reviewer:$rev, status:"running"}')"
+    comment_id="$(find_running_review_comment_id "$running_marker")" || exit 2
+    if [[ -z "$comment_id" ]]; then
+        echo "ERROR: no matching running review receipt for PR #$PR, reviewer $REVIEWER, kind $KIND, head $HEAD, claim $CLAIM_DIGEST" >&2
+        exit 2
+    fi
+    if ! update_pr_comment "$comment_id" "$body" >/dev/null; then
+        echo "ERROR: failed to retire running review receipt comment $comment_id on PR #$PR" >&2
+        exit 2
+    fi
+    echo "OK updated review-run receipt $comment_id to done on PR #$PR at head $HEAD and claim $CLAIM_DIGEST"
+}
+
 emit() {
     local body
-    body="$(printf '%s\n\n<!-- %s:v1 %s -->' "$3" "$1" "$2")"
+    body="$(render_body "$1" "$2" "$3")"
     if [[ "$DRY_RUN" -eq 1 ]]; then
         echo "DRY-RUN $1 receipt for PR #$PR at head $HEAD"
         printf '%s\n' "$body"
@@ -94,9 +164,7 @@ case "$SUBCMD" in
         resolve_claim_digest
         local_status="running"
         [[ "$SUBCMD" == "review-done" ]] && local_status="done"
-        marker="$(jq -cn --arg kind "$KIND" --arg head "$HEAD" --arg claim "$CLAIM_DIGEST" --arg rev "$REVIEWER" --arg st "$local_status" \
-            '{v:1, kind:$kind, head:$head, claim_digest:$claim, reviewer:$rev, status:$st}')"
-        emit "review-run" "$marker" "Review pass ($KIND) $local_status by $REVIEWER at head $HEAD and claim $CLAIM_DIGEST."
+        emit_review_run "$local_status"
         ;;
     verify)
         [[ -n "$VERIFIER" ]] || die_usage "verify requires --verifier <id>"
