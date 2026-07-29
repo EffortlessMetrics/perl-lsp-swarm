@@ -56,15 +56,15 @@ candidate head unchanged
 + material claim unchanged
 + main advances
 + no actual Git conflict
-+ no failed required integration proof
++ no required merge-group or combined-tree check has failed
 → candidate proof and review remain current
 ```
 
 Do not rebase, update-branch, merge `main`, create empty commits, rerun formal review, or replay full CI merely because the branch is behind.
 
-Do not proactively inspect sibling PR implementations, touched-file overlap, or nearby semantic surfaces to predict interactions. The candidate lane normally learns about integration through Git mergeability, an explicit stacked prerequisite, live merge-group policy, or an actual synthetic/hosted combined-tree result.
+Do not proactively inspect sibling PR implementations, touched-file overlap, or nearby semantic surfaces to predict interactions. The candidate lane normally learns about integration through Git mergeability, an explicit stacked prerequisite, current GitHub merge-queue or required-check behavior, or an actual synthetic or hosted combined-tree result.
 
-A changed integration basis may require fresh integration proof when live policy requires it. It does not by itself require branch mutation or fresh candidate review.
+A changed integration basis may require a fresh merge-group or combined-tree check when current GitHub branch protection, rulesets, merge queue, or required checks require it. It does not by itself require branch mutation or fresh candidate review.
 
 ## Actual conflict or integration failure
 
@@ -98,11 +98,11 @@ After repair or claim revision, rerun supporting evidence dimensions whose seman
 | conflict resolution | conflict-affected proof/review plus fresh formal-review record |
 | owner/consumer change | plan, authority review, proof seam, and fresh formal-review record |
 | external protocol change | external-truth judgment, dependent claims, and fresh formal-review record |
-| integration basis changes but candidate remains unchanged | integration proof only where policy requires it |
+| integration basis changes but candidate remains unchanged | merge-group or combined-tree checks only where current GitHub branch protection, rulesets, merge queue, or required checks require them |
 | any head change after formal review | fresh formal-review record; supporting depth remains proportional |
 
 ## Merge boundary
 
-Merge eligibility is determined by current GitHub branch protection, rulesets, merge queue, or required checks, substantive review convergence, actual mergeability, and required integration proof for the selected candidate.
+Merge eligibility is determined by current GitHub branch protection, rulesets, merge queue, or required checks, substantive review convergence, actual mergeability, and any merge-group or combined-tree check required for the selected candidate by that GitHub policy.
 
 After squash merge, reconciliation verifies the landed effect on current `main`; it does not pretend the future squash commit could have been reviewed in advance.
