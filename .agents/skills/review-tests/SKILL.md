@@ -7,7 +7,14 @@ description: Explicit atomic skill for adversarially challenging proposed or exi
 
 Try to falsify the proof.
 
-Ask:
+Require observed execution evidence before declaring proof ready:
+
+- the test or proof artifact executed successfully as an instrument;
+- it failed against the current/wrong behavior or a controlled realistic wrong implementation for the intended reason;
+- relevant controls executed and did not fail vacuously;
+- the evidence identifies the fixture, command/instrument, and observed result.
+
+Then ask:
 
 - What realistic incorrect implementation still passes?
 - Is the oracle independent, or does it merely restate the code?
@@ -26,8 +33,9 @@ A test adversary, external oracle, production-path reviewer, or mutation-style a
 
 ## Routes
 
-- `PROOF_READY` → `$build-candidate`
+- `PROOF_EXECUTION_OBSERVED_AND_ADEQUATE` → `$build-candidate`
 - `WEAK_PROOF` → `$spec-to-test`
+- `DRAFT_NOT_EXECUTED` / `INSTRUMENT_FAILURE` → `NOT_PROVEN` with the missing execution evidence
 - `REQUIREMENT_OR_OWNER_CHANGED` → `$prepare-issue`
 - `NO_EXECUTABLE_PROOF_SUBJECT` → return to `$deliver-pr`
 - `NOT_PROVEN` → preserve the missing oracle or instrument
