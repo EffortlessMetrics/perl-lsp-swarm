@@ -618,12 +618,18 @@ fn normalize_diagnostic(diagnostic: &str) -> String {
             let trimmed = token.trim_matches(|character: char| {
                 matches!(character, '"' | '\'' | '(' | ')' | '[' | ']' | ',' | ';')
             });
-            if trimmed.starts_with('/')
-                || trimmed.contains(":/")
-                || trimmed.contains("\\")
-                || trimmed.split('/').any(|part| {
-                    matches!(part.to_ascii_lowercase().as_str(), "target" | "tmp" | "temp")
-                })
+            let is_url = trimmed.contains("://");
+            let is_windows_path = trimmed.len() >= 3
+                && trimmed.as_bytes()[0].is_ascii_alphabetic()
+                && trimmed.as_bytes()[1] == b':'
+                && matches!(trimmed.as_bytes()[2], b'/' | b'\\');
+            if !is_url
+                && (trimmed.starts_with('/')
+                    || is_windows_path
+                    || trimmed.contains("\\")
+                    || trimmed.split('/').any(|part| {
+                        matches!(part.to_ascii_lowercase().as_str(), "target" | "tmp" | "temp")
+                    }))
             {
                 "<host-path>"
             } else {
@@ -646,10 +652,14 @@ fn failure_signature(
         bail!("failure record lacks a stable path or workstream");
     }
     validate_public_path(&failure.path, "failure path")?;
-    let mut fact_classes = failure.lsp_impact.clone();
-    fact_classes.sort();
-    fact_classes.dedup();
-    let lsp_surfaces = fact_classes.clone();
+    let fact_classes = vec![failure.bucket.clone()];
+    let mut lsp_surfaces = lsp_impact_for_bucket(&failure.bucket)
+        .into_iter()
+        .map(ToString::to_string)
+        .chain(failure.lsp_impact.iter().cloned())
+        .collect::<Vec<_>>();
+    lsp_surfaces.sort();
+    lsp_surfaces.dedup();
     let shape_seed =
         format!("{}|{}|{}|{}", stage, failure.bucket, failure.workstream, fact_classes.join(","));
     Ok(FailureClusterSignature {
@@ -837,6 +847,12 @@ fn read_boundary_bundle(path: &Path) -> Result<BoundaryBundle> {
             format!("decoding semantic-boundaries artifact {}", boundary_path.display())
         })?;
     semantic_boundaries.sort_by_key(semantic_boundary_key);
+    if semantic_boundaries
+        .windows(2)
+        .any(|pair| semantic_boundary_key(&pair[0]) == semantic_boundary_key(&pair[1]))
+    {
+        bail!("semantic-boundaries artifact contains a duplicate boundary key");
+    }
     Ok(BoundaryBundle { path: path.to_path_buf(), index, semantic_boundaries })
 }
 
@@ -6109,6 +6125,15 @@ mod tests {
         let bundle = read_boundary_bundle(&index_path)?;
         assert!(validate_bundle_against_baseline(&bundle, &baseline).is_empty());
 
+        let mut duplicate_boundaries = baseline.semantic_boundaries.clone();
+        duplicate_boundaries.push(sample_semantic_boundary());
+        fs::write(&boundary_path, serde_json::to_string_pretty(&duplicate_boundaries)?)?;
+        let error = match read_boundary_bundle(&index_path) {
+            Ok(_) => return Err(color_eyre::eyre::eyre!("duplicate boundary key was accepted")),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("duplicate boundary key"));
+
         let mut changed = baseline;
         changed.semantic_boundaries.clear();
         let violations = validate_bundle_against_baseline(&bundle, &changed);
@@ -6173,6 +6198,8 @@ mod tests {
             .ok_or_else(|| color_eyre::eyre::eyre!("missing parse cluster"))?;
         assert_eq!(parse_cluster.occurrence_count, 2);
         assert_eq!(parse_cluster.affected_files, vec!["base/lex.t", "base/ok.t"]);
+        assert_eq!(parse_cluster.signature.fact_classes, vec!["parse_recovery"]);
+        assert_ne!(parse_cluster.signature.fact_classes, parse_cluster.signature.lsp_surfaces);
         let harness_cluster = triage
             .clusters
             .iter()
@@ -6185,6 +6212,14 @@ mod tests {
             .find(|cluster| cluster.signature.bucket == "hir_lowering")
             .ok_or_else(|| color_eyre::eyre::eyre!("missing HIR cluster"))?;
         assert_eq!(hir_cluster.signature.stage, "hir_unmodeled");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_cluster_normalization_preserves_urls_and_scrubs_host_paths() -> TestResult {
+        let normalized =
+            normalize_diagnostic("see https://example.com/tmp and /tmp/perl/target/report");
+        assert_eq!(normalized, "see https://example.com/tmp and <host-path>");
         Ok(())
     }
 
