@@ -292,8 +292,8 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 
 ### Explainability and previews
 
-| Command                                      | Description                                                                              |
-| -------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Command                                  | Description                                                                              |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------- |
 | **Perl: Explain Provider Decision**      | Show why the last provider acted, fell back, or refused                                  |
 | **Perl: Copy Provider Decision Receipt** | Copy a structured local receipt for issue reports                                        |
 | **Perl: Show Workspace Trust Report**    | Show workspace roots, module resolution, index state, support tiers, and boundary policy |
