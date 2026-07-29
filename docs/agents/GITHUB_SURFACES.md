@@ -104,7 +104,7 @@ A substantive PR should make its claim and proof legible:
 ## Review index
 ```
 
-Publish ready by default. Draft is an explicit exception for remote-only proof, real collaboration on the same candidate branch, or a protected integration experiment whose remote behavior is the subject.
+Publish ready by default. Draft is an explicit exception for remote-only proof, real collaboration on the same candidate branch, or a protected integration experiment that requires remote evidence before broad review is useful.
 
 ## Formal review
 
