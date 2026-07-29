@@ -9,7 +9,10 @@
 import * as vscode from 'vscode';
 
 let lastFormatErrorTime = 0;
-const FORMAT_ERROR_COOLDOWN_MS = 30_000;
+// Reduced from 30s to 5s — the 30s cooldown meant that after the first
+// format error, all subsequent saves in the next 30s silently did nothing,
+// giving users no signal that formatting was broken. (UX_GAP_2.3)
+const FORMAT_ERROR_COOLDOWN_MS = 5_000;
 
 /**
  * Reset the format-error cooldown timer. Exported for test isolation.
