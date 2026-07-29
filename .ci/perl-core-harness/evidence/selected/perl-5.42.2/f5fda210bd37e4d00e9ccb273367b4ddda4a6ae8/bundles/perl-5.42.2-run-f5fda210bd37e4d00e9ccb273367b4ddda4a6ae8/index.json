@@ -1,7 +1,7 @@
 {
   "schema_version": "perl_core_harness.evidence_bundle.v1",
   "bundle_id": "perl-5.42.2-run-f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
-  "bundle_digest": "1f82306dbc7eb3cb7253f0a545751391381b10f21ef520e3630f2d0b73084b06",
+  "bundle_digest": "0ba470feb805e9cf9958f7ef6ef7e8d3e14f91f5c87b4d4b8d22a727c2b058bb",
   "series_id": "selected-run-perl-5.42.2",
   "manifest_hash": "a75bb83fe33159fb34b31ec9d12a22f301015ddc9a782031285770e2ce9143e4",
   "repository_commit": "f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
@@ -17,7 +17,7 @@
   "environment_identity": "ubuntu-24.04:rustc-1.97.0",
   "lineage": {
     "measurement_sha": "f5fda210bd37e4d00e9ccb273367b4ddda4a6ae8",
-    "publication_sha": null,
+    "publication_sha": "e88d56bee44c17f8ed27aa8c5fab2631b860b060",
     "landed_sha": null
   },
   "artifacts": [
@@ -160,6 +160,6 @@
     "normalized_authority": true,
     "claim_boundary": "selected parse and compile acceptance with explicit semantic-boundary inventory"
   },
-  "lifecycle": "measurement",
+  "lifecycle": "published",
   "created_at": "2026-07-28T23:54:31Z"
 }
