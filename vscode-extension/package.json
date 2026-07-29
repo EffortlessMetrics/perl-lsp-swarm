@@ -530,7 +530,7 @@
             "default": "",
             "scope": "machine",
             "order": 43,
-            "deprecationMessage": "This setting has no effect and will be removed. Use perl-lsp.critic.profile or perl-lsp.critic.theme instead.",
+            "deprecationMessage": "This setting has no effect and will be removed. Use perl-lsp.critic.profile instead.",
             "markdownDeprecationMessage": "**No effect.** This setting does nothing — it is a legacy placeholder from an earlier UI design and will be removed. Use `perl-lsp.critic.profile` for Perl::Critic profile selection.",
             "description": "[No effect] Legacy placeholder — will be removed.",
             "markdownDescription": "**[No effect]** Legacy placeholder — will be removed. Use `perl-lsp.critic.profile` instead."
