@@ -1353,6 +1353,9 @@
     "tar": "^7.5.22",
     "vscode-languageclient": "^10.1.0"
   },
+  "overrides": {
+    "brace-expansion": "5.0.8"
+  },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",
     "@types/jest": "^30.0.0",
