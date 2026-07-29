@@ -265,12 +265,23 @@ impl DebugAdapter {
             };
         }
 
-        let (signal_sent, failure_message) = if let Some(ref mut session) =
-            *lock_or_recover(&self.session, "debug_adapter.session")
-        {
-            let pid = session.process.id();
-            session.variable_cache.clear();
-            session.stack_frames.clear();
+        // Clear launched-session caches under the session lock, then drop the
+        // guard before `send_interrupt_signal`. On Windows that helper re-locks
+        // `self.session` to write debugger stdin; holding the same non-reentrant
+        // mutex across the call deadlocks pause delivery.
+        let launched_pid = {
+            let mut session_guard = lock_or_recover(&self.session, "debug_adapter.session");
+            if let Some(ref mut session) = *session_guard {
+                let pid = session.process.id();
+                session.variable_cache.clear();
+                session.stack_frames.clear();
+                Some(pid)
+            } else {
+                None
+            }
+        };
+
+        let (signal_sent, failure_message) = if let Some(pid) = launched_pid {
             (self.send_interrupt_signal(pid), "Failed to pause debugger")
         } else if let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
         {
