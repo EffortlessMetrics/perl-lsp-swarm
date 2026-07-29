@@ -4174,30 +4174,22 @@ profile = "recommended"
         assert!(config.perl_args.is_empty(), "perlArgs from workspace must be ignored");
     }
 
-    /// Issue #4957: this slice validates only `.perl-lsp.toml` (see
-    /// `apply_to_workspace_config_rejects_absolute_include_paths`). Absolute
-    /// `include_paths` arriving on the LSP client-settings channel
-    /// (`update_from_value`) are still accepted, and this test pins that
-    /// **current behaviour is unchanged** by the `.perl-lsp.toml` fix.
-    ///
-    /// It is NOT an assertion that the channel is trusted. In VS Code
-    /// `perl-lsp.includePaths` is `scope: resource`, so a committed
-    /// `.vscode/settings.json` reaches this same code path. Hardening that is
-    /// issue #4998; when it lands, this test is expected to change.
+    /// Security regression for the resource-scoped client-settings channel:
+    /// absolute paths must be rejected even when no workspace root is known.
+    /// Legitimate workspace-relative entries remain accepted.
     #[test]
-    fn update_from_value_still_accepts_absolute_include_paths_unchanged_by_this_slice() {
+    fn update_from_value_rejects_absolute_include_paths_without_workspace_root() {
         let mut config = WorkspaceConfig::default();
-        config.update_from_value(&serde_json::json!({
+        let rejected = config.update_from_value(&serde_json::json!({
             "workspace": {
                 "includePaths": ["/opt/company-perl-libs", "relative/lib"]
             }
         }));
-        assert_eq!(
-            config.include_paths,
-            vec!["/opt/company-perl-libs".to_string(), "relative/lib".to_string()],
-            "this slice must not change client-settings channel behaviour; \
-             provenance hardening is issue #4998"
-        );
+
+        assert_eq!(config.include_paths, vec!["relative/lib".to_string()]);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, "/opt/company-perl-libs");
+        assert_eq!(rejected[0].reason, RejectedClientIncludePathReason::Absolute);
     }
 
     /// Security regression: the LSP settings channel must not arm legacy subprocess
