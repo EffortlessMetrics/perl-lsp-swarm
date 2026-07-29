@@ -78,95 +78,101 @@ impl LspServer {
 
             tracing::debug!("Document saved: {}", uri);
 
-            // Re-run diagnostics on save to catch any changes
-            let documents = self.documents.lock();
-            if let Some(doc) = self.get_document(&documents, &normalized_uri) {
-                let parsed = doc.current_parsed();
-                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                    // `parsed` is guaranteed `Some` here since `ast` was
-                    // derived from it.
-                    let empty_errors: Arc<[perl_parser::error::ParseError]> = Arc::from([]);
-                    let parse_errors = parsed
-                        .as_ref()
-                        .map_or_else(|| empty_errors.clone(), |p| p.parse_errors_arc());
-                    // Run diagnostics, threading workspace semantic queries when available.
-                    let provider = DiagnosticsProvider::new(ast, doc.text.clone());
-                    let source_path = source_path_from_uri(uri);
+            // Re-run diagnostics on save to catch any changes. Keep this
+            // snapshot lock scoped: the reconciliation below takes the same
+            // lock again after diagnostics have been published.
+            {
+                let documents = self.documents.lock();
+                if let Some(doc) = self.get_document(&documents, &normalized_uri) {
+                    let parsed = doc.current_parsed();
+                    if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
+                        // `parsed` is guaranteed `Some` here since `ast` was
+                        // derived from it.
+                        let empty_errors: Arc<[perl_parser::error::ParseError]> = Arc::from([]);
+                        let parse_errors = parsed
+                            .as_ref()
+                            .map_or_else(|| empty_errors.clone(), |p| p.parse_errors_arc());
+                        // Run diagnostics, threading workspace semantic queries when available.
+                        let provider = DiagnosticsProvider::new(ast, doc.text.clone());
+                        let source_path = source_path_from_uri(uri);
 
-                    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                    let diagnostics = {
-                        // Attempt semantic-aware path; fall back to legacy when URI not indexed.
-                        let semantic_diags = self.workspace_index().and_then(|workspace_index| {
-                            workspace_index.with_semantic_queries_for_uri(
-                                uri,
-                                |file_id, queries| {
-                                    provider.get_diagnostics_with_path_and_semantics(
-                                        ast,
-                                        &parse_errors,
-                                        &doc.text,
-                                        None,
-                                        &[],
-                                        source_path.as_deref(),
-                                        file_id,
-                                        &queries,
+                        #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+                        let diagnostics = {
+                            // Attempt semantic-aware path; fall back to legacy when URI not indexed.
+                            let semantic_diags =
+                                self.workspace_index().and_then(|workspace_index| {
+                                    workspace_index.with_semantic_queries_for_uri(
+                                        uri,
+                                        |file_id, queries| {
+                                            provider.get_diagnostics_with_path_and_semantics(
+                                                ast,
+                                                &parse_errors,
+                                                &doc.text,
+                                                None,
+                                                &[],
+                                                source_path.as_deref(),
+                                                file_id,
+                                                &queries,
+                                            )
+                                        },
                                     )
-                                },
-                            )
-                        });
-                        semantic_diags.unwrap_or_else(|| {
-                            provider.get_diagnostics_with_path(
-                                ast,
-                                &parse_errors,
-                                &doc.text,
-                                None,
-                                &[],
-                                source_path.as_deref(),
-                            )
-                        })
-                    };
-                    #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-                    let diagnostics = provider.get_diagnostics_with_path(
-                        ast,
-                        &parse_errors,
-                        &doc.text,
-                        None,
-                        &[],
-                        source_path.as_deref(),
-                    );
-
-                    // Convert diagnostics
-                    let lsp_diagnostics: Vec<Value> = diagnostics
-                        .iter()
-                        .map(|diag| {
-                            let (start_line, start_char) = self.offset_to_pos16(doc, diag.range.0);
-                            let (end_line, end_char) = self.offset_to_pos16(doc, diag.range.1);
-
-                            json!({
-                                "range": {
-                                    "start": { "line": start_line, "character": start_char },
-                                    "end": { "line": end_line, "character": end_char }
-                                },
-                                "severity": match diag.severity {
-                                    InternalDiagnosticSeverity::Error => 1,
-                                    InternalDiagnosticSeverity::Warning => 2,
-                                    InternalDiagnosticSeverity::Information => 3,
-                                    InternalDiagnosticSeverity::Hint => 4,
-                                },
-                                "message": diag.message,
-                                "source": "perl"
+                                });
+                            semantic_diags.unwrap_or_else(|| {
+                                provider.get_diagnostics_with_path(
+                                    ast,
+                                    &parse_errors,
+                                    &doc.text,
+                                    None,
+                                    &[],
+                                    source_path.as_deref(),
+                                )
                             })
-                        })
-                        .collect();
+                        };
+                        #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
+                        let diagnostics = provider.get_diagnostics_with_path(
+                            ast,
+                            &parse_errors,
+                            &doc.text,
+                            None,
+                            &[],
+                            source_path.as_deref(),
+                        );
 
-                    // Send diagnostics notification
-                    if let Err(e) = self.notify(
-                        "textDocument/publishDiagnostics",
-                        json!({
-                            "uri": uri,
-                            "diagnostics": lsp_diagnostics
-                        }),
-                    ) {
-                        tracing::warn!("Failed to publish diagnostics for {}: {}", uri, e);
+                        // Convert diagnostics
+                        let lsp_diagnostics: Vec<Value> = diagnostics
+                            .iter()
+                            .map(|diag| {
+                                let (start_line, start_char) =
+                                    self.offset_to_pos16(doc, diag.range.0);
+                                let (end_line, end_char) = self.offset_to_pos16(doc, diag.range.1);
+
+                                json!({
+                                    "range": {
+                                        "start": { "line": start_line, "character": start_char },
+                                        "end": { "line": end_line, "character": end_char }
+                                    },
+                                    "severity": match diag.severity {
+                                        InternalDiagnosticSeverity::Error => 1,
+                                        InternalDiagnosticSeverity::Warning => 2,
+                                        InternalDiagnosticSeverity::Information => 3,
+                                        InternalDiagnosticSeverity::Hint => 4,
+                                    },
+                                    "message": diag.message,
+                                    "source": "perl"
+                                })
+                            })
+                            .collect();
+
+                        // Send diagnostics notification
+                        if let Err(e) = self.notify(
+                            "textDocument/publishDiagnostics",
+                            json!({
+                                "uri": uri,
+                                "diagnostics": lsp_diagnostics
+                            }),
+                        ) {
+                            tracing::warn!("Failed to publish diagnostics for {}: {}", uri, e);
+                        }
                     }
                 }
             }

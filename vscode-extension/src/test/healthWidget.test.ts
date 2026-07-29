@@ -230,11 +230,12 @@ describe('HealthWidget — counts', () => {
     expect(item.text).toBe('$(error) perl-lsp: stopped');
   });
 
-  test('counts do not affect indexing display', () => {
+  test('indexing display includes file count when available', () => {
     const { item, widget } = makeWidget();
     widget.onProgress('t', { kind: 'begin', title: 'Indexing' });
     widget.setFileCount(100);
-    expect(item.text).not.toContain('100 files');
+    // UX_GAP_1.1 / #5184: show progress file count while indexing.
+    expect(item.text).toContain('100 files');
   });
 
   test('fileCount accessor returns current value', () => {

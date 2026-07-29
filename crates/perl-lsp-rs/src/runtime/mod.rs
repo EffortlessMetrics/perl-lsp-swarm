@@ -601,6 +601,7 @@ impl LspServer {
         );
         provider_config.api_key_header = ai_config.api_key_header.clone();
         provider_config.api_key_prefix = ai_config.api_key_prefix.clone();
+        provider_config.local_model_mode = ai_config.local_model_mode;
 
         let limiter = Arc::new(perl_lsp_rs_core::providers::ai::RateLimiter::new(
             ai_config.rate_limit_rps,

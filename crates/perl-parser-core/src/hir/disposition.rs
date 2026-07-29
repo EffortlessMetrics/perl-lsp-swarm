@@ -783,6 +783,10 @@ pub fn stale_dispositions() -> Vec<&'static str> {
 mod tests {
     use super::*;
 
+    /// Short alias so long test names keep a single-line `-> TestResult` that
+    /// both `use_small_heuristics = "Max"` layouts agree on under `max_width = 100`.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     #[test]
     fn disposition_registry_covers_all_ast_kinds() {
         let missing = missing_dispositions();
@@ -826,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_category_derivation_is_consistent() {
+    fn legacy_category_derivation_is_consistent() -> TestResult {
         // Spot-check key nodes against expected legacy categories.
         let checks: &[(&str, LegacyCategory)] = &[
             ("Package", LegacyCategory::Lowered),
@@ -844,10 +848,11 @@ mod tests {
         ];
         for &(kind, expected) in checks {
             let got = disposition_for(kind)
-                .unwrap_or_else(|| panic!("no disposition for {kind}"))
+                .ok_or_else(|| format!("no disposition for {kind}"))?
                 .legacy_category();
             assert_eq!(got, expected, "legacy_category mismatch for {kind}");
         }
+        Ok(())
     }
 
     #[test]
@@ -1001,9 +1006,10 @@ mod tests {
     }
 
     #[test]
-    fn intentionally_skipped_kinds_have_correct_multi_axis_flags() {
+    fn intentionally_skipped_kinds_have_correct_multi_axis_flags() -> TestResult {
         // `Program` (root wrapper): traversal-only, no items, no side-facts.
-        let prog = disposition_for("Program").expect("Program must have a disposition");
+        let prog =
+            disposition_for("Program").ok_or_else(|| "no disposition for Program".to_string())?;
         assert!(!prog.emits_items, "Program must NOT emit HIR items");
         assert!(!prog.may_emit_boundary, "Program must NOT emit boundaries");
         assert!(prog.traverses_children, "Program must traverse children (root wrapper)");
@@ -1012,7 +1018,8 @@ mod tests {
         assert_eq!(prog.legacy_category(), LegacyCategory::IntentionallySkipped);
 
         // `Variable`: no items emitted, but records ScopeGraph references.
-        let var = disposition_for("Variable").expect("Variable must have a disposition");
+        let var =
+            disposition_for("Variable").ok_or_else(|| "no disposition for Variable".to_string())?;
         assert!(!var.emits_items, "Variable must NOT emit standalone HIR items");
         assert!(!var.may_emit_boundary, "Variable must NOT emit boundaries");
         assert!(!var.traverses_children, "Variable has no children to traverse");
@@ -1028,7 +1035,7 @@ mod tests {
             "MissingBlock",
             "UnknownRest",
         ] {
-            let d = disposition_for(kind).unwrap_or_else(|| panic!("no disposition for {kind}"));
+            let d = disposition_for(kind).ok_or_else(|| format!("no disposition for {kind}"))?;
             assert!(!d.emits_items, "{kind} must NOT emit HIR items");
             assert!(!d.may_emit_boundary, "{kind} must NOT emit boundaries");
             assert!(!d.traverses_children, "{kind} must NOT traverse children");
@@ -1042,15 +1049,17 @@ mod tests {
         }
 
         // `Prototype`: records metadata but does not traverse or emit.
-        let proto = disposition_for("Prototype").expect("Prototype must have a disposition");
+        let proto = disposition_for("Prototype")
+            .ok_or_else(|| "no disposition for Prototype".to_string())?;
         assert!(!proto.emits_items, "Prototype must NOT emit HIR items");
         assert!(!proto.traverses_children, "Prototype does not traverse children");
         assert!(proto.records_side_facts, "Prototype must record declaration metadata");
         assert!(proto.is_intentional, "Prototype classification must be intentional");
+        Ok(())
     }
 
     #[test]
-    fn not_yet_modeled_kinds_have_correct_multi_axis_flags() {
+    fn not_yet_modeled_kinds_have_correct_multi_axis_flags() -> TestResult {
         // All `NotYetModeled` kinds must fall to `_ => visit_children` and must
         // therefore have `traverses_children=true` and `is_intentional=false`.
         for kind in [
@@ -1074,7 +1083,7 @@ mod tests {
             "VString",
             "AmperCall",
         ] {
-            let d = disposition_for(kind).unwrap_or_else(|| panic!("no disposition for {kind}"));
+            let d = disposition_for(kind).ok_or_else(|| format!("no disposition for {kind}"))?;
             assert!(!d.emits_items, "{kind} (NotYetModeled) must NOT emit HIR items");
             assert!(!d.may_emit_boundary, "{kind} (NotYetModeled) must NOT emit boundaries");
             assert!(
@@ -1092,6 +1101,7 @@ mod tests {
                 "{kind} must derive to NotYetModeled"
             );
         }
+        Ok(())
     }
 
     #[test]

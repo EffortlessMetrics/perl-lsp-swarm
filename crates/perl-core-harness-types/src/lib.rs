@@ -11,10 +11,14 @@ use std::fmt;
 pub const DISCOVERY_SCHEMA_VERSION: &str = "perl_core_harness.discovery.v1";
 pub const RUN_REPORT_SCHEMA_VERSION: &str = "perl_core_harness.report.v1";
 pub const COMPILE_BASELINE_SCHEMA_VERSION: &str = "perl_core_harness.compile_baseline.v1";
+pub const COMPILE_BASELINE_V2_SCHEMA_VERSION: &str = "perl_core_harness.compile_baseline.v2";
 pub const SMOKE_SCHEMA_VERSION: &str = "perl_core_harness.smoke.v1";
 pub const PREPARE_SCHEMA_VERSION: &str = "perl_core_harness.prepare.v1";
 pub const GAP_MAP_SCHEMA_VERSION: &str = "perl_core_harness.gap_map.v1";
 pub const RUNNER_RECORD_SCHEMA_VERSION: &str = "perl_core_harness.runner_record.v1";
+pub const COMPARISON_SERIES_SCHEMA_VERSION: &str = "perl_core_harness.comparison_series.v1";
+pub const SERIES_MANIFEST_SCHEMA_VERSION: &str = COMPARISON_SERIES_SCHEMA_VERSION;
+pub const SERIES_MANIFEST_NORMALIZATION_VERSION: &str = "path-normalization.v1";
 
 /// Upstream Perl test scheduler to query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
@@ -127,6 +131,80 @@ pub struct DiscoveryReport {
     pub runner: HarnessRunner,
     pub profile: HarnessProfile,
     pub tests: Vec<DiscoveredTest>,
+}
+
+/// Immutable identity and denominator for a staged Perl harness comparison series.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SeriesManifest {
+    pub schema_version: String,
+    pub series_id: String,
+    pub profile: HarnessProfile,
+    pub profile_roots: Vec<String>,
+    pub repository_commit: String,
+    pub perl_requested_ref: String,
+    pub perl_resolved_ref: String,
+    pub runner: HarnessRunner,
+    pub normalized_manifest: Vec<String>,
+    pub manifest_hash: String,
+    pub preparation_receipt_id: String,
+    pub preparation_receipt_digest: String,
+    pub harness_schema_version: String,
+    pub compiler_subject_identity: String,
+    pub invocation_identity: String,
+    pub capability_identity: String,
+    pub environment_identity: String,
+    pub normalization_version: String,
+    pub created_at: String,
+    pub replaces_series_id: Option<String>,
+    pub change_reason: Option<String>,
+}
+
+/// A reviewed transition proving that an accepted semantic boundary retired.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BoundaryRetirement {
+    pub path: String,
+    pub id: String,
+    pub source_start: usize,
+    pub source_end: usize,
+    pub transition_id: String,
+    pub replacement_issue: String,
+    pub evidence_bundle: String,
+}
+
+/// Versioned compile baseline bound to one immutable comparison series.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompileBaselineV2 {
+    pub schema_version: String,
+    pub report_schema_version: String,
+    pub series_id: String,
+    pub manifest_hash: String,
+    pub repository_commit: String,
+    pub perl_resolved_ref: String,
+    pub preparation_receipt_id: String,
+    pub compiler_subject_identity: String,
+    pub invocation_identity: String,
+    pub capability_identity: String,
+    pub environment_identity: String,
+    pub source_report_digest: String,
+    pub accepted_transition_id: Option<String>,
+    pub evidence_bundle: Option<String>,
+    pub mode: HarnessMode,
+    pub profile: HarnessProfile,
+    pub runner: HarnessRunner,
+    pub file_membership: Vec<String>,
+    pub files_total: usize,
+    pub files_passed: usize,
+    pub files_failed: usize,
+    pub tap_assertions_total: usize,
+    pub tap_assertions_passed: usize,
+    pub buckets: BTreeMap<String, usize>,
+    pub expected_failures: Vec<RunFailure>,
+    pub file_results: Vec<RunFileResult>,
+    pub semantic_boundaries: Vec<ObservedSemanticBoundary>,
+    pub boundary_retirements: Vec<BoundaryRetirement>,
 }
 
 /// One upstream test discovered by `--dumptests`.
@@ -330,6 +408,9 @@ pub struct BaselineViolation {
 #[serde(rename_all = "snake_case")]
 pub enum BaselineViolationKind {
     SchemaMismatch,
+    SeriesMismatch,
+    ManifestMismatch,
+    UnexpectedFile,
     ModeMismatch,
     ProfileMismatch,
     PreviouslyPassingFileFailed,
@@ -340,6 +421,12 @@ pub enum BaselineViolationKind {
     MissingExpectedFile,
     AssertionRegression,
     SemanticBoundary,
+    MissingBoundaryInventory,
+    BoundaryRemovedWithoutRetirement,
+    BoundaryRetirementReceiptMismatch,
+    BoundaryRetirementReferencesUnknownBoundary,
+    MeasuredSubjectMismatch,
+    PreparationIdentityMismatch,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -532,10 +619,14 @@ mod tests {
         assert_eq!(DISCOVERY_SCHEMA_VERSION, "perl_core_harness.discovery.v1");
         assert_eq!(RUN_REPORT_SCHEMA_VERSION, "perl_core_harness.report.v1");
         assert_eq!(COMPILE_BASELINE_SCHEMA_VERSION, "perl_core_harness.compile_baseline.v1");
+        assert_eq!(COMPILE_BASELINE_V2_SCHEMA_VERSION, "perl_core_harness.compile_baseline.v2");
+        assert_eq!(COMPARISON_SERIES_SCHEMA_VERSION, "perl_core_harness.comparison_series.v1");
         assert_eq!(SMOKE_SCHEMA_VERSION, "perl_core_harness.smoke.v1");
         assert_eq!(PREPARE_SCHEMA_VERSION, "perl_core_harness.prepare.v1");
         assert_eq!(GAP_MAP_SCHEMA_VERSION, "perl_core_harness.gap_map.v1");
         assert_eq!(RUNNER_RECORD_SCHEMA_VERSION, "perl_core_harness.runner_record.v1");
+        assert_eq!(SERIES_MANIFEST_SCHEMA_VERSION, "perl_core_harness.comparison_series.v1");
+        assert_eq!(SERIES_MANIFEST_NORMALIZATION_VERSION, "path-normalization.v1");
     }
 
     #[test]

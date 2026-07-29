@@ -9,7 +9,7 @@
 //! |------|----------|-------------|
 //! | `assignment-in-condition` | Warning | `=` in `if`/`while` condition (likely meant `==`) |
 //! | `numeric-undef` | Warning | `==`/`!=` with potentially undefined value |
-//! | `PL400` | Information | Bareword filehandle in `open` call |
+//! | `PL400` | Warning | Bareword filehandle in `open` call |
 
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::ast::{Node, NodeKind};
@@ -108,7 +108,7 @@ fn check_bareword_filehandle(
 
     diagnostics.push(Diagnostic {
         range: (node.location.start, node.location.end),
-        severity: DiagnosticSeverity::Information,
+        severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::BarewordFilehandle.as_str().to_string()),
         message: "Use lexical filehandles instead of bareword filehandles".to_string(),
         related_information: vec![RelatedInformation {

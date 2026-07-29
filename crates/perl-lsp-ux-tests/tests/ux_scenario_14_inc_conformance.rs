@@ -118,6 +118,32 @@ fn send_include_paths(harness: &UxHarness, paths: &[&str]) {
     std::thread::sleep(Duration::from_millis(200));
 }
 
+/// Configure the server to use `externalIncludePaths` for absolute paths
+/// via workspace/didChangeConfiguration. Absolute paths must go through
+/// `externalIncludePaths` (machine scope) rather than `includePaths`
+/// (resource scope), per the client include-path trust boundary.
+fn send_external_include_paths(harness: &UxHarness, paths: &[&str]) {
+    let paths_json: Vec<serde_json::Value> = paths.iter().map(|p| json!(*p)).collect();
+    harness
+        .client
+        .notify(
+            "workspace/didChangeConfiguration",
+            json!({
+                "settings": {
+                    "perl": {
+                        "workspace": {
+                            "externalIncludePaths": paths_json,
+                            "useSystemInc": false
+                        }
+                    }
+                }
+            }),
+        )
+        .expect("didChangeConfiguration should not fail");
+    // Allow the server to process the configuration change.
+    std::thread::sleep(Duration::from_millis(200));
+}
+
 /// Configure `usePerl5lib` and `useSystemInc` independently via
 /// workspace/didChangeConfiguration. Used to exercise the four-cell matrix
 /// of (usePerl5lib × useSystemInc) for PERL5LIB completion gating.
@@ -453,7 +479,10 @@ fn scenario_14_absolute_include_path() {
     .expect("Failed to create UX harness");
 
     let abs_root_string = abs_root.path().to_string_lossy().to_string();
-    send_include_paths(&harness, &[abs_root_string.as_str()]);
+    // Absolute paths must go through externalIncludePaths (machine scope),
+    // not includePaths (resource scope) per the client include-path trust
+    // boundary. See config/mod.rs validate_resource_include_path_entry.
+    send_external_include_paths(&harness, &[abs_root_string.as_str()]);
 
     harness.open_file("fixture.pl", ABSOLUTE_INCLUDE_SOURCE).expect("didOpen should succeed");
     std::thread::sleep(Duration::from_millis(500));

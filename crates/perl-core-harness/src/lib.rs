@@ -10,15 +10,18 @@
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness_types::{
-    BaselineComparison, BaselineViolation, BaselineViolationKind, COMPILE_BASELINE_SCHEMA_VERSION,
-    CompileBaseline, DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport,
+    BaselineComparison, BaselineViolation, BaselineViolationKind, BoundaryRetirement,
+    COMPILE_BASELINE_SCHEMA_VERSION, COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaseline,
+    CompileBaselineV2, DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport,
     GAP_MAP_SCHEMA_VERSION, GapMap, ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION,
     PrepareReceipt, PrepareStatus, RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport,
-    RunSummary, RunnerRecord, RunnerStatus, SMOKE_SCHEMA_VERSION, SemanticBoundaryConfidence,
-    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SmokeFailureKind, SmokeReport,
-    SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
+    RunSummary, RunnerRecord, RunnerStatus, SERIES_MANIFEST_NORMALIZATION_VERSION,
+    SERIES_MANIFEST_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION, SemanticBoundaryConfidence,
+    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SeriesManifest, SmokeFailureKind,
+    SmokeReport, SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
 };
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -191,6 +194,35 @@ pub struct BaselineConfig {
     pub report: Option<PathBuf>,
     pub baseline: Option<PathBuf>,
     pub accept: bool,
+    pub series: Option<PathBuf>,
+    pub previous_baseline: Option<PathBuf>,
+    pub boundary_retirements: Option<PathBuf>,
+    pub compiler_subject_identity: Option<String>,
+    pub invocation_identity: Option<String>,
+    pub capability_identity: Option<String>,
+    pub environment_identity: Option<String>,
+    pub accepted_transition_id: Option<String>,
+    pub evidence_bundle: Option<String>,
+}
+
+/// Configuration for generating or checking a comparison-series manifest.
+#[derive(Debug, Clone)]
+pub struct SeriesManifestConfig {
+    pub discovery: PathBuf,
+    pub output: Option<PathBuf>,
+    pub series_id: String,
+    pub profile: HarnessProfile,
+    pub perl_requested_ref: String,
+    pub perl_resolved_ref: String,
+    pub preparation_receipt_id: String,
+    pub preparation_receipt_digest: String,
+    pub compiler_subject_identity: String,
+    pub invocation_identity: String,
+    pub capability_identity: String,
+    pub environment_identity: String,
+    pub replaces_series_id: Option<String>,
+    pub change_reason: Option<String>,
+    pub check: bool,
 }
 
 /// Configuration for `perl-core-harness smoke`.
@@ -245,6 +277,371 @@ pub fn discover(config: DiscoverConfig) -> Result<()> {
     );
     tracing::info!("wrote {}", output_path.display());
     Ok(())
+}
+
+/// Generate or check the immutable identity manifest for a comparison series.
+pub fn series_manifest(config: SeriesManifestConfig) -> Result<()> {
+    let discovery_path = config.discovery.clone();
+    let output_path =
+        config.output.clone().unwrap_or_else(|| default_series_manifest_path(config.profile));
+    let discovery = read_discovery_report(&discovery_path)?;
+
+    if config.check {
+        let existing = read_series_manifest(&output_path)?;
+        validate_series_manifest(&existing)?;
+        let expected = build_series_manifest(&discovery, &config, existing.created_at.clone())?;
+        if existing != expected {
+            bail!(
+                "comparison-series manifest drift detected for {}: regenerate an explicit new series",
+                existing.series_id
+            );
+        }
+        tracing::info!("perl-core-harness: series manifest check passed");
+        return Ok(());
+    }
+
+    let manifest = build_series_manifest(
+        &discovery,
+        &config,
+        Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    )?;
+    validate_series_manifest(&manifest)?;
+    if output_path.is_file() {
+        let existing = read_series_manifest(&output_path)?;
+        validate_series_manifest(&existing)?;
+        if config.replaces_series_id.as_deref() != Some(existing.series_id.as_str())
+            || config.change_reason.as_deref().is_none_or(|reason| reason.trim().is_empty())
+        {
+            bail!(
+                "comparison-series manifest is immutable; provide --replaces-series-id matching {} and a non-empty --change-reason to replace it",
+                existing.series_id
+            );
+        }
+        if manifest.series_id == existing.series_id {
+            bail!(
+                "a replacement comparison series must declare a new --series-id, not reuse {}",
+                existing.series_id
+            );
+        }
+    }
+    write_series_manifest(&output_path, &manifest)?;
+    tracing::info!(
+        "perl-core-harness: wrote {} comparison series with {} files",
+        manifest.series_id,
+        manifest.normalized_manifest.len()
+    );
+    Ok(())
+}
+
+fn build_series_manifest(
+    discovery: &DiscoveryReport,
+    config: &SeriesManifestConfig,
+    created_at: String,
+) -> Result<SeriesManifest> {
+    if discovery.profile != config.profile {
+        bail!(
+            "discovery profile {} does not match requested series profile {}",
+            discovery.profile,
+            config.profile
+        );
+    }
+    if config.series_id.trim().is_empty()
+        || config.perl_requested_ref.trim().is_empty()
+        || config.perl_resolved_ref.trim().is_empty()
+        || config.preparation_receipt_id.trim().is_empty()
+        || config.preparation_receipt_digest.trim().is_empty()
+        || config.compiler_subject_identity.trim().is_empty()
+        || config.invocation_identity.trim().is_empty()
+        || config.capability_identity.trim().is_empty()
+        || config.environment_identity.trim().is_empty()
+    {
+        bail!("series identity fields must not be empty");
+    }
+    validate_replacement_metadata(
+        &config.series_id,
+        config.replaces_series_id.as_deref(),
+        config.change_reason.as_deref(),
+    )?;
+    if discovery.perl_ref != config.perl_resolved_ref {
+        bail!(
+            "resolved Perl ref {} does not match discovery receipt {}",
+            config.perl_resolved_ref,
+            discovery.perl_ref
+        );
+    }
+
+    let normalized_manifest = normalize_discovered_tests(discovery, config.profile)?;
+    let profile_roots: Vec<String> =
+        config.profile.roots().iter().map(|root| (*root).to_string()).collect();
+    let manifest_hash = series_manifest_hash(&SeriesManifestHashInput {
+        series_id: &config.series_id,
+        repository_commit: &discovery.commit,
+        perl_requested_ref: &config.perl_requested_ref,
+        perl_resolved_ref: &config.perl_resolved_ref,
+        runner: discovery.runner,
+        profile: discovery.profile,
+        roots: &profile_roots,
+        files: &normalized_manifest,
+        preparation_receipt_id: &config.preparation_receipt_id,
+        preparation_receipt_digest: &config.preparation_receipt_digest,
+        harness_schema_version: &discovery.schema_version,
+        compiler_subject_identity: &config.compiler_subject_identity,
+        invocation_identity: &config.invocation_identity,
+        capability_identity: &config.capability_identity,
+        environment_identity: &config.environment_identity,
+        replaces_series_id: config.replaces_series_id.as_deref(),
+        change_reason: config.change_reason.as_deref(),
+    });
+
+    Ok(SeriesManifest {
+        schema_version: SERIES_MANIFEST_SCHEMA_VERSION.to_string(),
+        series_id: config.series_id.clone(),
+        profile: discovery.profile,
+        profile_roots,
+        repository_commit: discovery.commit.clone(),
+        perl_requested_ref: config.perl_requested_ref.clone(),
+        perl_resolved_ref: config.perl_resolved_ref.clone(),
+        runner: discovery.runner,
+        normalized_manifest,
+        manifest_hash,
+        preparation_receipt_id: config.preparation_receipt_id.clone(),
+        preparation_receipt_digest: config.preparation_receipt_digest.clone(),
+        harness_schema_version: discovery.schema_version.clone(),
+        compiler_subject_identity: config.compiler_subject_identity.clone(),
+        invocation_identity: config.invocation_identity.clone(),
+        capability_identity: config.capability_identity.clone(),
+        environment_identity: config.environment_identity.clone(),
+        normalization_version: SERIES_MANIFEST_NORMALIZATION_VERSION.to_string(),
+        created_at,
+        replaces_series_id: config.replaces_series_id.clone(),
+        change_reason: config.change_reason.clone(),
+    })
+}
+
+fn normalize_discovered_tests(
+    discovery: &DiscoveryReport,
+    profile: HarnessProfile,
+) -> Result<Vec<String>> {
+    let mut files = Vec::with_capacity(discovery.tests.len());
+    let allowed_roots = profile.roots().iter().copied().collect::<BTreeSet<_>>();
+    for test in &discovery.tests {
+        let normalized = normalize_test_path(&test.path).ok_or_else(|| {
+            color_eyre::eyre::eyre!("invalid discovered test path: {}", test.path)
+        })?;
+        if normalized.contains("..") || normalized.starts_with('/') {
+            bail!("discovered test path escapes the profile roots: {normalized}");
+        }
+        let Some((root, _)) = normalized.split_once('/') else {
+            bail!("discovered test must include a profile root: {normalized}");
+        };
+        if !allowed_roots.contains(root) {
+            bail!("discovered test {normalized} is outside core profile roots");
+        }
+        if test.root != root {
+            bail!("discovered test {} has mismatched root {}", test.path, test.root);
+        }
+        files.push(normalized);
+    }
+    files.sort();
+    for pair in files.windows(2) {
+        if pair[0] == pair[1] {
+            bail!("duplicate discovered test path: {}", pair[0]);
+        }
+    }
+    if files.is_empty() {
+        bail!("comparison series cannot have an empty file list");
+    }
+    Ok(files)
+}
+
+fn validate_series_manifest(manifest: &SeriesManifest) -> Result<()> {
+    if manifest.schema_version != SERIES_MANIFEST_SCHEMA_VERSION {
+        bail!("unsupported series manifest schema: {}", manifest.schema_version);
+    }
+    if manifest.series_id.trim().is_empty()
+        || manifest.repository_commit.trim().is_empty()
+        || manifest.perl_requested_ref.trim().is_empty()
+        || manifest.perl_resolved_ref.trim().is_empty()
+        || manifest.preparation_receipt_id.trim().is_empty()
+        || manifest.preparation_receipt_digest.trim().is_empty()
+        || manifest.compiler_subject_identity.trim().is_empty()
+        || manifest.invocation_identity.trim().is_empty()
+        || manifest.capability_identity.trim().is_empty()
+        || manifest.environment_identity.trim().is_empty()
+        || manifest.created_at.trim().is_empty()
+    {
+        bail!("comparison-series identity fields must not be empty");
+    }
+    validate_replacement_metadata(
+        &manifest.series_id,
+        manifest.replaces_series_id.as_deref(),
+        manifest.change_reason.as_deref(),
+    )?;
+    let expected_roots =
+        manifest.profile.roots().iter().map(|root| (*root).to_string()).collect::<Vec<_>>();
+    if manifest.profile_roots != expected_roots {
+        bail!("comparison-series roots do not match the declared profile");
+    }
+    if manifest.normalized_manifest.is_empty() {
+        bail!("comparison series cannot have an empty file list");
+    }
+    if manifest.normalization_version != SERIES_MANIFEST_NORMALIZATION_VERSION {
+        bail!("unsupported series manifest normalization: {}", manifest.normalization_version);
+    }
+    for pair in manifest.normalized_manifest.windows(2) {
+        if pair[0] >= pair[1] {
+            bail!("series manifest files must be strictly sorted and unique");
+        }
+    }
+    let tests = manifest
+        .normalized_manifest
+        .iter()
+        .map(|path| {
+            let root = path.split('/').next().ok_or_else(|| {
+                color_eyre::eyre::eyre!("series manifest path has no root: {path}")
+            })?;
+            Ok(DiscoveredTest { path: path.clone(), root: root.to_string() })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let discovery = DiscoveryReport {
+        schema_version: DISCOVERY_SCHEMA_VERSION.to_string(),
+        commit: manifest.repository_commit.clone(),
+        timestamp: manifest.created_at.clone(),
+        perl_ref: manifest.perl_resolved_ref.clone(),
+        prepared_tree: manifest.preparation_receipt_id.clone(),
+        host_perl: "manifest".to_string(),
+        runner: manifest.runner,
+        profile: manifest.profile,
+        tests,
+    };
+    if discovery.schema_version != manifest.harness_schema_version {
+        bail!("comparison-series harness schema does not match discovery schema");
+    }
+    let files = normalize_discovered_tests(&discovery, manifest.profile)?;
+    let expected_hash = series_manifest_hash(&SeriesManifestHashInput {
+        series_id: &manifest.series_id,
+        repository_commit: &manifest.repository_commit,
+        perl_requested_ref: &manifest.perl_requested_ref,
+        perl_resolved_ref: &manifest.perl_resolved_ref,
+        runner: manifest.runner,
+        profile: manifest.profile,
+        roots: &manifest.profile_roots,
+        files: &files,
+        preparation_receipt_id: &manifest.preparation_receipt_id,
+        preparation_receipt_digest: &manifest.preparation_receipt_digest,
+        harness_schema_version: &manifest.harness_schema_version,
+        compiler_subject_identity: &manifest.compiler_subject_identity,
+        invocation_identity: &manifest.invocation_identity,
+        capability_identity: &manifest.capability_identity,
+        environment_identity: &manifest.environment_identity,
+        replaces_series_id: manifest.replaces_series_id.as_deref(),
+        change_reason: manifest.change_reason.as_deref(),
+    });
+    if manifest.manifest_hash != expected_hash {
+        bail!("series manifest hash does not match its identity and file list");
+    }
+    Ok(())
+}
+
+fn validate_replacement_metadata(
+    series_id: &str,
+    replaces_series_id: Option<&str>,
+    change_reason: Option<&str>,
+) -> Result<()> {
+    if let Some(replaced) = replaces_series_id {
+        if replaced.trim().is_empty() || change_reason.is_none_or(|reason| reason.trim().is_empty())
+        {
+            bail!("replacement comparison series require a non-empty --change-reason");
+        }
+        if replaced == series_id {
+            bail!("a replacement comparison series must declare a new --series-id");
+        }
+    }
+    Ok(())
+}
+
+struct SeriesManifestHashInput<'a> {
+    series_id: &'a str,
+    repository_commit: &'a str,
+    perl_requested_ref: &'a str,
+    perl_resolved_ref: &'a str,
+    runner: HarnessRunner,
+    profile: HarnessProfile,
+    roots: &'a [String],
+    files: &'a [String],
+    preparation_receipt_id: &'a str,
+    preparation_receipt_digest: &'a str,
+    harness_schema_version: &'a str,
+    compiler_subject_identity: &'a str,
+    invocation_identity: &'a str,
+    capability_identity: &'a str,
+    environment_identity: &'a str,
+    replaces_series_id: Option<&'a str>,
+    change_reason: Option<&'a str>,
+}
+
+fn series_manifest_hash(input: &SeriesManifestHashInput<'_>) -> String {
+    let mut hasher = Sha256::new();
+    for value in [
+        SERIES_MANIFEST_SCHEMA_VERSION,
+        SERIES_MANIFEST_NORMALIZATION_VERSION,
+        input.series_id,
+        input.repository_commit,
+        input.perl_requested_ref,
+        input.perl_resolved_ref,
+        input.runner.as_str(),
+        input.profile.as_str(),
+        input.preparation_receipt_id,
+        input.preparation_receipt_digest,
+        input.harness_schema_version,
+        input.compiler_subject_identity,
+        input.invocation_identity,
+        input.capability_identity,
+        input.environment_identity,
+    ] {
+        hash_manifest_value(&mut hasher, value);
+    }
+    hash_manifest_value(&mut hasher, "profile-roots");
+    hash_manifest_length(&mut hasher, input.roots.len());
+    for value in input.roots {
+        hash_manifest_value(&mut hasher, value);
+    }
+    hash_manifest_value(&mut hasher, "normalized-files");
+    hash_manifest_length(&mut hasher, input.files.len());
+    for value in input.files {
+        hash_manifest_value(&mut hasher, value);
+    }
+    hash_manifest_optional_value(&mut hasher, input.replaces_series_id);
+    hash_manifest_optional_value(&mut hasher, input.change_reason);
+    hex_lower(&hasher.finalize())
+}
+
+fn hash_manifest_value(hasher: &mut Sha256, value: &str) {
+    hasher.update((value.len() as u64).to_le_bytes());
+    hasher.update(value.as_bytes());
+}
+
+fn hash_manifest_length(hasher: &mut Sha256, length: usize) {
+    hasher.update((length as u64).to_le_bytes());
+}
+
+fn hash_manifest_optional_value(hasher: &mut Sha256, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            hash_manifest_value(hasher, "some");
+            hash_manifest_value(hasher, value);
+        }
+        None => hash_manifest_value(hasher, "none"),
+    }
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
+        output.push(char::from_digit(u32::from(byte & 0x0f), 16).unwrap_or('0'));
+    }
+    output
 }
 
 /// Prepare an upstream Perl source tree for advisory smoke runs.
@@ -399,11 +796,78 @@ pub fn report() -> Result<()> {
 
 /// Check or update a checked-in Perl core harness baseline.
 pub fn baseline(config: BaselineConfig) -> Result<()> {
-    let report_path =
-        config.report.unwrap_or_else(|| default_run_report_path(config.mode, config.profile));
-    let baseline_path =
-        config.baseline.unwrap_or_else(|| default_baseline_path(config.mode, config.profile));
+    let report_path = config
+        .report
+        .clone()
+        .unwrap_or_else(|| default_run_report_path(config.mode, config.profile));
+    let baseline_path = config
+        .baseline
+        .clone()
+        .unwrap_or_else(|| default_baseline_path(config.mode, config.profile));
     let report = read_run_report(&report_path)?;
+    reject_v2_options_without_series(&config)?;
+
+    if let Some(series_path) = config.series.as_ref() {
+        let series = read_series_manifest(series_path)?;
+        validate_series_manifest(&series)?;
+        if config.accept {
+            let previous = if let Some(path) = config.previous_baseline.as_ref() {
+                Some(read_compile_baseline_v2(path)?)
+            } else if baseline_path.is_file() {
+                Some(read_compile_baseline_v2(&baseline_path)?)
+            } else {
+                None
+            };
+            let retirements = config
+                .boundary_retirements
+                .as_ref()
+                .map(|path| read_boundary_retirements(path))
+                .transpose()?
+                .unwrap_or_default();
+            let accepted = baseline_v2_from_report(
+                &report,
+                &series,
+                &config,
+                previous.as_ref(),
+                &retirements,
+            )?;
+            write_compile_baseline_v2(&baseline_path, &accepted)?;
+            tracing::info!(
+                "perl-core-harness: accepted {} {} v2 baseline",
+                accepted.mode,
+                accepted.profile
+            );
+            tracing::info!("wrote {}", baseline_path.display());
+            return Ok(());
+        }
+
+        let baseline = read_compile_baseline_v2(&baseline_path)?;
+        let identities = required_v2_identities(&config)?;
+        validate_v2_identities_against_series(&identities, &series)?;
+        let retirements = config
+            .boundary_retirements
+            .as_ref()
+            .map(|path| read_boundary_retirements(path))
+            .transpose()?
+            .unwrap_or_default();
+        let comparison = compare_baseline_v2_with_identities(
+            &baseline,
+            &report,
+            &series,
+            Some(&identities),
+            config.accepted_transition_id.as_deref(),
+            &retirements,
+        );
+        if !comparison.is_clean() {
+            bail_baseline_comparison(&comparison)?;
+        }
+        tracing::info!(
+            "perl-core-harness: v2 baseline check passed for {} {}",
+            report.mode,
+            report.profile
+        );
+        return Ok(());
+    }
 
     if config.accept {
         let baseline = baseline_from_report(&report)?;
@@ -964,6 +1428,28 @@ fn read_discovery_report(path: &Path) -> Result<DiscoveryReport> {
         .with_context(|| format!("decoding discovery report {}", path.display()))
 }
 
+fn default_series_manifest_path(profile: HarnessProfile) -> PathBuf {
+    let root = project_root().unwrap_or_else(|_| PathBuf::from("."));
+    root.join(".ci").join("perl-core-harness").join(format!("{profile}-series-manifest.json"))
+}
+
+fn write_series_manifest(path: &Path, manifest: &SeriesManifest) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating series manifest directory {}", parent.display()))?;
+    }
+    let json = serde_json::to_string_pretty(manifest).context("serializing series manifest")?;
+    fs::write(path, format!("{json}\n"))
+        .with_context(|| format!("writing series manifest {}", path.display()))
+}
+
+fn read_series_manifest(path: &Path) -> Result<SeriesManifest> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("reading series manifest {}", path.display()))?;
+    serde_json::from_str(&raw)
+        .with_context(|| format!("decoding series manifest {}", path.display()))
+}
+
 fn write_run_report(path: &Path, report: &RunReport) -> Result<()> {
     if let Some(parent) = path.parent() {
         let context = format!("creating output directory {}", parent.display());
@@ -1057,6 +1543,515 @@ fn baseline_from_report(report: &RunReport) -> Result<CompileBaseline> {
         bail!("cannot accept baseline with invalid receipt shape:\n{details}");
     }
     Ok(baseline)
+}
+
+fn baseline_v2_from_report(
+    report: &RunReport,
+    series: &SeriesManifest,
+    config: &BaselineConfig,
+    previous: Option<&CompileBaselineV2>,
+    retirements: &[BoundaryRetirement],
+) -> Result<CompileBaselineV2> {
+    let identities = required_v2_identities(config)?;
+    validate_report_against_series(report, series, config.mode)?;
+    validate_v2_identities_against_series(&identities, series)?;
+    ensure_valid_report_shape(report)?;
+    let file_membership =
+        report.file_results.iter().map(|result| result.path.clone()).collect::<BTreeSet<_>>();
+    let expected_membership = series.normalized_manifest.iter().cloned().collect::<BTreeSet<_>>();
+    if file_membership != expected_membership {
+        bail!(
+            "report file membership does not exactly match comparison series {}",
+            series.series_id
+        );
+    }
+    if let Some(previous) = previous {
+        if previous.series_id != series.series_id || previous.manifest_hash != series.manifest_hash
+        {
+            bail!("previous baseline does not belong to the current comparison series");
+        }
+        let transition_id = config.accepted_transition_id.as_deref().ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "boundary or baseline transitions require --accepted-transition-id"
+            )
+        })?;
+        let transition_violations = compare_boundary_transition(
+            previous,
+            &report.semantic_boundaries,
+            retirements,
+            transition_id,
+        );
+        if !transition_violations.is_empty() {
+            bail_baseline_comparison(&BaselineComparison { violations: transition_violations })?;
+        }
+    } else if !retirements.is_empty() {
+        bail!("boundary retirements require a previous v2 baseline");
+    }
+
+    let mut file_results = report.file_results.clone();
+    let mut expected_failures = report.failures.clone();
+    let mut semantic_boundaries = report.semantic_boundaries.clone();
+    file_results.sort_by(|left, right| left.path.cmp(&right.path));
+    expected_failures.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.bucket.cmp(&right.bucket))
+            .then_with(|| left.phase.cmp(&right.phase))
+    });
+    semantic_boundaries.sort_by_key(semantic_boundary_key);
+
+    Ok(CompileBaselineV2 {
+        schema_version: COMPILE_BASELINE_V2_SCHEMA_VERSION.to_string(),
+        report_schema_version: report.schema_version.clone(),
+        series_id: series.series_id.clone(),
+        manifest_hash: series.manifest_hash.clone(),
+        repository_commit: series.repository_commit.clone(),
+        perl_resolved_ref: series.perl_resolved_ref.clone(),
+        preparation_receipt_id: series.preparation_receipt_id.clone(),
+        compiler_subject_identity: identities.compiler_subject_identity,
+        invocation_identity: identities.invocation_identity,
+        capability_identity: identities.capability_identity,
+        environment_identity: identities.environment_identity,
+        source_report_digest: report_digest(report)?,
+        accepted_transition_id: config.accepted_transition_id.clone(),
+        evidence_bundle: config.evidence_bundle.clone(),
+        mode: report.mode,
+        profile: report.profile,
+        runner: report.runner,
+        files_total: file_results.len(),
+        file_membership: file_results.iter().map(|result| result.path.clone()).collect(),
+        files_passed: report.summary.files_passed,
+        files_failed: report.summary.files_failed,
+        tap_assertions_total: report.summary.tap_assertions_total,
+        tap_assertions_passed: report.summary.tap_assertions_passed,
+        buckets: report.buckets.clone(),
+        expected_failures,
+        file_results,
+        semantic_boundaries,
+        boundary_retirements: retirements.to_vec(),
+    })
+}
+
+struct V2Identities {
+    compiler_subject_identity: String,
+    invocation_identity: String,
+    capability_identity: String,
+    environment_identity: String,
+}
+
+fn required_v2_identities(config: &BaselineConfig) -> Result<V2Identities> {
+    Ok(V2Identities {
+        compiler_subject_identity: required_identity(
+            config.compiler_subject_identity.as_deref(),
+            "compiler subject",
+        )?,
+        invocation_identity: required_identity(
+            config.invocation_identity.as_deref(),
+            "invocation",
+        )?,
+        capability_identity: required_identity(
+            config.capability_identity.as_deref(),
+            "capability",
+        )?,
+        environment_identity: required_identity(
+            config.environment_identity.as_deref(),
+            "environment",
+        )?,
+    })
+}
+
+fn required_identity(value: Option<&str>, name: &str) -> Result<String> {
+    let value = value.filter(|value| !value.trim().is_empty()).ok_or_else(|| {
+        color_eyre::eyre::eyre!("baseline v2 requires a non-empty {name} identity")
+    })?;
+    Ok(value.to_string())
+}
+
+fn reject_v2_options_without_series(config: &BaselineConfig) -> Result<()> {
+    let has_v2_option = config.previous_baseline.is_some()
+        || config.boundary_retirements.is_some()
+        || config.compiler_subject_identity.is_some()
+        || config.invocation_identity.is_some()
+        || config.capability_identity.is_some()
+        || config.environment_identity.is_some()
+        || config.accepted_transition_id.is_some()
+        || config.evidence_bundle.is_some();
+    if config.series.is_none() && has_v2_option {
+        bail!("baseline v2 options require a comparison-series manifest");
+    }
+    if config.accepted_transition_id.as_deref().is_some_and(|id| id.trim().is_empty()) {
+        bail!("baseline v2 transition identity must not be empty");
+    }
+    if config.boundary_retirements.is_some() && config.accepted_transition_id.is_none() {
+        bail!("boundary retirement receipts require --accepted-transition-id");
+    }
+    Ok(())
+}
+
+fn validate_v2_identities_against_series(
+    identities: &V2Identities,
+    series: &SeriesManifest,
+) -> Result<()> {
+    if identities.compiler_subject_identity != series.compiler_subject_identity
+        || identities.invocation_identity != series.invocation_identity
+        || identities.capability_identity != series.capability_identity
+        || identities.environment_identity != series.environment_identity
+    {
+        bail!("baseline v2 identity inputs do not match the comparison series");
+    }
+    Ok(())
+}
+
+fn ensure_valid_report_shape(report: &RunReport) -> Result<()> {
+    let mut validation = validate_report_bucket_shape(report);
+    validation.extend(validate_semantic_boundary_shape(report));
+    if validation.is_empty() {
+        return Ok(());
+    }
+    let details = validation
+        .iter()
+        .map(|violation| {
+            let path = violation.path.as_deref().unwrap_or("-");
+            format!("{:?} {path}: {}", violation.kind, violation.message)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    bail!("cannot accept baseline with invalid receipt shape:\n{details}");
+}
+
+fn validate_report_against_series(
+    report: &RunReport,
+    series: &SeriesManifest,
+    mode: HarnessMode,
+) -> Result<()> {
+    if report.commit != series.repository_commit {
+        bail!("measured report commit does not match comparison series");
+    }
+    if report.perl_ref != series.perl_resolved_ref {
+        bail!("measured report Perl ref does not match comparison series");
+    }
+    if report.runner != series.runner {
+        bail!("measured report runner does not match comparison series");
+    }
+    if report.profile != series.profile {
+        bail!("measured report profile does not match comparison series");
+    }
+    if report.mode != mode {
+        bail!("measured report mode does not match requested baseline mode");
+    }
+    if report.schema_version != RUN_REPORT_SCHEMA_VERSION {
+        bail!("measured report schema is not the supported run-report schema");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn compare_baseline_v2(
+    baseline: &CompileBaselineV2,
+    report: &RunReport,
+    series: &SeriesManifest,
+) -> BaselineComparison {
+    compare_baseline_v2_with_identities(baseline, report, series, None, None, &[])
+}
+
+fn compare_baseline_v2_with_identities(
+    baseline: &CompileBaselineV2,
+    report: &RunReport,
+    series: &SeriesManifest,
+    identities: Option<&V2Identities>,
+    transition_id: Option<&str>,
+    retirements: &[BoundaryRetirement],
+) -> BaselineComparison {
+    let mut violations = Vec::new();
+    if baseline.schema_version != COMPILE_BASELINE_V2_SCHEMA_VERSION {
+        violations.push(violation(
+            BaselineViolationKind::SchemaMismatch,
+            None,
+            format!(
+                "baseline schema {} does not match {}",
+                baseline.schema_version, COMPILE_BASELINE_V2_SCHEMA_VERSION
+            ),
+        ));
+    }
+    if baseline.series_id != series.series_id || baseline.manifest_hash != series.manifest_hash {
+        violations.push(violation(
+            BaselineViolationKind::SeriesMismatch,
+            None,
+            "baseline does not reference the supplied comparison series",
+        ));
+    }
+    if baseline.repository_commit != series.repository_commit
+        || baseline.perl_resolved_ref != series.perl_resolved_ref
+        || baseline.preparation_receipt_id != series.preparation_receipt_id
+    {
+        violations.push(violation(
+            BaselineViolationKind::PreparationIdentityMismatch,
+            None,
+            "baseline preparation or source identity differs from the comparison series",
+        ));
+    }
+    if baseline.report_schema_version != report.schema_version
+        || baseline.mode != report.mode
+        || baseline.profile != report.profile
+        || baseline.runner != report.runner
+        || baseline.repository_commit != report.commit
+        || baseline.perl_resolved_ref != report.perl_ref
+    {
+        violations.push(violation(
+            BaselineViolationKind::MeasuredSubjectMismatch,
+            None,
+            "current report is not the measured subject declared by the v2 baseline",
+        ));
+    }
+    if report_digest(report).map(|digest| digest != baseline.source_report_digest).unwrap_or(true) {
+        violations.push(violation(
+            BaselineViolationKind::MeasuredSubjectMismatch,
+            None,
+            "current report digest differs from the v2 baseline subject",
+        ));
+    }
+    if let Some(identities) = identities
+        && (baseline.compiler_subject_identity != identities.compiler_subject_identity
+            || baseline.invocation_identity != identities.invocation_identity
+            || baseline.capability_identity != identities.capability_identity
+            || baseline.environment_identity != identities.environment_identity)
+    {
+        violations.push(violation(
+            BaselineViolationKind::MeasuredSubjectMismatch,
+            None,
+            "current identity inputs differ from the v2 baseline measured subject",
+        ));
+    }
+    let current_membership =
+        report.file_results.iter().map(|result| result.path.as_str()).collect::<BTreeSet<_>>();
+    let series_membership =
+        series.normalized_manifest.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    for path in series_membership.difference(&current_membership) {
+        violations.push(violation(
+            BaselineViolationKind::MissingExpectedFile,
+            Some((*path).to_string()),
+            "comparison series file is missing from the current report",
+        ));
+    }
+    for path in current_membership.difference(&series_membership) {
+        violations.push(violation(
+            BaselineViolationKind::UnexpectedFile,
+            Some((*path).to_string()),
+            "current report contains a file outside the immutable comparison series",
+        ));
+    }
+    if baseline.file_membership != series.normalized_manifest
+        || baseline.files_total != series.normalized_manifest.len()
+    {
+        violations.push(violation(
+            BaselineViolationKind::ManifestMismatch,
+            None,
+            "baseline file membership does not equal the comparison-series manifest",
+        ));
+    }
+    let legacy = CompileBaseline {
+        schema_version: COMPILE_BASELINE_SCHEMA_VERSION.to_string(),
+        report_schema_version: baseline.report_schema_version.clone(),
+        mode: baseline.mode,
+        profile: baseline.profile,
+        files_total: baseline.files_total,
+        files_passed: baseline.files_passed,
+        files_failed: baseline.files_failed,
+        tap_assertions_total: baseline.tap_assertions_total,
+        tap_assertions_passed: baseline.tap_assertions_passed,
+        buckets: baseline.buckets.clone(),
+        expected_failures: baseline.expected_failures.clone(),
+        file_results: baseline.file_results.clone(),
+        semantic_boundaries: Some(baseline.semantic_boundaries.clone()),
+    };
+    violations.extend(
+        compare_baseline(&legacy, report)
+            .violations
+            .into_iter()
+            .filter(|violation| violation.kind != BaselineViolationKind::SemanticBoundary),
+    );
+    violations.extend(compare_boundary_transition(
+        baseline,
+        &report.semantic_boundaries,
+        retirements,
+        transition_id.unwrap_or(""),
+    ));
+    BaselineComparison { violations }
+}
+
+fn compare_boundary_transition(
+    previous: &CompileBaselineV2,
+    current: &[ObservedSemanticBoundary],
+    retirements: &[BoundaryRetirement],
+    transition_id: &str,
+) -> Vec<BaselineViolation> {
+    let mut sorted_current = current.to_vec();
+    sorted_current.sort_by_key(semantic_boundary_key);
+    let previous_by_key = previous
+        .semantic_boundaries
+        .iter()
+        .map(|boundary| (semantic_boundary_key(boundary), boundary))
+        .collect::<BTreeMap<_, _>>();
+    let current_by_key = sorted_current
+        .iter()
+        .map(|boundary| (semantic_boundary_key(boundary), boundary))
+        .collect::<BTreeMap<_, _>>();
+    let retirement_keys = retirements
+        .iter()
+        .map(|retirement| SemanticBoundaryKey {
+            path: retirement.path.clone(),
+            id: retirement.id.clone(),
+            source_start: retirement.source_start,
+            source_end: retirement.source_end,
+        })
+        .collect::<BTreeSet<_>>();
+    let mut violations = Vec::new();
+    for key in previous_by_key.keys() {
+        if !current_by_key.contains_key(key) && !retirement_keys.contains(key) {
+            violations.push(violation(
+                BaselineViolationKind::BoundaryRemovedWithoutRetirement,
+                Some(key.path.clone()),
+                "accepted semantic boundary disappeared without a retirement receipt",
+            ));
+        }
+    }
+    if previous.semantic_boundaries != sorted_current && transition_id.trim().is_empty() {
+        violations.push(violation(
+            BaselineViolationKind::SemanticBoundary,
+            None,
+            "semantic-boundary changes require a reviewed transition identity",
+        ));
+    }
+    for retirement in retirements {
+        if retirement.transition_id != transition_id
+            || retirement.replacement_issue.trim().is_empty()
+            || retirement.evidence_bundle.trim().is_empty()
+        {
+            violations.push(violation(
+                BaselineViolationKind::BoundaryRetirementReceiptMismatch,
+                Some(retirement.path.clone()),
+                "boundary retirement receipt is incomplete or uses the wrong transition",
+            ));
+        }
+        if !previous_by_key.contains_key(&SemanticBoundaryKey {
+            path: retirement.path.clone(),
+            id: retirement.id.clone(),
+            source_start: retirement.source_start,
+            source_end: retirement.source_end,
+        }) {
+            violations.push(violation(
+                BaselineViolationKind::BoundaryRetirementReferencesUnknownBoundary,
+                Some(retirement.path.clone()),
+                "retirement receipt references a boundary absent from the previous baseline",
+            ));
+        }
+    }
+    violations
+}
+
+#[derive(serde::Serialize)]
+struct StableRunReportDigest<'a> {
+    schema_version: &'a str,
+    commit: &'a str,
+    perl_ref: &'a str,
+    runner: HarnessRunner,
+    mode: HarnessMode,
+    profile: HarnessProfile,
+    harness_status: Option<i32>,
+    summary: &'a RunSummary,
+    buckets: &'a BTreeMap<String, usize>,
+    file_results: &'a [RunFileResult],
+    failures: &'a [RunFailure],
+    semantic_boundaries: &'a [ObservedSemanticBoundary],
+}
+
+fn report_digest(report: &RunReport) -> Result<String> {
+    let mut stable = report.clone();
+    stable.file_results.sort_by(|left, right| left.path.cmp(&right.path));
+    stable.failures.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.bucket.cmp(&right.bucket))
+            .then_with(|| left.phase.cmp(&right.phase))
+    });
+    stable.semantic_boundaries.sort_by_key(semantic_boundary_key);
+    // Temporary paths, host Perl, and wall-clock timestamps are deliberately absent.
+    // Keep this field-by-field representation explicit so receipt identity does not
+    // depend on the full RunReport envelope or its disposable execution metadata.
+    let digest_input = StableRunReportDigest {
+        schema_version: &stable.schema_version,
+        commit: &stable.commit,
+        perl_ref: &stable.perl_ref,
+        runner: stable.runner,
+        mode: stable.mode,
+        profile: stable.profile,
+        harness_status: stable.harness_status,
+        summary: &stable.summary,
+        buckets: &stable.buckets,
+        file_results: &stable.file_results,
+        failures: &stable.failures,
+        semantic_boundaries: &stable.semantic_boundaries,
+    };
+    let bytes = serde_json::to_vec(&digest_input)
+        .context("serializing stable field-by-field report digest")?;
+    Ok(hex_lower(&Sha256::digest(bytes)))
+}
+
+fn read_compile_baseline_v2(path: &Path) -> Result<CompileBaselineV2> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("reading v2 baseline {}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&raw)
+        .with_context(|| format!("decoding baseline envelope {}", path.display()))?;
+    let schema =
+        value.get("schema_version").and_then(serde_json::Value::as_str).unwrap_or("missing");
+    if schema == COMPILE_BASELINE_SCHEMA_VERSION {
+        bail!("historical compile baseline v1 is readable but non-authoritative; migrate it to v2");
+    }
+    if schema != COMPILE_BASELINE_V2_SCHEMA_VERSION {
+        bail!("unsupported compile baseline schema: {schema}");
+    }
+    if !value.as_object().is_some_and(|object| object.contains_key("semantic_boundaries")) {
+        bail!(
+            "{:?}: migrated v2 baseline must declare semantic_boundaries, including an empty list",
+            BaselineViolationKind::MissingBoundaryInventory
+        );
+    }
+    serde_json::from_value(value)
+        .with_context(|| format!("decoding v2 baseline {}", path.display()))
+}
+
+fn write_compile_baseline_v2(path: &Path, baseline: &CompileBaselineV2) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating baseline directory {}", parent.display()))?;
+    }
+    let json = serde_json::to_string_pretty(baseline).context("serializing compile baseline v2")?;
+    fs::write(path, format!("{json}\n"))
+        .with_context(|| format!("writing v2 baseline {}", path.display()))
+}
+
+fn read_boundary_retirements(path: &Path) -> Result<Vec<BoundaryRetirement>> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("reading boundary retirements {}", path.display()))?;
+    serde_json::from_str(&raw)
+        .with_context(|| format!("decoding boundary retirements {}", path.display()))
+}
+
+fn bail_baseline_comparison(comparison: &BaselineComparison) -> Result<()> {
+    let details = comparison
+        .violations
+        .iter()
+        .map(|violation| {
+            let path = violation.path.as_deref().unwrap_or("-");
+            format!("{:?} {path}: {}", violation.kind, violation.message)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    bail!(
+        "perl-core-harness baseline transition/check failed with {} violation(s):\n{}",
+        comparison.violations.len(),
+        details
+    )
 }
 
 fn sort_baseline(baseline: &mut CompileBaseline) {
@@ -2729,6 +3724,495 @@ mod tests {
     }
 
     #[test]
+    fn comparison_series_normalizes_and_hashes_exact_membership() -> TestResult {
+        let mut discovery = sample_discovery_report();
+        discovery.tests = vec![
+            DiscoveredTest { path: "./base/ok.t".into(), root: "base".into() },
+            DiscoveredTest { path: "base\\lex.t".into(), root: "base".into() },
+        ];
+        let config = sample_series_config();
+        let manifest = build_series_manifest(&discovery, &config, "2026-07-02T00:00:00Z".into())?;
+
+        if manifest.normalized_manifest != vec!["base/lex.t", "base/ok.t"] {
+            bail!("comparison series did not normalize and sort its file membership");
+        }
+        if manifest.manifest_hash.is_empty() {
+            bail!("comparison series did not produce a manifest hash");
+        }
+        validate_series_manifest(&manifest)?;
+        Ok(())
+    }
+
+    #[test]
+    fn comparison_series_rejects_duplicate_normalized_membership() -> TestResult {
+        let mut discovery = sample_discovery_report();
+        discovery.tests.push(DiscoveredTest { path: "./base/ok.t".into(), root: "base".into() });
+
+        let Err(error) = build_series_manifest(&discovery, &sample_series_config(), "now".into())
+        else {
+            bail!("duplicate normalized membership should fail closed");
+        };
+        if !error.to_string().contains("duplicate discovered test path") {
+            bail!("unexpected duplicate error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn comparison_series_write_and_check_roundtrip() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let discovery_path = temp.path().join("discovery.json");
+        let output_path = temp.path().join("series.json");
+        write_discovery_report(&discovery_path, &sample_discovery_report())?;
+        let mut config = sample_series_config();
+        config.discovery = discovery_path;
+        config.output = Some(output_path.clone());
+
+        series_manifest(config.clone())?;
+        let written: SeriesManifest = serde_json::from_str(&fs::read_to_string(&output_path)?)?;
+        validate_series_manifest(&written)?;
+
+        config.check = true;
+        series_manifest(config)?;
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_rejects_an_extra_passing_file() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let config = sample_baseline_v2_config();
+        let baseline =
+            baseline_v2_from_report(&sample_compile_report(), &series, &config, None, &[])?;
+        let mut report = sample_compile_report();
+        report.file_results.push(RunFileResult {
+            path: "base/new.t".into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 1,
+            assertions_total: 1,
+        });
+        report.summary.files_total = 3;
+        report.summary.files_passed = 3;
+
+        let comparison = compare_baseline_v2(&baseline, &report, &series);
+        assert_violation(&comparison, BaselineViolationKind::UnexpectedFile);
+
+        let mut drifted_baseline = baseline;
+        drifted_baseline.file_membership.push("base/new.t".into());
+        drifted_baseline.files_total = 3;
+        let drift_comparison =
+            compare_baseline_v2(&drifted_baseline, &sample_compile_report(), &series);
+        assert_violation(&drift_comparison, BaselineViolationKind::ManifestMismatch);
+        Ok(())
+    }
+
+    #[test]
+    fn comparison_series_hash_includes_transition_metadata() -> TestResult {
+        let discovery = sample_discovery_report();
+        let first = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut replacement_config = sample_series_config();
+        replacement_config.series_id = "selected-base-perl-5.42.3".into();
+        replacement_config.replaces_series_id = Some(first.series_id.clone());
+        replacement_config.change_reason = Some("reviewed denominator correction".into());
+        let replacement = build_series_manifest(&discovery, &replacement_config, "now".into())?;
+        if first.manifest_hash == replacement.manifest_hash {
+            bail!("series replacement metadata must contribute to the manifest hash");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_binds_identities_to_series() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut config = sample_baseline_v2_config();
+        config.compiler_subject_identity = Some("different-compiler".into());
+        let Err(error) =
+            baseline_v2_from_report(&sample_compile_report(), &series, &config, None, &[])
+        else {
+            bail!("a baseline subject from a different compiler must fail closed");
+        };
+        if !error.to_string().contains("comparison series") {
+            bail!("unexpected identity mismatch error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_requires_report_shape_validation() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut report = sample_compile_report();
+        report
+            .file_results
+            .first_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("sample report has no file results"))?
+            .status = RunnerStatus::Fail;
+        let Err(error) =
+            baseline_v2_from_report(&report, &series, &sample_baseline_v2_config(), None, &[])
+        else {
+            bail!("an unbucketed failing file must not be accepted into baseline v2");
+        };
+        if !error.to_string().contains("UnbucketedFailure") {
+            bail!("unexpected report-shape error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn report_digest_ignores_disposable_measurement_metadata() -> TestResult {
+        let report = sample_compile_report();
+        let mut replay = report.clone();
+        replay.timestamp = "different-time".into();
+        replay.prepared_tree = "different-prepared-tree".into();
+        replay.run_tree = "different-run-tree".into();
+        replay.host_perl = "different-host-perl".into();
+        replay.file_results.reverse();
+        replay.failures.reverse();
+        replay.semantic_boundaries.reverse();
+        if report_digest(&report)? != report_digest(&replay)? {
+            bail!("volatile paths, timestamps, and record order changed the report digest");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_rejects_boundary_change_without_transition() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let baseline = baseline_v2_from_report(
+            &sample_compile_report(),
+            &series,
+            &sample_baseline_v2_config(),
+            None,
+            &[],
+        )?;
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+        let comparison = compare_baseline_v2(&baseline, &report, &series);
+        assert_violation(&comparison, BaselineViolationKind::SemanticBoundary);
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_reports_boundary_change_once_without_transition() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let baseline = baseline_v2_from_report(
+            &sample_compile_report(),
+            &series,
+            &sample_baseline_v2_config(),
+            None,
+            &[],
+        )?;
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+
+        let comparison = compare_baseline_v2(&baseline, &report, &series);
+        let boundary_violations = comparison
+            .violations
+            .iter()
+            .filter(|violation| violation.kind == BaselineViolationKind::SemanticBoundary)
+            .count();
+        if boundary_violations != 1 {
+            bail!("expected one semantic-boundary violation, found {boundary_violations}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_requires_reviewed_boundary_retirement() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut previous_report = sample_compile_report();
+        previous_report.semantic_boundaries.push(sample_semantic_boundary());
+        let config = sample_baseline_v2_config();
+        let previous = baseline_v2_from_report(&previous_report, &series, &config, None, &[])?;
+        let current = sample_compile_report();
+        let mut transition_config = config;
+        transition_config.accepted_transition_id = Some("transition-1".into());
+
+        let Err(error) =
+            baseline_v2_from_report(&current, &series, &transition_config, Some(&previous), &[])
+        else {
+            bail!("a disappearing boundary without retirement should fail closed");
+        };
+        if !error.to_string().contains("retirement") {
+            bail!("unexpected boundary retirement error: {error}");
+        }
+
+        let retirement = BoundaryRetirement {
+            path: "base/ok.t".into(),
+            id: "runtime_symbolic_reference".into(),
+            source_start: 4,
+            source_end: 12,
+            transition_id: "transition-1".into(),
+            replacement_issue: "#5168".into(),
+            evidence_bundle: "bundle-sha256:example".into(),
+        };
+        let accepted = baseline_v2_from_report(
+            &current,
+            &series,
+            &transition_config,
+            Some(&previous),
+            &[retirement],
+        )?;
+        if !accepted.semantic_boundaries.is_empty() {
+            bail!("retired boundary remained in the accepted inventory");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn boundary_retirement_validation_reports_specific_violation_kinds() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut previous_report = sample_compile_report();
+        previous_report.semantic_boundaries.push(sample_semantic_boundary());
+        let config = sample_baseline_v2_config();
+        let previous = baseline_v2_from_report(&previous_report, &series, &config, None, &[])?;
+
+        let invalid_retirement = BoundaryRetirement {
+            path: "base/ok.t".into(),
+            id: "runtime_symbolic_reference".into(),
+            source_start: 4,
+            source_end: 12,
+            transition_id: "wrong-transition".into(),
+            replacement_issue: String::new(),
+            evidence_bundle: String::new(),
+        };
+        let unknown_retirement = BoundaryRetirement {
+            path: "base/missing.t".into(),
+            id: "missing-boundary".into(),
+            source_start: 1,
+            source_end: 2,
+            transition_id: "transition-1".into(),
+            replacement_issue: "#5168".into(),
+            evidence_bundle: "bundle-sha256:example".into(),
+        };
+        let violations = compare_boundary_transition(
+            &previous,
+            &[],
+            &[invalid_retirement, unknown_retirement],
+            "transition-1",
+        );
+        if !violations.iter().any(|violation| {
+            violation.kind == BaselineViolationKind::BoundaryRetirementReceiptMismatch
+        }) {
+            bail!("invalid retirement metadata was not classified separately");
+        }
+        if !violations.iter().any(|violation| {
+            violation.kind == BaselineViolationKind::BoundaryRetirementReferencesUnknownBoundary
+        }) {
+            bail!("unknown retirement boundary was not classified separately");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_rejects_historical_v1_as_authority() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("baseline.json");
+        let baseline = baseline_from_report(&sample_compile_report())?;
+        write_compile_baseline(&path, &baseline)?;
+
+        let Err(error) = read_compile_baseline_v2(&path) else {
+            bail!("historical v1 baseline should not be accepted as v2 authority");
+        };
+        if !error.to_string().contains("historical compile baseline v1") {
+            bail!("unexpected v1 migration error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_requires_boundary_inventory_field() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("baseline.json");
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let baseline = baseline_v2_from_report(
+            &sample_compile_report(),
+            &series,
+            &sample_baseline_v2_config(),
+            None,
+            &[],
+        )?;
+        let mut value = serde_json::to_value(baseline)?;
+        value
+            .as_object_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("baseline was not an object"))?
+            .remove("semantic_boundaries");
+        fs::write(&path, format!("{}\n", serde_json::to_string(&value)?))?;
+        let Err(error) = read_compile_baseline_v2(&path) else {
+            bail!("a v2 baseline without a boundary inventory must fail closed");
+        };
+        if !error.to_string().contains("MissingBoundaryInventory") {
+            bail!("unexpected missing inventory error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn public_baseline_rejects_v2_options_without_series() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report_path = temp.path().join("report.json");
+        let baseline_path = temp.path().join("baseline.json");
+        write_run_report(&report_path, &sample_compile_report())?;
+        let mut config = sample_baseline_v2_config();
+        config.report = Some(report_path);
+        config.baseline = Some(baseline_path);
+        let Err(error) = baseline(config) else {
+            bail!("v2 identity options must not silently fall back to baseline v1");
+        };
+        if !error.to_string().contains("require a comparison-series manifest") {
+            bail!("unexpected v2 option error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn public_baseline_requires_transition_for_existing_v2_baseline() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report_path = temp.path().join("report.json");
+        let series_path = temp.path().join("series.json");
+        let baseline_path = temp.path().join("baseline.json");
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        write_series_manifest(&series_path, &series)?;
+
+        let mut previous_report = sample_compile_report();
+        previous_report.semantic_boundaries.push(sample_semantic_boundary());
+        let accepted = baseline_v2_from_report(
+            &previous_report,
+            &series,
+            &sample_baseline_v2_config(),
+            None,
+            &[],
+        )?;
+        write_compile_baseline_v2(&baseline_path, &accepted)?;
+        write_run_report(&report_path, &sample_compile_report())?;
+
+        let mut config = sample_baseline_v2_config();
+        config.report = Some(report_path);
+        config.baseline = Some(baseline_path);
+        config.series = Some(series_path);
+        let Err(error) = baseline(config) else {
+            bail!("overwriting an existing v2 baseline must require transition evidence");
+        };
+        if !error.to_string().contains("accepted-transition-id") {
+            bail!("unexpected transition error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn public_baseline_rejects_retirements_without_transition_id() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report_path = temp.path().join("report.json");
+        let series_path = temp.path().join("series.json");
+        let baseline_path = temp.path().join("baseline.json");
+        let retirements_path = temp.path().join("retirements.json");
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        write_series_manifest(&series_path, &series)?;
+        write_run_report(&report_path, &sample_compile_report())?;
+        fs::write(&retirements_path, "[]\n")?;
+
+        let mut config = sample_baseline_v2_config();
+        config.accept = false;
+        config.report = Some(report_path);
+        config.baseline = Some(baseline_path);
+        config.series = Some(series_path);
+        config.boundary_retirements = Some(retirements_path);
+        config.accepted_transition_id = None;
+        let Err(error) = baseline(config) else {
+            bail!("retirement receipts without a transition identity must fail closed");
+        };
+        if !error.to_string().contains("accepted-transition-id") {
+            bail!("unexpected missing transition identity error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn series_manifest_rejects_unknown_discovery_ref() -> TestResult {
+        let mut discovery = sample_discovery_report();
+        discovery.perl_ref = "unknown".into();
+        let Err(error) = build_series_manifest(&discovery, &sample_series_config(), "now".into())
+        else {
+            bail!("an unknown discovery Perl ref must not become a resolved series identity");
+        };
+        if !error.to_string().contains("does not match discovery receipt") {
+            bail!("unexpected unknown discovery ref error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn series_manifest_does_not_overwrite_without_replacement_identity() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let discovery_path = temp.path().join("discovery.json");
+        let output_path = temp.path().join("series.json");
+        write_discovery_report(&discovery_path, &sample_discovery_report())?;
+        let mut config = sample_series_config();
+        config.discovery = discovery_path;
+        config.output = Some(output_path);
+        series_manifest(config.clone())?;
+
+        let Err(error) = series_manifest(config) else {
+            bail!("existing comparison-series output must not be overwritten silently");
+        };
+        if !error.to_string().contains("manifest is immutable") {
+            bail!("unexpected immutable manifest error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn series_manifest_rejects_reusing_replaced_series_id() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let discovery_path = temp.path().join("discovery.json");
+        let output_path = temp.path().join("series.json");
+        write_discovery_report(&discovery_path, &sample_discovery_report())?;
+        let mut config = sample_series_config();
+        config.discovery = discovery_path;
+        config.output = Some(output_path.clone());
+        series_manifest(config.clone())?;
+
+        config.replaces_series_id = Some(config.series_id.clone());
+        config.change_reason = Some("reviewed replacement".into());
+        let Err(error) = series_manifest(config) else {
+            bail!("a replacement must not reuse the existing comparison-series ID");
+        };
+        if !error.to_string().contains("must declare a new --series-id") {
+            bail!("unexpected self-replacement error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn series_manifest_rejects_replacement_without_change_reason_on_new_path() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let discovery_path = temp.path().join("discovery.json");
+        let output_path = temp.path().join("replacement.json");
+        write_discovery_report(&discovery_path, &sample_discovery_report())?;
+        let mut config = sample_series_config();
+        config.discovery = discovery_path;
+        config.output = Some(output_path);
+        config.replaces_series_id = Some("selected-base-perl-5.42.1".into());
+        config.change_reason = None;
+
+        let Err(error) = series_manifest(config) else {
+            bail!("a replacement without change metadata must fail on a new output path");
+        };
+        if !error.to_string().contains("non-empty --change-reason") {
+            bail!("unexpected replacement metadata error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn identical_compile_report_passes_baseline() -> TestResult {
         let report = sample_compile_report();
         let baseline = baseline_from_report(&report)?;
@@ -2909,6 +4393,15 @@ mod tests {
             report: Some(report_path),
             baseline: Some(baseline_path.clone()),
             accept: true,
+            series: None,
+            previous_baseline: None,
+            boundary_retirements: None,
+            compiler_subject_identity: None,
+            invocation_identity: None,
+            capability_identity: None,
+            environment_identity: None,
+            accepted_transition_id: None,
+            evidence_bundle: None,
         })?;
 
         let raw = fs::read_to_string(&baseline_path)?;
@@ -3130,7 +4623,7 @@ mod tests {
             schema_version: DISCOVERY_SCHEMA_VERSION.into(),
             commit: "abc".into(),
             timestamp: "2026-07-02T00:00:00Z".into(),
-            perl_ref: "unknown".into(),
+            perl_ref: "perl-ref".into(),
             prepared_tree: "/tmp/perl".into(),
             host_perl: "perl".into(),
             runner: HarnessRunner::Test,
@@ -3181,7 +4674,7 @@ mod tests {
             schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
             commit: "abc".into(),
             timestamp: "2026-07-02T00:00:00Z".into(),
-            perl_ref: "unknown".into(),
+            perl_ref: "perl-ref".into(),
             prepared_tree: "/tmp/perl".into(),
             run_tree: "/tmp/run".into(),
             host_perl: "perl".into(),
@@ -3317,6 +4810,45 @@ mod tests {
                 DiscoveredTest { path: "base/lex.t".into(), root: "base".into() },
                 DiscoveredTest { path: "base/ok.t".into(), root: "base".into() },
             ],
+        }
+    }
+
+    fn sample_series_config() -> SeriesManifestConfig {
+        SeriesManifestConfig {
+            discovery: PathBuf::from("discovery.json"),
+            output: Some(PathBuf::from("series.json")),
+            series_id: "selected-base-perl-5.42.2".into(),
+            profile: HarnessProfile::Base,
+            perl_requested_ref: "perl-5.42.2".into(),
+            perl_resolved_ref: "perl-ref".into(),
+            preparation_receipt_id: "prepare-1".into(),
+            preparation_receipt_digest: "sha256:prepare".into(),
+            compiler_subject_identity: "compiler-subject-1".into(),
+            invocation_identity: "invocation-1".into(),
+            capability_identity: "capability-1".into(),
+            environment_identity: "environment-1".into(),
+            replaces_series_id: None,
+            change_reason: Some("initial selected series".into()),
+            check: false,
+        }
+    }
+
+    fn sample_baseline_v2_config() -> BaselineConfig {
+        BaselineConfig {
+            mode: HarnessMode::Compile,
+            profile: HarnessProfile::Base,
+            report: None,
+            baseline: None,
+            accept: true,
+            series: None,
+            previous_baseline: None,
+            boundary_retirements: None,
+            compiler_subject_identity: Some("compiler-subject-1".into()),
+            invocation_identity: Some("invocation-1".into()),
+            capability_identity: Some("capability-1".into()),
+            environment_identity: Some("environment-1".into()),
+            accepted_transition_id: None,
+            evidence_bundle: Some("bundle-sha256:example".into()),
         }
     }
 

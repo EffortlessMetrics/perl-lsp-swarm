@@ -507,6 +507,24 @@ mod tests {
     }
 
     #[test]
+    fn help_text_documents_ripr_facts_flags() {
+        // The --ripr-facts surface must be discoverable from --help output.
+        // Regression guard for issue #5278 — covers all 7 --ripr-* flags.
+        let rendered = render_help_text("perllsp");
+        for flag in [
+            "--ripr-facts",
+            "--ripr-schema",
+            "--ripr-root",
+            "--ripr-base",
+            "--ripr-head",
+            "--ripr-fact-classes",
+            "--ripr-out",
+        ] {
+            assert!(rendered.contains(flag), "help must list {flag}");
+        }
+    }
+
+    #[test]
     fn render_shell_completion_rewrites_function_and_command_names() {
         let script =
             "complete -F _perl_lsp perl-lsp\n# shell completion for perl-lsp and _perl_lsp";
