@@ -20,6 +20,21 @@ MATERIAL_SECTIONS: Final[tuple[str, ...]] = (
     "Review index",
 )
 
+# The first alias is the current-generation canonical heading. Later aliases
+# preserve meaningful review identity for PRs created from the existing
+# repository template while the template migration lands separately.
+SECTION_ALIASES: Final[dict[str, tuple[str, ...]]] = {
+    "Claim": ("Claim", "Claim Boundary"),
+    "What this establishes": ("What this establishes", "Behavior", "Changes"),
+    "What this does not establish": (
+        "What this does not establish",
+        "Non-goals",
+        "Remaining Work",
+    ),
+    "Risk and rollback": ("Risk and rollback", "Risk", "Rollback", "Risks"),
+    "Review index": ("Review index",),
+}
+
 _HEADING = re.compile(r"^##\s+(.+?)\s*$")
 
 
@@ -47,18 +62,26 @@ def canonical_material_claim(body: str) -> tuple[str, str]:
         if current is not None:
             sections[current].append(line)
 
-    material_keys = {name.casefold() for name in MATERIAL_SECTIONS}
-    if not material_keys.intersection(sections):
+    recognized_keys = {
+        alias.casefold()
+        for aliases in SECTION_ALIASES.values()
+        for alias in aliases
+    }
+    if not recognized_keys.intersection(sections):
         return _normalize_text(body), "full_body_fallback"
 
     parts: list[str] = []
-    for name in MATERIAL_SECTIONS:
-        key = name.casefold()
-        if key in sections:
+    for canonical_name in MATERIAL_SECTIONS:
+        values: list[str] = []
+        for alias in SECTION_ALIASES[canonical_name]:
+            key = alias.casefold()
+            if key not in sections:
+                continue
             value = _normalize_text("\n".join(sections[key]))
-        else:
-            value = "<missing>"
-        parts.append(f"## {name}\n{value}")
+            values.append(f"### {alias}\n{value}")
+
+        material = "\n\n".join(values) if values else "<missing>"
+        parts.append(f"## {canonical_name}\n{material}")
 
     return "\n\n".join(parts), "material_sections"
 
