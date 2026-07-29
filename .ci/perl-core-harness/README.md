@@ -158,6 +158,30 @@ through an explicit receipt-schema extension. Each cluster carries a direct
 reproduction descriptor and requires exact-series proof before a claimed
 resolution, baseline movement, or boundary retirement is accepted.
 
+## Failure-cluster history
+
+Persistent history is separate from single-bundle clustering. It records first
+and last authoritative bundles, historical membership, ownership state, stage,
+and explicit transition proof. A missing cluster remains active or unassigned;
+absence alone never marks it resolved.
+
+Write or update history from one validated bundle:
+
+```bash
+cargo xtask perl-core-harness triage --bundle path/to/evidence-bundle/index.json --output target/perl-core/triage/base-compile --history .ci/perl-core-harness/failure-cluster-history.v1.json --write-history
+```
+
+Check history without mutation:
+
+```bash
+cargo xtask perl-core-harness triage --bundle path/to/evidence-bundle/index.json --output target/perl-core/triage/base-compile --history .ci/perl-core-harness/failure-cluster-history.v1.json --check-history
+```
+
+History accepts an explicit `unassigned` state while work is being routed.
+`resolved` requires an owner, resolution PR, resolution bundle, and a
+versioned before/after transition; `accepted_debt` requires a boundary-registry
+reference. These checks are offline and do not query or mutate GitHub.
+
 Or run the smoke against a user-supplied prepared upstream Perl tree:
 
 ```bash

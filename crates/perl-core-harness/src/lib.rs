@@ -13,14 +13,17 @@ use perl_core_harness_types::{
     BOUNDARY_RETIREMENT_SCHEMA_VERSION, BaselineComparison, BaselineViolation,
     BaselineViolationKind, BoundaryRetirement, COMPILE_BASELINE_SCHEMA_VERSION,
     COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaseline, CompileBaselineV2,
-    DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport, FAILURE_CLUSTER_SCHEMA_VERSION,
-    FailureCluster, FailureClusterReport, FailureClusterSignature, FailureDebtCandidate,
-    GAP_MAP_SCHEMA_VERSION, GapMap, ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION,
-    PrepareReceipt, PrepareStatus, RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport,
-    RunSummary, RunnerRecord, RunnerStatus, SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION,
-    SERIES_MANIFEST_NORMALIZATION_VERSION, SERIES_MANIFEST_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION,
-    SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
-    SemanticBoundaryRegistry, SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
+    DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport,
+    FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION, FAILURE_CLUSTER_SCHEMA_VERSION, FailureCluster,
+    FailureClusterHistory, FailureClusterHistoryEntry, FailureClusterHistoryPresence,
+    FailureClusterHistoryStatus, FailureClusterIdentityQuality, FailureClusterReport,
+    FailureClusterSignature, FailureDebtCandidate, GAP_MAP_SCHEMA_VERSION, GapMap,
+    ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus,
+    RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunSummary, RunnerRecord,
+    RunnerStatus, SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION, SERIES_MANIFEST_NORMALIZATION_VERSION,
+    SERIES_MANIFEST_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION, SemanticBoundaryConfidence,
+    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SemanticBoundaryRegistry,
+    SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
     SemanticBoundaryReplacementStrategy, SeriesManifest, SmokeFailureKind, SmokeReport,
     SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
 };
@@ -248,6 +251,9 @@ pub struct BoundaryRegistryConfig {
 pub struct TriageConfig {
     pub bundle: PathBuf,
     pub output: PathBuf,
+    pub history: Option<PathBuf>,
+    pub write_history: bool,
+    pub check_history: bool,
 }
 
 /// Configuration for `perl-core-harness smoke`.
@@ -474,7 +480,556 @@ pub fn triage(config: TriageConfig) -> Result<()> {
         render_failure_cluster_markdown(&cluster_report),
     )
     .context("writing failure-clusters.md")?;
+
+    if config.write_history || config.check_history {
+        let history_path = config.history.as_ref().ok_or_else(|| {
+            color_eyre::eyre::eyre!("history path is required for history checks")
+        })?;
+        let history = read_cluster_history(history_path, config.write_history)?;
+        let shape_violations = validate_cluster_history_shape(&history);
+        if !shape_violations.is_empty() {
+            bail!("cluster history is invalid:\n{}", shape_violations.join("\n"));
+        }
+        if config.check_history {
+            let violations = validate_history_against_report(&history, &cluster_report);
+            if !violations.is_empty() {
+                bail!("cluster history check failed:\n{}", violations.join("\n"));
+            }
+        } else {
+            let updated = merge_cluster_history(history, &cluster_report)?;
+            let updated_json =
+                serde_json::to_string_pretty(&updated).context("serializing cluster history")?;
+            if let Some(parent) = history_path.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("creating cluster history directory {}", parent.display())
+                })?;
+            }
+            fs::write(history_path, format!("{updated_json}\n"))
+                .with_context(|| format!("writing cluster history {}", history_path.display()))?;
+            fs::write(config.output.join("cluster-history.json"), format!("{updated_json}\n"))
+                .context("writing cluster-history.json")?;
+            fs::write(
+                config.output.join("cluster-history.md"),
+                render_cluster_history_markdown(&updated),
+            )
+            .context("writing cluster-history.md")?;
+        }
+    }
     Ok(())
+}
+
+fn read_cluster_history(path: &Path, allow_missing: bool) -> Result<FailureClusterHistory> {
+    if !path.is_file() {
+        if allow_missing {
+            return Ok(FailureClusterHistory {
+                schema_version: FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION.into(),
+                entries: Vec::new(),
+            });
+        }
+        bail!("cluster history {} is missing", path.display());
+    }
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("reading cluster history {}", path.display()))?;
+    serde_json::from_str(&raw)
+        .with_context(|| format!("decoding cluster history {}", path.display()))
+}
+
+fn validate_cluster_history_shape(history: &FailureClusterHistory) -> Vec<String> {
+    let mut violations = Vec::new();
+    if history.schema_version != FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION {
+        violations.push(format!(
+            "history schema {} is not {}",
+            history.schema_version, FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION
+        ));
+    }
+    let mut cluster_ids = BTreeSet::new();
+    for entry in &history.entries {
+        if !cluster_ids.insert(entry.cluster_id.clone()) {
+            violations.push(format!("duplicate cluster history entry {}", entry.cluster_id));
+        }
+        for (label, value) in [
+            ("cluster_id", entry.cluster_id.as_str()),
+            ("signature_schema_version", entry.signature_schema_version.as_str()),
+            ("series_id", entry.series_id.as_str()),
+            ("manifest_hash", entry.manifest_hash.as_str()),
+            ("first_seen_series_id", entry.first_seen_series_id.as_str()),
+            ("first_seen_manifest_hash", entry.first_seen_manifest_hash.as_str()),
+            ("last_seen_series_id", entry.last_seen_series_id.as_str()),
+            ("last_seen_manifest_hash", entry.last_seen_manifest_hash.as_str()),
+            ("first_seen_bundle", entry.first_seen_bundle.as_str()),
+            ("last_seen_bundle", entry.last_seen_bundle.as_str()),
+            ("impacted_layer", entry.impacted_layer.as_str()),
+            ("direct_reproduction", entry.direct_reproduction.as_str()),
+            ("proposed_transition", entry.proposed_transition.as_str()),
+            ("stop_condition", entry.stop_condition.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                violations.push(format!("cluster {} has empty {label}", entry.cluster_id));
+            }
+        }
+        if entry.current_stage.as_deref().is_some_and(|stage| stage.trim().is_empty()) {
+            violations.push(format!("cluster {} has empty current_stage", entry.cluster_id));
+        }
+        match entry.presence {
+            FailureClusterHistoryPresence::Observed => {
+                if !entry.observed_in_current_bundle
+                    || entry.current_authority_bundle.as_deref().is_none_or(str::is_empty)
+                    || entry.absence_since_bundle.is_some()
+                    || entry.current_stage.is_none()
+                {
+                    violations.push(format!(
+                        "observed cluster {} lacks current-authority state",
+                        entry.cluster_id
+                    ));
+                }
+            }
+            FailureClusterHistoryPresence::AbsentUnresolved
+            | FailureClusterHistoryPresence::Resolved
+            | FailureClusterHistoryPresence::AcceptedDebt => {
+                if entry.observed_in_current_bundle
+                    || entry.current_authority_bundle.is_some()
+                    || entry.absence_since_bundle.as_deref().is_none_or(str::is_empty)
+                    || entry.current_stage.is_some()
+                    || !entry.current_affected_files.is_empty()
+                    || !entry.current_fact_classes.is_empty()
+                    || !entry.current_lsp_surfaces.is_empty()
+                {
+                    violations.push(format!(
+                        "absent cluster {} retains current-authority state",
+                        entry.cluster_id
+                    ));
+                }
+            }
+        }
+        if entry.status == FailureClusterHistoryStatus::Resolved
+            && entry.presence != FailureClusterHistoryPresence::Resolved
+        {
+            violations
+                .push(format!("resolved cluster {} has non-resolved presence", entry.cluster_id));
+        }
+        if entry.status == FailureClusterHistoryStatus::AcceptedDebt
+            && entry.presence != FailureClusterHistoryPresence::AcceptedDebt
+        {
+            violations
+                .push(format!("accepted-debt cluster {} has non-debt presence", entry.cluster_id));
+        }
+        if entry.status != FailureClusterHistoryStatus::Unassigned
+            && !entry.owner_issue.as_deref().is_some_and(is_issue_reference)
+        {
+            violations.push(format!(
+                "cluster {} requires an issue owner or explicit unassigned status",
+                entry.cluster_id
+            ));
+        }
+        if entry.status == FailureClusterHistoryStatus::AcceptedDebt
+            && entry.accepted_debt_refs.is_empty()
+        {
+            violations.push(format!(
+                "accepted-debt cluster {} has no registry reference",
+                entry.cluster_id
+            ));
+        }
+        if entry.status == FailureClusterHistoryStatus::Resolved {
+            if entry.resolution_pr.as_deref().is_none_or(|value| !is_pr_reference(value)) {
+                violations
+                    .push(format!("resolved cluster {} has no resolution PR", entry.cluster_id));
+            }
+            if entry.resolution_bundle.as_deref().is_none_or(|value| value.trim().is_empty()) {
+                violations.push(format!(
+                    "resolved cluster {} has no resolution bundle",
+                    entry.cluster_id
+                ));
+            }
+        }
+        validate_sorted_unique(
+            &entry.current_affected_files,
+            &format!("cluster {} current affected files", entry.cluster_id),
+            &mut violations,
+        );
+        validate_sorted_unique(
+            &entry.historical_affected_files,
+            &format!("cluster {} affected files", entry.cluster_id),
+            &mut violations,
+        );
+        validate_sorted_unique(
+            &entry.current_fact_classes,
+            &format!("cluster {} current fact classes", entry.cluster_id),
+            &mut violations,
+        );
+        validate_sorted_unique(
+            &entry.fact_classes,
+            &format!("cluster {} fact classes", entry.cluster_id),
+            &mut violations,
+        );
+        validate_sorted_unique(
+            &entry.current_lsp_surfaces,
+            &format!("cluster {} current LSP surfaces", entry.cluster_id),
+            &mut violations,
+        );
+        validate_sorted_unique(
+            &entry.lsp_surfaces,
+            &format!("cluster {} LSP surfaces", entry.cluster_id),
+            &mut violations,
+        );
+        for path in
+            entry.current_affected_files.iter().chain(entry.historical_affected_files.iter())
+        {
+            if validate_public_path(path, "cluster history file").is_err() {
+                violations.push(format!(
+                    "cluster {} has invalid affected file {}",
+                    entry.cluster_id, path
+                ));
+            }
+        }
+        let mut transition_ids = BTreeSet::new();
+        for transition in &entry.transitions {
+            if !transition_ids.insert(transition.transition_id.clone()) {
+                violations.push(format!(
+                    "cluster {} has duplicate transition {}",
+                    entry.cluster_id, transition.transition_id
+                ));
+            }
+            for (label, value) in [
+                ("transition_id", transition.transition_id.as_str()),
+                ("from_cluster_id", transition.from_cluster_id.as_str()),
+                ("from_stage", transition.from_stage.as_str()),
+                ("to_stage", transition.to_stage.as_str()),
+                ("before_series_id", transition.before_series_id.as_str()),
+                ("before_manifest_hash", transition.before_manifest_hash.as_str()),
+                ("before_bundle_id", transition.before_bundle_id.as_str()),
+                ("after_series_id", transition.after_series_id.as_str()),
+                ("after_manifest_hash", transition.after_manifest_hash.as_str()),
+                ("after_bundle_id", transition.after_bundle_id.as_str()),
+                ("proof_plan", transition.proof_plan.as_str()),
+                ("stop_condition", transition.stop_condition.as_str()),
+            ] {
+                if value.trim().is_empty() {
+                    violations.push(format!(
+                        "cluster {} transition {} has empty {label}",
+                        entry.cluster_id, transition.transition_id
+                    ));
+                }
+            }
+            if transition.to_cluster_id.is_none()
+                && transition.to_presence == FailureClusterHistoryPresence::Observed
+            {
+                violations.push(format!(
+                    "transition {} without a target cluster must not become observed",
+                    transition.transition_id
+                ));
+            }
+            if transition.to_cluster_id.as_deref() == Some(transition.from_cluster_id.as_str()) {
+                violations.push(format!(
+                    "transition {} has identical source and target clusters",
+                    transition.transition_id
+                ));
+            }
+            if transition.from_stage == transition.to_stage {
+                violations.push(format!(
+                    "transition {} has no stage or root-cause change",
+                    transition.transition_id
+                ));
+            }
+        }
+        if entry.status == FailureClusterHistoryStatus::Resolved
+            && !entry.transitions.iter().any(|transition| {
+                transition.to_cluster_id.is_none()
+                    && transition.to_presence == FailureClusterHistoryPresence::Resolved
+                    && transition.after_series_id == entry.series_id
+                    && transition.after_manifest_hash == entry.manifest_hash
+                    && transition.after_bundle_id
+                        == entry.resolution_bundle.as_deref().unwrap_or_default()
+            })
+        {
+            violations.push(format!(
+                "resolved cluster {} lacks a matching before/after transition",
+                entry.cluster_id
+            ));
+        }
+    }
+    violations
+}
+
+fn validate_sorted_unique(values: &[String], label: &str, violations: &mut Vec<String>) {
+    let mut sorted = values.to_vec();
+    sorted.sort();
+    sorted.dedup();
+    if sorted != values {
+        violations.push(format!("{label} must be sorted and unique"));
+    }
+}
+
+fn is_pr_reference(value: &str) -> bool {
+    value.strip_prefix('#').is_some_and(|digits| {
+        !digits.is_empty() && digits.chars().all(|character| character.is_ascii_digit())
+    })
+}
+
+fn merge_cluster_history(
+    mut history: FailureClusterHistory,
+    report: &FailureClusterReport,
+) -> Result<FailureClusterHistory> {
+    let current_ids =
+        report.clusters.iter().map(|cluster| cluster.cluster_id.as_str()).collect::<BTreeSet<_>>();
+    for entry in &mut history.entries {
+        if current_ids.contains(entry.cluster_id.as_str()) {
+            continue;
+        }
+        if entry.presence == FailureClusterHistoryPresence::Observed {
+            entry.presence = FailureClusterHistoryPresence::AbsentUnresolved;
+            entry.observed_in_current_bundle = false;
+            entry.current_authority_bundle = None;
+            entry.absence_since_bundle = Some(report.bundle_id.clone());
+            entry.current_affected_files.clear();
+            entry.current_fact_classes.clear();
+            entry.current_lsp_surfaces.clear();
+            entry.current_stage = None;
+        }
+    }
+    for cluster in &report.clusters {
+        if let Some(entry) =
+            history.entries.iter_mut().find(|entry| entry.cluster_id == cluster.cluster_id)
+        {
+            if entry.series_id != report.series_id || entry.manifest_hash != report.manifest_hash {
+                bail!(
+                    "cluster {} history identity differs from current report",
+                    cluster.cluster_id
+                );
+            }
+            if matches!(
+                entry.status,
+                FailureClusterHistoryStatus::Resolved | FailureClusterHistoryStatus::AcceptedDebt
+            ) {
+                bail!(
+                    "cluster {} is recorded as {} but is active in the current bundle",
+                    cluster.cluster_id,
+                    enum_label(entry.status)
+                );
+            }
+            entry.last_seen_bundle = report.bundle_id.clone();
+            entry.series_id = report.series_id.clone();
+            entry.manifest_hash = report.manifest_hash.clone();
+            entry.last_seen_series_id = report.series_id.clone();
+            entry.last_seen_manifest_hash = report.manifest_hash.clone();
+            entry.current_affected_files = cluster.affected_files.clone();
+            merge_sorted_unique(&mut entry.historical_affected_files, &cluster.affected_files);
+            entry.current_fact_classes = cluster.fact_classes.clone();
+            merge_sorted_unique(&mut entry.fact_classes, &cluster.fact_classes);
+            entry.current_lsp_surfaces = cluster.lsp_surfaces.clone();
+            merge_sorted_unique(&mut entry.lsp_surfaces, &cluster.lsp_surfaces);
+            entry.occurrence_count = cluster.occurrence_count;
+            entry.current_stage = Some(cluster.signature.stage.clone());
+            entry.impacted_layer = cluster.impacted_layer.clone();
+            entry.direct_reproduction = cluster.direct_reproduction.clone();
+            entry.current_authority_bundle = Some(report.bundle_id.clone());
+            entry.observed_in_current_bundle = true;
+            entry.absence_since_bundle = None;
+            entry.presence = FailureClusterHistoryPresence::Observed;
+        } else {
+            history.entries.push(history_entry_from_cluster(report, cluster));
+        }
+    }
+    history.entries.sort_by(|left, right| left.cluster_id.cmp(&right.cluster_id));
+    let violations = validate_cluster_history_shape(&history);
+    if !violations.is_empty() {
+        bail!("updated cluster history is invalid:\n{}", violations.join("\n"));
+    }
+    Ok(history)
+}
+
+fn history_entry_from_cluster(
+    report: &FailureClusterReport,
+    cluster: &FailureCluster,
+) -> FailureClusterHistoryEntry {
+    let mut affected_files = cluster.affected_files.clone();
+    let mut fact_classes = cluster.fact_classes.clone();
+    let mut lsp_surfaces = cluster.lsp_surfaces.clone();
+    affected_files.sort();
+    fact_classes.sort();
+    lsp_surfaces.sort();
+    FailureClusterHistoryEntry {
+        cluster_id: cluster.cluster_id.clone(),
+        signature_schema_version: cluster.signature.schema_version.clone(),
+        identity_quality: FailureClusterIdentityQuality::Provisional,
+        series_id: report.series_id.clone(),
+        manifest_hash: report.manifest_hash.clone(),
+        first_seen_series_id: report.series_id.clone(),
+        first_seen_manifest_hash: report.manifest_hash.clone(),
+        last_seen_series_id: report.series_id.clone(),
+        last_seen_manifest_hash: report.manifest_hash.clone(),
+        first_seen_bundle: report.bundle_id.clone(),
+        last_seen_bundle: report.bundle_id.clone(),
+        current_affected_files: affected_files.clone(),
+        historical_affected_files: affected_files,
+        current_fact_classes: fact_classes.clone(),
+        fact_classes,
+        current_lsp_surfaces: lsp_surfaces.clone(),
+        lsp_surfaces,
+        occurrence_count: cluster.occurrence_count,
+        current_stage: Some(cluster.signature.stage.clone()),
+        current_authority_bundle: Some(report.bundle_id.clone()),
+        observed_in_current_bundle: true,
+        absence_since_bundle: None,
+        presence: FailureClusterHistoryPresence::Observed,
+        impacted_layer: cluster.impacted_layer.clone(),
+        owner_issue: None,
+        status: FailureClusterHistoryStatus::Unassigned,
+        direct_reproduction: cluster.direct_reproduction.clone(),
+        proposed_transition: format!(
+            "resolve {} with general compiler semantics",
+            cluster.cluster_id
+        ),
+        stop_condition: format!("exact-series proof retires {}", cluster.cluster_id),
+        accepted_debt_refs: Vec::new(),
+        resolution_pr: None,
+        resolution_bundle: None,
+        transitions: Vec::new(),
+    }
+}
+
+fn merge_sorted_unique(values: &mut Vec<String>, additions: &[String]) {
+    values.extend(additions.iter().cloned());
+    values.sort();
+    values.dedup();
+}
+
+fn validate_history_against_report(
+    history: &FailureClusterHistory,
+    report: &FailureClusterReport,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let current = report
+        .clusters
+        .iter()
+        .map(|cluster| (cluster.cluster_id.as_str(), cluster))
+        .collect::<BTreeMap<_, _>>();
+    for cluster in &report.clusters {
+        let Some(entry) =
+            history.entries.iter().find(|entry| entry.cluster_id == cluster.cluster_id)
+        else {
+            violations
+                .push(format!("current cluster {} is missing from history", cluster.cluster_id));
+            continue;
+        };
+        if entry.series_id != report.series_id || entry.manifest_hash != report.manifest_hash {
+            violations
+                .push(format!("current cluster {} has stale series identity", cluster.cluster_id));
+        }
+        if entry.last_seen_bundle != report.bundle_id {
+            violations
+                .push(format!("current cluster {} has stale last-seen bundle", cluster.cluster_id));
+        }
+        if entry.presence != FailureClusterHistoryPresence::Observed
+            || !entry.observed_in_current_bundle
+            || entry.current_authority_bundle.as_deref() != Some(report.bundle_id.as_str())
+        {
+            violations.push(format!(
+                "current cluster {} is not marked observed in the current authority",
+                cluster.cluster_id
+            ));
+        }
+        if entry.current_stage.as_deref() != Some(cluster.signature.stage.as_str()) {
+            violations.push(format!(
+                "current cluster {} has an unrecorded stage transition",
+                cluster.cluster_id
+            ));
+        }
+        if matches!(
+            entry.status,
+            FailureClusterHistoryStatus::Resolved | FailureClusterHistoryStatus::AcceptedDebt
+        ) {
+            violations.push(format!(
+                "historical {} cluster {} is active again",
+                enum_label(entry.status),
+                cluster.cluster_id
+            ));
+        }
+    }
+    for entry in &history.entries {
+        if current.contains_key(entry.cluster_id.as_str()) {
+            continue;
+        }
+        if entry.presence == FailureClusterHistoryPresence::Observed
+            || entry.observed_in_current_bundle
+            || entry.current_authority_bundle.is_some()
+        {
+            violations.push(format!(
+                "history cluster {} is absent from the report but still marked current",
+                entry.cluster_id
+            ));
+        }
+        if entry.presence == FailureClusterHistoryPresence::AbsentUnresolved
+            && entry.absence_since_bundle.as_deref() != Some(report.bundle_id.as_str())
+        {
+            violations
+                .push(format!("absent cluster {} has stale absence bundle", entry.cluster_id));
+        }
+    }
+    violations
+}
+
+fn render_cluster_history_markdown(history: &FailureClusterHistory) -> String {
+    let mut counts = BTreeMap::<String, usize>::new();
+    for entry in &history.entries {
+        *counts.entry(enum_label(entry.status)).or_default() += 1;
+    }
+    let mut markdown = format!(
+        "# Compiler failure cluster history\n\n- Schema: {}\n- Entries: {}\n\n",
+        history.schema_version,
+        history.entries.len()
+    );
+    markdown.push_str("## Status counts\n\n");
+    for (status, count) in counts {
+        markdown.push_str(&format!("- {status}: {count}\n"));
+    }
+    let mut high_leverage = history.entries.iter().collect::<Vec<_>>();
+    high_leverage.sort_by(|left, right| {
+        right
+            .occurrence_count
+            .cmp(&left.occurrence_count)
+            .then_with(|| left.cluster_id.cmp(&right.cluster_id))
+    });
+    markdown.push_str("\n## High leverage\n\n");
+    for entry in high_leverage.iter().take(10) {
+        markdown.push_str(&format!(
+            "- {}: {} occurrence(s), status {}, owner {}\n",
+            entry.cluster_id,
+            entry.occurrence_count,
+            enum_label(entry.status),
+            entry.owner_issue.as_deref().unwrap_or("unassigned")
+        ));
+    }
+    markdown.push_str("\n## Clusters\n\n");
+    for entry in &history.entries {
+        markdown.push_str(&format!(
+            "### {}\n\n- Status: {}\n- Owner: {}\n- Stage: {}\n- Current series: {}\n- First/last series: {} / {}\n- First/last bundle: {} / {}\n- Current files: {}\n- Historical files: {}\n- Occurrences: {}\n- Reproduction: {}\n",
+            entry.cluster_id,
+            enum_label(entry.status),
+            entry.owner_issue.as_deref().unwrap_or("unassigned"),
+            entry.current_stage.as_deref().unwrap_or("absent"),
+            entry.series_id,
+            entry.first_seen_series_id,
+            entry.last_seen_series_id,
+            entry.first_seen_bundle,
+            entry.last_seen_bundle,
+            entry.current_affected_files.join(", "),
+            entry.historical_affected_files.join(", "),
+            entry.occurrence_count,
+            entry.direct_reproduction,
+        ));
+        for transition in &entry.transitions {
+            markdown.push_str(&format!(
+                "- Transition {}: {} -> {} ({} -> {})\n",
+                transition.transition_id,
+                transition.from_cluster_id,
+                transition.to_cluster_id.as_deref().unwrap_or("<absence>"),
+                transition.from_stage,
+                transition.to_stage
+            ));
+        }
+        markdown.push('\n');
+    }
+    markdown
 }
 
 fn bundle_artifact_path(bundle: &BoundaryBundle, kind: &str) -> Result<PathBuf> {
@@ -4007,6 +4562,7 @@ fn perl_tree_ref(perl_tree: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_core_harness_types::FailureClusterHistoryTransition;
     use perl_core_harness_types::{
         SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
         SemanticBoundaryRecord, SemanticBoundarySourceSpan,
@@ -6308,6 +6864,130 @@ mod tests {
         let representative = &triage.clusters[0].representative_failure;
         assert_eq!(representative.path, "base/ok.t");
         assert_eq!(representative.first_diagnostic, "<host-path> parse failure");
+        Ok(())
+    }
+
+    #[test]
+    fn cluster_history_preserves_missing_clusters_and_tracks_membership_growth() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        report.failures = vec![sample_failure("base/lex.t", "parse_recovery")];
+        let first_report = build_failure_cluster_report(&bundle, &report)?;
+        let history = merge_cluster_history(
+            FailureClusterHistory {
+                schema_version: FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION.into(),
+                entries: Vec::new(),
+            },
+            &first_report,
+        )?;
+        assert_eq!(history.entries.len(), 1);
+        assert_eq!(history.entries[0].status, FailureClusterHistoryStatus::Unassigned);
+        assert_eq!(history.entries[0].identity_quality, FailureClusterIdentityQuality::Provisional);
+        assert_eq!(history.entries[0].first_seen_series_id, "series-1");
+        assert_eq!(history.entries[0].last_seen_series_id, "series-1");
+        assert_eq!(history.entries[0].first_seen_bundle, "bundle-1");
+
+        let mut second_report = first_report.clone();
+        second_report.bundle_id = "bundle-2".into();
+        second_report.clusters[0].affected_files.push("base/ok.t".into());
+        second_report.clusters[0].affected_files.sort();
+        let history = merge_cluster_history(history, &second_report)?;
+        assert_eq!(history.entries[0].first_seen_bundle, "bundle-1");
+        assert_eq!(history.entries[0].last_seen_bundle, "bundle-2");
+        assert_eq!(history.entries[0].historical_affected_files, vec!["base/lex.t", "base/ok.t"]);
+
+        let mut absent_report = second_report;
+        absent_report.bundle_id = "bundle-3".into();
+        absent_report.clusters.clear();
+        let stale_absence = validate_history_against_report(&history, &absent_report);
+        assert!(stale_absence.iter().any(|violation| violation.contains("still marked current")));
+        let history_after_absence = merge_cluster_history(history.clone(), &absent_report)?;
+        assert_eq!(
+            history_after_absence.entries[0].presence,
+            FailureClusterHistoryPresence::AbsentUnresolved
+        );
+        assert!(!history_after_absence.entries[0].observed_in_current_bundle);
+        assert_eq!(
+            history_after_absence.entries[0].absence_since_bundle.as_deref(),
+            Some("bundle-3")
+        );
+        assert!(history_after_absence.entries[0].current_affected_files.is_empty());
+        assert!(history_after_absence.entries[0].current_stage.is_none());
+        assert!(validate_history_against_report(&history_after_absence, &absent_report).is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn cluster_history_rejects_stale_identity_and_unproven_resolution() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        report.failures.push(sample_failure("base/lex.t", "parse_recovery"));
+        let cluster_report = build_failure_cluster_report(&bundle, &report)?;
+        let mut history = merge_cluster_history(
+            FailureClusterHistory {
+                schema_version: FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION.into(),
+                entries: Vec::new(),
+            },
+            &cluster_report,
+        )?;
+        history.entries[0].manifest_hash = "stale-manifest".into();
+        let stale = validate_history_against_report(&history, &cluster_report);
+        assert!(stale.iter().any(|violation| violation.contains("stale series identity")));
+
+        history.entries[0].manifest_hash = cluster_report.manifest_hash.clone();
+        history.entries[0].status = FailureClusterHistoryStatus::Resolved;
+        history.entries[0].owner_issue = Some("#5175".into());
+        let invalid = validate_cluster_history_shape(&history);
+        assert!(invalid.iter().any(|violation| violation.contains("resolution PR")));
+        assert!(invalid.iter().any(|violation| violation.contains("resolution bundle")));
+        assert!(invalid.iter().any(|violation| violation.contains("before/after transition")));
+        Ok(())
+    }
+
+    #[test]
+    fn cluster_history_accepts_only_an_explicit_bound_transition() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        report.failures.push(sample_failure("base/lex.t", "parse_recovery"));
+        let cluster_report = build_failure_cluster_report(&bundle, &report)?;
+        let mut history = merge_cluster_history(
+            FailureClusterHistory {
+                schema_version: FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION.into(),
+                entries: Vec::new(),
+            },
+            &cluster_report,
+        )?;
+        let entry = &mut history.entries[0];
+        entry.owner_issue = Some("#5175".into());
+        entry.status = FailureClusterHistoryStatus::Resolved;
+        entry.presence = FailureClusterHistoryPresence::Resolved;
+        entry.observed_in_current_bundle = false;
+        entry.current_authority_bundle = None;
+        entry.absence_since_bundle = Some("bundle-2".into());
+        entry.current_affected_files.clear();
+        entry.current_fact_classes.clear();
+        entry.current_lsp_surfaces.clear();
+        entry.current_stage = None;
+        entry.resolution_pr = Some("#5300".into());
+        entry.resolution_bundle = Some("bundle-2".into());
+        entry.transitions.push(FailureClusterHistoryTransition {
+            transition_id: "transition-1".into(),
+            from_cluster_id: "failure-old".into(),
+            to_cluster_id: None,
+            to_presence: FailureClusterHistoryPresence::Resolved,
+            from_stage: "compile_effect".into(),
+            to_stage: "general_semantics".into(),
+            before_series_id: "series-1".into(),
+            before_manifest_hash: "manifest-1".into(),
+            before_bundle_id: "bundle-1".into(),
+            after_series_id: "series-1".into(),
+            after_manifest_hash: "manifest-1".into(),
+            after_bundle_id: "bundle-2".into(),
+            proof_plan: "focused typed proof plus exact-series replay".into(),
+            stop_condition: "the cluster no longer emits".into(),
+            implementation_pr: Some("#5300".into()),
+        });
+        assert!(validate_cluster_history_shape(&history).is_empty());
         Ok(())
     }
 
