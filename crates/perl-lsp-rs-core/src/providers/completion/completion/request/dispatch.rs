@@ -30,11 +30,8 @@ pub(super) fn complete_dispatch(
     // interpolation (e.g. "Hello $na|me"). Run sigil completion first so
     // variable candidates are offered, then fall through to file-path context
     // only if the prefix doesn't look like a variable. (COMPOSE-1d)
-    let prefix_starts_with_sigil = context
-        .prefix
-        .chars()
-        .next()
-        .is_some_and(|c| c == '$' || c == '@' || c == '%');
+    let prefix_starts_with_sigil =
+        context.prefix.chars().next().is_some_and(|c| c == '$' || c == '@' || c == '%');
 
     if context.in_string && !prefix_starts_with_sigil {
         complete_file_path_context(completions, context, source, is_cancelled);
