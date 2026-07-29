@@ -22,6 +22,18 @@ Examples:
 - claim wording changes invalidate the affected claim-boundary judgment;
 - an authority or support-boundary change may route back to issue preparation.
 
+## Formal-review currentness
+
+A formal review is a disposition of one complete candidate revision. Any head change after formal review requires a new formal-review record bound to the new head before merge.
+
+The depth of supporting re-examination remains proportional:
+
+- rerun focused proof and specialist lenses only where their semantic subjects changed;
+- inspect the new cumulative candidate sufficiently to verify that the changed-seam classification is itself sound;
+- then submit a fresh `REVIEW_CURRENT`, `REVIEW_FINDINGS_OPEN`, or `REVIEW_NOT_PROVEN` judgment for the new head.
+
+This preserves affected-only proof economics without allowing an unreviewed candidate revision to inherit a formal disposition from an older head.
+
 ## Squash-merge currentness
 
 This repository squash-merges. Therefore:
@@ -42,23 +54,24 @@ Do not rebase, update-branch, merge `main`, create empty commits, rerun formal r
 actual merge conflict
 → resolve conflict
 → candidate changed
-→ rerun affected proof and review
+→ rerun affected proof and specialist review
+→ submit fresh formal review for the resulting candidate
 ```
 
 A non-textual same-semantic-seam change on `main` may justify targeted interaction analysis even when Git reports no conflict. Branch mutation is required only when the integration result cannot otherwise be interpreted or live policy demands it.
 
 ## Affected-only invalidation
 
-After repair, rerun only evidence dimensions whose semantic subjects changed.
+After repair, rerun supporting evidence dimensions whose semantic subjects changed, then issue a fresh candidate-level formal-review disposition for the new head.
 
-| Change | Likely invalidation |
+| Change | Supporting evidence to refresh |
 | --- | --- |
 | PR-body wording only | claim review |
 | test-only repair | test review and dependent conclusions |
 | local implementation repair | focused behavior proof and changed-seam candidate review |
 | owner/consumer change | plan, authority review, proof seam |
 | external protocol change | external-truth judgment and dependent claims |
-| head changes after formal review | formal review for affected dimensions |
+| any head change after formal review | fresh formal-review record; supporting depth remains proportional |
 
 ## Merge boundary
 
