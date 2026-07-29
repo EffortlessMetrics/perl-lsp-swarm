@@ -826,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_category_derivation_is_consistent() {
+    fn legacy_category_derivation_is_consistent() -> Result<(), Box<dyn std::error::Error>> {
         // Spot-check key nodes against expected legacy categories.
         let checks: &[(&str, LegacyCategory)] = &[
             ("Package", LegacyCategory::Lowered),
@@ -844,10 +844,11 @@ mod tests {
         ];
         for &(kind, expected) in checks {
             let got = disposition_for(kind)
-                .unwrap_or_else(|| panic!("no disposition for {kind}"))
+                .ok_or_else(|| format!("no disposition for {kind}"))?
                 .legacy_category();
             assert_eq!(got, expected, "legacy_category mismatch for {kind}");
         }
+        Ok(())
     }
 
     #[test]
@@ -1001,7 +1002,8 @@ mod tests {
     }
 
     #[test]
-    fn intentionally_skipped_kinds_have_correct_multi_axis_flags() {
+    fn intentionally_skipped_kinds_have_correct_multi_axis_flags(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // `Program` (root wrapper): traversal-only, no items, no side-facts.
         let prog = disposition_for("Program").expect("Program must have a disposition");
         assert!(!prog.emits_items, "Program must NOT emit HIR items");
@@ -1028,7 +1030,7 @@ mod tests {
             "MissingBlock",
             "UnknownRest",
         ] {
-            let d = disposition_for(kind).unwrap_or_else(|| panic!("no disposition for {kind}"));
+            let d = disposition_for(kind).ok_or_else(|| format!("no disposition for {kind}"))?;
             assert!(!d.emits_items, "{kind} must NOT emit HIR items");
             assert!(!d.may_emit_boundary, "{kind} must NOT emit boundaries");
             assert!(!d.traverses_children, "{kind} must NOT traverse children");
@@ -1047,10 +1049,12 @@ mod tests {
         assert!(!proto.traverses_children, "Prototype does not traverse children");
         assert!(proto.records_side_facts, "Prototype must record declaration metadata");
         assert!(proto.is_intentional, "Prototype classification must be intentional");
+        Ok(())
     }
 
     #[test]
-    fn not_yet_modeled_kinds_have_correct_multi_axis_flags() {
+    fn not_yet_modeled_kinds_have_correct_multi_axis_flags(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // All `NotYetModeled` kinds must fall to `_ => visit_children` and must
         // therefore have `traverses_children=true` and `is_intentional=false`.
         for kind in [
@@ -1074,7 +1078,7 @@ mod tests {
             "VString",
             "AmperCall",
         ] {
-            let d = disposition_for(kind).unwrap_or_else(|| panic!("no disposition for {kind}"));
+            let d = disposition_for(kind).ok_or_else(|| format!("no disposition for {kind}"))?;
             assert!(!d.emits_items, "{kind} (NotYetModeled) must NOT emit HIR items");
             assert!(!d.may_emit_boundary, "{kind} (NotYetModeled) must NOT emit boundaries");
             assert!(
@@ -1092,6 +1096,7 @@ mod tests {
                 "{kind} must derive to NotYetModeled"
             );
         }
+        Ok(())
     }
 
     #[test]
