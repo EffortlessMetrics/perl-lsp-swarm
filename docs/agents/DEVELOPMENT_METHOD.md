@@ -13,7 +13,7 @@ current artifact
 → locally named next skill or material backward route
 ```
 
-The passes are the controls. Permanent personas, lifecycle labels, completion hooks, tracked stage state, and lane-coordination systems are not controls.
+The passes are the controls. Permanent personas, lifecycle labels, completion hooks, and tracked stage state are not controls.
 
 ## Governing law
 
