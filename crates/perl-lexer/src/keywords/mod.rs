@@ -15,6 +15,7 @@ pub const KEYWORDS: &[&str] = &[
     "END",
     "INIT",
     "UNITCHECK",
+    "__CLASS__",
     "__FILE__",
     "__LINE__",
     "__PACKAGE__",
@@ -146,6 +147,7 @@ pub const LSP_COMPLETION_KEYWORDS: &[&str] = &[
     "END",
     "INIT",
     "UNITCHECK",
+    "__CLASS__",
     "__FILE__",
     "__LINE__",
     "__PACKAGE__",
@@ -386,8 +388,8 @@ mod tests {
     fn keyword_inventory_counts_are_stable() {
         // These exact counts intentionally lock down curated inventories so
         // accidental additions/removals fail loudly.
-        assert_eq!(KEYWORDS.len(), 127, "KEYWORDS count changed");
-        assert_eq!(LSP_COMPLETION_KEYWORDS.len(), 68, "LSP_COMPLETION_KEYWORDS count changed");
+        assert_eq!(KEYWORDS.len(), 128, "KEYWORDS count changed");
+        assert_eq!(LSP_COMPLETION_KEYWORDS.len(), 69, "LSP_COMPLETION_KEYWORDS count changed");
         assert_eq!(DAP_COMPLETION_KEYWORDS.len(), 72, "DAP_COMPLETION_KEYWORDS count changed");
         assert_eq!(
             LSP_RUNTIME_COMPLETION_KEYWORDS.len(),
@@ -432,6 +434,7 @@ mod tests {
         assert!(is_keyword("print"));
         assert!(is_keyword("__PACKAGE__"));
         assert!(is_keyword("__SUB__"));
+        assert!(is_keyword("__CLASS__"));
         assert!(!is_keyword("definitely_not_a_perl_keyword"));
     }
 

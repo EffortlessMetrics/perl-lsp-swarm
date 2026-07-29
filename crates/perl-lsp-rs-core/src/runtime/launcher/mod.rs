@@ -822,6 +822,18 @@ pub fn help_text() -> String {
     );
     out.push_str("  --help               Show this help message\n");
     out.push('\n');
+    out.push_str("Fact export options:\n");
+    out.push_str("  --ripr-facts         Export a ripr-perl-facts-v1 fact packet and exit\n");
+    out.push_str("  --ripr-schema <ver>  Fact schema version (default: ripr-perl-facts-v1)\n");
+    out.push_str("  --ripr-root <path>   Repository root (default: .)\n");
+    out.push_str("  --ripr-base <ref>    Base git ref for differential extraction\n");
+    out.push_str("  --ripr-head <ref>    Head git ref for differential extraction\n");
+    out.push_str("  --ripr-fact-classes <list>\n");
+    out.push_str("                       Comma-separated fact classes to emit (default: all)\n");
+    out.push_str(
+        "  --ripr-out <path>    Output path (default: target/ripr/reports/perl-facts.json)\n",
+    );
+    out.push('\n');
     out.push_str("Examples:\n");
     out.push_str("  perllsp --stdio                        # stdio mode (default)\n");
     out.push_str("  perllsp --mcp                          # stdio mode alias for MCP clients\n");
@@ -885,7 +897,7 @@ const BASH_COMPLETION: &str = r#"_perl_lsp() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    opts="--stdio --mcp --socket --port --log --health --info --check --check-project --doctor --json --version --features-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help"
+    opts="--stdio --mcp --socket --port --log --health --info --check --check-project --doctor --json --version --features-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help --runtime-mode --diagnostic-mode --diagnostic-debounce-ms --eager-workspace-indexing --file-watchers --ripr-facts --ripr-schema --ripr-root --ripr-base --ripr-head --ripr-fact-classes --ripr-out"
 
     case "${prev}" in
         --port)
@@ -897,6 +909,18 @@ const BASH_COMPLETION: &str = r#"_perl_lsp() {
             ;;
         --completion)
             COMPREPLY=( $(compgen -W "bash zsh fish powershell pwsh" -- "${cur}") )
+            return 0
+            ;;
+        --runtime-mode)
+            COMPREPLY=( $(compgen -W "normal e2e" -- "${cur}") )
+            return 0
+            ;;
+        --diagnostic-mode)
+            COMPREPLY=( $(compgen -W "normal syntax-only" -- "${cur}") )
+            return 0
+            ;;
+        --ripr-root|--ripr-out)
+            COMPREPLY=( $(compgen -f -- "${cur}") )
             return 0
             ;;
         --perltidy-compat-report|--perlcritic-compat-report)
@@ -937,6 +961,18 @@ _perl-lsp() {
         '--perlcritic-compat-report[Report native critic compatibility for .perlcriticrc]:profile:_files' \
         '--feature-profile[Set feature profile]:profile:(ga-lock ga prod production all auto)' \
         '--completion[Generate shell completions]:shell:(bash zsh fish powershell pwsh)' \
+        '--runtime-mode[Runtime workload tuning]:mode:(normal e2e)' \
+        '--diagnostic-mode[Diagnostic scope tuning]:mode:(normal syntax-only)' \
+        '--diagnostic-debounce-ms[Diagnostic publish debounce window]:ms:' \
+        '--eager-workspace-indexing[Set eager-indexing tuning value]:bool:(true false)' \
+        '--file-watchers[Set file-watcher tuning value]:bool:(true false)' \
+        '--ripr-facts[Export a ripr-perl-facts-v1 fact packet]' \
+        '--ripr-schema[Fact schema version]:schema:' \
+        '--ripr-root[Repository root]:path:_directories' \
+        '--ripr-base[Base git ref]:ref:' \
+        '--ripr-head[Head git ref]:ref:' \
+        '--ripr-fact-classes[Fact classes filter]:classes:' \
+        '--ripr-out[Output path]:path:_files' \
         '--help[Show help message]' \
         '*:file:_files -g "*.{pl,pm,t}"'
 }
@@ -960,6 +996,18 @@ complete -c perl-lsp -l perltidy-compat-report -F -d 'Report native formatter co
 complete -c perl-lsp -l perlcritic-compat-report -F -d 'Report native critic compatibility for .perlcriticrc'
 complete -c perl-lsp -l feature-profile -x -a 'ga-lock ga prod production all auto' -d 'Set feature profile'
 complete -c perl-lsp -l completion -x -a 'bash zsh fish powershell pwsh' -d 'Generate shell completions'
+complete -c perl-lsp -l runtime-mode -x -a 'normal e2e' -d 'Runtime workload tuning'
+complete -c perl-lsp -l diagnostic-mode -x -a 'normal syntax-only' -d 'Diagnostic scope tuning'
+complete -c perl-lsp -l diagnostic-debounce-ms -x -d 'Diagnostic publish debounce window'
+complete -c perl-lsp -l eager-workspace-indexing -x -a 'true false' -d 'Set eager-indexing tuning value'
+complete -c perl-lsp -l file-watchers -x -a 'true false' -d 'Set file-watcher tuning value'
+complete -c perl-lsp -l ripr-facts -d 'Export a ripr-perl-facts-v1 fact packet'
+complete -c perl-lsp -l ripr-schema -x -d 'Fact schema version'
+complete -c perl-lsp -l ripr-root -d 'Repository root'
+complete -c perl-lsp -l ripr-base -x -d 'Base git ref for differential extraction'
+complete -c perl-lsp -l ripr-head -x -d 'Head git ref for differential extraction'
+complete -c perl-lsp -l ripr-fact-classes -x -d 'Fact classes filter'
+complete -c perl-lsp -l ripr-out -r -d 'Output path'
 complete -c perl-lsp -l help -d 'Show help message'
 "#;
 
@@ -983,6 +1031,18 @@ const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -Comma
         [CompletionResult]::new('--perlcritic-compat-report', '--perlcritic-compat-report', 'ParameterName', 'Report native critic compatibility for .perlcriticrc')
         [CompletionResult]::new('--feature-profile', '--feature-profile', 'ParameterName', 'Set feature profile')
         [CompletionResult]::new('--completion', '--completion', 'ParameterName', 'Generate shell completions')
+        [CompletionResult]::new('--runtime-mode', '--runtime-mode', 'ParameterName', 'Runtime workload tuning')
+        [CompletionResult]::new('--diagnostic-mode', '--diagnostic-mode', 'ParameterName', 'Diagnostic scope tuning')
+        [CompletionResult]::new('--diagnostic-debounce-ms', '--diagnostic-debounce-ms', 'ParameterName', 'Diagnostic publish debounce window')
+        [CompletionResult]::new('--eager-workspace-indexing', '--eager-workspace-indexing', 'ParameterName', 'Set eager-indexing tuning value')
+        [CompletionResult]::new('--file-watchers', '--file-watchers', 'ParameterName', 'Set file-watcher tuning value')
+        [CompletionResult]::new('--ripr-facts', '--ripr-facts', 'ParameterName', 'Export a ripr-perl-facts-v1 fact packet')
+        [CompletionResult]::new('--ripr-schema', '--ripr-schema', 'ParameterName', 'Fact schema version')
+        [CompletionResult]::new('--ripr-root', '--ripr-root', 'ParameterName', 'Repository root')
+        [CompletionResult]::new('--ripr-base', '--ripr-base', 'ParameterName', 'Base git ref')
+        [CompletionResult]::new('--ripr-head', '--ripr-head', 'ParameterName', 'Head git ref')
+        [CompletionResult]::new('--ripr-fact-classes', '--ripr-fact-classes', 'ParameterName', 'Fact classes filter')
+        [CompletionResult]::new('--ripr-out', '--ripr-out', 'ParameterName', 'Output path')
         [CompletionResult]::new('--help', '--help', 'ParameterName', 'Show help message')
     )
 
@@ -997,6 +1057,26 @@ const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -Comma
         }
         '--feature-profile' {
             @('ga-lock', 'ga', 'prod', 'production', 'all', 'auto') | Where-Object { $_ -like "$wordToComplete*" } |
+                ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+            return
+        }
+        '--runtime-mode' {
+            @('normal', 'e2e') | Where-Object { $_ -like "$wordToComplete*" } |
+                ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+            return
+        }
+        '--diagnostic-mode' {
+            @('normal', 'syntax-only') | Where-Object { $_ -like "$wordToComplete*" } |
+                ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+            return
+        }
+        '--eager-workspace-indexing' {
+            @('true', 'false') | Where-Object { $_ -like "$wordToComplete*" } |
+                ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+            return
+        }
+        '--file-watchers' {
+            @('true', 'false') | Where-Object { $_ -like "$wordToComplete*" } |
                 ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
             return
         }

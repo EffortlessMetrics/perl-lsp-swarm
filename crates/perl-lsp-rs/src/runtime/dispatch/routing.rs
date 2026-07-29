@@ -220,6 +220,24 @@ impl LspServer {
             // consume a worker thread for ~1 second per call (issue #4632).
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             "$/test/slowOperation" => self.handle_slow_operation_dispatch(&id, request.params),
+            // Tolerate unknown `$`-prefixed methods per LSP spec:
+            // "$"-prefixed method names are implementation-defined and should be
+            // silently ignored (notifications) or return MethodNotFound (requests)
+            // without constructing an enhanced error. This avoids noisy debug
+            // logging when clients echo progress/trace notifications back.
+            _ if method.starts_with('$') => {
+                if id.is_none() {
+                    tracing::trace!(method = %method, "Ignoring unknown $-prefixed notification");
+                    Ok(None)
+                } else {
+                    tracing::debug!(method = %method, "Unknown $-prefixed request");
+                    Err(JsonRpcError {
+                        code: METHOD_NOT_FOUND,
+                        message: format!("Method '{}' not found or not supported", method),
+                        data: None,
+                    })
+                }
+            }
             _ => {
                 tracing::debug!(method = %method, "Method not implemented");
                 // Enhanced error response with comprehensive context
