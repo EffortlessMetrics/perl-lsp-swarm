@@ -5,7 +5,6 @@ import type { LanguageClient } from 'vscode-languageclient/node';
 
 type DocumentClient = Pick<LanguageClient, 'sendRequest'>;
 type DocumentOutputChannel = Pick<vscode.OutputChannel, 'appendLine' | 'show'>;
-type AstOutputChannel = Pick<vscode.OutputChannel, 'clear' | 'appendLine' | 'show'>;
 export type ExecFileLike = (
   file: string,
   args: string[],
