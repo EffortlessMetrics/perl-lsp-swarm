@@ -232,6 +232,15 @@ impl DebugAdapter {
         self.event_sender = Some(sender);
     }
 
+    /// Initialize the workspace root boundary for path validation.
+    ///
+    /// Called by `DapServer::new` when a root is present in `DapConfig`. Once a
+    /// server-configured root is set, it is authoritative: a `workspaceRoot` field
+    /// in a subsequent launch request cannot widen it.
+    pub fn set_workspace_root(&self, root: PathBuf) {
+        *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
+    }
+
     /// Start a new session generation and reset its terminal-event gate.
     pub(super) fn begin_session_generation(&self) -> u64 {
         let mut state = lock_or_recover(&self.termination_state, "debug_adapter.termination_state");

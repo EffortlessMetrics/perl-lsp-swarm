@@ -139,13 +139,22 @@ impl DebugAdapter {
             // separate from the workspace validation boundary (which is always the script's parent).
             let user_cwd = args.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from);
 
-            // Set workspace root for path validation
-            // Always use the script's parent directory as the workspace boundary
-            // The workspace validation ensures the script exists within its project context
-            let workspace = Path::new(program).parent().map(PathBuf::from);
-            if let Some(ref root) = workspace {
-                *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") =
-                    Some(root.clone());
+            // Apply launch-provided workspaceRoot to the adapter boundary when no
+            // server-configured root is already authoritative. Never derive the boundary
+            // from program.parent() — that makes every launch trivially self-validating.
+            let launch_root = args
+                .get("workspaceRoot")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute());
+            if let Some(root) = launch_root {
+                let mut ws = lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root");
+                if ws.is_none() {
+                    // Server-configured root (from DapConfig) takes precedence;
+                    // only accept the launch field when no authoritative root exists.
+                    *ws = Some(root);
+                }
             }
 
             let perl_args = args

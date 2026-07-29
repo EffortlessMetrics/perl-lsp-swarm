@@ -93,3 +93,160 @@ fn test_launch_allows_valid_path() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+
+/// Regression test for the bypass where workspace_root = program.parent() made every
+/// launch self-validating. With a real workspace root configured, a script in a
+/// different directory must be rejected before Perl is spawned.
+#[test]
+fn test_configured_workspace_root_rejects_outside_script() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut adapter = DebugAdapter::new();
+    initialize_adapter(&mut adapter);
+
+    let workspace_dir = tempfile::tempdir()?;
+    let outside_dir = tempfile::tempdir()?;
+
+    // Script lives outside the workspace
+    let outside_script = outside_dir.path().join("attack.pl");
+    fs::write(&outside_script, "print 'bad';")?;
+
+    // Set the workspace root through the config seam (simulating DapServer::new wiring)
+    adapter.set_workspace_root(workspace_dir.path().to_path_buf());
+
+    let args = json!({
+        "program": must_some(outside_script.to_str()),
+        "args": []
+    });
+
+    let response = adapter.handle_request(2, "launch", Some(args));
+
+    match response {
+        DapMessage::Response { success, message, .. } => {
+            assert!(!success, "Launch of out-of-workspace script must be rejected");
+            let msg = message.unwrap_or_default();
+            assert!(
+                msg.contains("outside your workspace") || msg.contains("outside workspace"),
+                "Expected workspace-boundary rejection, got: {msg}"
+            );
+        }
+        other => return Err(format!("Expected Response, got: {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// A script inside the configured workspace root must be accepted by the boundary check.
+#[test]
+fn test_configured_workspace_root_accepts_inside_script() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut adapter = DebugAdapter::new();
+    initialize_adapter(&mut adapter);
+
+    let workspace_dir = tempfile::tempdir()?;
+    let script = workspace_dir.path().join("test.pl");
+    fs::write(&script, "print 'ok';")?;
+
+    adapter.set_workspace_root(workspace_dir.path().to_path_buf());
+
+    let args = json!({
+        "program": must_some(script.to_str()),
+        "args": []
+    });
+
+    let response = adapter.handle_request(2, "launch", Some(args));
+
+    match response {
+        DapMessage::Response { success, message, .. } => {
+            if !success {
+                let msg = message.unwrap_or_default();
+                assert!(
+                    !msg.contains("outside your workspace") && !msg.contains("outside workspace"),
+                    "Script inside workspace was incorrectly rejected: {msg}"
+                );
+            }
+        }
+        other => return Err(format!("Expected Response, got: {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// A `workspaceRoot` field in the launch args provides the boundary when no
+/// server-configured root is present. Scripts outside the declared root are rejected.
+#[test]
+fn test_launch_workspace_root_field_rejects_outside_script()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut adapter = DebugAdapter::new();
+    initialize_adapter(&mut adapter);
+
+    let workspace_dir = tempfile::tempdir()?;
+    let outside_dir = tempfile::tempdir()?;
+
+    let outside_script = outside_dir.path().join("attack.pl");
+    fs::write(&outside_script, "print 'bad';")?;
+
+    // No set_workspace_root() call — root comes only from the launch field
+    let args = json!({
+        "program": must_some(outside_script.to_str()),
+        "workspaceRoot": must_some(workspace_dir.path().to_str()),
+        "args": []
+    });
+
+    let response = adapter.handle_request(2, "launch", Some(args));
+
+    match response {
+        DapMessage::Response { success, message, .. } => {
+            assert!(!success, "Launch of out-of-workspace script must be rejected");
+            let msg = message.unwrap_or_default();
+            assert!(
+                msg.contains("outside your workspace") || msg.contains("outside workspace"),
+                "Expected workspace-boundary rejection, got: {msg}"
+            );
+        }
+        other => return Err(format!("Expected Response, got: {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// A `workspaceRoot` launch field must not widen a server-configured root.
+/// An attacker supplying a broad `workspaceRoot` in a launch request must not
+/// bypass the tighter server-configured boundary.
+#[test]
+fn test_launch_workspace_root_field_cannot_widen_server_root()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut adapter = DebugAdapter::new();
+    initialize_adapter(&mut adapter);
+
+    let workspace_dir = tempfile::tempdir()?;
+    let outside_dir = tempfile::tempdir()?;
+
+    let outside_script = outside_dir.path().join("attack.pl");
+    fs::write(&outside_script, "print 'bad';")?;
+
+    // Configure a narrow server root
+    adapter.set_workspace_root(workspace_dir.path().to_path_buf());
+
+    // Client attempts to widen the boundary by supplying the parent of both dirs
+    let broad_root = outside_dir.path().to_str().unwrap_or("/");
+    let args = json!({
+        "program": must_some(outside_script.to_str()),
+        "workspaceRoot": broad_root,
+        "args": []
+    });
+
+    let response = adapter.handle_request(2, "launch", Some(args));
+
+    match response {
+        DapMessage::Response { success, message, .. } => {
+            assert!(
+                !success,
+                "A client-supplied workspaceRoot must not widen the server-configured root"
+            );
+            let msg = message.unwrap_or_default();
+            assert!(
+                msg.contains("outside your workspace") || msg.contains("outside workspace"),
+                "Expected workspace-boundary rejection, got: {msg}"
+            );
+        }
+        other => return Err(format!("Expected Response, got: {other:?}").into()),
+    }
+    Ok(())
+}
