@@ -62,6 +62,19 @@ pub(super) fn find_line_end(provider: &CodeActionsProvider, pos: usize) -> usize
         .unwrap_or(provider.source().len())
 }
 
+pub(super) fn file_scope_pragma_insertion_offset(source: &str) -> usize {
+    if source.starts_with("#!") {
+        source.find('\n').map_or(source.len(), |offset| offset + 1)
+    } else {
+        0
+    }
+}
+
+pub(super) fn file_scope_pragma_text(source: &str, pragma: &str) -> String {
+    let separator = if source.starts_with("#!") && !source.contains('\n') { "\n" } else { "" };
+    format!("{separator}{pragma};\n")
+}
+
 pub(super) fn detect_quote_char(provider: &CodeActionsProvider, pos: usize) -> char {
     let source = provider.source();
     let before = &source[pos.saturating_sub(10)..pos];

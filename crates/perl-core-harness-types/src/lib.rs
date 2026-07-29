@@ -19,6 +19,12 @@ pub const RUNNER_RECORD_SCHEMA_VERSION: &str = "perl_core_harness.runner_record.
 pub const COMPARISON_SERIES_SCHEMA_VERSION: &str = "perl_core_harness.comparison_series.v1";
 pub const SERIES_MANIFEST_SCHEMA_VERSION: &str = COMPARISON_SERIES_SCHEMA_VERSION;
 pub const SERIES_MANIFEST_NORMALIZATION_VERSION: &str = "path-normalization.v1";
+pub const BOUNDARY_RETIREMENT_SCHEMA_VERSION: &str = "perl_core_harness.boundary_retirement.v1";
+pub const SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION: &str =
+    "perl_core_harness.semantic_boundary_registry.v1";
+pub const FAILURE_CLUSTER_SCHEMA_VERSION: &str = "perl_core_harness.failure_cluster.v1";
+pub const FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION: &str =
+    "perl_core_harness.failure_cluster_history.v1";
 
 /// Upstream Perl test scheduler to query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
@@ -164,12 +170,23 @@ pub struct SeriesManifest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct BoundaryRetirement {
+    /// Schema for this retirement receipt.
+    pub schema_version: String,
     pub path: String,
     pub id: String,
     pub source_start: usize,
     pub source_end: usize,
+    /// Comparison series that emitted the retired boundary.
+    pub series_id: String,
+    /// Comparison-series manifest hash identifying the retired boundary's denominator.
+    pub manifest_hash: String,
+    /// Compiler measurement commit used for the replacement run.
+    pub measurement_sha: String,
+    /// Stable digest of the replacement run report.
+    pub source_report_digest: String,
     pub transition_id: String,
     pub replacement_issue: String,
+    /// Content-addressed #5171 evidence bundle reference.
     pub evidence_bundle: String,
 }
 
@@ -566,6 +583,229 @@ pub struct ObservedSemanticBoundary {
     pub supporting_test: String,
 }
 
+/// Lifecycle state of a governed semantic-boundary registry entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticBoundaryRegistryState {
+    /// The boundary is currently emitted and must be observed in fresh evidence.
+    Active,
+    /// The boundary is expected to disappear after a reviewed replacement lands.
+    Retiring,
+    /// The boundary has disappeared in an exact-series receipt and is retained as history.
+    Retired,
+}
+
+/// Reviewed replacement strategy for a governed semantic boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticBoundaryReplacementStrategy {
+    GeneralParser,
+    HirSemantics,
+    CompileWorld,
+    AbstractCompileTimeEngine,
+    PlatformCapabilityModel,
+    ExecutableProfileEir,
+    LongLivedTestHarnessCompatibility,
+}
+
+/// One durable owner and proof record for an observed semantic boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticBoundaryRegistryEntry {
+    pub id: String,
+    pub disposition: SemanticBoundaryDisposition,
+    pub source_kind: String,
+    pub semantic_meaning: String,
+    pub series_id: String,
+    pub profile: HarnessProfile,
+    pub path: String,
+    pub manifest_hash: String,
+    pub source_span: SemanticBoundarySourceSpan,
+    pub source_shape: String,
+    pub lock_scope: SemanticBoundaryLockScope,
+    pub reason: String,
+    pub ambient_dependency: String,
+    pub blocks_downstream_static_facts: bool,
+    pub owner_issue: String,
+    pub supporting_test: String,
+    pub wrong_file_test: String,
+    pub changed_shape_test: String,
+    pub introduction_pr: String,
+    pub introduction_commit: String,
+    pub first_accepted_bundle: String,
+    pub replacement_strategy: SemanticBoundaryReplacementStrategy,
+    pub state: SemanticBoundaryRegistryState,
+    pub retirement_pr: Option<String>,
+    pub retirement_bundle: Option<String>,
+    pub review_after: Option<String>,
+    pub permanent_boundary_rationale: Option<String>,
+}
+
+/// Versioned machine-readable semantic-boundary registry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticBoundaryRegistry {
+    pub schema_version: String,
+    pub entries: Vec<SemanticBoundaryRegistryEntry>,
+}
+
+/// Normalized, membership-independent root-cause signature for one failure cluster.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailureClusterSignature {
+    pub schema_version: String,
+    pub series_id: String,
+    pub profile: HarnessProfile,
+    pub mode: HarnessMode,
+    pub stage: String,
+    pub bucket: String,
+    pub workstream: String,
+    pub source_shape_fingerprint: String,
+    pub fact_classes: Vec<String>,
+    pub lsp_surfaces: Vec<String>,
+}
+
+/// Deterministically reproducible compiler work cluster derived from one bundle.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailureCluster {
+    pub cluster_id: String,
+    pub signature: FailureClusterSignature,
+    pub affected_files: Vec<String>,
+    pub representative_failure: RunFailure,
+    pub direct_reproduction: String,
+    pub impacted_layer: String,
+    pub fact_classes: Vec<String>,
+    pub lsp_surfaces: Vec<String>,
+    pub occurrence_count: usize,
+    pub exact_series_proof_required: bool,
+}
+
+/// A semantic-boundary debt candidate kept separate from product failures.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailureDebtCandidate {
+    pub path: String,
+    pub id: String,
+    pub disposition: SemanticBoundaryDisposition,
+    pub reason: String,
+    pub owner_workstream: String,
+    pub exact_series_proof_required: bool,
+}
+
+/// Deterministic cluster and debt-candidate report for one evidence bundle.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailureClusterReport {
+    pub schema_version: String,
+    pub bundle_id: String,
+    pub series_id: String,
+    pub manifest_hash: String,
+    pub repository_commit: String,
+    pub profile: HarnessProfile,
+    pub mode: HarnessMode,
+    pub clusters: Vec<FailureCluster>,
+    pub debt_candidates: Vec<FailureDebtCandidate>,
+}
+
+/// Lifecycle state for a persisted compiler failure cluster.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureClusterHistoryStatus {
+    Unassigned,
+    Investigating,
+    BuilderReady,
+    InBuild,
+    Resolved,
+    AcceptedDebt,
+}
+
+/// Whether a history entry is present in the current authoritative bundle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureClusterHistoryPresence {
+    Observed,
+    AbsentUnresolved,
+    Resolved,
+    AcceptedDebt,
+}
+
+/// Whether the persisted cluster identity is backed by typed evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureClusterIdentityQuality {
+    Provisional,
+    Typed,
+}
+
+/// Explicit before/after evidence for a cluster or stage transition.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailureClusterHistoryTransition {
+    pub transition_id: String,
+    pub from_cluster_id: String,
+    pub to_cluster_id: Option<String>,
+    pub to_presence: FailureClusterHistoryPresence,
+    pub from_stage: String,
+    pub to_stage: String,
+    pub before_series_id: String,
+    pub before_manifest_hash: String,
+    pub before_bundle_id: String,
+    pub after_series_id: String,
+    pub after_manifest_hash: String,
+    pub after_bundle_id: String,
+    pub proof_plan: String,
+    pub stop_condition: String,
+    pub implementation_pr: Option<String>,
+}
+
+/// Durable state for one cluster across authoritative evidence bundles.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailureClusterHistoryEntry {
+    pub cluster_id: String,
+    pub signature_schema_version: String,
+    pub identity_quality: FailureClusterIdentityQuality,
+    pub series_id: String,
+    pub manifest_hash: String,
+    pub first_seen_series_id: String,
+    pub first_seen_manifest_hash: String,
+    pub last_seen_series_id: String,
+    pub last_seen_manifest_hash: String,
+    pub first_seen_bundle: String,
+    pub last_seen_bundle: String,
+    pub current_affected_files: Vec<String>,
+    pub historical_affected_files: Vec<String>,
+    pub current_fact_classes: Vec<String>,
+    pub fact_classes: Vec<String>,
+    pub current_lsp_surfaces: Vec<String>,
+    pub lsp_surfaces: Vec<String>,
+    pub occurrence_count: usize,
+    pub current_stage: Option<String>,
+    pub current_authority_bundle: Option<String>,
+    pub observed_in_current_bundle: bool,
+    pub absence_since_bundle: Option<String>,
+    pub presence: FailureClusterHistoryPresence,
+    pub impacted_layer: String,
+    pub owner_issue: Option<String>,
+    pub status: FailureClusterHistoryStatus,
+    pub direct_reproduction: String,
+    pub proposed_transition: String,
+    pub stop_condition: String,
+    pub accepted_debt_refs: Vec<String>,
+    pub resolution_pr: Option<String>,
+    pub resolution_bundle: Option<String>,
+    pub transitions: Vec<FailureClusterHistoryTransition>,
+}
+
+/// Versioned persistent cluster history and ownership ledger.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailureClusterHistory {
+    pub schema_version: String,
+    pub entries: Vec<FailureClusterHistoryEntry>,
+}
+
 pub fn workstream_for_bucket(bucket: &str) -> &'static str {
     match bucket {
         "parse_recovery" => "parser_recovery",
@@ -615,18 +855,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schema_constants_are_stable() {
-        assert_eq!(DISCOVERY_SCHEMA_VERSION, "perl_core_harness.discovery.v1");
-        assert_eq!(RUN_REPORT_SCHEMA_VERSION, "perl_core_harness.report.v1");
-        assert_eq!(COMPILE_BASELINE_SCHEMA_VERSION, "perl_core_harness.compile_baseline.v1");
-        assert_eq!(COMPILE_BASELINE_V2_SCHEMA_VERSION, "perl_core_harness.compile_baseline.v2");
-        assert_eq!(COMPARISON_SERIES_SCHEMA_VERSION, "perl_core_harness.comparison_series.v1");
-        assert_eq!(SMOKE_SCHEMA_VERSION, "perl_core_harness.smoke.v1");
-        assert_eq!(PREPARE_SCHEMA_VERSION, "perl_core_harness.prepare.v1");
-        assert_eq!(GAP_MAP_SCHEMA_VERSION, "perl_core_harness.gap_map.v1");
-        assert_eq!(RUNNER_RECORD_SCHEMA_VERSION, "perl_core_harness.runner_record.v1");
-        assert_eq!(SERIES_MANIFEST_SCHEMA_VERSION, "perl_core_harness.comparison_series.v1");
-        assert_eq!(SERIES_MANIFEST_NORMALIZATION_VERSION, "path-normalization.v1");
+    fn schema_constants_are_stable() -> Result<(), String> {
+        let expected = [
+            (DISCOVERY_SCHEMA_VERSION, "perl_core_harness.discovery.v1"),
+            (RUN_REPORT_SCHEMA_VERSION, "perl_core_harness.report.v1"),
+            (COMPILE_BASELINE_SCHEMA_VERSION, "perl_core_harness.compile_baseline.v1"),
+            (COMPILE_BASELINE_V2_SCHEMA_VERSION, "perl_core_harness.compile_baseline.v2"),
+            (COMPARISON_SERIES_SCHEMA_VERSION, "perl_core_harness.comparison_series.v1"),
+            (SMOKE_SCHEMA_VERSION, "perl_core_harness.smoke.v1"),
+            (PREPARE_SCHEMA_VERSION, "perl_core_harness.prepare.v1"),
+            (GAP_MAP_SCHEMA_VERSION, "perl_core_harness.gap_map.v1"),
+            (RUNNER_RECORD_SCHEMA_VERSION, "perl_core_harness.runner_record.v1"),
+            (SERIES_MANIFEST_SCHEMA_VERSION, "perl_core_harness.comparison_series.v1"),
+            (SERIES_MANIFEST_NORMALIZATION_VERSION, "path-normalization.v1"),
+            (BOUNDARY_RETIREMENT_SCHEMA_VERSION, "perl_core_harness.boundary_retirement.v1"),
+            (
+                SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION,
+                "perl_core_harness.semantic_boundary_registry.v1",
+            ),
+            (FAILURE_CLUSTER_SCHEMA_VERSION, "perl_core_harness.failure_cluster.v1"),
+            (
+                FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
+                "perl_core_harness.failure_cluster_history.v1",
+            ),
+        ];
+        for (actual, expected) in expected {
+            if actual != expected {
+                return Err(format!("schema constant {actual:?} did not equal {expected:?}"));
+            }
+        }
+        Ok(())
     }
 
     #[test]

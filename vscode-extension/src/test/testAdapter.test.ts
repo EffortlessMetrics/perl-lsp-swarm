@@ -10,7 +10,13 @@ describe('test adapter TAP parsing', () => {
       '1..1',
     ].join('\n');
 
-    expect(parseTapOutput(output)).toEqual({ total: 1, passed: 1, failed: 0, bailOut: null });
+    expect(parseTapOutput(output)).toEqual({
+      total: 1,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      bailOut: null,
+    });
   });
 
   test('preserves bailout text and plan count', () => {
@@ -18,7 +24,30 @@ describe('test adapter TAP parsing', () => {
       total: 3,
       passed: 0,
       failed: 0,
+      skipped: 0,
       bailOut: 'database unavailable',
+    });
+  });
+
+  test('counts TODO failures as skipped, not failed', () => {
+    const output = ['not ok 1 - future feature # TODO not implemented yet', '1..1'].join('\n');
+    expect(parseTapOutput(output)).toEqual({
+      total: 1,
+      passed: 0,
+      failed: 0,
+      skipped: 1,
+      bailOut: null,
+    });
+  });
+
+  test('counts SKIP passes as skipped, not passed', () => {
+    const output = ['ok 1 - platform-specific # SKIP only on linux', '1..1'].join('\n');
+    expect(parseTapOutput(output)).toEqual({
+      total: 1,
+      passed: 0,
+      failed: 0,
+      skipped: 1,
+      bailOut: null,
     });
   });
 

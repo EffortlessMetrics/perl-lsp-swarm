@@ -10,20 +10,29 @@
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness_types::{
-    BaselineComparison, BaselineViolation, BaselineViolationKind, BoundaryRetirement,
-    COMPILE_BASELINE_SCHEMA_VERSION, COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaseline,
-    CompileBaselineV2, DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport,
-    GAP_MAP_SCHEMA_VERSION, GapMap, ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION,
-    PrepareReceipt, PrepareStatus, RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport,
-    RunSummary, RunnerRecord, RunnerStatus, SERIES_MANIFEST_NORMALIZATION_VERSION,
+    BOUNDARY_RETIREMENT_SCHEMA_VERSION, BaselineComparison, BaselineViolation,
+    BaselineViolationKind, BoundaryRetirement, COMPILE_BASELINE_SCHEMA_VERSION,
+    COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaseline, CompileBaselineV2,
+    DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport,
+    FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION, FAILURE_CLUSTER_SCHEMA_VERSION, FailureCluster,
+    FailureClusterHistory, FailureClusterHistoryEntry, FailureClusterHistoryPresence,
+    FailureClusterHistoryStatus, FailureClusterIdentityQuality, FailureClusterReport,
+    FailureClusterSignature, FailureDebtCandidate, GAP_MAP_SCHEMA_VERSION, GapMap,
+    ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus,
+    RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunSummary, RunnerRecord,
+    RunnerStatus, SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION, SERIES_MANIFEST_NORMALIZATION_VERSION,
     SERIES_MANIFEST_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION, SemanticBoundaryConfidence,
-    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SeriesManifest, SmokeFailureKind,
-    SmokeReport, SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
+    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SemanticBoundaryRegistry,
+    SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
+    SemanticBoundaryReplacementStrategy, SeriesManifest, SmokeFailureKind, SmokeReport,
+    SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
 };
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -225,6 +234,28 @@ pub struct SeriesManifestConfig {
     pub check: bool,
 }
 
+/// Configuration for `perl-core-harness boundaries`.
+#[derive(Debug, Clone)]
+pub struct BoundaryRegistryConfig {
+    pub registry: PathBuf,
+    pub baselines: Vec<PathBuf>,
+    pub bundles: Vec<PathBuf>,
+    pub output: Option<PathBuf>,
+    pub check: bool,
+    pub report: bool,
+    pub historical: bool,
+}
+
+/// Configuration for `perl-core-harness triage`.
+#[derive(Debug, Clone)]
+pub struct TriageConfig {
+    pub bundle: PathBuf,
+    pub output: PathBuf,
+    pub history: Option<PathBuf>,
+    pub write_history: bool,
+    pub check_history: bool,
+}
+
 /// Configuration for `perl-core-harness smoke`.
 #[derive(Debug, Clone)]
 pub struct SmokeConfig {
@@ -331,6 +362,1441 @@ pub fn series_manifest(config: SeriesManifestConfig) -> Result<()> {
         manifest.normalized_manifest.len()
     );
     Ok(())
+}
+
+/// Validate the semantic-boundary registry against accepted v2 baselines and
+/// optional durable evidence-bundle indexes.
+pub fn boundaries(config: BoundaryRegistryConfig) -> Result<()> {
+    let raw = fs::read_to_string(&config.registry)
+        .with_context(|| format!("reading boundary registry {}", config.registry.display()))?;
+    let registry: SemanticBoundaryRegistry = serde_json::from_str(&raw)
+        .with_context(|| format!("decoding boundary registry {}", config.registry.display()))?;
+
+    let mut violations = validate_boundary_registry_shape(&registry);
+    let mut baseline_data = Vec::new();
+    for path in &config.baselines {
+        match read_compile_baseline_v2(path) {
+            Ok(baseline) => baseline_data.push((path.clone(), baseline)),
+            Err(error) => violations.push(format!("{}: {error}", path.display())),
+        }
+    }
+
+    let mut bundle_data = Vec::new();
+    for path in &config.bundles {
+        match read_boundary_bundle(path) {
+            Ok(bundle) => bundle_data.push(bundle),
+            Err(error) => violations.push(format!("{}: {error}", path.display())),
+        }
+    }
+
+    for (path, baseline) in &baseline_data {
+        violations.extend(validate_registry_against_baseline(
+            &registry,
+            baseline,
+            config.historical,
+        ));
+        for bundle in bundle_data.iter().filter(|bundle| {
+            bundle.index.series_id == baseline.series_id && bundle.index.profile == baseline.profile
+        }) {
+            violations.extend(validate_bundle_against_baseline(bundle, baseline));
+        }
+        if !config.bundles.is_empty()
+            && !bundle_data.iter().any(|bundle| {
+                bundle.index.series_id == baseline.series_id
+                    && bundle.index.profile == baseline.profile
+            })
+        {
+            violations.push(format!(
+                "{}: no evidence bundle was supplied for series {} profile {}",
+                path.display(),
+                baseline.series_id,
+                baseline.profile
+            ));
+        }
+    }
+    for bundle in &bundle_data {
+        if !baseline_data.iter().any(|(_, baseline)| {
+            baseline.series_id == bundle.index.series_id && baseline.profile == bundle.index.profile
+        }) {
+            violations.push(format!(
+                "bundle {} has no matching accepted baseline authority",
+                bundle.index.bundle_id
+            ));
+        }
+    }
+
+    let report = boundary_registry_report(
+        &registry,
+        &baseline_data,
+        &bundle_data,
+        config.historical,
+        violations,
+    );
+    let json =
+        serde_json::to_string_pretty(&report).context("serializing boundary registry report")?;
+    if let Some(path) = &config.output {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("creating boundary registry report directory {}", parent.display())
+            })?;
+        }
+        fs::write(path, format!("{json}\n"))
+            .with_context(|| format!("writing boundary registry report {}", path.display()))?;
+    } else if config.report {
+        io::stdout()
+            .write_all(format!("{json}\n").as_bytes())
+            .context("writing boundary registry report")?;
+    }
+
+    if !report.valid {
+        bail!(
+            "semantic-boundary registry validation failed with {} violation(s):\n{}",
+            report.violations.len(),
+            report.violations.join("\n")
+        );
+    }
+    Ok(())
+}
+
+/// Cluster typed failures and separate semantic-boundary debt from product failures.
+pub fn triage(config: TriageConfig) -> Result<()> {
+    let bundle = read_boundary_bundle(&config.bundle)?;
+    let compile_path = bundle_artifact_path(&bundle, "compile_report")?;
+    let raw = fs::read_to_string(&compile_path)
+        .with_context(|| format!("reading compile report {}", compile_path.display()))?;
+    let report: RunReport = serde_json::from_str(&raw)
+        .with_context(|| format!("decoding compile report {}", compile_path.display()))?;
+    validate_bundle_report_identity(&bundle, &report)?;
+    ensure_valid_report_shape(&report)?;
+    let cluster_report = build_failure_cluster_report(&bundle, &report)?;
+    fs::create_dir_all(&config.output)
+        .with_context(|| format!("creating triage output directory {}", config.output.display()))?;
+    let json =
+        serde_json::to_string_pretty(&cluster_report).context("serializing failure clusters")?;
+    fs::write(config.output.join("failure-clusters.json"), format!("{json}\n"))
+        .context("writing failure-clusters.json")?;
+    fs::write(
+        config.output.join("failure-clusters.md"),
+        render_failure_cluster_markdown(&cluster_report),
+    )
+    .context("writing failure-clusters.md")?;
+
+    if config.write_history || config.check_history {
+        let history_path = config.history.as_ref().ok_or_else(|| {
+            color_eyre::eyre::eyre!("history path is required for history checks")
+        })?;
+        let history = read_cluster_history(history_path, config.write_history)?;
+        let shape_violations = validate_cluster_history_shape(&history);
+        if !shape_violations.is_empty() {
+            bail!("cluster history is invalid:\n{}", shape_violations.join("\n"));
+        }
+        if config.check_history {
+            let violations = validate_history_against_report(&history, &cluster_report);
+            if !violations.is_empty() {
+                bail!("cluster history check failed:\n{}", violations.join("\n"));
+            }
+        } else {
+            let updated = merge_cluster_history(history, &cluster_report)?;
+            let updated_json =
+                serde_json::to_string_pretty(&updated).context("serializing cluster history")?;
+            if let Some(parent) = history_path.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("creating cluster history directory {}", parent.display())
+                })?;
+            }
+            fs::write(history_path, format!("{updated_json}\n"))
+                .with_context(|| format!("writing cluster history {}", history_path.display()))?;
+            fs::write(config.output.join("cluster-history.json"), format!("{updated_json}\n"))
+                .context("writing cluster-history.json")?;
+            fs::write(
+                config.output.join("cluster-history.md"),
+                render_cluster_history_markdown(&updated),
+            )
+            .context("writing cluster-history.md")?;
+        }
+    }
+    Ok(())
+}
+
+fn read_cluster_history(path: &Path, allow_missing: bool) -> Result<FailureClusterHistory> {
+    if !path.is_file() {
+        if allow_missing {
+            return Ok(FailureClusterHistory {
+                schema_version: FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION.into(),
+                entries: Vec::new(),
+            });
+        }
+        bail!("cluster history {} is missing", path.display());
+    }
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("reading cluster history {}", path.display()))?;
+    serde_json::from_str(&raw)
+        .with_context(|| format!("decoding cluster history {}", path.display()))
+}
+
+fn validate_cluster_history_shape(history: &FailureClusterHistory) -> Vec<String> {
+    let mut violations = Vec::new();
+    if history.schema_version != FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION {
+        violations.push(format!(
+            "history schema {} is not {}",
+            history.schema_version, FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION
+        ));
+    }
+    let mut cluster_ids = BTreeSet::new();
+    for entry in &history.entries {
+        if !cluster_ids.insert(entry.cluster_id.clone()) {
+            violations.push(format!("duplicate cluster history entry {}", entry.cluster_id));
+        }
+        for (label, value) in [
+            ("cluster_id", entry.cluster_id.as_str()),
+            ("signature_schema_version", entry.signature_schema_version.as_str()),
+            ("series_id", entry.series_id.as_str()),
+            ("manifest_hash", entry.manifest_hash.as_str()),
+            ("first_seen_series_id", entry.first_seen_series_id.as_str()),
+            ("first_seen_manifest_hash", entry.first_seen_manifest_hash.as_str()),
+            ("last_seen_series_id", entry.last_seen_series_id.as_str()),
+            ("last_seen_manifest_hash", entry.last_seen_manifest_hash.as_str()),
+            ("first_seen_bundle", entry.first_seen_bundle.as_str()),
+            ("last_seen_bundle", entry.last_seen_bundle.as_str()),
+            ("impacted_layer", entry.impacted_layer.as_str()),
+            ("direct_reproduction", entry.direct_reproduction.as_str()),
+            ("proposed_transition", entry.proposed_transition.as_str()),
+            ("stop_condition", entry.stop_condition.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                violations.push(format!("cluster {} has empty {label}", entry.cluster_id));
+            }
+        }
+        if entry.current_stage.as_deref().is_some_and(|stage| stage.trim().is_empty()) {
+            violations.push(format!("cluster {} has empty current_stage", entry.cluster_id));
+        }
+        match entry.presence {
+            FailureClusterHistoryPresence::Observed => {
+                if !entry.observed_in_current_bundle
+                    || entry.current_authority_bundle.as_deref().is_none_or(str::is_empty)
+                    || entry.absence_since_bundle.is_some()
+                    || entry.current_stage.is_none()
+                {
+                    violations.push(format!(
+                        "observed cluster {} lacks current-authority state",
+                        entry.cluster_id
+                    ));
+                }
+            }
+            FailureClusterHistoryPresence::AbsentUnresolved
+            | FailureClusterHistoryPresence::Resolved
+            | FailureClusterHistoryPresence::AcceptedDebt => {
+                if entry.observed_in_current_bundle
+                    || entry.current_authority_bundle.is_some()
+                    || entry.absence_since_bundle.as_deref().is_none_or(str::is_empty)
+                    || entry.current_stage.is_some()
+                    || !entry.current_affected_files.is_empty()
+                    || !entry.current_fact_classes.is_empty()
+                    || !entry.current_lsp_surfaces.is_empty()
+                {
+                    violations.push(format!(
+                        "absent cluster {} retains current-authority state",
+                        entry.cluster_id
+                    ));
+                }
+            }
+        }
+        if entry.status == FailureClusterHistoryStatus::Resolved
+            && entry.presence != FailureClusterHistoryPresence::Resolved
+        {
+            violations
+                .push(format!("resolved cluster {} has non-resolved presence", entry.cluster_id));
+        }
+        if entry.status == FailureClusterHistoryStatus::AcceptedDebt
+            && entry.presence != FailureClusterHistoryPresence::AcceptedDebt
+        {
+            violations
+                .push(format!("accepted-debt cluster {} has non-debt presence", entry.cluster_id));
+        }
+        if entry.status != FailureClusterHistoryStatus::Unassigned
+            && !entry.owner_issue.as_deref().is_some_and(is_issue_reference)
+        {
+            violations.push(format!(
+                "cluster {} requires an issue owner or explicit unassigned status",
+                entry.cluster_id
+            ));
+        }
+        if entry.presence == FailureClusterHistoryPresence::Resolved
+            && entry.status != FailureClusterHistoryStatus::Resolved
+        {
+            violations.push(format!(
+                "resolved-presence cluster {} has non-resolved status",
+                entry.cluster_id
+            ));
+        }
+        if entry.presence == FailureClusterHistoryPresence::AcceptedDebt
+            && entry.status != FailureClusterHistoryStatus::AcceptedDebt
+        {
+            violations.push(format!(
+                "accepted-debt presence cluster {} has non-debt status",
+                entry.cluster_id
+            ));
+        }
+        if entry.status == FailureClusterHistoryStatus::AcceptedDebt
+            && entry.accepted_debt_refs.is_empty()
+        {
+            violations.push(format!(
+                "accepted-debt cluster {} has no registry reference",
+                entry.cluster_id
+            ));
+        }
+        if entry.status == FailureClusterHistoryStatus::Resolved {
+            if entry.resolution_pr.as_deref().is_none_or(|value| !is_pr_reference(value)) {
+                violations
+                    .push(format!("resolved cluster {} has no resolution PR", entry.cluster_id));
+            }
+            if entry.resolution_bundle.as_deref().is_none_or(|value| value.trim().is_empty()) {
+                violations.push(format!(
+                    "resolved cluster {} has no resolution bundle",
+                    entry.cluster_id
+                ));
+            }
+        }
+        validate_sorted_unique(
+            &entry.current_affected_files,
+            &format!("cluster {} current affected files", entry.cluster_id),
+            &mut violations,
+        );
+        validate_sorted_unique(
+            &entry.historical_affected_files,
+            &format!("cluster {} affected files", entry.cluster_id),
+            &mut violations,
+        );
+        validate_sorted_unique(
+            &entry.current_fact_classes,
+            &format!("cluster {} current fact classes", entry.cluster_id),
+            &mut violations,
+        );
+        validate_sorted_unique(
+            &entry.fact_classes,
+            &format!("cluster {} fact classes", entry.cluster_id),
+            &mut violations,
+        );
+        validate_sorted_unique(
+            &entry.current_lsp_surfaces,
+            &format!("cluster {} current LSP surfaces", entry.cluster_id),
+            &mut violations,
+        );
+        validate_sorted_unique(
+            &entry.lsp_surfaces,
+            &format!("cluster {} LSP surfaces", entry.cluster_id),
+            &mut violations,
+        );
+        for path in
+            entry.current_affected_files.iter().chain(entry.historical_affected_files.iter())
+        {
+            if validate_public_path(path, "cluster history file").is_err() {
+                violations.push(format!(
+                    "cluster {} has invalid affected file {}",
+                    entry.cluster_id, path
+                ));
+            }
+        }
+        let mut transition_ids = BTreeSet::new();
+        for transition in &entry.transitions {
+            if !transition_ids.insert(transition.transition_id.clone()) {
+                violations.push(format!(
+                    "cluster {} has duplicate transition {}",
+                    entry.cluster_id, transition.transition_id
+                ));
+            }
+            for (label, value) in [
+                ("transition_id", transition.transition_id.as_str()),
+                ("from_cluster_id", transition.from_cluster_id.as_str()),
+                ("from_stage", transition.from_stage.as_str()),
+                ("to_stage", transition.to_stage.as_str()),
+                ("before_series_id", transition.before_series_id.as_str()),
+                ("before_manifest_hash", transition.before_manifest_hash.as_str()),
+                ("before_bundle_id", transition.before_bundle_id.as_str()),
+                ("after_series_id", transition.after_series_id.as_str()),
+                ("after_manifest_hash", transition.after_manifest_hash.as_str()),
+                ("after_bundle_id", transition.after_bundle_id.as_str()),
+                ("proof_plan", transition.proof_plan.as_str()),
+                ("stop_condition", transition.stop_condition.as_str()),
+            ] {
+                if value.trim().is_empty() {
+                    violations.push(format!(
+                        "cluster {} transition {} has empty {label}",
+                        entry.cluster_id, transition.transition_id
+                    ));
+                }
+            }
+            if transition.to_cluster_id.is_none()
+                && transition.to_presence == FailureClusterHistoryPresence::Observed
+            {
+                violations.push(format!(
+                    "transition {} without a target cluster must not become observed",
+                    transition.transition_id
+                ));
+            }
+            if transition.to_cluster_id.as_deref() == Some(transition.from_cluster_id.as_str()) {
+                violations.push(format!(
+                    "transition {} has identical source and target clusters",
+                    transition.transition_id
+                ));
+            }
+            if transition.from_stage == transition.to_stage {
+                violations.push(format!(
+                    "transition {} has no stage or root-cause change",
+                    transition.transition_id
+                ));
+            }
+        }
+        if entry.status == FailureClusterHistoryStatus::Resolved
+            && !entry.transitions.iter().any(|transition| {
+                transition.from_cluster_id == entry.cluster_id
+                    && transition.before_series_id == entry.first_seen_series_id
+                    && transition.before_manifest_hash == entry.first_seen_manifest_hash
+                    && transition.before_bundle_id == entry.first_seen_bundle
+                    && transition.to_cluster_id.is_none()
+                    && transition.to_presence == FailureClusterHistoryPresence::Resolved
+                    && transition.after_series_id == entry.series_id
+                    && transition.after_manifest_hash == entry.manifest_hash
+                    && transition.after_bundle_id
+                        == entry.resolution_bundle.as_deref().unwrap_or_default()
+            })
+        {
+            violations.push(format!(
+                "resolved cluster {} lacks a matching before/after transition",
+                entry.cluster_id
+            ));
+        }
+    }
+    violations
+}
+
+fn validate_sorted_unique(values: &[String], label: &str, violations: &mut Vec<String>) {
+    let mut sorted = values.to_vec();
+    sorted.sort();
+    sorted.dedup();
+    if sorted != values {
+        violations.push(format!("{label} must be sorted and unique"));
+    }
+}
+
+fn is_pr_reference(value: &str) -> bool {
+    value.strip_prefix('#').is_some_and(|digits| {
+        !digits.is_empty() && digits.chars().all(|character| character.is_ascii_digit())
+    })
+}
+
+fn merge_cluster_history(
+    mut history: FailureClusterHistory,
+    report: &FailureClusterReport,
+) -> Result<FailureClusterHistory> {
+    let current_ids =
+        report.clusters.iter().map(|cluster| cluster.cluster_id.as_str()).collect::<BTreeSet<_>>();
+    for entry in &mut history.entries {
+        if current_ids.contains(entry.cluster_id.as_str()) {
+            continue;
+        }
+        if entry.presence == FailureClusterHistoryPresence::Observed {
+            entry.presence = FailureClusterHistoryPresence::AbsentUnresolved;
+            entry.observed_in_current_bundle = false;
+            entry.current_authority_bundle = None;
+            entry.absence_since_bundle = Some(report.bundle_id.clone());
+            entry.current_affected_files.clear();
+            entry.current_fact_classes.clear();
+            entry.current_lsp_surfaces.clear();
+            entry.current_stage = None;
+        }
+    }
+    for cluster in &report.clusters {
+        if let Some(entry) =
+            history.entries.iter_mut().find(|entry| entry.cluster_id == cluster.cluster_id)
+        {
+            if entry.series_id != report.series_id || entry.manifest_hash != report.manifest_hash {
+                bail!(
+                    "cluster {} history identity differs from current report",
+                    cluster.cluster_id
+                );
+            }
+            if matches!(
+                entry.status,
+                FailureClusterHistoryStatus::Resolved | FailureClusterHistoryStatus::AcceptedDebt
+            ) {
+                bail!(
+                    "cluster {} is recorded as {} but is active in the current bundle",
+                    cluster.cluster_id,
+                    enum_label(entry.status)
+                );
+            }
+            entry.last_seen_bundle = report.bundle_id.clone();
+            entry.series_id = report.series_id.clone();
+            entry.manifest_hash = report.manifest_hash.clone();
+            entry.last_seen_series_id = report.series_id.clone();
+            entry.last_seen_manifest_hash = report.manifest_hash.clone();
+            entry.current_affected_files = cluster.affected_files.clone();
+            merge_sorted_unique(&mut entry.historical_affected_files, &cluster.affected_files);
+            entry.current_fact_classes = cluster.fact_classes.clone();
+            merge_sorted_unique(&mut entry.fact_classes, &cluster.fact_classes);
+            entry.current_lsp_surfaces = cluster.lsp_surfaces.clone();
+            merge_sorted_unique(&mut entry.lsp_surfaces, &cluster.lsp_surfaces);
+            entry.occurrence_count = cluster.occurrence_count;
+            entry.current_stage = Some(cluster.signature.stage.clone());
+            entry.impacted_layer = cluster.impacted_layer.clone();
+            entry.direct_reproduction = cluster.direct_reproduction.clone();
+            entry.current_authority_bundle = Some(report.bundle_id.clone());
+            entry.observed_in_current_bundle = true;
+            entry.absence_since_bundle = None;
+            entry.presence = FailureClusterHistoryPresence::Observed;
+        } else {
+            history.entries.push(history_entry_from_cluster(report, cluster));
+        }
+    }
+    history.entries.sort_by(|left, right| left.cluster_id.cmp(&right.cluster_id));
+    let violations = validate_cluster_history_shape(&history);
+    if !violations.is_empty() {
+        bail!("updated cluster history is invalid:\n{}", violations.join("\n"));
+    }
+    Ok(history)
+}
+
+fn history_entry_from_cluster(
+    report: &FailureClusterReport,
+    cluster: &FailureCluster,
+) -> FailureClusterHistoryEntry {
+    let mut affected_files = cluster.affected_files.clone();
+    let mut fact_classes = cluster.fact_classes.clone();
+    let mut lsp_surfaces = cluster.lsp_surfaces.clone();
+    affected_files.sort();
+    fact_classes.sort();
+    lsp_surfaces.sort();
+    FailureClusterHistoryEntry {
+        cluster_id: cluster.cluster_id.clone(),
+        signature_schema_version: cluster.signature.schema_version.clone(),
+        identity_quality: FailureClusterIdentityQuality::Provisional,
+        series_id: report.series_id.clone(),
+        manifest_hash: report.manifest_hash.clone(),
+        first_seen_series_id: report.series_id.clone(),
+        first_seen_manifest_hash: report.manifest_hash.clone(),
+        last_seen_series_id: report.series_id.clone(),
+        last_seen_manifest_hash: report.manifest_hash.clone(),
+        first_seen_bundle: report.bundle_id.clone(),
+        last_seen_bundle: report.bundle_id.clone(),
+        current_affected_files: affected_files.clone(),
+        historical_affected_files: affected_files,
+        current_fact_classes: fact_classes.clone(),
+        fact_classes,
+        current_lsp_surfaces: lsp_surfaces.clone(),
+        lsp_surfaces,
+        occurrence_count: cluster.occurrence_count,
+        current_stage: Some(cluster.signature.stage.clone()),
+        current_authority_bundle: Some(report.bundle_id.clone()),
+        observed_in_current_bundle: true,
+        absence_since_bundle: None,
+        presence: FailureClusterHistoryPresence::Observed,
+        impacted_layer: cluster.impacted_layer.clone(),
+        owner_issue: None,
+        status: FailureClusterHistoryStatus::Unassigned,
+        direct_reproduction: cluster.direct_reproduction.clone(),
+        proposed_transition: format!(
+            "resolve {} with general compiler semantics",
+            cluster.cluster_id
+        ),
+        stop_condition: format!("exact-series proof retires {}", cluster.cluster_id),
+        accepted_debt_refs: Vec::new(),
+        resolution_pr: None,
+        resolution_bundle: None,
+        transitions: Vec::new(),
+    }
+}
+
+fn merge_sorted_unique(values: &mut Vec<String>, additions: &[String]) {
+    values.extend(additions.iter().cloned());
+    values.sort();
+    values.dedup();
+}
+
+fn validate_history_against_report(
+    history: &FailureClusterHistory,
+    report: &FailureClusterReport,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let current = report
+        .clusters
+        .iter()
+        .map(|cluster| (cluster.cluster_id.as_str(), cluster))
+        .collect::<BTreeMap<_, _>>();
+    for cluster in &report.clusters {
+        let Some(entry) =
+            history.entries.iter().find(|entry| entry.cluster_id == cluster.cluster_id)
+        else {
+            violations
+                .push(format!("current cluster {} is missing from history", cluster.cluster_id));
+            continue;
+        };
+        if entry.series_id != report.series_id || entry.manifest_hash != report.manifest_hash {
+            violations
+                .push(format!("current cluster {} has stale series identity", cluster.cluster_id));
+        }
+        if entry.last_seen_bundle != report.bundle_id {
+            violations
+                .push(format!("current cluster {} has stale last-seen bundle", cluster.cluster_id));
+        }
+        if entry.presence != FailureClusterHistoryPresence::Observed
+            || !entry.observed_in_current_bundle
+            || entry.current_authority_bundle.as_deref() != Some(report.bundle_id.as_str())
+        {
+            violations.push(format!(
+                "current cluster {} is not marked observed in the current authority",
+                cluster.cluster_id
+            ));
+        }
+        if entry.current_stage.as_deref() != Some(cluster.signature.stage.as_str()) {
+            violations.push(format!(
+                "current cluster {} has an unrecorded stage transition",
+                cluster.cluster_id
+            ));
+        }
+        if matches!(
+            entry.status,
+            FailureClusterHistoryStatus::Resolved | FailureClusterHistoryStatus::AcceptedDebt
+        ) {
+            violations.push(format!(
+                "historical {} cluster {} is active again",
+                enum_label(entry.status),
+                cluster.cluster_id
+            ));
+        }
+    }
+    for entry in &history.entries {
+        if current.contains_key(entry.cluster_id.as_str()) {
+            continue;
+        }
+        if entry.presence == FailureClusterHistoryPresence::Observed
+            || entry.observed_in_current_bundle
+            || entry.current_authority_bundle.is_some()
+        {
+            violations.push(format!(
+                "history cluster {} is absent from the report but still marked current",
+                entry.cluster_id
+            ));
+        }
+        // `absence_since_bundle` records the first absence, not the latest check. A
+        // later bundle may confirm absence without changing that lifecycle boundary.
+        if entry.presence == FailureClusterHistoryPresence::AbsentUnresolved
+            && entry.absence_since_bundle.as_deref().is_none_or(str::is_empty)
+        {
+            violations
+                .push(format!("absent cluster {} has no first-absence bundle", entry.cluster_id));
+        }
+    }
+    violations
+}
+
+fn render_cluster_history_markdown(history: &FailureClusterHistory) -> String {
+    let mut counts = BTreeMap::<String, usize>::new();
+    for entry in &history.entries {
+        *counts.entry(enum_label(entry.status)).or_default() += 1;
+    }
+    let mut markdown = format!(
+        "# Compiler failure cluster history\n\n- Schema: {}\n- Entries: {}\n\n",
+        history.schema_version,
+        history.entries.len()
+    );
+    markdown.push_str("## Status counts\n\n");
+    for (status, count) in counts {
+        markdown.push_str(&format!("- {status}: {count}\n"));
+    }
+    let mut high_leverage = history.entries.iter().collect::<Vec<_>>();
+    high_leverage.sort_by(|left, right| {
+        right
+            .occurrence_count
+            .cmp(&left.occurrence_count)
+            .then_with(|| left.cluster_id.cmp(&right.cluster_id))
+    });
+    markdown.push_str("\n## High leverage\n\n");
+    for entry in high_leverage.iter().take(10) {
+        markdown.push_str(&format!(
+            "- {}: {} occurrence(s), status {}, owner {}\n",
+            entry.cluster_id,
+            entry.occurrence_count,
+            enum_label(entry.status),
+            entry.owner_issue.as_deref().unwrap_or("unassigned")
+        ));
+    }
+    markdown.push_str("\n## Clusters\n\n");
+    for entry in &history.entries {
+        markdown.push_str(&format!(
+            "### {}\n\n- Status: {}\n- Owner: {}\n- Stage: {}\n- Current series: {}\n- First/last series: {} / {}\n- First/last bundle: {} / {}\n- Current files: {}\n- Historical files: {}\n- Occurrences: {}\n- Reproduction: {}\n",
+            entry.cluster_id,
+            enum_label(entry.status),
+            entry.owner_issue.as_deref().unwrap_or("unassigned"),
+            entry.current_stage.as_deref().unwrap_or("absent"),
+            entry.series_id,
+            entry.first_seen_series_id,
+            entry.last_seen_series_id,
+            entry.first_seen_bundle,
+            entry.last_seen_bundle,
+            entry.current_affected_files.join(", "),
+            entry.historical_affected_files.join(", "),
+            entry.occurrence_count,
+            entry.direct_reproduction,
+        ));
+        for transition in &entry.transitions {
+            markdown.push_str(&format!(
+                "- Transition {}: {} -> {} ({} -> {})\n",
+                transition.transition_id,
+                transition.from_cluster_id,
+                transition.to_cluster_id.as_deref().unwrap_or("<absence>"),
+                transition.from_stage,
+                transition.to_stage
+            ));
+        }
+        markdown.push('\n');
+    }
+    markdown
+}
+
+fn bundle_artifact_path(bundle: &BoundaryBundle, kind: &str) -> Result<PathBuf> {
+    let artifact = bundle
+        .index
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == kind)
+        .ok_or_else(|| color_eyre::eyre::eyre!("evidence bundle has no {kind} artifact"))?;
+    validate_public_path(&artifact.logical_path, "evidence bundle artifact")?;
+    let path = bundle.path.parent().unwrap_or_else(|| Path::new(".")).join(&artifact.logical_path);
+    if !path.is_file() {
+        bail!("evidence bundle artifact {} is missing", path.display());
+    }
+    Ok(path)
+}
+
+fn validate_bundle_report_identity(bundle: &BoundaryBundle, report: &RunReport) -> Result<()> {
+    if report.schema_version != RUN_REPORT_SCHEMA_VERSION {
+        bail!("triage requires a v1 run report");
+    }
+    if report.mode != HarnessMode::Compile {
+        bail!("triage requires a compile report");
+    }
+    if report.commit != bundle.index.repository_commit
+        || report.perl_ref != bundle.index.perl_resolved_ref
+        || report.profile != bundle.index.profile
+        || report.runner != bundle.index.runner
+    {
+        bail!("compile report identity does not match evidence bundle");
+    }
+    let mut report_boundaries = report.semantic_boundaries.clone();
+    report_boundaries.sort_by_key(semantic_boundary_key);
+    if report_boundaries != bundle.semantic_boundaries {
+        bail!("compile report semantic-boundary inventory does not match evidence bundle");
+    }
+    Ok(())
+}
+
+fn build_failure_cluster_report(
+    bundle: &BoundaryBundle,
+    report: &RunReport,
+) -> Result<FailureClusterReport> {
+    let mut grouped = BTreeMap::<String, (FailureClusterSignature, Vec<RunFailure>)>::new();
+    for failure in &report.failures {
+        let failure = normalize_failure(failure)?;
+        let signature = failure_signature(bundle, report, &failure)?;
+        let key = serde_json::to_vec(&signature).context("serializing failure signature")?;
+        let cluster_key = hex_lower(&Sha256::digest(key));
+        grouped.entry(cluster_key).or_insert_with(|| (signature, Vec::new())).1.push(failure);
+    }
+
+    let mut clusters = Vec::new();
+    for (cluster_key, (signature, mut failures)) in grouped {
+        failures.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then_with(|| left.phase.cmp(&right.phase))
+                .then_with(|| left.first_diagnostic.cmp(&right.first_diagnostic))
+        });
+        let representative_failure = failures
+            .first()
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("failure cluster has no representative"))?;
+        let mut affected_files =
+            failures.iter().map(|failure| failure.path.clone()).collect::<Vec<_>>();
+        affected_files.sort();
+        affected_files.dedup();
+        let cluster_id = format!("failure-{:.16}", cluster_key);
+        clusters.push(FailureCluster {
+            cluster_id,
+            signature: signature.clone(),
+            affected_files,
+            representative_failure: representative_failure.clone(),
+            direct_reproduction: format!(
+                "bundle={} series={} mode={} profile={} test={}",
+                bundle.index.bundle_id,
+                bundle.index.series_id,
+                report.mode,
+                report.profile,
+                representative_failure.path
+            ),
+            impacted_layer: impacted_layer(&signature.stage, &signature.bucket).into(),
+            fact_classes: signature.fact_classes.clone(),
+            lsp_surfaces: signature.lsp_surfaces.clone(),
+            occurrence_count: failures.len(),
+            exact_series_proof_required: true,
+        });
+    }
+    clusters.sort_by(|left, right| left.cluster_id.cmp(&right.cluster_id));
+
+    let mut debt_candidates = bundle
+        .semantic_boundaries
+        .iter()
+        .filter(|boundary| {
+            !matches!(
+                boundary.disposition,
+                SemanticBoundaryDisposition::ImplementedStatic
+                    | SemanticBoundaryDisposition::StaticallyClassified
+                    | SemanticBoundaryDisposition::OrdinaryRuntime
+            )
+        })
+        .map(|boundary| FailureDebtCandidate {
+            path: boundary.path.clone(),
+            id: boundary.id.clone(),
+            disposition: boundary.disposition,
+            reason: boundary.reason.clone(),
+            owner_workstream: boundary.owner_workstream.clone(),
+            exact_series_proof_required: true,
+        })
+        .collect::<Vec<_>>();
+    debt_candidates
+        .sort_by(|left, right| left.path.cmp(&right.path).then_with(|| left.id.cmp(&right.id)));
+    Ok(FailureClusterReport {
+        schema_version: FAILURE_CLUSTER_SCHEMA_VERSION.into(),
+        bundle_id: bundle.index.bundle_id.clone(),
+        series_id: bundle.index.series_id.clone(),
+        manifest_hash: bundle.index.manifest_hash.clone(),
+        repository_commit: bundle.index.repository_commit.clone(),
+        profile: report.profile,
+        mode: report.mode,
+        clusters,
+        debt_candidates,
+    })
+}
+
+fn normalize_failure(failure: &RunFailure) -> Result<RunFailure> {
+    let path = normalize_test_path(&failure.path)
+        .ok_or_else(|| color_eyre::eyre::eyre!("failure path is not a Perl test path"))?;
+    validate_public_path(&path, "failure path")?;
+    let mut normalized = failure.clone();
+    normalized.path = path;
+    normalized.first_diagnostic = normalize_diagnostic(&failure.first_diagnostic);
+    Ok(normalized)
+}
+
+fn normalize_diagnostic(diagnostic: &str) -> String {
+    diagnostic
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .split_whitespace()
+        .map(|token| {
+            let trimmed = token.trim_matches(|character: char| {
+                matches!(character, '"' | '\'' | '(' | ')' | '[' | ']' | ',' | ';')
+            });
+            let is_url = trimmed.contains("://");
+            let is_windows_path = trimmed.len() >= 3
+                && trimmed.as_bytes()[0].is_ascii_alphabetic()
+                && trimmed.as_bytes()[1] == b':'
+                && matches!(trimmed.as_bytes()[2], b'/' | b'\\');
+            if !is_url
+                && (trimmed.starts_with('/')
+                    || is_windows_path
+                    || trimmed.contains("\\")
+                    || trimmed.split('/').any(|part| {
+                        matches!(part.to_ascii_lowercase().as_str(), "target" | "tmp" | "temp")
+                    }))
+            {
+                "<host-path>"
+            } else {
+                token
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn failure_signature(
+    bundle: &BoundaryBundle,
+    report: &RunReport,
+    failure: &RunFailure,
+) -> Result<FailureClusterSignature> {
+    let stage = failure_stage(&failure.bucket).ok_or_else(|| {
+        color_eyre::eyre::eyre!("unclassifiable failure bucket {}", failure.bucket)
+    })?;
+    if failure.path.trim().is_empty() || failure.workstream.trim().is_empty() {
+        bail!("failure record lacks a stable path or workstream");
+    }
+    validate_public_path(&failure.path, "failure path")?;
+    let fact_classes = vec![failure.bucket.clone()];
+    let mut lsp_surfaces = lsp_impact_for_bucket(&failure.bucket)
+        .into_iter()
+        .map(ToString::to_string)
+        .chain(failure.lsp_impact.iter().cloned())
+        .collect::<Vec<_>>();
+    lsp_surfaces.sort();
+    lsp_surfaces.dedup();
+    let shape_seed =
+        format!("{}|{}|{}|{}", stage, failure.bucket, failure.workstream, fact_classes.join(","));
+    Ok(FailureClusterSignature {
+        schema_version: FAILURE_CLUSTER_SCHEMA_VERSION.into(),
+        series_id: bundle.index.series_id.clone(),
+        profile: report.profile,
+        mode: report.mode,
+        stage: stage.into(),
+        bucket: failure.bucket.clone(),
+        workstream: failure.workstream.clone(),
+        source_shape_fingerprint: format!("shape-{:.16}", hex_lower(&Sha256::digest(shape_seed))),
+        fact_classes,
+        lsp_surfaces,
+    })
+}
+
+fn failure_stage(bucket: &str) -> Option<&'static str> {
+    match bucket {
+        "parse_recovery" | "source_decode" => Some("parse_recovery"),
+        "hir_lowering" => Some("hir_unmodeled"),
+        "compile_effect" => Some("compile_effect"),
+        "scope_pad"
+        | "package_stash"
+        | "pragma_feature"
+        | "module_resolution"
+        | "runtime_value_model"
+        | "runtime_control_flow"
+        | "runtime_io"
+        | "runtime_regex"
+        | "runtime_require_use"
+        | "runtime_test_harness" => Some("compile_effect"),
+        "cli_switch" | "harness_prepare" | "process_timeout" | "process_signal" | "environment" => {
+            Some("harness")
+        }
+        _ => None,
+    }
+}
+
+fn impacted_layer(stage: &str, bucket: &str) -> &'static str {
+    if stage == "harness" {
+        return "harness_or_environment";
+    }
+    match bucket {
+        "parse_recovery" | "source_decode" => "parser",
+        "hir_lowering" => "hir",
+        "compile_effect" | "scope_pad" | "package_stash" | "pragma_feature"
+        | "module_resolution" => "compiler_world",
+        _ => "compiler_semantics",
+    }
+}
+
+fn render_failure_cluster_markdown(report: &FailureClusterReport) -> String {
+    let mut markdown = format!(
+        "# Compiler failure clusters\n\n- Bundle: `{}`\n- Series: `{}`\n- Profile/mode: `{}` / `{}`\n\n",
+        report.bundle_id, report.series_id, report.profile, report.mode
+    );
+    markdown.push_str("## Clusters\n\n");
+    if report.clusters.is_empty() {
+        markdown.push_str("No product failure clusters were observed.\n\n");
+    }
+    for cluster in &report.clusters {
+        markdown.push_str(&format!(
+            "### `{}`\n\n- Stage: `{}`\n- Bucket: `{}`\n- Layer: `{}`\n- Occurrences: {}\n- Files: {}\n- Reproduction: `{}`\n\n",
+            cluster.cluster_id,
+            cluster.signature.stage,
+            cluster.signature.bucket,
+            cluster.impacted_layer,
+            cluster.occurrence_count,
+            cluster.affected_files.join(", "),
+            cluster.direct_reproduction
+        ));
+    }
+    markdown.push_str("## Semantic-boundary debt candidates\n\n");
+    for debt in &report.debt_candidates {
+        markdown.push_str(&format!(
+            "- `{}` `{}` `{}` — {}\n",
+            debt.path,
+            debt.id,
+            enum_label(debt.disposition),
+            debt.reason
+        ));
+    }
+    markdown
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct BoundaryRegistryReport {
+    schema_version: String,
+    mode: String,
+    registry_entries: usize,
+    baselines_checked: Vec<String>,
+    bundles_checked: Vec<String>,
+    counts: BoundaryRegistryCounts,
+    missing_active: Vec<String>,
+    emitting_retired: Vec<String>,
+    violations: Vec<String>,
+    valid: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct BoundaryRegistryCounts {
+    by_disposition: BTreeMap<String, usize>,
+    by_lock_scope: BTreeMap<String, usize>,
+    by_profile: BTreeMap<String, usize>,
+    by_owner_issue: BTreeMap<String, usize>,
+    by_replacement_strategy: BTreeMap<String, usize>,
+    by_state: BTreeMap<String, usize>,
+    downstream_static_facts_blocked: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+struct EvidenceBundleIndex {
+    schema_version: String,
+    bundle_id: String,
+    series_id: String,
+    manifest_hash: String,
+    repository_commit: String,
+    profile: HarnessProfile,
+    runner: HarnessRunner,
+    perl_resolved_ref: String,
+    lineage: EvidenceBundleLineage,
+    artifacts: Vec<EvidenceBundleArtifact>,
+    completeness: EvidenceBundleCompleteness,
+    lifecycle: String,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+struct EvidenceBundleLineage {
+    measurement_sha: String,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+struct EvidenceBundleArtifact {
+    kind: String,
+    logical_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+struct EvidenceBundleCompleteness {
+    status: String,
+    normalized_authority: bool,
+}
+
+#[derive(Debug, Clone)]
+struct BoundaryBundle {
+    path: PathBuf,
+    index: EvidenceBundleIndex,
+    semantic_boundaries: Vec<ObservedSemanticBoundary>,
+}
+
+fn read_boundary_bundle(path: &Path) -> Result<BoundaryBundle> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("reading evidence bundle index {}", path.display()))?;
+    let index: EvidenceBundleIndex = serde_json::from_str(&raw)
+        .with_context(|| format!("decoding evidence bundle index {}", path.display()))?;
+    if index.schema_version != "perl_core_harness.evidence_bundle.v1" {
+        bail!("unsupported evidence bundle schema {}", index.schema_version);
+    }
+    if index.bundle_id.trim().is_empty()
+        || index.series_id.trim().is_empty()
+        || index.manifest_hash.trim().is_empty()
+        || index.repository_commit.trim().is_empty()
+        || index.perl_resolved_ref.trim().is_empty()
+        || index.lineage.measurement_sha.trim().is_empty()
+    {
+        bail!("evidence bundle index has incomplete subject identity");
+    }
+    if index.lifecycle != "published"
+        || index.completeness.status != "complete"
+        || !index.completeness.normalized_authority
+    {
+        bail!("evidence bundle is not a complete normalized authority");
+    }
+    let artifact =
+        index.artifacts.iter().find(|artifact| artifact.kind == "semantic_boundaries").ok_or_else(
+            || color_eyre::eyre::eyre!("evidence bundle has no semantic-boundaries artifact"),
+        )?;
+    validate_public_path(&artifact.logical_path, "evidence bundle artifact")?;
+    let boundary_path =
+        path.parent().unwrap_or_else(|| Path::new(".")).join(&artifact.logical_path);
+    let boundary_raw = fs::read_to_string(&boundary_path).with_context(|| {
+        format!("reading semantic-boundaries artifact {}", boundary_path.display())
+    })?;
+    let mut semantic_boundaries: Vec<ObservedSemanticBoundary> =
+        serde_json::from_str(&boundary_raw).with_context(|| {
+            format!("decoding semantic-boundaries artifact {}", boundary_path.display())
+        })?;
+    semantic_boundaries.sort_by_key(semantic_boundary_key);
+    if semantic_boundaries
+        .windows(2)
+        .any(|pair| semantic_boundary_key(&pair[0]) == semantic_boundary_key(&pair[1]))
+    {
+        bail!("semantic-boundaries artifact contains a duplicate boundary key");
+    }
+    Ok(BoundaryBundle { path: path.to_path_buf(), index, semantic_boundaries })
+}
+
+fn validate_boundary_registry_shape(registry: &SemanticBoundaryRegistry) -> Vec<String> {
+    let mut violations = Vec::new();
+    if registry.schema_version != SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION {
+        violations.push(format!(
+            "registry schema {} is not {}",
+            registry.schema_version, SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION
+        ));
+    }
+    let mut active_keys = BTreeSet::new();
+    let mut meanings = BTreeMap::<String, String>::new();
+    for entry in &registry.entries {
+        let key = registry_boundary_key(entry);
+        let scoped_key = format!("{}:{}:{}", entry.series_id, entry.profile, key);
+        if entry.state != SemanticBoundaryRegistryState::Retired && !active_keys.insert(scoped_key)
+        {
+            violations.push(format!("duplicate active registry boundary key {key}"));
+        }
+        let meaning_key = entry.id.clone();
+        let fingerprint = format!(
+            "{:?}|{}|{:?}|{}",
+            entry.disposition, entry.source_kind, entry.lock_scope, entry.semantic_meaning
+        );
+        if let Some(previous) = meanings.insert(meaning_key.clone(), fingerprint.clone())
+            && previous != fingerprint
+        {
+            violations
+                .push(format!("stable registry ID {} is reused for another meaning", entry.id));
+        }
+        for (label, value) in [
+            ("id", entry.id.as_str()),
+            ("source_kind", entry.source_kind.as_str()),
+            ("semantic_meaning", entry.semantic_meaning.as_str()),
+            ("series_id", entry.series_id.as_str()),
+            ("manifest_hash", entry.manifest_hash.as_str()),
+            ("source_shape", entry.source_shape.as_str()),
+            ("reason", entry.reason.as_str()),
+            ("ambient_dependency", entry.ambient_dependency.as_str()),
+            ("owner_issue", entry.owner_issue.as_str()),
+            ("supporting_test", entry.supporting_test.as_str()),
+            ("wrong_file_test", entry.wrong_file_test.as_str()),
+            ("changed_shape_test", entry.changed_shape_test.as_str()),
+            ("introduction_pr", entry.introduction_pr.as_str()),
+            ("introduction_commit", entry.introduction_commit.as_str()),
+            ("first_accepted_bundle", entry.first_accepted_bundle.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                violations.push(format!("registry boundary {} has empty {label}", entry.id));
+            }
+        }
+        if let Err(error) = validate_public_path(&entry.path, "registry boundary path") {
+            violations.push(format!("{}: {error}", entry.id));
+        }
+        for (label, value) in [
+            ("supporting_test", entry.supporting_test.as_str()),
+            ("wrong_file_test", entry.wrong_file_test.as_str()),
+            ("changed_shape_test", entry.changed_shape_test.as_str()),
+        ] {
+            if let Err(error) = validate_public_path(value, label) {
+                violations.push(format!("{}: {error}", entry.id));
+            }
+        }
+        if entry.source_span.start >= entry.source_span.end {
+            violations.push(format!("registry boundary {} has an invalid source span", entry.id));
+        }
+        if !is_issue_reference(&entry.owner_issue) {
+            violations.push(format!("registry boundary {} has an invalid owner issue", entry.id));
+        }
+        if matches!(
+            entry.disposition,
+            SemanticBoundaryDisposition::Unknown | SemanticBoundaryDisposition::Unsupported
+        ) {
+            violations
+                .push(format!("registry boundary {} has a non-admissible disposition", entry.id));
+        }
+        if entry.disposition == SemanticBoundaryDisposition::SourceLockedCompatibility
+            && entry.lock_scope != SemanticBoundaryLockScope::PathAndSource
+        {
+            violations.push(format!("registry boundary {} widened source lock scope", entry.id));
+        }
+        if matches!(
+            entry.state,
+            SemanticBoundaryRegistryState::Retiring | SemanticBoundaryRegistryState::Retired
+        ) && (entry.retirement_pr.as_deref().is_none_or(str::is_empty)
+            || entry.retirement_bundle.as_deref().is_none_or(str::is_empty))
+        {
+            violations
+                .push(format!("registry boundary {} has incomplete retirement lineage", entry.id));
+        }
+        if entry.replacement_strategy
+            == SemanticBoundaryReplacementStrategy::LongLivedTestHarnessCompatibility
+            && entry.review_after.is_none()
+            && entry.permanent_boundary_rationale.is_none()
+        {
+            violations.push(format!(
+                "registry boundary {} lacks review or permanent-debt rationale",
+                entry.id
+            ));
+        }
+    }
+    violations.sort();
+    violations
+}
+
+fn validate_registry_against_baseline(
+    registry: &SemanticBoundaryRegistry,
+    baseline: &CompileBaselineV2,
+    historical: bool,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    violations.extend(
+        validate_accepted_semantic_boundary_inventory(&baseline.semantic_boundaries)
+            .into_iter()
+            .map(|violation| format!("baseline {}: {}", baseline.series_id, violation.message)),
+    );
+    let entries = registry
+        .entries
+        .iter()
+        .filter(|entry| entry.series_id == baseline.series_id && entry.profile == baseline.profile)
+        .collect::<Vec<_>>();
+    let entry_by_key = entries
+        .iter()
+        .map(|entry| (registry_boundary_key(entry), *entry))
+        .collect::<BTreeMap<_, _>>();
+    let observed_keys = baseline
+        .semantic_boundaries
+        .iter()
+        .map(registry_boundary_key_from_observed)
+        .collect::<BTreeSet<_>>();
+    for boundary in &baseline.semantic_boundaries {
+        let key = registry_boundary_key_from_observed(boundary);
+        let Some(entry) = entry_by_key.get(&registry_boundary_key_from_observed(boundary)) else {
+            violations.push(format!(
+                "series {} boundary {} has no registry entry",
+                baseline.series_id, key
+            ));
+            continue;
+        };
+        violations.extend(compare_registry_entry(entry, boundary, baseline));
+    }
+    if !historical {
+        for entry in entries {
+            let key = registry_boundary_key(entry);
+            if entry.state == SemanticBoundaryRegistryState::Active && !observed_keys.contains(&key)
+            {
+                violations.push(format!(
+                    "active registry boundary {} is absent from fresh baseline {}",
+                    entry.id, baseline.series_id
+                ));
+            }
+            if entry.state == SemanticBoundaryRegistryState::Retired && observed_keys.contains(&key)
+            {
+                violations.push(format!(
+                    "retired registry boundary {} still emits in baseline {}",
+                    entry.id, baseline.series_id
+                ));
+            }
+            if !observed_keys.contains(&key)
+                && matches!(
+                    entry.state,
+                    SemanticBoundaryRegistryState::Retiring
+                        | SemanticBoundaryRegistryState::Retired
+                )
+                && !has_exact_retirement(baseline, entry)
+            {
+                violations.push(format!(
+                    "boundary {} disappeared without exact retirement evidence in baseline {}",
+                    entry.id, baseline.series_id
+                ));
+            }
+        }
+    }
+    violations.sort();
+    violations
+}
+
+fn compare_registry_entry(
+    entry: &SemanticBoundaryRegistryEntry,
+    boundary: &ObservedSemanticBoundary,
+    baseline: &CompileBaselineV2,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let checks = [
+        (entry.id == boundary.id, "id"),
+        (entry.path == boundary.path, "path"),
+        (entry.disposition == boundary.disposition, "disposition"),
+        (entry.source_kind == boundary.source_kind, "source_kind"),
+        (entry.source_span == boundary.source_span, "source_span"),
+        (entry.lock_scope == boundary.lock_scope, "lock_scope"),
+        (entry.reason == boundary.reason, "reason"),
+        (
+            entry.blocks_downstream_static_facts == boundary.blocks_downstream_static_facts,
+            "blocks_downstream_static_facts",
+        ),
+        (entry.series_id == baseline.series_id, "series_id"),
+        (entry.profile == baseline.profile, "profile"),
+        (entry.manifest_hash == baseline.manifest_hash, "manifest_hash"),
+    ];
+    for (matches, field) in checks {
+        if !matches {
+            violations.push(format!(
+                "registry boundary {} disagrees with baseline {} in {field}",
+                entry.id, baseline.series_id
+            ));
+        }
+    }
+    violations
+}
+
+fn has_exact_retirement(
+    baseline: &CompileBaselineV2,
+    entry: &SemanticBoundaryRegistryEntry,
+) -> bool {
+    let Some(bundle) = entry.retirement_bundle.as_deref() else { return false };
+    baseline.boundary_retirements.iter().any(|retirement| {
+        retirement.path == entry.path
+            && retirement.id == entry.id
+            && retirement.source_start == entry.source_span.start
+            && retirement.source_end == entry.source_span.end
+            && retirement.series_id == baseline.series_id
+            && retirement.manifest_hash == baseline.manifest_hash
+            && retirement.measurement_sha == baseline.repository_commit
+            && retirement.source_report_digest == baseline.source_report_digest
+            && retirement.evidence_bundle == bundle
+    })
+}
+
+fn validate_bundle_against_baseline(
+    bundle: &BoundaryBundle,
+    baseline: &CompileBaselineV2,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let identity_checks = [
+        (bundle.index.series_id == baseline.series_id, "series_id"),
+        (bundle.index.manifest_hash == baseline.manifest_hash, "manifest_hash"),
+        (bundle.index.repository_commit == baseline.repository_commit, "repository_commit"),
+        (bundle.index.lineage.measurement_sha == baseline.repository_commit, "measurement_sha"),
+        (bundle.index.profile == baseline.profile, "profile"),
+    ];
+    for (matches, field) in identity_checks {
+        if !matches {
+            violations.push(format!(
+                "bundle {} disagrees with baseline {} in {field}",
+                bundle.index.bundle_id, baseline.series_id
+            ));
+        }
+    }
+    let mut baseline_boundaries = baseline.semantic_boundaries.clone();
+    baseline_boundaries.sort_by_key(semantic_boundary_key);
+    if bundle.semantic_boundaries != baseline_boundaries {
+        violations.push(format!(
+            "bundle {} semantic-boundary inventory disagrees with baseline {}",
+            bundle.index.bundle_id, baseline.series_id
+        ));
+    }
+    violations
+}
+
+fn boundary_registry_report(
+    registry: &SemanticBoundaryRegistry,
+    baselines: &[(PathBuf, CompileBaselineV2)],
+    bundles: &[BoundaryBundle],
+    historical: bool,
+    mut violations: Vec<String>,
+) -> BoundaryRegistryReport {
+    violations.sort();
+    let missing_active = violations
+        .iter()
+        .filter(|violation| {
+            violation.contains("active registry boundary") && violation.contains("absent")
+        })
+        .cloned()
+        .collect();
+    let emitting_retired = violations
+        .iter()
+        .filter(|violation| {
+            violation.contains("retired registry boundary") && violation.contains("still emits")
+        })
+        .cloned()
+        .collect();
+    let mut counts = BoundaryRegistryCounts {
+        by_disposition: BTreeMap::new(),
+        by_lock_scope: BTreeMap::new(),
+        by_profile: BTreeMap::new(),
+        by_owner_issue: BTreeMap::new(),
+        by_replacement_strategy: BTreeMap::new(),
+        by_state: BTreeMap::new(),
+        downstream_static_facts_blocked: 0,
+    };
+    for entry in &registry.entries {
+        increment(&mut counts.by_disposition, enum_label(entry.disposition));
+        increment(&mut counts.by_lock_scope, enum_label(entry.lock_scope));
+        increment(&mut counts.by_profile, entry.profile.to_string());
+        increment(&mut counts.by_owner_issue, entry.owner_issue.clone());
+        increment(&mut counts.by_replacement_strategy, enum_label(entry.replacement_strategy));
+        increment(&mut counts.by_state, enum_label(entry.state));
+        if entry.blocks_downstream_static_facts {
+            counts.downstream_static_facts_blocked += 1;
+        }
+    }
+    BoundaryRegistryReport {
+        schema_version: SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION.to_string(),
+        mode: if baselines.is_empty() {
+            "structural".to_string()
+        } else if historical {
+            "historical".to_string()
+        } else {
+            "current".to_string()
+        },
+        registry_entries: registry.entries.len(),
+        baselines_checked: baselines.iter().map(|(path, _)| path.display().to_string()).collect(),
+        bundles_checked: bundles.iter().map(|bundle| bundle.path.display().to_string()).collect(),
+        counts,
+        missing_active,
+        emitting_retired,
+        valid: violations.is_empty(),
+        violations,
+    }
+}
+
+fn increment(map: &mut BTreeMap<String, usize>, key: String) {
+    *map.entry(key).or_default() += 1;
+}
+
+fn enum_label<T: serde::Serialize>(value: T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(ToString::to_string))
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn registry_boundary_key(entry: &SemanticBoundaryRegistryEntry) -> String {
+    format!("{}:{}:{}:{}", entry.path, entry.id, entry.source_span.start, entry.source_span.end)
+}
+
+fn registry_boundary_key_from_observed(boundary: &ObservedSemanticBoundary) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        boundary.path, boundary.id, boundary.source_span.start, boundary.source_span.end
+    )
+}
+
+fn validate_public_path(value: &str, label: &str) -> Result<()> {
+    let normalized = value.replace('\\', "/");
+    let private_component = normalized.split('/').any(|component| {
+        matches!(component.to_ascii_lowercase().as_str(), "target" | "tmp" | "temp")
+    });
+    if normalized.trim().is_empty()
+        || normalized.starts_with('/')
+        || normalized.contains(":/")
+        || normalized.split('/').any(|part| part == "..")
+        || private_component
+    {
+        bail!("{label} contains a private or temporary host path: {value}");
+    }
+    Ok(())
+}
+
+fn is_issue_reference(value: &str) -> bool {
+    value.strip_prefix('#').is_some_and(|digits| {
+        !digits.is_empty() && digits.chars().all(|character| character.is_ascii_digit())
+    })
 }
 
 fn build_series_manifest(
@@ -1556,6 +3022,11 @@ fn baseline_v2_from_report(
     validate_report_against_series(report, series, config.mode)?;
     validate_v2_identities_against_series(&identities, series)?;
     ensure_valid_report_shape(report)?;
+    let accepted_boundary_violations =
+        validate_accepted_semantic_boundary_inventory(&report.semantic_boundaries);
+    if !accepted_boundary_violations.is_empty() {
+        bail_baseline_comparison(&BaselineComparison { violations: accepted_boundary_violations })?;
+    }
     let file_membership =
         report.file_results.iter().map(|result| result.path.clone()).collect::<BTreeSet<_>>();
     let expected_membership = series.normalized_manifest.iter().cloned().collect::<BTreeSet<_>>();
@@ -1580,6 +3051,8 @@ fn baseline_v2_from_report(
             &report.semantic_boundaries,
             retirements,
             transition_id,
+            series,
+            report,
         );
         if !transition_violations.is_empty() {
             bail_baseline_comparison(&BaselineComparison { violations: transition_violations })?;
@@ -1763,6 +3236,8 @@ fn compare_baseline_v2_with_identities(
     retirements: &[BoundaryRetirement],
 ) -> BaselineComparison {
     let mut violations = Vec::new();
+    violations.extend(validate_persisted_boundary_retirements(baseline, Some(series)));
+    violations.extend(validate_accepted_semantic_boundary_inventory(&baseline.semantic_boundaries));
     if baseline.schema_version != COMPILE_BASELINE_V2_SCHEMA_VERSION {
         violations.push(violation(
             BaselineViolationKind::SchemaMismatch,
@@ -1875,6 +3350,8 @@ fn compare_baseline_v2_with_identities(
         &report.semantic_boundaries,
         retirements,
         transition_id.unwrap_or(""),
+        series,
+        report,
     ));
     BaselineComparison { violations }
 }
@@ -1884,6 +3361,8 @@ fn compare_boundary_transition(
     current: &[ObservedSemanticBoundary],
     retirements: &[BoundaryRetirement],
     transition_id: &str,
+    series: &SeriesManifest,
+    report: &RunReport,
 ) -> Vec<BaselineViolation> {
     let mut sorted_current = current.to_vec();
     sorted_current.sort_by_key(semantic_boundary_key);
@@ -1905,6 +3384,7 @@ fn compare_boundary_transition(
             source_end: retirement.source_end,
         })
         .collect::<BTreeSet<_>>();
+    let current_report_digest = report_digest(report);
     let mut violations = Vec::new();
     for key in previous_by_key.keys() {
         if !current_by_key.contains_key(key) && !retirement_keys.contains(key) {
@@ -1923,28 +3403,93 @@ fn compare_boundary_transition(
         ));
     }
     for retirement in retirements {
-        if retirement.transition_id != transition_id
-            || retirement.replacement_issue.trim().is_empty()
-            || retirement.evidence_bundle.trim().is_empty()
-        {
-            violations.push(violation(
-                BaselineViolationKind::BoundaryRetirementReceiptMismatch,
-                Some(retirement.path.clone()),
-                "boundary retirement receipt is incomplete or uses the wrong transition",
-            ));
-        }
-        if !previous_by_key.contains_key(&SemanticBoundaryKey {
+        let retirement_key = SemanticBoundaryKey {
             path: retirement.path.clone(),
             id: retirement.id.clone(),
             source_start: retirement.source_start,
             source_end: retirement.source_end,
-        }) {
+        };
+        let retirement_digest_matches = current_report_digest
+            .as_ref()
+            .is_ok_and(|digest| digest == &retirement.source_report_digest);
+        if retirement.schema_version != BOUNDARY_RETIREMENT_SCHEMA_VERSION
+            || retirement.transition_id != transition_id
+            || retirement.replacement_issue.trim().is_empty()
+            || retirement.evidence_bundle.trim().is_empty()
+            || retirement.series_id != series.series_id
+            || retirement.manifest_hash != series.manifest_hash
+            || retirement.measurement_sha != report.commit
+            || !retirement_digest_matches
+        {
+            let message = if current_report_digest.is_err() {
+                "cannot validate retirement: failed to compute current report digest"
+            } else {
+                "boundary retirement receipt is incomplete, stale, or uses the wrong measured subject"
+            };
+            violations.push(violation(
+                BaselineViolationKind::BoundaryRetirementReceiptMismatch,
+                Some(retirement.path.clone()),
+                message,
+            ));
+        }
+        if !previous_by_key.contains_key(&retirement_key) {
             violations.push(violation(
                 BaselineViolationKind::BoundaryRetirementReferencesUnknownBoundary,
                 Some(retirement.path.clone()),
                 "retirement receipt references a boundary absent from the previous baseline",
             ));
         }
+        if current_by_key.contains_key(&retirement_key) {
+            violations.push(violation(
+                BaselineViolationKind::BoundaryRetirementReceiptMismatch,
+                Some(retirement.path.clone()),
+                "retirement receipt references a boundary still present in the current report",
+            ));
+        }
+    }
+    violations
+}
+
+fn validate_persisted_boundary_retirements(
+    baseline: &CompileBaselineV2,
+    series: Option<&SeriesManifest>,
+) -> Vec<BaselineViolation> {
+    let mut violations = Vec::new();
+    for retirement in &baseline.boundary_retirements {
+        let transition_matches = baseline
+            .accepted_transition_id
+            .as_deref()
+            .is_some_and(|transition_id| transition_id == retirement.transition_id);
+        let series_matches = series.is_none_or(|series| {
+            retirement.series_id == series.series_id
+                && retirement.manifest_hash == series.manifest_hash
+        });
+        if retirement.schema_version != BOUNDARY_RETIREMENT_SCHEMA_VERSION
+            || retirement.path.trim().is_empty()
+            || retirement.id.trim().is_empty()
+            || retirement.source_start >= retirement.source_end
+            || retirement.series_id != baseline.series_id
+            || retirement.manifest_hash != baseline.manifest_hash
+            || retirement.measurement_sha != baseline.repository_commit
+            || retirement.source_report_digest != baseline.source_report_digest
+            || !transition_matches
+            || retirement.replacement_issue.trim().is_empty()
+            || retirement.evidence_bundle.trim().is_empty()
+            || !series_matches
+        {
+            violations.push(violation(
+                BaselineViolationKind::BoundaryRetirementReceiptMismatch,
+                Some(retirement.path.clone()),
+                "persisted boundary retirement does not match the baseline and comparison-series identity",
+            ));
+        }
+    }
+    if !baseline.boundary_retirements.is_empty() && baseline.accepted_transition_id.is_none() {
+        violations.push(violation(
+            BaselineViolationKind::BoundaryRetirementReceiptMismatch,
+            None,
+            "persisted boundary retirements require the baseline accepted transition identity",
+        ));
     }
     violations
 }
@@ -2016,8 +3561,14 @@ fn read_compile_baseline_v2(path: &Path) -> Result<CompileBaselineV2> {
             BaselineViolationKind::MissingBoundaryInventory
         );
     }
-    serde_json::from_value(value)
-        .with_context(|| format!("decoding v2 baseline {}", path.display()))
+    let baseline: CompileBaselineV2 = serde_json::from_value(value)
+        .with_context(|| format!("decoding v2 baseline {}", path.display()))?;
+    let mut violations = validate_persisted_boundary_retirements(&baseline, None);
+    violations.extend(validate_accepted_semantic_boundary_inventory(&baseline.semantic_boundaries));
+    if !violations.is_empty() {
+        bail_baseline_comparison(&BaselineComparison { violations })?;
+    }
+    Ok(baseline)
 }
 
 fn write_compile_baseline_v2(path: &Path, baseline: &CompileBaselineV2) -> Result<()> {
@@ -2576,9 +4127,15 @@ fn collect_smoke_report_failures(
 }
 
 fn validate_semantic_boundary_shape(report: &RunReport) -> Vec<BaselineViolation> {
+    validate_semantic_boundary_inventory(&report.semantic_boundaries)
+}
+
+fn validate_semantic_boundary_inventory(
+    boundaries: &[ObservedSemanticBoundary],
+) -> Vec<BaselineViolation> {
     let mut violations = Vec::new();
     let mut keys = BTreeSet::new();
-    for boundary in &report.semantic_boundaries {
+    for boundary in boundaries {
         let path = Some(boundary.path.clone());
         let mut add = |message: &str| {
             violations.push(violation(
@@ -2653,6 +4210,33 @@ fn validate_semantic_boundary_shape(report: &RunReport) -> Vec<BaselineViolation
                 }
             }
             SemanticBoundaryDisposition::GovernedCompileTimeDynamic => {}
+        }
+    }
+    violations
+}
+
+fn validate_accepted_semantic_boundary_inventory(
+    boundaries: &[ObservedSemanticBoundary],
+) -> Vec<BaselineViolation> {
+    let mut violations = validate_semantic_boundary_inventory(boundaries);
+    for boundary in boundaries {
+        let path = Some(boundary.path.clone());
+        if matches!(
+            boundary.disposition,
+            SemanticBoundaryDisposition::Unknown | SemanticBoundaryDisposition::Unsupported
+        ) {
+            violations.push(violation(
+                BaselineViolationKind::SemanticBoundary,
+                path.clone(),
+                "accepted baseline cannot contain unknown or unsupported semantic boundaries",
+            ));
+        }
+        if boundary.blocks_compilation {
+            violations.push(violation(
+                BaselineViolationKind::SemanticBoundary,
+                path,
+                "accepted baseline cannot contain a compile-blocking semantic boundary",
+            ));
         }
     }
     violations
@@ -3000,6 +4584,7 @@ fn perl_tree_ref(perl_tree: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_core_harness_types::FailureClusterHistoryTransition;
     use perl_core_harness_types::{
         SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
         SemanticBoundaryRecord, SemanticBoundarySourceSpan,
@@ -3942,10 +5527,15 @@ mod tests {
         }
 
         let retirement = BoundaryRetirement {
+            schema_version: BOUNDARY_RETIREMENT_SCHEMA_VERSION.into(),
             path: "base/ok.t".into(),
             id: "runtime_symbolic_reference".into(),
             source_start: 4,
             source_end: 12,
+            series_id: series.series_id.clone(),
+            manifest_hash: series.manifest_hash.clone(),
+            measurement_sha: current.commit.clone(),
+            source_report_digest: report_digest(&current)?,
             transition_id: "transition-1".into(),
             replacement_issue: "#5168".into(),
             evidence_bundle: "bundle-sha256:example".into(),
@@ -3964,6 +5554,123 @@ mod tests {
     }
 
     #[test]
+    fn compile_baseline_v2_rejects_nonadmissible_accepted_boundaries() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+
+        for (label, disposition, blocks_compilation) in [
+            ("unknown", SemanticBoundaryDisposition::Unknown, true),
+            ("unsupported", SemanticBoundaryDisposition::Unsupported, true),
+            ("compile-blocking", SemanticBoundaryDisposition::DeferredRuntime, true),
+        ] {
+            let mut report = sample_compile_report();
+            let mut boundary = sample_semantic_boundary();
+            boundary.disposition = disposition;
+            boundary.blocks_compilation = blocks_compilation;
+            if matches!(disposition, SemanticBoundaryDisposition::Unknown) {
+                boundary.confidence = SemanticBoundaryConfidence::Unresolved;
+            }
+            if matches!(disposition, SemanticBoundaryDisposition::Unsupported) {
+                boundary.confidence = SemanticBoundaryConfidence::Unresolved;
+            }
+            report.semantic_boundaries.push(boundary);
+
+            let result =
+                baseline_v2_from_report(&report, &series, &sample_baseline_v2_config(), None, &[]);
+            if result.is_ok() {
+                bail!("{label} semantic boundary was accepted into baseline v2");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_rejects_stale_boundary_retirement_receipt() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut previous_report = sample_compile_report();
+        previous_report.semantic_boundaries.push(sample_semantic_boundary());
+        let config = sample_baseline_v2_config();
+        let previous = baseline_v2_from_report(&previous_report, &series, &config, None, &[])?;
+        let current = sample_compile_report();
+        let mut transition_config = config;
+        transition_config.accepted_transition_id = Some("transition-1".into());
+        let mut stale = BoundaryRetirement {
+            schema_version: BOUNDARY_RETIREMENT_SCHEMA_VERSION.into(),
+            path: "base/ok.t".into(),
+            id: "runtime_symbolic_reference".into(),
+            source_start: 4,
+            source_end: 12,
+            series_id: series.series_id.clone(),
+            manifest_hash: series.manifest_hash.clone(),
+            measurement_sha: current.commit.clone(),
+            source_report_digest: report_digest(&current)?,
+            transition_id: "transition-1".into(),
+            replacement_issue: "#5168".into(),
+            evidence_bundle: "bundle-sha256:example".into(),
+        };
+        stale.source_report_digest = "sha256:stale-report".into();
+
+        let Err(error) = baseline_v2_from_report(
+            &current,
+            &series,
+            &transition_config,
+            Some(&previous),
+            &[stale],
+        ) else {
+            bail!("a retirement receipt for a stale report must fail closed");
+        };
+        let message = error.to_string();
+        if !message.contains("BoundaryRetirementReceiptMismatch")
+            || !message.contains("base/ok.t")
+            || !message.contains("stale")
+        {
+            bail!("unexpected stale retirement error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_rejects_still_present_boundary_retirement() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+        let config = sample_baseline_v2_config();
+        let previous = baseline_v2_from_report(&report, &series, &config, None, &[])?;
+        let mut transition_config = config;
+        transition_config.accepted_transition_id = Some("transition-1".into());
+        let retirement = BoundaryRetirement {
+            schema_version: BOUNDARY_RETIREMENT_SCHEMA_VERSION.into(),
+            path: "base/ok.t".into(),
+            id: "runtime_symbolic_reference".into(),
+            source_start: 4,
+            source_end: 12,
+            series_id: series.series_id.clone(),
+            manifest_hash: series.manifest_hash.clone(),
+            measurement_sha: report.commit.clone(),
+            source_report_digest: report_digest(&report)?,
+            transition_id: "transition-1".into(),
+            replacement_issue: "#5168".into(),
+            evidence_bundle: "bundle-sha256:example".into(),
+        };
+
+        let Err(error) = baseline_v2_from_report(
+            &report,
+            &series,
+            &transition_config,
+            Some(&previous),
+            &[retirement],
+        ) else {
+            bail!("a retirement receipt for a still-present boundary must fail closed");
+        };
+        if !error.to_string().contains("still present") {
+            bail!("unexpected still-present retirement error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn boundary_retirement_validation_reports_specific_violation_kinds() -> TestResult {
         let discovery = sample_discovery_report();
         let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
@@ -3973,19 +5680,29 @@ mod tests {
         let previous = baseline_v2_from_report(&previous_report, &series, &config, None, &[])?;
 
         let invalid_retirement = BoundaryRetirement {
+            schema_version: BOUNDARY_RETIREMENT_SCHEMA_VERSION.into(),
             path: "base/ok.t".into(),
             id: "runtime_symbolic_reference".into(),
             source_start: 4,
             source_end: 12,
+            series_id: series.series_id.clone(),
+            manifest_hash: series.manifest_hash.clone(),
+            measurement_sha: previous.repository_commit.clone(),
+            source_report_digest: previous.source_report_digest.clone(),
             transition_id: "wrong-transition".into(),
             replacement_issue: String::new(),
             evidence_bundle: String::new(),
         };
         let unknown_retirement = BoundaryRetirement {
+            schema_version: BOUNDARY_RETIREMENT_SCHEMA_VERSION.into(),
             path: "base/missing.t".into(),
             id: "missing-boundary".into(),
             source_start: 1,
             source_end: 2,
+            series_id: series.series_id.clone(),
+            manifest_hash: series.manifest_hash.clone(),
+            measurement_sha: previous.repository_commit.clone(),
+            source_report_digest: previous.source_report_digest.clone(),
             transition_id: "transition-1".into(),
             replacement_issue: "#5168".into(),
             evidence_bundle: "bundle-sha256:example".into(),
@@ -3995,6 +5712,8 @@ mod tests {
             &[],
             &[invalid_retirement, unknown_retirement],
             "transition-1",
+            &series,
+            &sample_compile_report(),
         );
         if !violations.iter().any(|violation| {
             violation.kind == BaselineViolationKind::BoundaryRetirementReceiptMismatch
@@ -4005,6 +5724,92 @@ mod tests {
             violation.kind == BaselineViolationKind::BoundaryRetirementReferencesUnknownBoundary
         }) {
             bail!("unknown retirement boundary was not classified separately");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_rejects_tampered_persisted_retirement() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("baseline.json");
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut previous_report = sample_compile_report();
+        previous_report.semantic_boundaries.push(sample_semantic_boundary());
+        let config = sample_baseline_v2_config();
+        let previous = baseline_v2_from_report(&previous_report, &series, &config, None, &[])?;
+        let current = sample_compile_report();
+        let mut transition_config = config;
+        transition_config.accepted_transition_id = Some("transition-1".into());
+        let retirement = BoundaryRetirement {
+            schema_version: BOUNDARY_RETIREMENT_SCHEMA_VERSION.into(),
+            path: "base/ok.t".into(),
+            id: "runtime_symbolic_reference".into(),
+            source_start: 4,
+            source_end: 12,
+            series_id: series.series_id.clone(),
+            manifest_hash: series.manifest_hash.clone(),
+            measurement_sha: current.commit.clone(),
+            source_report_digest: report_digest(&current)?,
+            transition_id: "transition-1".into(),
+            replacement_issue: "#5168".into(),
+            evidence_bundle: "bundle-sha256:example".into(),
+        };
+        let accepted = baseline_v2_from_report(
+            &current,
+            &series,
+            &transition_config,
+            Some(&previous),
+            &[retirement],
+        )?;
+        let mut series_tampered = accepted.clone();
+        series_tampered.boundary_retirements[0].series_id = "wrong-series".into();
+        let comparison = compare_baseline_v2_with_identities(
+            &series_tampered,
+            &current,
+            &series,
+            None,
+            Some("transition-1"),
+            &[],
+        );
+        if !comparison.violations.iter().any(|violation| {
+            violation.kind == BaselineViolationKind::BoundaryRetirementReceiptMismatch
+        }) {
+            bail!("series-bound retirement tampering was not rejected during comparison");
+        }
+
+        let mutations = [
+            ("schema_version", serde_json::Value::String("other-schema".into())),
+            ("path", serde_json::Value::String(String::new())),
+            ("id", serde_json::Value::String(String::new())),
+            ("source_start", serde_json::Value::from(12_u64)),
+            ("series_id", serde_json::Value::String("wrong-series".into())),
+            ("manifest_hash", serde_json::Value::String("sha256:wrong".into())),
+            ("measurement_sha", serde_json::Value::String("wrong-measurement".into())),
+            ("source_report_digest", serde_json::Value::String("sha256:tampered".into())),
+            ("transition_id", serde_json::Value::String("wrong-transition".into())),
+            ("replacement_issue", serde_json::Value::String(String::new())),
+            ("evidence_bundle", serde_json::Value::String(String::new())),
+        ];
+        for (field, replacement) in mutations {
+            let mut mutated = serde_json::to_value(&accepted)?;
+            mutated["boundary_retirements"][0][field] = replacement;
+            fs::write(&path, format!("{}\n", serde_json::to_string(&mutated)?))?;
+            if read_compile_baseline_v2(&path).is_ok() {
+                bail!("tampered persisted retirement field {field} was accepted");
+            }
+        }
+
+        let mut value = serde_json::to_value(accepted)?;
+        value["boundary_retirements"][0]["source_report_digest"] =
+            serde_json::Value::String("sha256:tampered".into());
+        fs::write(&path, format!("{}\n", serde_json::to_string(&value)?))?;
+
+        let Err(error) = read_compile_baseline_v2(&path) else {
+            bail!("tampered persisted retirement must fail closed");
+        };
+        if !error.to_string().contains("persisted boundary retirement") {
+            bail!("unexpected persisted retirement error: {error}");
         }
         Ok(())
     }
@@ -4049,6 +5854,36 @@ mod tests {
         };
         if !error.to_string().contains("MissingBoundaryInventory") {
             bail!("unexpected missing inventory error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compile_baseline_v2_reader_rejects_nonadmissible_inventory() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("baseline.json");
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+        let baseline =
+            baseline_v2_from_report(&report, &series, &sample_baseline_v2_config(), None, &[])?;
+        let mut value = serde_json::to_value(baseline)?;
+        let boundary = value
+            .get_mut("semantic_boundaries")
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|boundaries| boundaries.first_mut())
+            .ok_or_else(|| color_eyre::eyre::eyre!("baseline has no boundary inventory"))?;
+        boundary["disposition"] = serde_json::Value::String("unsupported".into());
+        boundary["confidence"] = serde_json::Value::String("unresolved".into());
+        boundary["blocks_compilation"] = serde_json::Value::Bool(true);
+        fs::write(&path, format!("{}\n", serde_json::to_string(&value)?))?;
+
+        let Err(error) = read_compile_baseline_v2(&path) else {
+            bail!("a malformed accepted boundary inventory must fail closed");
+        };
+        if !error.to_string().contains("unknown or unsupported") {
+            bail!("unexpected malformed inventory error: {error}");
         }
         Ok(())
     }
@@ -4724,6 +6559,493 @@ mod tests {
             owner_workstream: "symbolic_reference_semantics".into(),
             supporting_test: "base/ok.t".into(),
         }
+    }
+
+    fn sample_registry_series() -> SeriesManifest {
+        SeriesManifest {
+            schema_version: SERIES_MANIFEST_SCHEMA_VERSION.into(),
+            series_id: "series-1".into(),
+            profile: HarnessProfile::Base,
+            profile_roots: vec!["base".into()],
+            repository_commit: "abc".into(),
+            perl_requested_ref: "perl-ref".into(),
+            perl_resolved_ref: "perl-ref".into(),
+            runner: HarnessRunner::Test,
+            normalized_manifest: vec!["base/lex.t".into(), "base/ok.t".into()],
+            manifest_hash: "manifest-1".into(),
+            preparation_receipt_id: "prepare-1".into(),
+            preparation_receipt_digest: "prepare-digest-1".into(),
+            harness_schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
+            compiler_subject_identity: "compiler-subject-1".into(),
+            invocation_identity: "invocation-1".into(),
+            capability_identity: "capability-1".into(),
+            environment_identity: "environment-1".into(),
+            normalization_version: SERIES_MANIFEST_NORMALIZATION_VERSION.into(),
+            created_at: "2026-07-02T00:00:00Z".into(),
+            replaces_series_id: None,
+            change_reason: Some("test series".into()),
+        }
+    }
+
+    fn sample_registry_entry() -> SemanticBoundaryRegistryEntry {
+        let boundary = sample_semantic_boundary();
+        SemanticBoundaryRegistryEntry {
+            id: boundary.id,
+            disposition: boundary.disposition,
+            source_kind: boundary.source_kind,
+            semantic_meaning: "symbolic reference remains dynamic".into(),
+            series_id: "series-1".into(),
+            profile: HarnessProfile::Base,
+            path: boundary.path,
+            manifest_hash: "manifest-1".into(),
+            source_span: boundary.source_span,
+            source_shape: "symbolic reference dereference".into(),
+            lock_scope: boundary.lock_scope,
+            reason: boundary.reason,
+            ambient_dependency: "runtime symbol table".into(),
+            blocks_downstream_static_facts: boundary.blocks_downstream_static_facts,
+            owner_issue: "#4753".into(),
+            supporting_test: boundary.supporting_test,
+            wrong_file_test: "fixtures/semantic-boundaries/wrong-file.t".into(),
+            changed_shape_test: "fixtures/semantic-boundaries/changed-shape.t".into(),
+            introduction_pr: "#5202".into(),
+            introduction_commit: "abc123".into(),
+            first_accepted_bundle: "bundle-1".into(),
+            replacement_strategy: SemanticBoundaryReplacementStrategy::HirSemantics,
+            state: SemanticBoundaryRegistryState::Active,
+            retirement_pr: None,
+            retirement_bundle: None,
+            review_after: None,
+            permanent_boundary_rationale: None,
+        }
+    }
+
+    #[test]
+    fn boundary_registry_accepts_an_exact_owned_entry() {
+        let registry = SemanticBoundaryRegistry {
+            schema_version: SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION.into(),
+            entries: vec![sample_registry_entry()],
+        };
+
+        assert!(validate_boundary_registry_shape(&registry).is_empty());
+    }
+
+    #[test]
+    fn boundary_registry_rejects_unknown_or_widened_debt() {
+        let mut entry = sample_registry_entry();
+        entry.disposition = SemanticBoundaryDisposition::Unknown;
+        entry.lock_scope = SemanticBoundaryLockScope::Path;
+        entry.owner_issue = "not-an-issue".into();
+        entry.path = "C:/private/run/base/ok.t".into();
+        let registry = SemanticBoundaryRegistry {
+            schema_version: SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION.into(),
+            entries: vec![entry],
+        };
+
+        let violations = validate_boundary_registry_shape(&registry);
+        assert!(violations.iter().any(|violation| violation.contains("non-admissible")));
+        assert!(violations.iter().any(|violation| violation.contains("invalid owner issue")));
+        assert!(violations.iter().any(|violation| violation.contains("private or temporary")));
+    }
+
+    #[test]
+    fn boundary_registry_matches_baseline_identity_and_inventory() -> TestResult {
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+        let series = sample_registry_series();
+        let baseline =
+            baseline_v2_from_report(&report, &series, &sample_baseline_v2_config(), None, &[])?;
+        let registry = SemanticBoundaryRegistry {
+            schema_version: SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION.into(),
+            entries: vec![sample_registry_entry()],
+        };
+
+        assert!(validate_registry_against_baseline(&registry, &baseline, false).is_empty());
+
+        let mut changed = registry;
+        changed.entries[0].manifest_hash = "wrong-manifest".into();
+        let violations = validate_registry_against_baseline(&changed, &baseline, false);
+        assert!(violations.iter().any(|violation| violation.contains("manifest_hash")));
+        Ok(())
+    }
+
+    #[test]
+    fn boundary_bundle_must_match_the_accepted_baseline_inventory() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let normalized = temp.path().join("normalized");
+        fs::create_dir_all(&normalized)?;
+        let index_path = temp.path().join("index.json");
+        let boundary_path = normalized.join("semantic-boundaries.json");
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+        let series = sample_registry_series();
+        let baseline =
+            baseline_v2_from_report(&report, &series, &sample_baseline_v2_config(), None, &[])?;
+        fs::write(&boundary_path, serde_json::to_string_pretty(&baseline.semantic_boundaries)?)?;
+        let index = EvidenceBundleIndex {
+            schema_version: "perl_core_harness.evidence_bundle.v1".into(),
+            bundle_id: "bundle-1".into(),
+            series_id: baseline.series_id.clone(),
+            manifest_hash: baseline.manifest_hash.clone(),
+            repository_commit: baseline.repository_commit.clone(),
+            profile: baseline.profile,
+            runner: HarnessRunner::Test,
+            perl_resolved_ref: "perl-ref".into(),
+            lineage: EvidenceBundleLineage { measurement_sha: "abc".into() },
+            artifacts: vec![EvidenceBundleArtifact {
+                kind: "semantic_boundaries".into(),
+                logical_path: "normalized/semantic-boundaries.json".into(),
+            }],
+            completeness: EvidenceBundleCompleteness {
+                status: "complete".into(),
+                normalized_authority: true,
+            },
+            lifecycle: "published".into(),
+        };
+        fs::write(&index_path, serde_json::to_string_pretty(&index)?)?;
+
+        let bundle = read_boundary_bundle(&index_path)?;
+        assert!(validate_bundle_against_baseline(&bundle, &baseline).is_empty());
+
+        let mut duplicate_boundaries = baseline.semantic_boundaries.clone();
+        duplicate_boundaries.push(sample_semantic_boundary());
+        fs::write(&boundary_path, serde_json::to_string_pretty(&duplicate_boundaries)?)?;
+        let error = match read_boundary_bundle(&index_path) {
+            Ok(_) => return Err(color_eyre::eyre::eyre!("duplicate boundary key was accepted")),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("duplicate boundary key"));
+
+        let mut changed = baseline;
+        changed.semantic_boundaries.clear();
+        let violations = validate_bundle_against_baseline(&bundle, &changed);
+        assert!(violations.iter().any(|violation| violation.contains("inventory")));
+        Ok(())
+    }
+
+    fn sample_boundary_bundle() -> BoundaryBundle {
+        BoundaryBundle {
+            path: PathBuf::from("bundles/bundle-1/index.json"),
+            index: EvidenceBundleIndex {
+                schema_version: "perl_core_harness.evidence_bundle.v1".into(),
+                bundle_id: "bundle-1".into(),
+                series_id: "series-1".into(),
+                manifest_hash: "manifest-1".into(),
+                repository_commit: "abc".into(),
+                profile: HarnessProfile::Base,
+                runner: HarnessRunner::Test,
+                perl_resolved_ref: "perl-ref".into(),
+                lineage: EvidenceBundleLineage { measurement_sha: "abc".into() },
+                artifacts: Vec::new(),
+                completeness: EvidenceBundleCompleteness {
+                    status: "complete".into(),
+                    normalized_authority: true,
+                },
+                lifecycle: "published".into(),
+            },
+            semantic_boundaries: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn failure_clusters_group_typed_failures_and_keep_debt_separate() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        report.failures = vec![
+            sample_failure("base/lex.t", "parse_recovery"),
+            sample_failure("base/ok.t", "parse_recovery"),
+            sample_failure("base/harness.t", "harness_prepare"),
+            sample_failure("base/hir.t", "hir_lowering"),
+        ];
+        let mut bundle = bundle;
+        bundle.semantic_boundaries.push(sample_semantic_boundary());
+        bundle.semantic_boundaries.push(ObservedSemanticBoundary {
+            disposition: SemanticBoundaryDisposition::ImplementedStatic,
+            id: "implemented_static".into(),
+            ..sample_semantic_boundary()
+        });
+        bundle.semantic_boundaries.push(ObservedSemanticBoundary {
+            disposition: SemanticBoundaryDisposition::OrdinaryRuntime,
+            id: "ordinary_runtime".into(),
+            ..sample_semantic_boundary()
+        });
+
+        let triage = build_failure_cluster_report(&bundle, &report)?;
+
+        assert_eq!(triage.clusters.len(), 3);
+        assert_eq!(triage.debt_candidates.len(), 1);
+        let parse_cluster = triage
+            .clusters
+            .iter()
+            .find(|cluster| cluster.signature.bucket == "parse_recovery")
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing parse cluster"))?;
+        assert_eq!(parse_cluster.occurrence_count, 2);
+        assert_eq!(parse_cluster.affected_files, vec!["base/lex.t", "base/ok.t"]);
+        assert_eq!(parse_cluster.signature.fact_classes, vec!["parse_recovery"]);
+        assert_ne!(parse_cluster.signature.fact_classes, parse_cluster.signature.lsp_surfaces);
+        let harness_cluster = triage
+            .clusters
+            .iter()
+            .find(|cluster| cluster.signature.bucket == "harness_prepare")
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing harness cluster"))?;
+        assert_eq!(harness_cluster.impacted_layer, "harness_or_environment");
+        let hir_cluster = triage
+            .clusters
+            .iter()
+            .find(|cluster| cluster.signature.bucket == "hir_lowering")
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing HIR cluster"))?;
+        assert_eq!(hir_cluster.signature.stage, "hir_unmodeled");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_cluster_normalization_preserves_urls_and_scrubs_host_paths() -> TestResult {
+        let normalized =
+            normalize_diagnostic("see https://example.com/tmp and /tmp/perl/target/report");
+        assert_eq!(normalized, "see https://example.com/tmp and <host-path>");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_cluster_triage_rejects_non_compile_reports() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let error = match validate_bundle_report_identity(&bundle, &sample_parse_report()) {
+            Ok(()) => return Err(color_eyre::eyre::eyre!("parse report was accepted by triage")),
+            Err(error) => error,
+        };
+        if !error.to_string().contains("triage requires a compile report") {
+            bail!("unexpected non-compile triage error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failure_cluster_triage_rejects_runner_mismatch() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        report.runner = HarnessRunner::Harness;
+        let error = match validate_bundle_report_identity(&bundle, &report) {
+            Ok(()) => return Err(color_eyre::eyre::eyre!("runner mismatch was accepted")),
+            Err(error) => error,
+        };
+        if !error.to_string().contains("identity does not match evidence bundle") {
+            bail!("unexpected runner mismatch error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failure_cluster_triage_rejects_invalid_report_shape() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        let result = report
+            .file_results
+            .first_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("sample compile report has no files"))?;
+        result.status = RunnerStatus::Fail;
+        validate_bundle_report_identity(&bundle, &report)?;
+        let error = match ensure_valid_report_shape(&report) {
+            Ok(()) => return Err(color_eyre::eyre::eyre!("invalid report shape was accepted")),
+            Err(error) => error,
+        };
+        if !error.to_string().contains("failing file has no failure bucket record") {
+            bail!("unexpected invalid report-shape error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failure_cluster_ids_are_stable_when_failure_order_changes() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        report.failures = vec![
+            sample_failure("base/ok.t", "parse_recovery"),
+            sample_failure("base/lex.t", "parse_recovery"),
+        ];
+        let first = build_failure_cluster_report(&bundle, &report)?;
+        report.failures.reverse();
+        let second = build_failure_cluster_report(&bundle, &report)?;
+
+        assert_eq!(serde_json::to_value(&first)?, serde_json::to_value(&second)?);
+        report.failures.push(sample_failure("base/new.t", "parse_recovery"));
+        let with_new_membership = build_failure_cluster_report(&bundle, &report)?;
+        assert_eq!(second.clusters[0].cluster_id, with_new_membership.clusters[0].cluster_id);
+        assert_eq!(with_new_membership.clusters[0].occurrence_count, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn failure_cluster_output_normalizes_host_paths_and_line_endings() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        let mut failure = sample_failure("base\\ok.t", "parse_recovery");
+        failure.first_diagnostic = "C:\\tmp\\perl\\base\\ok.t:1\r\nparse failure".into();
+        report.failures.push(failure);
+
+        let triage = build_failure_cluster_report(&bundle, &report)?;
+        let representative = &triage.clusters[0].representative_failure;
+        assert_eq!(representative.path, "base/ok.t");
+        assert_eq!(representative.first_diagnostic, "<host-path> parse failure");
+        Ok(())
+    }
+
+    #[test]
+    fn cluster_history_preserves_missing_clusters_and_tracks_membership_growth() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        report.failures = vec![sample_failure("base/lex.t", "parse_recovery")];
+        let first_report = build_failure_cluster_report(&bundle, &report)?;
+        let history = merge_cluster_history(
+            FailureClusterHistory {
+                schema_version: FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION.into(),
+                entries: Vec::new(),
+            },
+            &first_report,
+        )?;
+        assert_eq!(history.entries.len(), 1);
+        assert_eq!(history.entries[0].status, FailureClusterHistoryStatus::Unassigned);
+        assert_eq!(history.entries[0].identity_quality, FailureClusterIdentityQuality::Provisional);
+        assert_eq!(history.entries[0].first_seen_series_id, "series-1");
+        assert_eq!(history.entries[0].last_seen_series_id, "series-1");
+        assert_eq!(history.entries[0].first_seen_bundle, "bundle-1");
+
+        let mut second_report = first_report.clone();
+        second_report.bundle_id = "bundle-2".into();
+        second_report.clusters[0].affected_files.push("base/ok.t".into());
+        second_report.clusters[0].affected_files.sort();
+        let history = merge_cluster_history(history, &second_report)?;
+        assert_eq!(history.entries[0].first_seen_bundle, "bundle-1");
+        assert_eq!(history.entries[0].last_seen_bundle, "bundle-2");
+        assert_eq!(history.entries[0].historical_affected_files, vec!["base/lex.t", "base/ok.t"]);
+
+        let mut absent_report = second_report;
+        absent_report.bundle_id = "bundle-3".into();
+        absent_report.clusters.clear();
+        let stale_absence = validate_history_against_report(&history, &absent_report);
+        assert!(stale_absence.iter().any(|violation| violation.contains("still marked current")));
+        let history_after_absence = merge_cluster_history(history.clone(), &absent_report)?;
+        assert_eq!(
+            history_after_absence.entries[0].presence,
+            FailureClusterHistoryPresence::AbsentUnresolved
+        );
+        assert!(!history_after_absence.entries[0].observed_in_current_bundle);
+        assert_eq!(
+            history_after_absence.entries[0].absence_since_bundle.as_deref(),
+            Some("bundle-3")
+        );
+        assert!(history_after_absence.entries[0].current_affected_files.is_empty());
+        assert!(history_after_absence.entries[0].current_stage.is_none());
+        assert!(validate_history_against_report(&history_after_absence, &absent_report).is_empty());
+
+        let mut second_absent_report = absent_report;
+        second_absent_report.bundle_id = "bundle-4".into();
+        let history_after_second_absence =
+            merge_cluster_history(history_after_absence, &second_absent_report)?;
+        assert_eq!(
+            history_after_second_absence.entries[0].absence_since_bundle.as_deref(),
+            Some("bundle-3")
+        );
+        assert!(
+            validate_history_against_report(&history_after_second_absence, &second_absent_report)
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cluster_history_rejects_stale_identity_and_unproven_resolution() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        report.failures.push(sample_failure("base/lex.t", "parse_recovery"));
+        let cluster_report = build_failure_cluster_report(&bundle, &report)?;
+        let mut history = merge_cluster_history(
+            FailureClusterHistory {
+                schema_version: FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION.into(),
+                entries: Vec::new(),
+            },
+            &cluster_report,
+        )?;
+        history.entries[0].manifest_hash = "stale-manifest".into();
+        let stale = validate_history_against_report(&history, &cluster_report);
+        assert!(stale.iter().any(|violation| violation.contains("stale series identity")));
+
+        history.entries[0].manifest_hash = cluster_report.manifest_hash.clone();
+        history.entries[0].presence = FailureClusterHistoryPresence::Resolved;
+        let inverse = validate_cluster_history_shape(&history);
+        assert!(inverse.iter().any(|violation| violation.contains("resolved-presence cluster")));
+        history.entries[0].presence = FailureClusterHistoryPresence::Observed;
+        history.entries[0].status = FailureClusterHistoryStatus::Resolved;
+        history.entries[0].owner_issue = Some("#5175".into());
+        let invalid = validate_cluster_history_shape(&history);
+        assert!(invalid.iter().any(|violation| violation.contains("resolution PR")));
+        assert!(invalid.iter().any(|violation| violation.contains("resolution bundle")));
+        assert!(invalid.iter().any(|violation| violation.contains("before/after transition")));
+        Ok(())
+    }
+
+    #[test]
+    fn cluster_history_accepts_only_an_explicit_bound_transition() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        report.failures.push(sample_failure("base/lex.t", "parse_recovery"));
+        let cluster_report = build_failure_cluster_report(&bundle, &report)?;
+        let mut history = merge_cluster_history(
+            FailureClusterHistory {
+                schema_version: FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION.into(),
+                entries: Vec::new(),
+            },
+            &cluster_report,
+        )?;
+        let entry = &mut history.entries[0];
+        entry.owner_issue = Some("#5175".into());
+        entry.status = FailureClusterHistoryStatus::Resolved;
+        entry.presence = FailureClusterHistoryPresence::Resolved;
+        entry.observed_in_current_bundle = false;
+        entry.current_authority_bundle = None;
+        entry.absence_since_bundle = Some("bundle-2".into());
+        entry.current_affected_files.clear();
+        entry.current_fact_classes.clear();
+        entry.current_lsp_surfaces.clear();
+        entry.current_stage = None;
+        entry.resolution_pr = Some("#5300".into());
+        entry.resolution_bundle = Some("bundle-2".into());
+        let cluster_id = entry.cluster_id.clone();
+        let first_seen_series_id = entry.first_seen_series_id.clone();
+        let first_seen_manifest_hash = entry.first_seen_manifest_hash.clone();
+        let first_seen_bundle = entry.first_seen_bundle.clone();
+        entry.transitions.push(FailureClusterHistoryTransition {
+            transition_id: "transition-1".into(),
+            from_cluster_id: cluster_id,
+            to_cluster_id: None,
+            to_presence: FailureClusterHistoryPresence::Resolved,
+            from_stage: "compile_effect".into(),
+            to_stage: "general_semantics".into(),
+            before_series_id: first_seen_series_id,
+            before_manifest_hash: first_seen_manifest_hash,
+            before_bundle_id: first_seen_bundle,
+            after_series_id: "series-1".into(),
+            after_manifest_hash: "manifest-1".into(),
+            after_bundle_id: "bundle-2".into(),
+            proof_plan: "focused typed proof plus exact-series replay".into(),
+            stop_condition: "the cluster no longer emits".into(),
+            implementation_pr: Some("#5300".into()),
+        });
+        assert!(validate_cluster_history_shape(&history).is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn failure_cluster_triage_rejects_unknown_buckets() -> TestResult {
+        let bundle = sample_boundary_bundle();
+        let mut report = sample_compile_report();
+        report.failures.push(sample_failure("base/lex.t", "unclassified"));
+
+        let error = match build_failure_cluster_report(&bundle, &report) {
+            Ok(_) => return Err(color_eyre::eyre::eyre!("unknown bucket was accepted")),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("unclassifiable failure bucket"));
+        Ok(())
     }
 
     fn sample_parse_report() -> RunReport {
