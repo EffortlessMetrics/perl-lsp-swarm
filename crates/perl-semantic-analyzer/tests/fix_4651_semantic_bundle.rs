@@ -4,11 +4,6 @@
 //!   3. `find_catch_variable_range` used fragile rfind instead of parser ranges
 //!   4. `infer_node` MethodCall returned `Any`, inconsistent with
 //!      `infer_expr_fact_in_env`
-#![expect(
-    clippy::panic,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
-
 use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::scope_analyzer::{IssueKind, ScopeAnalyzer, ScopeIssue};
 use perl_semantic_analyzer::analysis::type_facts::ShapeFact;
@@ -242,13 +237,12 @@ fn infer_node_method_call_not_always_any() {
                     "Object shape package should be \"Other\" for create_other"
                 );
             }
-            other => {
-                panic!(
-                    "infer_expr_fact for $obj->create_other() should have an Object shape \
-                     proving method return facts were consumed.  Got shape: {:?}",
-                    other
-                );
-            }
+            other => assert!(
+                matches!(other, Some(ShapeFact::Object(_))),
+                "infer_expr_fact for $obj->create_other() should have an Object shape \
+                 proving method return facts were consumed.  Got shape: {:?}",
+                other
+            ),
         }
     }
 }
