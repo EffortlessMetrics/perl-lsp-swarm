@@ -162,6 +162,7 @@ pub struct SeriesManifest {
 
 /// A reviewed transition proving that an accepted semantic boundary retired.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct BoundaryRetirement {
     pub path: String,
     pub id: String,
