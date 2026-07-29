@@ -8,6 +8,13 @@ on:
       - ".agent-flow-bootstrap/**"
       - "scripts/materialize_agent_flow_bootstrap.py"
       - ".github/workflows/materialize-agent-flow.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".agent-flow-bootstrap/**"
+      - "scripts/materialize_agent_flow_bootstrap.py"
+      - ".github/workflows/materialize-agent-flow.yml"
 
 permissions:
   contents: write
@@ -18,6 +25,7 @@ concurrency:
 
 jobs:
   materialize:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
