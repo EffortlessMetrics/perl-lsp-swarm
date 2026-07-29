@@ -173,7 +173,7 @@ pub struct BoundaryRetirement {
     pub source_end: usize,
     /// Comparison series that emitted the retired boundary.
     pub series_id: String,
-    /// Exact denominator identity for the retired boundary.
+    /// Comparison-series manifest hash identifying the retired boundary's denominator.
     pub manifest_hash: String,
     /// Compiler measurement commit used for the replacement run.
     pub measurement_sha: String,
