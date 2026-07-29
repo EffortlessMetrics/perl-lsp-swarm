@@ -20,6 +20,8 @@ pub const COMPARISON_SERIES_SCHEMA_VERSION: &str = "perl_core_harness.comparison
 pub const SERIES_MANIFEST_SCHEMA_VERSION: &str = COMPARISON_SERIES_SCHEMA_VERSION;
 pub const SERIES_MANIFEST_NORMALIZATION_VERSION: &str = "path-normalization.v1";
 pub const BOUNDARY_RETIREMENT_SCHEMA_VERSION: &str = "perl_core_harness.boundary_retirement.v1";
+pub const SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION: &str =
+    "perl_core_harness.semantic_boundary_registry.v1";
 
 /// Upstream Perl test scheduler to query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
@@ -578,6 +580,72 @@ pub struct ObservedSemanticBoundary {
     pub supporting_test: String,
 }
 
+/// Lifecycle state of a governed semantic-boundary registry entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticBoundaryRegistryState {
+    /// The boundary is currently emitted and must be observed in fresh evidence.
+    Active,
+    /// The boundary is expected to disappear after a reviewed replacement lands.
+    Retiring,
+    /// The boundary has disappeared in an exact-series receipt and is retained as history.
+    Retired,
+}
+
+/// Reviewed replacement strategy for a governed semantic boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticBoundaryReplacementStrategy {
+    GeneralParser,
+    HirSemantics,
+    CompileWorld,
+    AbstractCompileTimeEngine,
+    PlatformCapabilityModel,
+    ExecutableProfileEir,
+    LongLivedTestHarnessCompatibility,
+}
+
+/// One durable owner and proof record for an observed semantic boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticBoundaryRegistryEntry {
+    pub id: String,
+    pub disposition: SemanticBoundaryDisposition,
+    pub source_kind: String,
+    pub semantic_meaning: String,
+    pub series_id: String,
+    pub profile: HarnessProfile,
+    pub path: String,
+    pub manifest_hash: String,
+    pub source_span: SemanticBoundarySourceSpan,
+    pub source_shape: String,
+    pub lock_scope: SemanticBoundaryLockScope,
+    pub reason: String,
+    pub ambient_dependency: String,
+    pub blocks_downstream_static_facts: bool,
+    pub owner_issue: String,
+    pub supporting_test: String,
+    pub wrong_file_test: String,
+    pub changed_shape_test: String,
+    pub introduction_pr: String,
+    pub introduction_commit: String,
+    pub first_accepted_bundle: String,
+    pub replacement_strategy: SemanticBoundaryReplacementStrategy,
+    pub state: SemanticBoundaryRegistryState,
+    pub retirement_pr: Option<String>,
+    pub retirement_bundle: Option<String>,
+    pub review_after: Option<String>,
+    pub permanent_boundary_rationale: Option<String>,
+}
+
+/// Versioned machine-readable semantic-boundary registry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticBoundaryRegistry {
+    pub schema_version: String,
+    pub entries: Vec<SemanticBoundaryRegistryEntry>,
+}
+
 pub fn workstream_for_bucket(bucket: &str) -> &'static str {
     match bucket {
         "parse_recovery" => "parser_recovery",
@@ -641,6 +709,10 @@ mod tests {
             (SERIES_MANIFEST_SCHEMA_VERSION, "perl_core_harness.comparison_series.v1"),
             (SERIES_MANIFEST_NORMALIZATION_VERSION, "path-normalization.v1"),
             (BOUNDARY_RETIREMENT_SCHEMA_VERSION, "perl_core_harness.boundary_retirement.v1"),
+            (
+                SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION,
+                "perl_core_harness.semantic_boundary_registry.v1",
+            ),
         ];
         for (actual, expected) in expected {
             if actual != expected {

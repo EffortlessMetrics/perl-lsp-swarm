@@ -16,15 +16,19 @@ use perl_core_harness_types::{
     DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport, GAP_MAP_SCHEMA_VERSION, GapMap,
     ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus,
     RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunSummary, RunnerRecord,
-    RunnerStatus, SERIES_MANIFEST_NORMALIZATION_VERSION, SERIES_MANIFEST_SCHEMA_VERSION,
-    SMOKE_SCHEMA_VERSION, SemanticBoundaryConfidence, SemanticBoundaryDisposition,
-    SemanticBoundaryLockScope, SeriesManifest, SmokeFailureKind, SmokeReport, SmokeStatus,
-    SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
+    RunnerStatus, SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION, SERIES_MANIFEST_NORMALIZATION_VERSION,
+    SERIES_MANIFEST_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION, SemanticBoundaryConfidence,
+    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SemanticBoundaryRegistry,
+    SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
+    SemanticBoundaryReplacementStrategy, SeriesManifest, SmokeFailureKind, SmokeReport,
+    SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
 };
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -226,6 +230,18 @@ pub struct SeriesManifestConfig {
     pub check: bool,
 }
 
+/// Configuration for `perl-core-harness boundaries`.
+#[derive(Debug, Clone)]
+pub struct BoundaryRegistryConfig {
+    pub registry: PathBuf,
+    pub baselines: Vec<PathBuf>,
+    pub bundles: Vec<PathBuf>,
+    pub output: Option<PathBuf>,
+    pub check: bool,
+    pub report: bool,
+    pub historical: bool,
+}
+
 /// Configuration for `perl-core-harness smoke`.
 #[derive(Debug, Clone)]
 pub struct SmokeConfig {
@@ -332,6 +348,568 @@ pub fn series_manifest(config: SeriesManifestConfig) -> Result<()> {
         manifest.normalized_manifest.len()
     );
     Ok(())
+}
+
+/// Validate the semantic-boundary registry against accepted v2 baselines and
+/// optional durable evidence-bundle indexes.
+pub fn boundaries(config: BoundaryRegistryConfig) -> Result<()> {
+    let raw = fs::read_to_string(&config.registry)
+        .with_context(|| format!("reading boundary registry {}", config.registry.display()))?;
+    let registry: SemanticBoundaryRegistry = serde_json::from_str(&raw)
+        .with_context(|| format!("decoding boundary registry {}", config.registry.display()))?;
+
+    let mut violations = validate_boundary_registry_shape(&registry);
+    let mut baseline_data = Vec::new();
+    for path in &config.baselines {
+        match read_compile_baseline_v2(path) {
+            Ok(baseline) => baseline_data.push((path.clone(), baseline)),
+            Err(error) => violations.push(format!("{}: {error}", path.display())),
+        }
+    }
+
+    let mut bundle_data = Vec::new();
+    for path in &config.bundles {
+        match read_boundary_bundle(path) {
+            Ok(bundle) => bundle_data.push(bundle),
+            Err(error) => violations.push(format!("{}: {error}", path.display())),
+        }
+    }
+
+    for (path, baseline) in &baseline_data {
+        violations.extend(validate_registry_against_baseline(
+            &registry,
+            baseline,
+            config.historical,
+        ));
+        for bundle in bundle_data.iter().filter(|bundle| {
+            bundle.index.series_id == baseline.series_id && bundle.index.profile == baseline.profile
+        }) {
+            violations.extend(validate_bundle_against_baseline(bundle, baseline));
+        }
+        if !config.bundles.is_empty()
+            && !bundle_data.iter().any(|bundle| {
+                bundle.index.series_id == baseline.series_id
+                    && bundle.index.profile == baseline.profile
+            })
+        {
+            violations.push(format!(
+                "{}: no evidence bundle was supplied for series {} profile {}",
+                path.display(),
+                baseline.series_id,
+                baseline.profile
+            ));
+        }
+    }
+    for bundle in &bundle_data {
+        if !baseline_data.iter().any(|(_, baseline)| {
+            baseline.series_id == bundle.index.series_id && baseline.profile == bundle.index.profile
+        }) {
+            violations.push(format!(
+                "bundle {} has no matching accepted baseline authority",
+                bundle.index.bundle_id
+            ));
+        }
+    }
+
+    let report = boundary_registry_report(
+        &registry,
+        &baseline_data,
+        &bundle_data,
+        config.historical,
+        violations,
+    );
+    let json =
+        serde_json::to_string_pretty(&report).context("serializing boundary registry report")?;
+    if let Some(path) = &config.output {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("creating boundary registry report directory {}", parent.display())
+            })?;
+        }
+        fs::write(path, format!("{json}\n"))
+            .with_context(|| format!("writing boundary registry report {}", path.display()))?;
+    } else if config.report {
+        io::stdout()
+            .write_all(format!("{json}\n").as_bytes())
+            .context("writing boundary registry report")?;
+    }
+
+    if !report.valid {
+        bail!(
+            "semantic-boundary registry validation failed with {} violation(s):\n{}",
+            report.violations.len(),
+            report.violations.join("\n")
+        );
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct BoundaryRegistryReport {
+    schema_version: String,
+    mode: String,
+    registry_entries: usize,
+    baselines_checked: Vec<String>,
+    bundles_checked: Vec<String>,
+    counts: BoundaryRegistryCounts,
+    missing_active: Vec<String>,
+    emitting_retired: Vec<String>,
+    violations: Vec<String>,
+    valid: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct BoundaryRegistryCounts {
+    by_disposition: BTreeMap<String, usize>,
+    by_lock_scope: BTreeMap<String, usize>,
+    by_profile: BTreeMap<String, usize>,
+    by_owner_issue: BTreeMap<String, usize>,
+    by_replacement_strategy: BTreeMap<String, usize>,
+    by_state: BTreeMap<String, usize>,
+    downstream_static_facts_blocked: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+struct EvidenceBundleIndex {
+    schema_version: String,
+    bundle_id: String,
+    series_id: String,
+    manifest_hash: String,
+    repository_commit: String,
+    profile: HarnessProfile,
+    perl_resolved_ref: String,
+    lineage: EvidenceBundleLineage,
+    artifacts: Vec<EvidenceBundleArtifact>,
+    completeness: EvidenceBundleCompleteness,
+    lifecycle: String,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+struct EvidenceBundleLineage {
+    measurement_sha: String,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+struct EvidenceBundleArtifact {
+    kind: String,
+    logical_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+struct EvidenceBundleCompleteness {
+    status: String,
+    normalized_authority: bool,
+}
+
+#[derive(Debug, Clone)]
+struct BoundaryBundle {
+    path: PathBuf,
+    index: EvidenceBundleIndex,
+    semantic_boundaries: Vec<ObservedSemanticBoundary>,
+}
+
+fn read_boundary_bundle(path: &Path) -> Result<BoundaryBundle> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("reading evidence bundle index {}", path.display()))?;
+    let index: EvidenceBundleIndex = serde_json::from_str(&raw)
+        .with_context(|| format!("decoding evidence bundle index {}", path.display()))?;
+    if index.schema_version != "perl_core_harness.evidence_bundle.v1" {
+        bail!("unsupported evidence bundle schema {}", index.schema_version);
+    }
+    if index.bundle_id.trim().is_empty()
+        || index.series_id.trim().is_empty()
+        || index.manifest_hash.trim().is_empty()
+        || index.repository_commit.trim().is_empty()
+        || index.perl_resolved_ref.trim().is_empty()
+        || index.lineage.measurement_sha.trim().is_empty()
+    {
+        bail!("evidence bundle index has incomplete subject identity");
+    }
+    if index.lifecycle != "published"
+        || index.completeness.status != "complete"
+        || !index.completeness.normalized_authority
+    {
+        bail!("evidence bundle is not a complete normalized authority");
+    }
+    let artifact =
+        index.artifacts.iter().find(|artifact| artifact.kind == "semantic_boundaries").ok_or_else(
+            || color_eyre::eyre::eyre!("evidence bundle has no semantic-boundaries artifact"),
+        )?;
+    validate_public_path(&artifact.logical_path, "evidence bundle artifact")?;
+    let boundary_path =
+        path.parent().unwrap_or_else(|| Path::new(".")).join(&artifact.logical_path);
+    let boundary_raw = fs::read_to_string(&boundary_path).with_context(|| {
+        format!("reading semantic-boundaries artifact {}", boundary_path.display())
+    })?;
+    let mut semantic_boundaries: Vec<ObservedSemanticBoundary> =
+        serde_json::from_str(&boundary_raw).with_context(|| {
+            format!("decoding semantic-boundaries artifact {}", boundary_path.display())
+        })?;
+    semantic_boundaries.sort_by_key(semantic_boundary_key);
+    Ok(BoundaryBundle { path: path.to_path_buf(), index, semantic_boundaries })
+}
+
+fn validate_boundary_registry_shape(registry: &SemanticBoundaryRegistry) -> Vec<String> {
+    let mut violations = Vec::new();
+    if registry.schema_version != SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION {
+        violations.push(format!(
+            "registry schema {} is not {}",
+            registry.schema_version, SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION
+        ));
+    }
+    let mut active_keys = BTreeSet::new();
+    let mut meanings = BTreeMap::<String, String>::new();
+    for entry in &registry.entries {
+        let key = registry_boundary_key(entry);
+        let scoped_key = format!("{}:{}:{}", entry.series_id, entry.profile, key);
+        if entry.state != SemanticBoundaryRegistryState::Retired && !active_keys.insert(scoped_key)
+        {
+            violations.push(format!("duplicate active registry boundary key {key}"));
+        }
+        let meaning_key = entry.id.clone();
+        let fingerprint = format!(
+            "{:?}|{}|{:?}|{}",
+            entry.disposition, entry.source_kind, entry.lock_scope, entry.semantic_meaning
+        );
+        if let Some(previous) = meanings.insert(meaning_key.clone(), fingerprint.clone())
+            && previous != fingerprint
+        {
+            violations
+                .push(format!("stable registry ID {} is reused for another meaning", entry.id));
+        }
+        for (label, value) in [
+            ("id", entry.id.as_str()),
+            ("source_kind", entry.source_kind.as_str()),
+            ("semantic_meaning", entry.semantic_meaning.as_str()),
+            ("series_id", entry.series_id.as_str()),
+            ("manifest_hash", entry.manifest_hash.as_str()),
+            ("source_shape", entry.source_shape.as_str()),
+            ("reason", entry.reason.as_str()),
+            ("ambient_dependency", entry.ambient_dependency.as_str()),
+            ("owner_issue", entry.owner_issue.as_str()),
+            ("supporting_test", entry.supporting_test.as_str()),
+            ("wrong_file_test", entry.wrong_file_test.as_str()),
+            ("changed_shape_test", entry.changed_shape_test.as_str()),
+            ("introduction_pr", entry.introduction_pr.as_str()),
+            ("introduction_commit", entry.introduction_commit.as_str()),
+            ("first_accepted_bundle", entry.first_accepted_bundle.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                violations.push(format!("registry boundary {} has empty {label}", entry.id));
+            }
+        }
+        if let Err(error) = validate_public_path(&entry.path, "registry boundary path") {
+            violations.push(format!("{}: {error}", entry.id));
+        }
+        for (label, value) in [
+            ("supporting_test", entry.supporting_test.as_str()),
+            ("wrong_file_test", entry.wrong_file_test.as_str()),
+            ("changed_shape_test", entry.changed_shape_test.as_str()),
+        ] {
+            if let Err(error) = validate_public_path(value, label) {
+                violations.push(format!("{}: {error}", entry.id));
+            }
+        }
+        if entry.source_span.start >= entry.source_span.end {
+            violations.push(format!("registry boundary {} has an invalid source span", entry.id));
+        }
+        if !is_issue_reference(&entry.owner_issue) {
+            violations.push(format!("registry boundary {} has an invalid owner issue", entry.id));
+        }
+        if matches!(
+            entry.disposition,
+            SemanticBoundaryDisposition::Unknown | SemanticBoundaryDisposition::Unsupported
+        ) {
+            violations
+                .push(format!("registry boundary {} has a non-admissible disposition", entry.id));
+        }
+        if entry.disposition == SemanticBoundaryDisposition::SourceLockedCompatibility
+            && entry.lock_scope != SemanticBoundaryLockScope::PathAndSource
+        {
+            violations.push(format!("registry boundary {} widened source lock scope", entry.id));
+        }
+        if matches!(
+            entry.state,
+            SemanticBoundaryRegistryState::Retiring | SemanticBoundaryRegistryState::Retired
+        ) && (entry.retirement_pr.as_deref().is_none_or(str::is_empty)
+            || entry.retirement_bundle.as_deref().is_none_or(str::is_empty))
+        {
+            violations
+                .push(format!("registry boundary {} has incomplete retirement lineage", entry.id));
+        }
+        if entry.replacement_strategy
+            == SemanticBoundaryReplacementStrategy::LongLivedTestHarnessCompatibility
+            && entry.review_after.is_none()
+            && entry.permanent_boundary_rationale.is_none()
+        {
+            violations.push(format!(
+                "registry boundary {} lacks review or permanent-debt rationale",
+                entry.id
+            ));
+        }
+    }
+    violations.sort();
+    violations
+}
+
+fn validate_registry_against_baseline(
+    registry: &SemanticBoundaryRegistry,
+    baseline: &CompileBaselineV2,
+    historical: bool,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    violations.extend(
+        validate_accepted_semantic_boundary_inventory(&baseline.semantic_boundaries)
+            .into_iter()
+            .map(|violation| format!("baseline {}: {}", baseline.series_id, violation.message)),
+    );
+    let entries = registry
+        .entries
+        .iter()
+        .filter(|entry| entry.series_id == baseline.series_id && entry.profile == baseline.profile)
+        .collect::<Vec<_>>();
+    let entry_by_key = entries
+        .iter()
+        .map(|entry| (registry_boundary_key(entry), *entry))
+        .collect::<BTreeMap<_, _>>();
+    let observed_keys = baseline
+        .semantic_boundaries
+        .iter()
+        .map(registry_boundary_key_from_observed)
+        .collect::<BTreeSet<_>>();
+    for boundary in &baseline.semantic_boundaries {
+        let key = registry_boundary_key_from_observed(boundary);
+        let Some(entry) = entry_by_key.get(&registry_boundary_key_from_observed(boundary)) else {
+            violations.push(format!(
+                "series {} boundary {} has no registry entry",
+                baseline.series_id, key
+            ));
+            continue;
+        };
+        violations.extend(compare_registry_entry(entry, boundary, baseline));
+    }
+    if !historical {
+        for entry in entries {
+            let key = registry_boundary_key(entry);
+            if entry.state == SemanticBoundaryRegistryState::Active && !observed_keys.contains(&key)
+            {
+                violations.push(format!(
+                    "active registry boundary {} is absent from fresh baseline {}",
+                    entry.id, baseline.series_id
+                ));
+            }
+            if entry.state == SemanticBoundaryRegistryState::Retired && observed_keys.contains(&key)
+            {
+                violations.push(format!(
+                    "retired registry boundary {} still emits in baseline {}",
+                    entry.id, baseline.series_id
+                ));
+            }
+            if !observed_keys.contains(&key)
+                && matches!(
+                    entry.state,
+                    SemanticBoundaryRegistryState::Retiring
+                        | SemanticBoundaryRegistryState::Retired
+                )
+                && !has_exact_retirement(baseline, entry)
+            {
+                violations.push(format!(
+                    "boundary {} disappeared without exact retirement evidence in baseline {}",
+                    entry.id, baseline.series_id
+                ));
+            }
+        }
+    }
+    violations.sort();
+    violations
+}
+
+fn compare_registry_entry(
+    entry: &SemanticBoundaryRegistryEntry,
+    boundary: &ObservedSemanticBoundary,
+    baseline: &CompileBaselineV2,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let checks = [
+        (entry.id == boundary.id, "id"),
+        (entry.path == boundary.path, "path"),
+        (entry.disposition == boundary.disposition, "disposition"),
+        (entry.source_kind == boundary.source_kind, "source_kind"),
+        (entry.source_span == boundary.source_span, "source_span"),
+        (entry.lock_scope == boundary.lock_scope, "lock_scope"),
+        (entry.reason == boundary.reason, "reason"),
+        (
+            entry.blocks_downstream_static_facts == boundary.blocks_downstream_static_facts,
+            "blocks_downstream_static_facts",
+        ),
+        (entry.series_id == baseline.series_id, "series_id"),
+        (entry.profile == baseline.profile, "profile"),
+        (entry.manifest_hash == baseline.manifest_hash, "manifest_hash"),
+    ];
+    for (matches, field) in checks {
+        if !matches {
+            violations.push(format!(
+                "registry boundary {} disagrees with baseline {} in {field}",
+                entry.id, baseline.series_id
+            ));
+        }
+    }
+    violations
+}
+
+fn has_exact_retirement(
+    baseline: &CompileBaselineV2,
+    entry: &SemanticBoundaryRegistryEntry,
+) -> bool {
+    let Some(bundle) = entry.retirement_bundle.as_deref() else { return false };
+    baseline.boundary_retirements.iter().any(|retirement| {
+        retirement.path == entry.path
+            && retirement.id == entry.id
+            && retirement.source_start == entry.source_span.start
+            && retirement.source_end == entry.source_span.end
+            && retirement.series_id == baseline.series_id
+            && retirement.manifest_hash == baseline.manifest_hash
+            && retirement.measurement_sha == baseline.repository_commit
+            && retirement.source_report_digest == baseline.source_report_digest
+            && retirement.evidence_bundle == bundle
+    })
+}
+
+fn validate_bundle_against_baseline(
+    bundle: &BoundaryBundle,
+    baseline: &CompileBaselineV2,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let identity_checks = [
+        (bundle.index.series_id == baseline.series_id, "series_id"),
+        (bundle.index.manifest_hash == baseline.manifest_hash, "manifest_hash"),
+        (bundle.index.repository_commit == baseline.repository_commit, "repository_commit"),
+        (bundle.index.lineage.measurement_sha == baseline.repository_commit, "measurement_sha"),
+        (bundle.index.profile == baseline.profile, "profile"),
+    ];
+    for (matches, field) in identity_checks {
+        if !matches {
+            violations.push(format!(
+                "bundle {} disagrees with baseline {} in {field}",
+                bundle.index.bundle_id, baseline.series_id
+            ));
+        }
+    }
+    let mut baseline_boundaries = baseline.semantic_boundaries.clone();
+    baseline_boundaries.sort_by_key(semantic_boundary_key);
+    if bundle.semantic_boundaries != baseline_boundaries {
+        violations.push(format!(
+            "bundle {} semantic-boundary inventory disagrees with baseline {}",
+            bundle.index.bundle_id, baseline.series_id
+        ));
+    }
+    violations
+}
+
+fn boundary_registry_report(
+    registry: &SemanticBoundaryRegistry,
+    baselines: &[(PathBuf, CompileBaselineV2)],
+    bundles: &[BoundaryBundle],
+    historical: bool,
+    mut violations: Vec<String>,
+) -> BoundaryRegistryReport {
+    violations.sort();
+    let missing_active = violations
+        .iter()
+        .filter(|violation| {
+            violation.contains("active registry boundary") && violation.contains("absent")
+        })
+        .cloned()
+        .collect();
+    let emitting_retired = violations
+        .iter()
+        .filter(|violation| {
+            violation.contains("retired registry boundary") && violation.contains("still emits")
+        })
+        .cloned()
+        .collect();
+    let mut counts = BoundaryRegistryCounts {
+        by_disposition: BTreeMap::new(),
+        by_lock_scope: BTreeMap::new(),
+        by_profile: BTreeMap::new(),
+        by_owner_issue: BTreeMap::new(),
+        by_replacement_strategy: BTreeMap::new(),
+        by_state: BTreeMap::new(),
+        downstream_static_facts_blocked: 0,
+    };
+    for entry in &registry.entries {
+        increment(&mut counts.by_disposition, enum_label(entry.disposition));
+        increment(&mut counts.by_lock_scope, enum_label(entry.lock_scope));
+        increment(&mut counts.by_profile, entry.profile.to_string());
+        increment(&mut counts.by_owner_issue, entry.owner_issue.clone());
+        increment(&mut counts.by_replacement_strategy, enum_label(entry.replacement_strategy));
+        increment(&mut counts.by_state, enum_label(entry.state));
+        if entry.blocks_downstream_static_facts {
+            counts.downstream_static_facts_blocked += 1;
+        }
+    }
+    BoundaryRegistryReport {
+        schema_version: SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION.to_string(),
+        mode: if baselines.is_empty() {
+            "structural".to_string()
+        } else if historical {
+            "historical".to_string()
+        } else {
+            "current".to_string()
+        },
+        registry_entries: registry.entries.len(),
+        baselines_checked: baselines.iter().map(|(path, _)| path.display().to_string()).collect(),
+        bundles_checked: bundles.iter().map(|bundle| bundle.path.display().to_string()).collect(),
+        counts,
+        missing_active,
+        emitting_retired,
+        valid: violations.is_empty(),
+        violations,
+    }
+}
+
+fn increment(map: &mut BTreeMap<String, usize>, key: String) {
+    *map.entry(key).or_default() += 1;
+}
+
+fn enum_label<T: serde::Serialize>(value: T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(ToString::to_string))
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn registry_boundary_key(entry: &SemanticBoundaryRegistryEntry) -> String {
+    format!("{}:{}:{}:{}", entry.path, entry.id, entry.source_span.start, entry.source_span.end)
+}
+
+fn registry_boundary_key_from_observed(boundary: &ObservedSemanticBoundary) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        boundary.path, boundary.id, boundary.source_span.start, boundary.source_span.end
+    )
+}
+
+fn validate_public_path(value: &str, label: &str) -> Result<()> {
+    let normalized = value.replace('\\', "/");
+    let private_component = normalized.split('/').any(|component| {
+        matches!(component.to_ascii_lowercase().as_str(), "target" | "tmp" | "temp")
+    });
+    if normalized.trim().is_empty()
+        || normalized.starts_with('/')
+        || normalized.contains(":/")
+        || normalized.split('/').any(|part| part == "..")
+        || private_component
+    {
+        bail!("{label} contains a private or temporary host path: {value}");
+    }
+    Ok(())
+}
+
+fn is_issue_reference(value: &str) -> bool {
+    value.strip_prefix('#').is_some_and(|digits| {
+        !digits.is_empty() && digits.chars().all(|character| character.is_ascii_digit())
+    })
 }
 
 fn build_series_manifest(
@@ -5093,6 +5671,158 @@ mod tests {
             owner_workstream: "symbolic_reference_semantics".into(),
             supporting_test: "base/ok.t".into(),
         }
+    }
+
+    fn sample_registry_series() -> SeriesManifest {
+        SeriesManifest {
+            schema_version: SERIES_MANIFEST_SCHEMA_VERSION.into(),
+            series_id: "series-1".into(),
+            profile: HarnessProfile::Base,
+            profile_roots: vec!["base".into()],
+            repository_commit: "abc".into(),
+            perl_requested_ref: "perl-ref".into(),
+            perl_resolved_ref: "perl-ref".into(),
+            runner: HarnessRunner::Test,
+            normalized_manifest: vec!["base/lex.t".into(), "base/ok.t".into()],
+            manifest_hash: "manifest-1".into(),
+            preparation_receipt_id: "prepare-1".into(),
+            preparation_receipt_digest: "prepare-digest-1".into(),
+            harness_schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
+            compiler_subject_identity: "compiler-subject-1".into(),
+            invocation_identity: "invocation-1".into(),
+            capability_identity: "capability-1".into(),
+            environment_identity: "environment-1".into(),
+            normalization_version: SERIES_MANIFEST_NORMALIZATION_VERSION.into(),
+            created_at: "2026-07-02T00:00:00Z".into(),
+            replaces_series_id: None,
+            change_reason: Some("test series".into()),
+        }
+    }
+
+    fn sample_registry_entry() -> SemanticBoundaryRegistryEntry {
+        let boundary = sample_semantic_boundary();
+        SemanticBoundaryRegistryEntry {
+            id: boundary.id,
+            disposition: boundary.disposition,
+            source_kind: boundary.source_kind,
+            semantic_meaning: "symbolic reference remains dynamic".into(),
+            series_id: "series-1".into(),
+            profile: HarnessProfile::Base,
+            path: boundary.path,
+            manifest_hash: "manifest-1".into(),
+            source_span: boundary.source_span,
+            source_shape: "symbolic reference dereference".into(),
+            lock_scope: boundary.lock_scope,
+            reason: boundary.reason,
+            ambient_dependency: "runtime symbol table".into(),
+            blocks_downstream_static_facts: boundary.blocks_downstream_static_facts,
+            owner_issue: "#4753".into(),
+            supporting_test: boundary.supporting_test,
+            wrong_file_test: "fixtures/semantic-boundaries/wrong-file.t".into(),
+            changed_shape_test: "fixtures/semantic-boundaries/changed-shape.t".into(),
+            introduction_pr: "#5202".into(),
+            introduction_commit: "abc123".into(),
+            first_accepted_bundle: "bundle-1".into(),
+            replacement_strategy: SemanticBoundaryReplacementStrategy::HirSemantics,
+            state: SemanticBoundaryRegistryState::Active,
+            retirement_pr: None,
+            retirement_bundle: None,
+            review_after: None,
+            permanent_boundary_rationale: None,
+        }
+    }
+
+    #[test]
+    fn boundary_registry_accepts_an_exact_owned_entry() {
+        let registry = SemanticBoundaryRegistry {
+            schema_version: SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION.into(),
+            entries: vec![sample_registry_entry()],
+        };
+
+        assert!(validate_boundary_registry_shape(&registry).is_empty());
+    }
+
+    #[test]
+    fn boundary_registry_rejects_unknown_or_widened_debt() {
+        let mut entry = sample_registry_entry();
+        entry.disposition = SemanticBoundaryDisposition::Unknown;
+        entry.lock_scope = SemanticBoundaryLockScope::Path;
+        entry.owner_issue = "not-an-issue".into();
+        entry.path = "C:/private/run/base/ok.t".into();
+        let registry = SemanticBoundaryRegistry {
+            schema_version: SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION.into(),
+            entries: vec![entry],
+        };
+
+        let violations = validate_boundary_registry_shape(&registry);
+        assert!(violations.iter().any(|violation| violation.contains("non-admissible")));
+        assert!(violations.iter().any(|violation| violation.contains("invalid owner issue")));
+        assert!(violations.iter().any(|violation| violation.contains("private or temporary")));
+    }
+
+    #[test]
+    fn boundary_registry_matches_baseline_identity_and_inventory() -> TestResult {
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+        let series = sample_registry_series();
+        let baseline =
+            baseline_v2_from_report(&report, &series, &sample_baseline_v2_config(), None, &[])?;
+        let registry = SemanticBoundaryRegistry {
+            schema_version: SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION.into(),
+            entries: vec![sample_registry_entry()],
+        };
+
+        assert!(validate_registry_against_baseline(&registry, &baseline, false).is_empty());
+
+        let mut changed = registry;
+        changed.entries[0].manifest_hash = "wrong-manifest".into();
+        let violations = validate_registry_against_baseline(&changed, &baseline, false);
+        assert!(violations.iter().any(|violation| violation.contains("manifest_hash")));
+        Ok(())
+    }
+
+    #[test]
+    fn boundary_bundle_must_match_the_accepted_baseline_inventory() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let normalized = temp.path().join("normalized");
+        fs::create_dir_all(&normalized)?;
+        let index_path = temp.path().join("index.json");
+        let boundary_path = normalized.join("semantic-boundaries.json");
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+        let series = sample_registry_series();
+        let baseline =
+            baseline_v2_from_report(&report, &series, &sample_baseline_v2_config(), None, &[])?;
+        fs::write(&boundary_path, serde_json::to_string_pretty(&baseline.semantic_boundaries)?)?;
+        let index = EvidenceBundleIndex {
+            schema_version: "perl_core_harness.evidence_bundle.v1".into(),
+            bundle_id: "bundle-1".into(),
+            series_id: baseline.series_id.clone(),
+            manifest_hash: baseline.manifest_hash.clone(),
+            repository_commit: baseline.repository_commit.clone(),
+            profile: baseline.profile,
+            perl_resolved_ref: "perl-ref".into(),
+            lineage: EvidenceBundleLineage { measurement_sha: "abc".into() },
+            artifacts: vec![EvidenceBundleArtifact {
+                kind: "semantic_boundaries".into(),
+                logical_path: "normalized/semantic-boundaries.json".into(),
+            }],
+            completeness: EvidenceBundleCompleteness {
+                status: "complete".into(),
+                normalized_authority: true,
+            },
+            lifecycle: "published".into(),
+        };
+        fs::write(&index_path, serde_json::to_string_pretty(&index)?)?;
+
+        let bundle = read_boundary_bundle(&index_path)?;
+        assert!(validate_bundle_against_baseline(&bundle, &baseline).is_empty());
+
+        let mut changed = baseline;
+        changed.semantic_boundaries.clear();
+        let violations = validate_bundle_against_baseline(&bundle, &changed);
+        assert!(violations.iter().any(|violation| violation.contains("inventory")));
+        Ok(())
     }
 
     fn sample_parse_report() -> RunReport {
