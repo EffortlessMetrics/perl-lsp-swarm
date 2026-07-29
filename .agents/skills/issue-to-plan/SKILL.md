@@ -5,7 +5,11 @@ description: Explicit atomic skill for synthesizing one researched issue into a 
 
 # Issue to plan
 
-Update the issue's current synthesis and current plan. Preserve research history in comments rather than rewriting it away.
+Synthesize the researched concern into one current issue plan. Preserve research history in comments rather than rewriting it away.
+
+## Durable write boundary
+
+A root or operation agent assigned issue preparation, or another explicitly admitted issue integrator, may update the issue body. A read-only planner or reviewer must not mutate GitHub; return the proposed synthesis, exact fields to replace, and supporting evidence through `READ_ONLY_RESULT` so the issue integrator can apply it.
 
 The plan should identify:
 
@@ -24,5 +28,6 @@ Do not over-specify exact code where investigation has not established it.
 ## Routes
 
 - `PLAN_DRAFTED` → `$research-plan`
+- `READ_ONLY_RESULT` → return the proposed issue delta and evidence to the issue integrator
 - `MATERIAL_PREMISE_CHANGED` → `$research-issue`
 - `NO_IMPLEMENTATION_REQUIRED` → return to `$deliver-pr`
