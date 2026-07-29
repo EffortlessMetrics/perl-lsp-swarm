@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Test the worktree guard in .claude/hooks/pre-tool-use.sh (#4464)
-# Each case simulates a Claude Code pre-tool-use invocation from either the
-# main checkout or a linked worktree and asserts the hook exit code.
+# Test the worktree guard in .claude/hooks/pre-tool-use.sh (#4464).
+# Each case simulates a Claude pre-tool-use invocation from either the actual
+# main checkout or a temporary linked worktree and asserts the hook exit code.
 
 set -eu
 
-HOOK="$(git rev-parse --show-toplevel)/.claude/hooks/pre-tool-use.sh"
+INVOKING_ROOT="$(git rev-parse --show-toplevel)"
+HOOK="$INVOKING_ROOT/.claude/hooks/pre-tool-use.sh"
 FAIL=0
 
 run_case() {
@@ -23,11 +24,20 @@ run_case() {
   fi
 }
 
-# Set up a temporary linked worktree for testing
-MAIN="$(git rev-parse --show-toplevel)"
+# Resolve the real main checkout through the shared Git common directory. This
+# remains correct when the test itself starts in a linked worktree, where
+# `git rev-parse --show-toplevel` identifies the linked checkout instead.
+COMMON_DIR="$(git rev-parse --git-common-dir)"
+COMMON_ABS="$(cd "$COMMON_DIR" && pwd -P)"
+MAIN="$(dirname "$COMMON_ABS")"
+if [ ! -e "$MAIN/.git" ]; then
+  echo "FAIL  unable to resolve main checkout from git common dir: $COMMON_ABS"
+  exit 1
+fi
+
 WORKTREE_TMP="$(mktemp -d)/wt-test-$$"
-git worktree add --detach "$WORKTREE_TMP" HEAD >/dev/null 2>&1
-trap 'git worktree remove --force "$WORKTREE_TMP" >/dev/null 2>&1 || true' EXIT
+git -C "$MAIN" worktree add --detach "$WORKTREE_TMP" HEAD >/dev/null 2>&1
+trap 'git -C "$MAIN" worktree remove --force "$WORKTREE_TMP" >/dev/null 2>&1 || true' EXIT
 
 # --- Main checkout: all git ops allowed ---
 run_case "main checkout: git checkout master"     "$MAIN" "git checkout master"     0
