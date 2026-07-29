@@ -2589,7 +2589,7 @@ enum PerlCoreHarnessCommand {
         #[arg(long)]
         repository_root: PathBuf,
 
-        /// Exact landed commit that current entries must identify.
+        /// Exact Git commit containing the current-authority records.
         #[arg(long)]
         landed_sha: String,
     },
