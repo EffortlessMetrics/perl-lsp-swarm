@@ -1,6 +1,6 @@
 ---
 name: "source-command-refresh-stale-prs"
-description: "Deprecated compatibility wrapper for auditing apparently stale PR checks without mass-mutating conflict-free candidates"
+description: "Deprecated compatibility wrapper for auditing selected stale PR checks without mass-mutating conflict-free candidates"
 ---
 
 # Refresh stale PRs — compatibility wrapper
@@ -11,28 +11,27 @@ This migrated command is retained temporarily for compatibility. Its historical 
 
 ## Procedure
 
-1. Enumerate the selected failing PRs and resolve each exact head, failed check, draft state, mergeability, and current review subject.
-2. Classify the failure:
+For each PR explicitly selected by the caller:
+
+1. Resolve its exact head, failed check, draft state, mergeability, and current review subject.
+2. Classify the observed result:
    - candidate-caused product/test failure;
    - stale or cancelled workflow result for the same head;
    - base/instrument failure already corrected on `main`;
-   - actual merge conflict;
-   - material same-semantic-seam interaction;
-   - missing/partial evidence (`NOT_PROVEN`).
+   - actual Git conflict;
+   - failed required merge-group/synthetic integration proof;
+   - missing or partial evidence (`NOT_PROVEN`).
 3. Prefer a same-head check rerun when the candidate is unchanged and only the workflow/instrument result is stale.
-4. Mutate the candidate only when:
-   - an actual conflict must be resolved;
-   - a material same-semantic-seam change changes the integration result;
-   - current GitHub branch protection, rulesets, merge queue, or required checks require integration evidence; or
-   - the integration result cannot otherwise be interpreted reliably.
-5. Any candidate mutation creates a new head and requires affected proof plus fresh candidate-level formal review.
-6. Report each PR independently. Do not use lifecycle labels as evidence and do not merge from this compatibility wrapper.
+4. Leave the branch alone when it is merely behind and still conflict-free.
+5. When an actual conflict or integration failure exists, comment on the owning issue/PR and let that lane resolve its own candidate.
+6. Any candidate mutation creates a new head and requires affected proof plus fresh candidate-level formal review.
+7. Report each PR independently. Do not inspect sibling implementation details, infer overlap from files, use lifecycle labels as evidence, or merge from this compatibility wrapper.
 
 ## Results
 
 - `SAME_HEAD_RERUN` — rerun the stale/cancelled instrument without branch mutation.
 - `CANDIDATE_REPAIR` — candidate-caused failure needs the normal build/repair flow.
-- `CONFLICT_OR_INTERACTION` — one integrating writer resolves the exact seam, then re-proves/reviews.
+- `LANE_CONFLICT_REPAIR` — the owning lane handles an actual Git or integration failure.
 - `CURRENT_EVIDENCE` — no action; existing candidate evidence remains current.
 - `NOT_PROVEN` — preserve the exact missing or contradictory evidence.
 
