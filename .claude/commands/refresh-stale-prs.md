@@ -13,7 +13,7 @@ Do not mass-update, rebase, or merge `main` into PR branches merely because chec
 1. Enumerate the selected failing PRs and resolve each exact head, failed check, draft state, mergeability, and current review subject.
 2. Classify each failure as candidate-caused, stale/cancelled same-head instrumentation, corrected base/instrument failure, actual conflict, material same-semantic-seam interaction, or `NOT_PROVEN`.
 3. Prefer a same-head workflow/check rerun when the candidate is unchanged and only the instrument result is stale.
-4. Mutate a candidate only for an actual conflict, material same-seam interaction, required GitHub integration policy, or an otherwise uninterpretable integration result.
+4. Mutate a candidate only for an actual conflict, material same-seam interaction, when current GitHub branch protection, rulesets, merge queue, or required checks require integration evidence, or when the integration result is otherwise uninterpretable.
 5. Any candidate mutation requires affected proof and fresh candidate-level formal review.
 6. Report each PR independently. Do not use lifecycle labels as evidence and do not merge from this compatibility command.
 
