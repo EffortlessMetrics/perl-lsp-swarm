@@ -1,0 +1,44 @@
+name: Materialize modern agent flow
+
+on:
+  push:
+    branches:
+      - codex/4203-modern-agent-flow
+    paths:
+      - ".agent-flow-bootstrap/**"
+      - "scripts/materialize_agent_flow_bootstrap.py"
+      - ".github/workflows/materialize-agent-flow.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: materialize-agent-flow-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v7
+        with:
+          ref: codex/4203-modern-agent-flow
+          fetch-depth: 0
+
+      - name: Materialize files
+        run: python3 -S scripts/materialize_agent_flow_bootstrap.py
+
+      - name: Validate generated operating system
+        run: |
+          python3 -S scripts/check_agent_flow.py
+          python3 -S -m unittest tests/test_agent_flow.py
+          git diff --check
+
+      - name: Commit generated files
+        run: |
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add -A
+          git commit -m "feat(agents): materialize modern Claude and Codex flow (#4203)"
+          git push origin HEAD:codex/4203-modern-agent-flow
