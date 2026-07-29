@@ -6,10 +6,10 @@ GitHub is the native interaction and asynchronous handoff layer for the developm
 
 | Surface | Owns |
 | --- | --- |
-| Issue | problem, research trail, corrections, current synthesis, plan, dependencies, next action |
+| Issue | problem, research trail, corrections, current synthesis, plan, explicit dependencies, next action |
 | Stable labels | area, kind, risk, size, release grouping, genuine blocker, human decision, requested lens |
 | Umbrella issue or milestone | durable multi-PR outcome and remaining coherent claims |
-| Branch or worktree | current mutation surface and integrating writer |
+| Branch or worktree | one current candidate's mutation surface and writer |
 | Pull request | one coherent acceptance-and-rollback candidate |
 | Draft or ready state | whether broad review is useful now |
 | Review request | visible pending formal judgment |
@@ -43,6 +43,30 @@ Preparation progressively adds:
 ```
 
 Comments preserve research, alternatives, corrections, and history. The issue body should retain one current usable synthesis.
+
+## Parallel claim lanes
+
+Distinct claims may proceed through separate issues, branches/worktrees, and PRs without a cross-lane coordination layer.
+
+Each lane owns:
+
+- its current candidate;
+- proof and review repair;
+- branch/worktree safety;
+- its eventual rebase, merge-conflict resolution, or integration repair;
+- current issue/PR closeout.
+
+Do not use GitHub to project touched-file overlap, lane liveness, writer reservations, candidate frontiers, or executor telemetry.
+
+When another lane genuinely needs a fact, add a direct comment to its controlling issue or PR. Appropriate handoffs include:
+
+- an explicit prerequisite landed or changed shape;
+- a governing contract or owner ruling changed;
+- one claim superseded or duplicated another;
+- a main-health repair became the named dependency;
+- Git or combined-tree proof exposed a real interaction.
+
+If no such fact exists, let the other lane focus on its work.
 
 ## Label policy
 
@@ -80,7 +104,7 @@ A substantive PR should make its claim and proof legible:
 ## Review index
 ```
 
-Publish ready by default. Draft is an explicit exception for remote-only proof, real branch collaboration, early visible ownership, or a protected integration experiment.
+Publish ready by default. Draft is an explicit exception for remote-only proof, real collaboration on the same candidate branch, or a protected integration experiment whose remote behavior is the subject.
 
 ## Formal review
 
@@ -112,6 +136,6 @@ Thread resolution is not itself evidence.
 
 ## Focused helpers
 
-Repository-owned helpers may centralize difficult factual questions such as candidate identity, complete review-thread enumeration, required-check currentness, material-claim identity, and merge preflight.
+Repository-owned helpers may centralize difficult factual questions such as candidate identity, complete review-thread enumeration, required-check currentness, material-claim identity, and merge preflight for the selected PR.
 
-They must not answer which lifecycle stage the PR is in, which agent works next, or which issue should be prioritized.
+They must not answer which lifecycle stage the PR is in, which agent works next, which issue should be prioritized, or how neighbouring lanes overlap.
