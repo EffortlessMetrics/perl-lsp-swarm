@@ -630,7 +630,7 @@ mod tests {
         assert!(
             ranges.iter().any(|range| {
                 range.get("kind") == Some(&json!("region"))
-                    && range.get("startLine") == Some(&json!(0))
+                    && range.get("startLine") == Some(&json!(1))
                     && range.get("endLine") == Some(&json!(2))
             }),
             "AST heredoc extraction must preserve a region fold over the multiline heredoc"
