@@ -33,10 +33,10 @@ Join into one hardened, simplified, challenged candidate.
 1. Establish or reuse one integrating writer and candidate branch.
 2. Run `$build-from-proof` for missing implementation.
 3. Run `$improve-test-suite` against the actual candidate.
-4. Run `$simplify-candidate`.
-5. Run `$review-candidate`, including candidate-stage vision alignment.
+4. Run `$simplify-candidate`; every changed revision returns through affected proof.
+5. Run `$review-candidate`, including candidate-stage vision alignment against current authorities.
 6. Repair ordinary findings through the same writer and repeat affected proof/review.
-7. Continue to `$finish-pr`.
+7. Return the typed candidate disposition to the invoking flow. `CANDIDATE_READY` is the normal handoff for publication/convergence; this flow does not require an unavailable outer endpoint to be installed in order to produce a complete candidate.
 
 ## What this establishes
 
@@ -48,9 +48,9 @@ Formal fixed-candidate review, current GitHub checks, review-thread convergence,
 
 ## Valid exits
 
-- `CANDIDATE_READY` → `$finish-pr`
+- `CANDIDATE_READY` → return the candidate identity, current proof, claim boundary, and review result to the invoking flow; its normal next phase is PR convergence
 - `CANDIDATE_FINDINGS_OPEN` → repair within this flow, then rerun affected passes
 - `WEAK_PROOF` → `$prepare-proof`
-- `MATERIAL_SCOPE_OR_AUTHORITY_CHANGE` → `$prepare-issue`
-- `NO_BUILD_SUBJECT` → return to `$deliver-pr` for proportional publication/review
+- `MATERIAL_SCOPE_OR_AUTHORITY_CHANGE` → return the corrected premise to the invoking flow for issue preparation
+- `NO_BUILD_SUBJECT` → return the no-build disposition for proportional publication/review
 - `BLOCKED` / `NOT_PROVEN` → preserve the exact boundary
