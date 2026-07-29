@@ -2561,6 +2561,18 @@ enum PerlCoreHarnessCommand {
         /// Output directory for failure-clusters.json and failure-clusters.md.
         #[arg(long)]
         output: PathBuf,
+
+        /// Persistent cluster-history JSON to write or check.
+        #[arg(long)]
+        history: Option<PathBuf>,
+
+        /// Merge the current report into persistent history without resolving absent clusters.
+        #[arg(long, conflicts_with = "check-history", requires = "history")]
+        write_history: bool,
+
+        /// Check that persistent history contains the current report without mutation.
+        #[arg(long, conflicts_with = "write-history", requires = "history")]
+        check_history: bool,
     },
 
     /// Run discovered tests in parse, compile, or execute mode (future slice).
@@ -4360,9 +4372,19 @@ fn run_cli(cli: Cli) -> Result<()> {
                 report,
                 historical,
             }),
-            PerlCoreHarnessCommand::Triage { bundle, output } => {
-                perl_core_harness::triage(perl_core_harness::TriageConfig { bundle, output })
-            }
+            PerlCoreHarnessCommand::Triage {
+                bundle,
+                output,
+                history,
+                write_history,
+                check_history,
+            } => perl_core_harness::triage(perl_core_harness::TriageConfig {
+                bundle,
+                output,
+                history,
+                write_history,
+                check_history,
+            }),
             PerlCoreHarnessCommand::Run {
                 mode,
                 perl_tree,

@@ -23,6 +23,8 @@ pub const BOUNDARY_RETIREMENT_SCHEMA_VERSION: &str = "perl_core_harness.boundary
 pub const SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION: &str =
     "perl_core_harness.semantic_boundary_registry.v1";
 pub const FAILURE_CLUSTER_SCHEMA_VERSION: &str = "perl_core_harness.failure_cluster.v1";
+pub const FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION: &str =
+    "perl_core_harness.failure_cluster_history.v1";
 
 /// Upstream Perl test scheduler to query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
@@ -704,6 +706,76 @@ pub struct FailureClusterReport {
     pub debt_candidates: Vec<FailureDebtCandidate>,
 }
 
+/// Lifecycle state for a persisted compiler failure cluster.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureClusterHistoryStatus {
+    Unassigned,
+    Investigating,
+    BuilderReady,
+    InBuild,
+    Resolved,
+    AcceptedDebt,
+}
+
+/// Explicit before/after evidence for a cluster or stage transition.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailureClusterHistoryTransition {
+    pub transition_id: String,
+    pub from_cluster_id: String,
+    pub to_cluster_id: String,
+    pub from_stage: String,
+    pub to_stage: String,
+    pub before_series_id: String,
+    pub before_manifest_hash: String,
+    pub before_bundle_id: String,
+    pub after_series_id: String,
+    pub after_manifest_hash: String,
+    pub after_bundle_id: String,
+    pub proof_plan: String,
+    pub stop_condition: String,
+    pub implementation_pr: Option<String>,
+}
+
+/// Durable state for one cluster across authoritative evidence bundles.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailureClusterHistoryEntry {
+    pub cluster_id: String,
+    pub signature_schema_version: String,
+    pub series_id: String,
+    pub manifest_hash: String,
+    pub first_seen_bundle: String,
+    pub last_seen_bundle: String,
+    pub current_affected_files: Vec<String>,
+    pub historical_affected_files: Vec<String>,
+    pub current_fact_classes: Vec<String>,
+    pub fact_classes: Vec<String>,
+    pub current_lsp_surfaces: Vec<String>,
+    pub lsp_surfaces: Vec<String>,
+    pub occurrence_count: usize,
+    pub current_stage: String,
+    pub impacted_layer: String,
+    pub owner_issue: Option<String>,
+    pub status: FailureClusterHistoryStatus,
+    pub direct_reproduction: String,
+    pub proposed_transition: String,
+    pub stop_condition: String,
+    pub accepted_debt_refs: Vec<String>,
+    pub resolution_pr: Option<String>,
+    pub resolution_bundle: Option<String>,
+    pub transitions: Vec<FailureClusterHistoryTransition>,
+}
+
+/// Versioned persistent cluster history and ownership ledger.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailureClusterHistory {
+    pub schema_version: String,
+    pub entries: Vec<FailureClusterHistoryEntry>,
+}
+
 pub fn workstream_for_bucket(bucket: &str) -> &'static str {
     match bucket {
         "parse_recovery" => "parser_recovery",
@@ -771,6 +843,10 @@ mod tests {
             "perl_core_harness.semantic_boundary_registry.v1"
         );
         assert_eq!(FAILURE_CLUSTER_SCHEMA_VERSION, "perl_core_harness.failure_cluster.v1");
+        assert_eq!(
+            FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
+            "perl_core_harness.failure_cluster_history.v1"
+        );
     }
 
     #[test]
