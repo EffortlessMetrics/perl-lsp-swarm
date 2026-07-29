@@ -99,7 +99,16 @@ def claim_digest(body: str) -> dict[str, object]:
 
 
 def _read_live_pr_body(pr: str, repo: str | None) -> str:
-    command = ["gh", "pr", "view", pr, "--json", "body", "--jq", ".body"]
+    command = [
+        "gh",
+        "pr",
+        "view",
+        pr,
+        "--json",
+        "body",
+        "--jq",
+        '.body // ""',
+    ]
     if repo:
         command.extend(["--repo", repo])
     completed = subprocess.run(command, check=False, capture_output=True, text=True)
