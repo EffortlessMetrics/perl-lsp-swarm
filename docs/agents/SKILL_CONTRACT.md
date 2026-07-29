@@ -1,6 +1,6 @@
 # Skill contract
 
-Skills are small, self-navigating artifact transformations. They make the next useful judgment clear without turning the repository into a runtime workflow engine.
+Skills are small, self-navigating artifact transformations. They make the next useful judgment clear without turning the repository into a runtime workflow engine or cross-lane coordinator.
 
 ## Required shape
 
@@ -13,7 +13,7 @@ Do not use when
 Authoritative inputs
 Focused questions
 Recommended procedure
-Optional orchestration / lenses
+Optional within-claim lenses or delegation
 GitHub and repository inputs
 Durable updates
 What this establishes
@@ -89,6 +89,9 @@ WEAK_PROOF
 REVIEW_FINDINGS_OPEN
   → address-review-comments
 
+PR_IN_FLIGHT
+  → return to deliver-goal so another distinct claim may proceed
+
 ALREADY_SATISFIED
   → return to deliver-pr for reconciliation
 
@@ -112,18 +115,27 @@ The normal path runs every applicable pass. A pass is not applicable only when:
 
 A missed earlier pass causes forward repair, not retrospective punishment.
 
-## Orchestration section
+## Candidate and lane rule
 
-A substantive skill may include a concise `## Orchestration` section describing:
+A substantive skill operates on one selected claim and its current candidate.
 
-- questions that may run independently;
-- the required join or synthesis decision;
-- the integrating writer and contested mutation boundary;
-- differentiated evidence, oracle, or review lenses;
-- the durable result to preserve;
-- runtime-only details that must not be persisted.
+- one claim normally has one current candidate;
+- one writer mutates that candidate branch/worktree at a time;
+- focused read-only research, oracle, proof, or review may assist when useful;
+- helpers do not inspect sibling lanes, touched-file overlap, or nearby symbols as a routine ownership check;
+- before creating a candidate, check only for an equivalent current PR and explicit prerequisites;
+- use direct issue or PR comments for material prerequisite, ruling, supersession, or actual integration findings;
+- the affected lane owns its own conflict resolution and affected re-proof/re-review.
 
-This is guidance for compiling an executor subgraph. It must not require a provider, model, agent count, team topology, or workflow engine.
+Do not add orchestration metadata, executor DAGs, lane reservations, candidate frontiers, or persistent liveness state to skills.
+
+A skill may contain a concise within-claim execution note when it materially clarifies:
+
+- which questions are read-only and independently answerable;
+- which candidate branch/worktree receives mutations;
+- which evidence or decision must be joined before continuing.
+
+That note must not require a provider, model, agent count, team topology, workflow engine, or cross-lane surveillance.
 
 ## GitHub interaction section
 
@@ -131,15 +143,17 @@ State which native GitHub surfaces the skill reads and may update. Also state wh
 
 A skill may use labels to classify area, kind, risk, release, or requested attention. It must not use lifecycle-mirror or agent-completion labels as proof that work succeeded.
 
+When another lane needs a material fact, a direct issue or PR comment is sufficient. Do not create another coordination database.
+
 ## Structural validation
 
 Maintenance-time validation may check:
 
 - metadata and route targets;
 - provider semantic coverage;
-- no-proof, midstream, repair, and backward routes;
-- one integrating writer per declared contested surface;
+- no-proof, midstream, in-flight, repair, and backward routes;
+- candidate-local writer wording where a skill mutates artifacts;
 - root skill-discovery budget;
-- absence of retired active references.
+- absence of retired active references and orchestration metadata.
 
-It must not inspect live issue or PR stage, require a named agent, authorize mutation, or run between ordinary skill transitions.
+It must not inspect live issue or PR stage, infer neighbouring-lane overlap, require a named agent, authorize mutation, or run between ordinary skill transitions.
