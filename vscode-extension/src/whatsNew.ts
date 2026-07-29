@@ -140,7 +140,7 @@ export class WhatsNewManager {
     const htmlBody =
       markdownContent.trim().length > 0
         ? markdownToHtml(markdownContent)
-        : `<p>See the full <a href="https://github.com/EffortlessMetrics/perl-lsp/blob/master/vscode-extension/CHANGELOG.md">CHANGELOG</a> for details.</p>`;
+        : `<p>See the full <a href="https://github.com/EffortlessMetrics/perl-lsp/blob/main/vscode-extension/CHANGELOG.md">CHANGELOG</a> for details.</p>`;
 
     return `<!DOCTYPE html>
 <html lang="en">
