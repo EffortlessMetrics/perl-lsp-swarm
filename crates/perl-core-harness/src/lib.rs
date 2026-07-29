@@ -1935,7 +1935,7 @@ fn compare_boundary_transition(
         ));
     }
     for retirement in retirements {
-        if (!transition_id.trim().is_empty() && retirement.transition_id != transition_id)
+        if retirement.transition_id != transition_id
             || retirement.replacement_issue.trim().is_empty()
             || retirement.evidence_bundle.trim().is_empty()
         {
