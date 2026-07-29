@@ -22,9 +22,53 @@ Valid exits and routes
 Actual stop conditions
 ```
 
+## Canonical skill vocabulary
+
+The public flows are:
+
+```text
+deliver-goal
+deliver-pr
+prepare-issue
+prepare-proof
+build-candidate
+finish-pr
+```
+
+The initial atomic transformation catalog is:
+
+```text
+# Issue and plan
+find-or-create-issue
+research-issue
+review-issue
+issue-to-plan
+research-plan
+review-plan
+compile-spec
+
+# Proof, build, and hardening
+spec-to-test
+review-tests
+build-from-proof
+improve-test-suite
+simplify-candidate
+review-candidate
+
+# Publication, review, and integration
+publish-pr
+address-review-comments
+final-challenge
+review-pr
+verify-live-ci
+merge-reconcile
+```
+
+Public flows are the natural user/root entrypoints. Atomic skills are normally called from a public flow or invoked explicitly for midstream work. Adding, renaming, or removing an atomic skill is a control-plane change and must update both provider implementations and route validation.
+
 ## Local route grammar
 
-Use direct callable skill names in route sections.
+Use direct callable skill names from the canonical vocabulary in route sections.
 
 ```text
 PLAN_READY
