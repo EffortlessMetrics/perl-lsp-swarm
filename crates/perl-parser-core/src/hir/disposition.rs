@@ -1002,11 +1002,11 @@ mod tests {
     }
 
     #[test]
-    fn intentionally_skipped_kinds_have_correct_multi_axis_flags()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn intentionally_skipped_kinds_have_correct_multi_axis_flags(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // `Program` (root wrapper): traversal-only, no items, no side-facts.
-        let prog = disposition_for("Program")
-            .ok_or_else(|| "no disposition for Program".to_string())?;
+        let prog =
+            disposition_for("Program").ok_or_else(|| "no disposition for Program".to_string())?;
         assert!(!prog.emits_items, "Program must NOT emit HIR items");
         assert!(!prog.may_emit_boundary, "Program must NOT emit boundaries");
         assert!(prog.traverses_children, "Program must traverse children (root wrapper)");
@@ -1015,8 +1015,8 @@ mod tests {
         assert_eq!(prog.legacy_category(), LegacyCategory::IntentionallySkipped);
 
         // `Variable`: no items emitted, but records ScopeGraph references.
-        let var = disposition_for("Variable")
-            .ok_or_else(|| "no disposition for Variable".to_string())?;
+        let var =
+            disposition_for("Variable").ok_or_else(|| "no disposition for Variable".to_string())?;
         assert!(!var.emits_items, "Variable must NOT emit standalone HIR items");
         assert!(!var.may_emit_boundary, "Variable must NOT emit boundaries");
         assert!(!var.traverses_children, "Variable has no children to traverse");
@@ -1056,8 +1056,8 @@ mod tests {
     }
 
     #[test]
-    fn not_yet_modeled_kinds_have_correct_multi_axis_flags()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn not_yet_modeled_kinds_have_correct_multi_axis_flags(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // All `NotYetModeled` kinds must fall to `_ => visit_children` and must
         // therefore have `traverses_children=true` and `is_intentional=false`.
         for kind in [
