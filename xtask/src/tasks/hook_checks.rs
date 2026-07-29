@@ -102,9 +102,9 @@ pub fn run_hook_tests() -> Result<()> {
         if !path.exists() {
             bail!("Required safety-hook test surface missing: {}", path.display());
         }
-        if !is_executable(path)? {
-            bail!("Safety-hook test surface not executable: {}", path.display());
-        }
+    }
+    if !is_executable(&pre_tool_use)? {
+        bail!("Registered safety hook not executable: {}", pre_tool_use.display());
     }
 
     let mut pass = 0u32;
@@ -154,7 +154,11 @@ pub fn run_hook_tests() -> Result<()> {
     Ok(())
 }
 
-fn run_script(path: &Path, input: Option<&str>, current_dir: Option<&Path>) -> Result<std::process::Output> {
+fn run_script(
+    path: &Path,
+    input: Option<&str>,
+    current_dir: Option<&Path>,
+) -> Result<std::process::Output> {
     let mut command = Command::new(bash_executable());
     command.arg(path);
     if let Some(dir) = current_dir {
@@ -175,10 +179,14 @@ fn run_script(path: &Path, input: Option<&str>, current_dir: Option<&Path>) -> R
         command.stdin(Stdio::piped());
     }
 
-    let mut child = command.spawn().with_context(|| format!("Failed to run {}", path.display()))?;
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("Failed to run {}", path.display()))?;
     if let Some(input) = input {
         let stdin = child.stdin.as_mut().context("Failed to open stdin for script")?;
-        stdin.write_all(input.as_bytes()).context("Failed to write hook input")?;
+        stdin
+            .write_all(input.as_bytes())
+            .context("Failed to write hook input")?;
     }
 
     child.wait_with_output().context("Failed to read script output")
