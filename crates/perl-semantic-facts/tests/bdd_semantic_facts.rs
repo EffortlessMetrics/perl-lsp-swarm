@@ -92,8 +92,9 @@ fn given_import_backed_candidate_when_inspecting_rank_reason_then_source_module_
         DefinitionRankReason::ExplicitImport { module: "List::Util".to_string() },
     );
 
+    assert!(matches!(&candidate.rank_reason, DefinitionRankReason::ExplicitImport { .. }));
     let DefinitionRankReason::ExplicitImport { module } = &candidate.rank_reason else {
-        panic!("expected ExplicitImport rank reason");
+        return;
     };
     assert_eq!(module, "List::Util");
     assert_eq!(candidate.display_name, "first");
@@ -261,8 +262,9 @@ fn given_explicit_import_spec_when_resolved_then_listed_symbols_available() {
         span_start_byte: Some(20),
     };
 
+    assert!(matches!(&spec.symbols, ImportSymbols::Explicit(_)));
     let ImportSymbols::Explicit(ref symbols) = spec.symbols else {
-        panic!("expected Explicit symbols");
+        return;
     };
     assert_eq!(symbols.len(), 3);
     assert!(symbols.contains(&"blessed".to_string()));
