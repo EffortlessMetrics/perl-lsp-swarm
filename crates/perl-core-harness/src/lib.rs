@@ -7,6 +7,13 @@
 //! staged profile through a `t/perl` compatibility wrapper in parse and compile
 //! modes. Execute mode is limited to explicit selected base tests.
 
+mod curated_gold;
+
+pub use curated_gold::{
+    CuratedGoldFactAdapter, CuratedGoldLoadConfig, LoadedCuratedGold, compare_curated_gold,
+    curated_gold_expectation_hash, load_curated_gold, sha256_digest,
+};
+
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness_types::{

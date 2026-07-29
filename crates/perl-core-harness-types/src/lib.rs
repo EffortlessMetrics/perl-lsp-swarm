@@ -5,6 +5,7 @@
 
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -15,6 +16,195 @@ pub const SMOKE_SCHEMA_VERSION: &str = "perl_core_harness.smoke.v1";
 pub const PREPARE_SCHEMA_VERSION: &str = "perl_core_harness.prepare.v1";
 pub const GAP_MAP_SCHEMA_VERSION: &str = "perl_core_harness.gap_map.v1";
 pub const RUNNER_RECORD_SCHEMA_VERSION: &str = "perl_core_harness.runner_record.v1";
+pub const CURATED_GOLD_SCHEMA_VERSION: &str = "curated_gold.v1";
+pub const CURATED_GOLD_COMPARISON_SCHEMA_VERSION: &str = "curated_gold_comparison.v1";
+
+/// A semantic fact class that can be independently labeled by curated gold.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum CuratedGoldFactClass {
+    #[serde(rename = "PackageSubTable")]
+    PackageSubTable,
+    #[serde(rename = "ScopeBinding")]
+    ScopeBinding,
+    #[serde(rename = "PlaceAccess")]
+    PlaceAccess,
+    #[serde(rename = "ContextDemand")]
+    ContextDemand,
+    #[serde(rename = "ControlFlow")]
+    ControlFlow,
+    #[serde(rename = "CompileEffect")]
+    CompileEffect,
+    #[serde(rename = "DynamicBoundary")]
+    DynamicBoundary,
+    #[serde(rename = "ImportExport")]
+    ImportExport,
+    #[serde(rename = "IsaComposition")]
+    IsaComposition,
+    #[serde(rename = "ConstantPrototype")]
+    ConstantPrototype,
+    #[serde(rename = "FrameworkGeneratedMember")]
+    FrameworkGeneratedMember,
+}
+
+impl CuratedGoldFactClass {
+    pub const ALL: [Self; 11] = [
+        Self::PackageSubTable,
+        Self::ScopeBinding,
+        Self::PlaceAccess,
+        Self::ContextDemand,
+        Self::ControlFlow,
+        Self::CompileEffect,
+        Self::DynamicBoundary,
+        Self::ImportExport,
+        Self::IsaComposition,
+        Self::ConstantPrototype,
+        Self::FrameworkGeneratedMember,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PackageSubTable => "PackageSubTable",
+            Self::ScopeBinding => "ScopeBinding",
+            Self::PlaceAccess => "PlaceAccess",
+            Self::ContextDemand => "ContextDemand",
+            Self::ControlFlow => "ControlFlow",
+            Self::CompileEffect => "CompileEffect",
+            Self::DynamicBoundary => "DynamicBoundary",
+            Self::ImportExport => "ImportExport",
+            Self::IsaComposition => "IsaComposition",
+            Self::ConstantPrototype => "ConstantPrototype",
+            Self::FrameworkGeneratedMember => "FrameworkGeneratedMember",
+        }
+    }
+}
+
+impl fmt::Display for CuratedGoldFactClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Source backing for a curated-gold fixture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
+pub enum CuratedGoldSource {
+    /// Source embedded in the fixture for small, self-contained examples.
+    Inline { text: String },
+    /// A path in a declared repository revision.
+    Repository { path: String, revision: String },
+}
+
+/// Confidence assigned by the independent gold author.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CuratedGoldConfidence {
+    High,
+    Medium,
+    Low,
+}
+
+/// Freshness of an observed fact relative to the declared source snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CuratedGoldFreshness {
+    Fresh,
+    Stale,
+    Unknown,
+}
+
+/// A source range attached to a curated fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CuratedGoldRange {
+    pub start_byte: u32,
+    pub end_byte: u32,
+}
+
+/// One normalized expected or observed semantic fact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CuratedGoldFact {
+    pub fact_id: String,
+    pub value: Value,
+    pub range: Option<CuratedGoldRange>,
+    pub provenance: String,
+    pub confidence: CuratedGoldConfidence,
+    pub freshness: CuratedGoldFreshness,
+    pub dynamic_boundary: Option<String>,
+}
+
+/// A read-only, independently authored semantic expectation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CuratedGoldFixture {
+    pub schema_version: String,
+    pub fixture_id: String,
+    pub fact_class: CuratedGoldFactClass,
+    pub source: CuratedGoldSource,
+    pub source_content_hash: String,
+    pub expected_facts: Vec<CuratedGoldFact>,
+    pub expectation_hash: String,
+    pub author_identity: String,
+    pub reviewer_identity: String,
+    pub review_receipt: String,
+    pub rationale: String,
+    pub coverage_intent: String,
+    pub confidence: CuratedGoldConfidence,
+    pub perl_references: Vec<String>,
+    pub allowed_dynamic_boundaries: Vec<String>,
+    pub minimum_compiler_capability: String,
+}
+
+/// Classification emitted for one gold comparison item.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CuratedGoldComparisonKind {
+    ExactAgreement,
+    MissingFact,
+    ExtraFact,
+    ValueMismatch,
+    RangeMismatch,
+    ProvenanceMismatch,
+    ConfidenceOrFreshnessMismatch,
+    ExpectedDynamicBoundary,
+    UnexpectedDynamicBoundary,
+    UnimplementedFactClass,
+    StaleFixture,
+}
+
+/// Overall status of a deterministic gold comparison receipt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CuratedGoldComparisonStatus {
+    ExactAgreement,
+    HasMismatches,
+    StaleFixture,
+    UnimplementedFactClass,
+}
+
+/// One deterministic comparison result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CuratedGoldComparisonItem {
+    pub kind: CuratedGoldComparisonKind,
+    pub fact_id: Option<String>,
+    pub detail: String,
+}
+
+/// Deterministic receipt for a read-only curated-gold comparison.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CuratedGoldComparisonReceipt {
+    pub schema_version: String,
+    pub fixture_id: String,
+    pub fact_class: CuratedGoldFactClass,
+    pub source_content_hash: String,
+    pub expectation_hash: String,
+    pub compiler_capability: String,
+    pub status: CuratedGoldComparisonStatus,
+    pub comparisons: Vec<CuratedGoldComparisonItem>,
+}
 
 /// Upstream Perl test scheduler to query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
@@ -536,6 +726,8 @@ mod tests {
         assert_eq!(PREPARE_SCHEMA_VERSION, "perl_core_harness.prepare.v1");
         assert_eq!(GAP_MAP_SCHEMA_VERSION, "perl_core_harness.gap_map.v1");
         assert_eq!(RUNNER_RECORD_SCHEMA_VERSION, "perl_core_harness.runner_record.v1");
+        assert_eq!(CURATED_GOLD_SCHEMA_VERSION, "curated_gold.v1");
+        assert_eq!(CURATED_GOLD_COMPARISON_SCHEMA_VERSION, "curated_gold_comparison.v1");
     }
 
     #[test]
@@ -609,6 +801,46 @@ mod tests {
         let encoded = serde_json::to_string(&record)?;
         let decoded: RunnerRecord = serde_json::from_str(&encoded)?;
         assert_eq!(decoded, record);
+        Ok(())
+    }
+
+    #[test]
+    fn curated_gold_contract_roundtrips_with_strict_types() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let fixture = CuratedGoldFixture {
+            schema_version: CURATED_GOLD_SCHEMA_VERSION.to_string(),
+            fixture_id: "gold.package.main".to_string(),
+            fact_class: CuratedGoldFactClass::PackageSubTable,
+            source: CuratedGoldSource::Inline { text: "package main;\n".to_string() },
+            source_content_hash:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .to_string(),
+            expected_facts: vec![CuratedGoldFact {
+                fact_id: "package:main".to_string(),
+                value: serde_json::json!({"name": "main"}),
+                range: Some(CuratedGoldRange { start_byte: 0, end_byte: 12 }),
+                provenance: "ExplicitSource".to_string(),
+                confidence: CuratedGoldConfidence::High,
+                freshness: CuratedGoldFreshness::Fresh,
+                dynamic_boundary: None,
+            }],
+            expectation_hash:
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+            author_identity: "author@example.test".to_string(),
+            reviewer_identity: "reviewer@example.test".to_string(),
+            review_receipt: "review-123".to_string(),
+            rationale: "source-backed package".to_string(),
+            coverage_intent: "package basics".to_string(),
+            confidence: CuratedGoldConfidence::High,
+            perl_references: vec!["perlfunc/package".to_string()],
+            allowed_dynamic_boundaries: Vec::new(),
+            minimum_compiler_capability: "compiler.facts.v1".to_string(),
+        };
+        let decoded: CuratedGoldFixture = serde_json::from_str(&serde_json::to_string(&fixture)?)?;
+        if decoded != fixture {
+            return Err("curated-gold fixture did not roundtrip".into());
+        }
         Ok(())
     }
 

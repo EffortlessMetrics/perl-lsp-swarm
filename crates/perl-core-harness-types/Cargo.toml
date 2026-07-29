@@ -13,9 +13,8 @@ publish = false
 [dependencies]
 clap = { workspace = true }
 serde.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true
 
+[dev-dependencies]
 [lints]
 workspace = true

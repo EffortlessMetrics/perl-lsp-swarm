@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/curated_gold.v1.schema.json",
+  "title": "Curated semantic gold fixture v1",
+  "description": "An independently authored, read-only semantic expectation. This schema does not authorize accepting or rewriting expectations.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_id",
+    "fact_class",
+    "source",
+    "source_content_hash",
+    "expected_facts",
+    "expectation_hash",
+    "author_identity",
+    "reviewer_identity",
+    "review_receipt",
+    "rationale",
+    "coverage_intent",
+    "confidence",
+    "perl_references",
+    "allowed_dynamic_boundaries",
+    "minimum_compiler_capability"
+  ],
+  "properties": {
+    "schema_version": { "const": "curated_gold.v1" },
+    "fixture_id": { "type": "string", "minLength": 1 },
+    "fact_class": { "$ref": "#/$defs/fact_class" },
+    "source": { "$ref": "#/$defs/source" },
+    "source_content_hash": { "$ref": "#/$defs/sha256" },
+    "expected_facts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/fact" }
+    },
+    "expectation_hash": { "$ref": "#/$defs/sha256" },
+    "author_identity": { "type": "string", "minLength": 1 },
+    "reviewer_identity": { "type": "string", "minLength": 1 },
+    "review_receipt": { "type": "string", "minLength": 1 },
+    "rationale": { "type": "string", "minLength": 1 },
+    "coverage_intent": { "type": "string", "minLength": 1 },
+    "confidence": { "$ref": "#/$defs/confidence" },
+    "perl_references": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "allowed_dynamic_boundaries": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "minimum_compiler_capability": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "fact_class": {
+      "type": "string",
+      "enum": [
+        "PackageSubTable",
+        "ScopeBinding",
+        "PlaceAccess",
+        "ContextDemand",
+        "ControlFlow",
+        "CompileEffect",
+        "DynamicBoundary",
+        "ImportExport",
+        "IsaComposition",
+        "ConstantPrototype",
+        "FrameworkGeneratedMember"
+      ]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"]
+    },
+    "freshness": {
+      "type": "string",
+      "enum": ["fresh", "stale", "unknown"]
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "range": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["start_byte", "end_byte"],
+      "properties": {
+        "start_byte": { "type": "integer", "minimum": 0 },
+        "end_byte": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fact_id",
+        "value",
+        "range",
+        "provenance",
+        "confidence",
+        "freshness",
+        "dynamic_boundary"
+      ],
+      "properties": {
+        "fact_id": { "type": "string", "minLength": 1 },
+        "value": {},
+        "range": { "$ref": "#/$defs/range" },
+        "provenance": { "type": "string", "minLength": 1 },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "freshness": { "$ref": "#/$defs/freshness" },
+        "dynamic_boundary": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "text"],
+          "properties": {
+            "kind": { "const": "inline" },
+            "text": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "path", "revision"],
+          "properties": {
+            "kind": { "const": "repository" },
+            "path": { "type": "string", "minLength": 1 },
+            "revision": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    }
+  }
+}

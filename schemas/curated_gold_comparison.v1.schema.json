@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/curated_gold_comparison.v1.schema.json",
+  "title": "Curated semantic gold comparison receipt v1",
+  "description": "Deterministic, read-only comparison output for one curated-gold fixture.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_id",
+    "fact_class",
+    "source_content_hash",
+    "expectation_hash",
+    "compiler_capability",
+    "status",
+    "comparisons"
+  ],
+  "properties": {
+    "schema_version": { "const": "curated_gold_comparison.v1" },
+    "fixture_id": { "type": "string", "minLength": 1 },
+    "fact_class": { "$ref": "curated_gold.v1.schema.json#/$defs/fact_class" },
+    "source_content_hash": { "$ref": "curated_gold.v1.schema.json#/$defs/sha256" },
+    "expectation_hash": { "$ref": "curated_gold.v1.schema.json#/$defs/sha256" },
+    "compiler_capability": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["exact_agreement", "has_mismatches", "stale_fixture", "unimplemented_fact_class"]
+    },
+    "comparisons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "fact_id", "detail"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "exact_agreement",
+              "missing_fact",
+              "extra_fact",
+              "value_mismatch",
+              "range_mismatch",
+              "provenance_mismatch",
+              "confidence_or_freshness_mismatch",
+              "expected_dynamic_boundary",
+              "unexpected_dynamic_boundary",
+              "unimplemented_fact_class",
+              "stale_fixture"
+            ]
+          },
+          "fact_id": { "type": ["string", "null"] },
+          "detail": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}
