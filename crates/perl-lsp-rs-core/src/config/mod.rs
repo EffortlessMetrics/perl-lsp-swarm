@@ -799,13 +799,17 @@ pub struct RejectedClientIncludePath {
     pub reason: RejectedClientIncludePathReason,
 }
 
-/// Why a client-settings `includePaths` entry was rejected.
+/// Why a client-settings `includePaths` / `externalIncludePaths` entry was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RejectedClientIncludePathReason {
     /// Absolute paths must use `externalIncludePaths` (machine scope) instead.
     Absolute,
     /// Relative entry failed workspace containment validation.
     EscapesWorkspace(String),
+    /// `externalIncludePaths` entries must be absolute filesystem roots.
+    ExternalRelative,
+    /// `externalIncludePaths` entries must not contain null/control characters.
+    ExternalInvalidCharacters,
 }
 
 impl RejectedClientIncludePath {
@@ -822,6 +826,15 @@ impl RejectedClientIncludePath {
             RejectedClientIncludePathReason::EscapesWorkspace(detail) => format!(
                 "'{}': escapes the workspace root ({detail})",
                 self.entry
+            ),
+            RejectedClientIncludePathReason::ExternalRelative => format!(
+                "'{}': relative paths are not allowed in `perl.workspace.externalIncludePaths`; \
+                 use `perl.workspace.includePaths` for workspace-relative roots instead.",
+                self.entry
+            ),
+            RejectedClientIncludePathReason::ExternalInvalidCharacters => format!(
+                "'{}': contains null bytes or disallowed control characters",
+                escape_for_display(&self.entry)
             ),
         }
     }
@@ -852,36 +865,48 @@ fn validate_resource_include_path_entry(
     Ok(())
 }
 
-fn parse_external_include_paths(paths: &[serde_json::Value]) -> Vec<String> {
-    paths
-        .iter()
-        .filter_map(|value| value.as_str())
-        .filter_map(|entry| {
-            let trimmed = entry.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            if external_include_path_has_invalid_characters(trimmed) {
-                tracing::warn!(
-                    target: "perl_lsp::config",
-                    entry = %escape_for_display(trimmed),
-                    "rejected perl.workspace.externalIncludePaths entry with null/control characters"
-                );
-                return None;
-            }
-            // Machine-scoped external roots must be absolute. Relative entries belong in
-            // resource-scoped `includePaths` (validated against the workspace root).
-            if !Path::new(trimmed).is_absolute() {
-                tracing::warn!(
-                    target: "perl_lsp::config",
-                    entry = %escape_for_display(trimmed),
-                    "rejected relative perl.workspace.externalIncludePaths entry; use includePaths for workspace-relative roots"
-                );
-                return None;
-            }
-            Some(trimmed.to_string())
-        })
-        .collect()
+fn parse_external_include_paths(
+    paths: &[serde_json::Value],
+) -> (Vec<String>, Vec<RejectedClientIncludePath>) {
+    let mut accepted = Vec::new();
+    let mut rejected = Vec::new();
+    for value in paths {
+        let Some(entry) = value.as_str() else {
+            continue;
+        };
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if external_include_path_has_invalid_characters(trimmed) {
+            tracing::warn!(
+                target: "perl_lsp::config",
+                entry = %escape_for_display(trimmed),
+                "rejected perl.workspace.externalIncludePaths entry with null/control characters"
+            );
+            rejected.push(RejectedClientIncludePath {
+                entry: trimmed.to_string(),
+                reason: RejectedClientIncludePathReason::ExternalInvalidCharacters,
+            });
+            continue;
+        }
+        // Machine-scoped external roots must be absolute. Relative entries belong in
+        // resource-scoped `includePaths` (validated against the workspace root).
+        if !Path::new(trimmed).is_absolute() {
+            tracing::warn!(
+                target: "perl_lsp::config",
+                entry = %escape_for_display(trimmed),
+                "rejected relative perl.workspace.externalIncludePaths entry; use includePaths for workspace-relative roots"
+            );
+            rejected.push(RejectedClientIncludePath {
+                entry: trimmed.to_string(),
+                reason: RejectedClientIncludePathReason::ExternalRelative,
+            });
+            continue;
+        }
+        accepted.push(trimmed.to_string());
+    }
+    (accepted, rejected)
 }
 
 fn external_include_path_has_invalid_characters(entry: &str) -> bool {
@@ -1032,12 +1057,17 @@ impl WorkspaceConfig {
     }
 
     /// Update workspace configuration from LSP settings.
+    ///
+    /// Fail-closed for `externalIncludePaths`: the default context ignores them.
+    /// Callers on the global / machine configuration channel must use
+    /// [`Self::update_from_value_with_context`] with
+    /// `apply_external_include_paths: true`.
     pub fn update_from_value(&mut self, settings: &serde_json::Value) -> Vec<RejectedClientIncludePath> {
         self.update_from_value_with_context(
             settings,
             WorkspaceConfigUpdateContext {
                 workspace_root: None,
-                apply_external_include_paths: true,
+                apply_external_include_paths: false,
             },
         )
     }
@@ -1075,7 +1105,9 @@ impl WorkspaceConfig {
                 if let Some(paths) =
                     workspace.get("externalIncludePaths").and_then(|v| v.as_array())
                 {
-                    self.external_include_paths = parse_external_include_paths(paths);
+                    let (accepted, external_rejected) = parse_external_include_paths(paths);
+                    self.external_include_paths = accepted;
+                    rejected.extend(external_rejected);
                 }
             }
             if let Some(extensions) = string_array(workspace.get("discoveryExtensions")) {
@@ -3878,8 +3910,28 @@ profile = "recommended"
             },
         );
 
-        assert!(rejected.is_empty());
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, "lib");
+        assert!(matches!(
+            rejected[0].reason,
+            RejectedClientIncludePathReason::ExternalRelative
+        ));
         assert_eq!(workspace.external_include_paths, vec![absolute.to_string()]);
+    }
+
+    #[test]
+    fn update_from_value_default_ignores_external_include_paths() {
+        let mut workspace = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
+
+        let rejected = workspace.update_from_value(&serde_json::json!({
+            "workspace": {
+                "externalIncludePaths": [absolute]
+            }
+        }));
+
+        assert!(rejected.is_empty());
+        assert!(workspace.external_include_paths.is_empty());
     }
 
     #[test]

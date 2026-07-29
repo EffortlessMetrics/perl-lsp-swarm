@@ -2,6 +2,7 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import * as vscode from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
+import { machineScopedExternalIncludePaths } from './languageClientConfiguration';
 
 type DocumentClient = Pick<LanguageClient, 'sendRequest'>;
 type DocumentOutputChannel = Pick<vscode.OutputChannel, 'appendLine' | 'show'>;
@@ -40,7 +41,8 @@ export async function runCheckSyntaxCommand(
   const filePath = editor.document.uri.fsPath;
   const config = vscode.workspace.getConfiguration('perl-lsp');
   const includePaths: string[] = config.get('includePaths', ['lib', 'local/lib/perl5']);
-  const externalIncludePaths: string[] = config.get('externalIncludePaths', []);
+  // Machine scope only — never honor workspace/folder externalIncludePaths (#4998).
+  const externalIncludePaths = machineScopedExternalIncludePaths(config);
   const workspaceRoot = vscode.workspace.getWorkspaceFolder(editor.document.uri)?.uri.fsPath;
   const perlArgs: string[] = [];
   for (const includePath of [...includePaths, ...externalIncludePaths]) {

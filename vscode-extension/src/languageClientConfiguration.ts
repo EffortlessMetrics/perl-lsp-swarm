@@ -209,6 +209,13 @@ function readExternalIncludePaths(config: ConfigurationReader): string[] | undef
   return inspected.globalValue.filter((value): value is string => typeof value === 'string');
 }
 
+/** Machine-scoped external roots only (`inspect().globalValue`); never workspace/folder. */
+export function machineScopedExternalIncludePaths(
+  config: ConfigurationReader = vscode.workspace.getConfiguration('perl-lsp'),
+): string[] {
+  return readExternalIncludePaths(config) ?? [];
+}
+
 export function buildWorkspaceConfigurationPayload(
   config: ConfigurationReader = vscode.workspace.getConfiguration('perl-lsp'),
 ): Record<string, unknown> | undefined {

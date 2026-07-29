@@ -9,6 +9,7 @@ import {
   classifyConfigurationSetting,
   DEFAULT_INCLUDE_PATHS,
   hasExplicitPerlCriticOverrides,
+  machineScopedExternalIncludePaths,
   syncLanguageClientConfiguration,
   syncPerlCriticConfiguration,
 } from '../languageClientConfiguration';
@@ -67,6 +68,20 @@ describe('language client configuration', () => {
     } as unknown as vscode.WorkspaceConfiguration;
 
     expect(buildWorkspaceConfigurationPayload(config)).toBeUndefined();
+    expect(machineScopedExternalIncludePaths(config)).toEqual([]);
+  });
+
+  test('machineScopedExternalIncludePaths returns only globalValue', () => {
+    const config = {
+      get: jest.fn(() => ['/workspace-should-not-win']),
+      inspect: jest.fn((key: string) =>
+        key === 'externalIncludePaths'
+          ? { globalValue: ['/opt/perl/lib'], workspaceValue: ['/etc'] }
+          : undefined,
+      ),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(machineScopedExternalIncludePaths(config)).toEqual(['/opt/perl/lib']);
   });
 
   test('combines workspace and critic settings under the canonical perl payload', () => {
