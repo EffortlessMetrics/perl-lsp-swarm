@@ -4296,6 +4296,44 @@ mod tests {
             Some(&previous),
             &[retirement],
         )?;
+        let mut series_tampered = accepted.clone();
+        series_tampered.boundary_retirements[0].series_id = "wrong-series".into();
+        let comparison = compare_baseline_v2_with_identities(
+            &series_tampered,
+            &current,
+            &series,
+            None,
+            Some("transition-1"),
+            &[],
+        );
+        if !comparison.violations.iter().any(|violation| {
+            violation.kind == BaselineViolationKind::BoundaryRetirementReceiptMismatch
+        }) {
+            bail!("series-bound retirement tampering was not rejected during comparison");
+        }
+
+        let mutations = [
+            ("schema_version", serde_json::Value::String("other-schema".into())),
+            ("path", serde_json::Value::String(String::new())),
+            ("id", serde_json::Value::String(String::new())),
+            ("source_start", serde_json::Value::from(12_u64)),
+            ("series_id", serde_json::Value::String("wrong-series".into())),
+            ("manifest_hash", serde_json::Value::String("sha256:wrong".into())),
+            ("measurement_sha", serde_json::Value::String("wrong-measurement".into())),
+            ("source_report_digest", serde_json::Value::String("sha256:tampered".into())),
+            ("transition_id", serde_json::Value::String("wrong-transition".into())),
+            ("replacement_issue", serde_json::Value::String(String::new())),
+            ("evidence_bundle", serde_json::Value::String(String::new())),
+        ];
+        for (field, replacement) in mutations {
+            let mut mutated = serde_json::to_value(&accepted)?;
+            mutated["boundary_retirements"][0][field] = replacement;
+            fs::write(&path, format!("{}\n", serde_json::to_string(&mutated)?))?;
+            if read_compile_baseline_v2(&path).is_ok() {
+                bail!("tampered persisted retirement field {field} was accepted");
+            }
+        }
+
         let mut value = serde_json::to_value(accepted)?;
         value["boundary_retirements"][0]["source_report_digest"] =
             serde_json::Value::String("sha256:tampered".into());
