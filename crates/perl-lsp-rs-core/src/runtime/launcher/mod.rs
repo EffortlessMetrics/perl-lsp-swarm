@@ -919,7 +919,11 @@ const BASH_COMPLETION: &str = r#"_perl_lsp() {
             COMPREPLY=( $(compgen -W "normal syntax-only" -- "${cur}") )
             return 0
             ;;
-        --ripr-root|--ripr-out)
+        --ripr-root)
+            COMPREPLY=( $(compgen -d -- "${cur}") )
+            return 0
+            ;;
+        --ripr-out)
             COMPREPLY=( $(compgen -f -- "${cur}") )
             return 0
             ;;
@@ -1003,11 +1007,11 @@ complete -c perl-lsp -l eager-workspace-indexing -x -a 'true false' -d 'Set eage
 complete -c perl-lsp -l file-watchers -x -a 'true false' -d 'Set file-watcher tuning value'
 complete -c perl-lsp -l ripr-facts -d 'Export a ripr-perl-facts-v1 fact packet'
 complete -c perl-lsp -l ripr-schema -x -d 'Fact schema version'
-complete -c perl-lsp -l ripr-root -d 'Repository root'
+complete -c perl-lsp -l ripr-root -r -F -d 'Repository root'
 complete -c perl-lsp -l ripr-base -x -d 'Base git ref for differential extraction'
 complete -c perl-lsp -l ripr-head -x -d 'Head git ref for differential extraction'
 complete -c perl-lsp -l ripr-fact-classes -x -d 'Fact classes filter'
-complete -c perl-lsp -l ripr-out -r -d 'Output path'
+complete -c perl-lsp -l ripr-out -r -F -d 'Output path'
 complete -c perl-lsp -l help -d 'Show help message'
 "#;
 
