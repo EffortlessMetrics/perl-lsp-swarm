@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stable digest for the material PR claim/review subject."""
+"""Stable digest for the visible material PR claim/review subject."""
 
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ MATERIAL_SECTIONS: Final[tuple[str, ...]] = (
 )
 
 # The first alias is the current-generation canonical heading. Later aliases
-# preserve meaningful review identity for PRs created from the existing
-# repository template while the template migration lands separately.
+# preserve meaningful review identity for PRs created from the repository's
+# existing template while that template migration lands separately.
 SECTION_ALIASES: Final[dict[str, tuple[str, ...]]] = {
     "Claim": ("Claim", "Claim Boundary"),
     "What this establishes": ("What this establishes", "Behavior", "Changes"),
@@ -31,11 +31,24 @@ SECTION_ALIASES: Final[dict[str, tuple[str, ...]]] = {
         "Non-goals",
         "Remaining Work",
     ),
-    "Risk and rollback": ("Risk and rollback", "Risk", "Rollback", "Risks"),
+    "Risk and rollback": (
+        "Risk and rollback",
+        "Risk",
+        "Rollback",
+        "Risks",
+        "Risk Surfaces",
+    ),
     "Review index": ("Review index",),
 }
 
-_HEADING = re.compile(r"^##\s+(.+?)\s*$")
+_HEADING = re.compile(r"^ {0,3}##(?!#)[ \t]+(.+?)(?:[ \t]+#+[ \t]*)?$")
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def normalize_pr_body(value: object) -> str:
+    """Normalize GitHub's nullable body field without inventing text."""
+
+    return value if isinstance(value, str) else ""
 
 
 def _normalize_text(text: str) -> str:
@@ -46,21 +59,87 @@ def _normalize_text(text: str) -> str:
     return "\n".join(normalized).strip()
 
 
+def _visible_structure_text(line: str, in_comment: bool) -> tuple[str, bool]:
+    """Remove HTML comments for structural parsing while preserving source text."""
+
+    visible: list[str] = []
+    cursor = 0
+    while cursor < len(line):
+        if in_comment:
+            end = line.find("-->", cursor)
+            if end < 0:
+                return "".join(visible), True
+            cursor = end + 3
+            in_comment = False
+            continue
+
+        start = line.find("<!--", cursor)
+        if start < 0:
+            visible.append(line[cursor:])
+            break
+        visible.append(line[cursor:start])
+        cursor = start + 4
+        in_comment = True
+
+    return "".join(visible), in_comment
+
+
+def _fence_opening(line: str) -> tuple[str, int] | None:
+    match = _FENCE.match(line)
+    if not match:
+        return None
+    sequence = match.group(1)
+    return sequence[0], len(sequence)
+
+
+def _is_fence_closing(line: str, marker: str, minimum: int) -> bool:
+    stripped = line.lstrip(" ")
+    if len(line) - len(stripped) > 3 or not stripped.startswith(marker * minimum):
+        return False
+    count = 0
+    while count < len(stripped) and stripped[count] == marker:
+        count += 1
+    return count >= minimum and stripped[count:].strip() == ""
+
+
 def canonical_material_claim(body: str) -> tuple[str, str]:
-    """Return canonical material text and extraction mode."""
+    """Return canonical visible material text and extraction mode.
+
+    Only visible level-two headings delimit material sections. Heading-shaped
+    text inside fenced code blocks or HTML comments remains ordinary content and
+    cannot switch the digest from full-body fallback into material-section mode.
+    """
 
     normalized = body.replace("\r\n", "\n").replace("\r", "\n")
     sections: dict[str, list[str]] = {}
     current: str | None = None
+    fence: tuple[str, int] | None = None
+    in_comment = False
 
-    for line in normalized.split("\n"):
-        match = _HEADING.match(line)
+    for source_line in normalized.split("\n"):
+        if fence is not None:
+            if current is not None:
+                sections[current].append(source_line)
+            if _is_fence_closing(source_line, fence[0], fence[1]):
+                fence = None
+            continue
+
+        visible_line, in_comment = _visible_structure_text(source_line, in_comment)
+        opening = _fence_opening(visible_line)
+        if opening is not None:
+            if current is not None:
+                sections[current].append(source_line)
+            fence = opening
+            continue
+
+        match = _HEADING.match(visible_line)
         if match:
             current = match.group(1).strip().casefold()
             sections.setdefault(current, [])
             continue
+
         if current is not None:
-            sections[current].append(line)
+            sections[current].append(source_line)
 
     recognized_keys = {
         alias.casefold()
@@ -68,9 +147,13 @@ def canonical_material_claim(body: str) -> tuple[str, str]:
         for alias in aliases
     }
     if not recognized_keys.intersection(sections):
-        return _normalize_text(body), "full_body_fallback"
+        canonical = _normalize_text(body)
+        if not canonical:
+            raise ValueError("empty PR body has no material claim to review")
+        return canonical, "full_body_fallback"
 
     parts: list[str] = []
+    has_material_content = False
     for canonical_name in MATERIAL_SECTIONS:
         values: list[str] = []
         for alias in SECTION_ALIASES[canonical_name]:
@@ -78,10 +161,15 @@ def canonical_material_claim(body: str) -> tuple[str, str]:
             if key not in sections:
                 continue
             value = _normalize_text("\n".join(sections[key]))
+            if value:
+                has_material_content = True
             values.append(f"### {alias}\n{value}")
 
         material = "\n\n".join(values) if values else "<missing>"
         parts.append(f"## {canonical_name}\n{material}")
+
+    if not has_material_content:
+        raise ValueError("recognized PR headings contain no material claim content")
 
     return "\n\n".join(parts), "material_sections"
 
@@ -114,7 +202,7 @@ def _read_live_pr_body(pr: str, repo: str | None) -> str:
     completed = subprocess.run(command, check=False, capture_output=True, text=True)
     if completed.returncode != 0:
         raise RuntimeError(completed.stderr.strip() or "gh pr view failed")
-    return completed.stdout
+    return normalize_pr_body(completed.stdout)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -137,11 +225,11 @@ def main(argv: list[str] | None = None) -> int:
             body = args.body_file.read_text(encoding="utf-8")
         else:
             body = sys.stdin.read()
-    except (OSError, RuntimeError) as error:
+        record = claim_digest(body)
+    except (OSError, RuntimeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
 
-    record = claim_digest(body)
     if args.json:
         print(json.dumps(record, sort_keys=True))
     else:
