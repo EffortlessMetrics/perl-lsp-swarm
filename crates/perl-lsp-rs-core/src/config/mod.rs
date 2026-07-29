@@ -429,14 +429,9 @@ impl ServerConfig {
                 }
                 self.perlcritic_severity = clamped;
             }
-            if let Some(profile) = critic.get("profile").and_then(|v| v.as_str()) {
-                let profile = profile.trim();
-                self.perlcritic_profile = (!profile.is_empty()).then(|| profile.to_string());
-            }
-            if let Some(theme) = critic.get("theme").and_then(|v| v.as_str()) {
-                let theme = theme.trim();
-                self.perlcritic_theme = (!theme.is_empty()).then(|| theme.to_string());
-            }
+            // Security: do NOT honour LSP-channel perlcritic.profile / theme (issue #5001).
+            // Subprocess profile paths may only be applied via trusted project config
+            // (`.perl-lsp.toml` → `apply_to_server_config`).
         }
 
         // Native `critic.*` settings are the product-surface keys. They are parsed
@@ -463,7 +458,16 @@ impl ServerConfig {
             }
             if let Some(engine) = critic.get("engine").and_then(|v| v.as_str()) {
                 match parse_critic_engine(engine) {
-                    Some(engine) => self.critic_engine = engine,
+                    Some(CriticEngine::Native) => self.critic_engine = CriticEngine::Native,
+                    Some(CriticEngine::Legacy) => {
+                        tracing::warn!(
+                            target: "perl_lsp::config",
+                            setting = "critic.engine",
+                            value = %engine,
+                            "ignoring legacy critic.engine from LSP settings channel; \
+                             use .perl-lsp.toml for trusted legacy subprocess configuration",
+                        );
+                    }
                     None => tracing::warn!(
                         target: "perl_lsp::config",
                         setting = "critic.engine",
@@ -509,10 +513,7 @@ impl ServerConfig {
                     ),
                 }
             }
-            if let Some(profile) = formatting.get("profile").and_then(|v| v.as_str()) {
-                let profile = profile.trim();
-                self.perltidy_profile = (!profile.is_empty()).then(|| profile.to_string());
-            }
+            // Security: do NOT honour LSP-channel formatting.profile / extraArgs (issue #5001).
             if let Some(len) = formatting.get("maximumLineLength").and_then(|v| v.as_u64()) {
                 self.perltidy_maximum_line_length = Some(len as u32);
             }
@@ -540,10 +541,6 @@ impl ServerConfig {
             if let Some(block) = formatting.get("blockCommentIndentation").and_then(|v| v.as_u64())
             {
                 self.perltidy_block_comment_indentation = Some(block as u32);
-            }
-            if let Some(args) = formatting.get("extraArgs").and_then(|v| v.as_array()) {
-                self.perltidy_extra_args =
-                    args.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
             }
             if let Some(timeout) = formatting.get("timeoutSecs").and_then(|v| v.as_u64()) {
                 self.perltidy_timeout_secs = timeout;
@@ -2944,8 +2941,8 @@ profile = "recommended"
         assert!(config.telemetry_enabled);
         assert!(!config.perlcritic_enabled);
         assert_eq!(config.perlcritic_severity, 5);
-        assert_eq!(config.perlcritic_profile.as_deref(), Some(".perlcriticrc"));
-        assert_eq!(config.perlcritic_theme.as_deref(), Some("core && !pbp"));
+        assert!(config.perlcritic_profile.is_none());
+        assert!(config.perlcritic_theme.is_none());
 
         config.update_from_value(&serde_json::json!({
             "perlcritic": {
@@ -3027,7 +3024,7 @@ profile = "recommended"
 
         assert!(!config.perltidy_enabled);
         assert_eq!(config.formatting_engine, FormatterMode::Compat);
-        assert_eq!(config.perltidy_profile.as_deref(), Some(".perltidyrc"));
+        assert!(config.perltidy_profile.is_none());
         assert_eq!(config.perltidy_maximum_line_length, Some(120));
         assert_eq!(config.perltidy_indent_columns, Some(2));
         assert_eq!(config.perltidy_tabs, Some(true));
@@ -3037,7 +3034,7 @@ profile = "recommended"
         assert_eq!(config.perltidy_add_trailing_commas, Some(true));
         assert_eq!(config.perltidy_vertical_alignment, Some(false));
         assert_eq!(config.perltidy_block_comment_indentation, Some(1));
-        assert_eq!(config.perltidy_extra_args, vec!["-noll".to_string(), "-bar".to_string()]);
+        assert!(config.perltidy_extra_args.is_empty());
         assert_eq!(config.perltidy_timeout_secs, 7);
         assert!(config.ai_completion.enabled);
         assert!(config.ai_completion.user_enabled);
@@ -3194,13 +3191,13 @@ profile = "recommended"
     #[test]
     fn perltidyrc_profile_does_not_force_external_formatting() {
         // A `.perltidyrc` profile is usable for compatibility reporting or an
-        // explicit external mode, but setting it must NOT switch the engine
-        // away from native.
+        // explicit external mode, but setting it via the LSP settings channel
+        // must NOT arm subprocess profile paths (issue #5001).
         let mut config = ServerConfig::default();
         config.update_from_value(&serde_json::json!({
             "formatting": { "profile": "/path/to/.perltidyrc" }
         }));
-        assert_eq!(config.perltidy_profile, Some("/path/to/.perltidyrc".to_string()));
+        assert!(config.perltidy_profile.is_none());
         assert_eq!(config.formatting_engine, FormatterMode::Native);
     }
 
@@ -3225,7 +3222,7 @@ profile = "recommended"
                 "profile": "strict"
             }
         }));
-        assert_eq!(config.critic_engine, CriticEngine::Legacy);
+        assert_eq!(config.critic_engine, CriticEngine::Native);
         assert_eq!(config.native_critic_profile, "strict");
 
         config.update_from_value(&serde_json::json!({
@@ -4201,6 +4198,33 @@ profile = "recommended"
             "this slice must not change client-settings channel behaviour; \
              provenance hardening is issue #4998"
         );
+    }
+
+    /// Security regression: the LSP settings channel must not arm legacy subprocess
+    /// profile paths or external formatter argv (issue #5001). Trusted project
+    /// config (`.perl-lsp.toml`) still applies via `apply_to_server_config`.
+    #[test]
+    fn server_config_update_from_value_ignores_untrusted_subprocess_capabilities() {
+        let mut config = ServerConfig::default();
+        config.update_from_value(&serde_json::json!({
+            "perlcritic": {
+                "profile": "/tmp/hostile/.perlcriticrc",
+                "theme": "core && !pbp"
+            },
+            "critic": {
+                "engine": "legacy"
+            },
+            "formatting": {
+                "profile": "/tmp/hostile/.perltidyrc",
+                "extraArgs": ["--logfile=/tmp/evil.log"]
+            }
+        }));
+
+        assert!(config.perlcritic_profile.is_none());
+        assert!(config.perlcritic_theme.is_none());
+        assert_eq!(config.critic_engine, CriticEngine::Native);
+        assert!(config.perltidy_profile.is_none());
+        assert!(config.perltidy_extra_args.is_empty());
     }
     #[test]
     fn parse_perl_inc_output_filters_dynamic_hook_entries() {
