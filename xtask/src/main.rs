@@ -2521,6 +2521,37 @@ enum PerlCoreHarnessCommand {
         check: bool,
     },
 
+    /// Validate the semantic-boundary registry against v2 baselines and evidence bundles.
+    Boundaries {
+        /// Machine-readable semantic-boundary registry JSON.
+        #[arg(long)]
+        registry: PathBuf,
+
+        /// Accepted v2 baseline JSON to validate; may be supplied more than once.
+        #[arg(long = "baseline")]
+        baselines: Vec<PathBuf>,
+
+        /// Durable #5171 evidence-bundle index JSON to validate; may be supplied more than once.
+        #[arg(long = "bundle")]
+        bundles: Vec<PathBuf>,
+
+        /// Write the deterministic report to this path.
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Validate the registry and inputs. This is the default mode.
+        #[arg(long)]
+        check: bool,
+
+        /// Emit the deterministic report to stdout.
+        #[arg(long)]
+        report: bool,
+
+        /// Inspect historical evidence without using absence to satisfy current active entries.
+        #[arg(long)]
+        historical: bool,
+    },
+
     /// Run discovered tests in parse, compile, or execute mode (future slice).
     Run {
         /// Harness mode to run.
@@ -4300,6 +4331,23 @@ fn run_cli(cli: Cli) -> Result<()> {
                 replaces_series_id,
                 change_reason,
                 check,
+            }),
+            PerlCoreHarnessCommand::Boundaries {
+                registry,
+                baselines,
+                bundles,
+                output,
+                check,
+                report,
+                historical,
+            } => perl_core_harness::boundaries(perl_core_harness::BoundaryRegistryConfig {
+                registry,
+                baselines,
+                bundles,
+                output,
+                check: check || !report,
+                report,
+                historical,
             }),
             PerlCoreHarnessCommand::Run {
                 mode,
