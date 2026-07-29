@@ -7,6 +7,18 @@ description: Explicit mutable review skill for challenging the actual candidate 
 
 Review the actual implementation while mutation is still expected.
 
+## Authoritative inputs
+
+Resolve current, claim-relative authority before reviewing:
+
+- controlling issue and current synthesis/plan;
+- governing specification, ADR, policy, or accepted invariant where applicable;
+- current product vision, roadmap, architecture, and semantic owner/consumer sources relevant to the change;
+- exact cumulative candidate identity and diff;
+- current proof, execution results, and known limitations.
+
+Do not substitute stale conversation or agent self-report for those sources. If the controlling claim or applicable authorities cannot be established reliably, return `NOT_PROVEN`; if investigation changes the premise, return the corrected boundary for issue preparation.
+
 Use applicable lenses:
 
 - candidate-mode vision alignment;
@@ -27,8 +39,8 @@ Run differentiated read-only lenses in parallel when they improve detection. One
 
 ## Routes
 
-- `CANDIDATE_READY` → `$finish-pr`
+- `CANDIDATE_READY` → return the candidate identity, material claim, current proof, and review result to the invoking flow for PR convergence
 - `CANDIDATE_FINDINGS_OPEN` → repair through `$build-candidate`, then repeat affected proof and review
 - `WEAK_PROOF` → `$prepare-proof`
-- `MATERIAL_VISION_AUTHORITY_OR_SCOPE_CHANGE` → `$prepare-issue`
-- `NOT_PROVEN` → preserve the missing evidence or candidate identity
+- `MATERIAL_VISION_AUTHORITY_OR_SCOPE_CHANGE` → return the corrected premise to the invoking flow for issue preparation
+- `NOT_PROVEN` → preserve the missing authority, evidence, or candidate identity
