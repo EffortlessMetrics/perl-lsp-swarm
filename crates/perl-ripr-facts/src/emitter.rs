@@ -1867,8 +1867,9 @@ mod tests {
     #[test]
     fn test_call_facts_collects_simple_is_call() {
         let calls = facts_from_src("is(discount(100), 50, 'half price');").is_args;
+        assert_eq!(calls.len(), 1, "must parse exactly one is call");
         let [(got, expected)] = calls.as_slice() else {
-            panic!("must parse exactly one is call");
+            return;
         };
         assert_eq!(got, "discount(100)");
         assert_eq!(expected, "50");
