@@ -265,18 +265,26 @@ impl DebugAdapter {
             };
         }
 
-        let signal_sent = if let Some(ref mut session) =
+        let (signal_sent, failure_message) = if let Some(ref mut session) =
             *lock_or_recover(&self.session, "debug_adapter.session")
         {
             let pid = session.process.id();
             session.variable_cache.clear();
             session.stack_frames.clear();
-            self.send_interrupt_signal(pid)
+            (self.send_interrupt_signal(pid), "Failed to pause debugger")
         } else if let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
         {
-            self.send_interrupt_signal(pid)
+            #[cfg(windows)]
+            {
+                let _ = pid;
+                (false, "Pause is unsupported for PID-attached sessions on Windows")
+            }
+            #[cfg(not(windows))]
+            {
+                (self.send_interrupt_signal(pid), "Failed to pause debugger")
+            }
         } else {
-            false
+            (false, "Failed to pause debugger")
         };
 
         DapMessage::Response {
@@ -285,7 +293,7 @@ impl DebugAdapter {
             success: signal_sent,
             command: "pause".to_string(),
             body: None,
-            message: if signal_sent { None } else { Some("Failed to pause debugger".to_string()) },
+            message: if signal_sent { None } else { Some(failure_message.to_string()) },
         }
     }
 
