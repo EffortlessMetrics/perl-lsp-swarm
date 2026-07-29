@@ -12,15 +12,17 @@ use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness_types::{
     BOUNDARY_RETIREMENT_SCHEMA_VERSION, BaselineComparison, BaselineViolation,
     BaselineViolationKind, BoundaryRetirement, COMPILE_BASELINE_SCHEMA_VERSION,
-    COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaseline, CompileBaselineV2,
-    DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport,
-    FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION, FAILURE_CLUSTER_SCHEMA_VERSION, FailureCluster,
-    FailureClusterHistory, FailureClusterHistoryEntry, FailureClusterHistoryPresence,
-    FailureClusterHistoryStatus, FailureClusterIdentityQuality, FailureClusterReport,
-    FailureClusterSignature, FailureDebtCandidate, GAP_MAP_SCHEMA_VERSION, GapMap,
-    ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus,
-    RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunSummary, RunnerRecord,
-    RunnerStatus, SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION, SERIES_MANIFEST_NORMALIZATION_VERSION,
+    COMPILE_BASELINE_V2_SCHEMA_VERSION, CURRENT_AUTHORITY_INDEX_SCHEMA_VERSION,
+    CompatibilityTransition, CompileBaseline, CompileBaselineV2, CurrentAuthorityEntry,
+    CurrentAuthorityIndex, CurrentAuthorityStatus, DISCOVERY_SCHEMA_VERSION, DiscoveredTest,
+    DiscoveryReport, FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION, FAILURE_CLUSTER_SCHEMA_VERSION,
+    FailureCluster, FailureClusterHistory, FailureClusterHistoryEntry,
+    FailureClusterHistoryPresence, FailureClusterHistoryStatus, FailureClusterIdentityQuality,
+    FailureClusterReport, FailureClusterSignature, FailureDebtCandidate, GAP_MAP_SCHEMA_VERSION,
+    GapMap, LANDED_LINEAGE_SCHEMA_VERSION, LandedLineage, ObservedSemanticBoundary,
+    PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus, RUN_REPORT_SCHEMA_VERSION, RunFailure,
+    RunFileResult, RunReport, RunSummary, RunnerRecord, RunnerStatus,
+    SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION, SERIES_MANIFEST_NORMALIZATION_VERSION,
     SERIES_MANIFEST_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION, SemanticBoundaryConfidence,
     SemanticBoundaryDisposition, SemanticBoundaryLockScope, SemanticBoundaryRegistry,
     SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
@@ -28,7 +30,7 @@ use perl_core_harness_types::{
     SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
 };
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -534,6 +536,353 @@ fn read_cluster_history(path: &Path, allow_missing: bool) -> Result<FailureClust
         .with_context(|| format!("decoding cluster history {}", path.display()))
 }
 
+/// Inputs for validating post-merge evidence lineage and current authority.
+#[derive(Debug, Clone)]
+pub struct CurrentAuthorityConfig {
+    /// Deterministic current-authority index.
+    pub index: PathBuf,
+    /// Landed-lineage records referenced by the index.
+    pub lineages: Vec<PathBuf>,
+    /// Repository tree containing the published evidence artifacts.
+    pub repository_root: PathBuf,
+    /// Exact head that the current authority must identify.
+    pub landed_sha: String,
+}
+
+fn authority_status_rank(status: CurrentAuthorityStatus) -> u8 {
+    match status {
+        CurrentAuthorityStatus::Current => 0,
+        CurrentAuthorityStatus::Historical => 1,
+        CurrentAuthorityStatus::Superseded => 2,
+    }
+}
+
+fn authority_entry_key(entry: &CurrentAuthorityEntry) -> (&str, u8, &str) {
+    (
+        entry.series_id.as_str(),
+        authority_status_rank(entry.status),
+        entry.observation_bundle_id.as_str(),
+    )
+}
+
+/// Validate the immutable identity chain for a current-authority index.
+pub fn validate_current_authority(config: CurrentAuthorityConfig) -> Result<CurrentAuthorityIndex> {
+    if config.lineages.is_empty() {
+        bail!("current-authority validation requires at least one lineage record");
+    }
+    validate_git_sha(&config.landed_sha, "expected landed SHA")?;
+    validate_git_commit(&config.repository_root, &config.landed_sha)?;
+    let index = read_json::<CurrentAuthorityIndex>(&config.index, "current-authority index")?;
+    if index.schema_version != CURRENT_AUTHORITY_INDEX_SCHEMA_VERSION {
+        bail!("unsupported current-authority index schema {}", index.schema_version);
+    }
+    if index.entries.is_empty() {
+        bail!("current-authority index contains no series");
+    }
+    if !index
+        .entries
+        .windows(2)
+        .all(|pair| authority_entry_key(&pair[0]) < authority_entry_key(&pair[1]))
+    {
+        bail!(
+            "current-authority index entries must be sorted by series, status, and observation bundle"
+        );
+    }
+
+    let mut lineages = Vec::new();
+    let mut lineage_paths = BTreeSet::new();
+    for path in &config.lineages {
+        let lineage = read_json::<LandedLineage>(path, "landed lineage")?;
+        validate_landed_lineage_shape(&lineage)?;
+        let path_key = path.to_string_lossy().replace('\\', "/");
+        if !lineage_paths.insert(path_key) {
+            bail!("duplicate landed lineage path {}", path.display());
+        }
+        lineages.push((path.clone(), lineage));
+    }
+
+    let mut current_series = BTreeSet::new();
+    for entry in &index.entries {
+        if entry.series_id.trim().is_empty()
+            || entry.manifest_hash.trim().is_empty()
+            || entry.observation_bundle_id.trim().is_empty()
+            || entry.observation_bundle_digest.trim().is_empty()
+            || entry.claim_boundary.trim().is_empty()
+        {
+            bail!("current-authority entry has incomplete identity");
+        }
+        validate_public_path(&entry.observation_bundle_path, "observation bundle path")?;
+        validate_public_path(&entry.landed_lineage_path, "landed lineage path")?;
+        if let Some(path) = &entry.accepted_baseline_path {
+            validate_public_path(path, "accepted baseline path")?;
+        }
+        let expected_lineage_path =
+            resolve_repo_path(&config.repository_root, &entry.landed_lineage_path)?;
+        let (lineage_path, lineage) = lineages
+            .iter()
+            .find(|(path, lineage)| {
+                lineage.series_id == entry.series_id && same_path(path, &expected_lineage_path)
+            })
+            .ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "current-authority entry {} has no matching lineage",
+                    entry.series_id
+                )
+            })?;
+        if entry.profile != lineage.profile
+            || entry.manifest_hash != lineage.manifest_hash
+            || entry.observation_bundle_id != lineage.evidence_bundle_id
+            || entry.observation_bundle_digest != lineage.evidence_bundle_digest
+            || entry.observation_transition != lineage.observation_transition
+            || entry.accepted_transition_id != lineage.accepted_transition_id
+            || entry.accepted_baseline_digest != lineage.accepted_baseline_digest
+            || entry.accepted_baseline_evidence_bundle != lineage.accepted_baseline_evidence_bundle
+        {
+            bail!("current-authority entry {} disagrees with its lineage", entry.series_id);
+        }
+        if matches!(entry.status, CurrentAuthorityStatus::Current)
+            && !current_series.insert(entry.series_id.clone())
+        {
+            bail!("duplicate current authority for series {}", entry.series_id);
+        }
+        if matches!(entry.status, CurrentAuthorityStatus::Current)
+            && matches!(lineage.observation_transition, CompatibilityTransition::Historical)
+        {
+            bail!("historical lineage {} cannot be current authority", entry.series_id);
+        }
+        if matches!(lineage.observation_transition, CompatibilityTransition::Regression)
+            && (entry.accepted_baseline_path.is_none() || entry.accepted_transition_id.is_none())
+        {
+            bail!(
+                "regression {} must retain an explicit accepted baseline and transition",
+                entry.series_id
+            );
+        }
+        validate_bundle_identity(&config.repository_root, &entry.observation_bundle_path, lineage)?;
+        validate_accepted_baseline(&config.repository_root, entry, lineage)?;
+        validate_artifact_digests(&config.repository_root, &config.index, lineage_path, lineage)?;
+        if matches!(entry.status, CurrentAuthorityStatus::Current)
+            && lineage.landed_sha != config.landed_sha
+        {
+            bail!(
+                "current authority {} landed SHA {} does not match expected {}",
+                entry.series_id,
+                lineage.landed_sha,
+                config.landed_sha
+            );
+        }
+    }
+    if current_series.is_empty() {
+        bail!("current-authority index has no current series");
+    }
+    Ok(index)
+}
+
+fn read_json<T: DeserializeOwned>(path: &Path, label: &str) -> Result<T> {
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("reading {label} {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("decoding {label} {}", path.display()))
+}
+
+fn validate_landed_lineage_shape(lineage: &LandedLineage) -> Result<()> {
+    if lineage.schema_version != LANDED_LINEAGE_SCHEMA_VERSION {
+        bail!("unsupported landed-lineage schema {}", lineage.schema_version);
+    }
+    for (label, value) in [
+        ("series ID", &lineage.series_id),
+        ("manifest hash", &lineage.manifest_hash),
+        ("bundle ID", &lineage.evidence_bundle_id),
+        ("bundle digest", &lineage.evidence_bundle_digest),
+        ("measurement SHA", &lineage.measurement_sha),
+        ("publication SHA", &lineage.publication_sha),
+        ("landed SHA", &lineage.landed_sha),
+        ("publication base SHA", &lineage.publication_base_sha),
+        ("recorder schema version", &lineage.recorder_schema_version),
+        ("creation reason", &lineage.created_reason),
+    ] {
+        if value.trim().is_empty() {
+            bail!("landed lineage has empty {label}");
+        }
+    }
+    for (label, value) in [
+        ("measurement SHA", &lineage.measurement_sha),
+        ("publication SHA", &lineage.publication_sha),
+        ("landed SHA", &lineage.landed_sha),
+        ("publication base SHA", &lineage.publication_base_sha),
+    ] {
+        validate_git_sha(value, label)?;
+    }
+    validate_digest(&lineage.evidence_bundle_digest, "bundle digest")?;
+    if lineage.authoritative_artifacts.is_empty() {
+        bail!("landed lineage has no authoritative artifacts");
+    }
+    validate_publication_paths(&lineage.publication_paths)?;
+    for (path, digest) in &lineage.authoritative_artifacts {
+        validate_public_path(path, "authoritative artifact path")?;
+        validate_digest(digest, "authoritative artifact digest")?;
+        if lineage.publication_paths.iter().all(|published| published != path) {
+            bail!("authoritative artifact {path} is absent from publication paths");
+        }
+    }
+    Ok(())
+}
+
+fn validate_bundle_identity(root: &Path, bundle_path: &str, lineage: &LandedLineage) -> Result<()> {
+    let bytes = git_blob_at(root, &lineage.landed_sha, bundle_path)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .with_context(|| format!("decoding observation bundle {bundle_path}"))?;
+    let bundle_id = value.get("bundle_id").and_then(serde_json::Value::as_str).unwrap_or("");
+    let bundle_digest =
+        value.get("bundle_digest").and_then(serde_json::Value::as_str).unwrap_or("");
+    if bundle_id != lineage.evidence_bundle_id || bundle_digest != lineage.evidence_bundle_digest {
+        bail!("observation bundle identity does not match landed lineage");
+    }
+    Ok(())
+}
+
+fn validate_accepted_baseline(
+    root: &Path,
+    entry: &CurrentAuthorityEntry,
+    lineage: &LandedLineage,
+) -> Result<()> {
+    let Some(path) = &entry.accepted_baseline_path else {
+        if entry.accepted_baseline_digest.is_some()
+            || entry.accepted_baseline_evidence_bundle.is_some()
+        {
+            bail!("accepted baseline metadata exists without an accepted baseline path");
+        }
+        return Ok(());
+    };
+    let bytes = git_blob_at(root, &lineage.landed_sha, path)?;
+    let actual_digest = sha256_digest_bytes(&bytes);
+    if entry.accepted_baseline_digest.as_deref() != Some(actual_digest.as_str())
+        || lineage.accepted_baseline_digest.as_deref() != Some(actual_digest.as_str())
+    {
+        bail!("accepted baseline {} digest is not bound to lineage", path);
+    }
+    if lineage.authoritative_artifacts.get(path) != Some(&actual_digest) {
+        bail!("accepted baseline {} is absent or mismatched in authoritative artifacts", path);
+    }
+    let baseline: CompileBaselineV2 = serde_json::from_slice(&bytes)
+        .with_context(|| format!("decoding accepted baseline {path}"))?;
+    if baseline.series_id != entry.series_id
+        || baseline.manifest_hash != entry.manifest_hash
+        || baseline.accepted_transition_id != entry.accepted_transition_id
+        || baseline.evidence_bundle.as_ref() != entry.accepted_baseline_evidence_bundle.as_ref()
+    {
+        bail!("accepted baseline {} disagrees with current authority", path);
+    }
+    Ok(())
+}
+
+fn validate_artifact_digests(
+    root: &Path,
+    index_path: &Path,
+    lineage_path: &Path,
+    lineage: &LandedLineage,
+) -> Result<()> {
+    for path in lineage.authoritative_artifacts.keys() {
+        let resolved = resolve_repo_path(root, path)?;
+        if same_path(&resolved, index_path) || same_path(&resolved, lineage_path) {
+            bail!("authority artifacts cannot self-reference lineage or index");
+        }
+        let expected = lineage.authoritative_artifacts.get(path).ok_or_else(|| {
+            color_eyre::eyre::eyre!("missing digest for authoritative artifact {path}")
+        })?;
+        let actual = sha256_digest_bytes(&git_blob_at(root, &lineage.landed_sha, path)?);
+        if actual != *expected {
+            bail!("authoritative artifact {path} differs at landed SHA");
+        }
+    }
+    Ok(())
+}
+
+fn validate_publication_paths(paths: &[String]) -> Result<()> {
+    if paths.is_empty() {
+        bail!("publication lineage has no changed paths");
+    }
+    for path in paths {
+        validate_public_path(path, "publication path")?;
+        let normalized = path.replace('\\', "/");
+        let approved = normalized.starts_with(".ci/perl-core-harness/")
+            || normalized.starts_with("evidence/")
+            || normalized.starts_with("reports/")
+            || normalized.starts_with("docs/project/status/")
+            || normalized.starts_with("docs/project/compatibility/")
+            || normalized.starts_with("plans/");
+        if !approved {
+            bail!("publication path {path} is outside the evidence-only allowlist");
+        }
+    }
+    Ok(())
+}
+
+fn validate_git_sha(value: &str, label: &str) -> Result<()> {
+    if value.len() != 40 && value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        bail!("{label} must be a 40- or 64-character hexadecimal SHA");
+    }
+    Ok(())
+}
+
+fn validate_git_commit(root: &Path, sha: &str) -> Result<()> {
+    let object = format!("{sha}^{{commit}}");
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["cat-file", "-e", &object])
+        .output()
+        .with_context(|| format!("checking landed commit {sha}"))?;
+    if !output.status.success() {
+        bail!("landed SHA {sha} is not a reachable commit in {}", root.display());
+    }
+    Ok(())
+}
+
+fn git_blob_at(root: &Path, commit: &str, path: &str) -> Result<Vec<u8>> {
+    validate_public_path(path, "Git artifact path")?;
+    let object = format!("{commit}:{}", path.replace('\\', "/"));
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["show", &object])
+        .output()
+        .with_context(|| format!("reading Git artifact {object}"))?;
+    if !output.status.success() {
+        bail!(
+            "landed SHA {commit} does not contain Git artifact {path}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(output.stdout)
+}
+
+fn validate_digest(value: &str, label: &str) -> Result<()> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        bail!("{label} must use the sha256:<hex> format");
+    };
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("{label} must contain 64 hexadecimal characters");
+    }
+    Ok(())
+}
+
+fn resolve_repo_path(root: &Path, value: &str) -> Result<PathBuf> {
+    validate_public_path(value, "repository-relative path")?;
+    let path = root.join(value.replace('\\', "/"));
+    Ok(path)
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn sha256_digest_bytes(bytes: &[u8]) -> String {
+    format!("sha256:{}", hex_lower(&Sha256::digest(bytes)))
+}
 fn validate_cluster_history_shape(history: &FailureClusterHistory) -> Vec<String> {
     let mut violations = Vec::new();
     if history.schema_version != FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION {
@@ -8152,5 +8501,217 @@ exit 1
         fs::write(&runner, body)?;
         set_executable(&runner)?;
         Ok(runner)
+    }
+    fn current_authority_fixture() -> TestResult<(tempfile::TempDir, CurrentAuthorityConfig)> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().to_path_buf();
+        fs::create_dir_all(root.join(".ci/perl-core-harness"))?;
+        let bundle_relative = ".ci/perl-core-harness/base-bundle.json";
+        let report_relative = ".ci/perl-core-harness/base-report.json";
+        let baseline_relative = ".ci/perl-core-harness/base-baseline.json";
+        let lineage_relative = ".ci/perl-core-harness/base-lineage.json";
+        let index_relative = ".ci/perl-core-harness/current-authority.json";
+        let bundle_digest = format!("sha256:{}", "b".repeat(64));
+        fs::write(
+            root.join(bundle_relative),
+            serde_json::to_vec(&serde_json::json!({
+                "bundle_id": "bundle-base",
+                "bundle_digest": bundle_digest,
+            }))?,
+        )?;
+        fs::write(root.join(report_relative), b"normalized report\n")?;
+        fs::write(
+            root.join(baseline_relative),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": "perl_core_harness.compile_baseline.v2",
+                "report_schema_version": RUN_REPORT_SCHEMA_VERSION,
+                "series_id": "selected-base-perl-5.42.2",
+                "manifest_hash": "manifest-base",
+                "repository_commit": "repo-base",
+                "perl_resolved_ref": "perl-base",
+                "preparation_receipt_id": "prepare-base",
+                "compiler_subject_identity": "compiler-base",
+                "invocation_identity": "invocation-base",
+                "capability_identity": "capability-base",
+                "environment_identity": "environment-base",
+                "source_report_digest": sha256_digest_bytes(&fs::read(root.join(report_relative))?),
+                "accepted_transition_id": null,
+                "evidence_bundle": "accepted-bundle-base",
+                "mode": "compile",
+                "profile": "base",
+                "runner": "test",
+                "file_membership": [],
+                "files_total": 0,
+                "files_passed": 0,
+                "files_failed": 0,
+                "tap_assertions_total": 0,
+                "tap_assertions_passed": 0,
+                "buckets": {},
+                "expected_failures": [],
+                "file_results": [],
+                "semantic_boundaries": [],
+                "boundary_retirements": []
+            }))?,
+        )?;
+        let run_git = |args: &[&str]| -> TestResult<String> {
+            let output = Command::new("git").arg("-C").arg(&root).args(args).output()?;
+            if !output.status.success() {
+                bail!(
+                    "fixture git command {:?} failed: {}",
+                    args,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            Ok(String::from_utf8(output.stdout)?.trim().to_string())
+        };
+        run_git(&["init", "--quiet"])?;
+        run_git(&["config", "user.email", "compiler-harness@example.invalid"])?;
+        run_git(&["config", "user.name", "Compiler Harness Fixture"])?;
+        run_git(&["add", ".ci/perl-core-harness"])?;
+        run_git(&["commit", "--quiet", "-m", "fixture authority"])?;
+        let landed_sha = run_git(&["rev-parse", "HEAD"])?;
+        let mut authoritative_artifacts = BTreeMap::new();
+        for path in [bundle_relative, report_relative, baseline_relative] {
+            authoritative_artifacts
+                .insert(path.to_string(), sha256_digest_bytes(&fs::read(root.join(path))?));
+        }
+        let lineage = LandedLineage {
+            schema_version: LANDED_LINEAGE_SCHEMA_VERSION.into(),
+            series_id: "selected-base-perl-5.42.2".into(),
+            profile: HarnessProfile::Base,
+            manifest_hash: "manifest-base".into(),
+            evidence_bundle_id: "bundle-base".into(),
+            evidence_bundle_digest: bundle_digest,
+            measurement_sha: "a".repeat(40),
+            publication_sha: "b".repeat(40),
+            landed_sha,
+            publication_base_sha: "d".repeat(40),
+            authoritative_artifacts,
+            publication_paths: vec![
+                bundle_relative.into(),
+                report_relative.into(),
+                baseline_relative.into(),
+            ],
+            accepted_transition_id: None,
+            accepted_baseline_digest: Some(sha256_digest_bytes(&fs::read(
+                root.join(baseline_relative),
+            )?)),
+            accepted_baseline_evidence_bundle: Some("accepted-bundle-base".into()),
+            observation_transition: CompatibilityTransition::NoChange,
+            recorder_schema_version: LANDED_LINEAGE_SCHEMA_VERSION.into(),
+            created_reason: "post-merge lineage binding".into(),
+            supersedes: None,
+        };
+        fs::write(root.join(lineage_relative), serde_json::to_vec_pretty(&lineage)?)?;
+        let index = CurrentAuthorityIndex {
+            schema_version: CURRENT_AUTHORITY_INDEX_SCHEMA_VERSION.into(),
+            entries: vec![CurrentAuthorityEntry {
+                series_id: lineage.series_id.clone(),
+                profile: lineage.profile,
+                manifest_hash: lineage.manifest_hash.clone(),
+                observation_bundle_path: bundle_relative.into(),
+                observation_bundle_id: lineage.evidence_bundle_id.clone(),
+                observation_bundle_digest: lineage.evidence_bundle_digest.clone(),
+                observation_transition: lineage.observation_transition,
+                accepted_baseline_path: Some(baseline_relative.into()),
+                accepted_baseline_digest: lineage.accepted_baseline_digest.clone(),
+                accepted_baseline_evidence_bundle: lineage
+                    .accepted_baseline_evidence_bundle
+                    .clone(),
+                accepted_transition_id: None,
+                landed_lineage_path: lineage_relative.into(),
+                status: CurrentAuthorityStatus::Current,
+                claim_boundary: "parse_compile_acceptance".into(),
+                unavailable_rails: vec!["execution".into(), "curated_gold".into()],
+            }],
+        };
+        fs::write(root.join(index_relative), serde_json::to_vec_pretty(&index)?)?;
+        Ok((
+            temp,
+            CurrentAuthorityConfig {
+                index: root.join(index_relative),
+                lineages: vec![root.join(lineage_relative)],
+                repository_root: root.to_path_buf(),
+                landed_sha: lineage.landed_sha.clone(),
+            },
+        ))
+    }
+
+    #[test]
+    fn current_authority_validates_landed_lineage_and_artifact_digests() -> TestResult {
+        let (_temp, config) = current_authority_fixture()?;
+        validate_current_authority(config)?;
+        Ok(())
+    }
+
+    #[test]
+    fn current_authority_rejects_wrong_landed_sha() -> TestResult {
+        let (_temp, mut config) = current_authority_fixture()?;
+        config.landed_sha = "e".repeat(40);
+        let error = validate_current_authority(config)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("wrong landed SHA was accepted"))?;
+        if !error.to_string().contains("landed SHA") {
+            bail!("wrong landed SHA produced an unclear error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn current_authority_uses_landed_git_blobs_not_worktree() -> TestResult {
+        let (_temp, config) = current_authority_fixture()?;
+        fs::write(
+            config.repository_root.join(".ci/perl-core-harness/base-report.json"),
+            b"changed report\n",
+        )?;
+        validate_current_authority(config)?;
+        Ok(())
+    }
+
+    #[test]
+    fn current_authority_allows_historical_observations_for_one_series() -> TestResult {
+        let (_temp, mut config) = current_authority_fixture()?;
+        let index: CurrentAuthorityIndex = read_json(&config.index, "current-authority index")?;
+        let current = index
+            .entries
+            .first()
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no current entry"))?;
+        let current_lineage_path = config
+            .lineages
+            .first()
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no lineage"))?;
+        let mut historical_lineage: LandedLineage =
+            read_json(&current_lineage_path, "landed lineage")?;
+        historical_lineage.observation_transition = CompatibilityTransition::Historical;
+        historical_lineage.supersedes = Some(current_lineage_path.display().to_string());
+        let historical_lineage_path =
+            config.repository_root.join(".ci/perl-core-harness/base-historical-lineage.json");
+        fs::write(&historical_lineage_path, serde_json::to_vec_pretty(&historical_lineage)?)?;
+        let mut historical = current.clone();
+        historical.observation_transition = CompatibilityTransition::Historical;
+        historical.landed_lineage_path =
+            ".ci/perl-core-harness/base-historical-lineage.json".into();
+        historical.status = CurrentAuthorityStatus::Historical;
+        let index = CurrentAuthorityIndex {
+            schema_version: index.schema_version,
+            entries: vec![current, historical],
+        };
+        fs::write(&config.index, serde_json::to_vec_pretty(&index)?)?;
+        config.lineages.push(historical_lineage_path);
+        validate_current_authority(config)?;
+        Ok(())
+    }
+
+    #[test]
+    fn current_authority_rejects_measured_code_publication_path() -> TestResult {
+        let error = validate_publication_paths(&["crates/perl-parser/src/lib.rs".into()])
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("measured code path was accepted"))?;
+        if !error.to_string().contains("evidence-only allowlist") {
+            bail!("measured code path produced an unclear error: {error}");
+        }
+        Ok(())
     }
 }
