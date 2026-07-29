@@ -1860,19 +1860,45 @@ Not found in workspace or configured include paths.
     /// Get hover documentation for common Perl operators. (UX_GAP_06)
     fn get_operator_hover(op: &str) -> Option<String> {
         let doc = match op {
-            "=>" => "**Fat Comma Operator**\n\nAuto-quotes the bareword on its left. `key => value` is equivalent to `'key', value`.",
-            "=~" => "**Binding Operator**\n\nBinds a scalar expression to a pattern match: `$str =~ /pattern/` or `$str =~ s/old/new/`.",
-            "!~" => "**Negated Binding Operator**\n\nLike `=~` but returns the negation of the match result.",
-            "->" => "**Arrow (Dereference) Operator**\n\nDereferences a reference: `$arr->[0]`, `$hash->{key}`, `$obj->method()`.",
-            ".." => "**Range Operator**\n\nIn list context: `1..10` generates 1 through 10. In scalar context: boolean flip-flop.",
-            "..." => "**Yada Yada Operator**\n\nPlaceholder for unimplemented code. Always throws an exception when executed.",
-            "**" => "**Exponentiation Operator**\n\n`$base ** $exp` raises `$base` to the power of `$exp`.",
-            "//" => "**Defined-Or Operator**\n\n`$a // $b` returns `$a` if defined, otherwise `$b`.",
-            "//=" => "**Defined-Or Assignment**\n\n`$a //= $b` assigns `$b` to `$a` only if `$a` is undefined.",
-            "||=" => "**Logical-Or Assignment**\n\n`$a ||= $b` assigns `$b` to `$a` only if `$a` is false.",
-            "&&=" => "**Logical-And Assignment**\n\n`$a &&= $b` assigns `$b` to `$a` only if `$a` is true.",
-            "<=>" => "**Spaceship Operator**\n\nReturns -1, 0, or 1 depending on whether `$a` is less than, equal to, or greater than `$b`.",
-            "cmp" => "**String Comparison (cmp)**\n\nReturns -1, 0, or 1 for string comparison. `$a cmp $b`.",
+            "=>" => {
+                "**Fat Comma Operator**\n\nAuto-quotes the bareword on its left. `key => value` is equivalent to `'key', value`."
+            }
+            "=~" => {
+                "**Binding Operator**\n\nBinds a scalar expression to a pattern match: `$str =~ /pattern/` or `$str =~ s/old/new/`."
+            }
+            "!~" => {
+                "**Negated Binding Operator**\n\nLike `=~` but returns the negation of the match result."
+            }
+            "->" => {
+                "**Arrow (Dereference) Operator**\n\nDereferences a reference: `$arr->[0]`, `$hash->{key}`, `$obj->method()`."
+            }
+            ".." => {
+                "**Range Operator**\n\nIn list context: `1..10` generates 1 through 10. In scalar context: boolean flip-flop."
+            }
+            "..." => {
+                "**Yada Yada Operator**\n\nPlaceholder for unimplemented code. Always throws an exception when executed."
+            }
+            "**" => {
+                "**Exponentiation Operator**\n\n`$base ** $exp` raises `$base` to the power of `$exp`."
+            }
+            "//" => {
+                "**Defined-Or Operator**\n\n`$a // $b` returns `$a` if defined, otherwise `$b`."
+            }
+            "//=" => {
+                "**Defined-Or Assignment**\n\n`$a //= $b` assigns `$b` to `$a` only if `$a` is undefined."
+            }
+            "||=" => {
+                "**Logical-Or Assignment**\n\n`$a ||= $b` assigns `$b` to `$a` only if `$a` is false."
+            }
+            "&&=" => {
+                "**Logical-And Assignment**\n\n`$a &&= $b` assigns `$b` to `$a` only if `$a` is true."
+            }
+            "<=>" => {
+                "**Spaceship Operator**\n\nReturns -1, 0, or 1 depending on whether `$a` is less than, equal to, or greater than `$b`."
+            }
+            "cmp" => {
+                "**String Comparison (cmp)**\n\nReturns -1, 0, or 1 for string comparison. `$a cmp $b`."
+            }
             _ => return None,
         };
         Some(doc.to_string())
@@ -1881,17 +1907,39 @@ Not found in workspace or configured include paths.
     /// Get hover documentation for Perl keywords. (UX_GAP_07)
     fn get_keyword_hover(kw: &str) -> Option<String> {
         let doc = match kw {
-            "sub" => "**`sub`**\n\nDeclare a named or anonymous subroutine.\n\n```perl\nsub greet {\n    my ($name) = @_;\n    print \"Hello, $name!\\n\";\n}\n```",
-            "package" => "**`package`**\n\nDeclare a namespace. All identifiers until the next `package` or end of scope belong to this package.\n\n```perl\npackage MyModule;\n```\nuse strict;\nuse warnings;\n```",
-            "use" => "**`use`**\n\nLoad a module at compile time and import its functions.\n\n```perl\nuse List::Util qw(sum max);\n```",
-            "my" => "**`my`**\n\nDeclare a lexically-scoped variable.\n\n```perl\nmy $scalar = 42;\nmy @array = (1, 2, 3);\n```",
-            "our" => "**`our`**\n\nDeclare a package variable that is lexically accessible.\n\n```perl\nour $VERSION = '1.00';\n```",
-            "if" => "**`if`**\n\nConditional statement.\n\n```perl\nif ($cond) { ... } elsif ($other) { ... } else { ... }\n```",
-            "while" => "**`while`**\n\nLoop while a condition is true.\n\n```perl\nwhile (<$fh>) { print $_; }\n```",
-            "for" | "foreach" => "**`for`/`foreach`**\n\nLoop over a list or range.\n\n```perl\nfor my $item (@list) { ... }\nforeach (1..10) { print $_; }\n```",
-            "return" => "**`return`**\n\nReturn from a subroutine with an optional value.\n\n```perl\nsub add { return $_[0] + $_[1]; }\n```",
-            "eval" => "**`eval`**\n\nCatch exceptions. Block form catches `die`; string form compiles and runs code.\n\n```perl\neval { risky_call() };\nif ($@) { warn \"Failed: $@\"; }\n```",
-            "do" => "**`do`**\n\nExecute a block and return the last expression value, or load and run a file.\n\n```perl\nmy $result = do { calculation() };\n```",
+            "sub" => {
+                "**`sub`**\n\nDeclare a named or anonymous subroutine.\n\n```perl\nsub greet {\n    my ($name) = @_;\n    print \"Hello, $name!\\n\";\n}\n```"
+            }
+            "package" => {
+                "**`package`**\n\nDeclare a namespace. All identifiers until the next `package` or end of scope belong to this package.\n\n```perl\npackage MyModule;\n```\nuse strict;\nuse warnings;\n```"
+            }
+            "use" => {
+                "**`use`**\n\nLoad a module at compile time and import its functions.\n\n```perl\nuse List::Util qw(sum max);\n```"
+            }
+            "my" => {
+                "**`my`**\n\nDeclare a lexically-scoped variable.\n\n```perl\nmy $scalar = 42;\nmy @array = (1, 2, 3);\n```"
+            }
+            "our" => {
+                "**`our`**\n\nDeclare a package variable that is lexically accessible.\n\n```perl\nour $VERSION = '1.00';\n```"
+            }
+            "if" => {
+                "**`if`**\n\nConditional statement.\n\n```perl\nif ($cond) { ... } elsif ($other) { ... } else { ... }\n```"
+            }
+            "while" => {
+                "**`while`**\n\nLoop while a condition is true.\n\n```perl\nwhile (<$fh>) { print $_; }\n```"
+            }
+            "for" | "foreach" => {
+                "**`for`/`foreach`**\n\nLoop over a list or range.\n\n```perl\nfor my $item (@list) { ... }\nforeach (1..10) { print $_; }\n```"
+            }
+            "return" => {
+                "**`return`**\n\nReturn from a subroutine with an optional value.\n\n```perl\nsub add { return $_[0] + $_[1]; }\n```"
+            }
+            "eval" => {
+                "**`eval`**\n\nCatch exceptions. Block form catches `die`; string form compiles and runs code.\n\n```perl\neval { risky_call() };\nif ($@) { warn \"Failed: $@\"; }\n```"
+            }
+            "do" => {
+                "**`do`**\n\nExecute a block and return the last expression value, or load and run a file.\n\n```perl\nmy $result = do { calculation() };\n```"
+            }
             _ => return None,
         };
         Some(doc.to_string())
