@@ -64,7 +64,7 @@ A current source-grounded problem statement, vision-aligned scope, and plan adeq
 
 Implementation correctness, proof quality, production reachability, review currentness, or merge readiness.
 
-## Valid exits
+## Routes
 
 - `PLAN_READY` → `$prepare-proof`
 - `SPEC_REQUIRED` → `$compile-spec`, then `$prepare-proof`
