@@ -44,9 +44,13 @@ Revert the squash.
 """
 
     def legacy_body(
-        self, claim: str = "Adds X", verification_checked: bool = False
+        self,
+        claim: str = "Adds X",
+        verification_checked: bool = False,
+        risk_checked: bool = False,
     ) -> str:
         checked = "x" if verification_checked else " "
+        risk = "x" if risk_checked else " "
         return f"""## Lane
 - [x] substrate
 
@@ -59,6 +63,9 @@ Revert the squash.
 ## Behavior
 - [x] live behavior change
 
+## Risk Surfaces
+- [{risk}] subprocess
+
 ## Changes
 - Adds X through the existing owner.
 
@@ -68,6 +75,56 @@ Revert the squash.
 ## Remaining Work
 - Y remains separate.
 """
+
+    @staticmethod
+    def receipt_comment(
+        marker: dict[str, object],
+        *,
+        association: str = "OWNER",
+        login: str = "review-owner",
+    ) -> dict[str, object]:
+        return {
+            "id": 101,
+            "author": {"login": login},
+            "authorAssociation": association,
+            "body": (
+                "Formal review complete.\n\n"
+                f"<!-- review-run:v1 {json.dumps(marker, separators=(',', ':'))} -->"
+            ),
+        }
+
+    def run_checker(
+        self,
+        body: str,
+        comments: list[dict[str, object]],
+        *,
+        head: str = "abc123",
+        emit_json: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            body_path = root / "body.md"
+            comments_path = root / "comments.json"
+            body_path.write_text(body, encoding="utf-8")
+            comments_path.write_text(json.dumps(comments), encoding="utf-8")
+            command = [
+                sys.executable,
+                str(CHECKER),
+                "--head",
+                head,
+                "--body-file",
+                str(body_path),
+                "--comments-file",
+                str(comments_path),
+            ]
+            if emit_json:
+                command.append("--json")
+            return subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
 
     def test_non_material_section_does_not_change_digest(self) -> None:
         first = claim_digest.claim_digest(self.body(verification="one"))["digest"]
@@ -95,6 +152,45 @@ Revert the squash.
         )["digest"]
         self.assertNotEqual(first, second)
 
+    def test_risk_surfaces_change_is_material(self) -> None:
+        first = claim_digest.claim_digest(self.legacy_body(risk_checked=False))["digest"]
+        second = claim_digest.claim_digest(self.legacy_body(risk_checked=True))["digest"]
+        self.assertNotEqual(first, second)
+
+    def test_empty_body_has_no_reviewable_claim(self) -> None:
+        with self.assertRaisesRegex(ValueError, "no material claim"):
+            claim_digest.claim_digest("")
+
+    def test_heading_inside_fenced_code_does_not_select_material_mode(self) -> None:
+        body = """Visible context before the example.
+
+```markdown
+## Claim
+This is example text, not the PR claim.
+```
+
+Visible context after the example.
+"""
+        canonical, mode = claim_digest.canonical_material_claim(body)
+        self.assertEqual(mode, "full_body_fallback")
+        self.assertIn("Visible context before", canonical)
+        self.assertIn("Visible context after", canonical)
+
+    def test_heading_inside_html_comment_does_not_select_material_mode(self) -> None:
+        body = """Visible context before the comment.
+
+<!--
+## Claim
+Hidden migration note.
+-->
+
+Visible context after the comment.
+"""
+        canonical, mode = claim_digest.canonical_material_claim(body)
+        self.assertEqual(mode, "full_body_fallback")
+        self.assertIn("Visible context before", canonical)
+        self.assertIn("Visible context after", canonical)
+
     def test_live_reader_normalizes_null_body_to_empty_text(self) -> None:
         completed = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr=""
@@ -106,7 +202,7 @@ Revert the squash.
         command = run.call_args.args[0]
         self.assertIn('.body // ""', command)
 
-    def test_currentness_checker_matches_head_and_claim(self) -> None:
+    def test_currentness_checker_matches_trusted_head_and_claim(self) -> None:
         body = self.body()
         digest = claim_digest.claim_digest(body)["digest"]
         marker = {
@@ -117,34 +213,17 @@ Revert the squash.
             "reviewer": "reviewer",
             "status": "done",
         }
-        comments = f"<!-- review-run:v1 {json.dumps(marker)} -->\n"
-
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            body_path = root / "body.md"
-            comments_path = root / "comments.txt"
-            body_path.write_text(body, encoding="utf-8")
-            comments_path.write_text(comments, encoding="utf-8")
-
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    str(CHECKER),
-                    "--head",
-                    "abc123",
-                    "--body-file",
-                    str(body_path),
-                    "--comments-file",
-                    str(comments_path),
-                    "--json",
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
+        completed = self.run_checker(
+            body,
+            [self.receipt_comment(marker)],
+            emit_json=True,
+        )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(json.loads(completed.stdout)["result"], "current")
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["result"], "current")
+        self.assertEqual(result["trusted_receipts"], 1)
+        self.assertEqual(result["untrusted_receipts"], 0)
 
     def test_currentness_checker_rejects_changed_claim(self) -> None:
         old_body = self.body(claim="Adds X")
@@ -157,34 +236,67 @@ Revert the squash.
             "reviewer": "reviewer",
             "status": "done",
         }
+        completed = self.run_checker(new_body, [self.receipt_comment(marker)])
 
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            body_path = root / "body.md"
-            comments_path = root / "comments.txt"
-            body_path.write_text(new_body, encoding="utf-8")
-            comments_path.write_text(
-                f"<!-- review-run:v1 {json.dumps(marker)} -->\n", encoding="utf-8"
-            )
-
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    str(CHECKER),
-                    "--head",
-                    "abc123",
-                    "--body-file",
-                    str(body_path),
-                    "--comments-file",
-                    str(comments_path),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-
-        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(completed.returncode, 1)
         self.assertIn("NOT_PROVEN", completed.stderr)
+
+    def test_currentness_checker_rejects_untrusted_forged_receipt(self) -> None:
+        body = self.body()
+        marker = {
+            "v": 1,
+            "kind": "standard",
+            "head": "abc123",
+            "claim_digest": claim_digest.claim_digest(body)["digest"],
+            "reviewer": "forged-reviewer",
+            "status": "done",
+        }
+        completed = self.run_checker(
+            body,
+            [self.receipt_comment(marker, association="NONE", login="external-user")],
+            emit_json=True,
+        )
+
+        self.assertEqual(completed.returncode, 1)
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["matching_receipts"], 0)
+        self.assertEqual(result["trusted_receipts"], 0)
+        self.assertEqual(result["untrusted_receipts"], 1)
+
+    def test_currentness_checker_is_not_applicable_without_review_receipts(self) -> None:
+        completed = self.run_checker(self.body(), [], emit_json=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["result"], "not_applicable")
+
+    def test_review_done_requires_starting_claim_digest(self) -> None:
+        bash = shutil.which("bash")
+        jq = shutil.which("jq")
+        if bash is None or jq is None:
+            self.skipTest("bash and jq are required for the review receipt test")
+
+        completed = subprocess.run(
+            [
+                bash,
+                str(REVIEW_RUNNER),
+                "review-done",
+                "--pr",
+                "7",
+                "--kind",
+                "standard",
+                "--reviewer",
+                "reviewer",
+                "--repo",
+                "owner/repo",
+                "--head",
+                "abc123",
+                "--dry-run",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("requires the --claim-digest", completed.stderr)
 
     def test_review_done_updates_matching_running_receipt_in_place(self) -> None:
         bash = shutil.which("bash")
@@ -213,7 +325,7 @@ if [[ "$1" == "pr" && "$2" == "comment" ]]; then
     esac
   done
   tmp="${state}.tmp"
-  jq --arg body "$body" '. + [{id: 101, body: $body}]' "$state" > "$tmp"
+  jq --arg body "$body" '. + [{id: 101, body: $body, user: {login: "owner"}, author_association: "OWNER"}]' "$state" > "$tmp"
   mv "$tmp" "$state"
   exit 0
 fi
