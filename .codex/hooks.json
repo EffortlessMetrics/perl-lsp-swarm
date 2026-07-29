@@ -11,21 +11,6 @@
         ]
       }
     ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write|NotebookEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "if [[ \"$CLAUDE_FILE_PATH\" == *.rs ]]; then cargo +1.92.0 fmt -- \"$CLAUDE_FILE_PATH\" 2>/dev/null || cargo fmt -- \"$CLAUDE_FILE_PATH\" 2>/dev/null || true; fi"
-          },
-          {
-            "type": "command",
-            "command": "if [[ \"$CLAUDE_FILE_PATH\" == *.rs ]]; then cargo check --quiet --message-format=short 2>&1 | head -20 || true; fi"
-          }
-        ]
-      }
-    ],
     "SessionStart": [
       {
         "matcher": "compact",
