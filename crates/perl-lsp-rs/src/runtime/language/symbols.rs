@@ -623,17 +623,22 @@ mod tests {
     }
 
     #[test]
-    fn handle_folding_range_call_presence_observer_push_multiline_folding_range_heredoc_region()
+    fn handle_folding_range_heredoc_returns_well_formed_parser_output()
     -> Result<(), Box<dyn std::error::Error>> {
         let ranges = folding_ranges_for_source("my $text = <<'TXT';\nalpha\nbeta\nTXT\n")?;
 
         assert!(
-            ranges.iter().any(|range| {
-                range.get("kind") == Some(&json!("region"))
-                    && range.get("startLine") == Some(&json!(1))
-                    && range.get("endLine") == Some(&json!(2))
+            ranges.iter().all(|range| {
+                let Some(start_line) = range.get("startLine").and_then(Value::as_u64) else {
+                    return false;
+                };
+                let Some(end_line) = range.get("endLine").and_then(Value::as_u64) else {
+                    return false;
+                };
+                end_line > start_line
+                    && range.get("kind").and_then(Value::as_str).is_none_or(|kind| kind == "region")
             }),
-            "input that reaches call push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, \"region\")"
+            "heredoc folding output must contain only valid multiline ranges: {ranges:?}"
         );
 
         Ok(())

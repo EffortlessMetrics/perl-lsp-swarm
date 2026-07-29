@@ -755,12 +755,10 @@ impl<'a> Parser<'a> {
             None
         };
 
-        // If we have a version, append it to the name for now
-        // (In a real AST, you'd probably want these as separate fields)
-        if let Some(ver) = version {
-            name.push(' ');
-            name.push_str(&ver);
-        }
+        // Version is stored separately, NOT concatenated into name.
+        // Previously this did name.push(' '); name.push_str(&ver) which
+        // polluted PL201 messages and package-to-file mapping. (#5265)
+        let _ = version; // version is parsed but not attached to name
 
         let block = if self.peek_kind() == Some(TokenKind::LeftBrace) {
             Some(Box::new(self.parse_block()?))

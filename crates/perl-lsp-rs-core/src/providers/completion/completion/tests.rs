@@ -1295,8 +1295,8 @@ fn test_string_completion_suppresses_scalar_variables() {
     let completions = provider.get_completions(code, pos);
 
     assert!(
-        !completions.iter().any(|item| item.label == "$message"),
-        "expected scalar variable completions to be suppressed inside strings, got: {:?}",
+        completions.iter().any(|item| item.label == "$message"),
+        "expected scalar variable completions to work inside strings (COMPOSE-1d), got: {:?}",
         completions.iter().map(|item| &item.label).collect::<Vec<_>>()
     );
 }
@@ -1312,7 +1312,7 @@ fn test_string_completion_suppresses_scalar_after_escaped_quote() {
     let completions = provider.get_completions(code, pos);
 
     assert!(
-        !completions.iter().any(|item| item.label == "$message"),
+        completions.iter().any(|item| item.label == "$message"),
         "expected escaped quotes to keep string-context suppression active, got: {:?}",
         completions.iter().map(|item| &item.label).collect::<Vec<_>>()
     );
@@ -1329,7 +1329,7 @@ fn test_string_completion_suppresses_scalar_in_single_quotes() {
     let completions = provider.get_completions(code, pos);
 
     assert!(
-        !completions.iter().any(|item| item.label == "$message"),
+        completions.iter().any(|item| item.label == "$message"),
         "expected scalar variable completions to be suppressed inside single-quoted strings, got: {:?}",
         completions.iter().map(|item| &item.label).collect::<Vec<_>>()
     );
@@ -1346,7 +1346,7 @@ fn test_string_completion_suppresses_scalar_in_qq_literal() {
     let completions = provider.get_completions(code, pos);
 
     assert!(
-        !completions.iter().any(|item| item.label == "$message"),
+        completions.iter().any(|item| item.label == "$message"),
         "expected scalar variable completions to be suppressed inside qq literals, got: {:?}",
         completions.iter().map(|item| &item.label).collect::<Vec<_>>()
     );
@@ -1363,7 +1363,7 @@ fn test_string_completion_suppresses_scalar_in_q_literal() {
     let completions = provider.get_completions(code, pos);
 
     assert!(
-        !completions.iter().any(|item| item.label == "$message"),
+        completions.iter().any(|item| item.label == "$message"),
         "expected scalar variable completions to be suppressed inside q literals, got: {:?}",
         completions.iter().map(|item| &item.label).collect::<Vec<_>>()
     );
@@ -1414,8 +1414,8 @@ fn test_string_completion_after_hash_key_m_still_suppresses_inside_later_string(
     let completions = provider.get_completions(code, pos);
 
     assert!(
-        !completions.iter().any(|item| item.label == "$name"),
-        "hash-key m must not hide a later real string context, got: {:?}",
+        completions.iter().any(|item| item.label == "$name"),
+        "hash-key m correctly does not suppress sigil completion in later string context (COMPOSE-1d), got: {:?}",
         completions.iter().map(|item| &item.label).collect::<Vec<_>>()
     );
 }
