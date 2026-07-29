@@ -22,9 +22,7 @@ use perl_lexer::builtins::phf_lookup::{
 fn phf_map_entries_all_have_static_lifetime_keys() {
     // Every key in the PHF map should be a non-empty &'static str.
     for (key, _) in BUILTIN_SIGS.entries() {
-        if key.is_empty() {
-            panic!("Found empty key in BUILTIN_SIGS");
-        }
+        assert!(!key.is_empty(), "Found empty key in BUILTIN_SIGS");
     }
 }
 
@@ -32,9 +30,7 @@ fn phf_map_entries_all_have_static_lifetime_keys() {
 fn phf_map_entry_count_matches_iteration_count() {
     let iter_count = BUILTIN_SIGS.entries().count();
     let len = BUILTIN_SIGS.len();
-    if iter_count != len {
-        panic!("entries().count()={iter_count} but len()={len}");
-    }
+    assert_eq!(iter_count, len, "entries().count()={iter_count} but len()={len}");
 }
 
 #[test]
@@ -312,9 +308,7 @@ fn hashmap_open_variants_ordered_most_specific_first() -> Result<(), String> {
 fn is_builtin_rejects_whitespace_variations() {
     let whitespace_names = [" print", "print ", " print ", "\tprint", "print\n", "\nprint"];
     for name in &whitespace_names {
-        if is_builtin(name) {
-            panic!("{name:?} with whitespace should not be a builtin");
-        }
+        assert!(!is_builtin(name), "{name:?} with whitespace should not be a builtin");
     }
 }
 
@@ -322,9 +316,7 @@ fn is_builtin_rejects_whitespace_variations() {
 fn is_builtin_rejects_partial_names() {
     let partials = ["pri", "prin", "ope", "chom", "splic"];
     for name in &partials {
-        if is_builtin(name) {
-            panic!("{name:?} (partial) should not be a builtin");
-        }
+        assert!(!is_builtin(name), "{name:?} (partial) should not be a builtin");
     }
 }
 
@@ -332,9 +324,7 @@ fn is_builtin_rejects_partial_names() {
 fn is_builtin_rejects_qualified_names() {
     let qualified = ["CORE::print", "main::open", "Perl::chomp"];
     for name in &qualified {
-        if is_builtin(name) {
-            panic!("{name:?} (qualified) should not be a builtin");
-        }
+        assert!(!is_builtin(name), "{name:?} (qualified) should not be a builtin");
     }
 }
 
@@ -342,35 +332,27 @@ fn is_builtin_rejects_qualified_names() {
 fn is_builtin_rejects_sigil_prefixed_names() {
     let sigiled = ["$print", "@push", "%keys", "&sort", "*open"];
     for name in &sigiled {
-        if is_builtin(name) {
-            panic!("{name:?} (sigil-prefixed) should not be a builtin");
-        }
+        assert!(!is_builtin(name), "{name:?} (sigil-prefixed) should not be a builtin");
     }
 }
 
 #[test]
 fn get_param_names_returns_empty_for_whitespace_input() {
     let params = get_param_names(" ");
-    if !params.is_empty() {
-        panic!("whitespace input should return empty params");
-    }
+    assert!(params.is_empty(), "whitespace input should return empty params");
 }
 
 #[test]
 fn get_param_names_returns_empty_for_newline_input() {
     let params = get_param_names("\n");
-    if !params.is_empty() {
-        panic!("newline input should return empty params");
-    }
+    assert!(params.is_empty(), "newline input should return empty params");
 }
 
 #[test]
 fn is_builtin_rejects_numeric_strings() {
     let numerics = ["0", "1", "42", "-1", "3.14"];
     for name in &numerics {
-        if is_builtin(name) {
-            panic!("{name:?} (numeric) should not be a builtin");
-        }
+        assert!(!is_builtin(name), "{name:?} (numeric) should not be a builtin");
     }
 }
 
@@ -378,9 +360,7 @@ fn is_builtin_rejects_numeric_strings() {
 fn is_builtin_rejects_special_chars() {
     let specials = ["!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "{}"];
     for name in &specials {
-        if is_builtin(name) {
-            panic!("{name:?} (special char) should not be a builtin");
-        }
+        assert!(!is_builtin(name), "{name:?} (special char) should not be a builtin");
     }
 }
 
@@ -759,18 +739,14 @@ fn builtin_count_includes_file_test_operators() {
     .iter()
     .filter(|op| is_builtin(op))
     .count();
-    if file_test_count != 27 {
-        panic!("Expected 27 file test operators, found {file_test_count}");
-    }
+    assert_eq!(file_test_count, 27, "Expected 27 file test operators, found {file_test_count}");
 }
 
 #[test]
 fn builtin_count_is_positive_and_stable() {
     let c1 = builtin_count();
     let c2 = builtin_count();
-    if c1 == 0 || c1 != c2 {
-        panic!("builtin_count should be positive and stable: c1={c1}, c2={c2}");
-    }
+    assert!(c1 > 0 && c1 == c2, "builtin_count should be positive and stable: c1={c1}, c2={c2}");
 }
 
 // ============================================================
@@ -779,49 +755,35 @@ fn builtin_count_is_positive_and_stable() {
 
 #[test]
 fn regression_sysopen_present() {
-    if !is_builtin("sysopen") {
-        panic!("sysopen should be a builtin");
-    }
+    assert!(is_builtin("sysopen"), "sysopen should be a builtin");
 }
 
 #[test]
 fn regression_readpipe_present() {
-    if !is_builtin("readpipe") {
-        panic!("readpipe should be a builtin");
-    }
+    assert!(is_builtin("readpipe"), "readpipe should be a builtin");
 }
 
 #[test]
 fn regression_sockatmark_present() {
-    if !is_builtin("sockatmark") {
-        panic!("sockatmark should be a builtin");
-    }
+    assert!(is_builtin("sockatmark"), "sockatmark should be a builtin");
 }
 
 #[test]
 fn regression_quotemeta_present() {
-    if !is_builtin("quotemeta") {
-        panic!("quotemeta should be a builtin");
-    }
+    assert!(is_builtin("quotemeta"), "quotemeta should be a builtin");
 }
 
 #[test]
 fn regression_fc_present() {
-    if !is_builtin("fc") {
-        panic!("fc (foldcase) should be a builtin");
-    }
+    assert!(is_builtin("fc"), "fc (foldcase) should be a builtin");
 }
 
 #[test]
 fn regression_state_present() {
-    if !is_builtin("state") {
-        panic!("state should be a builtin");
-    }
+    assert!(is_builtin("state"), "state should be a builtin");
 }
 
 #[test]
 fn regression_formline_present() {
-    if !is_builtin("formline") {
-        panic!("formline should be a builtin");
-    }
+    assert!(is_builtin("formline"), "formline should be a builtin");
 }

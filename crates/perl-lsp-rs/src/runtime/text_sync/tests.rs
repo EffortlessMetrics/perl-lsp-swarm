@@ -1799,6 +1799,58 @@ fn did_open_missing_text_returns_invalid_params() {
     }
 }
 
+/// A BOM supplied by an editor must not become part of the stored document
+/// text, because it would shift every UTF-16 column on the first line.
+#[test]
+fn did_open_strips_utf8_bom_before_storing_document_text() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = LspServer::new();
+    let uri = "file:///bom-editor-text.pl";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "\u{FEFF}my $value = 1;\n"
+        }
+    }))?;
+
+    let documents = server.documents.lock();
+    let document = documents.get(uri).ok_or("document was not stored after didOpen")?;
+    assert_eq!(document.text, "my $value = 1;\n");
+    assert!(!document.text.starts_with('\u{FEFF}'));
+    Ok(())
+}
+
+/// didOpen strips a BOM; a later range-less (full-document) didChange must
+/// not reintroduce it when the client resends BOM-prefixed text.
+#[test]
+fn did_open_then_full_did_change_keeps_bom_stripped() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///bom-full-sync.pl";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "\u{FEFF}my $value = 1;\n"
+        }
+    }))?;
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{ "text": "\u{FEFF}my $value = 2;\n" }]
+    })))?;
+
+    let documents = server.documents.lock();
+    let document = documents.get(uri).ok_or("document missing after full didChange")?;
+    assert_eq!(document.text, "my $value = 2;\n");
+    assert!(!document.text.starts_with('\u{FEFF}'));
+    Ok(())
+}
+
 /// did_open with a missing textDocument.uri field must return INVALID_PARAMS.
 #[test]
 fn did_open_missing_uri_returns_invalid_params() {

@@ -9,6 +9,7 @@ import {
   classifyConfigurationSetting,
   DEFAULT_INCLUDE_PATHS,
   hasExplicitPerlCriticOverrides,
+  machineScopedExternalIncludePaths,
   syncLanguageClientConfiguration,
   syncPerlCriticConfiguration,
 } from '../languageClientConfiguration';
@@ -38,6 +39,49 @@ describe('language client configuration', () => {
     expect(payload).toEqual({
       workspace: { includePaths: ['vendor/lib', 'local/lib/perl5'] },
     });
+  });
+
+  test('forwards machine-scoped external include paths from global settings only', () => {
+    const config = {
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'externalIncludePaths') {
+          return ['/opt/perl/lib'];
+        }
+        return defaultValue;
+      }),
+      inspect: jest.fn((key: string) =>
+        key === 'externalIncludePaths' ? { globalValue: ['/opt/perl/lib'] } : undefined,
+      ),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildWorkspaceConfigurationPayload(config)).toEqual({
+      workspace: { externalIncludePaths: ['/opt/perl/lib'] },
+    });
+  });
+
+  test('does not forward workspace attempts to set externalIncludePaths', () => {
+    const config = {
+      get: jest.fn((key: string, defaultValue?: unknown) => defaultValue),
+      inspect: jest.fn((key: string) =>
+        key === 'externalIncludePaths' ? { workspaceValue: ['/etc'] } : undefined,
+      ),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildWorkspaceConfigurationPayload(config)).toBeUndefined();
+    expect(machineScopedExternalIncludePaths(config)).toEqual([]);
+  });
+
+  test('machineScopedExternalIncludePaths returns only globalValue', () => {
+    const config = {
+      get: jest.fn(() => ['/workspace-should-not-win']),
+      inspect: jest.fn((key: string) =>
+        key === 'externalIncludePaths'
+          ? { globalValue: ['/opt/perl/lib'], workspaceValue: ['/etc'] }
+          : undefined,
+      ),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(machineScopedExternalIncludePaths(config)).toEqual(['/opt/perl/lib']);
   });
 
   test('combines workspace and critic settings under the canonical perl payload', () => {
@@ -156,6 +200,7 @@ describe('language client configuration', () => {
   test.each([
     ['perl-lsp.trace.server', 'live'],
     ['perl-lsp.includePaths', 'live'],
+    ['perl-lsp.externalIncludePaths', 'live'],
     ['perl-lsp.critic.severity', 'live'],
     ['perl-lsp.enableTestIntegration', 'reconstruct'],
     ['perl-lsp.aiCompletion.enabled', 'reconstruct'],

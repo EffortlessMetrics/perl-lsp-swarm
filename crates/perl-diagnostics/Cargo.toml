@@ -8,6 +8,14 @@ repository.workspace = true
 homepage.workspace = true
 license.workspace = true
 description = "Unified diagnostic codes, types, and catalog for Perl LSP."
+documentation = "https://docs.rs/perl-diagnostics"
+readme = "README.md"
+keywords = ["perl", "lsp", "diagnostics", "linting", "language-server"]
+categories = ["development-tools", "data-structures", "text-editors"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 serde = { version = "1.0", optional = true, features = ["derive"] }

@@ -1269,7 +1269,22 @@ impl LspServer {
                     // Update workspace config (include paths, @INC)
                     {
                         let mut workspace_config = self.workspace_config.lock();
-                        workspace_config.update_from_value(perl);
+                        let root_path = self.root_path.lock().clone();
+                        let rejected = workspace_config.update_from_value_with_context(
+                            perl,
+                            perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
+                                workspace_root: root_path.as_deref(),
+                                apply_external_include_paths: true,
+                            },
+                        );
+                        for entry in rejected {
+                            tracing::warn!(
+                                target: "perl_lsp::config",
+                                entry = %entry.entry,
+                                reason = %entry.render(),
+                                "rejected client includePaths entry"
+                            );
+                        }
                         tracing::debug!("Updated workspace config from perl settings");
                     }
 
@@ -1290,7 +1305,16 @@ impl LspServer {
                             let mut effective_config =
                                 perl_lsp_rs_core::config::WorkspaceConfig::default();
                             if let Some(init_opts) = init_options_perl.as_ref() {
-                                effective_config.update_from_value(init_opts);
+                                let rejected = effective_config.update_from_value(init_opts);
+                                for entry in rejected {
+                                    tracing::warn!(
+                                        target: "perl_lsp::config",
+                                        folder_uri = %folder.uri,
+                                        entry = %entry.entry,
+                                        reason = %entry.render(),
+                                        "rejected initializationOptions includePaths entry"
+                                    );
+                                }
                             }
                             if let Some(project_config) = &folder.project_config {
                                 // Re-applying an already-loaded, already-warned-about
@@ -1303,7 +1327,22 @@ impl LspServer {
                                     );
                                 }
                             }
-                            effective_config.update_from_value(perl);
+                            let rejected = effective_config.update_from_value_with_context(
+                                perl,
+                                perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
+                                    workspace_root: folder.path.as_deref(),
+                                    apply_external_include_paths: true,
+                                },
+                            );
+                            for entry in rejected {
+                                tracing::warn!(
+                                    target: "perl_lsp::config",
+                                    folder_uri = %folder.uri,
+                                    entry = %entry.entry,
+                                    reason = %entry.render(),
+                                    "rejected client includePaths entry"
+                                );
+                            }
                             folder.effective_workspace_config = effective_config;
                             folder.refresh_workspace_metadata();
                         }

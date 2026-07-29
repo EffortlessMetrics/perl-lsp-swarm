@@ -1494,7 +1494,9 @@ dependencies = [
  "color-eyre",
  "perl-core-harness-types",
  "perl-tdd-support",
+ "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tracing",
 ]
