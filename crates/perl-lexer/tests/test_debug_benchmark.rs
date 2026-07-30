@@ -3,13 +3,12 @@ use perl_lexer::{PerlLexer, TokenType};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
-fn debug_simple_tokens() {
+fn simple_statement_tokenizes_and_terminates() {
     let input = "my $x = 42; print $x;";
     let mut lexer = PerlLexer::new(input);
 
     let mut count = 0;
     while let Some(token) = lexer.next_token() {
-        println!("Token {}: {:?}", count, token);
         count += 1;
 
         // Check for EOF
@@ -21,7 +20,9 @@ fn debug_simple_tokens() {
         assert!(count <= 100, "Too many tokens - possible infinite loop");
     }
 
-    println!("Total tokens: {}", count);
+    // `my $x = 42 ; print $x ;` is 9 significant tokens; assert the lexer made
+    // real progress rather than bailing out after one or two.
+    assert!(count >= 9, "expected at least 9 tokens for {input:?}, got {count}");
 }
 
 #[test]
@@ -32,17 +33,23 @@ fn test_format_termination() -> TestResult {
     lexer.enter_format_mode();
 
     let token = lexer.next_token().ok_or("Expected token")?;
-    assert!(
-        matches!(token.token_type, TokenType::FormatBody(_) | TokenType::Error(_)),
-        "Expected FormatBody or Error, got {:?}",
-        token.token_type
-    );
 
-    if let TokenType::FormatBody(content) = token.token_type {
-        println!("Format body: {:?}", content);
-    } else if let TokenType::Error(msg) = token.token_type {
-        println!("Error: {:?}", msg);
-    }
+    // This input carries the documented `.` terminator, so it must lex as a
+    // FormatBody — accepting an Error here would let a regression that rejects
+    // every valid terminated format body keep this test green. Error is the
+    // expected outcome only in the no-termination test below.
+    let TokenType::FormatBody(content) = token.token_type else {
+        return Err(format!(
+            "terminated format body must lex as FormatBody, got {:?}",
+            token.token_type
+        )
+        .into());
+    };
+    assert_eq!(
+        content.as_ref(),
+        "Some format content\n",
+        "FormatBody must carry the body text without the terminator"
+    );
 
     Ok(())
 }
