@@ -35,10 +35,10 @@ genuinely does not apply; do not fabricate evidence.
 ## Deviations
 <!-- Material differences from the issue plan/contract and why. Link corrected issue/spec state where applicable. -->
 
-## What this establishes
-<!-- Keep the conclusion inside the proof boundary. -->
+## Claim Boundary
+<!-- Keep the conclusion inside the proof boundary. What becomes provably true, and what is explicitly out of scope? -->
 
-## What this does not establish
+## Non-goals
 <!-- Explicit non-goals, unrun proof, unsupported cases, and remaining work. -->
 
 ## Risk and rollback
