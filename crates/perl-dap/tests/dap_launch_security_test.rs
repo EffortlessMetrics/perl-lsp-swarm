@@ -81,11 +81,7 @@ fn test_launch_allows_valid_path() -> Result<(), Box<dyn std::error::Error>> {
     // Verify response
     match response {
         DapMessage::Response { success, message, .. } => {
-            assert!(
-                success,
-                "Launch of in-workspace script must succeed, got: {:?}",
-                message
-            );
+            assert!(success, "Launch of in-workspace script must succeed, got: {:?}", message);
         }
         other => return Err(format!("Expected Response, got: {other:?}").into()),
     }
@@ -154,11 +150,7 @@ fn test_configured_workspace_root_accepts_inside_script() -> Result<(), Box<dyn 
 
     match response {
         DapMessage::Response { success, message, .. } => {
-            assert!(
-                success,
-                "Launch of in-workspace script must succeed, got: {:?}",
-                message
-            );
+            assert!(success, "Launch of in-workspace script must succeed, got: {:?}", message);
         }
         other => return Err(format!("Expected Response, got: {other:?}").into()),
     }
