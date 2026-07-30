@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Review Run Receipt (v1)",
-  "description": "PR-level marker recording a review pass. Embedded in a PR issue comment as `<!-- review-run:v1 {json} -->` and posted/updated by scripts/reviews/run. Current-generation receipts bind the review to both the PR headRefOid and a normalized material-claim digest; historical receipts without claim_digest remain parseable but are not claim-current.",
+  "description": "PR-level marker recording a review pass. Embedded in a PR issue comment as `<!-- review-run:v1 {json} -->` and posted/updated by scripts/reviews/run. Current-generation receipts bind the review to the exact PR issue-comment ID, headRefOid, and normalized material-claim digest; historical receipts without claim_digest or comment_id remain parseable but are not claim-current.",
   "type": "object",
   "required": ["v", "kind", "head", "reviewer", "status"],
   "additionalProperties": false,
@@ -10,6 +10,7 @@
     "kind": {"enum": ["deep", "standard"]},
     "head": {"type": "string", "description": "The PR headRefOid this review pass ran against."},
     "claim_digest": {"type": "string", "description": "SHA-256 of the normalized material PR claim/review index. Optional only for historical v1 receipts."},
+    "comment_id": {"type": "string", "description": "The immutable GitHub issue-comment ID containing this receipt. Optional only for historical v1 receipts."},
     "reviewer": {"type": "string", "description": "Identity of the reviewer/agent."},
     "status": {"enum": ["running", "done"]}
   }

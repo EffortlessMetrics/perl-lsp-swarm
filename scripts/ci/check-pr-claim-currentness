@@ -20,7 +20,7 @@ from claim_digest import claim_digest, normalize_pr_body  # noqa: E402
 MARKER_START = re.compile(r"<!--\s*review-run:v1\b")
 TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 REQUIRED_RECEIPT_FIELDS = {"v", "kind", "head", "reviewer", "status"}
-ALLOWED_RECEIPT_FIELDS = REQUIRED_RECEIPT_FIELDS | {"claim_digest"}
+ALLOWED_RECEIPT_FIELDS = REQUIRED_RECEIPT_FIELDS | {"claim_digest", "comment_id"}
 REVIEW_KINDS = {"deep", "standard"}
 REVIEW_STATUSES = {"running", "done"}
 
@@ -138,7 +138,10 @@ def _valid_review_marker(value: dict[str, Any]) -> bool:
         return False
     if value.get("status") not in REVIEW_STATUSES:
         return False
-    return "claim_digest" not in value or isinstance(value.get("claim_digest"), str)
+    return (
+        ("claim_digest" not in value or isinstance(value.get("claim_digest"), str))
+        and ("comment_id" not in value or isinstance(value.get("comment_id"), str))
+    )
 
 
 def _count_invalid(association: str) -> tuple[int, int]:
@@ -177,6 +180,7 @@ def _markers(
             records.append(
                 {
                     "marker": value,
+                    "comment_id": str(comment.get("id") or ""),
                     "comment_author": login,
                     "author_association": association,
                     "trusted": association in TRUSTED_ASSOCIATIONS,
@@ -268,6 +272,8 @@ def main(argv: list[str] | None = None) -> int:
         if record["marker"].get("status") == "done"
         and record["marker"].get("head") == head
         and record["marker"].get("claim_digest") == digest
+        and record["marker"].get("comment_id") == record["comment_id"]
+        and bool(record["comment_id"])
     ]
 
     result = {

@@ -159,14 +159,15 @@ update_pr_comment() {
 
 emit_review_run() {
     local status="$1"
-    local marker body
-    marker="$(jq -cn --arg kind "$KIND" --arg head "$HEAD" --arg claim "$CLAIM_DIGEST" --arg rev "$REVIEWER" --arg st "$status" \
-        '{v:1, kind:$kind, head:$head, claim_digest:$claim, reviewer:$rev, status:$st}')"
-    body="$(render_body "review-run" "$marker" "Review pass ($KIND) $status by $REVIEWER at head $HEAD and claim $CLAIM_DIGEST.")"
+    local marker body comment_id
 
     if [[ "$DRY_RUN" -eq 1 ]]; then
+        comment_id="DRYRUN-COMMENT"
+        marker="$(jq -cn --arg kind "$KIND" --arg head "$HEAD" --arg claim "$CLAIM_DIGEST" --arg rev "$REVIEWER" --arg st "$status" --arg id "$comment_id" \
+            '{v:1, kind:$kind, head:$head, claim_digest:$claim, reviewer:$rev, status:$st, comment_id:$id}')"
+        body="$(render_body "review-run" "$marker" "Review pass ($KIND) $status by $REVIEWER at head $HEAD and claim $CLAIM_DIGEST.")"
         if [[ "$status" == "running" ]]; then
-            echo "DRY-RUN post for PR #$PR review_head=$HEAD claim_digest=$CLAIM_DIGEST comment_id=DRYRUN-COMMENT"
+            echo "DRY-RUN post for PR #$PR review_head=$HEAD claim_digest=$CLAIM_DIGEST comment_id=$comment_id"
         else
             echo "DRY-RUN update receipt review_head=$HEAD claim_digest=$CLAIM_DIGEST comment_id=$REVIEW_COMMENT_ID for PR #$PR"
         fi
@@ -175,15 +176,27 @@ emit_review_run() {
     fi
 
     if [[ "$status" == "running" ]]; then
-        local comment_id
+        marker="$(jq -cn --arg kind "$KIND" --arg head "$HEAD" --arg claim "$CLAIM_DIGEST" --arg rev "$REVIEWER" --arg st "$status" --arg id "pending" \
+            '{v:1, kind:$kind, head:$head, claim_digest:$claim, reviewer:$rev, status:$st, comment_id:$id}')"
+        body="$(render_body "review-run" "$marker" "Review pass ($KIND) $status by $REVIEWER at head $HEAD and claim $CLAIM_DIGEST.")"
         comment_id="$(post_pr_comment_id "$body")" || exit 2
+        marker="$(jq -cn --arg kind "$KIND" --arg head "$HEAD" --arg claim "$CLAIM_DIGEST" --arg rev "$REVIEWER" --arg st "$status" --arg id "$comment_id" \
+            '{v:1, kind:$kind, head:$head, claim_digest:$claim, reviewer:$rev, status:$st, comment_id:$id}')"
+        body="$(render_body "review-run" "$marker" "Review pass ($KIND) $status by $REVIEWER at head $HEAD and claim $CLAIM_DIGEST.")"
+        if ! update_pr_comment "$comment_id" "$body" >/dev/null; then
+            echo "ERROR: failed to bind running review receipt to returned comment ID $comment_id" >&2
+            exit 2
+        fi
         echo "OK posted running review-run receipt to PR #$PR review_head=$HEAD claim_digest=$CLAIM_DIGEST comment_id=$comment_id"
         return 0
     fi
 
     local running_marker
-    running_marker="$(jq -cn --arg kind "$KIND" --arg head "$HEAD" --arg claim "$CLAIM_DIGEST" --arg rev "$REVIEWER" \
-        '{v:1, kind:$kind, head:$head, claim_digest:$claim, reviewer:$rev, status:"running"}')"
+    running_marker="$(jq -cn --arg kind "$KIND" --arg head "$HEAD" --arg claim "$CLAIM_DIGEST" --arg rev "$REVIEWER" --arg id "$REVIEW_COMMENT_ID" \
+        '{v:1, kind:$kind, head:$head, claim_digest:$claim, reviewer:$rev, status:"running", comment_id:$id}')"
+    marker="$(jq -cn --arg kind "$KIND" --arg head "$HEAD" --arg claim "$CLAIM_DIGEST" --arg rev "$REVIEWER" --arg st "$status" --arg id "$REVIEW_COMMENT_ID" \
+        '{v:1, kind:$kind, head:$head, claim_digest:$claim, reviewer:$rev, status:$st, comment_id:$id}')"
+    body="$(render_body "review-run" "$marker" "Review pass ($KIND) $status by $REVIEWER at head $HEAD and claim $CLAIM_DIGEST.")"
     validate_running_review_comment "$REVIEW_COMMENT_ID" "$running_marker" || exit 2
     if ! update_pr_comment "$REVIEW_COMMENT_ID" "$body" >/dev/null; then
         echo "ERROR: failed to retire running review receipt comment $REVIEW_COMMENT_ID on PR #$PR" >&2

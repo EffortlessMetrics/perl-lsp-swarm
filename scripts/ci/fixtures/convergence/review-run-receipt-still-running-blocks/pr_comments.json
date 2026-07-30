@@ -1,9 +1,10 @@
 [
   {
+    "id": 101,
     "author": {
       "login": "bob"
     },
     "authorAssociation": "MEMBER",
-    "body": "Deep review in progress.\n\n<!-- review-run:v1 {\"v\":1,\"kind\":\"deep\",\"head\":\"9999999999999999999999999999999999999999\",\"claim_digest\":\"0ac28bc9c69ad7849f13905f7f36132883f34426fcefbb64f736139d7ab4e611\",\"reviewer\":\"bob\",\"status\":\"running\"} -->"
+    "body": "Deep review in progress.\n\n<!-- review-run:v1 {\"v\":1,\"kind\":\"deep\",\"head\":\"9999999999999999999999999999999999999999\",\"claim_digest\":\"0ac28bc9c69ad7849f13905f7f36132883f34426fcefbb64f736139d7ab4e611\",\"reviewer\":\"bob\",\"status\":\"running\",\"comment_id\":\"101\"} -->"
   }
 ]

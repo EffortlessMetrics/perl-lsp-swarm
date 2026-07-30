@@ -146,6 +146,7 @@ Revert the squash.
             "claim_digest": claim_digest.claim_digest(body)["digest"],
             "reviewer": "reviewer",
             "status": status,
+            "comment_id": "101",
         }
 
     def test_non_material_section_does_not_change_digest(self) -> None:
@@ -297,6 +298,21 @@ Visible context after the comment.
         self.assertEqual(result["matching_receipts"], 0)
         self.assertEqual(result["trusted_receipts"], 0)
         self.assertEqual(result["untrusted_receipts"], 1)
+
+    def test_currentness_checker_rejects_copied_receipt_marker(self) -> None:
+        body = self.body()
+        marker = self.valid_marker(body)
+        copied = self.receipt_comment(marker, comment_id=202)
+        completed = self.run_checker(
+            body,
+            [copied],
+            emit_json=True,
+        )
+
+        self.assertEqual(completed.returncode, 1)
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["matching_receipts"], 0)
+        self.assertEqual(result["trusted_receipts"], 1)
 
     def test_currentness_checker_rejects_malformed_trusted_receipt(self) -> None:
         body = self.body()
@@ -530,6 +546,7 @@ exit 2
             running = json.loads(state.read_text(encoding="utf-8"))
             self.assertEqual(len(running), 1)
             self.assertIn('"status":"running"', running[0]["body"])
+            self.assertIn('"comment_id":"101"', running[0]["body"])
 
             copied_id = int(comment_id) + 1
             copied = dict(running[0])
