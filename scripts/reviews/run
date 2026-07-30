@@ -4,8 +4,9 @@
 # Review receipts bind a formal judgment to both the PR head and the normalized
 # material claim/review index.
 #
-#   review-start → posts status=running and returns its immutable comment ID
-#   review-done  → requires that ID and updates exactly that validated receipt
+#   review-start → posts status=running and returns its immutable comment ID,
+#                  starting head, and claim digest
+#   review-done  → requires those starting values and updates exactly that receipt
 #   verify       → posts a verification marker (result=pass|fail)
 #
 # Updating the start receipt is load-bearing: the convergence checker counts
@@ -14,11 +15,11 @@
 #
 # Usage:
 #   scripts/reviews/run review-start --pr <n> --kind <deep|standard> --reviewer <id> [--claim-digest sha] [--repo r] [--head sha] [--dry-run]
-#   scripts/reviews/run review-done  --pr <n> --kind <deep|standard> --reviewer <id> --claim-digest <starting-sha> --comment-id <id> [--repo r] [--head sha] [--dry-run]
+#   scripts/reviews/run review-done  --pr <n> --kind <deep|standard> --reviewer <id> --head <starting-sha> --claim-digest <starting-digest> --comment-id <id> [--repo r] [--dry-run]
 #   scripts/reviews/run verify       --pr <n> --verifier <id> --result <pass|fail> [--findings <json>] [--repo r] [--head sha] [--dry-run]
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
 
 die_usage() { echo "ERROR: $1" >&2; exit 2; }
 
@@ -47,6 +48,10 @@ done
 command -v jq >/dev/null 2>&1 || die_usage "jq not found on PATH"
 
 resolve_repo_head() {
+    if [[ "$SUBCMD" == "review-done" && -z "$HEAD" ]]; then
+        die_usage "review-done requires the --head returned by review-start; do not substitute the current PR head"
+    fi
+
     if [[ "$DRY_RUN" -eq 0 ]]; then
         command -v gh >/dev/null 2>&1 || die_usage "gh not found on PATH (required unless --dry-run)"
         [[ -n "$REPO" ]] || REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
@@ -141,7 +146,7 @@ validate_running_review_comment() {
             ;;
     esac
     [[ "$body" == *"$needle"* ]] || {
-        echo "ERROR: comment $comment_id is not the matching running review receipt" >&2
+        echo "ERROR: comment $comment_id is not the matching running review receipt for starting head $HEAD and claim $CLAIM_DIGEST" >&2
         return 2
     }
 }
@@ -161,9 +166,9 @@ emit_review_run() {
 
     if [[ "$DRY_RUN" -eq 1 ]]; then
         if [[ "$status" == "running" ]]; then
-            echo "DRY-RUN post for PR #$PR at head $HEAD comment_id=DRYRUN-COMMENT"
+            echo "DRY-RUN post for PR #$PR review_head=$HEAD claim_digest=$CLAIM_DIGEST comment_id=DRYRUN-COMMENT"
         else
-            echo "DRY-RUN update receipt comment_id=$REVIEW_COMMENT_ID for PR #$PR at head $HEAD"
+            echo "DRY-RUN update receipt review_head=$HEAD claim_digest=$CLAIM_DIGEST comment_id=$REVIEW_COMMENT_ID for PR #$PR"
         fi
         printf '%s\n' "$body"
         return 0
@@ -172,7 +177,7 @@ emit_review_run() {
     if [[ "$status" == "running" ]]; then
         local comment_id
         comment_id="$(post_pr_comment_id "$body")" || exit 2
-        echo "OK posted running review-run receipt to PR #$PR at head $HEAD and claim $CLAIM_DIGEST comment_id=$comment_id"
+        echo "OK posted running review-run receipt to PR #$PR review_head=$HEAD claim_digest=$CLAIM_DIGEST comment_id=$comment_id"
         return 0
     fi
 
@@ -184,7 +189,7 @@ emit_review_run() {
         echo "ERROR: failed to retire running review receipt comment $REVIEW_COMMENT_ID on PR #$PR" >&2
         exit 2
     fi
-    echo "OK updated review-run receipt $REVIEW_COMMENT_ID to done on PR #$PR at head $HEAD and claim $CLAIM_DIGEST"
+    echo "OK updated review-run receipt review_head=$HEAD claim_digest=$CLAIM_DIGEST comment_id=$REVIEW_COMMENT_ID to done on PR #$PR"
 }
 
 emit() {
