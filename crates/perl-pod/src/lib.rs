@@ -286,7 +286,7 @@ const MAX_POD_FORMATTING_DEPTH: usize = 100;
 ///
 /// Handles simple (non-nested) formatting codes. Nested codes like `B<I<text>>`
 /// are handled by stripping outer codes first.
-fn strip_pod_formatting(text: &str) -> String {
+pub fn strip_pod_formatting(text: &str) -> String {
     strip_pod_formatting_depth(text, 0)
 }
 
@@ -417,34 +417,34 @@ fn escape_markdown_link_text(text: &str) -> String {
 
 /// Extract a markdown link from a POD `L<>` formatting code.
 ///
-/// Returns `[display](perl-module://target)` so LSP clients (VS Code) render
+/// Returns `[display](perldoc://target)` so LSP clients (VS Code) render
 /// the link as clickable in hover tooltips.  Spaces in section names are
 /// percent-encoded so the URL is well-formed.
 ///
 /// Handles all standard POD link forms:
-/// - `L<Module::Name>` → `[Module::Name](perl-module://Module::Name)`
-/// - `L<text|Module::Name>` → `[text](perl-module://Module::Name)`
-/// - `L<Module::Name/section>` → `[Module::Name](perl-module://Module::Name/section)`
-/// - `L<text|Module::Name/section>` → `[text](perl-module://Module::Name/section)`
+/// - `L<Module::Name>` → `[Module::Name](perldoc://Module::Name)`
+/// - `L<text|Module::Name>` → `[text](perldoc://Module::Name)`
+/// - `L<Module::Name/section>` → `[Module::Name](perldoc://Module::Name/section)`
+/// - `L<text|Module::Name/section>` → `[text](perldoc://Module::Name/section)`
 fn extract_link_display(link: &str, depth: usize) -> String {
     // L<text|target> — explicit display text before the pipe
     if let Some(pipe_pos) = link.find('|') {
         let display =
             escape_markdown_link_text(&strip_pod_formatting_depth(link[..pipe_pos].trim(), depth));
         let target = encode_pod_link_target(link[pipe_pos + 1..].trim());
-        return format!("[{display}](perl-module://{target})");
+        return format!("[{display}](perldoc://{target})");
     }
     // L<Module/section> — module + section, display is just the module part
     if let Some(slash_pos) = link.find('/') {
         let module =
             escape_markdown_link_text(&strip_pod_formatting_depth(link[..slash_pos].trim(), depth));
         let target = encode_pod_link_target(link.trim());
-        return format!("[{module}](perl-module://{target})");
+        return format!("[{module}](perldoc://{target})");
     }
     // L<Module::Name> — simple module reference
     let display = escape_markdown_link_text(&strip_pod_formatting_depth(link.trim(), depth));
     let target = encode_pod_link_target(link.trim());
-    format!("[{display}](perl-module://{target})")
+    format!("[{display}](perldoc://{target})")
 }
 
 /// Decodes a POD E<> entity to its corresponding character.
@@ -574,7 +574,7 @@ mod tests {
     fn double_angle_link_renders_markdown() {
         assert_eq!(
             strip_pod_formatting("L<< display text|File::Find/The wanted function >>"),
-            "[display text](perl-module://File::Find/The%20wanted%20function)"
+            "[display text](perldoc://File::Find/The%20wanted%20function)"
         );
     }
 
@@ -584,7 +584,7 @@ mod tests {
     fn link_pipe_form_trims_display_and_target() {
         // L<text|target> — leading/trailing whitespace on both sides is trimmed
         // so neither the display text nor the target leaks padding (#2480).
-        assert_eq!(strip_pod_formatting("L<  text  |  target  >"), "[text](perl-module://target)");
+        assert_eq!(strip_pod_formatting("L<  text  |  target  >"), "[text](perldoc://target)");
     }
 
     #[test]
@@ -593,7 +593,7 @@ mod tests {
         // space leaks into the rendered link text (#2482).
         assert_eq!(
             strip_pod_formatting("L<Module / Section>"),
-            "[Module](perl-module://Module%20/%20Section)"
+            "[Module](perldoc://Module%20/%20Section)"
         );
     }
 
@@ -603,7 +603,7 @@ mod tests {
         // text (#2485).
         assert_eq!(
             strip_pod_formatting("L< Module::Name >"),
-            "[Module::Name](perl-module://Module::Name)"
+            "[Module::Name](perldoc://Module::Name)"
         );
     }
 
