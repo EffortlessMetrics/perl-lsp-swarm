@@ -120,30 +120,54 @@ impl LspServer {
     /// file is still waiting for its asynchronous index update. Checking only
     /// the caller's URI therefore does not establish that the workspace snapshot
     /// is safe for cross-file navigation. Generation zero is the intentional
-    /// `didOpen` baseline and is not considered stale here.
+    /// `didOpen` baseline and is not considered stale here. Documents that were
+    /// intentionally kept out of the parser/index (for example templates or
+    /// binary/oversized buffers) are also excluded; a pending parse remains
+    /// eligible because its last published AST is retained as the latest snapshot.
     #[cfg(feature = "workspace")]
     pub(crate) fn workspace_index_stale_for_any_open_document(&self) -> bool {
         let Some(coordinator) = self.coordinator() else {
             return false;
         };
 
-        let document_generations = {
-            let documents = self.documents.lock();
-            documents
-                .iter()
-                .filter_map(|(uri, document)| {
-                    let generation = document.current_generation();
-                    (generation > 0).then(|| (uri.clone(), generation))
-                })
-                .collect::<Vec<_>>()
-        };
+        for _attempt in 0..=1 {
+            let document_generations = {
+                let documents = self.documents.lock();
+                documents
+                    .iter()
+                    .filter_map(|(uri, document)| {
+                        let generation = document.current_generation();
+                        let expected_to_index = document
+                            .latest_parsed()
+                            .is_some_and(|snapshot| snapshot.ast().is_some());
+                        (generation > 0 && expected_to_index).then(|| (uri.clone(), generation))
+                    })
+                    .collect::<Vec<_>>()
+            };
 
-        document_generations.into_iter().any(|(uri, generation)| {
-            match coordinator.index().indexed_generation(&uri) {
-                Some(indexed_generation) => indexed_generation < generation,
-                None => true,
+            let stale = document_generations.iter().any(|(uri, generation)| {
+                match coordinator.index().indexed_generation(uri) {
+                    Some(indexed_generation) => indexed_generation < *generation,
+                    None => true,
+                }
+            });
+
+            let documents = self.documents.lock();
+            let snapshot_is_current = document_generations.iter().all(|(uri, generation)| {
+                documents.get(uri).is_some_and(|document| {
+                    document.current_generation() == *generation
+                        && document.latest_parsed().is_some_and(|snapshot| snapshot.ast().is_some())
+                })
+            });
+            if snapshot_is_current {
+                return stale;
             }
-        })
+        }
+
+        // A document changed while both validation passes were running. Fail
+        // closed so navigation cannot consume an index snapshot from a
+        // generation that was never proven stable.
+        true
     }
 
     /// Offset to position conversion using cached line starts for O(log n) performance
@@ -281,15 +305,17 @@ impl LspServer {
 #[cfg(all(test, feature = "workspace"))]
 mod tests {
     use crate::runtime::LspServer;
+    use serde_json::json;
 
     #[test]
-    fn workspace_index_stale_for_document_false_when_document_is_not_open() {
+    fn workspace_index_stale_for_document_false_when_document_is_not_open()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
 
-        assert!(
-            !server.workspace_index_stale_for_document("file:///workspace/missing.pl"),
-            "missing open document must not be treated as stale"
-        );
+        if server.workspace_index_stale_for_document("file:///workspace/missing.pl") {
+            return Err("missing open document must not be treated as stale".into());
+        }
+        Ok(())
     }
 
     #[test]
@@ -303,10 +329,12 @@ mod tests {
         server.test_replace_document_without_index(uri, text, 2).map_err(std::io::Error::other)?;
         server.index_coordinator = None;
 
-        assert!(
-            !server.workspace_index_stale_for_document(uri),
-            "missing coordinator must fail closed to non-stale rather than blocking local providers"
-        );
+        if server.workspace_index_stale_for_document(uri) {
+            return Err(
+                "missing coordinator must fail closed to non-stale rather than blocking local providers"
+                    .into(),
+            );
+        }
 
         Ok(())
     }
@@ -320,15 +348,14 @@ mod tests {
 
         server.test_apply_did_open(uri, text, 1)?;
 
-        assert_eq!(
-            server.document_generation(uri),
-            Some(0),
-            "didOpen must start at document_generation == 0 before any didChange"
-        );
-        assert!(
-            !server.workspace_index_stale_for_document(uri),
-            "document_generation == 0 must never be reported as stale"
-        );
+        if server.document_generation(uri) != Some(0) {
+            return Err(
+                "didOpen must start at document_generation == 0 before any didChange".into()
+            );
+        }
+        if server.workspace_index_stale_for_document(uri) {
+            return Err("document_generation == 0 must never be reported as stale".into());
+        }
 
         Ok(())
     }
@@ -361,14 +388,14 @@ mod tests {
             )
             .map_err(std::io::Error::other)?;
 
-        assert!(
-            !server.workspace_index_stale_for_document(caller_uri),
-            "the unchanged caller must not be reported stale by the per-document helper"
-        );
-        assert!(
-            server.workspace_index_stale_for_any_open_document(),
-            "an edited definition target must block cross-file index navigation"
-        );
+        if server.workspace_index_stale_for_document(caller_uri) {
+            return Err(
+                "the unchanged caller must not be reported stale by the per-document helper".into(),
+            );
+        }
+        if !server.workspace_index_stale_for_any_open_document() {
+            return Err("an edited definition target must block cross-file index navigation".into());
+        }
 
         Ok(())
     }
@@ -394,10 +421,9 @@ mod tests {
             .index_file_with_generation(url::Url::parse(target_uri)?, target_text.to_string(), 1)
             .map_err(std::io::Error::other)?;
 
-        assert!(
-            !server.workspace_index_stale_for_any_open_document(),
-            "a current indexed snapshot must not block navigation"
-        );
+        if server.workspace_index_stale_for_any_open_document() {
+            return Err("a current indexed snapshot must not block navigation".into());
+        }
 
         Ok(())
     }
@@ -413,7 +439,75 @@ mod tests {
             .map_err(std::io::Error::other)?;
         server.index_coordinator = None;
 
-        assert!(!server.workspace_index_stale_for_any_open_document());
+        if server.workspace_index_stale_for_any_open_document() {
+            return Err("missing coordinator must not block navigation".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_index_stale_for_any_open_document_detects_missing_snapshot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///workspace/missing-snapshot.pl";
+        let text = "package MissingSnapshot;\nsub target {}\n";
+
+        server.test_apply_did_open(uri, text, 1)?;
+        let coordinator = server
+            .index_coordinator
+            .as_ref()
+            .ok_or("test server must have an index coordinator")?;
+        coordinator.index().remove_file(uri);
+        server.test_replace_document_without_index(uri, text, 2).map_err(std::io::Error::other)?;
+
+        if !server.workspace_index_stale_for_any_open_document() {
+            return Err("an eligible document without an indexed snapshot must be stale".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_index_stale_for_any_open_document_ignores_generation_zero_without_snapshot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///workspace/unindexed-open.pl";
+        let text = "package UnindexedOpen;\nsub target {}\n";
+
+        server.test_apply_did_open(uri, text, 1)?;
+        let coordinator = server
+            .index_coordinator
+            .as_ref()
+            .ok_or("test server must have an index coordinator")?;
+        coordinator.index().remove_file(uri);
+
+        if server.workspace_index_stale_for_any_open_document() {
+            return Err("generation zero without an indexed snapshot must not be stale".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_index_stale_for_any_open_document_ignores_intentionally_unindexed_document()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///workspace/templates/welcome.html.ep";
+
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "html",
+                "version": 1,
+                "text": "<div><%= $name %></div>"
+            }
+        })))?;
+        server.test_handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": "<div><%= $title %></div>" }]
+        })))?;
+
+        if server.workspace_index_stale_for_any_open_document() {
+            return Err("intentionally unindexed documents must not block navigation".into());
+        }
         Ok(())
     }
 }

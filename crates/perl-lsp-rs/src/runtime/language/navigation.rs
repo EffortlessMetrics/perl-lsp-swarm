@@ -1146,10 +1146,9 @@ impl LspServer {
                 params["textDocument"]["version"].as_i64().and_then(|n| i32::try_from(n).ok());
             self.ensure_latest(uri, req_version)?;
             #[cfg(feature = "workspace")]
-            let workspace_index_stale_for_open_documents =
-                self.workspace_index_stale_for_any_open_document();
+            let workspace_index_is_fresh = || !self.workspace_index_stale_for_any_open_document();
             #[cfg(not(feature = "workspace"))]
-            let workspace_index_stale_for_open_documents = false;
+            let workspace_index_is_fresh = || true;
 
             // First, extract module reference info while holding the document lock briefly
             // We need to release the lock before calling resolve_module_to_path to avoid deadlock
@@ -1321,14 +1320,16 @@ impl LspServer {
                     }
                     EarlyDefinitionTarget::FrameworkModule(module_ref) => {
                         #[cfg(feature = "workspace")]
-                        if !workspace_index_stale_for_open_documents
+                        if workspace_index_is_fresh()
                             && let Some(coordinator) = self.coordinator()
                             && let Some(def_location) =
                                 module_ref.definition_location(coordinator.index())
                             && let Some(lsp_location) =
                                 crate::workspace_index::lsp_adapter::to_lsp_location(&def_location)
                         {
-                            return Ok(Some(json!([lsp_location])));
+                            if workspace_index_is_fresh() {
+                                return Ok(Some(json!([lsp_location])));
+                            }
                         }
 
                         if let Some(module_path) = self.resolve_module_to_path_with_doc_at_offset(
@@ -1420,7 +1421,7 @@ impl LspServer {
                 }
 
                 #[cfg(feature = "workspace")]
-                if !workspace_index_stale_for_open_documents {
+                if workspace_index_is_fresh() {
                     let parsed = doc.current_parsed();
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                         if let Some(coordinator) = self.coordinator() {
@@ -1438,7 +1439,9 @@ impl LspServer {
                                         &def_location,
                                     )
                                 {
-                                    return Ok(Some(json!([lsp_location])));
+                                    if workspace_index_is_fresh() {
+                                        return Ok(Some(json!([lsp_location])));
+                                    }
                                 }
                             }
                         }
@@ -1504,7 +1507,9 @@ impl LspServer {
                                             &def_location,
                                         )
                                 {
-                                    return Ok(Some(json!([lsp_location])));
+                                    if workspace_index_is_fresh() {
+                                        return Ok(Some(json!([lsp_location])));
+                                    }
                                 }
                             }
                         }
@@ -1531,7 +1536,9 @@ impl LspServer {
                                     &name,
                                     Some(uri),
                                 ) {
-                                    return Ok(Some(result));
+                                    if workspace_index_is_fresh() {
+                                        return Ok(Some(result));
+                                    }
                                 }
                             }
                             FqnCursorComponent::Prefix => return Ok(None),
@@ -1555,7 +1562,9 @@ impl LspServer {
                                     method_name,
                                     Some(uri),
                                 ) {
-                                    return Ok(Some(result));
+                                    if workspace_index_is_fresh() {
+                                        return Ok(Some(result));
+                                    }
                                 }
                                 #[cfg(feature = "workspace")]
                                 {
@@ -1570,7 +1579,9 @@ impl LspServer {
                                                 &def_location,
                                             )
                                     {
-                                        return Ok(Some(json!([lsp_location])));
+                                        if workspace_index_is_fresh() {
+                                            return Ok(Some(json!([lsp_location])));
+                                        }
                                     }
                                 }
                                 if is_universal_method(method_name)
@@ -1581,7 +1592,9 @@ impl LspServer {
                                         Some(uri),
                                     )
                                 {
-                                    return Ok(Some(result));
+                                    if workspace_index_is_fresh() {
+                                        return Ok(Some(result));
+                                    }
                                 }
                                 // Partial/None: fall through to same-file resolution
                                 break;
@@ -1619,7 +1632,9 @@ impl LspServer {
                                             method_name,
                                             Some(uri),
                                         ) {
-                                            return Ok(Some(result));
+                                            if workspace_index_is_fresh() {
+                                                return Ok(Some(result));
+                                            }
                                         }
                                         #[cfg(feature = "workspace")]
                                         {
@@ -1635,7 +1650,9 @@ impl LspServer {
                                                         &def_location,
                                                     )
                                             {
-                                                return Ok(Some(json!([lsp_location])));
+                                                if workspace_index_is_fresh() {
+                                                    return Ok(Some(json!([lsp_location])));
+                                                }
                                             }
                                         }
                                     }
@@ -1648,7 +1665,9 @@ impl LspServer {
                                         Some(uri),
                                     )
                                 {
-                                    return Ok(Some(result));
+                                    if workspace_index_is_fresh() {
+                                        return Ok(Some(result));
+                                    }
                                 }
                                 // Fall through for non-self variables
                                 break;
@@ -1662,7 +1681,7 @@ impl LspServer {
                     let offset = self.pos16_to_offset(doc, line, character);
 
                     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                    if !workspace_index_stale_for_open_documents {
+                    if workspace_index_is_fresh() {
                         let cursor_on_arrow_method = cursor_in_regex_capture(
                             get_arrow_method_regex()?,
                             &text_around,
@@ -1751,7 +1770,7 @@ impl LspServer {
 
                     // Try workspace index for cross-file definitions using routing policy
                     #[cfg(feature = "workspace")]
-                    if !workspace_index_stale_for_open_documents {
+                    if workspace_index_is_fresh() {
                         if let Some(coordinator) = self.coordinator() {
                             let workspace_index = coordinator.index();
                             // Use symbol_at_cursor to get the symbol key
@@ -1786,7 +1805,9 @@ impl LspServer {
                                         })
                                         .collect();
                                     if !lsp_locations.is_empty() {
-                                        return Ok(Some(json!(lsp_locations)));
+                                        if workspace_index_is_fresh() {
+                                            return Ok(Some(json!(lsp_locations)));
+                                        }
                                     }
                                 }
 
@@ -1809,7 +1830,9 @@ impl LspServer {
                                         source_pkg = %import_source,
                                         "resolved bare imported symbol through require/import source"
                                     );
-                                    return Ok(Some(json!([lsp_location])));
+                                    if workspace_index_is_fresh() {
+                                        return Ok(Some(json!([lsp_location])));
+                                    }
                                 }
                             }
                         }
@@ -2069,11 +2092,18 @@ impl LspServer {
         byte_offset: usize,
     ) -> Option<Value> {
         let byte_offset = u32::try_from(byte_offset).ok()?;
+        if self.workspace_index_stale_for_any_open_document() {
+            return None;
+        }
         let workspace_index = self.workspace_index()?;
         let outcome = workspace_index.with_semantic_queries_for_uri(uri, |file_id, queries| {
             let ctx = QueryContext::new(file_id, None, Some(byte_offset));
             goto_definition_live_exact_or_imported(workspace_index.as_ref(), &queries, symbol, &ctx)
         })?;
+
+        if self.workspace_index_stale_for_any_open_document() {
+            return None;
+        }
 
         let DefinitionCutoverResult::Exact(candidate) = outcome.result else {
             return None;
