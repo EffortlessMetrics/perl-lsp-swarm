@@ -64,16 +64,34 @@ fn dollar_dollar_in_string_emits_pid_variable() -> R {
     Ok(())
 }
 
-// $$identifier must NOT consume the second $ into a PID token — the first $
-// becomes a literal and the second starts a new interpolation.
+// $$foo is a scalar-dereference expression, not a PID followed by a separate
+// variable. Verified against real perl 5.38.2:
+//   my $x = "v"; my $foo = \$x; print "$$foo";   # prints "v"
+// so the lexer must emit the whole `$$foo` as one Variable part rather than
+// splitting it into Literal("$") + Variable("$foo").
 #[test]
-fn dollar_dollar_identifier_treats_first_as_literal() -> R {
+fn dollar_dollar_identifier_is_scalar_deref() -> R {
     let parts = interpolated_parts(r#""$$foo""#).ok_or("no InterpolatedString")?;
-    // First '$' → Literal("$"), then '$foo' → Variable("$foo")
-    assert_eq!(
-        parts,
-        vec![StringPart::Literal(Arc::from("$")), StringPart::Variable(Arc::from("$foo")),]
-    );
+    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$$foo"))]);
+    Ok(())
+}
+
+// $$$foo chains scalar derefs (deref of a deref). Verified against real perl
+// 5.38.2:
+//   my $x = "v"; my $r1 = \$x; my $foo = \$r1; print "$$$foo";  # prints "v"
+#[test]
+fn dollar_dollar_dollar_identifier_is_double_scalar_deref() -> R {
+    let parts = interpolated_parts(r#""$$$foo""#).ok_or("no InterpolatedString")?;
+    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$$$foo"))]);
+    Ok(())
+}
+
+// Bare "$$" (PID) must keep working even though $$foo is now a deref chain —
+// the PID case only fires when no identifier follows the dollar run.
+#[test]
+fn dollar_dollar_bare_still_emits_pid_variable() -> R {
+    let parts = interpolated_parts(r#""$$""#).ok_or("no InterpolatedString")?;
+    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$$"))]);
     Ok(())
 }
 
@@ -92,6 +110,17 @@ fn dollar_zero_in_string_emits_variable() -> R {
 fn dollar_one_in_string_emits_variable() -> R {
     let parts = interpolated_parts(r#""$1""#).ok_or("no InterpolatedString")?;
     assert_eq!(parts, vec![StringPart::Variable(Arc::from("$1"))]);
+    Ok(())
+}
+
+// $10 is capture group 10 (a single multi-digit numeric variable), not $1
+// followed by literal "0". Verified against real perl 5.38.2 with an
+// 11-capture-group match: `$10` prints the 10th group's value, confirming
+// perl consumes all consecutive digits into one numeric variable.
+#[test]
+fn dollar_ten_in_string_emits_single_multi_digit_variable() -> R {
+    let parts = interpolated_parts(r#""$10""#).ok_or("no InterpolatedString")?;
+    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$10"))]);
     Ok(())
 }
 
@@ -123,6 +152,74 @@ fn dollar_caret_bare_in_string_emits_variable() -> R {
         "expected Variable(\"$^\") as first part, got {:?}",
         parts
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Array-length operator — $#array, $#{$ref}, $#$ref
+// ---------------------------------------------------------------------------
+
+// $#array is this PR's headline claim but had zero direct coverage.
+#[test]
+fn dollar_hash_array_in_string_emits_variable() -> R {
+    let parts = interpolated_parts(r#""$#array""#).ok_or("no InterpolatedString")?;
+    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$#array"))]);
+    Ok(())
+}
+
+// $#{$ref} interpolates to the last index of the array ref $ref. Verified
+// against real perl 5.38.2:
+//   my @arr = (10,20,30,40); my $ref = \@arr; print "$#{$ref}";  # prints 3
+// It must be emitted as one Variable part, not fragmented into
+// Variable("$#") + Literal("{") + Variable("$ref") + Literal("}").
+#[test]
+fn dollar_hash_brace_ref_in_string_emits_single_variable() -> R {
+    let parts = interpolated_parts(r#""$#{$ref}""#).ok_or("no InterpolatedString")?;
+    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$#{$ref}"))]);
+    Ok(())
+}
+
+// $#$ref is the sigil-less-brace form of the same thing. Verified against
+// real perl 5.38.2 (same script as above): `print "$#$ref";` also prints 3.
+// It must be emitted as one Variable part, not Variable("$#") + Variable("$ref").
+#[test]
+fn dollar_hash_dollar_ref_in_string_emits_single_variable() -> R {
+    let parts = interpolated_parts(r#""$#$ref""#).ok_or("no InterpolatedString")?;
+    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$#$ref"))]);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Escaped `\$foo` must stay a literal, never a Variable
+// ---------------------------------------------------------------------------
+
+#[test]
+fn escaped_dollar_foo_stays_literal() -> R {
+    let parts = interpolated_parts(r#""\$foo""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Literal(Arc::from("\\$foo"))],
+        "an escaped \\$ must never become a Variable part"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Bare trailing '$' catch-all fallback (the `_ => {}` replacement) — exercises
+// the fallback arm that previously had zero coverage.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bare_trailing_dollar_in_middle_of_literal_stays_literal() -> R {
+    let parts = interpolated_parts(r#""abc$""#).ok_or("no InterpolatedString")?;
+    let joined: String = parts
+        .iter()
+        .map(|part| match part {
+            StringPart::Literal(text) => Ok(text.to_string()),
+            other => Err(format!("expected only literal parts, got {other:?}")),
+        })
+        .collect::<Result<String, String>>()?;
+    assert_eq!(joined, "abc$", "trailing '$' in \"abc$\" must survive as literal text");
     Ok(())
 }
 

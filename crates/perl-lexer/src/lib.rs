@@ -2664,9 +2664,18 @@ impl<'a> PerlLexer<'a> {
                                 }
                             }
                         }
-                        // Digit variables: $0 (program name), $1..$9 (capture groups), etc.
+                        // Digit variables: $0 (program name), $1..$9, $10, $11, ...
+                        // (capture groups). Perl consumes *all* consecutive digits
+                        // into one numeric variable -- `"$10"` is capture group 10,
+                        // not `$1` followed by literal `"0"` (verified against real
+                        // perl 5.38.2 with an 11-group match: `$10` prints the 10th
+                        // group, not `$1` + "0"). `$0` (the program name) is simply
+                        // the one-digit case of this same rule.
                         Some(ch) if ch.is_ascii_digit() => {
                             self.advance();
+                            while self.current_char().is_some_and(|c| c.is_ascii_digit()) {
+                                self.advance();
+                            }
                             parts.push(StringPart::Variable(Arc::from(
                                 &self.input[part_start..self.position],
                             )));
@@ -2681,27 +2690,76 @@ impl<'a> PerlLexer<'a> {
                                 &self.input[part_start..self.position],
                             )));
                         }
-                        // Array-length operator: $#array
+                        // Array-length operator: $#array, $#{expr}, $#$ref. All
+                        // three interpolate to the last index of the referenced
+                        // array (verified against real perl 5.38.2: `$#{$ref}` and
+                        // `$#$ref` both print the same value as `$#array` for an
+                        // array ref `$ref`). Each is emitted as a single Variable
+                        // part -- `$#{$ref}`/`$#$ref` must not fragment into
+                        // separate Variable/Literal parts the way plain `${expr}`
+                        // subscripting would.
                         Some('#') => {
                             self.advance(); // consume '#'
-                            while self.current_char().is_some_and(is_perl_identifier_continue) {
-                                self.advance();
+                            match self.current_char() {
+                                Some('{') => {
+                                    let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                                }
+                                Some('$') => {
+                                    // $#$ref (and chained $#$$ref) -- consume the
+                                    // deref sigil chain, then the identifier.
+                                    while self.current_char() == Some('$') {
+                                        self.advance();
+                                    }
+                                    while self
+                                        .current_char()
+                                        .is_some_and(is_perl_identifier_continue)
+                                    {
+                                        self.advance();
+                                    }
+                                }
+                                _ => {
+                                    while self
+                                        .current_char()
+                                        .is_some_and(is_perl_identifier_continue)
+                                    {
+                                        self.advance();
+                                    }
+                                }
                             }
                             parts.push(StringPart::Variable(Arc::from(
                                 &self.input[part_start..self.position],
                             )));
                         }
-                        // $$ (PID) — only when not followed by an identifier start
+                        // $$ (PID) when not followed by an identifier; otherwise
+                        // `$$foo`, `$$$foo`, etc. are scalar-dereference chains and
+                        // interpolate as a single unit (verified against real perl
+                        // 5.38.2: `my $foo = \$x; print "$$foo"` prints the
+                        // dereferenced value of $x, and `"$$$foo"` double-derefs).
+                        // Emitted as one Variable part spanning the whole chain,
+                        // mirroring how the `${expr}` arm handles a unit. Bare `$$`
+                        // (no trailing identifier) remains the PID.
                         Some('$') => {
-                            if !self.peek_char(1).is_some_and(is_perl_identifier_start) {
-                                self.advance(); // consume second '$' for PID
-                                parts.push(StringPart::Variable(Arc::from(
-                                    &self.input[part_start..self.position],
-                                )));
-                            } else {
-                                // $$identifier = scalar deref; treat first '$' as literal
-                                current_literal.push('$');
+                            // Count consecutive '$' sigils starting at the current
+                            // position (at least 1, since we matched on '$' here).
+                            let mut dollar_run = 0usize;
+                            while self.peek_char(dollar_run) == Some('$') {
+                                dollar_run += 1;
                             }
+                            if self.peek_char(dollar_run).is_some_and(is_perl_identifier_start) {
+                                // Deref chain: consume the remaining '$' sigils,
+                                // then the identifier they dereference.
+                                for _ in 0..dollar_run {
+                                    self.advance();
+                                }
+                                while self.current_char().is_some_and(is_perl_identifier_continue) {
+                                    self.advance();
+                                }
+                            } else {
+                                self.advance(); // consume second '$' for PID
+                            }
+                            parts.push(StringPart::Variable(Arc::from(
+                                &self.input[part_start..self.position],
+                            )));
                         }
                         // Punctuation special variables: $!, $@, $?, $&, etc.
                         //
