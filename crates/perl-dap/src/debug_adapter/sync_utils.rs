@@ -181,6 +181,10 @@ fn try_emit_drop_notice(
 /// Only `output` drops increment [`OUTPUT_DROP_COUNTER`] and attempt
 /// [`try_emit_drop_notice`] — non-output drops must not inflate the output-drop
 /// accounting used for the user-visible console notice.
+///
+/// Hidden from the published facade: currently exercised by integration tests; not
+/// yet wired into production cleanup callers (which still use [`dispatch_event`]).
+#[doc(hidden)]
 pub fn dispatch_event_nonblocking(
     sender: &SyncSender<DapMessage>,
     seq: &Mutex<i64>,
