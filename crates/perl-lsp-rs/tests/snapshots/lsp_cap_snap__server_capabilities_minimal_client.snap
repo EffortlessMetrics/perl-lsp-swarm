@@ -30,6 +30,7 @@ completionProvider:
     - "-"
     - ">"
     - ":"
+    - "."
     - /
     - "\\"
     - "\""
@@ -63,6 +64,7 @@ executeCommandProvider:
     - perl.runSubtest
     - perl.debugFile
     - perl.debugTest
+    - perl.debugTests
     - perl.debugTestFile
     - perl.goToTest
     - perl.goToImplementation
