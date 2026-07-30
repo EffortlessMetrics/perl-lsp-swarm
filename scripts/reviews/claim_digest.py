@@ -128,8 +128,14 @@ def canonical_material_claim(body: str) -> tuple[str, str]:
                 fence = None
             continue
 
+        was_in_comment = in_comment
         visible_line, in_comment = _visible_structure_text(source_line, in_comment)
-        visible_document.append(visible_line)
+        comment_only_line = (
+            not visible_line.strip()
+            and (was_in_comment or "<!--" in source_line or "-->" in source_line)
+        )
+        if not comment_only_line:
+            visible_document.append(visible_line)
         opening = _fence_opening(visible_line)
         if opening is not None:
             if current is not None:
@@ -143,7 +149,7 @@ def canonical_material_claim(body: str) -> tuple[str, str]:
             sections.setdefault(current, [])
             continue
 
-        if current is not None:
+        if current is not None and not comment_only_line:
             sections[current].append(visible_line)
 
     recognized_keys = {
