@@ -2544,6 +2544,49 @@ impl<'a> PerlLexer<'a> {
                         self.advance();
                     }
                 }
+                '@' if self.config.parse_interpolation => {
+                    if !current_literal.is_empty() {
+                        parts.push(StringPart::Literal(Arc::from(current_literal)));
+                        current_literal = String::new();
+                    }
+                    let part_start = self.position;
+                    self.advance(); // consume '@'
+                    match self.current_char() {
+                        Some('{') => {
+                            let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                            parts.push(StringPart::Expression(Arc::from(
+                                &self.input[part_start..self.position],
+                            )));
+                        }
+                        Some(ch) if is_perl_identifier_start(ch) => {
+                            while self.position < self.input_bytes.len() {
+                                let byte = self.input_bytes[self.position];
+                                if byte.is_ascii_alphanumeric() || byte == b'_' {
+                                    self.position += 1;
+                                } else if byte >= 128 {
+                                    if let Some(c) = self.current_char() {
+                                        if is_perl_identifier_continue(c) {
+                                            self.advance();
+                                        } else {
+                                            break;
+                                        }
+                                    } else {
+                                        break;
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                            parts.push(StringPart::Variable(Arc::from(
+                                &self.input[part_start..self.position],
+                            )));
+                        }
+                        _ => {
+                            // '@' not followed by identifier or '{' — treat as literal
+                            current_literal.push('@');
+                        }
+                    }
+                }
                 '$' if self.config.parse_interpolation => {
                     // Handle variable interpolation - avoid unnecessary clone
                     if !current_literal.is_empty() {
@@ -2664,7 +2707,12 @@ impl<'a> PerlLexer<'a> {
                                 }
                             }
                         }
-                        _ => {}
+                        _ => {
+                            // '$' not followed by identifier or '{' — treat as literal.
+                            // The '$' was already consumed by advance(); re-emit it so it
+                            // is not silently dropped from the interpolated string model.
+                            current_literal.push('$');
+                        }
                     }
                 }
                 _ => {
