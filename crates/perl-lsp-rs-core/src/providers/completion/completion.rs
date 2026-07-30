@@ -111,7 +111,7 @@ mod xs_api;
 
 // Re-export public types
 pub use self::context::CompletionContext;
-pub use self::items::{CompletionItem, CompletionItemKind};
+pub use self::items::{CompletionItem, CompletionItemKind, InsertTextFormat};
 pub use self::methods::get_dbi_method_documentation;
 pub use self::test_more::get_test_more_documentation;
 pub use self::workspace::collect_module_names_from_roots_with_cache;
@@ -1381,6 +1381,7 @@ impl CompletionProvider {
                 additional_edits: vec![],
                 text_edit_range: Some((context.position - key_prefix_len, context.position)),
                 commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
             });
         }
@@ -1413,6 +1414,7 @@ impl CompletionProvider {
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
+                    insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
                 });
             };
@@ -1516,6 +1518,7 @@ impl CompletionProvider {
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
+                    insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
                 });
             }
@@ -1563,6 +1566,7 @@ impl CompletionProvider {
                 additional_edits: vec![],
                 text_edit_range: Some((context.prefix_start, context.position)),
                 commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
             });
         }
