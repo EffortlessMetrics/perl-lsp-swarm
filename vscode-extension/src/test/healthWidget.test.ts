@@ -179,7 +179,7 @@ describe('HealthWidget — $/progress', () => {
     expect(widget.mode).toBe('running');
   });
 
-  test('Stopped resets error and file counts so stale data is not shown on restart', () => {
+  test('Stopped clears the server-owned error count but keeps the client-owned file count', () => {
     const { item, widget } = makeWidget();
     widget.setFileCount(100);
     widget.setErrorCount(5);
@@ -187,12 +187,21 @@ describe('HealthWidget — $/progress', () => {
     expect(item.text).toBe('$(check) perl-lsp: 100 files | 5 errors');
 
     widget.onStateChange(ClientState.Stopped);
-
-    // After an auto-restart, Running should not show pre-crash counts.
     widget.onStateChange(ClientState.Running);
-    expect(item.text).toBe('$(check) perl-lsp');
-    expect(widget.fileCount).toBeUndefined();
+
+    // The error count belonged to the ended server session, so it must not
+    // survive the restart. It repopulates via onDidChangeDiagnostics once the
+    // restarted server republishes.
     expect(widget.errorCount).toBe(0);
+
+    // The file count is computed client-side from workspace.findFiles, so a
+    // server restart does not invalidate it. It MUST survive: nothing
+    // recomputes it after start(), because refreshFileCount() short-circuits
+    // on the cached fileCountPromise that only a workspace-folder change
+    // clears. Blanking it here left the widget permanently without a file
+    // count after any crash or manual restart.
+    expect(widget.fileCount).toBe(100);
+    expect(item.text).toBe('$(check) perl-lsp: 100 files');
   });
 
   test('Running during active tokens stays indexing', () => {

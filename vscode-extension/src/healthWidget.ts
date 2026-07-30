@@ -94,12 +94,25 @@ export class HealthWidget {
         this._activeTokens.clear();
         this._indexingMessage = undefined;
         this._indexingPercentage = undefined;
-        // Counts belong to the server session that just ended. Clearing them
-        // here means a crash + auto-restart renders a clean widget rather than
-        // pre-crash file/error counts, which would otherwise persist until the
-        // next onDidChangeDiagnostics fired.
+        // The two counts have different owners, so they are handled
+        // differently here.
+        //
+        // `_errorCount` came from the server session that just ended, so it IS
+        // stale — clear it. It repopulates on its own: HealthWidgetDataSource
+        // subscribes to `onDidChangeDiagnostics` and calls
+        // `refreshErrorCount()`, which the restarted server triggers as it
+        // republishes diagnostics.
+        //
+        // `_fileCount` is client-owned — HealthWidgetDataSource computes it
+        // from `vscode.workspace.findFiles`, never from the server — so a
+        // server restart does not invalidate it; the files on disk did not
+        // change. Do NOT clear it. `refreshFileCount()` short-circuits on the
+        // cached `fileCountPromise`, which is only invalidated when workspace
+        // folders change, and `start()` runs once per data-source lifetime, so
+        // nothing would recompute it. Clearing here blanked the count until the
+        // workspace changed or the extension host reloaded — worse than the
+        // stale value this reset exists to avoid.
         this._errorCount = 0;
-        this._fileCount = undefined;
         this._setMode('stopped');
         break;
     }
