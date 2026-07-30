@@ -70,8 +70,10 @@ say_it("hello world");
 // Sub without a signature gets no hints
 // ---------------------------------------------------------------------------
 #[test]
-fn test_parameter_hints_user_sub_no_signature_suppressed() -> Result<(), Box<dyn std::error::Error>>
+fn test_parameter_hints_user_sub_at_underscore_unpacking() -> Result<(), Box<dyn std::error::Error>>
 {
+    // `my ($x, $y) = @_` unpacking is now supported by
+    // extract_params_from_at_underscore — these subs DO get parameter hints.
     let src = r#"
 sub old_style { my ($x, $y) = @_; $x + $y }
 old_style(1, 2);
@@ -81,10 +83,8 @@ old_style(1, 2);
 
     let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
 
-    assert!(
-        !labels.contains(&"x:"),
-        "Should not hint for sub without formal signature; labels: {labels:?}"
-    );
+    assert!(labels.contains(&"x:"), "Should hint x: for @_ unpacking sub; labels: {labels:?}");
+    assert!(labels.contains(&"y:"), "Should hint y: for @_ unpacking sub; labels: {labels:?}");
     Ok(())
 }
 
@@ -184,7 +184,8 @@ some_external_function("a", "b");
 /// No NodeKind::Signature is emitted for @_-unpacked subs, so user_sigs has no
 /// entry for `render`, no resolver is present, and the walker skips cleanly.
 #[test]
-fn test_method_call_inlay_hints_in_file_method() -> Result<(), Box<dyn std::error::Error>> {
+fn test_method_call_inlay_hints_at_underscore_unpacking() -> Result<(), Box<dyn std::error::Error>>
+{
     let src = r#"
 package Formatter;
 sub render {
@@ -195,9 +196,9 @@ package main;
 my $fmt = Formatter->new();
 $fmt->render("hello %s", 10);
 "#;
-    // `render` is an old-style sub, so user_sigs won't have a formal signature
-    // (no NodeKind::Signature). Test falls through to no-resolver path → no hints.
-    // This confirms the no-false-positive guarantee for @_-style subs.
+    // `render` uses `my ($self, $template, $limit) = @_` unpacking which is now
+    // supported by extract_params_from_at_underscore. The `$self` invocant is
+    // skipped, so hints should show `template:` and `limit:`.
     let ast = ast_for(src)?;
     let hints = parameter_hints(&ast, &dummy_pos, None);
 
@@ -207,17 +208,50 @@ $fmt->render("hello %s", 10);
         .filter(|l| *l == "template:" || *l == "limit:")
         .collect();
 
-    // Old-style subs (my ($self, $template, $limit) = @_) are NOT indexed in
-    // user_sigs (only formal `sub foo($a, $b)` signatures are).  Confirm no hints.
     assert!(
-        method_labels.is_empty(),
-        "Old-style @_-unpacked method should produce no hints without resolver; \
-         labels: {method_labels:?}"
+        method_labels.contains(&"template:"),
+        "Should hint template: for @_ unpacked method; labels: {method_labels:?}"
+    );
+    assert!(
+        method_labels.contains(&"limit:"),
+        "Should hint limit: for @_ unpacked method; labels: {method_labels:?}"
     );
     Ok(())
 }
 
-/// Strong-oracle test: formal-signature method in the same file using Perl 5.36+ syntax.
+/// Regression test for the most common Perl OO unpacking idiom:
+/// `my $self = shift;` followed by `my ($a, $b) = @_;`.
+/// Previously dead code — the shift detection used `Display` format
+/// which produced "FunctionCall" instead of checking the function name.
+#[test]
+fn test_parameter_hints_shift_based_unpacking() -> Result<(), Box<dyn std::error::Error>> {
+    let src = r#"
+package Handler;
+sub process {
+    my $self = shift;
+    my ($data, $count) = @_;
+    return $data x $count;
+}
+package main;
+my $h = Handler->new();
+$h->process("ab", 3);
+"#;
+    let ast = ast_for(src)?;
+    let hints = parameter_hints(&ast, &dummy_pos, None);
+
+    let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+
+    // The invocant ($self) is skipped; only $data and $count should be hinted.
+    assert!(
+        labels.contains(&"data:"),
+        "Shift + @_ unpacking should hint data:; labels: {labels:?}"
+    );
+    assert!(
+        labels.contains(&"count:"),
+        "Shift + @_ unpacking should hint count:; labels: {labels:?}"
+    );
+    Ok(())
+}
 /// Param list: ($self, $template, $limit) → two visible params after skipping $self.
 ///
 /// This tests the NodeKind::Subroutine path (formal signature) combined with
