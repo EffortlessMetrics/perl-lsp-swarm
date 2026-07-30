@@ -179,6 +179,22 @@ describe('HealthWidget — $/progress', () => {
     expect(widget.mode).toBe('running');
   });
 
+  test('Stopped resets error and file counts so stale data is not shown on restart', () => {
+    const { item, widget } = makeWidget();
+    widget.setFileCount(100);
+    widget.setErrorCount(5);
+    widget.onStateChange(ClientState.Running);
+    expect(item.text).toBe('$(check) perl-lsp: 100 files | 5 errors');
+
+    widget.onStateChange(ClientState.Stopped);
+
+    // After an auto-restart, Running should not show pre-crash counts.
+    widget.onStateChange(ClientState.Running);
+    expect(item.text).toBe('$(check) perl-lsp');
+    expect(widget.fileCount).toBeUndefined();
+    expect(widget.errorCount).toBe(0);
+  });
+
   test('Running during active tokens stays indexing', () => {
     const { widget } = makeWidget();
     widget.onProgress('token-1', { kind: 'begin', title: 'Indexing' });

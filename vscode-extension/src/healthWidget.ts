@@ -94,6 +94,12 @@ export class HealthWidget {
         this._activeTokens.clear();
         this._indexingMessage = undefined;
         this._indexingPercentage = undefined;
+        // Counts belong to the server session that just ended. Clearing them
+        // here means a crash + auto-restart renders a clean widget rather than
+        // pre-crash file/error counts, which would otherwise persist until the
+        // next onDidChangeDiagnostics fired.
+        this._errorCount = 0;
+        this._fileCount = undefined;
         this._setMode('stopped');
         break;
     }
