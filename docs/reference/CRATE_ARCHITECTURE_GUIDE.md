@@ -4,11 +4,11 @@ This file was a v0.8.8-era combined crate inventory and Claude swarm-control gui
 
 Use the current sources instead:
 
-- [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md) — current system and crate architecture;
-- [`../../START_HERE.md`](../../START_HERE.md) — repository orientation and reading order;
-- [`../../AGENTS.md`](../../AGENTS.md) and [`../../CLAUDE.md`](../../CLAUDE.md) — current provider front doors;
-- [`../agents/DEVELOPMENT_METHOD.md`](../agents/DEVELOPMENT_METHOD.md) — provider-neutral development method;
-- [`../agents/ORCHESTRATION.md`](../agents/ORCHESTRATION.md) — within-claim orchestration and one-writer control;
+- [`../../CLAUDE.md`](../../CLAUDE.md) — current Claude repository operating contract;
+- [`../../AGENTS.md`](../../AGENTS.md) — current provider front door and agent roster;
+- [`../../docs/reference/ARCHITECTURE.md`](../../docs/reference/ARCHITECTURE.md) — current system and crate architecture;
+- [`../../docs/reference/ORCHESTRATION_DOCTRINE.md`](../../docs/reference/ORCHESTRATION_DOCTRINE.md) — orchestration and routing model;
+- [`../../docs/agents/IMPLEMENTATION_WORKER.md`](../../docs/agents/IMPLEMENTATION_WORKER.md) — provider-neutral implementation method;
 - package-local `AGENTS.md` / `CLAUDE.md` files — domain ownership, constraints, and focused commands;
 - current Cargo manifests and source — actual workspace membership and public crate seams.
 
