@@ -3769,16 +3769,34 @@ impl WorkspaceIndex {
         // Collect results with a relevance score for ranking. (#5087)
         // Match priority: exact > substring > subsequence (fuzzy).
         //
-        // Subsequence matching is only used for queries of at least 2 characters;
-        // shorter queries produce too many false positives (e.g. "a" matches
-        // nearly every symbol name). Empty queries are handled by exact/substring
-        // matchers (Rust's `contains("")` returns true for all strings, which is
-        // the desired "list everything" behavior for empty workspace/symbol queries).
-        let allow_subsequence = query_lower.chars().count() >= 2;
+        // Query-length policy (#5335):
+        //
+        // * empty query  — list everything. `contains("")` is true for every
+        //   name, which is the desired behavior for a symbol picker opened
+        //   before the user types.
+        // * 1 character  — **prefix** match only. Substring and subsequence both
+        //   degenerate for a single character: `name.contains(c)` and
+        //   `is_subsequence(c, name)` accept the identical set of names, and the
+        //   substring branch is evaluated first. So gating *only* the
+        //   subsequence branch on a 2-char minimum is a no-op for exactly the
+        //   case it was meant to fix — "a" still matched every name containing
+        //   an 'a'. Requiring a prefix is what actually makes a 1-char query
+        //   selective while keeping it useful.
+        // * 2+ characters — exact > substring > subsequence, unchanged.
+        let query_chars = query_lower.chars().count();
+        let single_char = query_chars == 1;
+        let allow_subsequence = query_chars >= 2;
         let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
         for (name_key, symbols) in search_idx.iter() {
             let score = if name_key == &query_lower {
                 3 // exact match
+            } else if single_char {
+                // Prefix-only for single-character queries (see policy above).
+                if name_key.starts_with(&query_lower) {
+                    2
+                } else {
+                    continue;
+                }
             } else if name_key.contains(&query_lower) {
                 2 // substring match
             } else if allow_subsequence && is_subsequence(&query_lower, name_key) {
@@ -11071,6 +11089,76 @@ mod entity_id_file_scoped_tests {
         assert_eq!(
             process_count, 1,
             "'process' must appear exactly once (no dup from dual-key indexing); got: {process_count}"
+        );
+    }
+
+    /// Regression guard for #5335: a single-character query must not return a
+    /// wall of every symbol that merely *contains* that character.
+    ///
+    /// The first attempt at #5335 gated only the subsequence branch on a
+    /// 2-character minimum. That is a no-op for 1-character needles: for a
+    /// single char, `haystack.contains(c)` and `is_subsequence(c, haystack)`
+    /// accept exactly the same set, and the substring branch is evaluated
+    /// first — so every "contains an 'a'" symbol still came back.
+    #[test]
+    fn single_char_query_matches_prefix_only_not_every_containing_symbol() {
+        let index = WorkspaceIndex::new();
+
+        must(index.index_file(
+            must(url::Url::parse("file:///lib/Shapes.pm")),
+            // Every name below contains an 'a'; only `alpha` starts with one.
+            "package Shapes;\nsub alpha { 1 }\nsub beta { 2 }\nsub gamma { 3 }\nsub delta { 4 }\n1;\n"
+                .to_string(),
+        ));
+
+        let names: Vec<String> =
+            index.search_source_symbols("a", None).iter().map(|s| s.name.to_string()).collect();
+
+        assert!(
+            names.iter().any(|n| n == "alpha"),
+            "1-char query 'a' must still match the prefix symbol 'alpha'; got: {names:?}"
+        );
+        for noise in ["beta", "gamma", "delta"] {
+            assert!(
+                !names.iter().any(|n| n == noise),
+                "1-char query 'a' must NOT match '{noise}' (contains 'a' but does not start \
+                 with it); got: {names:?}"
+            );
+        }
+    }
+
+    /// A 1-character query still honours qualified-name prefixes, and an empty
+    /// query must keep its "list everything" behaviour (used by clients that
+    /// open the symbol picker before typing).
+    #[test]
+    fn single_char_gate_preserves_empty_query_and_multichar_fuzzy() {
+        let index = WorkspaceIndex::new();
+
+        must(index.index_file(
+            must(url::Url::parse("file:///lib/Utils.pm")),
+            "package Utils;\nsub get_page_name { 1 }\nsub helper { 2 }\n1;\n".to_string(),
+        ));
+
+        // Empty query still lists everything.
+        assert!(
+            !index.search_source_symbols("", None).is_empty(),
+            "empty query must still list symbols"
+        );
+
+        // 2+ char subsequence matching is untouched: "gpn" -> get_page_name.
+        let fuzzy: Vec<String> =
+            index.search_source_symbols("gpn", None).iter().map(|s| s.name.to_string()).collect();
+        assert!(
+            fuzzy.iter().any(|n| n == "get_page_name"),
+            "multi-char subsequence 'gpn' must still match 'get_page_name'; got: {fuzzy:?}"
+        );
+
+        // 2+ char substring matching is untouched.
+        let substr: Vec<String> =
+            index.search_source_symbols("elp", None).iter().map(|s| s.name.to_string()).collect();
+        assert!(
+            substr.iter().any(|n| n == "helper"),
+            "multi-char substring 'elp' must still match 'helper'; got: {substr:?}"
         );
     }
 
