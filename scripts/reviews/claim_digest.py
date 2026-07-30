@@ -59,8 +59,12 @@ def _normalize_text(text: str) -> str:
     return "\n".join(normalized).strip()
 
 
-def _visible_structure_text(line: str, in_comment: bool) -> tuple[str, bool]:
-    """Remove HTML comments from rendered material outside fenced code."""
+def _visible_structure_text(
+    line: str,
+    in_comment: bool,
+    code_span_ticks: int | None,
+) -> tuple[str, bool, int | None]:
+    """Remove HTML comments while preserving literal Markdown code spans."""
 
     visible: list[str] = []
     cursor = 0
@@ -68,20 +72,40 @@ def _visible_structure_text(line: str, in_comment: bool) -> tuple[str, bool]:
         if in_comment:
             end = line.find("-->", cursor)
             if end < 0:
-                return "".join(visible), True
+                return "".join(visible), True, code_span_ticks
             cursor = end + 3
             in_comment = False
             continue
 
-        start = line.find("<!--", cursor)
-        if start < 0:
-            visible.append(line[cursor:])
-            break
-        visible.append(line[cursor:start])
-        cursor = start + 4
-        in_comment = True
+        if code_span_ticks is not None:
+            delimiter = "`" * code_span_ticks
+            end = line.find(delimiter, cursor)
+            if end < 0:
+                visible.append(line[cursor:])
+                return "".join(visible), False, code_span_ticks
+            visible.append(line[cursor : end + code_span_ticks])
+            cursor = end + code_span_ticks
+            code_span_ticks = None
+            continue
 
-    return "".join(visible), in_comment
+        if line.startswith("<!--", cursor):
+            cursor += 4
+            in_comment = True
+            continue
+
+        if line[cursor] == "`":
+            end = cursor
+            while end < len(line) and line[end] == "`":
+                end += 1
+            code_span_ticks = end - cursor
+            visible.append(line[cursor:end])
+            cursor = end
+            continue
+
+        visible.append(line[cursor])
+        cursor += 1
+
+    return "".join(visible), in_comment, code_span_ticks
 
 
 def _fence_opening(line: str) -> tuple[str, int] | None:
@@ -102,14 +126,18 @@ def _is_fence_closing(line: str, marker: str, minimum: int) -> bool:
     return count >= minimum and stripped[count:].strip() == ""
 
 
+def _is_indented_code(line: str) -> bool:
+    return line.startswith("    ") or line.startswith("\t")
+
+
 def canonical_material_claim(body: str) -> tuple[str, str]:
     """Return canonical visible material text and extraction mode.
 
     Only visible level-two headings delimit material sections. Heading-shaped
-    text inside fenced code blocks or HTML comments remains ordinary content and
-    cannot switch the digest from full-body fallback into material-section mode.
-    HTML comments outside fenced code are not rendered material, so they do not
-    affect currentness and cannot satisfy an otherwise-empty material section.
+    text inside fenced/indented code, inline code spans, or HTML comments remains
+    ordinary visible or hidden content according to GitHub Markdown semantics.
+    HTML comments outside literal code do not affect currentness and cannot
+    satisfy an otherwise-empty material section.
     """
 
     normalized = body.replace("\r\n", "\n").replace("\r", "\n")
@@ -118,6 +146,7 @@ def canonical_material_claim(body: str) -> tuple[str, str]:
     current: str | None = None
     fence: tuple[str, int] | None = None
     in_comment = False
+    code_span_ticks: int | None = None
 
     for source_line in normalized.split("\n"):
         if fence is not None:
@@ -128,23 +157,35 @@ def canonical_material_claim(body: str) -> tuple[str, str]:
                 fence = None
             continue
 
+        if not in_comment and code_span_ticks is None:
+            opening = _fence_opening(source_line)
+            if opening is not None:
+                visible_document.append(source_line)
+                if current is not None:
+                    sections[current].append(source_line)
+                fence = opening
+                continue
+            if _is_indented_code(source_line):
+                visible_document.append(source_line)
+                if current is not None:
+                    sections[current].append(source_line)
+                continue
+
         was_in_comment = in_comment
-        visible_line, in_comment = _visible_structure_text(source_line, in_comment)
+        visible_line, in_comment, code_span_ticks = _visible_structure_text(
+            source_line,
+            in_comment,
+            code_span_ticks,
+        )
         comment_only_line = (
             not visible_line.strip()
             and (was_in_comment or "<!--" in source_line or "-->" in source_line)
         )
         if not comment_only_line:
             visible_document.append(visible_line)
-        opening = _fence_opening(visible_line)
-        if opening is not None:
-            if current is not None:
-                sections[current].append(visible_line)
-            fence = opening
-            continue
 
         match = _HEADING.match(visible_line)
-        if match:
+        if match and code_span_ticks is None:
             current = match.group(1).strip().casefold()
             sections.setdefault(current, [])
             continue
