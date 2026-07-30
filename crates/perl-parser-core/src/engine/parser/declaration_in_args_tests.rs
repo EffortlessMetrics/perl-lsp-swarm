@@ -3,14 +3,15 @@
 
 use super::*;
 
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use perl_tdd_support::{must, must_some};
 
     /// Helper: parse code and return the full AST.
     fn parse_program(code: &str) -> Node {
         let mut parser = Parser::new(code);
-        parser.parse().unwrap_or_else(|e| panic!("Parse failed for `{code}`: {e:?}"))
+        must(parser.parse())
     }
 
     /// Helper: assert that the AST sexp contains no ERROR nodes.
@@ -24,10 +25,8 @@ mod tests {
     fn first_stmt(code: &str) -> Node {
         let ast = parse_program(code);
         match ast.kind {
-            NodeKind::Program { mut statements } if !statements.is_empty() => {
-                statements.swap_remove(0)
-            }
-            _ => panic!("Expected Program with statements, got: {}", ast.to_sexp()),
+            NodeKind::Program { mut statements } => must_some(statements.pop()),
+            _ => must_some(None),
         }
     }
 
