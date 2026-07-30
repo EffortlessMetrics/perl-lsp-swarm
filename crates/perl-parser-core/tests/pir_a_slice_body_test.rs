@@ -11,9 +11,9 @@
 
 use std::error::Error;
 
-use perl_parser_core::hir::lower_ast;
-use perl_parser_core::pir::{lower_hir_bodies, PirGraph, PirOperation, PIR_RECEIPT_VERSION};
 use perl_parser_core::Parser;
+use perl_parser_core::hir::lower_ast;
+use perl_parser_core::pir::{PIR_RECEIPT_VERSION, PirGraph, PirOperation, lower_hir_bodies};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
