@@ -30,7 +30,7 @@ const EXPECTED_VERSION: &str = env!("CARGO_PKG_VERSION");
 fn send_initialize_with_timeout(
     server: &common::LspServer,
     params: serde_json::Value,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, String> {
     let id = json!(1);
     common::send_request_no_wait(
         server,
@@ -47,13 +47,11 @@ fn send_initialize_with_timeout(
         &id,
         common::adaptive_timeout().max(Duration::from_secs(15)),
     )
-    .unwrap_or_else(|| {
-        panic!("initialize request timed out before the server returned serverInfo");
-    })
+    .ok_or_else(|| "initialize request timed out before the server returned serverInfo".to_owned())
 }
 
 #[test]
-fn lsp_server_version_matches_crate_version() {
+fn lsp_server_version_matches_crate_version() -> Result<(), String> {
     // Start the server using the same resolution logic as other tests
     let server = common::start_lsp_server();
 
@@ -66,7 +64,7 @@ fn lsp_server_version_matches_crate_version() {
             "rootUri": null,
             "workspaceFolders": null
         }),
-    );
+    )?;
 
     // Extract serverInfo.version from the response
     let server_version = response
@@ -103,10 +101,12 @@ fn lsp_server_version_matches_crate_version() {
     common::shutdown_and_exit(&server);
 
     eprintln!("✓ Server version {} matches expected {}", server_version, EXPECTED_VERSION);
+
+    Ok(())
 }
 
 #[test]
-fn lsp_server_identifier_is_perl_lsp() {
+fn lsp_server_identifier_is_perl_lsp() -> Result<(), String> {
     // Start the server
     let server = common::start_lsp_server();
 
@@ -117,7 +117,7 @@ fn lsp_server_identifier_is_perl_lsp() {
             "capabilities": {},
             "rootUri": null
         }),
-    );
+    )?;
 
     // Extract serverInfo.name from the response
     let server_name = response
@@ -135,4 +135,6 @@ fn lsp_server_identifier_is_perl_lsp() {
 
     // Clean shutdown
     common::shutdown_and_exit(&server);
+
+    Ok(())
 }
