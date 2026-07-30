@@ -7,7 +7,6 @@
 //! Each section is tagged with // AC:ID referencing issue #2783.
 
 // Response-shape failures are returned through the fallible test helpers below.
-#![allow(clippy::expect_used)]
 
 use perl_dap::{DapMessage, DebugAdapter};
 use serde_json::json;
