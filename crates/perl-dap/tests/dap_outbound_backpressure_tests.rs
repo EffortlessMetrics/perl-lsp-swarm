@@ -499,12 +499,14 @@ fn drop_notice_flood_does_not_produce_one_per_line() -> Result<(), String> {
 
     if total_drained != 1 {
         return Err(format!(
-            "a capacity-1 queue that never drained can hold only one message; drained={total_drained}"
+            "a capacity-1 queue that never drained can hold only one message; \
+             drained={total_drained}"
         ));
     }
     if notices != 0 {
         return Err(format!(
-            "a permanently-full queue must produce zero notices, not one per dropped line ({dropped} drops); notices={notices}"
+            "a permanently-full queue must produce zero notices, not one per dropped line \
+             ({dropped} drops); notices={notices}"
         ));
     }
     Ok(())
