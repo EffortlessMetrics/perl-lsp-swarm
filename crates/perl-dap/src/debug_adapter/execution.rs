@@ -265,37 +265,69 @@ impl DebugAdapter {
             };
         }
 
-        // Clear launched-session caches under the session lock, then drop the
-        // guard before `send_interrupt_signal`. On Windows that helper re-locks
-        // `self.session` to write debugger stdin; holding the same non-reentrant
-        // mutex across the call deadlocks pause delivery.
-        let launched_pid = {
+        // Deliver pause while the launched-session guard is held when possible:
+        // - Windows: write interrupt to debugger stdin under this lock. Do not
+        //   call `send_interrupt_signal` here — it re-locks `self.session` and
+        //   deadlocks on the non-reentrant mutex.
+        // - Unix: SIGINT via `send_interrupt_signal` does not re-lock session,
+        //   so keep the guard across the call to avoid a cleanup race between
+        //   cache clear and signal delivery.
+        let (signal_sent, failure_message) = {
             let mut session_guard = lock_or_recover(&self.session, "debug_adapter.session");
             if let Some(ref mut session) = *session_guard {
-                let pid = session.process.id();
                 session.variable_cache.clear();
                 session.stack_frames.clear();
-                Some(pid)
+                #[cfg(windows)]
+                {
+                    let sent = match session.process.stdin.as_mut() {
+                        Some(stdin) => match stdin.write_all(b"\x03\n") {
+                            Ok(()) => {
+                                let _ = stdin.flush();
+                                true
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to send interrupt via stdin: {}. \
+                                     Pause delivery failed — session left intact.",
+                                    e
+                                );
+                                false
+                            }
+                        },
+                        None => {
+                            tracing::warn!("No stdin handle for launched session pause");
+                            false
+                        }
+                    };
+                    (sent, "Failed to pause debugger")
+                }
+                #[cfg(unix)]
+                {
+                    let pid = session.process.id();
+                    (self.send_interrupt_signal(pid), "Failed to pause debugger")
+                }
+                #[cfg(not(any(unix, windows)))]
+                {
+                    (false, "Failed to pause debugger")
+                }
             } else {
-                None
+                drop(session_guard);
+                if let Some(pid) =
+                    *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
+                {
+                    #[cfg(windows)]
+                    {
+                        let _ = pid;
+                        (false, "Pause is unsupported for PID-attached sessions on Windows")
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        (self.send_interrupt_signal(pid), "Failed to pause debugger")
+                    }
+                } else {
+                    (false, "Failed to pause debugger")
+                }
             }
-        };
-
-        let (signal_sent, failure_message) = if let Some(pid) = launched_pid {
-            (self.send_interrupt_signal(pid), "Failed to pause debugger")
-        } else if let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
-        {
-            #[cfg(windows)]
-            {
-                let _ = pid;
-                (false, "Pause is unsupported for PID-attached sessions on Windows")
-            }
-            #[cfg(not(windows))]
-            {
-                (self.send_interrupt_signal(pid), "Failed to pause debugger")
-            }
-        } else {
-            (false, "Failed to pause debugger")
         };
 
         DapMessage::Response {
