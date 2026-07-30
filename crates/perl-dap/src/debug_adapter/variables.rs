@@ -875,7 +875,7 @@ mod hazard_invariant_tests {
     //
     // Skip when perl is not on PATH.
     #[test]
-    fn fix_1338_cached_eval_result_is_served_not_short_circuited() {
+    fn fix_1338_cached_eval_result_is_served_not_short_circuited() -> Result<(), String> {
         // Skip if perl is not available on PATH.
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
             return;
@@ -928,8 +928,10 @@ mod hazard_invariant_tests {
                     "cached EvalResult must return its 1 cached child; got {vars} (early return was applied incorrectly)"
                 );
             }
-            other => panic!("expected Response, got: {other:?}"),
+            other => return Err(format!("expected Response, got: {other:?}")),
         }
+
+        Ok(())
     }
 
     // --- build_locals_b_eval_cmd: Perl command template tests ---
