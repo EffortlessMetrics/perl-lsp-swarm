@@ -578,9 +578,17 @@ impl Scheduler {
             mutation_notify.notify_waiters();
 
             // A panicked mutation still owes its caller a reply, so `Panicked`
-            // delivers alongside the normal response path.
-            if let HandlerOutcome::Response(response) | HandlerOutcome::Panicked(response) = outcome
-            {
+            // delivers alongside the normal response path. Matched exhaustively
+            // on purpose: dropping an arm here is how #5206 happened, and an
+            // exhaustive match makes that a compile error rather than a silent
+            // hang.
+            let to_send = match outcome {
+                HandlerOutcome::Response(response) | HandlerOutcome::Panicked(response) => {
+                    Some(response)
+                }
+                HandlerOutcome::Empty => None,
+            };
+            if let Some(response) = to_send {
                 log_response(&response);
                 if server.outbound.send_response(response).is_err() {
                     break;
@@ -742,6 +750,10 @@ impl Scheduler {
                     return HandlerOutcome::Empty;
                 };
 
+                // The payload goes to the log, not onto the wire. A panic
+                // message can carry document text, absolute paths, or backend
+                // state, and the client-facing error is surfaced in editor UI;
+                // the method name is enough for the user to know what broke.
                 tracing::error!(method = %method, "Request handler panicked: {detail}");
                 HandlerOutcome::Panicked(JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
@@ -749,7 +761,9 @@ impl Scheduler {
                     result: None,
                     error: Some(JsonRpcError {
                         code: INTERNAL_ERROR,
-                        message: format!("{method} handler panicked: {detail}"),
+                        message: format!(
+                            "{method} handler failed unexpectedly; see the Perl LSP server log for details"
+                        ),
                         data: None,
                     }),
                 })
@@ -2166,9 +2180,12 @@ mod tests {
             "error should name the method that panicked; got {:?}",
             error.message
         );
+        // The payload belongs in the server log, not on the wire: a panic
+        // message can carry document text or absolute paths, and this error is
+        // surfaced in editor UI.
         assert!(
-            error.message.contains("provider exploded"),
-            "error should carry the panic payload; got {:?}",
+            !error.message.contains("provider exploded"),
+            "panic payload must not be echoed to the client; got {:?}",
             error.message
         );
     }
@@ -2187,23 +2204,37 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[allow(clippy::panic, reason = "the handler under test must actually panic")]
-    async fn panic_with_formatted_payload_is_reported() {
-        // `panic!("{}", x)` carries a `String` payload rather than a `&'static str`.
-        let outcome = Scheduler::run_handler(
-            || panic!("{}", "index out of range".to_string()),
-            Some(JsonRpcId::Integer(1)),
-            "textDocument/completion",
-        )
-        .await;
+    /// The `JoinError` a real panicking blocking task produces.
+    #[allow(clippy::panic, reason = "the task under test must actually panic")]
+    async fn join_error_from<F>(work: F) -> tokio::task::JoinError
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        match tokio::task::spawn_blocking(work).await {
+            Ok(()) => panic!("task was expected to panic but returned normally"),
+            Err(join_error) => join_error,
+        }
+    }
 
-        let error = must_some(must_some(panicked_response(outcome)).error);
-        assert!(
-            error.message.contains("index out of range"),
-            "String panic payloads must be reported, not swallowed; got {:?}",
-            error.message
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::panic, reason = "the task under test must actually panic")]
+    async fn join_failure_detail_recovers_static_str_payload() {
+        // A literal `panic!("...")` carries a `&'static str` payload.
+        let detail =
+            Scheduler::join_failure_detail(join_error_from(|| panic!("provider exploded")).await);
+        assert_eq!(detail, "provider exploded");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::panic, reason = "the task under test must actually panic")]
+    async fn join_failure_detail_recovers_formatted_string_payload() {
+        // `panic!("{}", x)` carries a `String` payload rather than a `&'static str`.
+        // These are separate downcast arms, so both need covering — the log line
+        // is the only place a panic payload is still reported.
+        let detail = Scheduler::join_failure_detail(
+            join_error_from(|| panic!("{}", "index out of range".to_string())).await,
         );
+        assert_eq!(detail, "index out of range");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
