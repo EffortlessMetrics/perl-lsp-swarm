@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{Context, Result, bail, ensure};
 use serde::Serialize;
 
 use crate::tasks::change_set::{self, ArtifactIdentity};
@@ -63,19 +63,21 @@ pub fn run(config: RepoHygieneConfig) -> Result<()> {
         (Some(base), Some(head)) => (base, head),
         _ => bail!("repo-hygiene requires a resolved commit range"),
     };
+    ensure_exact_head(&root, &head_sha)?;
 
-    let taplo_files = resolved
-        .changed_paths
-        .iter()
-        .filter(|path| is_toml_path(path))
-        .cloned()
-        .collect::<Vec<_>>();
-    let typos_files = resolved
-        .changed_paths
-        .iter()
-        .filter(|path| is_typos_path(path))
-        .cloned()
-        .collect::<Vec<_>>();
+    let changed_files = resolved.changed_paths;
+    let mut head_existing_files = Vec::with_capacity(changed_files.len());
+    for path in &changed_files {
+        if path_exists_at_head(&root, &head_sha, path)? {
+            head_existing_files.push(path.clone());
+        }
+    }
+    ensure_selected_paths_clean(&root, &head_existing_files)?;
+
+    let taplo_files =
+        head_existing_files.iter().filter(|path| is_toml_path(path)).cloned().collect::<Vec<_>>();
+    let typos_files =
+        head_existing_files.iter().filter(|path| is_typos_path(path)).cloned().collect::<Vec<_>>();
 
     let taplo = run_taplo(&root, &taplo_files);
     let typos = run_typos(&root, &typos_files);
@@ -84,7 +86,7 @@ pub fn run(config: RepoHygieneConfig) -> Result<()> {
         schema_version: SCHEMA_VERSION,
         base_sha: base_sha.clone(),
         head_sha: head_sha.clone(),
-        changed_files: resolved.changed_paths,
+        changed_files,
         taplo_files,
         typos_files,
         taplo,
@@ -122,7 +124,7 @@ fn run_taplo(root: &Path, files: &[String]) -> Vec<ToolResult> {
     format_args.extend(files.iter().map(String::as_str));
     let format = run_aqua(root, "taplo", &format_args);
 
-    let mut check_args = vec!["check"];
+    let mut check_args = vec!["lint"];
     check_args.extend(files.iter().map(String::as_str));
     let check = run_aqua(root, "taplo", &check_args);
     vec![format, check]
@@ -253,6 +255,77 @@ pub fn is_typos_path(path: &str) -> bool {
                 | "yml"
         )
     })
+}
+
+fn ensure_exact_head(root: &Path, expected_head: &str) -> Result<()> {
+    let actual_head = resolve_current_head(root)?;
+    ensure!(
+        actual_head == expected_head,
+        "repo-hygiene requires a clean checkout at head {expected_head}; current HEAD is {actual_head}"
+    );
+    Ok(())
+}
+
+fn resolve_current_head(root: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD^{commit}"])
+        .current_dir(root)
+        .output()
+        .context("resolving the checked-out HEAD")?;
+    if !output.status.success() {
+        bail!(
+            "could not resolve the checked-out HEAD: {}",
+            command_detail(&output.stdout, &output.stderr)
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn path_exists_at_head(root: &Path, head_sha: &str, path: &str) -> Result<bool> {
+    let object = format!("{head_sha}:{path}");
+    let exists = Command::new("git")
+        .args(["cat-file", "-e", &object])
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("checking whether {path} exists at {head_sha}"))?;
+    if !exists.status.success() {
+        return Ok(false);
+    }
+    let object_type = Command::new("git")
+        .args(["cat-file", "-t", &object])
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("checking the type of {path} at {head_sha}"))?;
+    if !object_type.status.success() {
+        bail!(
+            "could not inspect the type of {path} at {head_sha}: {}",
+            command_detail(&object_type.stdout, &object_type.stderr)
+        );
+    }
+    Ok(String::from_utf8_lossy(&object_type.stdout).trim() == "blob")
+}
+
+fn ensure_selected_paths_clean(root: &Path, paths: &[String]) -> Result<()> {
+    for path in paths {
+        for args in [["diff", "--quiet", "--"], ["diff", "--cached", "--"]] {
+            let output = Command::new("git")
+                .args(args)
+                .arg(path)
+                .current_dir(root)
+                .output()
+                .with_context(|| format!("checking whether {path} is clean"))?;
+            if output.status.code() == Some(1) {
+                bail!("repo-hygiene cannot prove {path}: the checked-out file is dirty");
+            }
+            if !output.status.success() {
+                bail!(
+                    "could not check whether {path} is clean: {}",
+                    command_detail(&output.stdout, &output.stderr)
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn command_detail(stdout: &[u8], stderr: &[u8]) -> String {

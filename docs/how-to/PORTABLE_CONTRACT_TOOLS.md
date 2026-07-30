@@ -62,7 +62,8 @@ The local and CI entry point for the scoped Taplo/typos contract is:
 cargo xtask repo-hygiene --base origin/main --head HEAD
 ```
 
-It consumes the shared exact-head change-set resolver. Taplo checks changed TOML
+It consumes the shared exact-head change-set resolver and requires the checkout
+to be at the requested head with selected files clean. Taplo checks changed TOML
 formatting and syntax; typos checks changed text/config/source files. An empty
 scope is `NOT_APPLICABLE`. Missing Aqua or a missing pinned tool is `NOT_PROVEN`
 and exits non-zero; it is never treated as a clean result.

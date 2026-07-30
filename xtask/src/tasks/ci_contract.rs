@@ -377,7 +377,10 @@ fn join_output(
 }
 
 fn result_for_exit(code: Option<i32>, detail: &str) -> ContractResultClass {
-    if detail.contains("repo-hygiene status is NotProven") {
+    if detail.contains("repo-hygiene status is NotProven")
+        || detail.contains("repo-hygiene requires a clean checkout")
+        || detail.contains("repo-hygiene cannot prove")
+    {
         return ContractResultClass::NotProven;
     }
     match code {
@@ -635,7 +638,7 @@ mod tests {
         let checks =
             select_checks(&["docs/guide.md".to_string()], "base", "head", Path::new("files.txt"));
         let ids = checks.iter().map(|check| check.id).collect::<Vec<_>>();
-        ensure!(ids == vec!["diff_check"], "docs-only selection was {ids:?}");
+        ensure!(ids == vec!["diff_check", "repo_hygiene"], "docs-only selection was {ids:?}");
         let diff_check = checks.first().ok_or_else(|| eyre!("docs-only selection was empty"))?;
         ensure!(
             diff_check.args == vec!["diff", "--check", "base..head"],
@@ -670,7 +673,8 @@ mod tests {
                 "diff_check",
                 "workflow_contract",
                 "workflow_trigger_policy",
-                "gate_policy"
+                "gate_policy",
+                "repo_hygiene"
             ],
             "workflow/policy selection was {ids:?}"
         );
@@ -686,7 +690,10 @@ mod tests {
             Path::new("files.txt"),
         );
         let ids = checks.iter().map(|check| check.id).collect::<Vec<_>>();
-        ensure!(ids == vec!["diff_check", "workflow_contract"], "shell selection was {ids:?}");
+        ensure!(
+            ids == vec!["diff_check", "workflow_contract", "repo_hygiene"],
+            "shell selection was {ids:?}"
+        );
         Ok(())
     }
 
@@ -721,6 +728,13 @@ mod tests {
             result_for_exit(Some(1), "policy finding: failed to read expected file")
                 == ContractResultClass::PolicyFinding,
             "policy output must not be downgraded by incidental wording"
+        );
+        ensure!(
+            result_for_exit(
+                Some(1),
+                "repo-hygiene requires a clean checkout at the requested head"
+            ) == ContractResultClass::NotProven,
+            "repo-hygiene proof-input failures must remain not-proven"
         );
         Ok(())
     }
