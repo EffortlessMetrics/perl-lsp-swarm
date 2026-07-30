@@ -112,19 +112,18 @@ fn test_from_tokens_empty_input() {
 }
 
 #[test]
-fn test_from_tokens_program_statement_count() {
+fn test_from_tokens_program_statement_count() -> Result<(), String> {
     let source = "my $a = 1;\nmy $b = 2;\nmy $c = 3;\n";
     let tokens = lex_to_tokens(source);
 
     let mut parser = Parser::from_tokens(tokens, source);
     let ast = must(parser.parse());
 
-    match ast.kind {
-        NodeKind::Program { ref statements } => {
-            assert_eq!(statements.len(), 3, "expected 3 statements");
-        }
-        _ => panic!("expected Program node"),
-    }
+    let NodeKind::Program { ref statements } = ast.kind else {
+        return Err("expected Program node".to_string());
+    };
+    assert_eq!(statements.len(), 3, "expected 3 statements");
+    Ok(())
 }
 
 #[test]
