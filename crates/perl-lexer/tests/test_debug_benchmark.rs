@@ -33,23 +33,23 @@ fn test_format_termination() -> TestResult {
     lexer.enter_format_mode();
 
     let token = lexer.next_token().ok_or("Expected token")?;
-    assert!(
-        matches!(token.token_type, TokenType::FormatBody(_) | TokenType::Error(_)),
-        "Expected FormatBody or Error, got {:?}",
-        token.token_type
-    );
 
-    // Whichever arm is taken, the payload must be non-empty — an empty body or
-    // an empty error message would be a silent lexer failure.
-    match token.token_type {
-        TokenType::FormatBody(content) => {
-            assert!(!content.is_empty(), "FormatBody payload must not be empty");
-        }
-        TokenType::Error(msg) => {
-            assert!(!msg.is_empty(), "Error payload must not be empty");
-        }
-        other => return Err(format!("unexpected token type: {other:?}").into()),
-    }
+    // This input carries the documented `.` terminator, so it must lex as a
+    // FormatBody — accepting an Error here would let a regression that rejects
+    // every valid terminated format body keep this test green. Error is the
+    // expected outcome only in the no-termination test below.
+    let TokenType::FormatBody(content) = token.token_type else {
+        return Err(format!(
+            "terminated format body must lex as FormatBody, got {:?}",
+            token.token_type
+        )
+        .into());
+    };
+    assert_eq!(
+        content.as_ref(),
+        "Some format content\n",
+        "FormatBody must carry the body text without the terminator"
+    );
 
     Ok(())
 }
