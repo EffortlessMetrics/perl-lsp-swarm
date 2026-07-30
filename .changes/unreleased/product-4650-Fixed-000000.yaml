@@ -1,5 +1,5 @@
 project: product
-component: Release tooling
+component: Packaging and distribution
 kind: Fixed
 body: >-
   Delete the orphaned homebrew/perl-lsp.rb formula (v0.11.0, wrong shape —
