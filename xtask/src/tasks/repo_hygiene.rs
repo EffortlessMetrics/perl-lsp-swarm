@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use color_eyre::eyre::{Context, Result, bail, ensure};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::tasks::change_set::{self, ArtifactIdentity};
 use crate::utils::project_root;
@@ -22,8 +22,9 @@ const AQUA_VERIFICATION_ENV: &[&str] = &[
     "AQUA_DISABLE_SLSA",
     "AQUA_DISABLE_GITHUB_ARTIFACT_ATTESTATION",
 ];
+const TAPLO_CONFIG_ENV: &str = "TAPLO_CONFIG";
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResultClass {
     Pass,
@@ -186,8 +187,17 @@ fn taplo_schema_policy(root: &Path, files: &[String]) -> Option<ToolResult> {
                 });
             }
         };
+        if is_remote_schema_reference(&content) {
+            return Some(ToolResult {
+                result: ResultClass::PolicyFinding,
+                command: "taplo lint --schema-policy".to_string(),
+                detail: format!(
+                    "external schema sources are not allowed for changed-file hygiene: {path}"
+                ),
+            });
+        }
         for (line_number, line) in content.lines().enumerate() {
-            if is_remote_schema_reference(line) {
+            if is_remote_schema_reference(line) && line.contains("#:schema") {
                 return Some(ToolResult {
                     result: ResultClass::PolicyFinding,
                     command: "taplo lint --schema-policy".to_string(),
@@ -204,10 +214,31 @@ fn taplo_schema_policy(root: &Path, files: &[String]) -> Option<ToolResult> {
 
 fn is_remote_schema_reference(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
-    lower.contains("schema")
-        && ["http://", "https://", "file://", "taplo://"]
-            .iter()
-            .any(|scheme| lower.contains(scheme))
+    if lower.contains("#:schema") && has_remote_schema_uri(&lower) {
+        return true;
+    }
+    toml::from_str::<toml::Value>(line)
+        .is_ok_and(|value| toml_value_has_remote_schema(&value, false))
+}
+
+fn has_remote_schema_uri(value: &str) -> bool {
+    ["http://", "https://", "file://", "taplo://"].iter().any(|scheme| value.contains(scheme))
+}
+
+fn toml_value_has_remote_schema(value: &toml::Value, schema_context: bool) -> bool {
+    match value {
+        toml::Value::Table(table) => table.iter().any(|(key, value)| {
+            let key_is_schema = key.to_ascii_lowercase().contains("schema");
+            toml_value_has_remote_schema(value, schema_context || key_is_schema)
+        }),
+        toml::Value::Array(values) => {
+            values.iter().any(|value| toml_value_has_remote_schema(value, schema_context))
+        }
+        toml::Value::String(value) => {
+            schema_context && has_remote_schema_uri(&value.to_ascii_lowercase())
+        }
+        _ => false,
+    }
 }
 
 fn run_aqua(root: &Path, tool: &str, args: &[String]) -> ToolResult {
@@ -220,6 +251,7 @@ fn run_aqua(root: &Path, tool: &str, args: &[String]) -> ToolResult {
     for name in AQUA_VERIFICATION_ENV {
         command.env_remove(name);
     }
+    command.env_remove(TAPLO_CONFIG_ENV);
     let rendered =
         format_command("aqua", &["exec".to_string(), "--".to_string(), tool.to_string()]);
     let rendered =
@@ -517,8 +549,18 @@ mod tests {
     #[test]
     fn remote_schema_references_are_rejected_before_taplo_runs() -> Result<()> {
         ensure!(is_remote_schema_reference("#:schema https://example.test/schema.json"));
-        ensure!(is_remote_schema_reference("path = \"file:///tmp/schema.json\" # schema"));
-        ensure!(!is_remote_schema_reference("path = \"schemas/local.json\" # schema"));
+        ensure!(is_remote_schema_reference("[schema]\npath = \"file:///tmp/schema.json\""));
+        ensure!(is_remote_schema_reference(
+            "[rule.schema]\npath = \"\"\"\nhttps://example.test/schema.json\n\"\"\""
+        ));
+        ensure!(!is_remote_schema_reference("[schema]\npath = \"schemas/local.json\""));
+        ensure!(!is_remote_schema_reference("[tool]\npath = \"https://example.test/tool\""));
+        Ok(())
+    }
+
+    #[test]
+    fn taplo_config_environment_override_is_cleared() -> Result<()> {
+        ensure!(TAPLO_CONFIG_ENV == "TAPLO_CONFIG");
         Ok(())
     }
 }
