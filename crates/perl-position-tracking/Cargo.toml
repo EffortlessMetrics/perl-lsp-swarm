@@ -22,7 +22,7 @@ include = [
 
 [dependencies]
 serde_json.workspace = true
-ropey = "1.6.1"
+ropey.workspace = true
 serde = { workspace = true }
 
 [features]

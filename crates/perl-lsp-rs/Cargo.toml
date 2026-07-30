@@ -79,7 +79,7 @@ walkdir.workspace = true
 uuid = { version = "1.23.2", features = ["v4"] }
 
 # Core dependencies for position mapping
-ropey = { version = "1.6.1" }
+ropey.workspace = true
 tokio = { workspace = true }
 once_cell.workspace = true
 tracing.workspace = true
