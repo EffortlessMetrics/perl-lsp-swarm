@@ -60,7 +60,7 @@ def _normalize_text(text: str) -> str:
 
 
 def _visible_structure_text(line: str, in_comment: bool) -> tuple[str, bool]:
-    """Remove HTML comments for structural parsing while preserving source text."""
+    """Remove HTML comments from rendered material outside fenced code."""
 
     visible: list[str] = []
     cursor = 0
@@ -108,16 +108,20 @@ def canonical_material_claim(body: str) -> tuple[str, str]:
     Only visible level-two headings delimit material sections. Heading-shaped
     text inside fenced code blocks or HTML comments remains ordinary content and
     cannot switch the digest from full-body fallback into material-section mode.
+    HTML comments outside fenced code are not rendered material, so they do not
+    affect currentness and cannot satisfy an otherwise-empty material section.
     """
 
     normalized = body.replace("\r\n", "\n").replace("\r", "\n")
     sections: dict[str, list[str]] = {}
+    visible_document: list[str] = []
     current: str | None = None
     fence: tuple[str, int] | None = None
     in_comment = False
 
     for source_line in normalized.split("\n"):
         if fence is not None:
+            visible_document.append(source_line)
             if current is not None:
                 sections[current].append(source_line)
             if _is_fence_closing(source_line, fence[0], fence[1]):
@@ -125,10 +129,11 @@ def canonical_material_claim(body: str) -> tuple[str, str]:
             continue
 
         visible_line, in_comment = _visible_structure_text(source_line, in_comment)
+        visible_document.append(visible_line)
         opening = _fence_opening(visible_line)
         if opening is not None:
             if current is not None:
-                sections[current].append(source_line)
+                sections[current].append(visible_line)
             fence = opening
             continue
 
@@ -139,7 +144,7 @@ def canonical_material_claim(body: str) -> tuple[str, str]:
             continue
 
         if current is not None:
-            sections[current].append(source_line)
+            sections[current].append(visible_line)
 
     recognized_keys = {
         alias.casefold()
@@ -147,7 +152,7 @@ def canonical_material_claim(body: str) -> tuple[str, str]:
         for alias in aliases
     }
     if not recognized_keys.intersection(sections):
-        canonical = _normalize_text(body)
+        canonical = _normalize_text("\n".join(visible_document))
         if not canonical:
             raise ValueError("empty PR body has no material claim to review")
         return canonical, "full_body_fallback"
