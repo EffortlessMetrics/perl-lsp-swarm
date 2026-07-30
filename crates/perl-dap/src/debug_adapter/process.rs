@@ -1090,10 +1090,11 @@ impl DebugAdapter {
     /// termination, client disconnect, or reader-thread EOF cleanup), the
     /// watchdog exits silently.  If the process is still running, the watchdog
     /// emits a `terminated` event with `reason: "debuggee_timeout"` after killing
-    /// the process.  The output reader thread will observe EOF and handle
-    /// session-state cleanup; the `TerminationState.emitted` flag ensures only
-    /// one `terminated` event reaches the client.  Kill runs before event
-    /// delivery so a stalled DAP client cannot leave the debuggee alive.
+    /// the process.  Termination is reserved (emitted-flag set) before the kill so
+    /// the output reader's EOF path cannot race in with `debugger_eof`.  The kill
+    /// still runs before the blocking event send so a stalled DAP client cannot
+    /// leave the debuggee alive.  The `TerminationState.emitted` flag ensures only
+    /// one `terminated` event reaches the client.
     ///
     /// The watchdog is generation-aware: if the session was replaced (e.g. via
     /// restart) before the timeout fires, the watchdog exits without acting.
@@ -1156,9 +1157,17 @@ impl DebugAdapter {
                 "Debuggee watchdog: killing hung perl -d process after wall-clock timeout"
             );
 
-            // Kill BEFORE emitting terminated. Blocking event delivery must not
-            // prevent cleanup when the DAP client has stalled and the outbound
-            // queue is full (#5149 / review P1).
+            // Reserve the timeout termination *before* kill so the output reader's
+            // EOF path cannot race in and emit `debugger_eof` first (#5149 review).
+            // Kill still runs before the blocking event send so a stalled client
+            // cannot leave the debuggee alive.
+            if !reserve_terminated_event(&termination_state, Some(session_generation)) {
+                tracing::debug!(
+                    "Debuggee watchdog: termination already reserved/emitted, skipping kill"
+                );
+                return;
+            }
+
             let killed = {
                 let Ok(mut guard) = session.lock() else {
                     return;
@@ -1174,15 +1183,13 @@ impl DebugAdapter {
                 tracing::error!("Debuggee watchdog: failed to kill hung debuggee process");
             }
 
-            // Notify the client after kill. Blocking send is acceptable here: the
-            // debuggee is already dead, and the emitted flag still suppresses the
-            // output reader's EOF-driven duplicate terminated event.
+            // Deliver the reserved timeout reason after kill. Blocking send is OK:
+            // the debuggee is already dead; the emitted flag was set at reserve time.
             if let Some(ref sender) = sender {
-                emit_terminated_event(
+                let _ = emit_event_safe(
                     sender,
                     &seq,
-                    &termination_state,
-                    Some(session_generation),
+                    "terminated",
                     Some(json!({"reason": "debuggee_timeout"})),
                 );
             }
@@ -2060,12 +2067,13 @@ impl DebugAdapter {
     }
 }
 
-fn emit_terminated_event(
-    sender: &SyncSender<DapMessage>,
-    seq: &Mutex<i64>,
+/// Atomically claim the single `terminated` emission for this session generation.
+///
+/// Returns `true` if this caller now owns emission (and must deliver the event),
+/// `false` if another path already reserved or emitted termination.
+fn reserve_terminated_event(
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
-    body: Option<Value>,
 ) -> bool {
     let mut state = lock_or_recover(termination_state, "debug_adapter.termination_state");
     if expected_generation.is_some_and(|generation| generation != state.generation) || state.emitted
@@ -2073,6 +2081,19 @@ fn emit_terminated_event(
         return false;
     }
     state.emitted = true;
+    true
+}
+
+fn emit_terminated_event(
+    sender: &SyncSender<DapMessage>,
+    seq: &Mutex<i64>,
+    termination_state: &Mutex<TerminationState>,
+    expected_generation: Option<u64>,
+    body: Option<Value>,
+) -> bool {
+    if !reserve_terminated_event(termination_state, expected_generation) {
+        return false;
+    }
     emit_event_safe(sender, seq, "terminated", body)
 }
 
