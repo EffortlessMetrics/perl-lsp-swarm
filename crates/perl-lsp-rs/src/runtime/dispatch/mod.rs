@@ -201,6 +201,43 @@ mod tests {
         );
     }
 
+    /// Preflight input-validation rejects requests whose method name contains
+    /// characters outside `[a-zA-Z0-9/$]` with JSON-RPC INVALID_REQUEST (-32600).
+    /// This is the end-to-end wiring test for the `validate_lsp_request` call
+    /// added to `preflight::prepare_request` (issue #5256).
+    #[test]
+    fn invalid_method_charset_returns_32600() {
+        let server = LspServer::new();
+        // Initialize so the server is past the not-initialized gate.
+        let _ = server.handle_request(request(1, "initialize", Some(json!({}))));
+
+        // `<` is not in the allowed method charset → INVALID_REQUEST.
+        let code = server
+            .handle_request(request(2, "textDocument/<script>", None))
+            .and_then(|r| r.error)
+            .map(|e| e.code);
+        assert_eq!(code, Some(-32600), "forbidden method charset must return -32600");
+    }
+
+    /// Preflight input-validation rejects requests whose params contain obvious
+    /// script-injection payloads with JSON-RPC INVALID_REQUEST (-32600).
+    #[test]
+    fn params_with_script_injection_return_32600() {
+        let server = LspServer::new();
+        let _ = server.handle_request(request(1, "initialize", Some(json!({}))));
+
+        // The `_` branch in validate_lsp_request blocks `<script` in any param value.
+        let code = server
+            .handle_request(request(
+                2,
+                "custom/eval",
+                Some(json!({"expression": "<script>alert(1)</script>"})),
+            ))
+            .and_then(|r| r.error)
+            .map(|e| e.code);
+        assert_eq!(code, Some(-32600), "script-injection in params must return -32600");
+    }
+
     /// Verify that the `$/test/slowOperation` endpoint is cfg-gated when neither
     /// test mode nor `expose_lsp_test_api` is enabled (issue #4632). The routing
     /// arm and handler must both carry the gate so a non-test, non-feature build

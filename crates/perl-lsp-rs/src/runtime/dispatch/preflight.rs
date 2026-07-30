@@ -39,6 +39,25 @@ pub(super) fn prepare_request(
         return PreflightOutcome::Respond(cancelled);
     }
 
+    let null = Value::Null;
+    let params_ref = request.params.as_ref().unwrap_or(&null);
+    if let Err(err) = crate::security::validate_lsp_request(&request.method, params_ref) {
+        tracing::debug!(method = %request.method, %err, "Rejected request: input validation failed");
+        if !context.should_respond {
+            return PreflightOutcome::NotificationHandled;
+        }
+        return PreflightOutcome::Respond(JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: context.id.as_ref().and_then(JsonRpcId::from_value),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32600,
+                message: format!("Invalid request: {err}"),
+                data: None,
+            }),
+        });
+    }
+
     auto_initialize_for_compat(server, request);
 
     PreflightOutcome::Continue
