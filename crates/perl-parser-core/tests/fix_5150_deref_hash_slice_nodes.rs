@@ -191,16 +191,26 @@ fn real_world_deref_hash_slice_in_assignment_lvalue() {
 }
 
 #[test]
-fn real_world_deref_key_value_slice_in_assignment_lvalue() {
-    // Lvalue deref key/value slice: %$href{qw(a b)} = (1, 2)
-    // Salvaged from #5183 — the `%`-sigil lvalue form was the one case across
-    // both competing drafts for #5150 that the merged fix did not cover.
-    let source = r#"%$href{qw(a b)} = (1, 2);"#;
+fn real_world_deref_key_value_slice_in_list_assignment_rvalue() {
+    // Deref key/value slice on the *right* of a list assignment:
+    //   my %pairs = %$href{qw(a b)};
+    //
+    // Salvaged from #5183, but corrected: that draft used the `%` slice as an
+    // assignment *target*, which is not valid Perl. Verified against
+    // perl 5.38.2:
+    //
+    //   $ perl -e 'my $href={}; %$href{qw(a b)} = (1,2);'
+    //   Can't modify key/value hash slice in list assignment
+    //
+    // Unlike an `@` hash slice, a `%` key/value slice cannot be an lvalue, so
+    // the rvalue form below is the real user scenario. (`@$href{...} = (...)`
+    // is a valid lvalue and is covered by the test above.)
+    let source = r#"my %pairs = %$href{qw(a b)};"#;
     assert_clean_parse(source);
     let ks = kinds(source);
     assert!(
         ks.contains(&"KeyValueSlice"),
-        "lvalue %$href{{...}} must produce KeyValueSlice; got: {ks:?}"
+        "rvalue %$href{{...}} must produce KeyValueSlice; got: {ks:?}"
     );
 }
 
