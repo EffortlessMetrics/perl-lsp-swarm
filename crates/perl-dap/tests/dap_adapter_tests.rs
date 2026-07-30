@@ -26,7 +26,11 @@ mod dap_phase2_tests {
         (adapter, rx)
     }
 
-    fn expect_response(msg: DapMessage, command: &str, expected_success: bool) -> Result<Option<Value>> {
+    fn expect_response(
+        msg: DapMessage,
+        command: &str,
+        expected_success: bool,
+    ) -> Result<Option<Value>> {
         let DapMessage::Response { success, command: c, body, .. } = msg else {
             anyhow::bail!("expected response for command {command}");
         };
