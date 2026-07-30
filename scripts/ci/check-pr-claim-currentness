@@ -17,6 +17,7 @@ sys.path.insert(0, str(REVIEWS_DIR))
 
 from claim_digest import claim_digest, normalize_pr_body  # noqa: E402
 
+MARKER_PREFIX = re.compile(r"<!--\s*review-run:v1\b", re.DOTALL)
 MARKER = re.compile(r"<!--\s*review-run:v1\s+(\{.*?\})\s*-->", re.DOTALL)
 TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 REQUIRED_RECEIPT_FIELDS = {"v", "kind", "head", "reviewer", "status"}
@@ -77,6 +78,12 @@ def _fixture_pr() -> tuple[str, str, list[dict[str, Any]]] | None:
     )
 
 
+def _live_pr_snapshot(pr: str, repo: str) -> tuple[str, str]:
+    raw = _run(["gh", "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body"])
+    document = json.loads(raw)
+    return str(document["headRefOid"]), normalize_pr_body(document.get("body"))
+
+
 def _live_pr(pr: str, repo: str | None) -> tuple[str, str, list[dict[str, Any]]]:
     fixture = _fixture_pr()
     if fixture is not None:
@@ -86,17 +93,15 @@ def _live_pr(pr: str, repo: str | None) -> tuple[str, str, list[dict[str, Any]]]
         repo = _run(
             ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]
         ).strip()
-    raw = _run(["gh", "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body"])
-    document = json.loads(raw)
+    initial_head, initial_body = _live_pr_snapshot(pr, repo)
     comments_raw = _run(
         ["gh", "api", "--paginate", f"repos/{repo}/issues/{pr}/comments?per_page=100"]
     )
     comments = _flatten_pages(_decode_json_stream(comments_raw))
-    return (
-        str(document["headRefOid"]),
-        normalize_pr_body(document.get("body")),
-        comments,
-    )
+    final_head, final_body = _live_pr_snapshot(pr, repo)
+    if (final_head, final_body) != (initial_head, initial_body):
+        raise RuntimeError("candidate head or material claim changed while loading comments")
+    return initial_head, initial_body, comments
 
 
 def _author_metadata(comment: dict[str, Any]) -> tuple[str, str]:
@@ -121,13 +126,13 @@ def _valid_review_marker(value: dict[str, Any]) -> bool:
         return False
     if value.get("v") != 1:
         return False
-    if value.get("kind") not in REVIEW_KINDS:
+    if not isinstance(value.get("kind"), str) or value.get("kind") not in REVIEW_KINDS:
         return False
     if not isinstance(value.get("head"), str):
         return False
     if not isinstance(value.get("reviewer"), str):
         return False
-    if value.get("status") not in REVIEW_STATUSES:
+    if not isinstance(value.get("status"), str) or value.get("status") not in REVIEW_STATUSES:
         return False
     return "claim_digest" not in value or isinstance(value.get("claim_digest"), str)
 
@@ -141,7 +146,14 @@ def _markers(
     for comment in comments:
         login, association = _author_metadata(comment)
         body = normalize_pr_body(comment.get("body"))
-        for match in MARKER.finditer(body):
+        markers = list(MARKER.finditer(body))
+        prefixes = list(MARKER_PREFIX.finditer(body))
+        for _ in range(len(prefixes) - len(markers)):
+            if association in TRUSTED_ASSOCIATIONS:
+                invalid_trusted += 1
+            else:
+                invalid_untrusted += 1
+        for match in markers:
             try:
                 value = json.loads(match.group(1))
             except json.JSONDecodeError:

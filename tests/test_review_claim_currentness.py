@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from importlib.machinery import SourceFileLoader
 import json
 import os
 import shutil
@@ -14,6 +15,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "scripts" / "reviews" / "claim_digest.py"
 CHECKER = ROOT / "scripts" / "ci" / "check-pr-claim-currentness"
+CHECKER_MODULE_PATH = CHECKER
 CONVERGENCE = ROOT / "scripts" / "ci" / "check-pr-review-convergence"
 REVIEW_RUNNER = ROOT / "scripts" / "reviews" / "run"
 CONVERGENCE_FIXTURES = ROOT / "scripts" / "ci" / "fixtures" / "convergence"
@@ -22,6 +24,12 @@ spec = importlib.util.spec_from_file_location("claim_digest", MODULE_PATH)
 assert spec is not None and spec.loader is not None
 claim_digest = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(claim_digest)
+
+checker_loader = SourceFileLoader("claim_currentness", str(CHECKER_MODULE_PATH))
+checker_spec = importlib.util.spec_from_loader("claim_currentness", checker_loader)
+assert checker_spec is not None
+claim_currentness = importlib.util.module_from_spec(checker_spec)
+checker_loader.exec_module(claim_currentness)
 
 
 class ClaimDigestTests(unittest.TestCase):
@@ -313,6 +321,50 @@ Visible context after the comment.
         self.assertEqual(result["result"], "not_proven")
         self.assertEqual(result["invalid_receipts"], 1)
         self.assertEqual(result["matching_receipts"], 0)
+
+    def test_currentness_checker_rejects_unhashable_enum_values(self) -> None:
+        body = self.body()
+        marker = self.valid_marker(body)
+        marker["kind"] = []
+        completed = self.run_checker(
+            body,
+            [self.receipt_comment(marker)],
+            emit_json=True,
+        )
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["result"], "not_proven")
+        self.assertEqual(result["invalid_trusted_receipts"], 1)
+
+    def test_currentness_checker_rejects_truncated_trusted_marker(self) -> None:
+        completed = self.run_checker(
+            self.body(),
+            [
+                {
+                    "author": {"login": "review-owner"},
+                    "authorAssociation": "OWNER",
+                    "body": '<!-- review-run:v1 {"v":1',
+                }
+            ],
+            emit_json=True,
+        )
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["result"], "not_proven")
+        self.assertEqual(result["invalid_trusted_receipts"], 1)
+
+    def test_live_reader_rechecks_snapshot_after_comments(self) -> None:
+        old_snapshot = json.dumps({"headRefOid": "head", "body": self.body()})
+        new_snapshot = json.dumps({"headRefOid": "head", "body": self.body(claim="Changed")})
+        with patch.object(
+            claim_currentness,
+            "_run",
+            side_effect=[old_snapshot, "[]", new_snapshot],
+        ):
+            with self.assertRaisesRegex(RuntimeError, "changed while loading comments"):
+                claim_currentness._live_pr("123", "owner/repo")
 
     def test_legacy_receipt_without_claim_digest_is_valid_but_not_current(self) -> None:
         body = self.body()
