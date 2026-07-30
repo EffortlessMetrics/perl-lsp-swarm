@@ -582,7 +582,10 @@ impl LspServer {
         self.load_and_apply_project_config();
 
         // Detect Perl interpreter and surface an actionable error if not found.
-        // Runs after config load so that perl-lsp.perl.path is already applied.
+        // Runs after config load, but note that no client channel can supply an
+        // interpreter path: workspace-supplied `perlPath` is refused above for
+        // security (#3729) and no such editor setting exists. See
+        // `check_perl_interpreter` for the full reasoning (#5034).
         self.check_perl_interpreter();
 
         // Construct the AI inline-completion backend if enabled in config
