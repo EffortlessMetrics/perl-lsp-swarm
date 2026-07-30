@@ -196,28 +196,18 @@ fn taplo_schema_policy(root: &Path, files: &[String]) -> Option<ToolResult> {
                 ),
             });
         }
-        for (line_number, line) in content.lines().enumerate() {
-            if is_remote_schema_reference(line) && line.contains("#:schema") {
-                return Some(ToolResult {
-                    result: ResultClass::PolicyFinding,
-                    command: "taplo lint --schema-policy".to_string(),
-                    detail: format!(
-                        "external schema sources are not allowed for changed-file hygiene: {path}:{}",
-                        line_number + 1
-                    ),
-                });
-            }
-        }
     }
     None
 }
 
-fn is_remote_schema_reference(line: &str) -> bool {
-    let lower = line.to_ascii_lowercase();
-    if lower.contains("#:schema") && has_remote_schema_uri(&lower) {
+fn is_remote_schema_reference(content: &str) -> bool {
+    if content.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("#:schema") && has_remote_schema_uri(&lower)
+    }) {
         return true;
     }
-    toml::from_str::<toml::Value>(line)
+    toml::from_str::<toml::Value>(content)
         .is_ok_and(|value| toml_value_has_remote_schema(&value, false))
 }
 
@@ -393,11 +383,15 @@ fn resolve_current_head(root: &Path) -> Result<String> {
 fn path_exists_at_head(root: &Path, head_sha: &str, path: &str) -> Result<bool> {
     let entry = Command::new("git")
         .args(["ls-tree", "-z", "--full-tree", head_sha, "--", path])
+        .env("GIT_LITERAL_PATHSPECS", "1")
         .current_dir(root)
         .output()
         .with_context(|| format!("checking whether {path} exists at {head_sha}"))?;
     if !entry.status.success() {
-        return Ok(false);
+        bail!(
+            "could not inspect whether {path} exists at {head_sha}: {}",
+            command_detail(&entry.stdout, &entry.stderr)
+        );
     }
     Ok(entry.stdout.split(|byte| *byte == 0).any(is_regular_tree_entry))
 }
@@ -417,6 +411,7 @@ fn ensure_selected_paths_clean(root: &Path, paths: &[String]) -> Result<()> {
             let output = Command::new("git")
                 .args(args)
                 .arg(path)
+                .env("GIT_LITERAL_PATHSPECS", "1")
                 .current_dir(root)
                 .output()
                 .with_context(|| format!("checking whether {path} is clean"))?;
@@ -485,6 +480,9 @@ fn write_summary(path: &Path, receipt: &RepoHygieneReceipt) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::process::Command;
+
     use super::*;
     use color_eyre::eyre::{Result, ensure};
 
@@ -552,6 +550,37 @@ mod tests {
         ));
         ensure!(!is_remote_schema_reference("[schema]\npath = \"schemas/local.json\""));
         ensure!(!is_remote_schema_reference("[tool]\npath = \"https://example.test/tool\""));
+        ensure!(!is_remote_schema_reference(
+            "#:schema schemas/local.json\nhomepage = \"https://example.test/tool\""
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn git_proof_inputs_treat_pathspecs_literally() -> Result<()> {
+        let repository = tempfile::tempdir()?;
+        let run_git = |args: &[&str]| -> Result<Vec<u8>> {
+            let output = Command::new("git").args(args).current_dir(repository.path()).output()?;
+            ensure!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                command_detail(&output.stdout, &output.stderr)
+            );
+            Ok(output.stdout)
+        };
+
+        run_git(&["init", "--quiet"])?;
+        run_git(&["config", "user.email", "repo-hygiene@example.test"])?;
+        run_git(&["config", "user.name", "repo-hygiene"])?;
+        fs::write(repository.path().join("policy.toml"), "enabled = true\n")?;
+        run_git(&["add", "policy.toml"])?;
+        run_git(&["commit", "--quiet", "-m", "fixture"])?;
+        let head = String::from_utf8(run_git(&["rev-parse", "HEAD"])?)?.trim().to_string();
+
+        ensure!(!path_exists_at_head(repository.path(), &head, ":(literal)policy.toml")?);
+        fs::write(repository.path().join("policy.toml"), "enabled = false\n")?;
+        ensure_selected_paths_clean(repository.path(), &[":(literal)policy.toml".to_string()])?;
         Ok(())
     }
 
