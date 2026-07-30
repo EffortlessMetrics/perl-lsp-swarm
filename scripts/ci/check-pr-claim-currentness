@@ -19,6 +19,10 @@ from claim_digest import claim_digest, normalize_pr_body  # noqa: E402
 
 MARKER = re.compile(r"<!--\s*review-run:v1\s+(\{.*?\})\s*-->", re.DOTALL)
 TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+REQUIRED_RECEIPT_FIELDS = {"v", "kind", "head", "reviewer", "status"}
+ALLOWED_RECEIPT_FIELDS = REQUIRED_RECEIPT_FIELDS | {"claim_digest"}
+REVIEW_KINDS = {"deep", "standard"}
+REVIEW_STATUSES = {"running", "done"}
 
 
 def _run(command: list[str]) -> str:
@@ -109,8 +113,31 @@ def _author_metadata(comment: dict[str, Any]) -> tuple[str, str]:
     return login, association
 
 
-def _markers(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _valid_review_marker(value: dict[str, Any]) -> bool:
+    """Apply the checked-in review-run.v1 wire contract without extra dependencies."""
+
+    keys = set(value)
+    if not REQUIRED_RECEIPT_FIELDS.issubset(keys) or not keys.issubset(ALLOWED_RECEIPT_FIELDS):
+        return False
+    if value.get("v") != 1:
+        return False
+    if value.get("kind") not in REVIEW_KINDS:
+        return False
+    if not isinstance(value.get("head"), str):
+        return False
+    if not isinstance(value.get("reviewer"), str):
+        return False
+    if value.get("status") not in REVIEW_STATUSES:
+        return False
+    return "claim_digest" not in value or isinstance(value.get("claim_digest"), str)
+
+
+def _markers(
+    comments: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int, int]:
     records: list[dict[str, Any]] = []
+    invalid_trusted = 0
+    invalid_untrusted = 0
     for comment in comments:
         login, association = _author_metadata(comment)
         body = normalize_pr_body(comment.get("body"))
@@ -118,8 +145,16 @@ def _markers(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
             try:
                 value = json.loads(match.group(1))
             except json.JSONDecodeError:
+                if association in TRUSTED_ASSOCIATIONS:
+                    invalid_trusted += 1
+                else:
+                    invalid_untrusted += 1
                 continue
-            if not isinstance(value, dict):
+            if not isinstance(value, dict) or not _valid_review_marker(value):
+                if association in TRUSTED_ASSOCIATIONS:
+                    invalid_trusted += 1
+                else:
+                    invalid_untrusted += 1
                 continue
             records.append(
                 {
@@ -129,7 +164,7 @@ def _markers(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "trusted": association in TRUSTED_ASSOCIATIONS,
                 }
             )
-    return records
+    return records, invalid_trusted, invalid_untrusted
 
 
 def _fixture_comments(path: Path) -> list[dict[str, Any]]:
@@ -143,7 +178,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("pr", nargs="?", help="Pull-request number for live mode")
     parser.add_argument("--repo", help="owner/repo for live mode")
-    parser.add_argument("--head", help="Expected/current head for fixture mode")
+    parser.add_argument("--head", help="Current head for fixture mode")
+    parser.add_argument(
+        "--expected-head",
+        help="Fail NOT_PROVEN unless the fetched candidate still matches this full head SHA",
+    )
     parser.add_argument("--body-file", type=Path, help="PR-body fixture")
     parser.add_argument(
         "--comments-file", type=Path, help="Structured PR-comments JSON fixture"
@@ -172,8 +211,14 @@ def main(argv: list[str] | None = None) -> int:
                 raise RuntimeError("live mode requires a pull-request number")
             head, body, comments = _live_pr(args.pr, args.repo)
 
-        records = _markers(comments)
-        if not records:
+        if args.expected_head and head != args.expected_head:
+            raise RuntimeError(
+                "candidate moved while review convergence was being checked: "
+                f"expected {args.expected_head}, observed {head}"
+            )
+
+        records, invalid_trusted_receipts, invalid_untrusted_receipts = _markers(comments)
+        if not records and invalid_trusted_receipts == 0:
             result = {
                 "result": "not_applicable",
                 "head": head,
@@ -182,6 +227,10 @@ def main(argv: list[str] | None = None) -> int:
                 "completed_receipts": 0,
                 "trusted_receipts": 0,
                 "untrusted_receipts": 0,
+                "invalid_receipts": invalid_untrusted_receipts,
+                "invalid_trusted_receipts": 0,
+                "invalid_untrusted_receipts": invalid_untrusted_receipts,
+                "matching_authors": [],
             }
             if args.json:
                 print(json.dumps(result, sort_keys=True))
@@ -204,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
     ]
 
     result = {
-        "result": "current" if matching else "not_proven",
+        "result": "current" if matching and invalid_trusted_receipts == 0 else "not_proven",
         "head": head,
         "claim_digest": digest,
         "matching_receipts": len(matching),
@@ -213,26 +262,34 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "trusted_receipts": len(trusted),
         "untrusted_receipts": len(records) - len(trusted),
+        "invalid_receipts": invalid_trusted_receipts + invalid_untrusted_receipts,
+        "invalid_trusted_receipts": invalid_trusted_receipts,
+        "invalid_untrusted_receipts": invalid_untrusted_receipts,
         "matching_authors": sorted(
             {str(record["comment_author"]) for record in matching if record["comment_author"]}
         ),
     }
 
+    current = bool(matching) and invalid_trusted_receipts == 0
     if args.json:
         print(json.dumps(result, sort_keys=True))
-    elif matching:
+    elif current:
         print(
             f"claim review current: head={head} claim_digest={digest} "
             f"trusted_authors={','.join(result['matching_authors'])}"
         )
     else:
+        reason = (
+            f"{invalid_trusted_receipts} invalid trusted review-run receipt(s) present"
+            if invalid_trusted_receipts
+            else "no trusted completed review receipt matches"
+        )
         print(
-            "NOT_PROVEN: no trusted completed review receipt matches "
-            f"head={head} claim_digest={digest}",
+            f"NOT_PROVEN: {reason} head={head} claim_digest={digest}",
             file=sys.stderr,
         )
 
-    return 0 if matching else 1
+    return 0 if current else 1
 
 
 if __name__ == "__main__":
