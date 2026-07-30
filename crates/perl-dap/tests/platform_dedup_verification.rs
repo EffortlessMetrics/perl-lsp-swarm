@@ -19,9 +19,10 @@ fn resolve_perl_path_with_toolchain_returns_same_result_from_both_crates() -> Te
         }
         (Err(_), Err(_)) => {}
         _ => {
-            panic!(
+            return Err(format!(
                 "perl-dap and perl-lsp-rs-core disagree: dap={dap_result:?}, core={core_result:?}"
-            );
+            )
+            .into());
         }
     }
     Ok(())
@@ -58,9 +59,10 @@ fn resolve_perl_path_returns_same_result_from_both_crates() -> TestResult {
         }
         (Err(_), Err(_)) => {}
         _ => {
-            panic!(
+            return Err(format!(
                 "perl-dap and perl-lsp-rs-core disagree: dap={dap_result:?}, core={core_result:?}"
-            );
+            )
+            .into());
         }
     }
     Ok(())
