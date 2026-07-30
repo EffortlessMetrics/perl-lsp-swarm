@@ -391,27 +391,24 @@ fn resolve_current_head(root: &Path) -> Result<String> {
 }
 
 fn path_exists_at_head(root: &Path, head_sha: &str, path: &str) -> Result<bool> {
-    let object = format!("{head_sha}:{path}");
-    let exists = Command::new("git")
-        .args(["cat-file", "-e", &object])
+    let entry = Command::new("git")
+        .args(["ls-tree", "-z", "--full-tree", head_sha, "--", path])
         .current_dir(root)
         .output()
         .with_context(|| format!("checking whether {path} exists at {head_sha}"))?;
-    if !exists.status.success() {
+    if !entry.status.success() {
         return Ok(false);
     }
-    let object_type = Command::new("git")
-        .args(["cat-file", "-t", &object])
-        .current_dir(root)
-        .output()
-        .with_context(|| format!("checking the type of {path} at {head_sha}"))?;
-    if !object_type.status.success() {
-        bail!(
-            "could not inspect the type of {path} at {head_sha}: {}",
-            command_detail(&object_type.stdout, &object_type.stderr)
-        );
-    }
-    Ok(String::from_utf8_lossy(&object_type.stdout).trim() == "blob")
+    Ok(entry.stdout.split(|byte| *byte == 0).any(is_regular_tree_entry))
+}
+
+fn is_regular_tree_entry(entry: &[u8]) -> bool {
+    let Some(tab) = entry.iter().position(|byte| *byte == b'\t') else { return false };
+    let header = &entry[..tab];
+    let mut fields = header.split(|byte| *byte == b' ');
+    let Some(mode) = fields.next() else { return false };
+    let Some(object_type) = fields.next() else { return false };
+    matches!(mode, b"100644" | b"100755") && object_type == b"blob"
 }
 
 fn ensure_selected_paths_clean(root: &Path, paths: &[String]) -> Result<()> {
@@ -561,6 +558,15 @@ mod tests {
     #[test]
     fn taplo_config_environment_override_is_cleared() -> Result<()> {
         ensure!(TAPLO_CONFIG_ENV == "TAPLO_CONFIG");
+        Ok(())
+    }
+
+    #[test]
+    fn only_regular_blob_tree_entries_are_proof_inputs() -> Result<()> {
+        ensure!(is_regular_tree_entry(b"100644 blob abc\tfile.toml\0"));
+        ensure!(is_regular_tree_entry(b"100755 blob abc\tscript.sh\0"));
+        ensure!(!is_regular_tree_entry(b"120000 blob abc\tlink.toml\0"));
+        ensure!(!is_regular_tree_entry(b"160000 commit abc\tsubmodule\0"));
         Ok(())
     }
 }

@@ -298,20 +298,29 @@ struct RepoHygieneStatusReceipt {
 }
 
 fn clear_repo_hygiene_receipt(root: &Path, args: &[String]) -> Result<()> {
-    let path = repo_hygiene_receipt_path(root, args)?;
-    match fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| format!("removing {}", path.display())),
+    for flag in ["--receipt", "--summary"] {
+        let path = repo_hygiene_output_path(root, args, flag)?;
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("removing {}", path.display()));
+            }
+        }
     }
+    Ok(())
 }
 
 fn repo_hygiene_receipt_path(root: &Path, args: &[String]) -> Result<PathBuf> {
+    repo_hygiene_output_path(root, args, "--receipt")
+}
+
+fn repo_hygiene_output_path(root: &Path, args: &[String], flag: &str) -> Result<PathBuf> {
     let path = args
         .windows(2)
-        .find(|pair| pair[0] == "--receipt")
+        .find(|pair| pair[0] == flag)
         .map(|pair| root.join(&pair[1]))
-        .ok_or_else(|| eyre!("repo-hygiene check did not declare a receipt path"))?;
+        .ok_or_else(|| eyre!("repo-hygiene check did not declare a {flag} path"))?;
     Ok(path)
 }
 
@@ -823,6 +832,25 @@ mod tests {
             result == ContractResultClass::NotProven,
             "invalid repo-hygiene receipts must be not-proven"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn clearing_repo_hygiene_outputs_removes_receipt_and_summary() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let receipt = directory.path().join("repo-hygiene.json");
+        let summary = directory.path().join("repo-hygiene.md");
+        fs::write(&receipt, b"stale")?;
+        fs::write(&summary, b"stale")?;
+        let args = vec![
+            "--receipt".to_string(),
+            "repo-hygiene.json".to_string(),
+            "--summary".to_string(),
+            "repo-hygiene.md".to_string(),
+        ];
+        clear_repo_hygiene_receipt(directory.path(), &args)?;
+        ensure!(!receipt.exists(), "stale receipt must be removed");
+        ensure!(!summary.exists(), "stale summary must be removed");
         Ok(())
     }
 
