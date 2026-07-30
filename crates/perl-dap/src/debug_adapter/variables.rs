@@ -847,7 +847,7 @@ mod hazard_invariant_tests {
     fn fix_1338_stale_eval_ref_stopped_session_short_circuits_to_honest_empty() {
         // Skip if perl is not available on PATH.
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Ok(());
         }
         let mut a = adapter();
         // Seed a Stopped session so the Running-state guard does not trigger.
