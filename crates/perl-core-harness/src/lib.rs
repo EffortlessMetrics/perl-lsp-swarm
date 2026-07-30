@@ -609,6 +609,7 @@ pub fn validate_current_authority(config: CurrentAuthorityConfig) -> Result<Curr
         }
         lineages.push((relative_path, lineage));
     }
+    validate_supersession_graph(&lineages)?;
 
     let indexed_series =
         index.entries.iter().map(|entry| entry.series_id.clone()).collect::<BTreeSet<_>>();
@@ -687,27 +688,6 @@ pub fn validate_current_authority(config: CurrentAuthorityConfig) -> Result<Curr
             lineage_path,
             lineage,
         )?;
-        if let Some(supersedes) = lineage.supersedes.as_deref() {
-            validate_public_path(supersedes, "superseded lineage path")?;
-            if supersedes == lineage_path {
-                bail!("lineage {} cannot supersede itself", lineage_path);
-            }
-            let (_, superseded) =
-                lineages.iter().find(|(path, _)| path == supersedes).ok_or_else(|| {
-                    color_eyre::eyre::eyre!(
-                        "lineage {} supersedes missing lineage {}",
-                        lineage_path,
-                        supersedes
-                    )
-                })?;
-            if superseded.series_id != lineage.series_id {
-                bail!(
-                    "lineage {} supersedes a different series {}",
-                    lineage_path,
-                    superseded.series_id
-                );
-            }
-        }
     }
     if current_series.is_empty() {
         bail!("current-authority index has no current series");
@@ -875,6 +855,40 @@ fn validate_artifact_digests(
         let actual = sha256_digest_bytes(&git_blob_at(root, &lineage.landed_sha, path)?);
         if actual != *expected {
             bail!("authoritative artifact {path} differs at landed SHA");
+        }
+    }
+    Ok(())
+}
+
+fn validate_supersession_graph(lineages: &[(String, LandedLineage)]) -> Result<()> {
+    let by_path =
+        lineages.iter().map(|(path, lineage)| (path.as_str(), lineage)).collect::<BTreeMap<_, _>>();
+    for (path, lineage) in &by_path {
+        let Some(supersedes) = lineage.supersedes.as_deref() else {
+            continue;
+        };
+        validate_public_path(supersedes, "superseded lineage path")?;
+        if supersedes == *path {
+            bail!("lineage {path} cannot supersede itself");
+        }
+        let superseded = by_path.get(supersedes).ok_or_else(|| {
+            color_eyre::eyre::eyre!("lineage {path} supersedes missing lineage {supersedes}")
+        })?;
+        if superseded.series_id != lineage.series_id {
+            bail!("lineage {path} supersedes a different series {}", superseded.series_id);
+        }
+    }
+    for start in by_path.keys() {
+        let mut seen = BTreeSet::new();
+        let mut current = *start;
+        while let Some(lineage) = by_path.get(current) {
+            if !seen.insert(current) {
+                bail!("supersession graph contains a cycle at lineage {current}");
+            }
+            let Some(next) = lineage.supersedes.as_deref() else {
+                break;
+            };
+            current = next;
         }
     }
     Ok(())
@@ -8888,6 +8902,27 @@ exit 1
         run_git(&["commit", "--quiet", "-m", "fixture historical authority"])?;
         config.landed_sha = run_git(&["rev-parse", "HEAD"])?;
         validate_current_authority(config)?;
+        Ok(())
+    }
+
+    #[test]
+    fn supersession_graph_rejects_cycles() -> TestResult {
+        let (_temp, config) = current_authority_fixture()?;
+        let current_path = config
+            .lineages
+            .first()
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no lineage"))?;
+        let current: LandedLineage = read_json_bytes(&fs::read(current_path)?, "landed lineage")?;
+        let mut first = current.clone();
+        first.supersedes = Some("b".into());
+        let mut second = current;
+        second.supersedes = Some("a".into());
+        let error = validate_supersession_graph(&[("a".into(), first), ("b".into(), second)])
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("supersession cycle was accepted"))?;
+        if !error.to_string().contains("cycle") {
+            bail!("supersession cycle produced an unclear error: {error}");
+        }
         Ok(())
     }
 
