@@ -33,6 +33,12 @@ pub enum EventDispatchResult {
 /// Monotonic count of `output` events dropped due to a full outbound queue.
 static OUTPUT_DROP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// The [`OUTPUT_DROP_COUNTER`] value as of the last successfully-emitted drop-notice
+/// event. Used to rate-limit the synthetic notice: we only attempt to emit a new one
+/// once more drops have accumulated since the last one that actually made it onto the
+/// wire.
+static LAST_NOTIFIED_DROP_COUNT: AtomicU64 = AtomicU64::new(0);
+
 /// Returns the current count of `output` events dropped due to a full outbound queue.
 pub fn output_drop_count() -> u64 {
     OUTPUT_DROP_COUNTER.load(Ordering::Relaxed)
@@ -43,28 +49,39 @@ pub fn output_drop_count() -> u64 {
 /// Policy:
 /// - `output` events use `try_send`. On `Full` the event is dropped with a warning and the
 ///   global [`OUTPUT_DROP_COUNTER`] is incremented. This prevents a chatty debuggee from
-///   growing the queue without bound when the client is slow.
+///   growing the queue without bound when the client is slow. A best-effort synthetic
+///   `output` notice is also attempted (see [`try_emit_drop_notice`]) so the drop is
+///   user-visible in the debug console, not just in the adapter's own log.
 /// - All other events (lifecycle: `stopped`, `terminated`, `continued`, `initialized`, …) use
 ///   blocking `send`. These are rare and must be delivered; the call applies backpressure to
 ///   the producer until the writer thread drains a slot.
+///
+/// The `seq` guard is held for the *entire* dispatch, including the `try_send`/`send` call,
+/// so that seq-assignment and enqueue are atomic: two threads racing to dispatch events can
+/// never have the later-assigned `seq` overtake the earlier one in the outbound channel.
 pub fn dispatch_event(
     sender: &SyncSender<DapMessage>,
     seq: &Mutex<i64>,
     event: &str,
     body: Option<Value>,
 ) -> EventDispatchResult {
-    let msg = {
-        let mut seq_lock = lock_or_recover(seq, "dispatch_event.seq");
-        *seq_lock += 1;
-        DapMessage::Event { seq: *seq_lock, event: event.to_string(), body }
-    };
+    let mut seq_lock = lock_or_recover(seq, "dispatch_event.seq");
+    *seq_lock += 1;
+    let msg = DapMessage::Event { seq: *seq_lock, event: event.to_string(), body };
 
     if event == "output" {
         match sender.try_send(msg) {
             Ok(()) => EventDispatchResult::Sent,
             Err(TrySendError::Full(_)) => {
-                OUTPUT_DROP_COUNTER.fetch_add(1, Ordering::Relaxed);
+                let dropped_total = OUTPUT_DROP_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
                 tracing::warn!(event, "DAP outbound queue full; dropping output event");
+                // Deliberately scoped to *this* channel's own full-queue moment: only a
+                // call that has already independently proven this exact channel full for a
+                // real event may attempt the notice. That keeps the (process-wide) drop
+                // counters from ever letting a notice intended for one channel land on an
+                // unrelated, otherwise-idle channel (relevant when multiple adapters run in
+                // one process, e.g. in tests).
+                try_emit_drop_notice(sender, &mut seq_lock, dropped_total);
                 EventDispatchResult::Dropped
             }
             Err(TrySendError::Disconnected(_)) => EventDispatchResult::Disconnected,
@@ -75,6 +92,68 @@ pub fn dispatch_event(
             Err(_) => EventDispatchResult::Disconnected,
         }
     }
+}
+
+/// Best-effort emission of a synthetic `output` event telling the user that output lines
+/// were dropped, so the drop is visible in the debug console rather than only in the
+/// adapter's own log.
+///
+/// Safety / anti-flood properties:
+/// - Uses `try_send` only, in a small bounded number of attempts — never blocks
+///   indefinitely, and can never deadlock against the writer thread (which never acquires
+///   `seq`; see `transport.rs`'s event-handler loop).
+/// - Never calls back into [`dispatch_event`] or increments [`OUTPUT_DROP_COUNTER`], so it
+///   cannot recurse even if the notice itself would also need to be dropped.
+/// - Rate-limited on two axes: it only *attempts* a send when the drop count has grown since
+///   the last successfully-emitted notice (`dropped_total > LAST_NOTIFIED_DROP_COUNT`), and it
+///   only *succeeds* when the queue has room for one of a handful of `try_send` attempts
+///   (each separated by a cooperative [`std::thread::yield_now`], never a sleep or blocking
+///   wait). A sustained flood where the queue stays full therefore produces zero notices
+///   until the client catches up enough to free a slot — never one notice per dropped line.
+/// - Called while the caller already holds `seq_lock`; reuses that guard instead of
+///   re-acquiring the mutex.
+fn try_emit_drop_notice(
+    sender: &SyncSender<DapMessage>,
+    seq_lock: &mut MutexGuard<'_, i64>,
+    dropped_total: u64,
+) {
+    let last_notified = LAST_NOTIFIED_DROP_COUNT.load(Ordering::Relaxed);
+    if dropped_total <= last_notified {
+        // Nothing new to report since the last notice that actually made it out.
+        return;
+    }
+    let newly_dropped = dropped_total - last_notified;
+    let body = Some(serde_json::json!({
+        "category": "console",
+        "output": format!(
+            "[perl-lsp] {newly_dropped} output line(s) dropped due to slow debug client\n"
+        ),
+    }));
+    let next_seq = **seq_lock + 1;
+
+    // Bounded, non-blocking retries: gives a slow-but-not-permanently-stalled client's
+    // writer thread a few scheduling slices to drain a slot, without ever looping
+    // unboundedly or blocking. Fixed upper bound, no recursion.
+    const MAX_ATTEMPTS: u8 = 8;
+    for attempt in 0..MAX_ATTEMPTS {
+        let msg =
+            DapMessage::Event { seq: next_seq, event: "output".to_string(), body: body.clone() };
+        match sender.try_send(msg) {
+            Ok(()) => {
+                **seq_lock = next_seq;
+                LAST_NOTIFIED_DROP_COUNT.store(dropped_total, Ordering::Relaxed);
+                return;
+            }
+            Err(TrySendError::Disconnected(_)) => return,
+            Err(TrySendError::Full(_)) => {
+                if attempt + 1 < MAX_ATTEMPTS {
+                    std::thread::yield_now();
+                }
+            }
+        }
+    }
+    // Queue stayed full for every attempt: skip silently. Do not retry beyond the fixed
+    // bound above, do not consume a seq number, do not recurse into the drop-counting path.
 }
 
 /// Send a DAP event through the bounded event channel with poison-safe sequence numbering.
