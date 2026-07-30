@@ -29,19 +29,49 @@ When GitHub owns the next transition—pending checks, requested review, merge q
 
 After any candidate or material-claim change, rerun affected supporting evidence, perform the bounded final challenge, and obtain a fresh formal review before merge.
 
-## Routes
+## Child outcome routing
+
+### Publication
 
 - `PR_PUBLISHED_READY` / `PR_RESUMED` → `address-review-comments`
-- `DRAFT_FOR_NAMED_REASON` / `DRAFT_REASON_COMPLETE` → `publish-pr` for the explicit readiness transition
+- `DRAFT_FOR_NAMED_REASON` → complete the named remote proof or collaboration, then repeat `publish-pr`
+- `DRAFT_REASON_COMPLETE` / `DRAFT` → `publish-pr` to recheck the full threshold and perform the explicit ready transition
+- `CANDIDATE_NOT_COHERENT` / `LOCAL_PROOF_STALE` / `WORKTREE_DIRTY` → `build-candidate`
+- `DUPLICATE_OR_WRITER_COLLISION` → reuse/resume the equivalent candidate or resolve the actual same-branch/worktree collision
+- `IDENTITY_NOT_PROVEN` → establish branch/candidate identity; if reliable identity cannot be restored, return `NOT_PROVEN`
+
+### Feedback and mutable challenge
+
 - `FINDINGS_REPAIRED_OR_DISPOSITIONED` → `final-challenge`
+- `MUTABLE_FINDINGS_OPEN` → `build-candidate`, then repeat affected proof and `final-challenge`
+- `PROOF_WEAKENED` / `PROOF_REVISE` → `prepare-proof`, then repeat affected candidate passes
+- `MATERIAL_PREMISE_CHANGED` → `prepare-issue`
+- `SPLIT_CLAIM` → `prepare-issue` to narrow the current claim and preserve the independent residual claim
+- `FOLLOW_UP_ACCEPTED` → create or link the bounded follow-up, then continue this PR within its current claim
+- `DISPOSITION_INSTRUMENT_FAILURE` → leave the finding unresolved, repair the disposition instrument, and retry; otherwise return `NOT_PROVEN`
+
+### Formal review
+
 - `CANDIDATE_FIXED_FOR_FORMAL_REVIEW` → `review-pr`
 - `REVIEW_CURRENT` → `verify-live-ci`
 - `REVIEW_FINDINGS_OPEN` → `address-review-comments`
 - `REVIEW_NOT_PROVEN` → resolve candidate/claim identity, evidence, or receipt-instrument failure, then repeat `review-pr`; if evidence cannot be restored, return `NOT_PROVEN`
-- `CLAIM_REVIEW_STALE` → `final-challenge`, then `review-pr`
-- `PRODUCT_OR_TEST_FAILURE` → `build-candidate`, then repeat affected proof, final challenge, and formal review
-- `PENDING_REMOTE` / `PR_IN_FLIGHT` → return control to `deliver-pr` or `deliver-goal`
+- `CLAIM_REVIEW_STALE` → rerun affected proof, `final-challenge`, then `review-pr`
+
+### Live integration
+
+- `PRODUCT_OR_TEST_FAILURE` → `build-candidate`, then repeat affected proof, `final-challenge`, and `review-pr`
+- `PENDING` / `PENDING_REMOTE` / `PR_IN_FLIGHT` → record the exact pending transition once and return control to `deliver-pr` or `deliver-goal`
+- `CONFLICT` → resolve this lane's conflict, then `build-candidate` for affected repair/proof followed by `final-challenge` and `review-pr`
+- `INTEGRATION_INTERACTION` → repair the smallest affected candidate through `build-candidate`, then rerun affected proof, `final-challenge`, and `review-pr`
+- `INSTRUMENT_FAILURE` → identify and repair the failed evidence instrument; if trustworthy evidence cannot be restored, return `NOT_PROVEN`
 - `INTEGRATION_READY` → `merge-reconcile`
+
+### Merge and closeout
+
 - `RECONCILED` → return the bounded closeout to the invoking flow
-- `PARTIAL` / `SUPERSEDED` → reconcile and return the residual graph
+- `PARTIAL` → preserve remaining acceptance and return the residual graph
+- `SUPERSEDED` / `DELIBERATELY_CLOSED` → preserve the durable disposition and return the residual graph
+- `CANDIDATE_MOVED` / `CLAIM_REVIEW_STALE` → rerun affected proof, `final-challenge`, and `review-pr`
+- `MERGE_BLOCKED` → preserve the exact live blocker; return `PR_IN_FLIGHT` when GitHub owns the pending transition, otherwise return `BLOCKED`
 - `BLOCKED` / `NOT_PROVEN` → preserve the exact live blocker or missing evidence
