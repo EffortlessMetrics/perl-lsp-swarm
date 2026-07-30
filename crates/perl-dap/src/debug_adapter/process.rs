@@ -136,16 +136,62 @@ impl DebugAdapter {
 
             // Extract user-provided cwd for script execution (if specified)
             // This is the working directory where the debugged script will run,
-            // separate from the workspace validation boundary (which is always the script's parent).
+            // separate from the workspace validation boundary. `cwd` is
+            // user-controlled and MUST NEVER be trusted as a security boundary —
+            // doing so (or deriving the boundary from `program`'s own parent
+            // directory, as this code used to) makes every launch trivially
+            // self-validating and defeats the workspace check entirely.
             let user_cwd = args.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from);
 
-            // Set workspace root for path validation
-            // Always use the script's parent directory as the workspace boundary
-            // The workspace validation ensures the script exists within its project context
-            let workspace = Path::new(program).parent().map(PathBuf::from);
-            if let Some(ref root) = workspace {
-                *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") =
-                    Some(root.clone());
+            // Determine the workspace boundary for this launch.
+            //
+            // The server-configured root (set once via `set_workspace_root`,
+            // typically from `DapConfig.workspace_root` at server construction)
+            // is the source of truth. A launch-args `workspaceRoot` may NARROW
+            // that boundary but must never WIDEN it — otherwise a malicious or
+            // misconfigured client could hand itself a broader root than the
+            // server allows. If no server root is configured, a launch-args
+            // `workspaceRoot` is accepted as the boundary for this launch (there
+            // is nothing to widen relative to).
+            //
+            // If neither is present, validation is skipped entirely (see the
+            // `None` handling in `launch_debugger`) — this preserves current
+            // behavior for existing users, since `DapConfig.workspace_root` is
+            // not yet populated from any CLI/editor-supplied source (tracked
+            // separately in #5345; that fail-open gap is intentionally out of
+            // scope for this fix).
+            let server_root =
+                lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+            let launch_root_arg =
+                args.get("workspaceRoot").and_then(|w| w.as_str()).map(PathBuf::from);
+
+            let effective_root = match (server_root, launch_root_arg) {
+                (Some(server), Some(launch)) => match security::validate_path(&launch, &server) {
+                    Ok(narrowed) => Some(narrowed),
+                    Err(e) => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(format!(
+                                "The launch 'workspaceRoot' ('{}') is outside your workspace \
+                                     folder and cannot widen the server-configured boundary. \
+                                     Details: {}",
+                                launch.display(),
+                                e
+                            )),
+                        };
+                    }
+                },
+                (Some(server), None) => Some(server),
+                (None, Some(launch)) => Some(launch),
+                (None, None) => None,
+            };
+
+            if let Some(root) = effective_root {
+                *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
             }
 
             let perl_args = args
@@ -1674,42 +1720,6 @@ impl DebugAdapter {
             }
         }
 
-        #[cfg(windows)]
-        {
-            // Graceful shutdown first: send Ctrl+C via GenerateConsoleCtrlEvent,
-            // then wait for the process to exit. This mirrors the Unix SIGTERM →
-            // wait → SIGKILL escalation and satisfies the DAP security spec's
-            // graceful-shutdown expectation (regression for #4639: the old
-            // Windows path skipped this and killed outright).
-            let pid = process.id();
-            use winapi::um::wincon::{CTRL_C_EVENT, GenerateConsoleCtrlEvent};
-            // SAFETY: GenerateConsoleCtrlEvent is a stable Win32 API taking two
-            // POD-by-value arguments (u32 control code, u32 process group id)
-            // and returning a BOOL. No preconditions on calling thread/process
-            // state, no caller-owned resources, no pointer dereference — both
-            // arguments are passed by value. Failure is indicated by returning 0
-            // (FALSE), handled below.
-            let result = unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid) };
-            if result != 0 {
-                tracing::info!(pid, "Sent Ctrl+C for graceful termination");
-                if Self::wait_for_child_exit(
-                    process,
-                    Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
-                ) {
-                    return true;
-                }
-                tracing::warn!(
-                    pid,
-                    "Process did not exit after Ctrl+C, falling back to force-kill"
-                );
-            } else {
-                tracing::warn!(
-                    pid,
-                    "GenerateConsoleCtrlEvent failed for graceful termination, falling back to force-kill"
-                );
-            }
-        }
-
         if let Err(e) = process.kill() {
             tracing::warn!(error = %e, "Failed to terminate process");
         }
@@ -1946,9 +1956,8 @@ impl DebugAdapter {
 
     /// Send interrupt signal to process (cross-platform).
     ///
-    /// On Unix, sends SIGINT. On Windows, tries `GenerateConsoleCtrlEvent` first
-    /// (works when the target is in the same console group), then falls back to
-    /// writing the interrupt character to debugger stdin (session mode only).
+    /// On Unix, sends SIGINT. On Windows, writes the interrupt character to
+    /// debugger stdin for a launched session; PID-attached pause is unsupported.
     /// On stdin-write failure, returns `false` without terminating the debuggee
     /// (the session is left intact for the client to retry or disposition).
     /// Returns `false` on unsupported platforms.
@@ -1973,29 +1982,8 @@ impl DebugAdapter {
         }
         #[cfg(windows)]
         {
-            use winapi::um::wincon::{CTRL_C_EVENT, GenerateConsoleCtrlEvent};
-            // Try GenerateConsoleCtrlEvent first (works for processes in same console group).
-            // SAFETY: GenerateConsoleCtrlEvent is a stable Win32 API that takes two POD-by-value
-            // arguments (a u32 control code and a u32 process group id) and returns a BOOL. It
-            // has no preconditions on the calling thread or process state, holds no caller-owned
-            // resources, and cannot dereference invalid memory because both arguments are passed
-            // by value. The only failure mode is the call returning 0 (FALSE), which we handle
-            // explicitly via the `if result != 0` check below.
-            let result = unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid) };
-            if result != 0 {
-                tracing::info!("Sent Ctrl+C event to process {}", pid);
-                return true;
-            }
-            tracing::warn!(
-                "GenerateConsoleCtrlEvent failed for pid {}, trying stdin fallback",
-                pid
-            );
-
-            // Fallback: write interrupt character to debugger stdin (session mode only).
+            // Write the interrupt character to debugger stdin (session mode only).
             // On stdin-write failure, return `false` — do NOT terminate the debuggee.
-            // A pause that fails delivery is a client-visible error, not a reason to
-            // destroy the session (regression for #4639: the old code called
-            // terminate_child_process here, killing the debuggee on pause failure).
             if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
             {
                 if let Some(stdin) = session.process.stdin.as_mut() {
@@ -2020,10 +2008,9 @@ impl DebugAdapter {
                     false
                 }
             } else {
-                // attached_pid mode: GenerateConsoleCtrlEvent was already attempted above.
                 tracing::warn!(
-                    "GenerateConsoleCtrlEvent failed and no session active for pid {}",
-                    pid
+                    pid,
+                    "PID-attached pause is unsupported on Windows; refusing to signal the target"
                 );
                 false
             }
@@ -2534,10 +2521,8 @@ mod tests {
     fn terminate_child_process_graceful_shutdown_on_windows() -> Result<(), String> {
         use std::process::Command;
 
-        // Spawn a process that sleeps briefly. GenerateConsoleCtrlEvent may or may
-        // not succeed depending on console group membership, but the key assertion
-        // is that terminate_child_process returns true (the process was terminated,
-        // whether gracefully or via force-kill fallback).
+        // Spawn a process that sleeps briefly. The key assertion is that
+        // terminate_child_process returns true (the process was terminated).
         let mut child = Command::new("cmd")
             .args(["/c", "ping -n 30 127.0.0.1 > nul"])
             .spawn()
@@ -2616,8 +2601,7 @@ mod tests {
         let adapter = DebugAdapter::new();
         // 999_999 is virtually guaranteed not to exist.
         let result = adapter.send_interrupt_signal(999_999);
-        // On Windows, GenerateConsoleCtrlEvent will likely fail for a nonexistent
-        // pid, and there's no session stdin to fall back to, so this returns false.
+        // There is no session stdin for this PID-attached request, so this returns false.
         // The key assertion is that it doesn't panic or destroy anything.
         let _ = result; // result depends on console state; the point is no panic
     }

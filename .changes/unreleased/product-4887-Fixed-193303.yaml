@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "A bare `return;` with no value now gets a well-formed source range spanning the `return` keyword, instead of a degenerate/inverted range that could confuse features relying on accurate node spans."
+time: 2026-07-23T19:33:03Z
+custom:
+  PR: "4887"
+  Slug: valueless-return-source-range
+  Breaking: "no"

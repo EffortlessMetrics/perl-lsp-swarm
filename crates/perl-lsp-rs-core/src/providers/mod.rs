@@ -40,6 +40,7 @@ pub mod rename;
 pub mod semantic_tokens;
 
 // Wave G1b Phase 2 -- near-leaves
+#[cfg(feature = "ai-provider")]
 pub mod ai;
 pub mod formatting;
 
@@ -55,6 +56,7 @@ pub mod lsp_compat;
 pub mod testing;
 
 // Module-level re-exports for convenient access (O2 requirement per Wave G1b spec)
+#[cfg(feature = "ai-provider")]
 pub use ai::*;
 pub use code_actions::*;
 pub use code_lens::*;

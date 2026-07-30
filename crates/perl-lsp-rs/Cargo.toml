@@ -53,7 +53,7 @@ perl-diagnostics = { workspace = true }
 # (perl-lsp-semantic-tokens absorbed into perl-lsp-rs-core::providers::semantic_tokens — Wave G1b)
 # Provider crates absorbed into perl-lsp-rs-core (Wave G1a)
 # perl-lsp-critic-parser absorbed into perl-lsp-rs-core::critic_parser (Wave G3 step 7)
-perl-lsp-rs-core = { workspace = true, features = ["lsp-compat"] }
+perl-lsp-rs-core = { workspace = true, features = ["lsp-compat", "ai-provider"] }
 # perl-lsp-performance absorbed into perl-lsp-rs-core::performance (Wave G3 step 5)
 perl-lsp-perltidy = { workspace = true }
 perl-position-tracking = { workspace = true, features = ["lsp-compat"] }
@@ -79,7 +79,7 @@ walkdir.workspace = true
 uuid = { version = "1.23.2", features = ["v4"] }
 
 # Core dependencies for position mapping
-ropey = { version = "1.6.1" }
+ropey.workspace = true
 tokio = { workspace = true }
 once_cell.workspace = true
 tracing.workspace = true

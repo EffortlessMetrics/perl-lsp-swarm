@@ -2575,6 +2575,25 @@ enum PerlCoreHarnessCommand {
         check_history: bool,
     },
 
+    /// Validate landed evidence lineage and the deterministic current-authority index.
+    CurrentAuthority {
+        /// Current-authority index JSON.
+        #[arg(long)]
+        index: PathBuf,
+
+        /// Landed-lineage JSON; may be supplied more than once.
+        #[arg(long = "lineage")]
+        lineages: Vec<PathBuf>,
+
+        /// Repository root containing the published evidence artifacts.
+        #[arg(long)]
+        repository_root: PathBuf,
+
+        /// Exact Git commit containing the current-authority records.
+        #[arg(long)]
+        landed_sha: String,
+    },
+
     /// Run discovered tests in parse, compile, or execute mode (future slice).
     Run {
         /// Harness mode to run.
@@ -4385,6 +4404,20 @@ fn run_cli(cli: Cli) -> Result<()> {
                 write_history,
                 check_history,
             }),
+            PerlCoreHarnessCommand::CurrentAuthority {
+                index,
+                lineages,
+                repository_root,
+                landed_sha,
+            } => perl_core_harness::validate_current_authority(
+                perl_core_harness::CurrentAuthorityConfig {
+                    index,
+                    lineages,
+                    repository_root,
+                    landed_sha,
+                },
+            )
+            .map(|_| ()),
             PerlCoreHarnessCommand::Run {
                 mode,
                 perl_tree,

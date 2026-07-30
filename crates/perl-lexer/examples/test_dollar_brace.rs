@@ -1,3 +1,8 @@
+//! Developer-facing demo binary whose entire output *is* stdout, so the
+//! workspace-wide `print_stdout = "deny"` lint is opted out of here rather
+//! than worked around.
+#![allow(clippy::print_stdout)]
+
 use perl_lexer::{PerlLexer, TokenType};
 
 fn main() {

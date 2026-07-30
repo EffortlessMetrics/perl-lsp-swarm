@@ -134,7 +134,7 @@ mod tests {
 
         let (checks_after, emoji_hits_after) = get_unicode_stats();
         assert!(checks_after >= checks_before + 5);
-        assert!(emoji_hits_after >= emoji_hits_before + 1);
+        assert!(emoji_hits_after > emoji_hits_before);
     }
 
     #[test]

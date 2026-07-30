@@ -77,7 +77,7 @@ fn if_elsif_else_lowers_to_one_branch_node() {
 }
 
 #[test]
-fn branch_node_condition_is_none_in_v0() {
+fn branch_node_condition_is_none_in_v0() -> Result<(), String> {
     // PIR v0 defers condition-expression lowering. The condition field must be
     // None — it is a named follow-up, not a silent omission.
     let graph = lower("if ($x) { 1 }");
@@ -89,8 +89,9 @@ fn branch_node_condition_is_none_in_v0() {
                 "PIR v0: condition must be None — lowering condition expressions is a named follow-up"
             );
         }
-        _ => panic!("expected Branch operation"),
+        _ => return Err("expected Branch operation".to_string()),
     }
+    Ok(())
 }
 
 #[test]

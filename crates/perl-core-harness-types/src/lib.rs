@@ -25,6 +25,9 @@ pub const SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION: &str =
 pub const FAILURE_CLUSTER_SCHEMA_VERSION: &str = "perl_core_harness.failure_cluster.v1";
 pub const FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION: &str =
     "perl_core_harness.failure_cluster_history.v1";
+pub const LANDED_LINEAGE_SCHEMA_VERSION: &str = "perl_core_harness.landed_lineage.v1";
+pub const CURRENT_AUTHORITY_INDEX_SCHEMA_VERSION: &str =
+    "perl_core_harness.current_authority_index.v1";
 
 /// Upstream Perl test scheduler to query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
@@ -806,6 +809,90 @@ pub struct FailureClusterHistory {
     pub entries: Vec<FailureClusterHistoryEntry>,
 }
 
+/// Transition observed by a published bundle relative to the accepted state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompatibilityTransition {
+    /// The observation does not change the accepted state.
+    NoChange,
+    /// The observation is a candidate improvement that still needs acceptance.
+    ImprovementCandidate,
+    /// The observation regresses from the accepted state.
+    Regression,
+    /// The declared contract may need a reviewed correction.
+    ContractCorrectionCandidate,
+    /// The evidence is insufficient to establish a transition.
+    NotProven,
+    /// The record is retained only for history.
+    Historical,
+}
+
+/// Lifecycle of a comparison-series authority record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CurrentAuthorityStatus {
+    /// The record is the current authority for its series.
+    Current,
+    /// The record is retained for historical inspection.
+    Historical,
+    /// The record was replaced by a later authority record.
+    Superseded,
+}
+
+/// Post-merge identity binding for one published evidence bundle.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LandedLineage {
+    pub schema_version: String,
+    pub series_id: String,
+    pub profile: HarnessProfile,
+    pub manifest_hash: String,
+    pub evidence_bundle_id: String,
+    pub evidence_bundle_digest: String,
+    pub measurement_sha: String,
+    pub publication_sha: String,
+    pub landed_sha: String,
+    pub publication_base_sha: String,
+    pub authoritative_artifacts: BTreeMap<String, String>,
+    pub publication_paths: Vec<String>,
+    pub accepted_transition_id: Option<String>,
+    pub accepted_baseline_digest: Option<String>,
+    pub accepted_baseline_evidence_bundle: Option<String>,
+    pub observation_transition: CompatibilityTransition,
+    pub recorder_schema_version: String,
+    pub created_reason: String,
+    pub supersedes: Option<String>,
+}
+
+/// One series entry in the deterministic current-authority index.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CurrentAuthorityEntry {
+    pub series_id: String,
+    pub profile: HarnessProfile,
+    pub manifest_hash: String,
+    pub observation_bundle_path: String,
+    pub observation_bundle_id: String,
+    pub observation_bundle_digest: String,
+    pub observation_transition: CompatibilityTransition,
+    pub accepted_baseline_path: Option<String>,
+    pub accepted_baseline_digest: Option<String>,
+    pub accepted_baseline_evidence_bundle: Option<String>,
+    pub accepted_transition_id: Option<String>,
+    pub landed_lineage_path: String,
+    pub status: CurrentAuthorityStatus,
+    pub claim_boundary: String,
+    pub unavailable_rails: Vec<String>,
+}
+
+/// Deterministic index of current and historical series authorities.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CurrentAuthorityIndex {
+    pub schema_version: String,
+    pub entries: Vec<CurrentAuthorityEntry>,
+}
+
 pub fn workstream_for_bucket(bucket: &str) -> &'static str {
     match bucket {
         "parse_recovery" => "parser_recovery",
@@ -877,6 +964,11 @@ mod tests {
             (
                 FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
                 "perl_core_harness.failure_cluster_history.v1",
+            ),
+            (LANDED_LINEAGE_SCHEMA_VERSION, "perl_core_harness.landed_lineage.v1"),
+            (
+                CURRENT_AUTHORITY_INDEX_SCHEMA_VERSION,
+                "perl_core_harness.current_authority_index.v1",
             ),
         ];
         for (actual, expected) in expected {
