@@ -4,9 +4,9 @@
 
 | Version | Supported |
 | ------- | --------- |
-| 0.11.x  | Yes -- current release line |
-| 0.10.x  | Security fixes only |
-| < 0.10  | No |
+| 0.17.x  | Yes -- current release line |
+| 0.16.x  | Security fixes only |
+| < 0.16  | No |
 
 ## Reporting a Vulnerability
 
