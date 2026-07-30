@@ -1720,42 +1720,6 @@ impl DebugAdapter {
             }
         }
 
-        #[cfg(windows)]
-        {
-            // Graceful shutdown first: send Ctrl+C via GenerateConsoleCtrlEvent,
-            // then wait for the process to exit. This mirrors the Unix SIGTERM →
-            // wait → SIGKILL escalation and satisfies the DAP security spec's
-            // graceful-shutdown expectation (regression for #4639: the old
-            // Windows path skipped this and killed outright).
-            let pid = process.id();
-            use winapi::um::wincon::{CTRL_C_EVENT, GenerateConsoleCtrlEvent};
-            // SAFETY: GenerateConsoleCtrlEvent is a stable Win32 API taking two
-            // POD-by-value arguments (u32 control code, u32 process group id)
-            // and returning a BOOL. No preconditions on calling thread/process
-            // state, no caller-owned resources, no pointer dereference — both
-            // arguments are passed by value. Failure is indicated by returning 0
-            // (FALSE), handled below.
-            let result = unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid) };
-            if result != 0 {
-                tracing::info!(pid, "Sent Ctrl+C for graceful termination");
-                if Self::wait_for_child_exit(
-                    process,
-                    Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
-                ) {
-                    return true;
-                }
-                tracing::warn!(
-                    pid,
-                    "Process did not exit after Ctrl+C, falling back to force-kill"
-                );
-            } else {
-                tracing::warn!(
-                    pid,
-                    "GenerateConsoleCtrlEvent failed for graceful termination, falling back to force-kill"
-                );
-            }
-        }
-
         if let Err(e) = process.kill() {
             tracing::warn!(error = %e, "Failed to terminate process");
         }
@@ -1992,9 +1956,8 @@ impl DebugAdapter {
 
     /// Send interrupt signal to process (cross-platform).
     ///
-    /// On Unix, sends SIGINT. On Windows, tries `GenerateConsoleCtrlEvent` first
-    /// (works when the target is in the same console group), then falls back to
-    /// writing the interrupt character to debugger stdin (session mode only).
+    /// On Unix, sends SIGINT. On Windows, writes the interrupt character to
+    /// debugger stdin for a launched session; PID-attached pause is unsupported.
     /// On stdin-write failure, returns `false` without terminating the debuggee
     /// (the session is left intact for the client to retry or disposition).
     /// Returns `false` on unsupported platforms.
@@ -2019,29 +1982,8 @@ impl DebugAdapter {
         }
         #[cfg(windows)]
         {
-            use winapi::um::wincon::{CTRL_C_EVENT, GenerateConsoleCtrlEvent};
-            // Try GenerateConsoleCtrlEvent first (works for processes in same console group).
-            // SAFETY: GenerateConsoleCtrlEvent is a stable Win32 API that takes two POD-by-value
-            // arguments (a u32 control code and a u32 process group id) and returns a BOOL. It
-            // has no preconditions on the calling thread or process state, holds no caller-owned
-            // resources, and cannot dereference invalid memory because both arguments are passed
-            // by value. The only failure mode is the call returning 0 (FALSE), which we handle
-            // explicitly via the `if result != 0` check below.
-            let result = unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid) };
-            if result != 0 {
-                tracing::info!("Sent Ctrl+C event to process {}", pid);
-                return true;
-            }
-            tracing::warn!(
-                "GenerateConsoleCtrlEvent failed for pid {}, trying stdin fallback",
-                pid
-            );
-
-            // Fallback: write interrupt character to debugger stdin (session mode only).
+            // Write the interrupt character to debugger stdin (session mode only).
             // On stdin-write failure, return `false` — do NOT terminate the debuggee.
-            // A pause that fails delivery is a client-visible error, not a reason to
-            // destroy the session (regression for #4639: the old code called
-            // terminate_child_process here, killing the debuggee on pause failure).
             if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
             {
                 if let Some(stdin) = session.process.stdin.as_mut() {
@@ -2066,10 +2008,9 @@ impl DebugAdapter {
                     false
                 }
             } else {
-                // attached_pid mode: GenerateConsoleCtrlEvent was already attempted above.
                 tracing::warn!(
-                    "GenerateConsoleCtrlEvent failed and no session active for pid {}",
-                    pid
+                    pid,
+                    "PID-attached pause is unsupported on Windows; refusing to signal the target"
                 );
                 false
             }
@@ -2580,10 +2521,8 @@ mod tests {
     fn terminate_child_process_graceful_shutdown_on_windows() -> Result<(), String> {
         use std::process::Command;
 
-        // Spawn a process that sleeps briefly. GenerateConsoleCtrlEvent may or may
-        // not succeed depending on console group membership, but the key assertion
-        // is that terminate_child_process returns true (the process was terminated,
-        // whether gracefully or via force-kill fallback).
+        // Spawn a process that sleeps briefly. The key assertion is that
+        // terminate_child_process returns true (the process was terminated).
         let mut child = Command::new("cmd")
             .args(["/c", "ping -n 30 127.0.0.1 > nul"])
             .spawn()
@@ -2662,8 +2601,7 @@ mod tests {
         let adapter = DebugAdapter::new();
         // 999_999 is virtually guaranteed not to exist.
         let result = adapter.send_interrupt_signal(999_999);
-        // On Windows, GenerateConsoleCtrlEvent will likely fail for a nonexistent
-        // pid, and there's no session stdin to fall back to, so this returns false.
+        // There is no session stdin for this PID-attached request, so this returns false.
         // The key assertion is that it doesn't panic or destroy anything.
         let _ = result; // result depends on console state; the point is no panic
     }
