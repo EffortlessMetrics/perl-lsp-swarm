@@ -10,6 +10,62 @@ use std::sync::Once;
 /// Fires at most once per LSP session, when Perl is not found anywhere.
 static PERL_NOT_FOUND_WARNED: Once = Once::new();
 
+/// How a user can actually make the language server find Perl.
+///
+/// Deliberately names **no editor setting**. The language server has no
+/// user-facing interpreter-path setting, so the previous advice to "set
+/// `perl-lsp.perl.path`" pointed at something that cannot be set (#5034):
+///
+/// - `perl-lsp.perl.path` does not appear in the extension's
+///   `contributes.configuration` — the shipped settings are `perl-lsp.serverPath`
+///   (the *server binary*, not the interpreter), `includePaths`, and
+///   `externalIncludePaths`.
+/// - `.perl-lsp.toml`'s `[perl]` section has no interpreter field
+///   (`ProjectPerlConfig` carries only include/discovery/PERL5LIB keys).
+/// - Workspace-scoped `perlPath` is *deliberately ignored*, because a hostile
+///   project could otherwise redirect the interpreter used for the `@INC` probe
+///   and get arbitrary code execution at config-load time (#3729).
+///
+/// `perlPath` in `launch.json` is a DAP-only key; it selects the debuggee's
+/// interpreter and has no effect on the language server. Naming it here would
+/// send users to the wrong place — the DAP side already carries its own,
+/// correct `launch.json` guidance.
+const PERL_REMEDIATION: &str = "Install Perl (https://strawberryperl.com on Windows, \
+     `brew install perl` on macOS, or your system package manager) and make sure `perl` is on \
+     PATH, then reload the window (Ctrl+Shift+P \u{2192} Developer: Reload Window).";
+
+/// Message for "Perl was found, but only via an OS fallback path".
+///
+/// Kept separate from the emitting code so the wording is directly testable.
+fn perl_fallback_message(path: &std::path::Path, label: &str) -> String {
+    format!(
+        "perl-lsp: Perl not found on PATH; using {label} at {}. \
+         Add Perl to PATH to suppress this message.",
+        path.display()
+    )
+}
+
+/// Message for "no Perl interpreter could be used".
+///
+/// `configured` is the interpreter path the server was told to use, when one is
+/// set — in that case the path itself is the thing to check, so the generic
+/// install-Perl advice would be misleading.
+fn perl_not_found_message(searched: &[String], configured: Option<&str>) -> String {
+    let searched_str = searched.join(", ");
+    match configured.filter(|path| !path.is_empty()) {
+        Some(configured) => format!(
+            "perl-lsp: The configured Perl interpreter was not found at `{configured}`. \
+             Searched: {searched_str}. \
+             Check that the path exists and is executable, then reload the window \
+             (Ctrl+Shift+P \u{2192} Developer: Reload Window)."
+        ),
+        None => format!(
+            "perl-lsp: Perl interpreter not found on PATH. Searched: {searched_str}. \
+             {PERL_REMEDIATION}"
+        ),
+    }
+}
+
 impl LspServer {
     /// Set the root path from the root URI during initialization
     ///
@@ -41,15 +97,15 @@ impl LspServer {
 
     /// Detect the Perl interpreter and surface an actionable message if not found.
     ///
-    /// Called once during `handle_initialize`. Reads `perl-lsp.perl.path` from the
-    /// workspace config (if set), then falls back to full OS-aware detection. Emits:
+    /// Called once during `handle_initialize`. Uses the configured interpreter path
+    /// if one is present, then falls back to full OS-aware detection. Emits:
     ///
     /// - `window/logMessage` (Info) if Perl was found via an OS fallback path so the
     ///   user knows which interpreter will be used.
     /// - `window/showMessage` (Error) **once per session** if no Perl interpreter is found
     ///   anywhere, with actionable remediation text.
-    /// - `window/showMessage` (Error) **once per session** if `perl-lsp.perl.path` is set
-    ///   but the configured path does not exist.
+    /// - `window/showMessage` (Error) **once per session** if an interpreter path is
+    ///   configured but does not exist.
     ///
     /// Does not alter any server state. Tracing fallback is preserved alongside user messages.
     pub(crate) fn check_perl_interpreter(&self) {
@@ -64,11 +120,7 @@ impl LspServer {
                 tracing::debug!(path = %path.display(), "Perl interpreter: found on PATH");
             }
             PerlInterpreterResult::FoundViaFallback { ref path, ref label } => {
-                let msg = format!(
-                    "perl-lsp: Perl not found on PATH; using {label} at {}. \
-                     Add Perl to PATH or set `perl-lsp.perl.path` to suppress this message.",
-                    path.display()
-                );
+                let msg = perl_fallback_message(path, label);
                 tracing::info!(path = %path.display(), label = %label, "Perl interpreter found via fallback");
                 if let Err(e) = self.log_message(MessageType::Info, &msg) {
                     tracing::warn!(error = %e, "Failed to send logMessage for perl fallback");
@@ -77,23 +129,7 @@ impl LspServer {
             PerlInterpreterResult::NotFound { ref searched } => {
                 tracing::warn!(searched = ?searched, "Perl interpreter not found");
                 PERL_NOT_FOUND_WARNED.call_once(|| {
-                    let searched_str = searched.join(", ");
-                    let msg = if configured_path.as_deref().is_some_and(|p| !p.is_empty()) {
-                        format!(
-                            "perl-lsp: The configured Perl interpreter was not found. \
-                             Searched: {searched_str}. \
-                             Check `perl-lsp.perl.path` in your settings and reload the window \
-                             (Ctrl+Shift+P \u{2192} Developer: Reload Window)."
-                        )
-                    } else {
-                        format!(
-                            "perl-lsp: Perl interpreter not found on PATH. \
-                             Searched: {searched_str}. \
-                             Install Perl (https://strawberryperl.com on Windows, \
-                             `brew install perl` on macOS, or your system package manager) \
-                             and reload the window, or set `perl-lsp.perl.path` in settings."
-                        )
-                    };
+                    let msg = perl_not_found_message(searched, configured_path.as_deref());
                     if let Err(e) = self.show_message(MessageType::Error, &msg) {
                         tracing::warn!(error = %e, "Failed to send showMessage for perl not found");
                     }
@@ -358,6 +394,81 @@ mod tests {
         server.workspace_config.lock().perl_path = Some(fake_perl.to_string_lossy().to_string());
         // Should not panic
         server.check_perl_interpreter();
+    }
+
+    // =====================================================================
+    // Perl-not-found remediation must not name a setting that does not exist
+    // (#5034). Mirrors the DAP-side guard in
+    // crates/perl-dap/tests/dap_launch_error_remediation_tests.rs.
+    // =====================================================================
+
+    /// Every user-facing interpreter message, for the "must not mention" guards.
+    fn all_perl_interpreter_messages() -> Vec<String> {
+        vec![
+            perl_fallback_message(std::path::Path::new("/usr/local/bin/perl"), "Homebrew"),
+            perl_not_found_message(&["/usr/bin".to_string(), "/bin".to_string()], None),
+            perl_not_found_message(&["/usr/bin".to_string()], Some("/opt/custom/perl")),
+        ]
+    }
+
+    #[test]
+    fn perl_messages_never_name_the_nonexistent_perl_path_setting() {
+        // `perl-lsp.perl.path` is not in the extension's contributes.configuration,
+        // `.perl-lsp.toml`'s [perl] section has no interpreter field, and
+        // workspace-scoped perlPath is ignored for security (#3729). Advising it
+        // sends the user somewhere they cannot act.
+        for msg in all_perl_interpreter_messages() {
+            assert!(
+                !msg.contains("perl-lsp.perl.path"),
+                "message must not point at the nonexistent perl-lsp.perl.path setting, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn perl_messages_never_name_dap_only_launch_json_keys() {
+        // `perlPath` is a launch.json/DAP key and does not affect the language
+        // server, so naming it here would be a different wrong answer.
+        for msg in all_perl_interpreter_messages() {
+            assert!(
+                !msg.contains("launch.json"),
+                "language-server message must not send users to launch.json, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn perl_not_found_message_gives_actionable_install_guidance() {
+        let msg = perl_not_found_message(&["/usr/bin".to_string(), "/bin".to_string()], None);
+        // The searched paths tell the user what was actually tried.
+        assert!(msg.contains("/usr/bin, /bin"), "must list searched paths, got: {msg}");
+        // Remediation the user can actually perform.
+        assert!(msg.contains("PATH"), "must mention PATH, got: {msg}");
+        assert!(msg.contains("Install Perl"), "must tell the user to install Perl, got: {msg}");
+        assert!(msg.contains("Reload Window"), "must say how to re-trigger detection, got: {msg}");
+    }
+
+    #[test]
+    fn configured_path_message_points_at_the_configured_path_not_at_installing_perl() {
+        // When a path is configured, the path is the problem — generic
+        // "install Perl" advice would be a misdiagnosis.
+        let msg = perl_not_found_message(&["/x".to_string()], Some("/opt/custom/perl"));
+        assert!(msg.contains("/opt/custom/perl"), "must name the configured path, got: {msg}");
+        assert!(
+            !msg.contains("Install Perl"),
+            "a configured-but-missing path is not an install problem, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn fallback_message_names_the_interpreter_and_how_to_silence_it() {
+        let msg = perl_fallback_message(std::path::Path::new("/opt/homebrew/bin/perl"), "Homebrew");
+        assert!(msg.contains("/opt/homebrew/bin/perl"), "must name the interpreter, got: {msg}");
+        assert!(msg.contains("Homebrew"), "must name the fallback source, got: {msg}");
+        assert!(
+            msg.contains("Add Perl to PATH"),
+            "must give the one action that suppresses it, got: {msg}"
+        );
     }
 
     #[test]
