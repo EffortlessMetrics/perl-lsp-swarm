@@ -2704,9 +2704,19 @@ impl<'a> PerlLexer<'a> {
                             }
                         }
                         // Punctuation special variables: $!, $@, $?, $&, etc.
+                        //
+                        // '"' is deliberately NOT in this set. Perl does define $"
+                        // (the list separator), but inside a double-quoted string the
+                        // closing delimiter wins: `perl -e 'print "$"'` prints a
+                        // literal '$' rather than interpolating $". Accepting '"'
+                        // here would consume the terminating quote, turning the
+                        // valid string "$" into an unterminated-string error and
+                        // mis-lexing everything after it. A trailing '$' falls
+                        // through to the literal arm below, which is the correct
+                        // reading.
                         Some(
                             '?' | '!' | '@' | '&' | '`' | '\'' | '.' | '/' | '\\' | '|' | '+' | '-'
-                            | '[' | ']' | '~' | '=' | '%' | ',' | '"' | ';' | '>' | '<' | ')' | '(',
+                            | '[' | ']' | '~' | '=' | '%' | ',' | ';' | '>' | '<' | ')' | '(',
                         ) => {
                             self.advance(); // consume the special character
                             parts.push(StringPart::Variable(Arc::from(

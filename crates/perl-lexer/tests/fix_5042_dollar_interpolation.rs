@@ -157,3 +157,70 @@ fn dollar_brace_expr_in_string_still_emits_expression() -> R {
     assert_eq!(parts, vec![StringPart::Expression(Arc::from("${expr}"))]);
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// The closing delimiter must win over $"
+//
+// Perl defines $" (the list separator), but inside a double-quoted string the
+// terminating quote takes precedence: `perl -e 'print "$"'` prints a literal
+// '$' (with a "Final $ should be \$ or $name" warning) rather than
+// interpolating $". An earlier revision of this fix accepted '"' as a
+// punctuation special variable, which consumed the closing quote and turned
+// the valid string "$" into Error("unterminated string") -- and silently
+// mis-lexed every token after it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn trailing_dollar_does_not_consume_closing_quote() -> R {
+    let parts = interpolated_parts(r#""$""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Literal(Arc::from("$"))],
+        "a trailing '$' must stay literal and leave the closing quote intact"
+    );
+    Ok(())
+}
+
+#[test]
+fn trailing_dollar_leaves_following_tokens_intact() -> R {
+    // Regression guard for the cascade: if the closing quote is swallowed, the
+    // concatenation operator and the next string are absorbed as string content
+    // and the whole statement mis-lexes.
+    let mut lexer = PerlLexer::new(r#""$" . "tail""#);
+
+    let first = lexer.next_token().ok_or("no first token")?;
+    assert_eq!(
+        first.token_type,
+        TokenType::InterpolatedString(vec![StringPart::Literal(Arc::from("$"))]),
+        "first token must be the complete string \"$\""
+    );
+
+    let second = lexer.next_token().ok_or("no second token")?;
+    assert!(
+        !matches!(second.token_type, TokenType::Error(_)),
+        "token after the string must not be an error, got {:?}",
+        second.token_type
+    );
+    Ok(())
+}
+
+#[test]
+fn literal_prefix_then_trailing_dollar_stays_literal() -> R {
+    let parts = interpolated_parts(r#""cost: $""#).ok_or("no InterpolatedString")?;
+
+    // The lexer emits the trailing '$' as its own Literal part rather than
+    // merging it into the preceding one, so assert on the reconstructed text
+    // and on the absence of any interpolation -- those are the properties that
+    // matter here. Adjacent-literal fragmentation is existing lexer behavior
+    // and is deliberately not pinned to a single part by this test.
+    let joined: String = parts
+        .iter()
+        .map(|part| match part {
+            StringPart::Literal(text) => Ok(text.to_string()),
+            other => Err(format!("expected only literal parts, got {other:?}")),
+        })
+        .collect::<Result<String, String>>()?;
+
+    assert_eq!(joined, "cost: $", "trailing '$' must survive as literal text");
+    Ok(())
+}
