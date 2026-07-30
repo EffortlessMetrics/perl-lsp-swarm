@@ -152,7 +152,7 @@ fn test_goto_unknown_target_id_returns_failure() -> Result<(), Box<dyn std::erro
             assert!(!success, "goto with unregistered targetId must fail");
             assert!(message.is_some(), "failure response must include a message");
         }
-        other => panic!("expected Response, got {other:?}"),
+        other => return Err(format!("expected Response, got {other:?}").into()),
     }
     Ok(())
 }
@@ -321,7 +321,7 @@ fn test_goto_targets_path_traversal_blocked_when_workspace_set()
             DapMessage::Response { command, .. } => {
                 assert_eq!(command, "gotoTargets");
             }
-            other => panic!("expected Response, got {other:?}"),
+            other => return Err(format!("expected Response, got {other:?}").into()),
         }
     }
     Ok(())
@@ -345,7 +345,7 @@ fn test_breakpoint_locations_path_traversal_does_not_panic()
         DapMessage::Response { command, .. } => {
             assert_eq!(command, "breakpointLocations");
         }
-        other => panic!("expected Response, got {other:?}"),
+        other => return Err(format!("expected Response, got {other:?}").into()),
     }
     Ok(())
 }
@@ -374,7 +374,7 @@ fn test_evaluate_newline_injection_blocked() -> Result<(), Box<dyn std::error::E
                     "rejection message should mention newlines: {msg}"
                 );
             }
-            other => panic!("expected Response, got {other:?}"),
+            other => return Err(format!("expected Response, got {other:?}").into()),
         }
     }
     Ok(())
@@ -466,7 +466,7 @@ fn test_initialize_response_seq_before_initialized_event_seq()
             assert!(success);
             seq
         }
-        other => panic!("expected initialize Response, got {other:?}"),
+        other => return Err(format!("expected initialize Response, got {other:?}").into()),
     };
 
     let event = rx
@@ -477,7 +477,7 @@ fn test_initialize_response_seq_before_initialized_event_seq()
             assert_eq!(event, "initialized");
             seq
         }
-        other => panic!("expected initialized Event, got {other:?}"),
+        other => return Err(format!("expected initialized Event, got {other:?}").into()),
     };
 
     // The event was emitted after the response, so its sequence must be higher
@@ -512,7 +512,7 @@ fn test_all_commands_return_proper_response_shape() -> Result<(), Box<dyn std::e
                 assert_eq!(request_seq, 1, "{cmd}: request_seq must echo input seq");
                 assert_eq!(command, cmd, "{cmd}: command must echo input command");
             }
-            other => panic!("{cmd}: expected Response, got {other:?}"),
+            other => return Err(format!("{cmd}: expected Response, got {other:?}").into()),
         }
     }
     Ok(())
@@ -533,7 +533,7 @@ fn test_unknown_command_returns_structured_error_response() -> Result<(), Box<dy
             assert_eq!(request_seq, 42, "request_seq must echo the input");
             assert!(message.is_some(), "unknown command must include an error message");
         }
-        other => panic!("expected Response for unknown command, got {other:?}"),
+        other => return Err(format!("expected Response for unknown command, got {other:?}").into()),
     }
     Ok(())
 }
