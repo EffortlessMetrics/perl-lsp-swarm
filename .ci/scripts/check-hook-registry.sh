@@ -31,11 +31,12 @@ fi
 # Strip the "$CLAUDE_PROJECT_DIR"/ prefix (with or without quotes around the variable)
 mapfile -t SCRIPT_PATHS < <(
   jq -r '
-    .hooks
-    | to_entries[]
-    | .value[]
+    (.hooks // {})
+    | to_entries[]?
+    | .value[]?
     | .hooks[]?
-    | .command
+    | .command?
+    | select(type == "string")
     | select(endswith(".sh"))
   ' "$SETTINGS" \
   | sed 's|"\$CLAUDE_PROJECT_DIR"/||g' \
