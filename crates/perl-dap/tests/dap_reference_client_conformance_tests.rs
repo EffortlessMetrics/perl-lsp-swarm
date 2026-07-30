@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow};
 use perl_dap::{DapMessage, DebugAdapter};
 use serde_json::Value;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::Duration;
 
 fn fixture_dir() -> PathBuf {
@@ -104,7 +104,7 @@ fn vscode_mock_debug_surface_conformance() -> Result<()> {
             .and_then(Value::as_array)
             .ok_or_else(|| anyhow!("{fixture_name}: fixture requests must be an array"))?;
 
-        let (tx, rx) = channel();
+        let (tx, rx) = sync_channel(64);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(tx);
         let mut prev_response_seq = 0_i64;

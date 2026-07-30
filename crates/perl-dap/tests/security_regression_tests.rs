@@ -5,7 +5,7 @@
 
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use serde_json::json;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::sync_channel;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -26,7 +26,7 @@ fn initialize_adapter(adapter: &mut DebugAdapter) -> TestResult {
 #[test]
 fn test_command_injection_via_program_argument() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
 
@@ -71,7 +71,7 @@ fn test_command_injection_via_program_argument() -> TestResult {
 #[test]
 fn test_launch_with_nonexistent_file_errors_gracefully() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
 
@@ -97,7 +97,7 @@ fn test_launch_with_nonexistent_file_errors_gracefully() -> TestResult {
 #[test]
 fn test_launch_with_empty_program_rejected() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
 
@@ -127,7 +127,7 @@ fn test_launch_with_empty_program_rejected() -> TestResult {
 #[test]
 fn test_launch_with_whitespace_program_rejected() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
 
@@ -157,7 +157,7 @@ fn test_launch_with_whitespace_program_rejected() -> TestResult {
 #[test]
 fn test_launch_with_directory_rejected() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
 
@@ -187,7 +187,7 @@ fn test_launch_with_directory_rejected() -> TestResult {
 #[test]
 fn test_other_flag_injection_blocked() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
 

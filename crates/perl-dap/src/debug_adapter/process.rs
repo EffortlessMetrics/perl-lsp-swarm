@@ -3,6 +3,8 @@
 use super::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+// The internal TCP-attach DapEvent fan-in channel is still unbounded (non-goal of #5149).
+use std::sync::mpsc::channel;
 
 mod perl_info;
 mod perl_spawn;
@@ -1437,51 +1439,42 @@ impl DebugAdapter {
                                 match event {
                                     DapEvent::Output { category, output } => {
                                         if let Some(ref sender) = event_sender {
-                                            let mut seq_lock = seq_counter
-                                                .lock()
-                                                .unwrap_or_else(|e| e.into_inner());
-                                            *seq_lock += 1;
-                                            let _ = sender.send(DapMessage::Event {
-                                                seq: *seq_lock,
-                                                event: "output".to_string(),
-                                                body: Some(json!({
+                                            dispatch_event(
+                                                sender,
+                                                &seq_counter,
+                                                "output",
+                                                Some(json!({
                                                     "category": category,
                                                     "output": output
                                                 })),
-                                            });
+                                            );
                                         }
                                     }
                                     DapEvent::Stopped { reason, thread_id } => {
                                         if let Some(ref sender) = event_sender {
-                                            let mut seq_lock = seq_counter
-                                                .lock()
-                                                .unwrap_or_else(|e| e.into_inner());
-                                            *seq_lock += 1;
-                                            let _ = sender.send(DapMessage::Event {
-                                                seq: *seq_lock,
-                                                event: "stopped".to_string(),
-                                                body: Some(json!({
+                                            dispatch_event(
+                                                sender,
+                                                &seq_counter,
+                                                "stopped",
+                                                Some(json!({
                                                     "reason": reason,
                                                     "threadId": thread_id,
                                                     "allThreadsStopped": true
                                                 })),
-                                            });
+                                            );
                                         }
                                     }
                                     DapEvent::Continued { thread_id } => {
                                         if let Some(ref sender) = event_sender {
-                                            let mut seq_lock = seq_counter
-                                                .lock()
-                                                .unwrap_or_else(|e| e.into_inner());
-                                            *seq_lock += 1;
-                                            let _ = sender.send(DapMessage::Event {
-                                                seq: *seq_lock,
-                                                event: "continued".to_string(),
-                                                body: Some(json!({
+                                            dispatch_event(
+                                                sender,
+                                                &seq_counter,
+                                                "continued",
+                                                Some(json!({
                                                     "threadId": thread_id,
                                                     "allThreadsContinued": true
                                                 })),
-                                            });
+                                            );
                                         }
                                     }
                                     DapEvent::Terminated { reason } => {
@@ -2080,7 +2073,7 @@ impl DebugAdapter {
 }
 
 fn emit_terminated_event(
-    sender: &Sender<DapMessage>,
+    sender: &SyncSender<DapMessage>,
     seq: &Mutex<i64>,
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
@@ -2101,12 +2094,12 @@ mod tests {
         DebugAdapter, detect_perl_info, emit_terminated_event, format_perl_spawn_error,
         is_valid_perl_interpreter,
     };
-    use std::sync::mpsc::{TryRecvError, channel};
+    use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
 
     #[test]
     fn competing_termination_sources_emit_one_structured_event() -> Result<(), String> {
-        let (sender, receiver) = channel();
+        let (sender, receiver) = sync_channel(64);
         let seq = Arc::new(Mutex::new(0));
         let termination_state =
             Arc::new(Mutex::new(super::TerminationState { generation: 1, emitted: false }));
@@ -2153,7 +2146,7 @@ mod tests {
 
     #[test]
     fn stale_session_generation_cannot_emit_termination() -> Result<(), String> {
-        let (sender, receiver) = channel();
+        let (sender, receiver) = sync_channel(64);
         let seq = Arc::new(Mutex::new(0));
         let termination_state =
             Mutex::new(super::TerminationState { generation: 2, emitted: false });
@@ -2653,7 +2646,7 @@ mod tests {
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let child = cmd.spawn().map_err(|e| format!("failed to spawn test process: {e}"))?;
 
-        let (sender, receiver) = channel();
+        let (sender, receiver) = sync_channel(64);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(sender);
         adapter.initialized.store(true, std::sync::atomic::Ordering::Release);

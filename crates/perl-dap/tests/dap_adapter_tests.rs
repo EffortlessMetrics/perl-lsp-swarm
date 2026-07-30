@@ -15,12 +15,12 @@ mod dap_phase2_tests {
     use serde_json::{Value, json};
     use std::io::Write;
     use std::path::PathBuf;
-    use std::sync::mpsc::{Receiver, channel};
+    use std::sync::mpsc::{Receiver, sync_channel};
     use std::time::{Duration, Instant};
     use tempfile::NamedTempFile;
 
     fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessage>) {
-        let (tx, rx) = channel();
+        let (tx, rx) = sync_channel(64);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(tx);
         (adapter, rx)
