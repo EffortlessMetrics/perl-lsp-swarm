@@ -34,8 +34,12 @@ mod dap_phase2_tests {
         let DapMessage::Response { success, command: c, body, .. } = msg else {
             anyhow::bail!("expected response for command {command}");
         };
-        assert_eq!(c, command, "unexpected command");
-        assert_eq!(success, expected_success, "unexpected success value");
+        if c != command {
+            anyhow::bail!("unexpected command: expected {command}, got {c}");
+        }
+        if success != expected_success {
+            anyhow::bail!("unexpected success value: expected {expected_success}, got {success}");
+        }
         Ok(body)
     }
 
