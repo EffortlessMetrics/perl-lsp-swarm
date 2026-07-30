@@ -1215,6 +1215,8 @@ fn load_compatibility_series(
     };
     let accepted_baseline = read_compile_baseline_v2(accepted_path)?;
     validate_accepted_ratchet_identity(&accepted_baseline, &series)?;
+    let (transition, transition_reason, requires_acceptance) =
+        classify_compatibility_transition(&accepted_baseline, &compile_report);
     if let Some(index) = &authority {
         let current = index
             .entries
@@ -1235,6 +1237,14 @@ fn load_compatibility_series(
             || entry.observation_bundle_id != bundle.index.bundle_id
         {
             bail!("current-authority entry disagrees with series {}", series.series_id);
+        }
+        if entry.observation_transition != transition {
+            bail!(
+                "current-authority transition {:?} does not match measured transition {:?} for {}",
+                entry.observation_transition,
+                transition,
+                series.series_id
+            );
         }
         validate_authority_artifact_bindings(
             &input.evidence_bundle,
@@ -1264,8 +1274,6 @@ fn load_compatibility_series(
         Some(path) => load_execution_rail(path, &series, &bundle.index.bundle_id)?,
         None => unavailable_rail("selected execution receipt was not supplied"),
     };
-    let (transition, transition_reason, requires_acceptance) =
-        classify_compatibility_transition(&accepted_baseline, &compile_report);
     let observation = CompatibilityObservation {
         observation_bundle_id: bundle.index.bundle_id.clone(),
         measurement_sha: bundle.index.lineage.measurement_sha.clone(),
@@ -1398,6 +1406,15 @@ fn validate_accepted_ratchet_identity(
     {
         bail!("accepted baseline is not an identity match for series {}", series.series_id);
     }
+    validate_result_summary_shape(
+        baseline.files_total,
+        baseline.files_passed,
+        baseline.files_failed,
+        baseline.tap_assertions_total,
+        baseline.tap_assertions_passed,
+        &baseline.file_results,
+        "accepted baseline",
+    )?;
     validate_accepted_semantic_boundary_inventory(&baseline.semantic_boundaries)
         .into_iter()
         .next()
@@ -1434,7 +1451,11 @@ fn classify_compatibility_transition(
             false,
         );
     }
-    if accepted.semantic_boundaries != current.semantic_boundaries {
+    let mut accepted_boundaries = accepted.semantic_boundaries.clone();
+    let mut current_boundaries = current.semantic_boundaries.clone();
+    accepted_boundaries.sort_by_key(semantic_boundary_key);
+    current_boundaries.sort_by_key(semantic_boundary_key);
+    if accepted_boundaries != current_boundaries {
         return (
             CompatibilityTransition::ContractCorrectionCandidate,
             "compile score is unchanged but semantic-boundary evidence changed".into(),
@@ -4310,18 +4331,74 @@ fn validate_v2_identities_against_series(
 fn ensure_valid_report_shape(report: &RunReport) -> Result<()> {
     let mut validation = validate_report_bucket_shape(report);
     validation.extend(validate_semantic_boundary_shape(report));
-    if validation.is_empty() {
-        return Ok(());
+    if !validation.is_empty() {
+        let details = validation
+            .iter()
+            .map(|violation| {
+                let path = violation.path.as_deref().unwrap_or("-");
+                format!("{:?} {path}: {}", violation.kind, violation.message)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        bail!("cannot accept baseline with invalid receipt shape:\n{details}");
     }
-    let details = validation
-        .iter()
-        .map(|violation| {
-            let path = violation.path.as_deref().unwrap_or("-");
-            format!("{:?} {path}: {}", violation.kind, violation.message)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    bail!("cannot accept baseline with invalid receipt shape:\n{details}");
+    validate_result_summary_shape(
+        report.summary.files_total,
+        report.summary.files_passed,
+        report.summary.files_failed,
+        report.summary.tap_assertions_total,
+        report.summary.tap_assertions_passed,
+        &report.file_results,
+        "run report",
+    )
+}
+
+fn validate_result_summary_shape(
+    files_total: usize,
+    files_passed: usize,
+    files_failed: usize,
+    tap_assertions_total: usize,
+    tap_assertions_passed: usize,
+    file_results: &[RunFileResult],
+    subject: &str,
+) -> Result<()> {
+    if files_passed + files_failed != files_total {
+        bail!("{subject} file counts do not add up to files_total");
+    }
+    if tap_assertions_passed > tap_assertions_total {
+        bail!("{subject} passed assertions exceed tap_assertions_total");
+    }
+    if file_results.len() != files_total {
+        bail!("{subject} file_results length does not match files_total");
+    }
+    let mut paths = BTreeSet::new();
+    let mut passed_files = 0;
+    let mut failed_files = 0;
+    let mut assertions_total = 0;
+    let mut assertions_passed = 0;
+    for result in file_results {
+        let path = normalize_test_path(&result.path)
+            .ok_or_else(|| color_eyre::eyre::eyre!("{subject} contains an invalid test path"))?;
+        if !paths.insert(path) {
+            bail!("{subject} contains duplicate file results");
+        }
+        match result.status {
+            RunnerStatus::Pass => passed_files += 1,
+            RunnerStatus::Fail => failed_files += 1,
+        }
+        if result.assertions_passed > result.assertions_total {
+            bail!("{subject} has a file with passed assertions exceeding its total");
+        }
+        assertions_total += result.assertions_total;
+        assertions_passed += result.assertions_passed;
+    }
+    if passed_files != files_passed || failed_files != files_failed {
+        bail!("{subject} file statuses do not match its summary counts");
+    }
+    if assertions_total != tap_assertions_total || assertions_passed != tap_assertions_passed {
+        bail!("{subject} file assertions do not match its summary counts");
+    }
+    Ok(())
 }
 
 fn validate_report_against_series(
