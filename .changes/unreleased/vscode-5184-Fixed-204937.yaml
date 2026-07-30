@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Fixed
+body: "Opening a single .pl file with no workspace folder now discovers .perl-lsp.toml from that file's directory instead of silently ignoring it, the format-on-save error cooldown was reduced from 30s to 5s so a formatting error doesn't silently block saves for half a minute, and the indexing status bar now shows file count."
+time: 2026-07-28T20:49:37Z
+custom:
+  PR: "5184"
+  Slug: single-file-toml-and-format-cooldown
+  Breaking: "no"

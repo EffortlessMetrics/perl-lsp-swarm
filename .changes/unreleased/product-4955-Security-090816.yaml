@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Security
+body: "A project's .perl-lsp.toml can no longer set the AI-completion endpoint, API key environment variable, header, or prefix — those are now only settable via the trusted LSP client/server settings channel, closing a path where a cloned repository could redirect a named secret to an attacker-chosen destination."
+time: 2026-07-25T09:08:16Z
+custom:
+  PR: "4955"
+  Slug: remove-workspace-ai-endpoint-authority
+  Breaking: "no"

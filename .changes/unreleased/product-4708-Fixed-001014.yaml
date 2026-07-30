@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Fixed
+body: "21 additional LSP request handlers (completion, hover, definition, references, document/workspace symbol, folding, code actions, formatting, rename, inlay hints, semantic tokens, type hierarchy, diagnostics, signature help, document highlight, and notebook sync) now honor perl.disabledFeatures, instead of continuing to run when a client had disabled them."
+time: 2026-07-23T00:10:14Z
+custom:
+  PR: "4708"
+  Slug: capability-gating-21-handlers
+  Breaking: "no"

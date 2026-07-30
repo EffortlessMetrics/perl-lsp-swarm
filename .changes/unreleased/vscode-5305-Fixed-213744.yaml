@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Fixed
+body: "The Test Explorer's prove-based test runner now resolves the prove executable from the same directory as the configured perl (matching perlbrew/plenv installs) and falls back to shell:true on Windows, instead of failing on Windows where prove is a .bat shim."
+time: 2026-07-29T21:37:44Z
+custom:
+  PR: "5305"
+  Slug: test-explorer-prove-path-windows
+  Breaking: "no"

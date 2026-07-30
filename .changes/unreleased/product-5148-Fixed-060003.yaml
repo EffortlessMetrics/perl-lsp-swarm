@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Inlay hints now show parameter names for subs using the common `my ($a, $b) = @_` unpacking idiom (including the `my $self = shift;` pattern), instead of only working for subs with an explicit formal signature."
+time: 2026-07-28T06:00:03Z
+custom:
+  PR: "5148"
+  Slug: inlay-hints-underscore-unpacking
+  Breaking: "no"

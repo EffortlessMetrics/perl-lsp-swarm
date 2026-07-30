@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Fixed
+body: "Checking for a newer perl-lsp release now times out after 30 seconds instead of being able to hang indefinitely and block the binary download/update flow."
+time: 2026-07-25T12:46:02Z
+custom:
+  PR: "5018"
+  Slug: getlatestrelease-timeout
+  Breaking: "no"
