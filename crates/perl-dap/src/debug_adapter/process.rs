@@ -136,16 +136,62 @@ impl DebugAdapter {
 
             // Extract user-provided cwd for script execution (if specified)
             // This is the working directory where the debugged script will run,
-            // separate from the workspace validation boundary (which is always the script's parent).
+            // separate from the workspace validation boundary. `cwd` is
+            // user-controlled and MUST NEVER be trusted as a security boundary —
+            // doing so (or deriving the boundary from `program`'s own parent
+            // directory, as this code used to) makes every launch trivially
+            // self-validating and defeats the workspace check entirely.
             let user_cwd = args.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from);
 
-            // Set workspace root for path validation
-            // Always use the script's parent directory as the workspace boundary
-            // The workspace validation ensures the script exists within its project context
-            let workspace = Path::new(program).parent().map(PathBuf::from);
-            if let Some(ref root) = workspace {
-                *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") =
-                    Some(root.clone());
+            // Determine the workspace boundary for this launch.
+            //
+            // The server-configured root (set once via `set_workspace_root`,
+            // typically from `DapConfig.workspace_root` at server construction)
+            // is the source of truth. A launch-args `workspaceRoot` may NARROW
+            // that boundary but must never WIDEN it — otherwise a malicious or
+            // misconfigured client could hand itself a broader root than the
+            // server allows. If no server root is configured, a launch-args
+            // `workspaceRoot` is accepted as the boundary for this launch (there
+            // is nothing to widen relative to).
+            //
+            // If neither is present, validation is skipped entirely (see the
+            // `None` handling in `launch_debugger`) — this preserves current
+            // behavior for existing users, since `DapConfig.workspace_root` is
+            // not yet populated from any CLI/editor-supplied source (tracked
+            // separately in #5345; that fail-open gap is intentionally out of
+            // scope for this fix).
+            let server_root =
+                lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+            let launch_root_arg =
+                args.get("workspaceRoot").and_then(|w| w.as_str()).map(PathBuf::from);
+
+            let effective_root = match (server_root, launch_root_arg) {
+                (Some(server), Some(launch)) => match security::validate_path(&launch, &server) {
+                    Ok(narrowed) => Some(narrowed),
+                    Err(e) => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(format!(
+                                "The launch 'workspaceRoot' ('{}') is outside your workspace \
+                                     folder and cannot widen the server-configured boundary. \
+                                     Details: {}",
+                                launch.display(),
+                                e
+                            )),
+                        };
+                    }
+                },
+                (Some(server), None) => Some(server),
+                (None, Some(launch)) => Some(launch),
+                (None, None) => None,
+            };
+
+            if let Some(root) = effective_root {
+                *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
             }
 
             let perl_args = args
