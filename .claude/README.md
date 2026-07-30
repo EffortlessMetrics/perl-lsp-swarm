@@ -1,51 +1,27 @@
-# Claude Control Plane
+# Claude repository adapter
 
-This repo runs one swarm, not multiple parallel pack stories.
+Claude uses the repository's durable development method through provider-native surfaces:
 
-The canonical runtime surfaces are:
+- `CLAUDE.md` — complete Claude repository operating contract;
+- `.claude/skills/` — public flows, atomic transformations, and focused operations loaded just in time;
+- package-local `CLAUDE.md` files — domain ownership, commands, and constraints;
+- GitHub issues, PRs, reviews, threads, checks, and merges — live transaction state.
 
-- `.claude/agents/` — agent definitions and role-specific swarm instructions
-- `.claude/commands/` — slash entrypoints (step skills, shared ops, domain ops)
-- `.claude/settings.json` — shared permissions and hook enforcement
+Project `.claude/settings.json` is intentionally minimal. Personal permission posture, command allowlists, model routing, experimental features, and provider-specific convenience settings belong in user or local configuration. The repository does not promise that `gh`, Cargo, or other shell commands are pre-authorized.
 
-Legacy directories archived to `docs/reference/archive/` during architecture transition.
+The repository no longer uses project hooks, task-completion gates, subagent lifecycle gates, private swarm metrics, fixed pipeline leads, or a tracked current-stage/active-goal surface as development authority. Formatting, proof, review currentness, required checks, merge protection, and reconciliation run at coherent candidate and GitHub boundaries.
 
-## Agent Roster
+## Operating model
 
-See [agents/AGENT_CATALOG.md](./agents/AGENT_CATALOG.md) for the full inventory.
+```text
+current repository and GitHub state
+→ narrowest public flow
+→ focused JIT skill
+→ evidence-backed result and local route
+→ one integrating writer for contested mutation
+→ protected merge and reconciliation
+```
 
-### Pipeline Leads (TeamCreate — long-running coordinators)
-- `lead-discovery` (sonnet) — find work: spawns scouts, plan-reviewers
-- `lead-build` (sonnet) — build from specs: spawns builders
-- `lead-review` (sonnet) — review and merge: spawns reviewers, ops, wisdom
+The main Claude thread is normally the warm accountable orchestrator. Focused subagents, context forks, Agent Teams, and worktrees are runtime choices used when they improve evidence or permit genuinely disjoint work; they are not lifecycle nodes.
 
-### Worker Agents (Agent() — worktree-isolated, one task, exit)
-- `scout` (haiku), `scout-parser` (haiku), `scout-lsp` (haiku), `scout-dap` (sonnet)
-- `plan-reviewer` (sonnet), `builder` (sonnet)
-- `reviewer` (haiku), `reviewer-deep` (sonnet)
-- `ops` (haiku), `research-web` (sonnet), `wisdom` (sonnet)
-
-## Operating Doctrine
-
-- worktree = write boundary
-- worker = context boundary
-- commands = slash entrypoints for all agent procedures
-- hooks and settings = deterministic enforcement
-- GitHub issues and PRs = persistent work state
-
-Two interfaces for two scales: Agent() spawns worktree-isolated workers
-for individual tasks. TeamCreate with pipeline leads coordinates workers at
-scale (10+ tasks). Step skills provide mechanical instructions for each
-todo step. Domain ops (`/parser-fix`, `/verify`, `/corpus-ratchet`, etc.)
-handle specialized procedures.
-
-The roster mapping lives in
-[agents/AGENT_CATALOG.md](./agents/AGENT_CATALOG.md). It records agent models,
-step counts, and roles.
-
-## State
-
-Swarm state lives in GitHub (issues, PRs, labels) and `.ops-perl-lsp/swarm-metrics.jsonl`.
-Use `gh issue list`, `gh pr list`, and `/swarm-status` to query current state.
-Reusable worktree slots live in `.ops-perl-lsp/worktree-manager/state.json` and
-are managed through `/worktree-manager`.
+Legacy command and persona catalogues remain temporary migration donors until the provider-native skill and router cutover removes them from active discovery. Historical versions remain available through Git history and repository archives.
