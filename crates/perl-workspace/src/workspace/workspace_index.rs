@@ -3820,6 +3820,11 @@ impl WorkspaceIndex {
     /// This is a narrow workspace-symbol pilot: returned symbols are explicitly
     /// labeled as generated/framework members and point at the source declaration
     /// that produced the member, not at an exact generated method body.
+    ///
+    /// Queries shorter than [`MIN_LOOSE_MATCH_QUERY_CHARS`] characters match by
+    /// prefix only, matching [`Self::search_source_symbols`]. The two result
+    /// sets are concatenated into one `workspace/symbol` response, so they must
+    /// narrow short queries the same way. (#5335)
     pub fn search_generated_workspace_symbols(
         &self,
         query: &str,
@@ -3831,6 +3836,19 @@ impl WorkspaceIndex {
         }
 
         let query_lower = query.to_lowercase();
+        // #5335: mirror the short-query narrowing that `search_source_symbols`
+        // applies. These results are appended to the *same* `workspace/symbol`
+        // response, so leaving this matcher ungated would keep reproducing the
+        // one-character blowup for every framework-generated member.
+        let loose_match_allowed = query_lower.chars().count() >= MIN_LOOSE_MATCH_QUERY_CHARS;
+        let matches_query_text = |candidate: &str| -> bool {
+            let candidate_lower = candidate.to_lowercase();
+            if loose_match_allowed {
+                candidate_lower.contains(&query_lower)
+            } else {
+                candidate_lower.starts_with(&query_lower)
+            }
+        };
         let source_backed_qualified_names = self.source_backed_qualified_names();
         let shards = self.fact_shards.read();
         let mut results = Vec::new();
@@ -3851,9 +3869,7 @@ impl WorkspaceIndex {
                 else {
                     continue;
                 };
-                if !bare_name.to_lowercase().contains(&query_lower)
-                    && !entity.canonical_name.to_lowercase().contains(&query_lower)
-                {
+                if !matches_query_text(bare_name) && !matches_query_text(&entity.canonical_name) {
                     continue;
                 }
                 let Some(anchor_id) = entity.anchor_id else {
@@ -6806,6 +6822,40 @@ use constant {
             "200".to_string(),
         ]);
         assert_eq!(names, vec!["HTTP_OK"]);
+    }
+
+    /// Companion to `search_source_symbols_one_char_query_matches_prefix_only`.
+    ///
+    /// `handle_workspace_symbols_v2` concatenates `search_source_symbols` and
+    /// `search_generated_workspace_symbols` into one `workspace/symbol`
+    /// response, so narrowing only the former would leave the #5335 blowup
+    /// intact for every framework-generated member.
+    #[test]
+    fn search_generated_workspace_symbols_one_char_query_matches_prefix_only() {
+        let index = WorkspaceIndex::new();
+        let code = r#"package Generated::Pilot;
+use Moo;
+has display_name => (is => 'rw');
+1;
+"#;
+        let uri = must(url::Url::parse("file:///lib/Generated/Pilot.pm"));
+        must(index.index_file(uri, code.to_string()));
+
+        let count = |query: &str| index.search_generated_workspace_symbols(query, None).len();
+
+        // Sanity: the generated member is discoverable at all.
+        assert_eq!(count("display_name"), 1, "generated member must be indexed");
+
+        // Prefix match on the bare name survives.
+        assert_eq!(count("d"), 1, "one-char prefix match must still find 'display_name'");
+
+        // 'n' occurs inside "display_name" but starts neither the bare name nor
+        // the qualified name. Before #5335 the substring test admitted it.
+        assert_eq!(count("n"), 0, "one-char query must not substring-match 'display_name'");
+
+        // Longer queries keep substring matching on both bare and qualified name.
+        assert_eq!(count("name"), 1, "multi-char substring match must be unaffected");
+        assert_eq!(count("pilot"), 1, "multi-char qualified-name substring match must survive");
     }
 
     #[test]
