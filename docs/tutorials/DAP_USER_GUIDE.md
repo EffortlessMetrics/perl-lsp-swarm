@@ -81,6 +81,13 @@ Use `env` for debug-session environment overrides:
 }
 ```
 
+## Evaluate Expressions Safely
+
+The debugger's safe evaluation mode provides syntactic validation as admission
+control. It is not a sandboxed interpreter boundary and does not provide
+interpreter or operating-system isolation. Timeout enforcement is a separate
+defense, and expressions that need side effects must opt in explicitly.
+
 ## Common Problems
 
 ### Perl Interpreter Not Found
