@@ -1415,10 +1415,23 @@ fn validate_accepted_ratchet_identity(
         &baseline.file_results,
         "accepted baseline",
     )?;
-    validate_accepted_semantic_boundary_inventory(&baseline.semantic_boundaries)
-        .into_iter()
-        .next()
-        .map_or(Ok(()), |violation| bail!("accepted baseline is invalid: {}", violation.message))
+    let membership = file_result_membership(&baseline.file_results)?;
+    let expected = series.normalized_manifest.iter().cloned().collect::<BTreeSet<_>>();
+    if membership != expected {
+        bail!("accepted baseline file results do not match series {}", series.series_id);
+    }
+    let violations = validate_accepted_semantic_boundary_inventory(&baseline.semantic_boundaries);
+    if !violations.is_empty() {
+        bail!(
+            "accepted baseline is invalid:\n{}",
+            violations
+                .iter()
+                .map(|violation| violation.message.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    Ok(())
 }
 
 fn classify_compatibility_transition(
@@ -1485,8 +1498,12 @@ fn validate_report_for_compatibility(
 }
 
 fn report_membership(report: &RunReport) -> Result<BTreeSet<String>> {
+    file_result_membership(&report.file_results)
+}
+
+fn file_result_membership(file_results: &[RunFileResult]) -> Result<BTreeSet<String>> {
     let mut membership = BTreeSet::new();
-    for result in &report.file_results {
+    for result in file_results {
         let path = normalize_test_path(&result.path)
             .ok_or_else(|| color_eyre::eyre::eyre!("report contains an invalid test path"))?;
         if !membership.insert(path) {
@@ -4377,8 +4394,9 @@ fn validate_result_summary_shape(
     let mut assertions_total = 0;
     let mut assertions_passed = 0;
     for result in file_results {
-        let path = normalize_test_path(&result.path)
-            .ok_or_else(|| color_eyre::eyre::eyre!("{subject} contains an invalid test path"))?;
+        let Some(path) = normalize_test_path(&result.path) else {
+            bail!("{subject} contains an invalid test path");
+        };
         if !paths.insert(path) {
             bail!("{subject} contains duplicate file results");
         }
