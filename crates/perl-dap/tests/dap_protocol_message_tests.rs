@@ -79,8 +79,8 @@ fn test_breakpoint_locations_no_source_path_returns_empty() -> Result<(), Box<dy
 }
 
 #[test]
-fn test_breakpoint_locations_nonexistent_file_returns_empty(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_breakpoint_locations_nonexistent_file_returns_empty()
+-> Result<(), Box<dyn std::error::Error>> {
     // AC:2783 — nonexistent file returns successful empty list (not an error)
     let mut adapter = DebugAdapter::new();
     let args = json!({
@@ -112,8 +112,8 @@ fn test_breakpoint_locations_sequence_numbers() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-fn test_breakpoint_locations_path_traversal_does_not_panic(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_breakpoint_locations_path_traversal_does_not_panic()
+-> Result<(), Box<dyn std::error::Error>> {
     // AC:2783 — path traversal paths must not panic.
     // #4638: Without a workspace root set (pre-launch), validate_source_path now
     // rejects parent-directory traversal components.  The path `/../../../etc/passwd`
@@ -228,8 +228,8 @@ fn test_exception_info_with_thread_id_argument() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
-fn test_exception_info_no_session_returns_unknown_exception(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_exception_info_no_session_returns_unknown_exception()
+-> Result<(), Box<dyn std::error::Error>> {
     // AC:2783 — without a session, description must indicate an unknown exception
     let mut adapter = DebugAdapter::new();
     let msg = adapter.handle_request(1, "exceptionInfo", None);
