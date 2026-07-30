@@ -42,7 +42,7 @@
 //! never performs heavy work — it only classifies and enqueues.
 
 use crate::protocol::{
-    JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse, REQUEST_CANCELLED,
+    INTERNAL_ERROR, JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse, REQUEST_CANCELLED,
 };
 use crate::transport::log_response;
 use std::cmp::Ordering as CmpOrdering;
@@ -404,6 +404,26 @@ enum StaleReason {
     DocumentInstanceChanged,
 }
 
+/// What a request handler produced, once a handler panic has been turned into a
+/// response the client can actually receive.
+///
+/// Handlers run on the blocking pool, so a panic surfaces as a `JoinError`
+/// instead of unwinding into the scheduler. Discarding that error leaves a
+/// request that carries an id with no reply at all, and an LSP client waits for
+/// its reply forever — the editor hangs with no error and no recovery short of
+/// restarting the server (#5206).
+#[derive(Debug)]
+enum HandlerOutcome {
+    /// The handler returned a response. Subject to the caller's freshness policy.
+    Response(JsonRpcResponse),
+    /// The handler panicked; this is the synthesized `InternalError`. It is
+    /// delivered as-is, because a crash is not a stale result and must never be
+    /// suppressed by a freshness check.
+    Panicked(JsonRpcResponse),
+    /// Nothing to send: a notification, or a panic on a request carrying no id.
+    Empty,
+}
+
 impl Scheduler {
     /// Create a new scheduler and spawn worker tasks.
     ///
@@ -545,14 +565,22 @@ impl Scheduler {
             // Run on blocking thread: handlers are CPU-bound and use
             // parking_lot locks which must not block the tokio runtime.
             let srv = Arc::clone(&server);
-            let result =
-                tokio::task::spawn_blocking(move || srv.handle_request(queued.request)).await;
+            let id = queued.request.id.clone();
+            let method = queued.request.method.clone();
+            let seq = queued.seq;
+            let outcome =
+                Self::run_handler(move || srv.handle_request(queued.request), id, &method).await;
 
             // Reads that were enqueued after this mutation can proceed once state is updated.
-            mutation_seq_done.store(queued.seq, Ordering::SeqCst);
+            // This must happen even when the handler panicked, or every read
+            // waiting on this sequence number would stall behind it.
+            mutation_seq_done.store(seq, Ordering::SeqCst);
             mutation_notify.notify_waiters();
 
-            if let Ok(Some(response)) = result {
+            // A panicked mutation still owes its caller a reply, so `Panicked`
+            // delivers alongside the normal response path.
+            if let HandlerOutcome::Response(response) | HandlerOutcome::Panicked(response) = outcome
+            {
                 log_response(&response);
                 if server.outbound.send_response(response).is_err() {
                     break;
@@ -683,6 +711,67 @@ impl Scheduler {
     fn send_response(outbound: &OutboundSender, response: JsonRpcResponse) {
         log_response(&response);
         let _ = outbound.send_response(response);
+    }
+
+    /// Run a request handler on the blocking pool, converting a handler panic
+    /// into an `InternalError` response.
+    ///
+    /// Handlers are CPU-bound and take `parking_lot` locks, so they must not run
+    /// on the async runtime. `spawn_blocking` catches a handler panic and hands
+    /// it back as a `JoinError` rather than unwinding through the scheduler.
+    /// `parking_lot` mutexes release while unwinding and are never poisoned, so
+    /// the server itself stays usable after a panicked handler — the only thing
+    /// still owed to the client is a reply, which is what this synthesizes.
+    ///
+    /// Both the mutation worker and the read dispatcher route through here so
+    /// neither can reintroduce the dropped-`Err` hang (#5206).
+    async fn run_handler<F>(work: F, id: Option<JsonRpcId>, method: &str) -> HandlerOutcome
+    where
+        F: FnOnce() -> Option<JsonRpcResponse> + Send + 'static,
+    {
+        match tokio::task::spawn_blocking(work).await {
+            Ok(Some(response)) => HandlerOutcome::Response(response),
+            Ok(None) => HandlerOutcome::Empty,
+            Err(join_error) => {
+                let detail = Self::join_failure_detail(join_error);
+
+                // A notification has no id, so there is no reply to address and
+                // nothing is left hanging. Log it and move on.
+                let Some(id) = id else {
+                    tracing::error!(method = %method, "Notification handler panicked: {detail}");
+                    return HandlerOutcome::Empty;
+                };
+
+                tracing::error!(method = %method, "Request handler panicked: {detail}");
+                HandlerOutcome::Panicked(JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: Some(id),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: INTERNAL_ERROR,
+                        message: format!("{method} handler panicked: {detail}"),
+                        data: None,
+                    }),
+                })
+            }
+        }
+    }
+
+    /// Best-effort readable text for a failed handler task.
+    ///
+    /// A panic payload is only recoverable as `&'static str` (a literal
+    /// `panic!("...")`) or `String` (a formatted one); anything else is opaque.
+    fn join_failure_detail(join_error: tokio::task::JoinError) -> String {
+        if !join_error.is_panic() {
+            return "handler task was cancelled".to_string();
+        }
+
+        let payload = join_error.into_panic();
+        payload
+            .downcast_ref::<&'static str>()
+            .map(|message| (*message).to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic payload".to_string())
     }
 
     /// Send a handler response only while its captured document instance and
@@ -829,28 +918,40 @@ impl Scheduler {
                 return;
             }
 
-            let result = tokio::task::spawn_blocking({
-                let handler_server = Arc::clone(&srv);
-                move || handler_server.handle_request(queued.request)
-            })
+            let outcome = Self::run_handler(
+                {
+                    let handler_server = Arc::clone(&srv);
+                    move || handler_server.handle_request(queued.request)
+                },
+                id.clone(),
+                &method,
+            )
             .await;
 
-            if let Ok(Some(response)) = result {
-                // A handler may spend a long time outside the document lock
-                // (for example, waiting for an AI completion backend). A
-                // mutation can advance the document generation while that
-                // work is running, so make the final send decision against
-                // the same freshness snapshot used at dispatch ingress.
-                if response.error.as_ref().is_some_and(|error| error.code == REQUEST_CANCELLED) {
-                    // Preserve a cancellation response that the handler
-                    // already produced. The scheduler must not emit a second
-                    // response when explicit cancellation races with a edit.
-                    Self::send_response(&outbound, response);
-                } else if let Some(reason) =
-                    Self::send_response_if_fresh(&srv, freshness.as_ref(), response)
-                {
-                    Self::send_cancellation(&srv, id, &method, reason);
+            match outcome {
+                // A panic is not a stale result. Deliver the error without
+                // consulting freshness, so a crash during an edit cannot leave
+                // the request unanswered.
+                HandlerOutcome::Panicked(response) => Self::send_response(&outbound, response),
+                HandlerOutcome::Response(response) => {
+                    // A handler may spend a long time outside the document lock
+                    // (for example, waiting for an AI completion backend). A
+                    // mutation can advance the document generation while that
+                    // work is running, so make the final send decision against
+                    // the same freshness snapshot used at dispatch ingress.
+                    if response.error.as_ref().is_some_and(|error| error.code == REQUEST_CANCELLED)
+                    {
+                        // Preserve a cancellation response that the handler
+                        // already produced. The scheduler must not emit a second
+                        // response when explicit cancellation races with a edit.
+                        Self::send_response(&outbound, response);
+                    } else if let Some(reason) =
+                        Self::send_response_if_fresh(&srv, freshness.as_ref(), response)
+                    {
+                        Self::send_cancellation(&srv, id, &method, reason);
+                    }
                 }
+                HandlerOutcome::Empty => {}
             }
         });
     }
@@ -2010,5 +2111,124 @@ mod tests {
             "buffer_text must normalize the URI before lookup"
         );
         Ok(())
+    }
+
+    // =====================================================================
+    // Panicked handler must never leave a request unanswered (#5206)
+    //
+    // These drive `Scheduler::run_handler` — the same function the mutation
+    // worker and the read dispatcher both call — with a closure that really
+    // panics on the blocking pool, so the `JoinError` under test is a real one.
+    // =====================================================================
+
+    /// The synthesized response for a panicked handler, or `None` for any other
+    /// outcome. Lets the assertions below use `must_some` instead of unwrapping.
+    fn panicked_response(outcome: HandlerOutcome) -> Option<JsonRpcResponse> {
+        match outcome {
+            HandlerOutcome::Panicked(response) => Some(response),
+            HandlerOutcome::Response(_) | HandlerOutcome::Empty => None,
+        }
+    }
+
+    /// The handler response for a healthy outcome, or `None` otherwise.
+    fn healthy_response(outcome: HandlerOutcome) -> Option<JsonRpcResponse> {
+        match outcome {
+            HandlerOutcome::Response(response) => Some(response),
+            HandlerOutcome::Panicked(_) | HandlerOutcome::Empty => None,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::panic, reason = "the handler under test must actually panic")]
+    async fn panicked_request_handler_answers_with_internal_error() {
+        let outcome = Scheduler::run_handler(
+            || panic!("provider exploded"),
+            Some(JsonRpcId::Integer(7)),
+            "textDocument/hover",
+        )
+        .await;
+
+        // Before the fix the `Err(JoinError)` was dropped by
+        // `if let Ok(Some(response))` and the client waited forever.
+        let response = must_some(panicked_response(outcome));
+
+        assert_eq!(
+            response.id,
+            Some(JsonRpcId::Integer(7)),
+            "the reply must carry the panicked request's id, or the client cannot match it"
+        );
+        assert!(response.result.is_none(), "a panicked handler has no result");
+
+        let error = must_some(response.error);
+        assert_eq!(error.code, INTERNAL_ERROR);
+        assert!(
+            error.message.contains("textDocument/hover"),
+            "error should name the method that panicked; got {:?}",
+            error.message
+        );
+        assert!(
+            error.message.contains("provider exploded"),
+            "error should carry the panic payload; got {:?}",
+            error.message
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::panic, reason = "the handler under test must actually panic")]
+    async fn panicked_notification_handler_sends_nothing() {
+        // A notification has no id, so there is no reply to address and nothing
+        // is left hanging. Answering anyway would be a protocol violation.
+        let outcome =
+            Scheduler::run_handler(|| panic!("boom"), None, "textDocument/didChange").await;
+
+        assert!(
+            matches!(outcome, HandlerOutcome::Empty),
+            "a panicked notification must not produce a response, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::panic, reason = "the handler under test must actually panic")]
+    async fn panic_with_formatted_payload_is_reported() {
+        // `panic!("{}", x)` carries a `String` payload rather than a `&'static str`.
+        let outcome = Scheduler::run_handler(
+            || panic!("{}", "index out of range".to_string()),
+            Some(JsonRpcId::Integer(1)),
+            "textDocument/completion",
+        )
+        .await;
+
+        let error = must_some(must_some(panicked_response(outcome)).error);
+        assert!(
+            error.message.contains("index out of range"),
+            "String panic payloads must be reported, not swallowed; got {:?}",
+            error.message
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn healthy_handler_outcomes_are_unchanged() {
+        // Guards the refactor: the non-panicking paths must behave exactly as
+        // the previous `if let Ok(Some(response))` did.
+        let response = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Integer(3)),
+            result: Some(serde_json::json!({"ok": true})),
+            error: None,
+        };
+        let outcome = Scheduler::run_handler(
+            move || Some(response),
+            Some(JsonRpcId::Integer(3)),
+            "initialize",
+        )
+        .await;
+        let delivered = must_some(healthy_response(outcome));
+        assert_eq!(delivered.id, Some(JsonRpcId::Integer(3)));
+
+        let empty = Scheduler::run_handler(|| None, None, "textDocument/didOpen").await;
+        assert!(
+            matches!(empty, HandlerOutcome::Empty),
+            "a notification handler returning None must stay Empty, got {empty:?}"
+        );
     }
 }
