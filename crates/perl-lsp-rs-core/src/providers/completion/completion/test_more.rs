@@ -2,7 +2,7 @@
 //!
 //! Provides completion for Test::More functions in test contexts.
 
-use super::{context::CompletionContext, items::CompletionItem};
+use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
 
 /// Test::More function completions
 pub const TEST_MORE_EXPORTS: &[(&str, &str, &str)] = &[
@@ -91,6 +91,7 @@ pub fn add_test_more_completions(
                 additional_edits: vec![],
                 text_edit_range: Some((context.prefix_start, context.position)),
                 commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
             });
         }

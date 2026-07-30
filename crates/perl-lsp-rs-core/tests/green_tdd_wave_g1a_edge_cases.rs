@@ -127,7 +127,7 @@ fn test_code_lens_provider_with_file_path_set() -> Result<(), Box<dyn std::error
 /// This tests that intra-module dependency resolution works after collapse.
 #[test]
 fn test_file_completion_uses_completion_item_types() -> Result<(), Box<dyn std::error::Error>> {
-    use perl_lsp_rs_core::providers::completion_item::CompletionItem;
+    use perl_lsp_rs_core::providers::completion_item::{CompletionItem, InsertTextFormat};
     use perl_lsp_rs_core::providers::file_completion::FileCompletionOptions;
 
     // If file_completion had a function that returns CompletionItem, we'd test that.
@@ -144,6 +144,7 @@ fn test_file_completion_uses_completion_item_types() -> Result<(), Box<dyn std::
         additional_edits: Vec::new(),
         text_edit_range: None,
         commit_characters: None,
+        insert_text_format: InsertTextFormat::PlainText,
         label_details: None,
     };
     Ok(())
@@ -187,7 +188,7 @@ fn test_completion_item_dedup_empty() -> Result<(), Box<dyn std::error::Error>> 
 #[test]
 fn test_completion_item_dedup_single() -> Result<(), Box<dyn std::error::Error>> {
     use perl_lsp_rs_core::providers::completion_item::{
-        CompletionItem, CompletionItemKind, deduplicate_and_sort,
+        CompletionItem, CompletionItemKind, InsertTextFormat, deduplicate_and_sort,
     };
 
     let item = CompletionItem {
@@ -201,6 +202,7 @@ fn test_completion_item_dedup_single() -> Result<(), Box<dyn std::error::Error>>
         additional_edits: Vec::new(),
         text_edit_range: None,
         commit_characters: None,
+        insert_text_format: InsertTextFormat::PlainText,
         label_details: None,
     };
     let result = deduplicate_and_sort(vec![item.clone()]);
@@ -213,7 +215,7 @@ fn test_completion_item_dedup_single() -> Result<(), Box<dyn std::error::Error>>
 #[test]
 fn test_completion_item_dedup_removes_duplicates() -> Result<(), Box<dyn std::error::Error>> {
     use perl_lsp_rs_core::providers::completion_item::{
-        CompletionItem, CompletionItemKind, deduplicate_and_sort,
+        CompletionItem, CompletionItemKind, InsertTextFormat, deduplicate_and_sort,
     };
 
     let make = |label: &str| CompletionItem {
@@ -227,6 +229,7 @@ fn test_completion_item_dedup_removes_duplicates() -> Result<(), Box<dyn std::er
         additional_edits: Vec::new(),
         text_edit_range: None,
         commit_characters: None,
+        insert_text_format: InsertTextFormat::PlainText,
         label_details: None,
     };
 
@@ -240,7 +243,7 @@ fn test_completion_item_dedup_removes_duplicates() -> Result<(), Box<dyn std::er
 #[test]
 fn test_completion_item_dedup_sorts_alphabetically() -> Result<(), Box<dyn std::error::Error>> {
     use perl_lsp_rs_core::providers::completion_item::{
-        CompletionItem, CompletionItemKind, deduplicate_and_sort,
+        CompletionItem, CompletionItemKind, InsertTextFormat, deduplicate_and_sort,
     };
 
     let make = |label: &str| CompletionItem {
@@ -254,6 +257,7 @@ fn test_completion_item_dedup_sorts_alphabetically() -> Result<(), Box<dyn std::
         additional_edits: Vec::new(),
         text_edit_range: None,
         commit_characters: None,
+        insert_text_format: InsertTextFormat::PlainText,
         label_details: None,
     };
 
