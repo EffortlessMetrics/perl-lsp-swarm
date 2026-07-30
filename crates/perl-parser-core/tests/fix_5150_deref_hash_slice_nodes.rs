@@ -191,6 +191,20 @@ fn real_world_deref_hash_slice_in_assignment_lvalue() {
 }
 
 #[test]
+fn real_world_deref_key_value_slice_in_assignment_lvalue() {
+    // Lvalue deref key/value slice: %$href{qw(a b)} = (1, 2)
+    // Salvaged from #5183 — the `%`-sigil lvalue form was the one case across
+    // both competing drafts for #5150 that the merged fix did not cover.
+    let source = r#"%$href{qw(a b)} = (1, 2);"#;
+    assert_clean_parse(source);
+    let ks = kinds(source);
+    assert!(
+        ks.contains(&"KeyValueSlice"),
+        "lvalue %$href{{...}} must produce KeyValueSlice; got: {ks:?}"
+    );
+}
+
+#[test]
 fn deref_hash_slice_with_complex_subscript_ref() {
     // @{$obj->{data}}{@keys} — nested deref before hash slice
     let source = r#"my @vals = @{$obj->{data}}{@keys};"#;
