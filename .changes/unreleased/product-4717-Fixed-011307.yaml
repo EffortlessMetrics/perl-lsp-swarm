@@ -9,8 +9,8 @@ body: >-
   Correct docs/RELEASE_PROCESS.md crates.io rollback section to document
   cargo yank instead of the false claim that crates.io does not support
   yanking.
-time: 2026-07-22T20:45:00Z
+time: 2026-07-23T01:13:07Z
 custom:
-  PR: "4650"
+  PR: "4717"
   Slug: homebrew-formula-fix
   Breaking: "no"
