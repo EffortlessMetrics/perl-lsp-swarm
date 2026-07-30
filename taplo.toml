@@ -1,0 +1,14 @@
+# Taplo owns changed-file TOML formatting and syntax/duplicate-key checks.
+# Semantic policy validation remains with the repository's Rust/Python tools.
+include = ["**/*.toml"]
+exclude = ["**/Cargo.lock", "target/**"]
+
+[formatting]
+align_entries = false
+align_comments = false
+array_trailing_comma = true
+column_width = 100
+indent_entries = 2
+indent_tables = 2
+reorder_keys = false
+trailing_newline = true

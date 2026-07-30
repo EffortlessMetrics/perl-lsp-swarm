@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::tasks::change_set::{self, ArtifactIdentity};
 use crate::tasks::ci_scope::{self, ScopeOutput};
+use crate::tasks::repo_hygiene;
 use crate::utils::project_root;
 
 const SCHEMA_VERSION: &str = "ci-contract.v1";
@@ -227,6 +228,29 @@ fn select_checks(
         });
     }
 
+    if changed_files
+        .iter()
+        .any(|file| repo_hygiene::is_toml_path(file) || repo_hygiene::is_typos_path(file))
+    {
+        checks.push(CheckSpec {
+            id: "repo_hygiene",
+            reason: "changed TOML or text/config/source surface changed".to_string(),
+            program: "cargo",
+            args: vec![
+                "xtask".to_string(),
+                "repo-hygiene".to_string(),
+                "--base".to_string(),
+                base.to_string(),
+                "--head".to_string(),
+                head.to_string(),
+                "--receipt".to_string(),
+                "target/receipts/repo-hygiene.json".to_string(),
+                "--summary".to_string(),
+                "target/receipts/repo-hygiene.md".to_string(),
+            ],
+        });
+    }
+
     checks
 }
 
@@ -353,6 +377,9 @@ fn join_output(
 }
 
 fn result_for_exit(code: Option<i32>, detail: &str) -> ContractResultClass {
+    if detail.contains("repo-hygiene status is NotProven") {
+        return ContractResultClass::NotProven;
+    }
     match code {
         Some(0) if has_policy_finding(detail) => ContractResultClass::PolicyFinding,
         Some(0) => ContractResultClass::Success,

@@ -184,6 +184,8 @@ jobs:
           path: |
             target/receipts/ci-contract.json
             target/receipts/ci-contract.md
+            target/receipts/repo-hygiene.json
+            target/receipts/repo-hygiene.md
             target/ci-contract/changed-files.txt
           if-no-files-found: warn
           retention-days: 7

@@ -28,8 +28,10 @@ The first inventory contains tools that already have repository-native policies 
 - Changie 1.25.0;
 - actionlint 1.7.12;
 - Zizmor 1.26.1.
+- Taplo 0.10.0;
+- typos 1.48.0.
 
-Lychee, Taplo, typos, and other contract tools join this inventory only when their owning admission slice lands.
+Lychee and other contract tools join this inventory only when their owning admission slice lands.
 
 ## Integrity model
 
@@ -51,6 +53,19 @@ aqua exec -- <tool> <arguments>
 ```
 
 The existing Nix and checksum-install workflows remain in place during the foundation phase. A later PR may consolidate those paths after Linux, macOS, Windows, and forked-PR behavior have receipts.
+
+## Changed-file hygiene
+
+The local and CI entry point for the scoped Taplo/typos contract is:
+
+```bash
+cargo xtask repo-hygiene --base origin/main --head HEAD
+```
+
+It consumes the shared exact-head change-set resolver. Taplo checks changed TOML
+formatting and syntax; typos checks changed text/config/source files. An empty
+scope is `NOT_APPLICABLE`. Missing Aqua or a missing pinned tool is `NOT_PROVEN`
+and exits non-zero; it is never treated as a clean result.
 
 ## Upgrade procedure
 
