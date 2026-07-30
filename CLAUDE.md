@@ -1,212 +1,137 @@
-# CLAUDE.md
+# Claude repository operating contract
 
-**Metrics**: [status/index.md](docs/project/status/index.md) | **API Stability**: [STABILITY.md](docs/reference/STABILITY.md) | **Implementation agents**: [AGENTS.md](AGENTS.md)
+## Product direction
 
-This file is a **router**, not the doctrine itself: it names what every agent must
-hold in working memory; everything else is one link away. Full operating model
-(levels, truth hierarchy, delegation, receipts):
-[docs/swarm/modern-claude-operating-model.md](docs/swarm/modern-claude-operating-model.md).
-Why this file stays thin (it hit 2521 lines once and had to be pruned):
-[CLAUDE_MD_EVOLUTION.md](docs/project/CLAUDE_MD_EVOLUTION.md).
+perl-lsp is becoming a compiler-backed Perl toolchain whose parser, compiler facts, workspace model, LSP, DAP, packaging, and editor behavior remain honest about source, freshness, confidence, fallback, and dynamic boundaries.
 
-## Orchestration model
+Optimize for real user-visible closure, semantic ownership, deterministic proof, and maintainable current-main behavior—not local component completion or workflow compliance.
 
-perl-lsp is **orchestrator-driven**: a long-lived orchestrator routes work through
-[7 lifecycle moments](docs/reference/PIPELINE_GATES.md) (Identify → Spec → Build →
-Review → CI green → Merge → Learn) — boundaries that block work at the earliest
-reliable point (unsettled context before mutation, structural defects before commit,
-missing proof before publication, stale review/integration defects before merge),
-enforced by evidence and rulesets rather than role/label machinery — to
-consolidated, long-running warm agents (roster:
-[.claude/agents/AGENT_CATALOG.md](.claude/agents/AGENT_CATALOG.md)). It routes and
-writes code directly only by exception, always followed by an independent adversarial
-pass. **The CI/merge control plane (ripr, Codecov-patch, the fmt/clippy meta-gate,
-main-green) is the binding constraint, not codegen** — treat infra as product
-velocity. Rationale: [ORCHESTRATION_DOCTRINE.md](docs/reference/ORCHESTRATION_DOCTRINE.md)
-and [operating model § why this doc exists](docs/swarm/modern-claude-operating-model.md#why-this-doc-exists).
-Consequential-PR-decision contract: [MAINTAINER_AGENT_DOCTRINE.md](docs/reference/MAINTAINER_AGENT_DOCTRINE.md).
+## Sources of truth
 
-## Truth hierarchy
+Use the highest applicable current authority:
 
-When sources disagree, higher wins: **(1)** live `origin/main` + GitHub PR/check state
-**(2)** active lane manifest (`.perl-lsp/goals/`) + generated status boards **(3)**
-machine receipts + accepted baselines **(4)** specs/ADRs/contracts/policy **(5)**
-CLAUDE.md + scoped rules **(6)** auto-memory + `CLAUDE.local.md` **(7)** conversation
-handoffs (lowest — self-report is unverified). Never let a lower rank override a
-higher one. CI-specific instance of this rule:
-[LIVE_SIGNALS_VS_LABELS.md](docs/reference/LIVE_SIGNALS_VS_LABELS.md).
+1. current `origin/main`, live GitHub issues/PRs/reviews/checks/rulesets, and actual repository behavior;
+2. accepted specifications, ADRs, policies, generated contracts, and independent proof;
+3. this file and package-local `CLAUDE.md` guidance;
+4. Claude plans, task lists, subagents, Teams state, worktrees, memory, and conversation.
 
-## Session start and work discipline
+GitHub owns live transaction state. The repository owns durable product, architecture, method, and proof contracts. Claude runtime topology, task state, liveness, model choice, and temporary plans are not repository authority.
 
-Run `just doctor` and `just clean-worktrees` before spawning agents; labels are
-navigation only — routing and priority read live GitHub + issue/spec state, per
-[PIPELINE_GATES.md](docs/reference/PIPELINE_GATES.md) and
-[LIVE_SIGNALS_VS_LABELS.md](docs/reference/LIVE_SIGNALS_VS_LABELS.md). One accountable
-writer per PR. Production writes happen in a **worktree**, never the main checkout.
-Finish or disposition same-lane active work before starting another branch. One
-change, one proof, one PR. **Never weaken a test or ratchet for green** — a red gate
-is signal, not an obstacle to route around.
+Do not use labels, dashboards, tracked active-goal pointers, task completion, teammate identity, or conversational self-report as proof that work is ready.
 
-## Issue-first implementation
+## Select the public flow
 
-Before creating a writer worktree, branch, or production edit for substantive work,
-establish or reconcile one controlling issue whose latest plan revision carries a
-`BUILD` verdict (research → synthesize plan → independent verdict). Read-only
-investigation may precede `builder-ready`. Run `/start-work <issue>` before taking
-write ownership — it is an advisory pre-mutation guard, not a required check.
-Comments carry evidence; labels are navigation, not authorization. Full model:
-[#3971](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3971) /
-[#3807](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3807).
+Use the narrowest applicable skill under `.claude/skills/`:
 
-## Delegation
+- `deliver-goal` — a durable multi-PR outcome or umbrella;
+- `deliver-pr` — one issue, PR, branch, candidate, or coherent claim;
+- `prepare-issue` — the problem, owner, scope, proof seam, or plan is unsettled;
+- `prepare-proof` — intent is settled but proof is absent or weak;
+- `build-candidate` — reviewed proof or a coherent candidate needs implementation, hardening, simplification, or mutable review;
+- `finish-pr` — publication, GitHub feedback, formal review, live integration, merge, or reconciliation.
 
-Haiku for search/mechanical-verify/external-fact-check/narrow-review; Sonnet for
-plan/implement/synthesize/refactor/deep-review; Workflows for broad independent
-fan-out or repeatable audits; Teams only when workers must actually communicate.
-Independent review approaches the seam from a **different direction**, not just a
-fresh context. Leave `CLAUDE_CODE_SUBAGENT_MODEL` **unset** — per-agent `model:`
-frontmatter is the routing decision. Review/audit workflows must be **capability
-read-only** (Edit/Write/mutating-git/GitHub-write excluded from the allowlist, not
-merely prompted against — workflow subagents run in `acceptEdits` and inherit the
-parent's tools). Full model:
-[docs/swarm/modern-claude-operating-model.md#delegation-model](docs/swarm/modern-claude-operating-model.md#delegation-model).
+Enter at the earliest absent or stale useful judgment. Existing coherent work enters midstream. Do not replay completed stages merely to manufacture process evidence, and do not run a lifecycle locator between skills.
 
-## Closure discipline and one-decision-per-pass
+## Operating posture
 
-**Component-proved ≠ system-proved.** Before "done"/"merge"/"live", verify the full
-production chain: the live caller, reachability from a real request, the durable
-artifact on `origin`, and the externally observable effect — bound to the current
-repo identity and PR revision. Track completion on independent axes (Implemented · Merged ·
-Reachable · Correct · Measured · Promoted · Consolidated); a gap on
-Reachable/Promoted/Consolidated is **inventory, not product**. Background:
-[docs/forensics/2026-06-25-closure-gap-the-recurring-defect.md](docs/forensics/2026-06-25-closure-gap-the-recurring-defect.md).
+**Default-complete, recovery-forward.** Normally perform every applicable research, vision, planning, proof, hardening, simplification, review, and reconciliation pass before creating the next more expensive artifact.
 
-**Each agent's pass produces exactly ONE routing decision**: sign off (`<gate>-reviewed`)
-OR bounce back (`needs-*`) — never both in the same pass. Per the 2026-04-26 #6780
-incident, applying both confused the merge gate and let unfixed bugs ride to main.
+When an earlier pass was missed, perform the cheapest version that can still improve the current artifact and continue. Missing historical ceremony, labels, receipts, or named-agent handoffs is not a reason to discard coherent work.
 
-**No GitHub-enforced merge check depends on label state**: the two required checks
-(`Perl LSP Rust Small Result`, `ripr+ New Gap Gate` — classic branch-protection status
-checks) green for the live PR, plus 0 unresolved conversation threads (this repo's
-conversation-resolution convention — enforced by the `main` branch ruleset's
-`required_review_thread_resolution` rule; classic branch protection's own
-`required_conversation_resolution` setting is off) is what gates a merge
-attempt — not `needs-*`/`merge-ready`. The mechanical `needs-label-gate` that once
-blocked a GitHub merge on `needs-*` presence was retired (#4005). That doesn't make
-`needs-*` inert: the `queue_reconciler` cron strips the `merge-ready` navigation
-label when a non-CI `needs-*` label is present or live CI is red, and the ops merge
-checklist still treats an active `needs-*` label as a hard stop — an unaddressed
-bounce label still blocks a PR from merging in practice, as reconciliation/process
-discipline, not a ruleset gate. **Main must stay green; merge requires green**
-(2026-04-26 directive) — verify workspace-wide CI, not just per-crate, before merging.
+Make reasonable documented engineering decisions and proceed. Return only for a genuine product or semantic decision, a concrete safety hazard, or honest `NOT_PROVEN` evidence.
 
-Squash merge is the normal integration operation. Do not require the eventual squash
-commit SHA to exist before merging, or treat a branch SHA comparison as a separate
-merge gate; GitHub creates the squash commit and post-merge checks may run on that
-new commit afterward.
+## Claude orchestration
 
-## Publication and proof
+The main Claude thread is the warm accountable orchestrator unless it was explicitly spawned with a bounded brief. Naming one issue or PR does not convert the main thread into a disposable worker.
 
-Every PR body should answer: Intent · Controlling issue · Scope · Non-goals · Change
-shape · Behavioral proof · Receipts · Independent review · What was not run · Claim
-boundary · Risk & rollback · Remaining work (full shape:
-[operating model § receipts](docs/swarm/modern-claude-operating-model.md#receipts--pr-cockpit)).
-Receipts are machine-produced, SHA-bound, claim-bounded evidence — not narrative
-summaries. **GitHub/repo state is truth**, not conversational checkboxes; the
-TaskList board's `completed` status does not reliably persist across sessions (known
-harness bug) — never rely on it for cross-session state.
+For substantive work, the main thread may use:
 
-## Coding standards
+- direct execution;
+- one whole-flow operation agent;
+- ordinary subagents or context forks for independent read-heavy source, oracle, proof, or review questions;
+- Agent Teams when communication between focused readers/reviewers or distinct claim lanes materially improves the result;
+- separate writers on distinct claims, each with its own candidate branch/worktree, even when eventual Git integration may require repair.
 
-Invoke `/coding-standards` for full detail; [WORKTREE_PROTOCOL.md](docs/reference/WORKTREE_PROTOCOL.md)
-for worktree mechanics.
+One writer mutates each current candidate branch/worktree at a time. Distinct claim lanes use ordinary optimistic Git concurrency and may touch the same files, crates, or nearby semantics; each affected lane owns its actual merge conflict or combined-tree repair. Do not proactively inspect sibling implementations merely to predict overlap. The main thread owns decisions, contradiction-preserving synthesis, GitHub updates, and continuation. Persist joined durable results; keep teammate liveness, join order, retries, model routing, and temporary worktree bookkeeping runtime-local.
 
-- **Banned in production code**: `unwrap()`, `expect()`, `panic!()`, `todo!()`,
-  `unimplemented!()`, `std::process::abort()`, `dbg!()`. Use `?`, `.ok_or_else()`,
-  pattern matching, `Result`/`Option`. `std::process::exit()` only in `bin/` and
-  `lifecycle.rs`. Narrow exceptions exist (LazyLock regex initializers, profiling
-  bins) — see `/coding-standards` for the exact list.
-  Tests: `Result<()>` returns or `perl_tdd_support::must`/`must_some`.
-- **Never use `git stash` in a worktree agent.** The stash list is shared across all
-  worktrees and the main checkout — `git stash pop` may silently restore another
-  agent's changes. Use `git restore <file>` to discard, or `git commit -m "wip"` to
-  save work in progress.
-- Run `cargo fmt` and `cargo clippy --workspace` before committing. Prefer
-  `.first()` over `.get(0)`, `.push(char)` over `.push_str`, `or_default()` over
-  `or_insert_with(Vec::new)`; avoid unnecessary `.clone()` on Copy types.
+A compact whole-flow assignment is sufficient when repository skills carry the method:
 
-## Merge and CI
-
-Exactly two branch-protection required checks (authoritative:
-[.ci/policies/required-checks.toml](.ci/policies/required-checks.toml) — the
-plural `[[checks]]` array is the merge-blocking inventory; the singular
-`[[check]]` array feeds `workflow-trigger-lint` for workflow-shape linting):
-- `Perl LSP Rust Small Result`
-- `ripr+ New Gap Gate`
-
-(`Codecov / Patch 95`, `CI Gate (Advisory Aggregate)`, `PR Smoke` are advisory — not
-required.) Merge in batches of 3 (CI cancellation cascade); run
-`just cpan-corpus-ratchet` after parser merges — batch-of-3 mechanics:
-[.claude/agents/ops.md](.claude/agents/ops.md) and
-[PROCESS_LESSONS.md §3](docs/reference/PROCESS_LESSONS.md). **Before merging a batch,
-compare changed-file lists (`gh pr diff --name-only`); when two PRs in the batch touch
-the same file, merge the older/smaller one first and expect the other to need a
-conflict-resolution merge afterward — don't merge same-file PRs back-to-back blind**
-(observed 2026-07-04: #3397 and #3381 both touched `runtime/scheduler.rs`; wrong order
-created an avoidable conflict). Local preflight, timing, and the Codecov false-low
-recipe: [CI_GATE_PLAYBOOK.md](docs/reference/CI_GATE_PLAYBOOK.md).
-
-**Never enable or retain auto-merge while any requested review is still active or any
-substantive review conversation remains unresolved.** Resolve threads for a reason
-(fixed/refuted/superseded/follow-up), each backed by a machine-readable
-`Disposition:`/`Evidence:` reply posted BEFORE resolution — never performatively. Main
-mechanically requires conversation resolution before merge. The
-`resolved_without_disposition` gate — which will mechanically block any resolved
-thread with no reply, the resolved-to-clear pattern that shipped 6 live P1 defects
-through #3647 — is proposed in #3732 but **deliberately held back** for a
-dogfood-advisory-first rollout, so it doesn't retroactively block PRs already in
-flight; until it lands, follow the convention as process discipline, not yet
-mechanically enforced. Canonical convention: [review-convergence.md § Disposition-reply
-convention](.claude/reference/review-convergence.md#disposition-reply-convention-before-calling-resolvereviewthread).
-
-## Quick reference
-
-```bash
-just doctor && just pr-fast           # health check, then canonical fast push guard
-nix develop -c just ci-gate           # canonical local merge gate (before merge)
-cargo test --workspace --lib          # run all tests
+```text
+Take issue #123 through `deliver-pr`.
+Use GitHub as durable state. Follow each skill's normal and material backward
+routes until the claim is reconciled or a real blocker remains.
 ```
 
-Full command catalog: [COMMANDS_REFERENCE.md](docs/reference/COMMANDS_REFERENCE.md) and
-the `justfile`. Crate map (~30 post-collapse crates; run `cargo metadata --no-deps` for
-the current member count — do not hardcode it, it drifts):
-[IMPLEMENTATION_WORKER.md § Project shape](docs/agents/IMPLEMENTATION_WORKER.md#project-shape).
-Key paths, parser-version notes, workspace exclusions:
-[AGENTS.md](AGENTS.md) and [WORKSPACE_ARCHITECTURE.md](docs/project/WORKSPACE_ARCHITECTURE.md).
+For focused delegation, name the skill, target, authoritative inputs, read/write boundary, and expected result. Do not create another identity merely because attention moved from research to proof or proof to implementation.
 
-## Documentation index
+Detailed method and contracts: [`docs/agents/DEVELOPMENT_METHOD.md`](docs/agents/DEVELOPMENT_METHOD.md), [`docs/agents/GITHUB_SURFACES.md`](docs/agents/GITHUB_SURFACES.md), [`docs/agents/REVIEW_CURRENTNESS.md`](docs/agents/REVIEW_CURRENTNESS.md), and [`docs/agents/SKILL_CONTRACT.md`](docs/agents/SKILL_CONTRACT.md).
 
-Gates, agent roster, label taxonomy, skip criteria:
-[PIPELINE_GATES.md](docs/reference/PIPELINE_GATES.md). Per-label live-vs-authoritative
-audit: [LIVE_SIGNALS_VS_LABELS.md](docs/reference/LIVE_SIGNALS_VS_LABELS.md).
-Post-where-work-lives protocol: [ISSUE_SCOUT_PROTOCOL.md](docs/reference/ISSUE_SCOUT_PROTOCOL.md).
-Also: [ROADMAP.md](docs/project/ROADMAP.md) ·
-[FAILURE_MODES.md](docs/reference/FAILURE_MODES.md) ·
-[PROVIDER_READINESS_CONTRACT.md](docs/reference/PROVIDER_READINESS_CONTRACT.md) ·
-[features.toml](features.toml) · [SPEC_TEMPLATE.md](docs/reference/SPEC_TEMPLATE.md) ·
-[SUBSYSTEM_HAZARD_DEFAULTS.md](docs/reference/SUBSYSTEM_HAZARD_DEFAULTS.md) ·
-[docs/learnings/README.md](docs/learnings/README.md) (repo incidents, greppable) ·
-[docs/concepts/](docs/concepts/) (portable patterns).
+## GitHub-native work
 
-**User-facing semantic PRs** (hover/completion docs, builtin signatures, version-gated
-behavior, diagnostic wording) require correctness review against an **external
-oracle** (perldoc, the LSP/DAP spec, the real crate API) before merge — green CI
-proves internal consistency, never external truth (the #3118 incident: fully green
-CI still shipped a hallucinated fact). See [external-truth-gate.md](docs/concepts/external-truth-gate.md).
+- issues hold research, corrections, current synthesis, plan, dependencies, and next action;
+- pull requests hold one coherent acceptance-and-rollback candidate;
+- submitted reviews and inline threads hold formal findings and evidence-backed dispositions;
+- checks and rulesets hold current machine and integration evidence;
+- merge closeout records what landed, what remains, and the next coherent claim.
 
-**PR title `(#N)` rule**: `(#0000)` is accepted when the real issue number is unknown
-(never guess a real one) and auto-applies `needs-issue-link`, which self-clears once
-the title carries a real number. See `.github/workflows/pr-title-check.yml`.
+Use labels only for stable area, kind, risk, release, blocker, or requested-attention classification.
 
-**Files**: `.ops-perl-lsp/` (metrics), `.claude/agents/` (agent defs and catalog),
-`.claude/commands/` (step skills), `.spec/<issue#>-<slug>/` (per-work-item specs).
+Publish locally complete candidates ready by default. `publish-pr` defines the proof, hardening, simplification, clean-worktree, candidate-identity, writer-collision, and claim thresholds. Draft is an explicit exception for remote-only proof, real collaboration, early visible ownership, or a protected integration experiment.
+
+A clean review is valid. Never manufacture a finding or edit to prove review effort.
+
+## Proof and currentness
+
+Formal review is bound to:
+
+```text
+full candidate head SHA
++ normalized material PR claim/review-index digest
+```
+
+- candidate or material claim change → rerun affected supporting proof and specialist review, then obtain a fresh formal-review record;
+- actual merge conflict → resolve, rerun affected evidence, then formally review the resulting subject;
+- explicit prerequisite change or actual merge-group/combined-tree failure → targeted analysis and lane-local repair;
+- unrelated `main` movement with unchanged conflict-free candidate and material claim → no rebase, update-branch, empty commit, full CI replay, or formal-review churn.
+
+Editorial PR-body changes outside material claim, establishment/non-goal, risk/rollback, and substantive review-index sections do not require review churn.
+
+This repository squash-merges. GitHub creates the landed squash commit; reconciliation verifies its effect on current `main`.
+
+Never weaken a test, ratchet, support claim, or required proof merely to obtain green status. Use `NOT_PROVEN` for missing, partial, stale, contradictory, or instrument-failed evidence.
+
+## Hard stops
+
+Stop only for concrete preventable hazards:
+
+- two writers would mutate the same candidate branch/worktree concurrently;
+- destructive cleanup would lose unsalvaged work;
+- repository, branch, candidate, or material claim identity cannot be established;
+- a secret or unsafe release would be published;
+- a durable contract is structurally invalid;
+- substantive review findings remain unresolved;
+- current GitHub branch protection, rulesets, merge queue, or required checks block merge.
+
+Otherwise detect, explain, repair, and continue.
+
+## Repository and Claude hygiene
+
+- production code must not use `unwrap`, `expect`, `panic!`, `todo!`, `unimplemented!`, `abort`, or `dbg!` outside documented narrow exceptions;
+- never use `git stash` in worktrees; use scoped restore or a WIP commit;
+- stage intended paths explicitly;
+- use one worktree per genuine concurrent write lane, not per lifecycle pass;
+- run focused proof first, then affected package proof, then broader proof at the coherent candidate boundary;
+- use package-local `CLAUDE.md` files for domain ownership and commands;
+- shared `.claude/settings.json` must remain portable and minimal; personal permissions, bypass posture, model routing, experimental choices, and broad command allowlists belong in user or local settings.
+
+Useful commands:
+
+```bash
+just doctor
+just pr-fast
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-targets
+```
+
+Select proof proportionately; current GitHub protection remains authoritative at merge.
