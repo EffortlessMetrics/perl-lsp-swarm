@@ -147,6 +147,15 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ env.CONTRACT_HEAD }}
           fetch-depth: 0
+      - name: Install portable contract tools
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p "$RUNNER_TEMP/bin"
+          GOBIN="$RUNNER_TEMP/bin" go install github.com/aquaproj/aqua/v2/cmd/aqua@v2.57.0
+          export PATH="$RUNNER_TEMP/bin:$PATH"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          bash scripts/tools/aqua-doctor.sh
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
         with:
