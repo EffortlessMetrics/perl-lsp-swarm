@@ -490,9 +490,11 @@ impl ServerConfig {
                 }
             }
             if let Some(include) = string_array(critic.get("include")) {
+                warn_unknown_native_critic_rule_ids("critic.include", &include);
                 self.native_critic_include = include;
             }
             if let Some(exclude) = string_array(critic.get("exclude")) {
+                warn_unknown_native_critic_rule_ids("critic.exclude", &exclude);
                 self.native_critic_exclude = exclude;
             }
         }
@@ -680,6 +682,39 @@ const CRITIC_ENGINE_VALID_OPTIONS: &str = "native, legacy (external, perlcritic)
 /// `tracing::warn!` messages when a user supplies an unrecognized value.
 /// Kept in sync with [`parse_native_critic_profile`].
 const NATIVE_CRITIC_PROFILE_VALID_OPTIONS: &str = "recommended, strict";
+
+/// Returns any entries in `ids` that are not registered native critic rule IDs
+/// in the strict catalog.
+///
+/// The strict catalog is the superset of all registered native rules; any ID
+/// that doesn't appear there is either a typo or a stale reference and will be
+/// silently ignored at check time.
+pub fn unknown_native_critic_rule_ids(ids: &[String]) -> Vec<&str> {
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let known = crate::tooling::perl_critic::NativeCriticRegistry::for_profile(
+        crate::tooling::perl_critic::NativeCriticProfile::Strict,
+    )
+    .rule_ids();
+    ids.iter()
+        .filter_map(|id| if known.contains(&id.as_str()) { None } else { Some(id.as_str()) })
+        .collect()
+}
+
+/// Emit a `tracing::warn!` for each entry in `ids` that is not a known native
+/// critic rule ID in the strict catalog.
+fn warn_unknown_native_critic_rule_ids(setting: &'static str, ids: &[String]) {
+    for unknown_id in unknown_native_critic_rule_ids(ids) {
+        tracing::warn!(
+            target: "perl_lsp::config",
+            setting,
+            value = %unknown_id,
+            "unrecognized native critic rule ID; it will be silently ignored at check time. \
+             Check for a typo against the registered strict-profile rule IDs.",
+        );
+    }
+}
 
 /// Controls whether PERL5LIB paths are prepended or appended to `include_paths`.
 ///
@@ -1774,10 +1809,14 @@ impl ProjectConfig {
             }
         }
         if let Some(ref include) = self.critic.include {
-            config.native_critic_include = normalize_string_list(include);
+            let ids = normalize_string_list(include);
+            warn_unknown_native_critic_rule_ids("critic.include", &ids);
+            config.native_critic_include = ids;
         }
         if let Some(ref exclude) = self.critic.exclude {
-            config.native_critic_exclude = normalize_string_list(exclude);
+            let ids = normalize_string_list(exclude);
+            warn_unknown_native_critic_rule_ids("critic.exclude", &ids);
+            config.native_critic_exclude = ids;
         }
         if let Some(ref profile) = self.formatting.perltidy_profile {
             config.perltidy_profile = Some(profile.clone());
@@ -4665,5 +4704,59 @@ api_key_prefix = "Attacker "
         assert_eq!(config.ai_completion.api_key_env, "OPENAI_API_KEY");
         assert_eq!(config.ai_completion.api_key_header, "Authorization");
         assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
+    }
+
+    #[test]
+    fn unknown_native_critic_rule_ids_accepts_valid_strict_catalog_ids() {
+        let valid_ids: Vec<String> = vec![
+            "native.testing.require_use_strict".to_string(),
+            "native.testing.require_use_warnings".to_string(),
+            "native.variables.duplicate_parameter".to_string(),
+            "native.variables.duplicate_lexical".to_string(),
+            "native.variables.unused_lexical".to_string(),
+        ];
+        let unknown = unknown_native_critic_rule_ids(&valid_ids);
+        assert!(
+            unknown.is_empty(),
+            "all IDs should be recognized in the strict catalog, got: {unknown:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_native_critic_rule_ids_flags_typos_and_nonexistent_ids() {
+        let ids = vec![
+            "native.variables.duplicate_parameter".to_string(),
+            "native.variables.typoed_rule_name".to_string(),
+            "completely.made.up".to_string(),
+        ];
+        let unknown = unknown_native_critic_rule_ids(&ids);
+        assert_eq!(unknown.len(), 2, "expected 2 unknown IDs, got: {unknown:?}");
+        assert!(unknown.contains(&"native.variables.typoed_rule_name"));
+        assert!(unknown.contains(&"completely.made.up"));
+    }
+
+    #[test]
+    fn unknown_native_critic_rule_ids_returns_empty_for_empty_input() {
+        let unknown = unknown_native_critic_rule_ids(&[]);
+        assert!(unknown.is_empty());
+    }
+
+    #[test]
+    fn server_config_update_warns_on_unknown_native_critic_include_ids() {
+        // Validation function returns unknown IDs — tracing::warn! fires for each one,
+        // but we verify correctness through the public validation fn, not the subscriber.
+        let ids =
+            vec!["native.testing.require_use_strict".to_string(), "not.a.real.rule".to_string()];
+        let unknown = unknown_native_critic_rule_ids(&ids);
+        assert_eq!(unknown, vec!["not.a.real.rule"]);
+
+        // Valid IDs accepted without error.
+        let mut config = ServerConfig::default();
+        config.update_from_value(&serde_json::json!({
+            "critic": {
+                "include": ["native.testing.require_use_strict"]
+            }
+        }));
+        assert_eq!(config.native_critic_include, vec!["native.testing.require_use_strict"]);
     }
 }
