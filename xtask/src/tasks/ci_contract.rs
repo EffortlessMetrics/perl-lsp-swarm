@@ -258,8 +258,12 @@ fn run_check(root: &Path, spec: &CheckSpec) -> ContractCheck {
     let command = format_command(spec.program, &spec.args);
     match execute_check(root, spec) {
         Ok(output) => {
-            let (result, detail) =
-                classify_check_output(output.status.code(), &output.stdout, &output.stderr);
+            let (result, detail) = classify_check_output(
+                spec.id,
+                output.status.code(),
+                &output.stdout,
+                &output.stderr,
+            );
             ContractCheck {
                 id: spec.id.to_string(),
                 reason: spec.reason.clone(),
@@ -376,12 +380,15 @@ fn join_output(
     handle.join().map_err(|_| io::Error::other(format!("{stream} reader panicked")))?
 }
 
-fn result_for_exit(code: Option<i32>, detail: &str) -> ContractResultClass {
-    if detail.contains("repo-hygiene status is NotProven")
-        || detail.contains("repo-hygiene requires a clean checkout")
-        || detail.contains("repo-hygiene cannot prove")
-    {
-        return ContractResultClass::NotProven;
+fn result_for_exit(check_id: &str, code: Option<i32>, detail: &str) -> ContractResultClass {
+    if check_id == "repo_hygiene" {
+        return if detail.contains("repo-hygiene status is PolicyFinding") {
+            ContractResultClass::PolicyFinding
+        } else if code == Some(0) {
+            ContractResultClass::Success
+        } else {
+            ContractResultClass::NotProven
+        };
     }
     match code {
         Some(0) if has_policy_finding(detail) => ContractResultClass::PolicyFinding,
@@ -399,6 +406,7 @@ fn has_policy_finding(detail: &str) -> bool {
 }
 
 fn classify_check_output(
+    check_id: &str,
     code: Option<i32>,
     stdout: &[u8],
     stderr: &[u8],
@@ -409,7 +417,7 @@ fn classify_check_output(
     } else {
         bounded_output(&raw_detail)
     };
-    (result_for_exit(code, &raw_detail), detail)
+    (result_for_exit(check_id, code, &raw_detail), detail)
 }
 
 fn head_identity_check(expected: &str, current: &str) -> ContractCheck {
@@ -700,41 +708,47 @@ mod tests {
     #[test]
     fn command_results_map_to_documented_classes() -> Result<()> {
         ensure!(
-            result_for_exit(Some(0), "ok") == ContractResultClass::Success,
+            result_for_exit("generic", Some(0), "ok") == ContractResultClass::Success,
             "zero exit must be success"
         );
         ensure!(
-            result_for_exit(Some(0), "WARN existing advisory baseline")
+            result_for_exit("generic", Some(0), "WARN existing advisory baseline")
                 == ContractResultClass::PolicyFinding,
             "explicit advisory findings must remain visible"
         );
         ensure!(
-            result_for_exit(Some(1), "policy finding") == ContractResultClass::PolicyFinding,
+            result_for_exit("generic", Some(1), "policy finding")
+                == ContractResultClass::PolicyFinding,
             "one exit must be a policy finding"
         );
         ensure!(
-            result_for_exit(Some(2), "tool failed") == ContractResultClass::NotProven,
+            result_for_exit("generic", Some(2), "tool failed") == ContractResultClass::NotProven,
             "other exits must be not-proven"
         );
         ensure!(
-            result_for_exit(None, "process terminated") == ContractResultClass::NotProven,
+            result_for_exit("generic", None, "process terminated")
+                == ContractResultClass::NotProven,
             "missing exit code must be not-proven"
         );
         ensure!(
-            result_for_exit(Some(2), "instrument failure") == ContractResultClass::NotProven,
+            result_for_exit("generic", Some(2), "instrument failure")
+                == ContractResultClass::NotProven,
             "instrument exit status must be not-proven"
         );
         ensure!(
-            result_for_exit(Some(1), "policy finding: failed to read expected file")
+            result_for_exit("generic", Some(1), "policy finding: failed to read expected file")
                 == ContractResultClass::PolicyFinding,
             "policy output must not be downgraded by incidental wording"
         );
         ensure!(
-            result_for_exit(
-                Some(1),
-                "repo-hygiene requires a clean checkout at the requested head"
-            ) == ContractResultClass::NotProven,
-            "repo-hygiene proof-input failures must remain not-proven"
+            result_for_exit("repo_hygiene", Some(1), "could not resolve requested head")
+                == ContractResultClass::NotProven,
+            "repo-hygiene resolver failures must remain not-proven"
+        );
+        ensure!(
+            result_for_exit("repo_hygiene", Some(1), "repo-hygiene status is PolicyFinding")
+                == ContractResultClass::PolicyFinding,
+            "repo-hygiene policy findings must remain policy findings"
         );
         Ok(())
     }

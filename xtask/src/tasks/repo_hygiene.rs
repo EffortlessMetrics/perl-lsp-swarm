@@ -15,6 +15,13 @@ use crate::utils::project_root;
 
 const SCHEMA_VERSION: &str = "repo-hygiene.v1";
 const CLAIM_BOUNDARY: &str = "Changed-file Taplo formatting/syntax checks and typos checks for the exact resolved range; not whole-repository historical cleanliness, semantic policy validation, or release readiness";
+const TOOL_CONFIG_FILES: &[&str] = &["aqua.yaml", "taplo.toml", ".typos.toml"];
+const AQUA_VERIFICATION_ENV: &[&str] = &[
+    "AQUA_GLOBAL_CONFIG",
+    "AQUA_DISABLE_COSIGN",
+    "AQUA_DISABLE_SLSA",
+    "AQUA_DISABLE_GITHUB_ARTIFACT_ATTESTATION",
+];
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -72,7 +79,15 @@ pub fn run(config: RepoHygieneConfig) -> Result<()> {
             head_existing_files.push(path.clone());
         }
     }
-    ensure_selected_paths_clean(&root, &head_existing_files)?;
+    let mut proof_input_files = head_existing_files.clone();
+    for path in TOOL_CONFIG_FILES {
+        if path_exists_at_head(&root, &head_sha, path)?
+            && !proof_input_files.iter().any(|file| file == path)
+        {
+            proof_input_files.push((*path).to_string());
+        }
+    }
+    ensure_selected_paths_clean(&root, &proof_input_files)?;
 
     let taplo_files =
         head_existing_files.iter().filter(|path| is_toml_path(path)).cloned().collect::<Vec<_>>();
@@ -114,18 +129,19 @@ fn run_taplo(root: &Path, files: &[String]) -> Vec<ToolResult> {
             detail: "no changed TOML files were resolved".to_string(),
         }];
     }
+    if let Some(policy) = taplo_schema_policy(root, files) {
+        return vec![policy];
+    }
 
-    let available = run_aqua(root, "taplo", &["--version"]);
+    let available = run_aqua(root, "taplo", &["--version".to_string()]);
     if available.result != ResultClass::Pass {
         return vec![available];
     }
 
-    let mut format_args = vec!["fmt", "--check"];
-    format_args.extend(files.iter().map(String::as_str));
+    let format_args = tool_file_args(&["fmt", "--check"], files);
     let format = run_aqua(root, "taplo", &format_args);
 
-    let mut check_args = vec!["lint"];
-    check_args.extend(files.iter().map(String::as_str));
+    let check_args = tool_file_args(&["lint"], files);
     let check = run_aqua(root, "taplo", &check_args);
     vec![format, check]
 }
@@ -135,19 +151,75 @@ fn run_typos(root: &Path, files: &[String]) -> Option<ToolResult> {
         return None;
     }
 
-    let available = run_aqua(root, "typos", &["--version"]);
+    let available = run_aqua(root, "typos", &["--version".to_string()]);
     if available.result != ResultClass::Pass {
         return Some(available);
     }
 
-    let mut args = Vec::with_capacity(files.len());
-    args.extend(files.iter().map(String::as_str));
+    let args = tool_file_args(&[], files);
     Some(run_aqua(root, "typos", &args))
 }
 
-fn run_aqua(root: &Path, tool: &str, args: &[&str]) -> ToolResult {
+fn tool_file_args(prefix: &[&str], files: &[String]) -> Vec<String> {
+    let mut args = prefix.iter().map(|arg| (*arg).to_string()).collect::<Vec<_>>();
+    args.push("--".to_string());
+    args.extend(files.iter().cloned());
+    args
+}
+
+fn taplo_schema_policy(root: &Path, files: &[String]) -> Option<ToolResult> {
+    let mut inputs = files.to_vec();
+    for config in ["taplo.toml", ".taplo.toml"] {
+        if root.join(config).is_file() && !inputs.iter().any(|path| path == config) {
+            inputs.push(config.to_string());
+        }
+    }
+
+    for path in inputs {
+        let content = match fs::read_to_string(root.join(&path)) {
+            Ok(content) => content,
+            Err(error) => {
+                return Some(ToolResult {
+                    result: ResultClass::NotProven,
+                    command: "taplo lint --schema-policy".to_string(),
+                    detail: format!("could not read Taplo input {path}: {error}"),
+                });
+            }
+        };
+        for (line_number, line) in content.lines().enumerate() {
+            if is_remote_schema_reference(line) {
+                return Some(ToolResult {
+                    result: ResultClass::PolicyFinding,
+                    command: "taplo lint --schema-policy".to_string(),
+                    detail: format!(
+                        "external schema sources are not allowed for changed-file hygiene: {path}:{}",
+                        line_number + 1
+                    ),
+                });
+            }
+        }
+    }
+    None
+}
+
+fn is_remote_schema_reference(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("schema")
+        && ["http://", "https://", "file://", "taplo://"]
+            .iter()
+            .any(|scheme| lower.contains(scheme))
+}
+
+fn run_aqua(root: &Path, tool: &str, args: &[String]) -> ToolResult {
     let mut command = Command::new("aqua");
-    command.current_dir(root).args(["exec", "--", tool]).args(args);
+    command
+        .current_dir(root)
+        .env("AQUA_CONFIG", root.join("aqua.yaml"))
+        .args(["exec", "--", tool])
+        .args(args);
+    for name in AQUA_VERIFICATION_ENV {
+        command.env_remove(name);
+    }
     let rendered =
         format_command("aqua", &["exec".to_string(), "--".to_string(), tool.to_string()]);
     let rendered =
@@ -166,7 +238,7 @@ fn run_aqua(root: &Path, tool: &str, args: &[&str]) -> ToolResult {
     let detail = command_detail(&output.stdout, &output.stderr);
     let result = if output.status.success() {
         ResultClass::Pass
-    } else if args == ["--version"] {
+    } else if args.len() == 1 && args[0] == "--version" {
         ResultClass::NotProven
     } else {
         ResultClass::PolicyFinding
@@ -411,6 +483,30 @@ mod tests {
         };
         ensure!(result.result == ResultClass::NotProven);
         ensure!(overall_status(std::slice::from_ref(&result), None) == ResultClass::NotProven);
+        Ok(())
+    }
+
+    #[test]
+    fn tool_file_args_terminate_options_for_literal_paths() -> Result<()> {
+        let taplo = tool_file_args(
+            &["lint"],
+            &["--config=outside.toml".to_string(), "--file-list=paths.txt".to_string()],
+        );
+        ensure!(
+            taplo == vec!["lint", "--", "--config=outside.toml", "--file-list=paths.txt"],
+            "Taplo paths must be literal arguments: {taplo:?}"
+        );
+
+        let typos = tool_file_args(&[], &["--files".to_string()]);
+        ensure!(typos == vec!["--", "--files"], "typos paths must be literal arguments: {typos:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn remote_schema_references_are_rejected_before_taplo_runs() -> Result<()> {
+        ensure!(is_remote_schema_reference("#:schema https://example.test/schema.json"));
+        ensure!(is_remote_schema_reference("path = \"file:///tmp/schema.json\" # schema"));
+        ensure!(!is_remote_schema_reference("path = \"schemas/local.json\" # schema"));
         Ok(())
     }
 }

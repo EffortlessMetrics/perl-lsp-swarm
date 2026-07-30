@@ -68,6 +68,10 @@ formatting and syntax; typos checks changed text/config/source files. An empty
 scope is `NOT_APPLICABLE`. Missing Aqua or a missing pinned tool is `NOT_PROVEN`
 and exits non-zero; it is never treated as a clean result.
 
+Changed-file hygiene rejects network-backed Taplo schema references before the
+checker runs. Relative local schema paths remain eligible for validation; the
+contract does not let a pull request make CI fetch an arbitrary URL.
+
 ## Upgrade procedure
 
 1. Select the intended tool release and read its release notes.
