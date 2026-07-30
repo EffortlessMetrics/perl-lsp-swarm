@@ -584,6 +584,14 @@ pub fn validate_current_authority(config: CurrentAuthorityConfig) -> Result<Curr
     if index.entries.is_empty() {
         bail!("current-authority index contains no series");
     }
+    let mut declared_current_series = BTreeSet::new();
+    for entry in &index.entries {
+        if matches!(entry.status, CurrentAuthorityStatus::Current)
+            && !declared_current_series.insert(entry.series_id.clone())
+        {
+            bail!("duplicate current authority for series {}", entry.series_id);
+        }
+    }
     if !index
         .entries
         .windows(2)
@@ -603,6 +611,12 @@ pub fn validate_current_authority(config: CurrentAuthorityConfig) -> Result<Curr
             "landed lineage",
         )?;
         validate_landed_lineage_shape(&lineage)?;
+        validate_git_ancestor(&config.repository_root, &lineage.landed_sha, &config.landed_sha)?;
+        validate_git_ancestor(
+            &config.repository_root,
+            &lineage.publication_sha,
+            &config.landed_sha,
+        )?;
         validate_publication_scope(&config.repository_root, &lineage)?;
         if !lineage_paths.insert(relative_path.clone()) {
             bail!("duplicate landed lineage path {}", path.display());
@@ -650,10 +664,8 @@ pub fn validate_current_authority(config: CurrentAuthorityConfig) -> Result<Curr
         {
             bail!("current-authority entry {} disagrees with its lineage", entry.series_id);
         }
-        if matches!(entry.status, CurrentAuthorityStatus::Current)
-            && !current_series.insert(entry.series_id.clone())
-        {
-            bail!("duplicate current authority for series {}", entry.series_id);
+        if matches!(entry.status, CurrentAuthorityStatus::Current) {
+            current_series.insert(entry.series_id.clone());
         }
         if matches!(entry.status, CurrentAuthorityStatus::Current)
             && matches!(lineage.observation_transition, CompatibilityTransition::Historical)
@@ -741,6 +753,19 @@ fn validate_landed_lineage_shape(lineage: &LandedLineage) -> Result<()> {
         if lineage.publication_paths.iter().all(|published| published != path) {
             bail!("authoritative artifact {path} is absent from publication paths");
         }
+    }
+    let artifact_paths = lineage
+        .authoritative_artifacts
+        .keys()
+        .map(|path| path.replace('\\', "/"))
+        .collect::<BTreeSet<_>>();
+    let publication_paths = lineage
+        .publication_paths
+        .iter()
+        .map(|path| path.replace('\\', "/"))
+        .collect::<BTreeSet<_>>();
+    if artifact_paths != publication_paths {
+        bail!("publication paths and authoritative artifact digests must match exactly");
     }
     Ok(())
 }
@@ -897,12 +922,18 @@ fn validate_supersession_graph(lineages: &[(String, LandedLineage)]) -> Result<(
 fn validate_publication_scope(root: &Path, lineage: &LandedLineage) -> Result<()> {
     validate_git_commit(root, &lineage.publication_sha)?;
     validate_git_commit(root, &lineage.publication_base_sha)?;
+    validate_git_ancestor(root, &lineage.publication_base_sha, &lineage.publication_sha)?;
     let output = Command::new("git")
+        .arg("--no-replace-objects")
+        .arg("-c")
+        .arg("core.quotePath=false")
         .arg("-C")
         .arg(root)
         .args([
             "diff",
+            "--no-renames",
             "--name-only",
+            "-z",
             "--diff-filter=ACDMRTUXB",
             &lineage.publication_base_sha,
             &lineage.publication_sha,
@@ -920,7 +951,8 @@ fn validate_publication_scope(root: &Path, lineage: &LandedLineage) -> Result<()
     }
     let mut actual = String::from_utf8(output.stdout)
         .context("publication diff contained invalid UTF-8")?
-        .lines()
+        .split('\0')
+        .filter(|path| !path.is_empty())
         .map(|path| path.replace('\\', "/"))
         .collect::<Vec<_>>();
     actual.sort();
@@ -970,6 +1002,7 @@ fn validate_git_sha(value: &str, label: &str) -> Result<()> {
 fn validate_git_commit(root: &Path, sha: &str) -> Result<()> {
     let object = format!("{sha}^{{commit}}");
     let output = Command::new("git")
+        .arg("--no-replace-objects")
         .arg("-C")
         .arg(root)
         .args(["cat-file", "-e", &object])
@@ -981,10 +1014,25 @@ fn validate_git_commit(root: &Path, sha: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_git_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Result<()> {
+    let output = Command::new("git")
+        .arg("--no-replace-objects")
+        .arg("-C")
+        .arg(root)
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .output()
+        .with_context(|| format!("checking Git ancestry {ancestor}..{descendant}"))?;
+    if !output.status.success() {
+        bail!("Git commit {ancestor} is not an ancestor of {descendant}");
+    }
+    Ok(())
+}
+
 fn git_blob_at(root: &Path, commit: &str, path: &str) -> Result<Vec<u8>> {
     validate_public_path(path, "Git artifact path")?;
     let object = format!("{commit}:{}", path.replace('\\', "/"));
     let output = Command::new("git")
+        .arg("--no-replace-objects")
         .arg("-C")
         .arg(root)
         .args(["show", &object])
@@ -8817,10 +8865,76 @@ exit 1
         ))
     }
 
+    fn commit_fixture_authority(root: &Path) -> TestResult<String> {
+        let run_git = |args: &[&str]| -> TestResult<String> {
+            let output = Command::new("git").arg("-C").arg(root).args(args).output()?;
+            if !output.status.success() {
+                bail!(
+                    "fixture git command {:?} failed: {}",
+                    args,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            Ok(String::from_utf8(output.stdout)?.trim().to_string())
+        };
+        run_git(&["add", ".ci/perl-core-harness"])?;
+        run_git(&["commit", "--quiet", "-m", "fixture authority update"])?;
+        run_git(&["rev-parse", "HEAD"])
+    }
+
     #[test]
     fn current_authority_validates_landed_lineage_and_artifact_digests() -> TestResult {
         let (_temp, config) = current_authority_fixture()?;
         validate_current_authority(config)?;
+        Ok(())
+    }
+
+    #[test]
+    fn current_authority_rejects_tampered_artifact_digest() -> TestResult {
+        let (_temp, mut config) = current_authority_fixture()?;
+        let lineage_path = config
+            .lineages
+            .first()
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no lineage"))?;
+        let mut lineage: LandedLineage =
+            read_json_bytes(&fs::read(&lineage_path)?, "landed lineage")?;
+        let artifact = lineage
+            .authoritative_artifacts
+            .get_mut(".ci/perl-core-harness/base-report.json")
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no report digest"))?;
+        *artifact = format!("sha256:{}", "c".repeat(64));
+        fs::write(&lineage_path, serde_json::to_vec_pretty(&lineage)?)?;
+        config.landed_sha = commit_fixture_authority(&config.repository_root)?;
+        let error = validate_current_authority(config)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("tampered artifact digest was accepted"))?;
+        if !error.to_string().contains("differs at landed SHA") {
+            bail!("tampered artifact digest produced an unclear error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn current_authority_rejects_duplicate_current_series() -> TestResult {
+        let (_temp, mut config) = current_authority_fixture()?;
+        let index: CurrentAuthorityIndex =
+            read_json_bytes(&fs::read(&config.index)?, "current-authority index")?;
+        let duplicate = index
+            .entries
+            .first()
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no current entry"))?;
+        let mut changed = index;
+        changed.entries.push(duplicate);
+        fs::write(&config.index, serde_json::to_vec_pretty(&changed)?)?;
+        config.landed_sha = commit_fixture_authority(&config.repository_root)?;
+        let error = validate_current_authority(config)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("duplicate current series was accepted"))?;
+        if !error.to_string().contains("duplicate current authority") {
+            bail!("duplicate current series produced an unclear error: {error}");
+        }
         Ok(())
     }
 
