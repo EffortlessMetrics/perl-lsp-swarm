@@ -800,7 +800,7 @@ mod tests {
 
     #[test]
     fn shell_output_is_bounded_and_preserves_streams() -> Result<()> {
-        let (result, detail) = classify_check_output(Some(0), b"out", b"err");
+        let (result, detail) = classify_check_output("generic", Some(0), b"out", b"err");
         ensure!(result == ContractResultClass::Success, "ordinary output was not successful");
         ensure!(detail == "stdout: out; stderr: err", "combined output was {detail:?}");
         ensure!(
@@ -809,13 +809,13 @@ mod tests {
         );
         let late_warning = format!("{}\nWARN late advisory", "x".repeat(2000));
         let (late_result, late_detail) =
-            classify_check_output(Some(0), late_warning.as_bytes(), &[]);
+            classify_check_output("generic", Some(0), late_warning.as_bytes(), &[]);
         ensure!(
             late_result == ContractResultClass::PolicyFinding,
             "late advisory output must be classified before receipt truncation"
         );
         ensure!(late_detail.len() == 2000, "late advisory detail was not bounded");
-        let (_, terminated_detail) = classify_check_output(None, &vec![b'x'; 2000], &[]);
+        let (_, terminated_detail) = classify_check_output("generic", None, &vec![b'x'; 2000], &[]);
         ensure!(
             terminated_detail.len() == 2000,
             "termination detail was not bounded after adding its prefix"
