@@ -1287,7 +1287,6 @@ fn handle_breakpoint_locations(args: Option<&Value>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Result;
 
     #[test]
     fn parse_returns_none_for_non_external_backend() {
@@ -1393,37 +1392,35 @@ mod tests {
     }
 
     #[test]
-    fn initialize_returns_static_caps_before_any_peer() -> Result<()> {
+    fn initialize_returns_static_caps_before_any_peer() {
         let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
         assert!(!bridge.is_live());
         let out = bridge.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
-        let (cmd, ok, body) = as_response(&out[0])?;
+        let (cmd, ok, body) = as_response(&out[0]);
         assert_eq!(cmd, "initialize");
         assert!(ok);
         let caps = body.expect("caps");
         assert_eq!(caps["supportsConditionalBreakpoints"], true);
         assert_eq!(caps["supportsLogPoints"], false);
-        assert_eq!(event_name(&out[1])?, "initialized");
-        Ok(())
+        assert_eq!(event_name(&out[1]), "initialized");
     }
 
     #[test]
-    fn mirror_rejects_control_gracefully_without_a_peer() -> Result<()> {
+    fn mirror_rejects_control_gracefully_without_a_peer() {
         let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
         for cmd in ["continue", "next", "stepIn", "stepOut", "pause"] {
             let out = bridge.dispatch(2, cmd, Some(json!({ "threadId": 1 })));
-            let (rcmd, ok, _) = as_response(&out[0])?;
+            let (rcmd, ok, _) = as_response(&out[0]);
             assert_eq!(rcmd, cmd);
             assert!(!ok, "{cmd} must be rejected in mirror mode");
             if let DapMessage::Response { message, .. } = &out[0] {
                 assert!(message.as_deref().unwrap_or("").contains("mirror mode"));
             }
         }
-        Ok(())
     }
 
     #[test]
-    fn setbreakpoints_before_handshake_queues_and_answers_pending() -> Result<()> {
+    fn setbreakpoints_before_handshake_queues_and_answers_pending() {
         let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
         let out = bridge.dispatch(
             3,
@@ -1434,27 +1431,26 @@ mod tests {
             })),
         );
         assert_eq!(bridge.pending_source_count(), 1);
-        let (_, ok, body) = as_response(&out[0])?;
+        let (_, ok, body) = as_response(&out[0]);
         assert!(ok, "queued setBreakpoints still returns a success response");
         let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
         assert_eq!(bps.len(), 2);
         assert_eq!(bps[0]["verified"], false, "queued breakpoints are unverified until flush");
-        Ok(())
     }
 
-    fn as_response(msg: &DapMessage) -> Result<(&str, bool, Option<&Value>)> {
+    fn as_response(msg: &DapMessage) -> (&str, bool, Option<&Value>) {
         match msg {
             DapMessage::Response { command, success, body, .. } => {
-                Ok((command.as_str(), *success, body.as_ref()))
+                (command.as_str(), *success, body.as_ref())
             }
-            other => anyhow::bail!("expected response, got {other:?}"),
+            other => panic!("expected response, got {other:?}"),
         }
     }
 
-    fn event_name(msg: &DapMessage) -> Result<&str> {
+    fn event_name(msg: &DapMessage) -> &str {
         match msg {
-            DapMessage::Event { event, .. } => Ok(event.as_str()),
-            other => anyhow::bail!("expected event, got {other:?}"),
+            DapMessage::Event { event, .. } => event.as_str(),
+            other => panic!("expected event, got {other:?}"),
         }
     }
 }
