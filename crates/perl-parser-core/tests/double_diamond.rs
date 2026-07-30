@@ -11,18 +11,18 @@ use perl_tdd_support::must;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-fn parse_first_expr(source: &str) -> NodeKind {
+fn parse_first_expr(source: &str) -> Result<NodeKind, String> {
     let mut parser = Parser::new(source);
     let ast = must(parser.parse());
     match ast.kind {
         NodeKind::Program { ref statements } => {
-            let stmt = statements.first().expect("no statements");
+            let stmt = statements.first().ok_or_else(|| "no statements".to_string())?;
             match &stmt.kind {
-                NodeKind::ExpressionStatement { expression } => expression.kind.clone(),
-                other => panic!("expected ExpressionStatement, got {other:?}"),
+                NodeKind::ExpressionStatement { expression } => Ok(expression.kind.clone()),
+                other => Err(format!("expected ExpressionStatement, got {other:?}")),
             }
         }
-        other => panic!("expected Program, got {other:?}"),
+        other => Err(format!("expected Program, got {other:?}")),
     }
 }
 
@@ -30,13 +30,14 @@ fn parse_first_expr(source: &str) -> NodeKind {
 
 /// `<<>>` must parse without any ERROR node and yield `NodeKind::Diamond`.
 #[test]
-fn test_double_diamond_standalone_parses_as_diamond() {
+fn test_double_diamond_standalone_parses_as_diamond() -> Result<(), String> {
     assert_clean_parse("<<>>;");
-    let kind = parse_first_expr("<<>>;");
+    let kind = parse_first_expr("<<>>;")?;
     assert!(
         matches!(kind, NodeKind::Diamond),
         "expected NodeKind::Diamond for `<<>>`, got {kind:?}"
     );
+    Ok(())
 }
 
 /// `my $line = <<>>;`
@@ -55,21 +56,23 @@ fn test_double_diamond_while_condition_parses_cleanly() {
 
 /// `<>` must still parse as Diamond.
 #[test]
-fn test_single_diamond_unchanged() {
+fn test_single_diamond_unchanged() -> Result<(), String> {
     assert_clean_parse("<>;");
-    let kind = parse_first_expr("<>;");
+    let kind = parse_first_expr("<>;")?;
     assert!(matches!(kind, NodeKind::Diamond), "expected NodeKind::Diamond for `<>`, got {kind:?}");
+    Ok(())
 }
 
 /// `<STDIN>` must still parse as Readline.
 #[test]
-fn test_stdin_readline_unchanged() {
+fn test_stdin_readline_unchanged() -> Result<(), String> {
     assert_clean_parse("<STDIN>;");
-    let kind = parse_first_expr("<STDIN>;");
+    let kind = parse_first_expr("<STDIN>;")?;
     assert!(
         matches!(kind, NodeKind::Readline { .. }),
         "expected NodeKind::Readline for `<STDIN>`, got {kind:?}"
     );
+    Ok(())
 }
 
 /// `$x << 2` must still parse as arithmetic left-shift (BinaryOp), not Diamond.

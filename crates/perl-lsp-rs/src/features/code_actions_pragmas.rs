@@ -15,11 +15,21 @@ pub fn missing_pragmas_actions(uri: &str, text: &str) -> Vec<Value> {
     let insert_at = find_pragma_insertion_point(text);
 
     if !has_strict {
-        actions.push(make_action(uri, "Add use strict;", insert_at, "use strict;\n"));
+        actions.push(make_action(
+            uri,
+            "Add use strict;",
+            insert_at,
+            &pragma_text(text, "use strict"),
+        ));
     }
 
     if !has_warnings {
-        actions.push(make_action(uri, "Add use warnings;", insert_at, "use warnings;\n"));
+        actions.push(make_action(
+            uri,
+            "Add use warnings;",
+            insert_at,
+            &pragma_text(text, "use warnings"),
+        ));
     }
 
     actions
@@ -27,8 +37,15 @@ pub fn missing_pragmas_actions(uri: &str, text: &str) -> Vec<Value> {
 
 /// Find the best position to insert pragmas
 fn find_pragma_insertion_point(text: &str) -> usize {
+    let shebang_end = if text.starts_with("#!") {
+        text.find('\n').map_or(text.len(), |offset| offset + 1)
+    } else {
+        0
+    };
+
     // Look for package declaration
-    if let Some(pos) = text.find("package ") {
+    if let Some(pos) = text[shebang_end..].find("package ") {
+        let pos = shebang_end + pos;
         // Find the end of the package line
         if let Some(newline) = text[pos..].find('\n') {
             return pos + newline + 1;
@@ -39,8 +56,13 @@ fn find_pragma_insertion_point(text: &str) -> usize {
         }
     }
 
-    // Otherwise insert at the beginning
-    0
+    // Otherwise insert after the shebang, if one is present.
+    shebang_end
+}
+
+fn pragma_text(source: &str, pragma: &str) -> String {
+    let separator = if source.starts_with("#!") && !source.contains('\n') { "\n" } else { "" };
+    format!("{separator}{pragma};\n")
 }
 
 /// Create a code action JSON object
@@ -150,5 +172,16 @@ sub hello {
         let text = "package MyModule;\nsub foo {}\n";
         let point = find_pragma_insertion_point(text);
         assert_eq!(point, 18); // After "package MyModule;\n"
+    }
+
+    #[test]
+    fn test_insertion_point_and_text_preserve_shebang() {
+        let text = "#!/usr/bin/perl\nprint 'hello';\n";
+        assert_eq!(find_pragma_insertion_point(text), "#!/usr/bin/perl\n".len());
+        assert_eq!(pragma_text(text, "use strict"), "use strict;\n");
+
+        let unterminated = "#!/usr/bin/perl";
+        assert_eq!(find_pragma_insertion_point(unterminated), unterminated.len());
+        assert_eq!(pragma_text(unterminated, "use strict"), "\nuse strict;\n");
     }
 }

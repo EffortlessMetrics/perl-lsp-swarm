@@ -2641,9 +2641,16 @@ mod tests {
             text.contains("native.common.stale_dollar_at"),
             "native stale-$@ finding (no PL* equivalent) should still be present; got: {text:?}"
         );
+        // PL601 (SecurityBacktickExec) and native.security.backtick_exec both
+        // emit at Warning severity after the #5285 fix. Since they share the same
+        // range+severity, the dedup collapses the native-critic one — PL601 wins.
         assert!(
-            text.contains("native.security.backtick_exec"),
-            "native backtick-exec finding (different severity than PL601) should still be present; got: {text:?}"
+            text.contains("PL601"),
+            "backtick-exec should be present as PL601 (deduped from native.security.backtick_exec); got: {text:?}"
+        );
+        assert!(
+            !text.contains("native.security.backtick_exec"),
+            "native backtick-exec should be deduped to PL601 (same severity after #5285); got: {text:?}"
         );
         assert!(
             text.contains("PL404"),

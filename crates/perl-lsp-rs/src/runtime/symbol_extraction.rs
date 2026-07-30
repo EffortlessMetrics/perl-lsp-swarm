@@ -241,7 +241,9 @@ impl LspServer {
             // FunctionCall is Expression-category (NOT Declaration), so it is handled
             // as its own outer arm — outside the Declaration drift-guard above.
             // We emit these as Property (kind 7) so editors can distinguish them from subs.
-            NodeKind::FunctionCall { name, args } if name == "has" => {
+            NodeKind::FunctionCall { name, args } | NodeKind::AmperCall { name, args }
+                if name == "has" =>
+            {
                 if let Some(first_arg) = args.first() {
                     // Extract the attribute name from a String literal (value is already
                     // unquoted per NodeKind::String doc) or an Identifier first arg.
@@ -445,7 +447,7 @@ impl LspServer {
                 }
             }
 
-            NodeKind::FunctionCall { name, args } => {
+            NodeKind::FunctionCall { name, args } | NodeKind::AmperCall { name, args } => {
                 if symbol_kind == "subroutine"
                     && perl_parser::qualified_name::split_qualified_name(name).1
                         == perl_parser::qualified_name::split_qualified_name(symbol_name).1

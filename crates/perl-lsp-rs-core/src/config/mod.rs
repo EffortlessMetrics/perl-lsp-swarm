@@ -378,7 +378,7 @@ impl ServerConfig {
             if let Some(chained) = inlay.get("chainedHints").and_then(|v| v.as_bool()) {
                 self.inlay_hints_chained_hints = chained;
             }
-            if let Some(max_len) = inlay.get("maxLength").and_then(|v| v.as_u64()) {
+            if let Some(max_len) = inlay.get("maxLength").and_then(as_config_u64) {
                 self.inlay_hints_max_length = max_len as usize;
             }
         }
@@ -429,14 +429,9 @@ impl ServerConfig {
                 }
                 self.perlcritic_severity = clamped;
             }
-            if let Some(profile) = critic.get("profile").and_then(|v| v.as_str()) {
-                let profile = profile.trim();
-                self.perlcritic_profile = (!profile.is_empty()).then(|| profile.to_string());
-            }
-            if let Some(theme) = critic.get("theme").and_then(|v| v.as_str()) {
-                let theme = theme.trim();
-                self.perlcritic_theme = (!theme.is_empty()).then(|| theme.to_string());
-            }
+            // Security: do NOT honour LSP-channel perlcritic.profile / theme (issue #5001).
+            // Subprocess profile paths may only be applied via trusted project config
+            // (`.perl-lsp.toml` → `apply_to_server_config`).
         }
 
         // Native `critic.*` settings are the product-surface keys. They are parsed
@@ -463,7 +458,16 @@ impl ServerConfig {
             }
             if let Some(engine) = critic.get("engine").and_then(|v| v.as_str()) {
                 match parse_critic_engine(engine) {
-                    Some(engine) => self.critic_engine = engine,
+                    Some(CriticEngine::Native) => self.critic_engine = CriticEngine::Native,
+                    Some(CriticEngine::Legacy) => {
+                        tracing::warn!(
+                            target: "perl_lsp::config",
+                            setting = "critic.engine",
+                            value = %engine,
+                            "ignoring legacy critic.engine from LSP settings channel; \
+                             use .perl-lsp.toml for trusted legacy subprocess configuration",
+                        );
+                    }
                     None => tracing::warn!(
                         target: "perl_lsp::config",
                         setting = "critic.engine",
@@ -509,14 +513,11 @@ impl ServerConfig {
                     ),
                 }
             }
-            if let Some(profile) = formatting.get("profile").and_then(|v| v.as_str()) {
-                let profile = profile.trim();
-                self.perltidy_profile = (!profile.is_empty()).then(|| profile.to_string());
-            }
-            if let Some(len) = formatting.get("maximumLineLength").and_then(|v| v.as_u64()) {
+            // Security: do NOT honour LSP-channel formatting.profile / extraArgs (issue #5001).
+            if let Some(len) = formatting.get("maximumLineLength").and_then(as_config_u64) {
                 self.perltidy_maximum_line_length = Some(len as u32);
             }
-            if let Some(indent) = formatting.get("indentColumns").and_then(|v| v.as_u64()) {
+            if let Some(indent) = formatting.get("indentColumns").and_then(as_config_u64) {
                 self.perltidy_indent_columns = Some(indent as u32);
             }
             if let Some(tabs) = formatting.get("tabs").and_then(|v| v.as_bool()) {
@@ -537,15 +538,10 @@ impl ServerConfig {
             if let Some(align) = formatting.get("verticalAlignment").and_then(|v| v.as_bool()) {
                 self.perltidy_vertical_alignment = Some(align);
             }
-            if let Some(block) = formatting.get("blockCommentIndentation").and_then(|v| v.as_u64())
-            {
+            if let Some(block) = formatting.get("blockCommentIndentation").and_then(as_config_u64) {
                 self.perltidy_block_comment_indentation = Some(block as u32);
             }
-            if let Some(args) = formatting.get("extraArgs").and_then(|v| v.as_array()) {
-                self.perltidy_extra_args =
-                    args.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-            }
-            if let Some(timeout) = formatting.get("timeoutSecs").and_then(|v| v.as_u64()) {
+            if let Some(timeout) = formatting.get("timeoutSecs").and_then(as_config_u64) {
                 self.perltidy_timeout_secs = timeout;
             }
         }
@@ -708,10 +704,18 @@ pub enum Perl5LibPrecedence {
 pub struct WorkspaceConfig {
     /// Workspace-root-relative include paths for module resolution.
     ///
-    /// Relative entries are resolved against the workspace root. Absolute
-    /// entries are honored literally as external include roots.
+    /// Only relative entries that remain inside the workspace after
+    /// normalization are accepted from the resource-scoped client-settings
+    /// channel (`perl.workspace.includePaths`). Absolute external roots
+    /// belong in [`Self::external_include_paths`].
     /// Default: `["lib", ".", "local/lib/perl5"]`
     pub include_paths: Vec<String>,
+
+    /// Machine-scoped external include roots (absolute paths).
+    ///
+    /// Populated from `perl.workspace.externalIncludePaths`, which VS Code
+    /// exposes as `perl-lsp.externalIncludePaths` with `scope: machine`.
+    pub external_include_paths: Vec<String>,
 
     /// Additional file extensions accepted during workspace discovery.
     pub discovery_extra_extensions: Vec<String>,
@@ -763,6 +767,7 @@ impl Default for WorkspaceConfig {
     fn default() -> Self {
         Self {
             include_paths: vec!["lib".to_string(), ".".to_string(), "local/lib/perl5".to_string()],
+            external_include_paths: Vec::new(),
             discovery_extra_extensions: Vec::new(),
             discovery_extra_skipped_dirs: Vec::new(),
             use_system_inc: false,
@@ -776,6 +781,137 @@ impl Default for WorkspaceConfig {
             perl5lib_precedence: Perl5LibPrecedence::Prepend,
         }
     }
+}
+
+/// Context for [`WorkspaceConfig::update_from_value_with_context`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WorkspaceConfigUpdateContext<'a> {
+    /// Workspace root used to reject traversal in resource-scoped `includePaths`.
+    pub workspace_root: Option<&'a Path>,
+    /// When `false`, ignore `externalIncludePaths` (folder-scoped client payloads).
+    pub apply_external_include_paths: bool,
+}
+
+/// A resource-scoped `includePaths` entry rejected during client-settings validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedClientIncludePath {
+    /// The raw, as-configured entry string.
+    pub entry: String,
+    /// Why it was rejected.
+    pub reason: RejectedClientIncludePathReason,
+}
+
+/// Why a client-settings `includePaths` / `externalIncludePaths` entry was rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RejectedClientIncludePathReason {
+    /// Absolute paths must use `externalIncludePaths` (machine scope) instead.
+    Absolute,
+    /// Relative entry failed workspace containment validation.
+    EscapesWorkspace(String),
+    /// `externalIncludePaths` entries must be absolute filesystem roots.
+    ExternalRelative,
+    /// `externalIncludePaths` entries must not contain null/control characters.
+    ExternalInvalidCharacters,
+}
+
+impl RejectedClientIncludePath {
+    /// Render a single human-readable line for logs and editor notifications.
+    #[must_use]
+    pub fn render(&self) -> String {
+        match &self.reason {
+            RejectedClientIncludePathReason::Absolute => format!(
+                "'{}': absolute paths are not allowed in `perl.workspace.includePaths` \
+                 (workspace-supplied). Move this entry to `perl-lsp.externalIncludePaths` \
+                 in your user settings instead.",
+                self.entry
+            ),
+            RejectedClientIncludePathReason::EscapesWorkspace(detail) => {
+                format!("'{}': escapes the workspace root ({detail})", self.entry)
+            }
+            RejectedClientIncludePathReason::ExternalRelative => format!(
+                "'{}': relative paths are not allowed in `perl.workspace.externalIncludePaths`; \
+                 use `perl.workspace.includePaths` for workspace-relative roots instead.",
+                self.entry
+            ),
+            RejectedClientIncludePathReason::ExternalInvalidCharacters => format!(
+                "'{}': contains null bytes or disallowed control characters",
+                escape_for_display(&self.entry)
+            ),
+        }
+    }
+}
+
+fn validate_resource_include_path_entry(
+    entry: &str,
+    workspace_root: Option<&Path>,
+) -> Result<(), RejectedClientIncludePathReason> {
+    let trimmed = entry.trim();
+    if trimmed.is_empty() {
+        return Err(RejectedClientIncludePathReason::EscapesWorkspace(
+            "empty include path".to_string(),
+        ));
+    }
+
+    let candidate = Path::new(trimmed);
+    if candidate.is_absolute() {
+        return Err(RejectedClientIncludePathReason::Absolute);
+    }
+
+    if let Some(root) = workspace_root {
+        if let Err(err) = validate_workspace_path(candidate, root) {
+            return Err(RejectedClientIncludePathReason::EscapesWorkspace(err.to_string()));
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_external_include_paths(
+    paths: &[serde_json::Value],
+) -> (Vec<String>, Vec<RejectedClientIncludePath>) {
+    let mut accepted = Vec::new();
+    let mut rejected = Vec::new();
+    for value in paths {
+        let Some(entry) = value.as_str() else {
+            continue;
+        };
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if external_include_path_has_invalid_characters(trimmed) {
+            tracing::warn!(
+                target: "perl_lsp::config",
+                entry = %escape_for_display(trimmed),
+                "rejected perl.workspace.externalIncludePaths entry with null/control characters"
+            );
+            rejected.push(RejectedClientIncludePath {
+                entry: trimmed.to_string(),
+                reason: RejectedClientIncludePathReason::ExternalInvalidCharacters,
+            });
+            continue;
+        }
+        // Machine-scoped external roots must be absolute. Relative entries belong in
+        // resource-scoped `includePaths` (validated against the workspace root).
+        if !Path::new(trimmed).is_absolute() {
+            tracing::warn!(
+                target: "perl_lsp::config",
+                entry = %escape_for_display(trimmed),
+                "rejected relative perl.workspace.externalIncludePaths entry; use includePaths for workspace-relative roots"
+            );
+            rejected.push(RejectedClientIncludePath {
+                entry: trimmed.to_string(),
+                reason: RejectedClientIncludePathReason::ExternalRelative,
+            });
+            continue;
+        }
+        accepted.push(trimmed.to_string());
+    }
+    (accepted, rejected)
+}
+
+fn external_include_path_has_invalid_characters(entry: &str) -> bool {
+    entry.chars().any(|c| c == '\0' || (c.is_control() && c != '\t'))
 }
 
 fn normalize_include_path(path: &str) -> Option<String> {
@@ -838,6 +974,17 @@ fn string_array(value: Option<&serde_json::Value>) -> Option<Vec<String>> {
     })
 }
 
+/// Parse a JSON numeric value into `u64`, accepting both integer and float forms.
+///
+/// `serde_json::Value::as_u64()` rejects JSON floats (e.g. `4.0`), which some
+/// configuration generators emit. This helper accepts both `4` and `4.0` and
+/// also rejects negative values (all config numeric fields are non-negative).
+fn as_config_u64(value: &serde_json::Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_f64().filter(|f| *f >= 0.0 && f.is_finite()).map(|f| f as u64))
+}
+
 impl WorkspaceConfig {
     /// Parse a `PERL5LIB` environment variable value into a list of paths.
     ///
@@ -858,18 +1005,24 @@ impl WorkspaceConfig {
     /// If `self.use_perl5lib` is `false`, or `perl5lib_paths` is empty, the
     /// returned list contains only `self.include_paths` entries (trimmed and deduplicated).
     pub fn effective_include_paths(&self, perl5lib_paths: &[String]) -> Vec<String> {
+        let configured = dedupe_preserve_order(
+            self.include_paths
+                .iter()
+                .map(String::as_str)
+                .chain(self.external_include_paths.iter().map(String::as_str)),
+        );
         if !self.use_perl5lib || perl5lib_paths.is_empty() {
-            return dedupe_preserve_order(self.include_paths.iter().map(String::as_str));
+            return configured;
         }
         match self.perl5lib_precedence {
             Perl5LibPrecedence::Prepend => dedupe_preserve_order(
                 perl5lib_paths
                     .iter()
                     .map(String::as_str)
-                    .chain(self.include_paths.iter().map(String::as_str)),
+                    .chain(configured.iter().map(String::as_str)),
             ),
             Perl5LibPrecedence::Append => dedupe_preserve_order(
-                self.include_paths
+                configured
                     .iter()
                     .map(String::as_str)
                     .chain(perl5lib_paths.iter().map(String::as_str)),
@@ -916,11 +1069,59 @@ impl WorkspaceConfig {
     }
 
     /// Update workspace configuration from LSP settings.
-    pub fn update_from_value(&mut self, settings: &serde_json::Value) {
+    ///
+    /// Fail-closed for `externalIncludePaths`: the default context ignores them.
+    /// Callers on the global / machine configuration channel must use
+    /// [`Self::update_from_value_with_context`] with
+    /// `apply_external_include_paths: true`.
+    pub fn update_from_value(
+        &mut self,
+        settings: &serde_json::Value,
+    ) -> Vec<RejectedClientIncludePath> {
+        self.update_from_value_with_context(
+            settings,
+            WorkspaceConfigUpdateContext {
+                workspace_root: None,
+                apply_external_include_paths: false,
+            },
+        )
+    }
+
+    /// Update workspace configuration from LSP settings with validation context.
+    ///
+    /// Resource-scoped `includePaths` reject absolute entries and any relative
+    /// entry that escapes `workspace_root` when provided. `externalIncludePaths`
+    /// are accepted only when `apply_external_include_paths` is true (global /
+    /// machine channel).
+    pub fn update_from_value_with_context(
+        &mut self,
+        settings: &serde_json::Value,
+        context: WorkspaceConfigUpdateContext<'_>,
+    ) -> Vec<RejectedClientIncludePath> {
+        let mut rejected = Vec::new();
         if let Some(workspace) = settings.get("workspace") {
             if let Some(paths) = workspace.get("includePaths").and_then(|v| v.as_array()) {
-                self.include_paths =
-                    paths.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                let mut valid = Vec::with_capacity(paths.len());
+                for value in paths {
+                    let Some(entry) = value.as_str() else {
+                        continue;
+                    };
+                    match validate_resource_include_path_entry(entry, context.workspace_root) {
+                        Ok(()) => valid.push(entry.to_string()),
+                        Err(reason) => rejected
+                            .push(RejectedClientIncludePath { entry: entry.to_string(), reason }),
+                    }
+                }
+                self.include_paths = valid;
+            }
+            if context.apply_external_include_paths {
+                if let Some(paths) =
+                    workspace.get("externalIncludePaths").and_then(|v| v.as_array())
+                {
+                    let (accepted, external_rejected) = parse_external_include_paths(paths);
+                    self.external_include_paths = accepted;
+                    rejected.extend(external_rejected);
+                }
             }
             if let Some(extensions) = string_array(workspace.get("discoveryExtensions")) {
                 self.discovery_extra_extensions = extensions;
@@ -939,7 +1140,7 @@ impl WorkspaceConfig {
             // would let a hostile project execute arbitrary code via the @INC
             // probe (issue #3729). The interpreter / args remain whatever the
             // user (not the workspace) configured globally.
-            if let Some(timeout) = workspace.get("resolutionTimeout").and_then(|v| v.as_u64()) {
+            if let Some(timeout) = workspace.get("resolutionTimeout").and_then(as_config_u64) {
                 self.resolution_timeout_ms = timeout;
             }
             if let Some(use_p5l) = workspace.get("usePerl5lib").and_then(|v| v.as_bool()) {
@@ -968,6 +1169,7 @@ impl WorkspaceConfig {
                 }
             }
         }
+        rejected
     }
 
     /// Get system @INC paths (lazily populated).
@@ -2749,8 +2951,8 @@ profile = "recommended"
         assert!(config.telemetry_enabled);
         assert!(!config.perlcritic_enabled);
         assert_eq!(config.perlcritic_severity, 5);
-        assert_eq!(config.perlcritic_profile.as_deref(), Some(".perlcriticrc"));
-        assert_eq!(config.perlcritic_theme.as_deref(), Some("core && !pbp"));
+        assert!(config.perlcritic_profile.is_none());
+        assert!(config.perlcritic_theme.is_none());
 
         config.update_from_value(&serde_json::json!({
             "perlcritic": {
@@ -2832,7 +3034,7 @@ profile = "recommended"
 
         assert!(!config.perltidy_enabled);
         assert_eq!(config.formatting_engine, FormatterMode::Compat);
-        assert_eq!(config.perltidy_profile.as_deref(), Some(".perltidyrc"));
+        assert!(config.perltidy_profile.is_none());
         assert_eq!(config.perltidy_maximum_line_length, Some(120));
         assert_eq!(config.perltidy_indent_columns, Some(2));
         assert_eq!(config.perltidy_tabs, Some(true));
@@ -2842,7 +3044,7 @@ profile = "recommended"
         assert_eq!(config.perltidy_add_trailing_commas, Some(true));
         assert_eq!(config.perltidy_vertical_alignment, Some(false));
         assert_eq!(config.perltidy_block_comment_indentation, Some(1));
-        assert_eq!(config.perltidy_extra_args, vec!["-noll".to_string(), "-bar".to_string()]);
+        assert!(config.perltidy_extra_args.is_empty());
         assert_eq!(config.perltidy_timeout_secs, 7);
         assert!(config.ai_completion.enabled);
         assert!(config.ai_completion.user_enabled);
@@ -2999,13 +3201,13 @@ profile = "recommended"
     #[test]
     fn perltidyrc_profile_does_not_force_external_formatting() {
         // A `.perltidyrc` profile is usable for compatibility reporting or an
-        // explicit external mode, but setting it must NOT switch the engine
-        // away from native.
+        // explicit external mode, but setting it via the LSP settings channel
+        // must NOT arm subprocess profile paths (issue #5001).
         let mut config = ServerConfig::default();
         config.update_from_value(&serde_json::json!({
             "formatting": { "profile": "/path/to/.perltidyrc" }
         }));
-        assert_eq!(config.perltidy_profile, Some("/path/to/.perltidyrc".to_string()));
+        assert!(config.perltidy_profile.is_none());
         assert_eq!(config.formatting_engine, FormatterMode::Native);
     }
 
@@ -3030,7 +3232,7 @@ profile = "recommended"
                 "profile": "strict"
             }
         }));
-        assert_eq!(config.critic_engine, CriticEngine::Legacy);
+        assert_eq!(config.critic_engine, CriticEngine::Native);
         assert_eq!(config.native_critic_profile, "strict");
 
         config.update_from_value(&serde_json::json!({
@@ -3629,6 +3831,138 @@ profile = "recommended"
     }
 
     #[test]
+    fn update_from_value_rejects_absolute_include_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut workspace = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({ "workspace": { "includePaths": [absolute, "lib"] } }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: Some(temp.path()),
+                apply_external_include_paths: true,
+            },
+        );
+
+        assert_eq!(workspace.include_paths, vec!["lib".to_string()]);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, absolute);
+        assert_eq!(rejected[0].reason, RejectedClientIncludePathReason::Absolute);
+        assert!(
+            rejected[0].render().contains("externalIncludePaths"),
+            "rejection message should name externalIncludePaths: {}",
+            rejected[0].render()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn update_from_value_rejects_traversal_include_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut workspace = WorkspaceConfig::default();
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({ "workspace": { "includePaths": ["../../../../etc", "vendor/lib"] } }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: Some(temp.path()),
+                apply_external_include_paths: true,
+            },
+        );
+
+        assert_eq!(workspace.include_paths, vec!["vendor/lib".to_string()]);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, "../../../../etc");
+        assert!(matches!(rejected[0].reason, RejectedClientIncludePathReason::EscapesWorkspace(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn update_from_value_accepts_external_include_paths_from_global_channel() {
+        let mut workspace = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({
+                "workspace": {
+                    "includePaths": ["lib"],
+                    "externalIncludePaths": [absolute]
+                }
+            }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: None,
+                apply_external_include_paths: true,
+            },
+        );
+
+        assert!(rejected.is_empty());
+        assert_eq!(workspace.include_paths, vec!["lib".to_string()]);
+        assert_eq!(workspace.external_include_paths, vec![absolute.to_string()]);
+        assert_eq!(
+            workspace.effective_include_paths(&[]),
+            vec!["lib".to_string(), absolute.to_string()]
+        );
+    }
+
+    #[test]
+    fn update_from_value_rejects_relative_external_include_paths() {
+        let mut workspace = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({
+                "workspace": {
+                    "externalIncludePaths": ["lib", absolute, ""]
+                }
+            }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: None,
+                apply_external_include_paths: true,
+            },
+        );
+
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, "lib");
+        assert!(matches!(rejected[0].reason, RejectedClientIncludePathReason::ExternalRelative));
+        assert_eq!(workspace.external_include_paths, vec![absolute.to_string()]);
+    }
+
+    #[test]
+    fn update_from_value_default_ignores_external_include_paths() {
+        let mut workspace = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
+
+        let rejected = workspace.update_from_value(&serde_json::json!({
+            "workspace": {
+                "externalIncludePaths": [absolute]
+            }
+        }));
+
+        assert!(rejected.is_empty());
+        assert!(workspace.external_include_paths.is_empty());
+    }
+
+    #[test]
+    fn update_from_value_ignores_external_include_paths_from_folder_channel() {
+        let mut workspace = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({
+                "workspace": {
+                    "externalIncludePaths": [absolute]
+                }
+            }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: None,
+                apply_external_include_paths: false,
+            },
+        );
+
+        assert!(rejected.is_empty());
+        assert!(workspace.external_include_paths.is_empty());
+    }
+
+    #[test]
     fn apply_to_workspace_config_sets_perl5lib_toggles() -> TestResult {
         let temp = tempfile::tempdir()?;
         let mut workspace = WorkspaceConfig::default();
@@ -3850,30 +4184,50 @@ profile = "recommended"
         assert!(config.perl_args.is_empty(), "perlArgs from workspace must be ignored");
     }
 
-    /// Issue #4957: this slice validates only `.perl-lsp.toml` (see
-    /// `apply_to_workspace_config_rejects_absolute_include_paths`). Absolute
-    /// `include_paths` arriving on the LSP client-settings channel
-    /// (`update_from_value`) are still accepted, and this test pins that
-    /// **current behaviour is unchanged** by the `.perl-lsp.toml` fix.
-    ///
-    /// It is NOT an assertion that the channel is trusted. In VS Code
-    /// `perl-lsp.includePaths` is `scope: resource`, so a committed
-    /// `.vscode/settings.json` reaches this same code path. Hardening that is
-    /// issue #4998; when it lands, this test is expected to change.
+    /// Security regression for the resource-scoped client-settings channel:
+    /// absolute paths must be rejected even when no workspace root is known.
+    /// Legitimate workspace-relative entries remain accepted.
     #[test]
-    fn update_from_value_still_accepts_absolute_include_paths_unchanged_by_this_slice() {
+    fn update_from_value_rejects_absolute_include_paths_without_workspace_root() {
         let mut config = WorkspaceConfig::default();
-        config.update_from_value(&serde_json::json!({
+        let absolute = if cfg!(windows) { r"C:\Windows" } else { "/opt/company-perl-libs" };
+        let rejected = config.update_from_value(&serde_json::json!({
             "workspace": {
-                "includePaths": ["/opt/company-perl-libs", "relative/lib"]
+                "includePaths": [absolute, "relative/lib"]
             }
         }));
-        assert_eq!(
-            config.include_paths,
-            vec!["/opt/company-perl-libs".to_string(), "relative/lib".to_string()],
-            "this slice must not change client-settings channel behaviour; \
-             provenance hardening is issue #4998"
-        );
+
+        assert_eq!(config.include_paths, vec!["relative/lib".to_string()]);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, absolute);
+        assert_eq!(rejected[0].reason, RejectedClientIncludePathReason::Absolute);
+    }
+
+    /// Security regression: the LSP settings channel must not arm legacy subprocess
+    /// profile paths or external formatter argv (issue #5001). Trusted project
+    /// config (`.perl-lsp.toml`) still applies via `apply_to_server_config`.
+    #[test]
+    fn server_config_update_from_value_ignores_untrusted_subprocess_capabilities() {
+        let mut config = ServerConfig::default();
+        config.update_from_value(&serde_json::json!({
+            "perlcritic": {
+                "profile": "/tmp/hostile/.perlcriticrc",
+                "theme": "core && !pbp"
+            },
+            "critic": {
+                "engine": "legacy"
+            },
+            "formatting": {
+                "profile": "/tmp/hostile/.perltidyrc",
+                "extraArgs": ["--logfile=/tmp/evil.log"]
+            }
+        }));
+
+        assert!(config.perlcritic_profile.is_none());
+        assert!(config.perlcritic_theme.is_none());
+        assert_eq!(config.critic_engine, CriticEngine::Native);
+        assert!(config.perltidy_profile.is_none());
+        assert!(config.perltidy_extra_args.is_empty());
     }
     #[test]
     fn parse_perl_inc_output_filters_dynamic_hook_entries() {

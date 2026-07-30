@@ -54,6 +54,7 @@ export const CRITIC_SETTINGS = [
 
 const LIVE_SETTINGS = [
   'perl-lsp.includePaths',
+  'perl-lsp.externalIncludePaths',
   'perl-lsp.trace.server',
   ...CRITIC_SETTINGS,
 ] as const;
@@ -190,18 +191,50 @@ function readIncludePaths(config: ConfigurationReader): string[] {
   return configured.filter((value): value is string => typeof value === 'string');
 }
 
-export function buildWorkspaceConfigurationPayload(
-  config: ConfigurationReader = vscode.workspace.getConfiguration('perl-lsp'),
-): Record<string, unknown> | undefined {
-  if (!hasExplicitOverride(config, 'includePaths')) {
+function readExternalIncludePaths(config: ConfigurationReader): string[] | undefined {
+  const inspected = config.inspect?.('externalIncludePaths') as
+    | {
+        globalValue?: unknown;
+      }
+    | undefined;
+
+  if (!inspected || inspected.globalValue === undefined) {
     return undefined;
   }
 
-  return {
-    workspace: {
-      includePaths: readIncludePaths(config),
-    },
-  };
+  if (!Array.isArray(inspected.globalValue)) {
+    return undefined;
+  }
+
+  return inspected.globalValue.filter((value): value is string => typeof value === 'string');
+}
+
+/** Machine-scoped external roots only (`inspect().globalValue`); never workspace/folder. */
+export function machineScopedExternalIncludePaths(
+  config: ConfigurationReader = vscode.workspace.getConfiguration('perl-lsp'),
+): string[] {
+  return readExternalIncludePaths(config) ?? [];
+}
+
+export function buildWorkspaceConfigurationPayload(
+  config: ConfigurationReader = vscode.workspace.getConfiguration('perl-lsp'),
+): Record<string, unknown> | undefined {
+  const includePathsExplicit = hasExplicitOverride(config, 'includePaths');
+  const externalIncludePaths = readExternalIncludePaths(config);
+
+  if (!includePathsExplicit && externalIncludePaths === undefined) {
+    return undefined;
+  }
+
+  const workspace: Record<string, unknown> = {};
+  if (includePathsExplicit) {
+    workspace.includePaths = readIncludePaths(config);
+  }
+  if (externalIncludePaths !== undefined) {
+    workspace.externalIncludePaths = externalIncludePaths;
+  }
+
+  return { workspace };
 }
 
 export function buildPerlCriticConfiguration(

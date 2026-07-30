@@ -4,18 +4,13 @@
 //!   3. `find_catch_variable_range` used fragile rfind instead of parser ranges
 //!   4. `infer_node` MethodCall returned `Any`, inconsistent with
 //!      `infer_expr_fact_in_env`
-#![expect(
-    clippy::panic,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
-
 use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::scope_analyzer::{IssueKind, ScopeAnalyzer, ScopeIssue};
 use perl_semantic_analyzer::analysis::type_facts::ShapeFact;
 use perl_semantic_analyzer::analysis::type_inference::TypeInferenceEngine;
 use perl_semantic_analyzer::pragma_tracker::PragmaTracker;
 use perl_semantic_analyzer::{Node, NodeKind};
-use perl_tdd_support::must;
+use perl_tdd_support::{must, must_some};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -235,21 +230,20 @@ fn infer_node_method_call_not_always_any() {
         // returned Any without consulting the facts, so the fact would have
         // no shape (TypeFact::unknown).  After the fix, the Object shape is
         // present, proving the facts were consumed.
-        match &fact.shape {
-            Some(ShapeFact::Object(shape)) => {
-                assert_eq!(
-                    shape.package, "Other",
-                    "Object shape package should be \"Other\" for create_other"
-                );
-            }
-            other => {
-                panic!(
-                    "infer_expr_fact for $obj->create_other() should have an Object shape \
-                     proving method return facts were consumed.  Got shape: {:?}",
-                    other
-                );
-            }
-        }
+        assert!(
+            matches!(&fact.shape, Some(ShapeFact::Object(_))),
+            "infer_expr_fact for $obj->create_other() should have an Object shape \
+             proving method return facts were consumed.  Got shape: {:?}",
+            fact.shape
+        );
+        let shape = must_some(fact.shape.as_ref().and_then(|shape| match shape {
+            ShapeFact::Object(shape) => Some(shape),
+            _ => None,
+        }));
+        assert_eq!(
+            shape.package, "Other",
+            "Object shape package should be \"Other\" for create_other"
+        );
     }
 }
 

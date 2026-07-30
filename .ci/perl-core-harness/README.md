@@ -113,6 +113,75 @@ Smoke and baseline validation also reject malformed boundary records (missing
 ownership/proof fields, reversed spans, unknown dispositions, or inconsistent
 source-lock confidence/blocking flags).
 
+Compile-baseline v2 treats its inventory as accepted authority: `unknown`,
+`unsupported`, and compile-blocking boundaries cannot be persisted there. A
+boundary retirement uses `perl_core_harness.boundary_retirement.v1` and must
+bind the prior series ID and manifest hash, the replacement measurement SHA,
+the replacement report digest, a transition ID, an owning issue, and a
+content-addressed evidence-bundle reference. A stale or still-present
+retirement is rejected instead of being counted as debt retirement.
+
+The durable ownership mechanism is the versioned
+`.ci/perl-core-harness/semantic-boundary-registry.v1.json` registry. The
+registry validator is intentionally offline and can check one or more accepted
+baseline-v2 receipts plus their durable #5171 bundle indexes:
+
+```bash
+cargo xtask perl-core-harness boundaries \
+  --registry .ci/perl-core-harness/semantic-boundary-registry.v1.json \
+  --baseline path/to/compile-baseline-v2.json \
+  --bundle path/to/evidence-bundle/index.json \
+  --check --report
+```
+
+The empty checked-in registry is a mechanism scaffold. #4753 populates it from
+the first accepted selected inventory. Until then, no current baseline is
+claimed as governed debt merely because its boundaries are not yet registered.
+
+## Failure-cluster triage
+
+The offline triage command consumes one complete, published evidence bundle and
+its compile report. It writes deterministic JSON and Markdown work-cluster
+reports while keeping semantic-boundary debt candidates separate from product
+failures:
+
+```bash
+cargo xtask perl-core-harness triage --bundle path/to/evidence-bundle/index.json --output target/perl-core/triage/base-compile
+```
+
+Cluster IDs are derived from the series-bound, typed failure signature rather
+than file counts, paths outside the selected manifest, timestamps, or free-form
+diagnostic prose. Unknown failure buckets fail closed. The current v1 report
+uses the typed bucket, workstream, LSP-impact, stage, and profile/mode fields
+available in the run receipt; richer parser/HIR/effect fields can be added only
+through an explicit receipt-schema extension. Each cluster carries a direct
+reproduction descriptor and requires exact-series proof before a claimed
+resolution, baseline movement, or boundary retirement is accepted.
+
+## Failure-cluster history
+
+Persistent history is separate from single-bundle clustering. It records first
+and last authoritative bundles, historical membership, ownership state, stage,
+and explicit transition proof. A missing cluster remains active or unassigned;
+absence alone never marks it resolved.
+
+Write or update history from one validated bundle:
+
+```bash
+cargo xtask perl-core-harness triage --bundle path/to/evidence-bundle/index.json --output target/perl-core/triage/base-compile --history .ci/perl-core-harness/failure-cluster-history.v1.json --write-history
+```
+
+Check history without mutation:
+
+```bash
+cargo xtask perl-core-harness triage --bundle path/to/evidence-bundle/index.json --output target/perl-core/triage/base-compile --history .ci/perl-core-harness/failure-cluster-history.v1.json --check-history
+```
+
+History accepts an explicit `unassigned` state while work is being routed.
+`resolved` requires an owner, resolution PR, resolution bundle, and a
+versioned before/after transition; `accepted_debt` requires a boundary-registry
+reference. These checks are offline and do not query or mutate GitHub.
+
 Or run the smoke against a user-supplied prepared upstream Perl tree:
 
 ```bash

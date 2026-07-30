@@ -205,7 +205,12 @@ suite('Managed binary smoke', function () {
       );
       results.health1 = health1;
       assert.ok(health1, 'first health check should return a result');
-      assert.equal(health1.ok, true, JSON.stringify(health1.checks, null, 2));
+      // Managed-binary smoke proves the LSP binary path; a missing system Perl
+      // on some Windows runners must not fail the overall health aggregate.
+      const health1Blocking = health1.checks.filter(
+        (check) => check.status === 'error' && check.label !== 'Perl interpreter',
+      );
+      assert.equal(health1Blocking.length, 0, JSON.stringify(health1.checks, null, 2));
       assert.ok(
         health1.checks.some((check) => check.label === 'LSP binary' && check.status === 'ok'),
         JSON.stringify(health1.checks, null, 2),
@@ -273,7 +278,10 @@ suite('Managed binary smoke', function () {
       );
       results.health2 = health2;
       assert.ok(health2, 'second health check should return a result');
-      assert.equal(health2.ok, true, JSON.stringify(health2.checks, null, 2));
+      const health2Blocking = health2.checks.filter(
+        (check) => check.status === 'error' && check.label !== 'Perl interpreter',
+      );
+      assert.equal(health2Blocking.length, 0, JSON.stringify(health2.checks, null, 2));
       assert.ok(
         health2.checks.some((check) => check.label === 'LSP binary' && check.status === 'ok'),
         JSON.stringify(health2.checks, null, 2),
