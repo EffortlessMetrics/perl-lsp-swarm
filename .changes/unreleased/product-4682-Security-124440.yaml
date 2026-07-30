@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Security
+body: "The regex embedded-code-execution security scanner no longer false-flags `(?{ ... })`-shaped text that appears only inside a `(?#...)` regex comment as a live code-execution risk."
+time: 2026-07-22T12:44:40Z
+custom:
+  PR: "4682"
+  Slug: regex-comment-false-positive-code-execution
+  Breaking: "no"

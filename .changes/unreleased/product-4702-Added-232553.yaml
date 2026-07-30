@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Added
+body: "Perl 5.32+ chained comparisons (e.g. `1 < $x < 10`) now parse with correct chained semantics instead of being left-associated into an incorrect nested comparison."
+time: 2026-07-24T23:25:53Z
+custom:
+  PR: "4702"
+  Slug: chained-comparison-operators
+  Breaking: "no"

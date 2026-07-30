@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Performance
+body: "Document formatting now holds the documents lock for a narrower scope, reducing lock contention with other requests while a format is in progress."
+time: 2026-07-23T00:44:37Z
+custom:
+  PR: "4711"
+  Slug: narrow-documents-lock-formatting
+  Breaking: "no"
