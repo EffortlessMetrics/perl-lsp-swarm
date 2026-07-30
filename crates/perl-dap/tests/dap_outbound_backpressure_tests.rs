@@ -229,21 +229,24 @@ fn nonblocking_lifecycle_drops_when_full() -> Result<(), String> {
 /// therefore run in a loop so one `cargo test` invocation catches it reliably (>90%+ per
 /// invocation against the unfixed code) without weakening the ordering assertion itself.
 #[test]
-fn concurrent_output_flood_and_lifecycle_event_preserve_seq_order() {
+fn concurrent_output_flood_and_lifecycle_event_preserve_seq_order() -> Result<(), String> {
     let trials = 5;
     for trial in 0..trials {
-        run_seq_order_race_trial(trial);
+        run_seq_order_race_trial(trial)?;
     }
+    Ok(())
 }
 
-fn run_seq_order_race_trial(trial: usize) {
+fn run_seq_order_race_trial(trial: usize) -> Result<(), String> {
     let cap = 1;
     let (tx, rx) = sync_channel::<DapMessage>(cap);
     let seq = Arc::new(Mutex::new(0i64));
 
     // Fill the single slot so every producer immediately races against backpressure.
     let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "fill\n"})));
-    assert_eq!(r, EventDispatchResult::Sent, "initial fill should be accepted");
+    if r != EventDispatchResult::Sent {
+        return Err(format!("trial {trial}: initial fill should be accepted, got {r:?}"));
+    }
 
     // Generous thread/iteration counts: the race window is narrow, so use enough
     // concurrent contention to make it reliably reproduce against the unfixed code
@@ -303,37 +306,42 @@ fn run_seq_order_race_trial(trial: usize) {
     }
 
     for handle in flood_handles {
-        handle.join().expect("flood thread must not panic");
+        handle.join().map_err(|_| format!("trial {trial}: flood thread panicked"))?;
     }
-    let life_result = life_handle.join().expect("lifecycle thread must not panic");
-    assert_eq!(life_result, EventDispatchResult::Sent, "stopped event must be delivered");
+    let life_result =
+        life_handle.join().map_err(|_| format!("trial {trial}: lifecycle thread panicked"))?;
+    if life_result != EventDispatchResult::Sent {
+        return Err(format!("trial {trial}: stopped event must be delivered, got {life_result:?}"));
+    }
 
     // The critical assertion: transmission order must track seq. A later-assigned seq
     // must never be observed before an earlier one.
     for w in observed_seqs.windows(2) {
-        assert!(
-            w[0] <= w[1],
-            "trial {trial}: outbound events observed out of seq order: seq {} arrived before \
-             seq {} (full observed sequence: {:?})",
-            w[0],
-            w[1],
-            observed_seqs
-        );
+        if w[0] > w[1] {
+            return Err(format!(
+                "trial {trial}: outbound events observed out of seq order: seq {} arrived before \
+                 seq {} (full observed sequence: {:?})",
+                w[0], w[1], observed_seqs
+            ));
+        }
     }
+    Ok(())
 }
 
 /// Explicit `terminated` case: a lifecycle event named literally `"terminated"` must never
 /// be dropped, even when the outbound queue is full. `terminated` uses the blocking `send`
 /// path (only `output` uses drop-on-full `try_send`).
 #[test]
-fn terminated_event_never_dropped_when_queue_full() {
+fn terminated_event_never_dropped_when_queue_full() -> Result<(), String> {
     let cap = 1;
     let (tx, rx) = sync_channel::<DapMessage>(cap);
     let seq = Arc::new(Mutex::new(0i64));
 
     // Fill the single slot with an output event.
     let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "filling\n"})));
-    assert_eq!(r, EventDispatchResult::Sent);
+    if r != EventDispatchResult::Sent {
+        return Err(format!("expected Sent when filling queue, got {r:?}"));
+    }
 
     // Spawn a thread: send a `terminated` event (will block because the queue is full).
     let tx2 = tx.clone();
@@ -346,24 +354,26 @@ fn terminated_event_never_dropped_when_queue_full() {
     thread::sleep(Duration::from_millis(20));
 
     // Drain the output event, freeing one slot.
-    let drained =
-        rx.recv_timeout(Duration::from_millis(200)).expect("output event must be drainable");
-    assert!(
-        matches!(&drained, DapMessage::Event { event, .. } if event == "output"),
-        "expected output event, got: {drained:?}"
-    );
+    let drained = rx
+        .recv_timeout(Duration::from_millis(200))
+        .map_err(|e| format!("output event must be drainable: {e}"))?;
+    if !matches!(&drained, DapMessage::Event { event, .. } if event == "output") {
+        return Err(format!("expected output event, got: {drained:?}"));
+    }
 
     // The `terminated` event should now be delivered — it must never be dropped.
     let terminated = rx
         .recv_timeout(Duration::from_millis(500))
-        .expect("terminated event must arrive after queue drains");
-    assert!(
-        matches!(&terminated, DapMessage::Event { event, .. } if event == "terminated"),
-        "expected terminated event, got: {terminated:?}"
-    );
+        .map_err(|e| format!("terminated event must arrive after queue drains: {e}"))?;
+    if !matches!(&terminated, DapMessage::Event { event, .. } if event == "terminated") {
+        return Err(format!("expected terminated event, got: {terminated:?}"));
+    }
 
-    let result = handle.join().expect("dispatch thread must not panic");
-    assert_eq!(result, EventDispatchResult::Sent, "terminated event must be delivered (Sent)");
+    let result = handle.join().map_err(|_| "dispatch thread panicked".to_string())?;
+    if result != EventDispatchResult::Sent {
+        return Err(format!("terminated event must be delivered (Sent), got {result:?}"));
+    }
+    Ok(())
 }
 
 /// After output events are dropped, a synthetic `output` event notifying the user must
@@ -378,7 +388,7 @@ fn terminated_event_never_dropped_when_queue_full() {
 /// inside the full-branch lands right as a slot frees. Generous thread/iteration counts
 /// make this reliable in practice; see the PR description for repeated-run verification.
 #[test]
-fn drop_notice_appears_after_drops() {
+fn drop_notice_appears_after_drops() -> Result<(), String> {
     let cap = 1;
     let (tx, rx) = sync_channel::<DapMessage>(cap);
     let seq = Arc::new(Mutex::new(0i64));
@@ -432,14 +442,15 @@ fn drop_notice_appears_after_drops() {
     }
 
     for handle in producers {
-        handle.join().expect("producer thread must not panic");
+        handle.join().map_err(|_| "producer thread panicked".to_string())?;
     }
 
-    assert!(
-        found_notice,
-        "expected a synthetic drop-notice output event to appear during a sustained \
-         multi-producer output flood against a slow consumer"
-    );
+    if !found_notice {
+        return Err("expected a synthetic drop-notice output event to appear during a sustained \
+             multi-producer output flood against a slow consumer"
+            .into());
+    }
+    Ok(())
 }
 
 /// A sustained flood must not produce one drop-notice per dropped line. With the queue
@@ -447,7 +458,7 @@ fn drop_notice_appears_after_drops() {
 /// never succeed either, so zero notices land no matter how many output events are dropped —
 /// a strict, deterministic proof that the mechanism cannot flood the console with notices.
 #[test]
-fn drop_notice_flood_does_not_produce_one_per_line() {
+fn drop_notice_flood_does_not_produce_one_per_line() -> Result<(), String> {
     let cap = 1;
     let (tx, rx) = sync_channel::<DapMessage>(cap);
     let seq = Arc::new(Mutex::new(0i64));
@@ -455,7 +466,9 @@ fn drop_notice_flood_does_not_produce_one_per_line() {
     // Fill the only slot and never drain it: every subsequent output event, and every
     // notice-retry attempt made on its behalf, must observe the queue as permanently full.
     let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "keep\n"})));
-    assert_eq!(r, EventDispatchResult::Sent);
+    if r != EventDispatchResult::Sent {
+        return Err(format!("expected Sent when filling queue, got {r:?}"));
+    }
 
     let total = 500usize;
     let mut dropped = 0usize;
@@ -466,7 +479,11 @@ fn drop_notice_flood_does_not_produce_one_per_line() {
             dropped += 1;
         }
     }
-    assert_eq!(dropped, total, "every send after the first must be dropped (queue never drains)");
+    if dropped != total {
+        return Err(format!(
+            "every send after the first must be dropped (queue never drains); dropped={dropped} total={total}"
+        ));
+    }
 
     // Drain everything now: exactly one message can ever have been resident (capacity 1),
     // and it can only be the original "keep" payload — never a drop notice, since the
@@ -480,9 +497,15 @@ fn drop_notice_flood_does_not_produce_one_per_line() {
         }
     }
 
-    assert_eq!(total_drained, 1, "a capacity-1 queue that never drained can hold only one message");
-    assert_eq!(
-        notices, 0,
-        "a permanently-full queue must produce zero notices, not one per dropped line ({dropped} drops)"
-    );
+    if total_drained != 1 {
+        return Err(format!(
+            "a capacity-1 queue that never drained can hold only one message; drained={total_drained}"
+        ));
+    }
+    if notices != 0 {
+        return Err(format!(
+            "a permanently-full queue must produce zero notices, not one per dropped line ({dropped} drops); notices={notices}"
+        ));
+    }
+    Ok(())
 }

@@ -173,10 +173,14 @@ fn try_emit_drop_notice(
 
 /// Non-blocking dispatch for cleanup-critical events.
 ///
-/// Uses `try_send` for every event kind. On `Full`, increments the drop counter and
-/// returns [`EventDispatchResult::Dropped`] so the caller can finish process kill
-/// without waiting for the DAP client to drain the queue. Holds `seq` for the entire
+/// Uses `try_send` for every event kind. On `Full`, returns
+/// [`EventDispatchResult::Dropped`] so the caller can finish process kill without
+/// waiting for the DAP client to drain the queue. Holds `seq` for the entire
 /// try_send so seq/enqueue stay atomic (same invariant as [`dispatch_event`]).
+///
+/// Only `output` drops increment [`OUTPUT_DROP_COUNTER`] and attempt
+/// [`try_emit_drop_notice`] — non-output drops must not inflate the output-drop
+/// accounting used for the user-visible console notice.
 pub fn dispatch_event_nonblocking(
     sender: &SyncSender<DapMessage>,
     seq: &Mutex<i64>,
@@ -188,15 +192,22 @@ pub fn dispatch_event_nonblocking(
     let msg = DapMessage::Event { seq: *seq_lock, event: event.to_string(), body };
     match sender.try_send(msg) {
         Ok(()) => EventDispatchResult::Sent,
-        Err(TrySendError::Full(_)) => {
-            let count = OUTPUT_DROP_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
-            if should_warn_on_drop(count) {
+        Err(TrySendError::Full(_)) if event == "output" => {
+            let dropped_total = OUTPUT_DROP_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
+            if should_warn_on_drop(dropped_total) {
                 tracing::warn!(
-                    event,
-                    dropped = count,
-                    "DAP outbound queue full; dropping event (nonblocking path)"
+                    dropped = dropped_total,
+                    "DAP outbound queue full; dropping output events (nonblocking path)"
                 );
             }
+            try_emit_drop_notice(sender, &mut seq_lock, dropped_total);
+            EventDispatchResult::Dropped
+        }
+        Err(TrySendError::Full(_)) => {
+            tracing::debug!(
+                event,
+                "DAP outbound queue full; dropping non-output event (nonblocking path)"
+            );
             EventDispatchResult::Dropped
         }
         Err(TrySendError::Disconnected(_)) => EventDispatchResult::Disconnected,
