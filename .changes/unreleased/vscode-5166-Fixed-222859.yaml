@@ -1,9 +1,0 @@
-project: vscode
-component: Editor behavior
-kind: Fixed
-body: "Fixed a duplicate 'const newStateNum' declaration in the VS Code extension's crash-recovery watchdog handler that broke the extension build (no VSIX could be produced), and hardened the shebang-safe pragma quick fix to correctly separate pragma insertion from files with unterminated or malformed shebang lines."
-time: 2026-07-29T22:28:59Z
-custom:
-  PR: "5166"
-  Slug: watchdog-duplicate-const-and-pragma-edge-cases
-  Breaking: "no"

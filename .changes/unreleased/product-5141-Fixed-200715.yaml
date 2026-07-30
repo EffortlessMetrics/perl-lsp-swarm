@@ -1,7 +1,7 @@
 project: product
 component: Language intelligence
 kind: Fixed
-body: "A batch of 19 fixes across core language features: hover responses now include a `range` field so editors highlight the hovered token; overlapping critic/built-in diagnostics for the same issue are deduplicated instead of double-reporting; recovered parse errors now show user-friendly messages instead of leaking internal enum names; array rename now correctly distinguishes element access ($arr[0]) from bare scalars ($arr); the default workspace scan budget was raised from 500ms to 10s so large workspaces no longer silently index only partially; the file watcher no longer overwrites unsaved edits in open documents; and `use experimental`/`require VERSION` pragmas are now recognized for feature-gating."
+body: "A batch of 19 consolidated fix PRs across core language features; user-visible highlights: hover responses now include a `range` field so editors highlight the hovered token; overlapping critic/built-in diagnostics for the same issue are deduplicated instead of double-reporting; recovered parse errors now show user-friendly messages instead of leaking internal enum names; array rename now correctly distinguishes element access ($arr[0]) from bare scalars ($arr); the default workspace scan budget was raised from 500ms to 10s so large workspaces no longer silently index only partially; the file watcher no longer overwrites unsaved edits in open documents; and `use experimental`/`require VERSION` pragmas are now recognized for feature-gating."
 time: 2026-07-27T20:07:15Z
 custom:
   PR: "5141"
