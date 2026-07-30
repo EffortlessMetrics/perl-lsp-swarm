@@ -94,7 +94,7 @@ fn test_all_zero_arg_commands_return_response() -> Result<(), Box<dyn std::error
             DapMessage::Response { command, .. } => {
                 assert_eq!(command, *cmd, "{cmd}: command must echo back");
             }
-            other => panic!("{cmd}: expected Response, got {other:?}"),
+            other => return Err(format!("{cmd}: expected Response, got {other:?}").into()),
         }
     }
     Ok(())
@@ -135,7 +135,12 @@ fn test_all_required_arg_commands_return_error_when_args_missing()
                 let err_msg = message.unwrap_or_default();
                 assert!(!err_msg.is_empty(), "{cmd}: missing-args error must be non-empty");
             }
-            other => panic!("{cmd}: expected Response for missing-args path, got {other:?}"),
+            other => {
+                return Err(format!(
+                    "{cmd}: expected Response for missing-args path, got {other:?}"
+                )
+                .into());
+            }
         }
     }
     Ok(())
@@ -216,7 +221,7 @@ fn test_request_seq_echo_for_all_dispatched_commands() -> Result<(), Box<dyn std
                 assert_eq!(request_seq, req_seq, "{command}: request_seq must be echoed exactly");
                 assert_eq!(cmd, *command, "{command}: response command must echo request command");
             }
-            other => panic!("{command}: expected Response, got {other:?}"),
+            other => return Err(format!("{command}: expected Response, got {other:?}").into()),
         }
     }
     Ok(())
@@ -245,7 +250,7 @@ fn test_seq_numbers_strictly_monotone_across_session() -> Result<(), Box<dyn std
         let msg = adapter.handle_request(req_seq, cmd, args.clone());
         let seq = match msg {
             DapMessage::Response { seq, .. } => seq,
-            other => panic!("{cmd}: expected Response, got {other:?}"),
+            other => return Err(format!("{cmd}: expected Response, got {other:?}").into()),
         };
 
         if let Some(prev) = prev_seq {
@@ -267,7 +272,7 @@ fn test_seq_numbers_never_repeat() -> Result<(), Box<dyn std::error::Error>> {
         let msg = adapter.handle_request(i as i64 + 1, cmd, None);
         let seq = match msg {
             DapMessage::Response { seq, .. } => seq,
-            other => panic!("{cmd}: expected Response, got {other:?}"),
+            other => return Err(format!("{cmd}: expected Response, got {other:?}").into()),
         };
         assert!(
             seen_seqs.insert(seq),
@@ -467,7 +472,7 @@ fn test_error_responses_always_have_message() -> Result<(), Box<dyn std::error::
                     "{cmd}: error response must include a non-empty message, got empty string"
                 );
             }
-            other => panic!("{cmd}: expected Response, got {other:?}"),
+            other => return Err(format!("{cmd}: expected Response, got {other:?}").into()),
         }
     }
     Ok(())
@@ -774,7 +779,7 @@ fn test_cancel_followed_by_command_returns_valid_response() -> Result<(), Box<dy
             assert_eq!(command, "cancel");
             assert!(success, "cancel must succeed");
         }
-        other => panic!("cancel: expected Response, got {other:?}"),
+        other => return Err(format!("cancel: expected Response, got {other:?}").into()),
     }
 
     // Second: breakpointLocations with a source path triggers the cancel_requested check
@@ -789,7 +794,12 @@ fn test_cancel_followed_by_command_returns_valid_response() -> Result<(), Box<dy
             assert_eq!(command, "breakpointLocations", "command must echo");
             assert_eq!(request_seq, 2, "request_seq must be echoed after cancel");
         }
-        other => panic!("breakpointLocations after cancel: expected Response, got {other:?}"),
+        other => {
+            return Err(format!(
+                "breakpointLocations after cancel: expected Response, got {other:?}"
+            )
+            .into());
+        }
     }
 
     // Third: a subsequent command must also return a valid Response.
@@ -799,7 +809,9 @@ fn test_cancel_followed_by_command_returns_valid_response() -> Result<(), Box<dy
             assert_eq!(command, "threads");
             assert_eq!(request_seq, 3);
         }
-        other => panic!("threads after cancel: expected Response, got {other:?}"),
+        other => {
+            return Err(format!("threads after cancel: expected Response, got {other:?}").into());
+        }
     }
     Ok(())
 }
@@ -824,7 +836,12 @@ fn test_empty_object_args_do_not_panic() -> Result<(), Box<dyn std::error::Error
             DapMessage::Response { command, .. } => {
                 assert_eq!(command, *cmd, "{cmd}: command must echo");
             }
-            other => panic!("{cmd}: expected Response for empty-object args, got {other:?}"),
+            other => {
+                return Err(format!(
+                    "{cmd}: expected Response for empty-object args, got {other:?}"
+                )
+                .into());
+            }
         }
     }
     Ok(())
@@ -845,7 +862,7 @@ fn test_deeply_nested_json_args_do_not_panic() -> Result<(), Box<dyn std::error:
         DapMessage::Response { command, .. } => {
             assert_eq!(command, "setBreakpoints");
         }
-        other => panic!("expected Response, got {other:?}"),
+        other => return Err(format!("expected Response, got {other:?}").into()),
     }
     Ok(())
 }
@@ -864,7 +881,7 @@ fn test_wrong_type_args_do_not_panic() -> Result<(), Box<dyn std::error::Error>>
         DapMessage::Response { command, .. } => {
             assert_eq!(command, "scopes");
         }
-        other => panic!("expected Response for wrong-type args, got {other:?}"),
+        other => return Err(format!("expected Response for wrong-type args, got {other:?}").into()),
     }
     Ok(())
 }
@@ -917,7 +934,7 @@ fn test_multiple_sequential_requests_do_not_corrupt_state() -> Result<(), Box<dy
                 assert_eq!(request_seq, req_seq, "{cmd}: request_seq must match");
                 assert_eq!(command, *cmd, "{cmd}: command must echo");
             }
-            other => panic!("{cmd}: expected Response, got {other:?}"),
+            other => return Err(format!("{cmd}: expected Response, got {other:?}").into()),
         }
     }
     Ok(())
