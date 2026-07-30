@@ -384,10 +384,28 @@ impl LspLimits {
             if let Some(v) = limits.get("completionCap").and_then(|v| v.as_u64()) {
                 self.completion_cap = v as usize;
             }
+            if let Some(v) = limits.get("documentSymbolCap").and_then(|v| v.as_u64()) {
+                self.document_symbol_cap = v as usize;
+            }
+            if let Some(v) = limits.get("codeLensCap").and_then(|v| v.as_u64()) {
+                self.code_lens_cap = v as usize;
+            }
+            if let Some(v) = limits.get("diagnosticsPerFileCap").and_then(|v| v.as_u64()) {
+                self.diagnostics_per_file_cap = v as usize;
+            }
+            if let Some(v) = limits.get("inlayHintsCap").and_then(|v| v.as_u64()) {
+                self.inlay_hints_cap = v as usize;
+            }
 
             // Cache limits
             if let Some(v) = limits.get("astCacheMaxEntries").and_then(|v| v.as_u64()) {
                 self.ast_cache_max_entries = v as usize;
+            }
+            if let Some(v) = limits.get("astCacheTtlSecs").and_then(|v| v.as_u64()) {
+                self.ast_cache_ttl_secs = v;
+            }
+            if let Some(v) = limits.get("symbolCacheMaxEntries").and_then(|v| v.as_u64()) {
+                self.symbol_cache_max_entries = v as usize;
             }
 
             // Index limits
@@ -570,5 +588,29 @@ mod tests {
         limits.update_from_value(&settings);
         assert_eq!(limits.workspace_symbol_cap, 300);
         assert_eq!(limits.max_indexed_files, 20_000);
+    }
+
+    #[test]
+    fn test_update_from_value_reads_all_result_caps() {
+        // Regression guard for #5292: all documented result-cap keys
+        // must be wired through update_from_value.
+        let mut limits = LspLimits::default();
+        let settings = serde_json::json!({
+            "limits": {
+                "documentSymbolCap": 42,
+                "codeLensCap": 17,
+                "diagnosticsPerFileCap": 99,
+                "inlayHintsCap": 123,
+                "astCacheTtlSecs": 600,
+                "symbolCacheMaxEntries": 5000
+            }
+        });
+        limits.update_from_value(&settings);
+        assert_eq!(limits.document_symbol_cap, 42);
+        assert_eq!(limits.code_lens_cap, 17);
+        assert_eq!(limits.diagnostics_per_file_cap, 99);
+        assert_eq!(limits.inlay_hints_cap, 123);
+        assert_eq!(limits.ast_cache_ttl_secs, 600);
+        assert_eq!(limits.symbol_cache_max_entries, 5000);
     }
 }

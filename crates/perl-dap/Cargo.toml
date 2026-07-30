@@ -55,7 +55,7 @@ perl-ast = { workspace = true }
 perl-parser = { workspace = true }
 perl-parser-core = { workspace = true }
 thiserror.workspace = true
-ropey = "1.6.1"
+ropey.workspace = true
 
 perl-module = { workspace = true }
 # Wave Final PR B: perl-content-length-framing absorbed into perl-lsp-rs-core::transport::framing

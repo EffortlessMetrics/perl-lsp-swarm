@@ -465,7 +465,8 @@ impl PerlOracleEnv {
             .env_remove("PERL_LOCAL_LIB_ROOT")
             .env_remove("PERL_LOCAL_LIB_PREFIX")
             .output()
-            .is_ok();
+            .map(|o| o.status.success())
+            .unwrap_or(false);
         if !available {
             return None;
         }

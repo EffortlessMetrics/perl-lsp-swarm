@@ -101,8 +101,10 @@ impl CodeActionsProvider {
             Some("native.common.undef_comparison") => {
                 fixes::fix_native_undef_comparison(self, diagnostic)
             }
-            Some("native.testing.require_use_strict") => fixes::add_use_strict(diagnostic),
-            Some("native.testing.require_use_warnings") => fixes::add_use_warnings(diagnostic),
+            Some("native.testing.require_use_strict") => fixes::add_use_strict(self, diagnostic),
+            Some("native.testing.require_use_warnings") => {
+                fixes::add_use_warnings(self, diagnostic)
+            }
             _ if has_any_code(
                 code,
                 &[
@@ -473,6 +475,39 @@ mod tests {
         }));
         assert!(actions.iter().any(|action| {
             action.title == "Add 'use warnings'" && action.edit.new_text == "use warnings;\n"
+        }));
+    }
+
+    #[test]
+    fn test_native_critic_strict_warnings_quick_fixes_preserve_shebang() {
+        let source = "#!/usr/bin/perl\nprint 'hello';\n".to_string();
+        let provider = CodeActionsProvider::new(source.clone());
+        let diagnostics = vec![
+            make_diagnostic(
+                (0, 0),
+                DiagnosticSeverity::Warning,
+                "native.testing.require_use_strict",
+                "Code does not use strict",
+            ),
+            make_diagnostic(
+                (0, 0),
+                DiagnosticSeverity::Warning,
+                "native.testing.require_use_warnings",
+                "Code does not use warnings",
+            ),
+        ];
+
+        let actions = provider.get_code_actions((0, 1), &diagnostics);
+        let insertion = "#!/usr/bin/perl\n".len();
+        assert!(actions.iter().any(|action| {
+            action.title == "Add 'use strict'"
+                && action.edit.range == (insertion, insertion)
+                && action.edit.new_text == "use strict;\n"
+        }));
+        assert!(actions.iter().any(|action| {
+            action.title == "Add 'use warnings'"
+                && action.edit.range == (insertion, insertion)
+                && action.edit.new_text == "use warnings;\n"
         }));
     }
 

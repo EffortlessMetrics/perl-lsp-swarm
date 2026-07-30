@@ -81,15 +81,13 @@ fn test_launch_allows_valid_path() -> Result<(), Box<dyn std::error::Error>> {
     // Verify response
     match response {
         DapMessage::Response { success, message, .. } => {
-            if !success {
-                let msg = message.clone().unwrap_or_default();
-                assert!(
-                    !msg.contains("outside workspace") && !msg.contains("outside your workspace"),
-                    "Valid path rejected by security check: {msg}"
-                );
-            }
+            assert!(
+                success,
+                "Launch of in-workspace script must succeed, got: {:?}",
+                message
+            );
         }
-        _ => return Err("Expected Response message".into()),
+        other => return Err(format!("Expected Response, got: {other:?}").into()),
     }
     Ok(())
 }
@@ -156,13 +154,11 @@ fn test_configured_workspace_root_accepts_inside_script() -> Result<(), Box<dyn 
 
     match response {
         DapMessage::Response { success, message, .. } => {
-            if !success {
-                let msg = message.unwrap_or_default();
-                assert!(
-                    !msg.contains("outside your workspace") && !msg.contains("outside workspace"),
-                    "Script inside workspace was incorrectly rejected: {msg}"
-                );
-            }
+            assert!(
+                success,
+                "Launch of in-workspace script must succeed, got: {:?}",
+                message
+            );
         }
         other => return Err(format!("Expected Response, got: {other:?}").into()),
     }

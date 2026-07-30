@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { spawn } from 'child_process';
 
 /**
@@ -8,6 +9,48 @@ import { spawn } from 'child_process';
  * Discovers `.t` test files in the workspace, parses `subtest` blocks,
  * and runs them via `prove -v`, mapping TAP output to VSCode test results.
  */
+
+/**
+ * Resolve the `prove` command for the current platform.
+ *
+ * On Windows, `prove` is a `.bat` script shim — spawning it without
+ * `shell: true` fails with ENOENT. On all platforms, attempt to derive
+ * `prove` from the directory of the `perl` binary on PATH so that
+ * perlbrew/plenv users get the matching `prove`.
+ *
+ * Returns `{ command, args, shell }` for use with `child_process.spawn`.
+ */
+export function resolveProveCommand(extraArgs: string[]): {
+  command: string;
+  args: string[];
+  shell: boolean;
+} {
+  const isWindows = process.platform === 'win32';
+
+  // Try to find `prove` next to `perl` on PATH.
+  let provePath: string | null = null;
+  try {
+    const { execSync } = require('child_process');
+    const perlPath = execSync('perl -e "print $^X"', {
+      encoding: 'utf8',
+      timeout: 3000,
+    }).trim();
+    const perlDir = path.dirname(perlPath);
+    const candidate = path.join(perlDir, isWindows ? 'prove.bat' : 'prove');
+    if (fs.existsSync(candidate)) {
+      provePath = candidate;
+    }
+  } catch {
+    // perl not on PATH or execSync failed — fall back to bare 'prove'.
+  }
+
+  if (provePath) {
+    return { command: provePath, args: extraArgs, shell: false };
+  }
+
+  // Fallback: bare 'prove' with shell on Windows for .bat resolution.
+  return { command: 'prove', args: extraArgs, shell: isWindows };
+}
 
 export interface SubtestInfo {
   name: string;
@@ -202,9 +245,15 @@ export class PerlTestAdapter implements vscode.Disposable {
 
     return new Promise<void>((resolve) => {
       const startTime = Date.now();
-      const proc = spawn('prove', ['-v', '--nocolor', filePath], {
+      const {
+        command: proveCmd,
+        args: proveArgs,
+        shell: useShell,
+      } = resolveProveCommand(['-v', '--nocolor', filePath]);
+      const proc = spawn(proveCmd, proveArgs, {
         cwd,
         env: { ...process.env, HARNESS_ACTIVE: '1' },
+        shell: useShell,
       });
 
       let stdout = '';

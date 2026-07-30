@@ -613,30 +613,20 @@ impl ExecuteCommandProvider {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| ext_path.to_string_lossy().into_owned());
 
-        // Emit the workspace boundary so `perl-dap` validates the launch path
-        // against a real root rather than the program's own parent directory.
-        let workspace_root =
-            self.find_workspace_root(file_path).map(|p| p.to_string_lossy().into_owned());
-
-        let mut configuration = serde_json::json!({
-            "type": "perl",
-            "request": "launch",
-            "name": format!("Debug Test: {file_name}"),
-            "program": ext_path.to_string_lossy(),
-            "cwd": cwd.to_string_lossy(),
-            "stopOnEntry": false,
-            "args": [],
-            "env": { "PERL_TEST_HARNESS_DUMP_TAP": "1" }
-        });
-        if let Some(root) = workspace_root {
-            configuration["workspaceRoot"] = serde_json::Value::String(root);
-        }
-
         Ok(json!({
             "success": true,
             "action": "startDebugging",
             "adapter": "perl-dap",
-            "configuration": configuration
+            "configuration": {
+                "type": "perl",
+                "request": "launch",
+                "name": format!("Debug Test: {file_name}"),
+                "program": ext_path.to_string_lossy(),
+                "cwd": cwd.to_string_lossy(),
+                "stopOnEntry": false,
+                "args": [],
+                "env": { "PERL_TEST_HARNESS_DUMP_TAP": "1" }
+            }
         }))
     }
 

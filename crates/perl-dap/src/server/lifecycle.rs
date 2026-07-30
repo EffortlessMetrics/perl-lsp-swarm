@@ -26,11 +26,7 @@ impl DapServer {
     ///
     /// Currently always succeeds. Phase 2 will add validation and initialization errors.
     pub fn new(config: DapConfig) -> anyhow::Result<Self> {
-        let adapter = DebugAdapter::new();
-        if let Some(ref root) = config.workspace_root {
-            adapter.set_workspace_root(root.clone());
-        }
-        Ok(Self { config, adapter })
+        Ok(Self { config, adapter: DebugAdapter::new() })
     }
 
     /// Run the DAP server
