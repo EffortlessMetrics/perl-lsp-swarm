@@ -28,19 +28,19 @@ Before creating a candidate, check whether an equivalent current PR already impl
 
 ```text
 concern, issue, or plan unsettled
-  → prepare-issue
+  → $prepare-issue
 
 intent settled, proof absent or weak
-  → prepare-proof
+  → $prepare-proof
 
 reviewed proof or implementation candidate needs completion
-  → build-candidate
+  → $build-candidate
 
 publication-ready candidate or existing PR needs convergence
-  → finish-pr
+  → $finish-pr
 
 merged or deliberately closed but unreconciled
-  → merge-reconcile through finish-pr
+  → $merge-reconcile through $finish-pr
 
 claim already reconciled
   → return completed result
