@@ -4,17 +4,17 @@
 # Review receipts bind a formal judgment to both the PR head and the normalized
 # material claim/review index.
 #
-#   review-start → computes or accepts a claim digest and posts status=running
-#   review-done  → REQUIRES the starting digest and updates that exact marker
+#   review-start → posts status=running and returns its immutable comment ID
+#   review-done  → requires that ID and updates exactly that validated receipt
 #   verify       → posts a verification marker (result=pass|fail)
 #
 # Updating the start receipt is load-bearing: the convergence checker counts
-# running markers as in-flight work. Appending a second done marker would leave
-# the historical running marker active forever.
+# running markers as in-flight work. Selecting by public marker text is unsafe
+# because retries or copied markers are not unique.
 #
 # Usage:
 #   scripts/reviews/run review-start --pr <n> --kind <deep|standard> --reviewer <id> [--claim-digest sha] [--repo r] [--head sha] [--dry-run]
-#   scripts/reviews/run review-done  --pr <n> --kind <deep|standard> --reviewer <id> --claim-digest <starting-sha> [--repo r] [--head sha] [--dry-run]
+#   scripts/reviews/run review-done  --pr <n> --kind <deep|standard> --reviewer <id> --claim-digest <starting-sha> --comment-id <id> [--repo r] [--head sha] [--dry-run]
 #   scripts/reviews/run verify       --pr <n> --verifier <id> --result <pass|fail> [--findings <json>] [--repo r] [--head sha] [--dry-run]
 set -euo pipefail
 
@@ -25,7 +25,7 @@ die_usage() { echo "ERROR: $1" >&2; exit 2; }
 [[ $# -ge 1 ]] || die_usage "missing subcommand (review-start|review-done|verify)"
 SUBCMD="$1"; shift
 
-PR="" KIND="" REVIEWER="" VERIFIER="" RESULT="" FINDINGS="0" REPO="" HEAD="" CLAIM_DIGEST="" DRY_RUN=0
+PR="" KIND="" REVIEWER="" VERIFIER="" RESULT="" FINDINGS="0" REPO="" HEAD="" CLAIM_DIGEST="" REVIEW_COMMENT_ID="" DRY_RUN=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --pr)           PR="${2:-}"; shift 2 ;;
@@ -37,6 +37,7 @@ while [[ $# -gt 0 ]]; do
         --repo)         REPO="${2:-}"; shift 2 ;;
         --head)         HEAD="${2:-}"; shift 2 ;;
         --claim-digest) CLAIM_DIGEST="${2:-}"; shift 2 ;;
+        --comment-id)   REVIEW_COMMENT_ID="${2:-}"; shift 2 ;;
         --dry-run)      DRY_RUN=1; shift ;;
         *) die_usage "unknown argument: $1" ;;
     esac
@@ -52,12 +53,17 @@ resolve_repo_head() {
         [[ -n "$HEAD" ]] || HEAD="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)"
     else
         [[ -n "$HEAD" ]] || HEAD="DRYRUN-HEAD"
+        [[ -n "$REPO" ]] || REPO="DRYRUN/REPO"
     fi
 }
 
 resolve_claim_digest() {
     if [[ "$SUBCMD" == "review-done" ]]; then
         [[ -n "$CLAIM_DIGEST" ]] || die_usage "review-done requires the --claim-digest captured by review-start"
+        [[ -n "$REVIEW_COMMENT_ID" ]] || die_usage "review-done requires the --comment-id returned by review-start"
+        if [[ "$DRY_RUN" -eq 0 && ! "$REVIEW_COMMENT_ID" =~ ^[0-9]+$ ]]; then
+            die_usage "review-done --comment-id must be a numeric GitHub issue-comment ID"
+        fi
         return 0
     fi
     [[ "$SUBCMD" == "review-start" ]] || return 0
@@ -77,25 +83,67 @@ render_body() {
     printf '%s\n\n<!-- %s:v1 %s -->' "$3" "$1" "$2"
 }
 
-post_pr_comment() {
+post_pr_comment_id() {
     local body="$1"
-    gh pr comment "$PR" --repo "$REPO" --body "$body"
+    local comment_id
+    if ! comment_id="$(gh api -X POST "repos/$REPO/issues/$PR/comments" --raw-field body="$body" --jq '.id' 2>&1)"; then
+        echo "ERROR: failed to post receipt to PR #$PR: $comment_id" >&2
+        return 2
+    fi
+    [[ "$comment_id" =~ ^[0-9]+$ ]] || {
+        echo "ERROR: GitHub did not return a numeric comment ID for PR #$PR: $comment_id" >&2
+        return 2
+    }
+    printf '%s' "$comment_id"
 }
 
-find_running_review_comment_id() {
-    local running_marker="$1"
-    local needle="<!-- review-run:v1 $running_marker -->"
-    local comments
-    if ! comments="$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" 2>&1)"; then
-        echo "ERROR: failed to list review-run receipts for PR #$PR: $comments" >&2
+load_review_comment() {
+    local comment_id="$1"
+    local comment
+    if ! comment="$(gh api "repos/$REPO/issues/comments/$comment_id" 2>&1)"; then
+        echo "ERROR: failed to load review-run receipt comment $comment_id: $comment" >&2
+        return 2
+    fi
+    printf '%s' "$comment"
+}
+
+validate_running_review_comment() {
+    local comment_id="$1"
+    local running_marker="$2"
+    local comment expected_suffix actual_id issue_url association body needle
+
+    comment="$(load_review_comment "$comment_id")" || return 2
+    if ! jq -e . >/dev/null 2>&1 <<<"$comment"; then
+        echo "ERROR: review-run receipt comment $comment_id returned invalid JSON" >&2
         return 2
     fi
 
-    printf '%s\n' "$comments" | jq -sr --arg needle "$needle" '
-        (((map(if type == "array" then . else [.] end) | add) // []))
-        | [ .[] | select((.body // "") | contains($needle)) | .id ]
-        | last // empty
-    '
+    actual_id="$(jq -r '.id // empty' <<<"$comment")"
+    issue_url="$(jq -r '.issue_url // empty' <<<"$comment")"
+    association="$(jq -r '(.author_association // .authorAssociation // "") | ascii_upcase' <<<"$comment")"
+    body="$(jq -r '.body // ""' <<<"$comment")"
+    expected_suffix="/repos/$REPO/issues/$PR"
+    needle="<!-- review-run:v1 $running_marker -->"
+
+    [[ "$actual_id" == "$comment_id" ]] || {
+        echo "ERROR: receipt lookup returned comment $actual_id instead of $comment_id" >&2
+        return 2
+    }
+    [[ "$issue_url" == *"$expected_suffix" ]] || {
+        echo "ERROR: comment $comment_id does not belong to $REPO PR #$PR" >&2
+        return 2
+    }
+    case "$association" in
+        OWNER|MEMBER|COLLABORATOR) ;;
+        *)
+            echo "ERROR: comment $comment_id is not authored by a trusted repository association" >&2
+            return 2
+            ;;
+    esac
+    [[ "$body" == *"$needle"* ]] || {
+        echo "ERROR: comment $comment_id is not the matching running review receipt" >&2
+        return 2
+    }
 }
 
 update_pr_comment() {
@@ -112,50 +160,43 @@ emit_review_run() {
     body="$(render_body "review-run" "$marker" "Review pass ($KIND) $status by $REVIEWER at head $HEAD and claim $CLAIM_DIGEST.")"
 
     if [[ "$DRY_RUN" -eq 1 ]]; then
-        action="post"
-        [[ "$status" == "done" ]] && action="update matching running receipt"
-        echo "DRY-RUN $action for PR #$PR at head $HEAD"
+        if [[ "$status" == "running" ]]; then
+            echo "DRY-RUN post for PR #$PR at head $HEAD comment_id=DRYRUN-COMMENT"
+        else
+            echo "DRY-RUN update receipt comment_id=$REVIEW_COMMENT_ID for PR #$PR at head $HEAD"
+        fi
         printf '%s\n' "$body"
         return 0
     fi
 
     if [[ "$status" == "running" ]]; then
-        if ! post_pr_comment "$body" >/dev/null; then
-            echo "ERROR: failed to post review-run receipt to PR #$PR" >&2
-            exit 2
-        fi
-        echo "OK posted running review-run receipt to PR #$PR at head $HEAD and claim $CLAIM_DIGEST"
+        local comment_id
+        comment_id="$(post_pr_comment_id "$body")" || exit 2
+        echo "OK posted running review-run receipt to PR #$PR at head $HEAD and claim $CLAIM_DIGEST comment_id=$comment_id"
         return 0
     fi
 
-    local running_marker comment_id
+    local running_marker
     running_marker="$(jq -cn --arg kind "$KIND" --arg head "$HEAD" --arg claim "$CLAIM_DIGEST" --arg rev "$REVIEWER" \
         '{v:1, kind:$kind, head:$head, claim_digest:$claim, reviewer:$rev, status:"running"}')"
-    comment_id="$(find_running_review_comment_id "$running_marker")" || exit 2
-    if [[ -z "$comment_id" ]]; then
-        echo "ERROR: no matching running review receipt for PR #$PR, reviewer $REVIEWER, kind $KIND, head $HEAD, claim $CLAIM_DIGEST" >&2
+    validate_running_review_comment "$REVIEW_COMMENT_ID" "$running_marker" || exit 2
+    if ! update_pr_comment "$REVIEW_COMMENT_ID" "$body" >/dev/null; then
+        echo "ERROR: failed to retire running review receipt comment $REVIEW_COMMENT_ID on PR #$PR" >&2
         exit 2
     fi
-    if ! update_pr_comment "$comment_id" "$body" >/dev/null; then
-        echo "ERROR: failed to retire running review receipt comment $comment_id on PR #$PR" >&2
-        exit 2
-    fi
-    echo "OK updated review-run receipt $comment_id to done on PR #$PR at head $HEAD and claim $CLAIM_DIGEST"
+    echo "OK updated review-run receipt $REVIEW_COMMENT_ID to done on PR #$PR at head $HEAD and claim $CLAIM_DIGEST"
 }
 
 emit() {
-    local body
+    local body comment_id
     body="$(render_body "$1" "$2" "$3")"
     if [[ "$DRY_RUN" -eq 1 ]]; then
         echo "DRY-RUN $1 receipt for PR #$PR at head $HEAD"
         printf '%s\n' "$body"
         return 0
     fi
-    if ! post_pr_comment "$body" >/dev/null; then
-        echo "ERROR: failed to post $1 receipt to PR #$PR" >&2
-        exit 2
-    fi
-    echo "OK posted $1 receipt to PR #$PR at head $HEAD"
+    comment_id="$(post_pr_comment_id "$body")" || exit 2
+    echo "OK posted $1 receipt to PR #$PR at head $HEAD comment_id=$comment_id"
 }
 
 case "$SUBCMD" in
