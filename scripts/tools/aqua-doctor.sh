@@ -22,7 +22,7 @@ EOF
 fi
 
 echo "aqua binary: $(command -v aqua)"
-aqua -v
+aqua version
 
 echo "installing tools from ${AQUA_CONFIG_PATH}"
 AQUA_CONFIG="${AQUA_CONFIG_PATH}" aqua install
