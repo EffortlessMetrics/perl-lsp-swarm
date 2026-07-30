@@ -3,8 +3,8 @@
 #
 # The internal core owns reviewer/head, thread, disposition, verification, and
 # in-flight review axes. This public command additionally binds any review-run
-# protocol to the visible material PR claim. Callers continue to consume one
-# summary and one final JSON verdict.
+# protocol to the visible material PR claim. Callers consume one summary and one
+# final JSON verdict on both converged and blocked paths.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,12 +26,33 @@ CORE_RC=$?
 set -e
 
 cat "$TMP_DIR/core.err" >&2
-if [[ "$CORE_RC" -ne 0 ]]; then
-    cat "$TMP_DIR/core.out"
+CORE_JSON="$(sed -n '/^{/,$p' "$TMP_DIR/core.out")"
+CORE_SUMMARY="$(sed '/^{/,$d' "$TMP_DIR/core.out")"
+
+if ! jq -e . >/dev/null 2>&1 <<<"$CORE_JSON"; then
+    echo "ERROR: review convergence core did not emit its final JSON verdict" >&2
+    cat "$TMP_DIR/core.out" >&2
+    exit 2
+fi
+
+# Exit 2 is an instrument/fetch failure. Exit 1 is an ordinary blocking review
+# verdict and must still be composed with the material-claim axis so callers see
+# one stable result shape.
+if [[ "$CORE_RC" -ge 2 ]]; then
+    [[ -n "$CORE_SUMMARY" ]] && printf '%s\n' "$CORE_SUMMARY"
+    printf '%s\n' "$CORE_JSON"
     exit "$CORE_RC"
 fi
 
-CLAIM_ARGS=("$1")
+CORE_HEAD="$(jq -r '.headRefOid // empty' <<<"$CORE_JSON")"
+if [[ -z "$CORE_HEAD" ]]; then
+    echo "ERROR: review convergence core omitted headRefOid" >&2
+    [[ -n "$CORE_SUMMARY" ]] && printf '%s\n' "$CORE_SUMMARY"
+    printf '%s\n' "$CORE_JSON"
+    exit 2
+fi
+
+CLAIM_ARGS=("$1" --expected-head "$CORE_HEAD")
 if [[ -n "${2:-}" ]]; then
     CLAIM_ARGS+=(--repo "$2")
 fi
@@ -41,48 +62,69 @@ set +e
 CLAIM_RC=$?
 set -e
 
-CORE_JSON="$(sed -n '/^{/,$p' "$TMP_DIR/core.out")"
-CORE_SUMMARY="$(sed '/^{/,$d' "$TMP_DIR/core.out")"
-CLAIM_JSON='{"result":"not_proven","head":null,"claim_digest":null,"matching_receipts":0,"completed_receipts":0,"trusted_receipts":0,"untrusted_receipts":0}'
+CLAIM_JSON='{"result":"not_proven","head":null,"claim_digest":null,"matching_receipts":0,"completed_receipts":0,"trusted_receipts":0,"untrusted_receipts":0,"invalid_receipts":0,"invalid_trusted_receipts":0,"invalid_untrusted_receipts":0,"matching_authors":[]}'
 if [[ -s "$TMP_DIR/claim.out" ]]; then
     CLAIM_JSON="$(cat "$TMP_DIR/claim.out")"
 fi
 
-if ! jq -e . >/dev/null 2>&1 <<<"$CORE_JSON"; then
-    echo "ERROR: review convergence core did not emit its final JSON verdict" >&2
-    cat "$TMP_DIR/core.out" >&2
-    exit 2
-fi
 if ! jq -e . >/dev/null 2>&1 <<<"$CLAIM_JSON"; then
     echo "ERROR: material-claim checker emitted invalid JSON" >&2
     cat "$TMP_DIR/claim.out" >&2
     exit 2
 fi
 
-if [[ "$CLAIM_RC" -eq 0 ]]; then
-    [[ -n "$CORE_SUMMARY" ]] && printf '%s\n' "$CORE_SUMMARY"
-    CLAIM_RESULT="$(jq -r '.result' <<<"$CLAIM_JSON")"
-    echo "OK   PR #$1: material-claim review state=$CLAIM_RESULT"
-else
+CLAIM_HEAD="$(jq -r '.head // empty' <<<"$CLAIM_JSON")"
+HEADS_MATCH=false
+if [[ -n "$CLAIM_HEAD" && "$CLAIM_HEAD" == "$CORE_HEAD" ]]; then
+    HEADS_MATCH=true
+fi
+
+[[ -n "$CORE_SUMMARY" ]] && printf '%s\n' "$CORE_SUMMARY"
+if [[ -s "$TMP_DIR/claim.err" ]]; then
     cat "$TMP_DIR/claim.err" >&2
-    echo "BLOCK PR #$1: base review axes passed but the material claim is not bound to a trusted current review receipt" >&2
+fi
+
+if [[ "$CLAIM_RC" -eq 0 && "$HEADS_MATCH" == true ]]; then
+    CLAIM_RESULT="$(jq -r '.result' <<<"$CLAIM_JSON")"
+    echo "OK   PR #$1: material-claim review state=$CLAIM_RESULT at $CORE_HEAD"
+elif [[ "$CLAIM_RC" -eq 2 || "$HEADS_MATCH" != true ]]; then
+    echo "BLOCK PR #$1: material-claim currentness is NOT_PROVEN for candidate $CORE_HEAD" >&2
+    echo "FAIL PR #$1: review convergence NOT PROVEN — candidate snapshot or claim instrument moved/failed"
+else
+    echo "BLOCK PR #$1: material claim is not bound to a trusted current review receipt" >&2
     echo "FAIL PR #$1: review convergence NOT achieved — material claim review is not current"
 fi
+
+CORE_OK=false
+[[ "$CORE_RC" -eq 0 ]] && CORE_OK=true
+CLAIM_OK=false
+[[ "$CLAIM_RC" -eq 0 && "$HEADS_MATCH" == true ]] && CLAIM_OK=true
 
 jq -n \
     --argjson core "$CORE_JSON" \
     --argjson claim "$CLAIM_JSON" \
-    --argjson claimOk "$([[ "$CLAIM_RC" -eq 0 ]] && echo true || echo false)" \
+    --argjson coreOk "$CORE_OK" \
+    --argjson claimOk "$CLAIM_OK" \
+    --argjson headsMatch "$HEADS_MATCH" \
     '$core + {
-        converged: ($core.converged and $claimOk),
+        converged: ($coreOk and $claimOk),
         material_claim_review: ($claim.result // "not_proven"),
         material_claim_digest: ($claim.claim_digest // null),
         material_claim_matching_receipts: ($claim.matching_receipts // 0),
+        material_claim_completed_receipts: ($claim.completed_receipts // 0),
         material_claim_trusted_receipts: ($claim.trusted_receipts // 0),
-        material_claim_untrusted_receipts: ($claim.untrusted_receipts // 0)
+        material_claim_untrusted_receipts: ($claim.untrusted_receipts // 0),
+        material_claim_invalid_receipts: ($claim.invalid_receipts // 0),
+        material_claim_invalid_trusted_receipts: ($claim.invalid_trusted_receipts // 0),
+        material_claim_invalid_untrusted_receipts: ($claim.invalid_untrusted_receipts // 0),
+        material_claim_head: ($claim.head // null),
+        material_claim_head_matches_candidate: $headsMatch
     }'
 
-if [[ "$CLAIM_RC" -eq 0 ]]; then
+if [[ "$CORE_RC" -eq 0 && "$CLAIM_RC" -eq 0 && "$HEADS_MATCH" == true ]]; then
     exit 0
 fi
-exit "$CLAIM_RC"
+if [[ "$CORE_RC" -ge 2 || "$CLAIM_RC" -ge 2 || "$HEADS_MATCH" != true ]]; then
+    exit 2
+fi
+exit 1
