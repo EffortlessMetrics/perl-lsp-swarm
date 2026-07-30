@@ -3769,36 +3769,21 @@ impl WorkspaceIndex {
         // Collect results with a relevance score for ranking. (#5087)
         // Match priority: exact > substring > subsequence (fuzzy).
         //
-        // Query-length policy (#5335):
+        // Query-length policy (#5335) — see `matches_under_length_policy`.
         //
         // * empty query  — list everything. `contains("")` is true for every
         //   name, which is the desired behavior for a symbol picker opened
         //   before the user types.
-        // * 1 character  — **prefix** match only. Substring and subsequence both
-        //   degenerate for a single character: `name.contains(c)` and
-        //   `is_subsequence(c, name)` accept the identical set of names, and the
-        //   substring branch is evaluated first. So gating *only* the
-        //   subsequence branch on a 2-char minimum is a no-op for exactly the
-        //   case it was meant to fix — "a" still matched every name containing
-        //   an 'a'. Requiring a prefix is what actually makes a 1-char query
-        //   selective while keeping it useful.
+        // * 1 character  — **prefix** match only.
         // * 2+ characters — exact > substring > subsequence, unchanged.
-        let query_chars = query_lower.chars().count();
-        let single_char = query_chars == 1;
-        let allow_subsequence = query_chars >= 2;
+        let single_char = single_char_query(query);
+        let allow_subsequence = query.chars().count() >= 2;
         let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
         for (name_key, symbols) in search_idx.iter() {
             let score = if name_key == &query_lower {
                 3 // exact match
-            } else if single_char {
-                // Prefix-only for single-character queries (see policy above).
-                if name_key.starts_with(&query_lower) {
-                    2
-                } else {
-                    continue;
-                }
-            } else if name_key.contains(&query_lower) {
-                2 // substring match
+            } else if matches_under_length_policy(&query_lower, single_char, name_key) {
+                2 // prefix (1-char query) or substring (2+)
             } else if allow_subsequence && is_subsequence(&query_lower, name_key) {
                 1 // fuzzy subsequence match
             } else {
@@ -3832,6 +3817,7 @@ impl WorkspaceIndex {
         }
 
         let query_lower = query.to_lowercase();
+        let single_char = single_char_query(query);
         let source_backed_qualified_names = self.source_backed_qualified_names();
         let shards = self.fact_shards.read();
         let mut results = Vec::new();
@@ -3852,9 +3838,19 @@ impl WorkspaceIndex {
                 else {
                     continue;
                 };
-                if !bare_name.to_lowercase().contains(&query_lower)
-                    && !entity.canonical_name.to_lowercase().contains(&query_lower)
-                {
+                // Same query-length policy as `search_source_symbols` (#5335):
+                // `handle_workspace_symbols_v2` appends these results to the
+                // source-backed ones, so a 1-char query would otherwise still
+                // return generated members that merely *contain* the character.
+                if !matches_under_length_policy(
+                    &query_lower,
+                    single_char,
+                    &bare_name.to_lowercase(),
+                ) && !matches_under_length_policy(
+                    &query_lower,
+                    single_char,
+                    &entity.canonical_name.to_lowercase(),
+                ) {
                     continue;
                 }
                 let Some(anchor_id) = entity.anchor_id else {
@@ -11162,6 +11158,35 @@ mod entity_id_file_scoped_tests {
         );
     }
 
+    /// A single typed character whose lowercase mapping expands to multiple code
+    /// points must still take the prefix-only path.
+    ///
+    /// `"İ"` (U+0130) lowercases to `"i\u{307}"` — 2 chars. Counting the *folded*
+    /// query would classify this as a 2+ char query and hand it to
+    /// substring/subsequence matching, so `xİfoo` would come back for a query
+    /// the user typed as one character.
+    #[test]
+    fn single_char_gate_counts_chars_before_case_folding() {
+        let index = WorkspaceIndex::new();
+
+        must(index.index_file(
+            must(url::Url::parse("file:///lib/Unicode.pm")),
+            "package Unicode;\nsub \u{130}start { 1 }\nsub x\u{130}foo { 2 }\n1;\n".to_string(),
+        ));
+
+        let names: Vec<String> = index
+            .search_source_symbols("\u{130}", None)
+            .iter()
+            .map(|s| s.name.to_string())
+            .collect();
+
+        assert!(
+            !names.iter().any(|n| n == "x\u{130}foo"),
+            "1-char query 'İ' must NOT match 'xİfoo' — the char count must be taken \
+             before lowercasing (İ folds to 2 code points); got: {names:?}"
+        );
+    }
+
     #[test]
     fn search_source_symbols_keeps_same_name_from_multiple_workspace_folders() {
         let index = WorkspaceIndex::new();
@@ -12941,6 +12966,48 @@ sub bar { return $greeting; }
             text,
             "compute_key",
         );
+    }
+}
+
+/// Is the (already trimmed) query exactly one character?
+///
+/// Counted on the **original** query, before case folding. Lowercasing can
+/// expand a single character into several code points — `"İ".to_lowercase()` is
+/// `"i\u{307}"`, which counts as 2 chars — so counting the folded form would let
+/// a single typed character bypass the prefix-only branch in
+/// [`matches_under_length_policy`] and reach substring/subsequence matching.
+fn single_char_query(trimmed_query: &str) -> bool {
+    trimmed_query.chars().count() == 1
+}
+
+/// Does `haystack_lower` match `needle_lower` under the shared workspace-symbol
+/// query-length policy? (#5335)
+///
+/// A **single-character** query must match as a *prefix*; anything longer (and
+/// the empty query) matches as a *substring*.
+///
+/// Why prefix rather than "substring only": for a one-character needle,
+/// `haystack.contains(c)` and `is_subsequence(c, haystack)` accept the identical
+/// set of names — a one-char subsequence just *is* a substring. So gating only
+/// the subsequence branch on a 2-char minimum (the first attempt at #5335) was a
+/// no-op for exactly the case it targeted: typing "a" still matched every name
+/// containing an 'a'. Requiring a prefix is what makes a 1-char query selective
+/// while keeping it useful.
+///
+/// Both `needle_lower` and `haystack_lower` must already be lowercased;
+/// `single_char` must come from [`single_char_query`] on the unfolded query.
+///
+/// Every workspace-symbol search path must route through this so the policy
+/// cannot drift between them.
+fn matches_under_length_policy(
+    needle_lower: &str,
+    single_char: bool,
+    haystack_lower: &str,
+) -> bool {
+    if single_char {
+        haystack_lower.starts_with(needle_lower)
+    } else {
+        haystack_lower.contains(needle_lower)
     }
 }
 
