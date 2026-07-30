@@ -57,13 +57,22 @@ fn perl_not_found_message(searched: &[String], configured: Option<&str>) -> Stri
     match configured.filter(|path| !path.is_empty()) {
         Some(configured) => {
             // `find_perl_interpreter` reports a missing configured path as the
-            // sole searched entry (`configured path: <p>`), so echoing the list
-            // verbatim would print the same path twice. Report only entries that
-            // add something, so a longer list is still surfaced.
+            // sole searched entry (`configured path: <p>`, path trimmed), so
+            // echoing the list verbatim would print the same path twice. Drop
+            // only entries that restate the configured path and nothing else.
+            //
+            // Matched by equality, not `contains`: a configured `/usr` is a
+            // substring of a genuinely distinct `/usr/local/bin` entry, and
+            // suppressing that would lose information rather than dedupe it.
+            let trimmed = configured.trim();
+            let restated = format!("configured path: {trimmed}");
             let also: Vec<&str> = searched
                 .iter()
                 .map(String::as_str)
-                .filter(|entry| !entry.contains(configured))
+                .filter(|entry| {
+                    let entry = entry.trim();
+                    entry != restated && entry != trimmed
+                })
                 .collect();
             let also = if also.is_empty() {
                 String::new()
@@ -501,6 +510,31 @@ mod tests {
             "configured path should appear exactly once, got: {msg}"
         );
         assert!(!msg.contains("Also searched"), "nothing extra was searched, got: {msg}");
+    }
+
+    #[test]
+    fn dedup_does_not_suppress_entries_that_merely_start_with_the_configured_path() {
+        // A configured `/usr` is a substring of `/usr/local/bin`, which is a
+        // genuinely different location — a `contains` filter would eat it.
+        let msg = perl_not_found_message(
+            &["configured path: /usr".to_string(), "/usr/local/bin".to_string()],
+            Some("/usr"),
+        );
+        assert!(
+            msg.contains("Also searched: /usr/local/bin"),
+            "a distinct path that merely shares a prefix must survive, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn messages_contain_no_doubled_whitespace() {
+        // Rust's `\<newline>` continuation strips the newline and the following
+        // line's indentation, so the multi-line literals render as single
+        // spaces. Pinned because it is invisible in the source.
+        for msg in all_perl_interpreter_messages() {
+            assert!(!msg.contains("  "), "message has doubled whitespace: {msg:?}");
+            assert!(!msg.contains('\n'), "message has a newline: {msg:?}");
+        }
     }
 
     #[test]
