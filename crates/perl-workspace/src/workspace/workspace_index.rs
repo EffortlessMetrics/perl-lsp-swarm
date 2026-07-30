@@ -3768,13 +3768,20 @@ impl WorkspaceIndex {
         let mut seen: HashSet<(String, usize)> = HashSet::new();
         // Collect results with a relevance score for ranking. (#5087)
         // Match priority: exact > substring > subsequence (fuzzy).
+        //
+        // Subsequence matching is only used for queries of at least 2 characters;
+        // shorter queries produce too many false positives (e.g. "a" matches
+        // nearly every symbol name). Empty queries are handled by exact/substring
+        // matchers (Rust's `contains("")` returns true for all strings, which is
+        // the desired "list everything" behavior for empty workspace/symbol queries).
+        let allow_subsequence = query_lower.chars().count() >= 2;
         let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
         for (name_key, symbols) in search_idx.iter() {
             let score = if name_key == &query_lower {
                 3 // exact match
             } else if name_key.contains(&query_lower) {
                 2 // substring match
-            } else if is_subsequence(&query_lower, name_key) {
+            } else if allow_subsequence && is_subsequence(&query_lower, name_key) {
                 1 // fuzzy subsequence match
             } else {
                 continue;
