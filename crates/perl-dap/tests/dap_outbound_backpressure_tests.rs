@@ -37,7 +37,7 @@ fn is_drop_notice(msg: &DapMessage) -> bool {
 /// `output` events that arrive on a full queue are dropped with `Dropped`,
 /// not queued or treated as a disconnect.
 #[test]
-fn output_drop_when_queue_full() {
+fn output_drop_when_queue_full() -> Result<(), String> {
     let cap = 2;
     let (tx, _rx) = sync_channel::<DapMessage>(cap);
     let seq = Arc::new(Mutex::new(0i64));
@@ -45,29 +45,34 @@ fn output_drop_when_queue_full() {
     for i in 0..cap {
         let result =
             dispatch_event(&tx, &seq, "output", Some(json!({"output": format!("line {i}\n")})));
-        assert_eq!(result, EventDispatchResult::Sent, "slot {i} should be accepted");
+        if result != EventDispatchResult::Sent {
+            return Err(format!("slot {i} should be accepted, got {result:?}"));
+        }
     }
 
     let result = dispatch_event(&tx, &seq, "output", Some(json!({"output": "overflow\n"})));
-    assert_eq!(
-        result,
-        EventDispatchResult::Dropped,
-        "output event on a full queue must be Dropped, not Sent or Disconnected"
-    );
+    if result != EventDispatchResult::Dropped {
+        return Err(format!(
+            "output event on a full queue must be Dropped, not Sent or Disconnected; got {result:?}"
+        ));
+    }
+    Ok(())
 }
 
 /// A `stopped` lifecycle event blocks until a slot is available, then is delivered.
 /// Queue capacity = 1: fill with one output event, spawn a thread to send `stopped`
 /// (which must block), drain the output event, then assert `stopped` arrives.
 #[test]
-fn lifecycle_blocks_until_drain() {
+fn lifecycle_blocks_until_drain() -> Result<(), String> {
     let cap = 1;
     let (tx, rx) = sync_channel::<DapMessage>(cap);
     let seq = Arc::new(Mutex::new(0i64));
 
     // Fill the single slot with an output event.
     let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "filling\n"})));
-    assert_eq!(r, EventDispatchResult::Sent);
+    if r != EventDispatchResult::Sent {
+        return Err(format!("expected Sent when filling queue, got {r:?}"));
+    }
 
     // Spawn a thread: send a `stopped` event (will block because the queue is full).
     let tx2 = tx.clone();
@@ -85,30 +90,32 @@ fn lifecycle_blocks_until_drain() {
     std::thread::sleep(Duration::from_millis(20));
 
     // Drain the output event, freeing one slot.
-    let drained =
-        rx.recv_timeout(Duration::from_millis(200)).expect("output event must be drainable");
-    assert!(
-        matches!(&drained, DapMessage::Event { event, .. } if event == "output"),
-        "expected output event, got: {drained:?}"
-    );
+    let drained = rx
+        .recv_timeout(Duration::from_millis(200))
+        .map_err(|e| format!("output event must be drainable: {e}"))?;
+    if !matches!(&drained, DapMessage::Event { event, .. } if event == "output") {
+        return Err(format!("expected output event, got: {drained:?}"));
+    }
 
     // The `stopped` event should now be delivered.
     let stopped = rx
         .recv_timeout(Duration::from_millis(500))
-        .expect("stopped event must arrive after queue drains");
-    assert!(
-        matches!(&stopped, DapMessage::Event { event, .. } if event == "stopped"),
-        "expected stopped event, got: {stopped:?}"
-    );
+        .map_err(|e| format!("stopped event must arrive after queue drains: {e}"))?;
+    if !matches!(&stopped, DapMessage::Event { event, .. } if event == "stopped") {
+        return Err(format!("expected stopped event, got: {stopped:?}"));
+    }
 
-    let result = handle.join().expect("dispatch thread must not panic");
-    assert_eq!(result, EventDispatchResult::Sent, "stopped event must be delivered (Sent)");
+    let result = handle.join().map_err(|_| "dispatch thread panicked".to_string())?;
+    if result != EventDispatchResult::Sent {
+        return Err(format!("stopped event must be delivered (Sent), got {result:?}"));
+    }
+    Ok(())
 }
 
 /// Flooding the queue with many output events from a producer that outruns a slow consumer
 /// must not hang and must produce drops rather than unbounded growth.
 #[test]
-fn slow_consumer_output_flood_stays_bounded() {
+fn slow_consumer_output_flood_stays_bounded() -> Result<(), String> {
     let cap = 4;
     let (tx, _rx) = sync_channel::<DapMessage>(cap);
     let seq = Arc::new(Mutex::new(0i64));
@@ -122,40 +129,77 @@ fn slow_consumer_output_flood_stays_bounded() {
         match dispatch_event(&tx, &seq, "output", Some(json!({"output": format!("line {i}\n")}))) {
             EventDispatchResult::Sent => sent += 1,
             EventDispatchResult::Dropped => dropped += 1,
-            EventDispatchResult::Disconnected => panic!("unexpected disconnect on iteration {i}"),
+            EventDispatchResult::Disconnected => {
+                return Err(format!("unexpected disconnect on iteration {i}"));
+            }
         }
     }
 
-    assert!(
-        dropped > 0,
-        "at least one output event must be dropped when producer outruns consumer"
-    );
-    assert!(sent <= cap, "in-queue items cannot exceed channel capacity ({cap})");
-    assert_eq!(sent + dropped, total, "every event is either sent or dropped");
-    assert!(
-        output_drop_count() > initial_drops,
-        "global drop counter must advance when output events are dropped"
-    );
+    if dropped == 0 {
+        return Err(
+            "at least one output event must be dropped when producer outruns consumer".into()
+        );
+    }
+    if sent > cap {
+        return Err(format!("in-queue items cannot exceed channel capacity ({cap}), sent={sent}"));
+    }
+    if sent + dropped != total {
+        return Err(format!(
+            "every event is either sent or dropped; sent={sent} dropped={dropped} total={total}"
+        ));
+    }
+    if output_drop_count() <= initial_drops {
+        return Err("global drop counter must advance when output events are dropped".into());
+    }
+    Ok(())
 }
 
 /// Sending to a disconnected receiver returns `Disconnected` for both output
 /// and lifecycle events.
 #[test]
-fn disconnected_receiver_returns_disconnected() {
+fn disconnected_receiver_returns_disconnected() -> Result<(), String> {
     let (tx, rx) = sync_channel::<DapMessage>(4);
     let seq = Arc::new(Mutex::new(0i64));
 
     drop(rx); // disconnect the receiver
 
     let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "x\n"})));
-    assert_eq!(r, EventDispatchResult::Disconnected, "output must be Disconnected when rx dropped");
+    if r != EventDispatchResult::Disconnected {
+        return Err(format!("output must be Disconnected when rx dropped, got {r:?}"));
+    }
 
     let r2 = dispatch_event(&tx, &seq, "stopped", Some(json!({"reason": "end"})));
-    assert_eq!(
-        r2,
-        EventDispatchResult::Disconnected,
-        "stopped must be Disconnected when rx dropped"
+    if r2 != EventDispatchResult::Disconnected {
+        return Err(format!("stopped must be Disconnected when rx dropped, got {r2:?}"));
+    }
+    Ok(())
+}
+
+/// Nonblocking dispatch must drop a lifecycle event on a full queue instead of blocking.
+#[test]
+fn nonblocking_lifecycle_drops_when_full() -> Result<(), String> {
+    use perl_dap::debug_adapter::sync_utils::dispatch_event_nonblocking;
+
+    let (tx, _rx) = sync_channel::<DapMessage>(1);
+    let seq = Arc::new(Mutex::new(0i64));
+
+    let fill = dispatch_event(&tx, &seq, "output", Some(json!({"output": "fill\n"})));
+    if fill != EventDispatchResult::Sent {
+        return Err(format!("expected Sent to fill queue, got {fill:?}"));
+    }
+
+    let result = dispatch_event_nonblocking(
+        &tx,
+        &seq,
+        "terminated",
+        Some(json!({"reason": "debuggee_timeout"})),
     );
+    if result != EventDispatchResult::Dropped {
+        return Err(format!(
+            "nonblocking terminated on full queue must be Dropped, got {result:?}"
+        ));
+    }
+    Ok(())
 }
 
 /// Real-thread ordering regression test (PR #5318, defect 1).

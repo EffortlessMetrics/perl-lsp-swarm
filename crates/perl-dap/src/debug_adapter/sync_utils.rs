@@ -39,19 +39,26 @@ static OUTPUT_DROP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// wire.
 static LAST_NOTIFIED_DROP_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// Warn on the first drop and every [`OUTPUT_DROP_WARN_INTERVAL`] thereafter so a
+/// chatty debuggee cannot turn bounded-queue drops into unbounded log I/O.
+const OUTPUT_DROP_WARN_INTERVAL: u64 = 64;
+
 /// Returns the current count of `output` events dropped due to a full outbound queue.
 pub fn output_drop_count() -> u64 {
     OUTPUT_DROP_COUNTER.load(Ordering::Relaxed)
 }
 
+fn should_warn_on_drop(count: u64) -> bool {
+    count == 1 || count.is_multiple_of(OUTPUT_DROP_WARN_INTERVAL)
+}
+
 /// Dispatch a DAP event through the bounded outbound channel.
 ///
 /// Policy:
-/// - `output` events use `try_send`. On `Full` the event is dropped with a warning and the
-///   global [`OUTPUT_DROP_COUNTER`] is incremented. This prevents a chatty debuggee from
-///   growing the queue without bound when the client is slow. A best-effort synthetic
-///   `output` notice is also attempted (see [`try_emit_drop_notice`]) so the drop is
-///   user-visible in the debug console, not just in the adapter's own log.
+/// - `output` events use `try_send`. On `Full` the event is dropped, the global
+///   [`OUTPUT_DROP_COUNTER`] is incremented, and a rate-limited warning is emitted.
+///   A best-effort synthetic `output` notice is also attempted (see
+///   [`try_emit_drop_notice`]) so the drop is user-visible in the debug console.
 /// - All other events (lifecycle: `stopped`, `terminated`, `continued`, `initialized`, …) use
 ///   blocking `send`. These are rare and must be delivered; the call applies backpressure to
 ///   the producer until the writer thread drains a slot.
@@ -59,6 +66,9 @@ pub fn output_drop_count() -> u64 {
 /// The `seq` guard is held for the *entire* dispatch, including the `try_send`/`send` call,
 /// so that seq-assignment and enqueue are atomic: two threads racing to dispatch events can
 /// never have the later-assigned `seq` overtake the earlier one in the outbound channel.
+///
+/// For paths that must not block on a stalled client (e.g. optional cleanup helpers), prefer
+/// [`dispatch_event_nonblocking`] so cleanup cannot hang behind a full queue.
 pub fn dispatch_event(
     sender: &SyncSender<DapMessage>,
     seq: &Mutex<i64>,
@@ -74,7 +84,12 @@ pub fn dispatch_event(
             Ok(()) => EventDispatchResult::Sent,
             Err(TrySendError::Full(_)) => {
                 let dropped_total = OUTPUT_DROP_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
-                tracing::warn!(event, "DAP outbound queue full; dropping output event");
+                if should_warn_on_drop(dropped_total) {
+                    tracing::warn!(
+                        dropped = dropped_total,
+                        "DAP outbound queue full; dropping output events"
+                    );
+                }
                 // Deliberately scoped to *this* channel's own full-queue moment: only a
                 // call that has already independently proven this exact channel full for a
                 // real event may attempt the notice. That keeps the (process-wide) drop
@@ -154,6 +169,38 @@ fn try_emit_drop_notice(
     }
     // Queue stayed full for every attempt: skip silently. Do not retry beyond the fixed
     // bound above, do not consume a seq number, do not recurse into the drop-counting path.
+}
+
+/// Non-blocking dispatch for cleanup-critical events.
+///
+/// Uses `try_send` for every event kind. On `Full`, increments the drop counter and
+/// returns [`EventDispatchResult::Dropped`] so the caller can finish process kill
+/// without waiting for the DAP client to drain the queue. Holds `seq` for the entire
+/// try_send so seq/enqueue stay atomic (same invariant as [`dispatch_event`]).
+pub fn dispatch_event_nonblocking(
+    sender: &SyncSender<DapMessage>,
+    seq: &Mutex<i64>,
+    event: &str,
+    body: Option<Value>,
+) -> EventDispatchResult {
+    let mut seq_lock = lock_or_recover(seq, "dispatch_event_nonblocking.seq");
+    *seq_lock += 1;
+    let msg = DapMessage::Event { seq: *seq_lock, event: event.to_string(), body };
+    match sender.try_send(msg) {
+        Ok(()) => EventDispatchResult::Sent,
+        Err(TrySendError::Full(_)) => {
+            let count = OUTPUT_DROP_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
+            if should_warn_on_drop(count) {
+                tracing::warn!(
+                    event,
+                    dropped = count,
+                    "DAP outbound queue full; dropping event (nonblocking path)"
+                );
+            }
+            EventDispatchResult::Dropped
+        }
+        Err(TrySendError::Disconnected(_)) => EventDispatchResult::Disconnected,
+    }
 }
 
 /// Send a DAP event through the bounded event channel with poison-safe sequence numbering.

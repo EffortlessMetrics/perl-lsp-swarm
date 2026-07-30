@@ -1089,10 +1089,11 @@ impl DebugAdapter {
     /// session is still alive.  If the process has already exited (normal
     /// termination, client disconnect, or reader-thread EOF cleanup), the
     /// watchdog exits silently.  If the process is still running, the watchdog
-    /// emits a `terminated` event with `reason: "debuggee_timeout"` and kills
+    /// emits a `terminated` event with `reason: "debuggee_timeout"` after killing
     /// the process.  The output reader thread will observe EOF and handle
     /// session-state cleanup; the `TerminationState.emitted` flag ensures only
-    /// one `terminated` event reaches the client.
+    /// one `terminated` event reaches the client.  Kill runs before event
+    /// delivery so a stalled DAP client cannot leave the debuggee alive.
     ///
     /// The watchdog is generation-aware: if the session was replaced (e.g. via
     /// restart) before the timeout fires, the watchdog exits without acting.
@@ -1155,21 +1156,9 @@ impl DebugAdapter {
                 "Debuggee watchdog: killing hung perl -d process after wall-clock timeout"
             );
 
-            // Emit the terminated event BEFORE killing so the client receives
-            // the timeout reason.  The output reader's subsequent EOF-driven
-            // terminated event will be suppressed by the emitted flag.
-            if let Some(ref sender) = sender {
-                emit_terminated_event(
-                    sender,
-                    &seq,
-                    &termination_state,
-                    Some(session_generation),
-                    Some(json!({"reason": "debuggee_timeout"})),
-                );
-            }
-
-            // Kill the debuggee process.  The output reader will see EOF and
-            // clean up session state via clear_active_session_state_for_generation.
+            // Kill BEFORE emitting terminated. Blocking event delivery must not
+            // prevent cleanup when the DAP client has stalled and the outbound
+            // queue is full (#5149 / review P1).
             let killed = {
                 let Ok(mut guard) = session.lock() else {
                     return;
@@ -1183,6 +1172,19 @@ impl DebugAdapter {
 
             if !killed {
                 tracing::error!("Debuggee watchdog: failed to kill hung debuggee process");
+            }
+
+            // Notify the client after kill. Blocking send is acceptable here: the
+            // debuggee is already dead, and the emitted flag still suppresses the
+            // output reader's EOF-driven duplicate terminated event.
+            if let Some(ref sender) = sender {
+                emit_terminated_event(
+                    sender,
+                    &seq,
+                    &termination_state,
+                    Some(session_generation),
+                    Some(json!({"reason": "debuggee_timeout"})),
+                );
             }
         });
     }

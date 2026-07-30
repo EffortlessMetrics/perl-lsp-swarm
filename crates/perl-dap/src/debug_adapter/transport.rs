@@ -243,9 +243,14 @@ impl DebugAdapter {
                 let response = self.dispatch_request(seq, &command, arguments);
                 let payload = serde_json::to_vec(&response).map_err(io::Error::other)?;
 
-                let mut writer = lock_or_recover(&shared_writer, "response_writer");
-                write_framed_payload(&mut *writer, &payload)?;
-                writer.flush()?;
+                // Drop the response-writer guard before any event dispatch. A blocking
+                // `initialized` send while still holding this mutex deadlocks against the
+                // event consumer, which needs the same writer to drain a full queue.
+                {
+                    let mut writer = lock_or_recover(&shared_writer, "response_writer");
+                    write_framed_payload(&mut *writer, &payload)?;
+                    writer.flush()?;
+                }
 
                 // DAP requires this event only after initialize response is sent.
                 if command == "initialize"
