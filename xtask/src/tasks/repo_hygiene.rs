@@ -277,7 +277,8 @@ pub fn is_typos_path(path: &str) -> bool {
     if path.starts_with("target/") || path.ends_with("/Cargo.lock") || path == "Cargo.lock" {
         return false;
     }
-    let lower = path.to_ascii_lowercase();
+    let basename =
+        Path::new(path).file_name().and_then(|name| name.to_str()).map(str::to_ascii_lowercase);
     if is_toml_path(path)
         || [
             "readme",
@@ -291,7 +292,11 @@ pub fn is_typos_path(path: &str) -> bool {
             ".editorconfig",
         ]
         .iter()
-        .any(|name| lower == *name || lower.starts_with(&format!("{name}.")))
+        .any(|name| {
+            basename.as_deref().is_some_and(|basename| {
+                basename == *name || basename.starts_with(&format!("{name}."))
+            })
+        })
     {
         return true;
     }
@@ -465,7 +470,14 @@ mod tests {
 
     #[test]
     fn classifies_project_text_and_source_for_typos() -> Result<()> {
-        for path in ["README.md", "crates/perl-parser/src/lib.rs", ".github/workflows/ci.yml"] {
+        for path in [
+            "README.md",
+            "crates/perl-parser/src/lib.rs",
+            ".github/workflows/ci.yml",
+            ".docker/perl-lsp/Dockerfile",
+            "tree-sitter-perl/Makefile",
+            "tree-sitter-perl/LICENSE",
+        ] {
             ensure!(is_typos_path(path), "expected {path} to be checked");
         }
         ensure!(!is_typos_path("Cargo.lock"));

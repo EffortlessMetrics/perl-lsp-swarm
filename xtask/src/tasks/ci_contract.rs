@@ -382,7 +382,9 @@ fn join_output(
 
 fn result_for_exit(check_id: &str, code: Option<i32>, detail: &str) -> ContractResultClass {
     if check_id == "repo_hygiene" {
-        return if detail.contains("repo-hygiene status is PolicyFinding") {
+        return if detail.contains("repo hygiene: NotApplicable") {
+            ContractResultClass::NotApplicable
+        } else if detail.contains("repo-hygiene status is PolicyFinding") {
             ContractResultClass::PolicyFinding
         } else if code == Some(0) {
             ContractResultClass::Success
@@ -749,6 +751,14 @@ mod tests {
             result_for_exit("repo_hygiene", Some(1), "repo-hygiene status is PolicyFinding")
                 == ContractResultClass::PolicyFinding,
             "repo-hygiene policy findings must remain policy findings"
+        );
+        ensure!(
+            result_for_exit(
+                "repo_hygiene",
+                Some(0),
+                "repo hygiene: NotApplicable (no changed TOML files)"
+            ) == ContractResultClass::NotApplicable,
+            "repo-hygiene empty scopes must remain not-applicable"
         );
         Ok(())
     }
