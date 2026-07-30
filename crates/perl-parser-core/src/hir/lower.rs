@@ -17,16 +17,16 @@ use super::model::{
     CompileEnvironmentBoundary, CompileEnvironmentBoundaryKind, CompilePhase, CompilePhaseBlock,
     CompileProvenance, ControlTransfer, ControlTransferKind, DeferExpr, DerefAggregateKind,
     DerefExpr, DerefOperandKind, DynamicBoundary, DynamicBoundaryKind, ExportDeclaration,
-    ExportDeclarationKind, GlobSlot, GlobSlotKind, GlobSlotSource, HirBindingId, HirFile, HirId,
-    HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact, IncRootKind, IndirectCallExpr,
-    InheritanceSource, LiteralExpr, LiteralKind, LoopKind, LoopShell, MatchExpr, MethodCallExpr,
-    MethodDecl, ModuleRequest, ModuleRequestKind, ModuleResolutionStatus, PackageDecl,
-    PackageInheritanceEdge, PackageStash, PragmaArgumentKind, PragmaEffect, PragmaStateFact,
-    PrototypeFact, PrototypeTable, RecoveryConfidence, RegexExpr, RegexTargetKind, RequireDecl,
-    ScopeFrame, ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary,
-    StashDynamicBoundaryKind, StashGraph, StashProvenance, StatementModifierKind,
-    StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr, TransliterationExpr, TryExpr,
-    UseDecl, VariableBinding, VariableDecl, HIR_BODY_MODEL_VERSION,
+    ExportDeclarationKind, GlobSlot, GlobSlotKind, GlobSlotSource, HIR_BODY_MODEL_VERSION,
+    HirBindingId, HirFile, HirId, HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact,
+    IncRootKind, IndirectCallExpr, InheritanceSource, LiteralExpr, LiteralKind, LoopKind,
+    LoopShell, MatchExpr, MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind,
+    ModuleResolutionStatus, PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind,
+    PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable, RecoveryConfidence, RegexExpr,
+    RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence,
+    StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
+    StatementModifierKind, StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr,
+    TransliterationExpr, TryExpr, UseDecl, VariableBinding, VariableDecl,
 };
 
 /// Lower a parser AST into first-slice HIR items plus canonical body arenas.
@@ -2340,21 +2340,13 @@ fn static_export_tag_name_from_node(node: &Node) -> Option<String> {
 
 fn clean_export_symbol(value: &str) -> Option<String> {
     let cleaned = value.trim().trim_matches(',').trim_matches('"').trim_matches('\'');
-    if is_export_symbol_name(cleaned) {
-        Some(cleaned.to_string())
-    } else {
-        None
-    }
+    if is_export_symbol_name(cleaned) { Some(cleaned.to_string()) } else { None }
 }
 
 fn clean_export_tag(value: &str) -> Option<String> {
     let cleaned =
         value.trim().trim_matches(',').trim_matches('"').trim_matches('\'').trim_start_matches(':');
-    if is_bareword_like(cleaned) {
-        Some(cleaned.to_string())
-    } else {
-        None
-    }
+    if is_bareword_like(cleaned) { Some(cleaned.to_string()) } else { None }
 }
 
 fn is_export_symbol_name(value: &str) -> bool {
@@ -2479,11 +2471,7 @@ fn static_pragma_args(pragma: &str, args: &[String]) -> Option<(PragmaArgumentKi
         }
     }
 
-    if normalized.is_empty() {
-        None
-    } else {
-        Some((PragmaArgumentKind::Categories, normalized))
-    }
+    if normalized.is_empty() { None } else { Some((PragmaArgumentKind::Categories, normalized)) }
 }
 
 fn static_pragma_arg_items(arg: &str) -> Option<Vec<String>> {
@@ -2502,11 +2490,7 @@ fn static_pragma_arg_items(arg: &str) -> Option<Vec<String>> {
     };
 
     let items = body.split_whitespace().map(clean_static_pragma_arg).collect::<Option<Vec<_>>>()?;
-    if items.is_empty() {
-        None
-    } else {
-        Some(items)
-    }
+    if items.is_empty() { None } else { Some(items) }
 }
 
 fn clean_static_pragma_arg(arg: &str) -> Option<String> {
