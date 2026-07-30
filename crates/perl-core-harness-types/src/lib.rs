@@ -900,8 +900,10 @@ pub struct CurrentAuthorityIndex {
 #[serde(rename_all = "snake_case")]
 pub enum CompatibilityRailAvailability {
     Available,
+    /// The rail has evidence, but only for a declared subset of its contract.
     Partial,
     NotAvailable,
+    /// Evidence exists, but its freshness contract prevents current use.
     Stale,
 }
 

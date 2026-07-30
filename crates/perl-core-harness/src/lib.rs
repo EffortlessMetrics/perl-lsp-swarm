@@ -1142,6 +1142,8 @@ pub fn load_compatibility_state(
     })
 }
 
+const PARSE_BASELINE_SCHEMA_VERSION: &str = "not_available";
+
 fn load_compatibility_series(
     input: &CompatibilitySeriesInput,
     repository_commit: &str,
@@ -1205,12 +1207,12 @@ fn load_compatibility_series(
                 .join("\n")
         );
     }
-    let accepted_path = input.accepted_baseline.as_ref().ok_or_else(|| {
-        color_eyre::eyre::eyre!(
+    let Some(accepted_path) = input.accepted_baseline.as_ref() else {
+        bail!(
             "compatibility series {} must identify an accepted baseline separately from its current observation",
             series.series_id
-        )
-    })?;
+        );
+    };
     let accepted_baseline = read_compile_baseline_v2(accepted_path)?;
     validate_accepted_ratchet_identity(&accepted_baseline, &series)?;
     if let Some(index) = &authority {
@@ -1269,7 +1271,7 @@ fn load_compatibility_series(
         measurement_sha: bundle.index.lineage.measurement_sha.clone(),
         parse: compatibility_run_state(
             &parse_report,
-            "not_available",
+            PARSE_BASELINE_SCHEMA_VERSION,
             &bundle.index.bundle_id,
             parse_clusters.clusters.len(),
         ),
@@ -1325,7 +1327,7 @@ fn load_compatibility_series(
             requires_acceptance,
         },
         accepted_ratchet,
-        parse: compatibility_run_state(&parse_report, "not_available", &bundle.index.bundle_id, parse_clusters.clusters.len()),
+        parse: compatibility_run_state(&parse_report, PARSE_BASELINE_SCHEMA_VERSION, &bundle.index.bundle_id, parse_clusters.clusters.len()),
         compile: compatibility_run_state(
             &compile_report,
             &compile_baseline.schema_version,
