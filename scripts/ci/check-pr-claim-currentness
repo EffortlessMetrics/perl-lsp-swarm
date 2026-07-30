@@ -17,7 +17,7 @@ sys.path.insert(0, str(REVIEWS_DIR))
 
 from claim_digest import claim_digest, normalize_pr_body  # noqa: E402
 
-MARKER = re.compile(r"<!--\s*review-run:v1\s+(\{.*?\})\s*-->", re.DOTALL)
+MARKER_START = re.compile(r"<!--\s*review-run:v1\b")
 TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 REQUIRED_RECEIPT_FIELDS = {"v", "kind", "head", "reviewer", "status"}
 ALLOWED_RECEIPT_FIELDS = REQUIRED_RECEIPT_FIELDS | {"claim_digest"}
@@ -77,6 +77,14 @@ def _fixture_pr() -> tuple[str, str, list[dict[str, Any]]] | None:
     )
 
 
+def _read_pr_snapshot(pr: str, repo: str) -> tuple[str, str]:
+    raw = _run(["gh", "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body"])
+    document = json.loads(raw)
+    if not isinstance(document, dict) or not document.get("headRefOid"):
+        raise RuntimeError("GitHub did not return a complete PR head/body snapshot")
+    return str(document["headRefOid"]), normalize_pr_body(document.get("body"))
+
+
 def _live_pr(pr: str, repo: str | None) -> tuple[str, str, list[dict[str, Any]]]:
     fixture = _fixture_pr()
     if fixture is not None:
@@ -86,17 +94,18 @@ def _live_pr(pr: str, repo: str | None) -> tuple[str, str, list[dict[str, Any]]]
         repo = _run(
             ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]
         ).strip()
-    raw = _run(["gh", "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body"])
-    document = json.loads(raw)
+
+    first_head, first_body = _read_pr_snapshot(pr, repo)
     comments_raw = _run(
         ["gh", "api", "--paginate", f"repos/{repo}/issues/{pr}/comments?per_page=100"]
     )
     comments = _flatten_pages(_decode_json_stream(comments_raw))
-    return (
-        str(document["headRefOid"]),
-        normalize_pr_body(document.get("body")),
-        comments,
-    )
+    second_head, second_body = _read_pr_snapshot(pr, repo)
+    if first_head != second_head or first_body != second_body:
+        raise RuntimeError(
+            "PR head or body changed while review comments were being loaded; retry against one fixed snapshot"
+        )
+    return second_head, second_body, comments
 
 
 def _author_metadata(comment: dict[str, Any]) -> tuple[str, str]:
@@ -132,6 +141,10 @@ def _valid_review_marker(value: dict[str, Any]) -> bool:
     return "claim_digest" not in value or isinstance(value.get("claim_digest"), str)
 
 
+def _count_invalid(association: str) -> tuple[int, int]:
+    return (1, 0) if association in TRUSTED_ASSOCIATIONS else (0, 1)
+
+
 def _markers(
     comments: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], int, int]:
@@ -141,20 +154,25 @@ def _markers(
     for comment in comments:
         login, association = _author_metadata(comment)
         body = normalize_pr_body(comment.get("body"))
-        for match in MARKER.finditer(body):
+        for start in MARKER_START.finditer(body):
+            end = body.find("-->", start.end())
+            if end < 0:
+                trusted, untrusted = _count_invalid(association)
+                invalid_trusted += trusted
+                invalid_untrusted += untrusted
+                break
+            payload = body[start.end() : end].strip()
             try:
-                value = json.loads(match.group(1))
+                value = json.loads(payload)
             except json.JSONDecodeError:
-                if association in TRUSTED_ASSOCIATIONS:
-                    invalid_trusted += 1
-                else:
-                    invalid_untrusted += 1
+                trusted, untrusted = _count_invalid(association)
+                invalid_trusted += trusted
+                invalid_untrusted += untrusted
                 continue
             if not isinstance(value, dict) or not _valid_review_marker(value):
-                if association in TRUSTED_ASSOCIATIONS:
-                    invalid_trusted += 1
-                else:
-                    invalid_untrusted += 1
+                trusted, untrusted = _count_invalid(association)
+                invalid_trusted += trusted
+                invalid_untrusted += untrusted
                 continue
             records.append(
                 {
