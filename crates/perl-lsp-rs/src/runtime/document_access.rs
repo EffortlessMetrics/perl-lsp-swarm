@@ -114,6 +114,38 @@ impl LspServer {
         }
     }
 
+    /// Whether any edited open document lacks a current workspace-index snapshot.
+    ///
+    /// A cross-file provider can query an unchanged caller while the definition
+    /// file is still waiting for its asynchronous index update. Checking only
+    /// the caller's URI therefore does not establish that the workspace snapshot
+    /// is safe for cross-file navigation. Generation zero is the intentional
+    /// `didOpen` baseline and is not considered stale here.
+    #[cfg(feature = "workspace")]
+    pub(crate) fn workspace_index_stale_for_any_open_document(&self) -> bool {
+        let Some(coordinator) = self.coordinator() else {
+            return false;
+        };
+
+        let document_generations = {
+            let documents = self.documents.lock();
+            documents
+                .iter()
+                .filter_map(|(uri, document)| {
+                    let generation = document.current_generation();
+                    (generation > 0).then(|| (uri.clone(), generation))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        document_generations.into_iter().any(|(uri, generation)| {
+            match coordinator.index().indexed_generation(&uri) {
+                Some(indexed_generation) => indexed_generation < generation,
+                None => true,
+            }
+        })
+    }
+
     /// Offset to position conversion using cached line starts for O(log n) performance
     #[inline]
     pub(crate) fn offset_to_pos16(&self, doc: &DocumentState, offset: usize) -> (u32, u32) {
@@ -298,6 +330,90 @@ mod tests {
             "document_generation == 0 must never be reported as stale"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_index_stale_for_any_open_document_detects_stale_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let caller_uri = "file:///workspace/caller.pl";
+        let target_uri = "file:///workspace/target.pl";
+        let target_v1 = "package Target;\nsub old_target {}\n";
+
+        server.test_apply_did_open(caller_uri, "Target::old_target();\n", 1)?;
+        server.test_apply_did_open(target_uri, target_v1, 1)?;
+
+        let coordinator = server
+            .index_coordinator
+            .as_ref()
+            .ok_or("test server must have an index coordinator")?;
+        coordinator
+            .index()
+            .index_file_with_generation(url::Url::parse(target_uri)?, target_v1.to_string(), 0)
+            .map_err(std::io::Error::other)?;
+
+        server
+            .test_replace_document_without_index(
+                target_uri,
+                "package Target;\nsub new_target {}\n",
+                2,
+            )
+            .map_err(std::io::Error::other)?;
+
+        assert!(
+            !server.workspace_index_stale_for_document(caller_uri),
+            "the unchanged caller must not be reported stale by the per-document helper"
+        );
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "an edited definition target must block cross-file index navigation"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_index_stale_for_any_open_document_is_false_when_all_snapshots_are_current()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let target_uri = "file:///workspace/current-target.pl";
+        let target_text = "package Target;\nsub current_target {}\n";
+
+        server.test_apply_did_open(target_uri, target_text, 1)?;
+        server
+            .test_replace_document_without_index(target_uri, target_text, 2)
+            .map_err(std::io::Error::other)?;
+
+        let coordinator = server
+            .index_coordinator
+            .as_ref()
+            .ok_or("test server must have an index coordinator")?;
+        coordinator
+            .index()
+            .index_file_with_generation(url::Url::parse(target_uri)?, target_text.to_string(), 1)
+            .map_err(std::io::Error::other)?;
+
+        assert!(
+            !server.workspace_index_stale_for_any_open_document(),
+            "a current indexed snapshot must not block navigation"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_index_stale_for_any_open_document_is_false_without_coordinator()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut server = LspServer::new();
+        let uri = "file:///workspace/no-cross-file-index.pl";
+        server.test_apply_did_open(uri, "my $value = 1;\n", 1)?;
+        server
+            .test_replace_document_without_index(uri, "my $value = 2;\n", 2)
+            .map_err(std::io::Error::other)?;
+        server.index_coordinator = None;
+
+        assert!(!server.workspace_index_stale_for_any_open_document());
         Ok(())
     }
 }

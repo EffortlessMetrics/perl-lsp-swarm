@@ -1145,7 +1145,11 @@ impl LspServer {
             let req_version =
                 params["textDocument"]["version"].as_i64().and_then(|n| i32::try_from(n).ok());
             self.ensure_latest(uri, req_version)?;
-            let workspace_index_stale_for_document = self.workspace_index_stale_for_document(uri);
+            #[cfg(feature = "workspace")]
+            let workspace_index_stale_for_open_documents =
+                self.workspace_index_stale_for_any_open_document();
+            #[cfg(not(feature = "workspace"))]
+            let workspace_index_stale_for_open_documents = false;
 
             // First, extract module reference info while holding the document lock briefly
             // We need to release the lock before calling resolve_module_to_path to avoid deadlock
@@ -1317,7 +1321,7 @@ impl LspServer {
                     }
                     EarlyDefinitionTarget::FrameworkModule(module_ref) => {
                         #[cfg(feature = "workspace")]
-                        if !workspace_index_stale_for_document
+                        if !workspace_index_stale_for_open_documents
                             && let Some(coordinator) = self.coordinator()
                             && let Some(def_location) =
                                 module_ref.definition_location(coordinator.index())
@@ -1416,7 +1420,7 @@ impl LspServer {
                 }
 
                 #[cfg(feature = "workspace")]
-                if !workspace_index_stale_for_document {
+                if !workspace_index_stale_for_open_documents {
                     let parsed = doc.current_parsed();
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                         if let Some(coordinator) = self.coordinator() {
@@ -1658,7 +1662,7 @@ impl LspServer {
                     let offset = self.pos16_to_offset(doc, line, character);
 
                     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                    if !workspace_index_stale_for_document {
+                    if !workspace_index_stale_for_open_documents {
                         let cursor_on_arrow_method = cursor_in_regex_capture(
                             get_arrow_method_regex()?,
                             &text_around,
@@ -1747,7 +1751,7 @@ impl LspServer {
 
                     // Try workspace index for cross-file definitions using routing policy
                     #[cfg(feature = "workspace")]
-                    if !workspace_index_stale_for_document {
+                    if !workspace_index_stale_for_open_documents {
                         if let Some(coordinator) = self.coordinator() {
                             let workspace_index = coordinator.index();
                             // Use symbol_at_cursor to get the symbol key
