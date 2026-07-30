@@ -12,17 +12,21 @@ use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness_types::{
     BOUNDARY_RETIREMENT_SCHEMA_VERSION, BaselineComparison, BaselineViolation,
     BaselineViolationKind, BoundaryRetirement, COMPILE_BASELINE_SCHEMA_VERSION,
-    COMPILE_BASELINE_V2_SCHEMA_VERSION, CURRENT_AUTHORITY_INDEX_SCHEMA_VERSION,
-    CompatibilityTransition, CompileBaseline, CompileBaselineV2, CurrentAuthorityEntry,
-    CurrentAuthorityIndex, CurrentAuthorityStatus, DISCOVERY_SCHEMA_VERSION, DiscoveredTest,
-    DiscoveryReport, FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION, FAILURE_CLUSTER_SCHEMA_VERSION,
-    FailureCluster, FailureClusterHistory, FailureClusterHistoryEntry,
-    FailureClusterHistoryPresence, FailureClusterHistoryStatus, FailureClusterIdentityQuality,
-    FailureClusterReport, FailureClusterSignature, FailureDebtCandidate, GAP_MAP_SCHEMA_VERSION,
-    GapMap, LANDED_LINEAGE_SCHEMA_VERSION, LandedLineage, ObservedSemanticBoundary,
-    PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus, RUN_REPORT_SCHEMA_VERSION, RunFailure,
-    RunFileResult, RunReport, RunSummary, RunnerRecord, RunnerStatus,
-    SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION, SERIES_MANIFEST_NORMALIZATION_VERSION,
+    COMPILE_BASELINE_V2_SCHEMA_VERSION, COMPILER_COMPATIBILITY_SCHEMA_VERSION,
+    CURRENT_AUTHORITY_INDEX_SCHEMA_VERSION, CompatibilityAcceptedRatchet,
+    CompatibilityClusterState, CompatibilityDebtState, CompatibilityObservation,
+    CompatibilityRailAvailability, CompatibilityRailState, CompatibilityRunState,
+    CompatibilitySeriesIdentity, CompatibilityTransition, CompatibilityTransitionCandidate,
+    CompileBaseline, CompileBaselineV2, CompilerCompatibilitySeries, CompilerCompatibilityState,
+    CurrentAuthorityEntry, CurrentAuthorityIndex, CurrentAuthorityStatus, DISCOVERY_SCHEMA_VERSION,
+    DiscoveredTest, DiscoveryReport, FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
+    FAILURE_CLUSTER_SCHEMA_VERSION, FailureCluster, FailureClusterHistory,
+    FailureClusterHistoryEntry, FailureClusterHistoryPresence, FailureClusterHistoryStatus,
+    FailureClusterIdentityQuality, FailureClusterReport, FailureClusterSignature,
+    FailureDebtCandidate, GAP_MAP_SCHEMA_VERSION, GapMap, LANDED_LINEAGE_SCHEMA_VERSION,
+    LandedLineage, ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus,
+    RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunSummary, RunnerRecord,
+    RunnerStatus, SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION, SERIES_MANIFEST_NORMALIZATION_VERSION,
     SERIES_MANIFEST_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION, SemanticBoundaryConfidence,
     SemanticBoundaryDisposition, SemanticBoundaryLockScope, SemanticBoundaryRegistry,
     SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
@@ -256,6 +260,30 @@ pub struct TriageConfig {
     pub history: Option<PathBuf>,
     pub write_history: bool,
     pub check_history: bool,
+}
+
+/// Input receipts for one independently identified compatibility series.
+#[derive(Debug, Clone)]
+pub struct CompatibilitySeriesInput {
+    pub series_manifest: PathBuf,
+    pub parse_report: PathBuf,
+    pub compile_report: PathBuf,
+    pub compile_baseline: PathBuf,
+    /// Accepted ratchet to compare with the current observation.
+    pub accepted_baseline: Option<PathBuf>,
+    pub evidence_bundle: PathBuf,
+    pub boundary_registry: Option<PathBuf>,
+    pub cluster_history: Option<PathBuf>,
+    pub execute_report: Option<PathBuf>,
+    /// Optional #5234 current-authority admission proof.
+    pub current_authority: Option<CurrentAuthorityConfig>,
+}
+
+/// Configuration for loading typed compiler compatibility state.
+#[derive(Debug, Clone)]
+pub struct CompatibilityLoadConfig {
+    pub inputs: Vec<CompatibilitySeriesInput>,
+    pub repository_commit: String,
 }
 
 /// Configuration for `perl-core-harness smoke`.
@@ -1080,6 +1108,598 @@ fn normalize_windows_extended_path(path: &Path) -> PathBuf {
 fn sha256_digest_bytes(bytes: &[u8]) -> String {
     format!("sha256:{}", hex_lower(&Sha256::digest(bytes)))
 }
+
+/// Load one or more independently identified compatibility series from typed
+/// harness receipts. This is the input contract for generated compatibility
+/// views; it does not render or mutate any status document.
+pub fn load_compatibility_state(
+    config: CompatibilityLoadConfig,
+) -> Result<CompilerCompatibilityState> {
+    if config.inputs.is_empty() {
+        bail!("compiler compatibility requires at least one series input");
+    }
+    if config.repository_commit.trim().is_empty() {
+        bail!("compiler compatibility requires a repository commit");
+    }
+    let mut series = config
+        .inputs
+        .iter()
+        .map(|input| load_compatibility_series(input, &config.repository_commit))
+        .collect::<Result<Vec<_>>>()?;
+    series.sort_by(|left, right| left.identity.series_id.cmp(&right.identity.series_id));
+    for pair in series.windows(2) {
+        if pair[0].identity.series_id == pair[1].identity.series_id {
+            bail!(
+                "compiler compatibility contains duplicate series {}",
+                pair[0].identity.series_id
+            );
+        }
+    }
+    Ok(CompilerCompatibilityState {
+        schema_version: COMPILER_COMPATIBILITY_SCHEMA_VERSION.into(),
+        repository_commit: config.repository_commit,
+        series,
+    })
+}
+
+const PARSE_BASELINE_SCHEMA_VERSION: &str = "not_available";
+
+fn load_compatibility_series(
+    input: &CompatibilitySeriesInput,
+    repository_commit: &str,
+) -> Result<CompilerCompatibilitySeries> {
+    let authority = input
+        .current_authority
+        .as_ref()
+        .map(|config| validate_current_authority(config.clone()))
+        .transpose()?;
+    let series = read_series_manifest(&input.series_manifest)?;
+    validate_series_manifest(&series)?;
+    if series.repository_commit != repository_commit {
+        bail!("series {} has a different repository subject", series.series_id);
+    }
+    let bundle = read_boundary_bundle(&input.evidence_bundle)?;
+    if bundle.index.series_id != series.series_id
+        || bundle.index.manifest_hash != series.manifest_hash
+        || bundle.index.repository_commit != series.repository_commit
+        || bundle.index.profile != series.profile
+        || bundle.index.runner != series.runner
+        || bundle.index.perl_resolved_ref != series.perl_resolved_ref
+        || bundle.index.lineage.measurement_sha != series.repository_commit
+    {
+        bail!("evidence bundle identity does not match series {}", series.series_id);
+    }
+    let declared_compile = bundle_artifact_path(&bundle, "compile_report")?;
+    if fs::canonicalize(&declared_compile).ok() != fs::canonicalize(&input.compile_report).ok() {
+        bail!("compile report input is not the bundle-declared compile report");
+    }
+    let parse_report = read_run_report(&input.parse_report)?;
+    let compile_report = read_run_report(&input.compile_report)?;
+    validate_report_for_compatibility(&parse_report, &series, HarnessMode::Parse)?;
+    validate_report_for_compatibility(&compile_report, &series, HarnessMode::Compile)?;
+    let compile_membership = report_membership(&compile_report)?;
+    if compile_membership != series.normalized_manifest.iter().cloned().collect() {
+        bail!("compile report membership differs from series {}", series.series_id);
+    }
+    let compile_baseline = read_compile_baseline_v2(&input.compile_baseline)?;
+    let baseline_comparison = compare_baseline_v2_with_identities(
+        &compile_baseline,
+        &compile_report,
+        &series,
+        Some(&V2Identities {
+            compiler_subject_identity: series.compiler_subject_identity.clone(),
+            invocation_identity: series.invocation_identity.clone(),
+            capability_identity: series.capability_identity.clone(),
+            environment_identity: series.environment_identity.clone(),
+        }),
+        None,
+        &[],
+    );
+    if !baseline_comparison.violations.is_empty() {
+        bail!(
+            "compile baseline is not an authoritative subject for series {}:\n{}",
+            series.series_id,
+            baseline_comparison
+                .violations
+                .iter()
+                .map(|violation| violation.message.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    let Some(accepted_path) = input.accepted_baseline.as_ref() else {
+        bail!(
+            "compatibility series {} must identify an accepted baseline separately from its current observation",
+            series.series_id
+        );
+    };
+    let accepted_baseline = read_compile_baseline_v2(accepted_path)?;
+    validate_accepted_ratchet_identity(&accepted_baseline, &series)?;
+    let (transition, transition_reason, requires_acceptance) =
+        classify_compatibility_transition(&accepted_baseline, &compile_report);
+    if let Some(index) = &authority {
+        let current = index
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.series_id == series.series_id
+                    && entry.status == CurrentAuthorityStatus::Current
+            })
+            .collect::<Vec<_>>();
+        if current.len() != 1 {
+            bail!(
+                "current-authority admission for {} must contain exactly one current entry",
+                series.series_id
+            );
+        }
+        let entry = current[0];
+        if entry.manifest_hash != series.manifest_hash
+            || entry.observation_bundle_id != bundle.index.bundle_id
+        {
+            bail!("current-authority entry disagrees with series {}", series.series_id);
+        }
+        if entry.observation_transition != transition {
+            bail!(
+                "current-authority transition {:?} does not match measured transition {:?} for {}",
+                entry.observation_transition,
+                transition,
+                series.series_id
+            );
+        }
+        validate_authority_artifact_bindings(
+            &input.evidence_bundle,
+            accepted_path,
+            &entry.observation_bundle_path,
+            &entry.observation_bundle_digest,
+            entry.accepted_baseline_path.as_deref(),
+            entry.accepted_baseline_digest.as_deref(),
+            input.current_authority.as_ref().map(|config| config.repository_root.as_path()),
+        )?;
+    }
+    let mut parse_bundle = bundle.clone();
+    parse_bundle.semantic_boundaries = parse_report.semantic_boundaries.clone();
+    let parse_clusters = build_failure_cluster_report(&parse_bundle, &parse_report)?;
+    let compile_clusters = build_failure_cluster_report(&bundle, &compile_report)?;
+
+    let (history_rail, cluster_state) =
+        load_cluster_history_state(input.cluster_history.as_deref(), &compile_clusters, &series)?;
+    let registry_rail =
+        load_registry_state(input.boundary_registry.as_deref(), &compile_baseline, &bundle)?;
+    let debt = build_compatibility_debt_state(
+        &compile_baseline,
+        registry_rail.clone(),
+        history_rail.clone(),
+    );
+    let execution = match &input.execute_report {
+        Some(path) => load_execution_rail(path, &series, &bundle.index.bundle_id)?,
+        None => unavailable_rail("selected execution receipt was not supplied"),
+    };
+    let observation = CompatibilityObservation {
+        observation_bundle_id: bundle.index.bundle_id.clone(),
+        measurement_sha: bundle.index.lineage.measurement_sha.clone(),
+        parse: compatibility_run_state(
+            &parse_report,
+            PARSE_BASELINE_SCHEMA_VERSION,
+            &bundle.index.bundle_id,
+            parse_clusters.clusters.len(),
+        ),
+        compile: compatibility_run_state(
+            &compile_report,
+            &compile_baseline.schema_version,
+            &bundle.index.bundle_id,
+            compile_clusters.clusters.len(),
+        ),
+        debt: debt.clone(),
+        clusters: cluster_state.clone(),
+        execution: execution.clone(),
+        curated_gold: unavailable_rail("curated semantic-gold receipt was not supplied"),
+        differential_oracle: unavailable_rail("differential-oracle receipt was not supplied"),
+        eir: unavailable_rail("EIR evaluation receipt was not supplied"),
+        claim_boundary: "compile-harness and typed receipt state only; general semantics and runtime correctness are not implied".into(),
+    };
+    let accepted_ratchet = CompatibilityAcceptedRatchet {
+        baseline_schema_version: accepted_baseline.schema_version.clone(),
+        baseline_digest: sha256_digest_bytes(&fs::read(accepted_path)?),
+        baseline_evidence_bundle_id: accepted_baseline.evidence_bundle.clone(),
+        accepted_transition_id: accepted_baseline.accepted_transition_id.clone(),
+        files_total: accepted_baseline.files_total,
+        files_passed: accepted_baseline.files_passed,
+    };
+    let identity = CompatibilitySeriesIdentity {
+        series_id: series.series_id.clone(),
+        profile: series.profile,
+        profile_roots: series.profile_roots.clone(),
+        manifest_hash: series.manifest_hash.clone(),
+        denominator: series.normalized_manifest.len(),
+        repository_commit: series.repository_commit.clone(),
+        perl_requested_ref: series.perl_requested_ref.clone(),
+        perl_resolved_ref: series.perl_resolved_ref.clone(),
+        runner: series.runner,
+        compiler_subject_identity: series.compiler_subject_identity.clone(),
+        invocation_identity: series.invocation_identity.clone(),
+        capability_identity: series.capability_identity.clone(),
+        environment_identity: series.environment_identity.clone(),
+        preparation_receipt_id: series.preparation_receipt_id.clone(),
+        preparation_receipt_digest: series.preparation_receipt_digest.clone(),
+        measurement_sha: bundle.index.lineage.measurement_sha.clone(),
+        publication_sha: bundle.index.lineage.publication_sha.clone(),
+        landed_sha: bundle.index.lineage.landed_sha.clone(),
+        evidence_bundle_id: bundle.index.bundle_id.clone(),
+    };
+    Ok(CompilerCompatibilitySeries {
+        identity,
+        current_observation: observation,
+        transition_candidate: CompatibilityTransitionCandidate {
+            transition,
+            reason: transition_reason,
+            requires_acceptance,
+        },
+        accepted_ratchet,
+        parse: compatibility_run_state(&parse_report, PARSE_BASELINE_SCHEMA_VERSION, &bundle.index.bundle_id, parse_clusters.clusters.len()),
+        compile: compatibility_run_state(
+            &compile_report,
+            &compile_baseline.schema_version,
+            &bundle.index.bundle_id,
+            compile_clusters.clusters.len(),
+        ),
+        debt,
+        clusters: cluster_state,
+        execution,
+        curated_gold: unavailable_rail("curated semantic-gold receipt was not supplied"),
+        differential_oracle: unavailable_rail("differential-oracle receipt was not supplied"),
+        eir: unavailable_rail("EIR evaluation receipt was not supplied"),
+        claim_boundary: "compile-harness and typed receipt state only; general semantics and runtime correctness are not implied".into(),
+    })
+}
+
+fn validate_authority_artifact_bindings(
+    observation_path: &Path,
+    accepted_path: &Path,
+    expected_observation_path: &str,
+    expected_observation_digest: &str,
+    expected_accepted_path: Option<&str>,
+    expected_accepted_digest: Option<&str>,
+    repository_root: Option<&Path>,
+) -> Result<()> {
+    let Some(root) = repository_root else {
+        bail!("current-authority artifact binding requires a repository root");
+    };
+    let observation_relative = repository_relative_path(root, observation_path)?;
+    if observation_relative != expected_observation_path {
+        bail!("current-authority observation path does not match the supplied bundle");
+    }
+    let observation_digest = sha256_digest_bytes(&fs::read(observation_path)?);
+    if observation_digest != expected_observation_digest {
+        bail!("current-authority observation digest does not match the supplied bundle");
+    }
+    let Some(expected_accepted_path) = expected_accepted_path else {
+        bail!("current-authority entry omits its accepted baseline path");
+    };
+    let Some(expected_accepted_digest) = expected_accepted_digest else {
+        bail!("current-authority entry omits its accepted baseline digest");
+    };
+    let accepted_relative = repository_relative_path(root, accepted_path)?;
+    if accepted_relative != expected_accepted_path {
+        bail!("current-authority accepted-baseline path does not match the supplied baseline");
+    }
+    let accepted_digest = sha256_digest_bytes(&fs::read(accepted_path)?);
+    if accepted_digest != expected_accepted_digest {
+        bail!("current-authority accepted-baseline digest does not match the supplied baseline");
+    }
+    Ok(())
+}
+
+fn validate_accepted_ratchet_identity(
+    baseline: &CompileBaselineV2,
+    series: &SeriesManifest,
+) -> Result<()> {
+    if baseline.schema_version != COMPILE_BASELINE_V2_SCHEMA_VERSION
+        || baseline.series_id != series.series_id
+        || baseline.manifest_hash != series.manifest_hash
+        || baseline.repository_commit != series.repository_commit
+        || baseline.perl_resolved_ref != series.perl_resolved_ref
+        || baseline.profile != series.profile
+        || baseline.runner != series.runner
+        || baseline.mode != HarnessMode::Compile
+        || baseline.file_membership != series.normalized_manifest
+        || baseline.files_total != series.normalized_manifest.len()
+    {
+        bail!("accepted baseline is not an identity match for series {}", series.series_id);
+    }
+    validate_result_summary_shape(
+        baseline.files_total,
+        baseline.files_passed,
+        baseline.files_failed,
+        baseline.tap_assertions_total,
+        baseline.tap_assertions_passed,
+        &baseline.file_results,
+        "accepted baseline",
+    )?;
+    let membership = file_result_membership(&baseline.file_results)?;
+    let expected = series.normalized_manifest.iter().cloned().collect::<BTreeSet<_>>();
+    if membership != expected {
+        bail!("accepted baseline file results do not match series {}", series.series_id);
+    }
+    let violations = validate_accepted_semantic_boundary_inventory(&baseline.semantic_boundaries);
+    if !violations.is_empty() {
+        bail!(
+            "accepted baseline is invalid:\n{}",
+            violations
+                .iter()
+                .map(|violation| violation.message.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    Ok(())
+}
+
+fn classify_compatibility_transition(
+    accepted: &CompileBaselineV2,
+    current: &RunReport,
+) -> (CompatibilityTransition, String, bool) {
+    if current.summary.files_passed > accepted.files_passed {
+        return (
+            CompatibilityTransition::ImprovementCandidate,
+            format!(
+                "current compile observation improved from {}/{} to {}/{}",
+                accepted.files_passed,
+                accepted.files_total,
+                current.summary.files_passed,
+                current.summary.files_total
+            ),
+            true,
+        );
+    }
+    if current.summary.files_passed < accepted.files_passed {
+        return (
+            CompatibilityTransition::Regression,
+            format!(
+                "current compile observation regressed from {}/{} to {}/{}",
+                accepted.files_passed,
+                accepted.files_total,
+                current.summary.files_passed,
+                current.summary.files_total
+            ),
+            false,
+        );
+    }
+    let mut accepted_boundaries = accepted.semantic_boundaries.clone();
+    let mut current_boundaries = current.semantic_boundaries.clone();
+    accepted_boundaries.sort_by_key(semantic_boundary_key);
+    current_boundaries.sort_by_key(semantic_boundary_key);
+    if accepted_boundaries != current_boundaries {
+        return (
+            CompatibilityTransition::ContractCorrectionCandidate,
+            "compile score is unchanged but semantic-boundary evidence changed".into(),
+            true,
+        );
+    }
+    (
+        CompatibilityTransition::NoChange,
+        "current compile observation matches the accepted ratchet".into(),
+        false,
+    )
+}
+
+fn validate_report_for_compatibility(
+    report: &RunReport,
+    series: &SeriesManifest,
+    mode: HarnessMode,
+) -> Result<()> {
+    validate_report_against_series(report, series, mode)?;
+    ensure_valid_report_shape(report)?;
+    let membership = report_membership(report)?;
+    let expected = series.normalized_manifest.iter().cloned().collect::<BTreeSet<_>>();
+    if membership != expected {
+        bail!("{} report membership differs from series {}", mode, series.series_id);
+    }
+    Ok(())
+}
+
+fn report_membership(report: &RunReport) -> Result<BTreeSet<String>> {
+    file_result_membership(&report.file_results)
+}
+
+fn file_result_membership(file_results: &[RunFileResult]) -> Result<BTreeSet<String>> {
+    let mut membership = BTreeSet::new();
+    for result in file_results {
+        let path = normalize_test_path(&result.path)
+            .ok_or_else(|| color_eyre::eyre::eyre!("report contains an invalid test path"))?;
+        if !membership.insert(path) {
+            bail!("report contains duplicate file membership");
+        }
+    }
+    Ok(membership)
+}
+
+fn compatibility_run_state(
+    report: &RunReport,
+    baseline_schema_version: &str,
+    bundle_id: &str,
+    cluster_count: usize,
+) -> CompatibilityRunState {
+    CompatibilityRunState {
+        schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
+        mode: report.mode,
+        files_total: report.summary.files_total,
+        files_passed: report.summary.files_passed,
+        files_failed: report.summary.files_failed,
+        tap_assertions_total: report.summary.tap_assertions_total,
+        tap_assertions_passed: report.summary.tap_assertions_passed,
+        baseline_schema_version: baseline_schema_version.into(),
+        report_schema_version: report.schema_version.clone(),
+        evidence_bundle_id: bundle_id.into(),
+        cluster_count,
+    }
+}
+
+fn load_registry_state(
+    path: Option<&Path>,
+    baseline: &CompileBaselineV2,
+    bundle: &BoundaryBundle,
+) -> Result<CompatibilityRailState> {
+    let Some(path) = path else {
+        return Ok(unavailable_rail("semantic-boundary registry was not supplied"));
+    };
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("reading compatibility boundary registry {}", path.display()))?;
+    let registry: SemanticBoundaryRegistry = serde_json::from_str(&raw)
+        .with_context(|| format!("decoding compatibility boundary registry {}", path.display()))?;
+    let mut violations = validate_boundary_registry_shape(&registry);
+    violations.extend(validate_registry_against_baseline(&registry, baseline, false));
+    violations.extend(validate_bundle_against_baseline(bundle, baseline));
+    if !violations.is_empty() {
+        bail!(
+            "boundary registry is not authoritative for {}:\n{}",
+            baseline.series_id,
+            violations.join("\n")
+        );
+    }
+    Ok(available_rail(
+        SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION,
+        format!("validated {} registry entries", registry.entries.len()),
+        vec![format!("series:{}", baseline.series_id)],
+    ))
+}
+
+fn load_cluster_history_state(
+    path: Option<&Path>,
+    clusters: &FailureClusterReport,
+    series: &SeriesManifest,
+) -> Result<(CompatibilityRailState, CompatibilityClusterState)> {
+    let Some(path) = path else {
+        return Ok((
+            unavailable_rail("failure-cluster history was not supplied"),
+            CompatibilityClusterState {
+                active_count: clusters.clusters.len(),
+                unassigned_count: clusters.clusters.len(),
+                by_status: BTreeMap::from([("unassigned".into(), clusters.clusters.len())]),
+                history_bundle_id: None,
+            },
+        ));
+    };
+    let history = read_cluster_history(path, false)?;
+    let violations = validate_cluster_history_shape(&history);
+    if !violations.is_empty() {
+        bail!("cluster history is not authoritative:\n{}", violations.join("\n"));
+    }
+    let current_violations = validate_history_against_report(&history, clusters);
+    if !current_violations.is_empty() {
+        bail!(
+            "cluster history is stale for series {}:\n{}",
+            series.series_id,
+            current_violations.join("\n")
+        );
+    }
+    let current_ids = clusters
+        .clusters
+        .iter()
+        .map(|cluster| cluster.cluster_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let current_entries =
+        history.entries.iter().filter(|entry| current_ids.contains(entry.cluster_id.as_str()));
+    let mut by_status = BTreeMap::new();
+    let mut unassigned_count = 0;
+    let mut history_bundle_id = None;
+    for entry in current_entries {
+        *by_status.entry(enum_label(entry.status)).or_insert(0) += 1;
+        if entry.status == FailureClusterHistoryStatus::Unassigned {
+            unassigned_count += 1;
+        }
+        history_bundle_id = Some(entry.last_seen_bundle.clone());
+    }
+    Ok((
+        available_rail(
+            FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
+            format!("validated {} history entries", history.entries.len()),
+            history_bundle_id.clone().into_iter().collect(),
+        ),
+        CompatibilityClusterState {
+            active_count: clusters.clusters.len(),
+            unassigned_count,
+            by_status,
+            history_bundle_id,
+        },
+    ))
+}
+
+fn load_execution_rail(
+    path: &Path,
+    series: &SeriesManifest,
+    bundle_id: &str,
+) -> Result<CompatibilityRailState> {
+    let report = read_run_report(path)?;
+    if report.mode != HarnessMode::Execute {
+        bail!("execution rail report is not execute mode");
+    }
+    if report.commit != series.repository_commit
+        || report.perl_ref != series.perl_resolved_ref
+        || report.profile != series.profile
+        || report.runner != series.runner
+    {
+        bail!("execution rail identity does not match series {}", series.series_id);
+    }
+    ensure_valid_report_shape(&report)?;
+    Ok(available_rail(
+        RUN_REPORT_SCHEMA_VERSION,
+        "selected execution receipt validated".into(),
+        vec![format!("bundle:{bundle_id}")],
+    ))
+}
+
+fn build_compatibility_debt_state(
+    baseline: &CompileBaselineV2,
+    registry: CompatibilityRailState,
+    history: CompatibilityRailState,
+) -> CompatibilityDebtState {
+    let mut by_disposition = BTreeMap::new();
+    let mut by_lock_scope = BTreeMap::new();
+    let mut source_locked_count = 0;
+    let mut downstream_blocking_count = 0;
+    for boundary in &baseline.semantic_boundaries {
+        *by_disposition.entry(enum_label(boundary.disposition)).or_insert(0) += 1;
+        *by_lock_scope.entry(enum_label(boundary.lock_scope)).or_insert(0) += 1;
+        if boundary.disposition == SemanticBoundaryDisposition::SourceLockedCompatibility {
+            source_locked_count += 1;
+        }
+        if boundary.blocks_downstream_static_facts {
+            downstream_blocking_count += 1;
+        }
+    }
+    CompatibilityDebtState {
+        boundary_count: baseline.semantic_boundaries.len(),
+        source_locked_count,
+        downstream_blocking_count,
+        by_disposition,
+        by_lock_scope,
+        registry,
+        history,
+    }
+}
+
+fn unavailable_rail(reason: &str) -> CompatibilityRailState {
+    CompatibilityRailState {
+        availability: CompatibilityRailAvailability::NotAvailable,
+        reason: reason.into(),
+        schema_version: None,
+        evidence_refs: Vec::new(),
+    }
+}
+
+fn available_rail(
+    schema_version: &str,
+    reason: String,
+    evidence_refs: Vec<String>,
+) -> CompatibilityRailState {
+    CompatibilityRailState {
+        availability: CompatibilityRailAvailability::Available,
+        reason,
+        schema_version: Some(schema_version.into()),
+        evidence_refs,
+    }
+}
+
 fn validate_cluster_history_shape(history: &FailureClusterHistory) -> Vec<String> {
     let mut violations = Vec::new();
     if history.schema_version != FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION {
@@ -1914,6 +2534,10 @@ struct EvidenceBundleIndex {
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 struct EvidenceBundleLineage {
     measurement_sha: String,
+    #[serde(default)]
+    publication_sha: Option<String>,
+    #[serde(default)]
+    landed_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
@@ -3724,18 +4348,75 @@ fn validate_v2_identities_against_series(
 fn ensure_valid_report_shape(report: &RunReport) -> Result<()> {
     let mut validation = validate_report_bucket_shape(report);
     validation.extend(validate_semantic_boundary_shape(report));
-    if validation.is_empty() {
-        return Ok(());
+    if !validation.is_empty() {
+        let details = validation
+            .iter()
+            .map(|violation| {
+                let path = violation.path.as_deref().unwrap_or("-");
+                format!("{:?} {path}: {}", violation.kind, violation.message)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        bail!("cannot accept baseline with invalid receipt shape:\n{details}");
     }
-    let details = validation
-        .iter()
-        .map(|violation| {
-            let path = violation.path.as_deref().unwrap_or("-");
-            format!("{:?} {path}: {}", violation.kind, violation.message)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    bail!("cannot accept baseline with invalid receipt shape:\n{details}");
+    validate_result_summary_shape(
+        report.summary.files_total,
+        report.summary.files_passed,
+        report.summary.files_failed,
+        report.summary.tap_assertions_total,
+        report.summary.tap_assertions_passed,
+        &report.file_results,
+        "run report",
+    )
+}
+
+fn validate_result_summary_shape(
+    files_total: usize,
+    files_passed: usize,
+    files_failed: usize,
+    tap_assertions_total: usize,
+    tap_assertions_passed: usize,
+    file_results: &[RunFileResult],
+    subject: &str,
+) -> Result<()> {
+    if files_passed + files_failed != files_total {
+        bail!("{subject} file counts do not add up to files_total");
+    }
+    if tap_assertions_passed > tap_assertions_total {
+        bail!("{subject} passed assertions exceed tap_assertions_total");
+    }
+    if file_results.len() != files_total {
+        bail!("{subject} file_results length does not match files_total");
+    }
+    let mut paths = BTreeSet::new();
+    let mut passed_files = 0;
+    let mut failed_files = 0;
+    let mut assertions_total = 0;
+    let mut assertions_passed = 0;
+    for result in file_results {
+        let Some(path) = normalize_test_path(&result.path) else {
+            bail!("{subject} contains an invalid test path");
+        };
+        if !paths.insert(path) {
+            bail!("{subject} contains duplicate file results");
+        }
+        match result.status {
+            RunnerStatus::Pass => passed_files += 1,
+            RunnerStatus::Fail => failed_files += 1,
+        }
+        if result.assertions_passed > result.assertions_total {
+            bail!("{subject} has a file with passed assertions exceeding its total");
+        }
+        assertions_total += result.assertions_total;
+        assertions_passed += result.assertions_passed;
+    }
+    if passed_files != files_passed || failed_files != files_failed {
+        bail!("{subject} file statuses do not match its summary counts");
+    }
+    if assertions_total != tap_assertions_total || assertions_passed != tap_assertions_passed {
+        bail!("{subject} file assertions do not match its summary counts");
+    }
+    Ok(())
 }
 
 fn validate_report_against_series(
@@ -7241,7 +7922,11 @@ mod tests {
             profile: baseline.profile,
             runner: HarnessRunner::Test,
             perl_resolved_ref: "perl-ref".into(),
-            lineage: EvidenceBundleLineage { measurement_sha: "abc".into() },
+            lineage: EvidenceBundleLineage {
+                measurement_sha: "abc".into(),
+                publication_sha: None,
+                landed_sha: None,
+            },
             artifacts: vec![EvidenceBundleArtifact {
                 kind: "semantic_boundaries".into(),
                 logical_path: "normalized/semantic-boundaries.json".into(),
@@ -7285,7 +7970,11 @@ mod tests {
                 profile: HarnessProfile::Base,
                 runner: HarnessRunner::Test,
                 perl_resolved_ref: "perl-ref".into(),
-                lineage: EvidenceBundleLineage { measurement_sha: "abc".into() },
+                lineage: EvidenceBundleLineage {
+                    measurement_sha: "abc".into(),
+                    publication_sha: None,
+                    landed_sha: None,
+                },
                 artifacts: Vec::new(),
                 completeness: EvidenceBundleCompleteness {
                     status: "complete".into(),
@@ -7581,6 +8270,193 @@ mod tests {
             implementation_pr: Some("#5300".into()),
         });
         assert!(validate_cluster_history_shape(&history).is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn compatibility_loader_keeps_rails_separate_and_optional_evidence_explicit() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let series = build_series_manifest(
+            &sample_discovery_report(),
+            &sample_series_config(),
+            "2026-07-02T00:00:00Z".into(),
+        )?;
+        let baseline = baseline_v2_from_report(
+            &sample_compile_report(),
+            &series,
+            &sample_baseline_v2_config(),
+            None,
+            &[],
+        )?;
+        let series_path = temp.path().join("series.json");
+        let parse_path = temp.path().join("parse.json");
+        let compile_path = temp.path().join("compile.json");
+        let baseline_path = temp.path().join("baseline.json");
+        let accepted_path = temp.path().join("accepted-baseline.json");
+        let index_path = temp.path().join("bundle").join("index.json");
+        let normalized = index_path
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing bundle parent"))?
+            .join("normalized");
+        fs::create_dir_all(&normalized)?;
+        fs::write(&series_path, serde_json::to_string_pretty(&series)?)?;
+        write_run_report(&parse_path, &sample_parse_report())?;
+        write_run_report(&compile_path, &sample_compile_report())?;
+        write_compile_baseline_v2(&baseline_path, &baseline)?;
+        write_compile_baseline_v2(&accepted_path, &baseline)?;
+        fs::write(
+            normalized.join("semantic-boundaries.json"),
+            serde_json::to_string_pretty(&baseline.semantic_boundaries)?,
+        )?;
+        fs::write(normalized.join("compile.json"), fs::read_to_string(&compile_path)?)?;
+        let mut index = sample_boundary_bundle().index;
+        index.series_id = series.series_id.clone();
+        index.manifest_hash = series.manifest_hash.clone();
+        index.repository_commit = series.repository_commit.clone();
+        index.profile = series.profile;
+        index.perl_resolved_ref = series.perl_resolved_ref.clone();
+        index.artifacts = vec![
+            EvidenceBundleArtifact {
+                kind: "semantic_boundaries".into(),
+                logical_path: "normalized/semantic-boundaries.json".into(),
+            },
+            EvidenceBundleArtifact {
+                kind: "compile_report".into(),
+                logical_path: "normalized/compile.json".into(),
+            },
+        ];
+        fs::write(&index_path, serde_json::to_string_pretty(&index)?)?;
+
+        let state = load_compatibility_state(CompatibilityLoadConfig {
+            inputs: vec![CompatibilitySeriesInput {
+                series_manifest: series_path,
+                parse_report: parse_path,
+                compile_report: normalized.join("compile.json"),
+                compile_baseline: baseline_path,
+                accepted_baseline: Some(accepted_path),
+                evidence_bundle: index_path,
+                boundary_registry: None,
+                cluster_history: None,
+                execute_report: None,
+                current_authority: None,
+            }],
+            repository_commit: "abc".into(),
+        })?;
+
+        assert_eq!(state.schema_version, COMPILER_COMPATIBILITY_SCHEMA_VERSION);
+        assert_eq!(state.series.len(), 1);
+        assert_eq!(state.series[0].identity.denominator, 2);
+        assert_eq!(state.series[0].parse.files_passed, 2);
+        assert_eq!(state.series[0].compile.files_passed, 2);
+        assert_eq!(
+            state.series[0].transition_candidate.transition,
+            CompatibilityTransition::NoChange
+        );
+        assert_eq!(
+            state.series[0].curated_gold.availability,
+            CompatibilityRailAvailability::NotAvailable
+        );
+        assert_eq!(
+            state.series[0].debt.registry.availability,
+            CompatibilityRailAvailability::NotAvailable
+        );
+        let encoded = serde_json::to_string_pretty(&state)?;
+        assert!(encoded.contains("not_available"));
+        let decoded: CompilerCompatibilityState = serde_json::from_str(&encoded)?;
+        assert_eq!(decoded, state);
+        Ok(())
+    }
+
+    #[test]
+    fn compatibility_transition_classifies_regression_without_lowering_ratchet() -> TestResult {
+        let series = build_series_manifest(
+            &sample_discovery_report(),
+            &sample_series_config(),
+            "2026-07-02T00:00:00Z".into(),
+        )?;
+        let mut accepted = baseline_v2_from_report(
+            &sample_compile_report(),
+            &series,
+            &sample_baseline_v2_config(),
+            None,
+            &[],
+        )?;
+        accepted.files_total = 25;
+        accepted.files_passed = 25;
+        let mut current = sample_compile_report();
+        current.summary.files_total = 25;
+        current.summary.files_passed = 24;
+        current.summary.files_failed = 1;
+
+        let (transition, reason, requires_acceptance) =
+            classify_compatibility_transition(&accepted, &current);
+        assert_eq!(transition, CompatibilityTransition::Regression);
+        assert!(reason.contains("regressed"));
+        assert!(!requires_acceptance);
+        assert_eq!(accepted.files_passed, 25);
+        Ok(())
+    }
+
+    #[test]
+    fn compatibility_transition_classifies_improvement_as_candidate() -> TestResult {
+        let series = build_series_manifest(
+            &sample_discovery_report(),
+            &sample_series_config(),
+            "2026-07-02T00:00:00Z".into(),
+        )?;
+        let mut accepted = baseline_v2_from_report(
+            &sample_compile_report(),
+            &series,
+            &sample_baseline_v2_config(),
+            None,
+            &[],
+        )?;
+        accepted.files_total = 25;
+        accepted.files_passed = 24;
+        let mut current = sample_compile_report();
+        current.summary.files_total = 25;
+        current.summary.files_passed = 25;
+        current.summary.files_failed = 0;
+
+        let (transition, reason, requires_acceptance) =
+            classify_compatibility_transition(&accepted, &current);
+        assert_eq!(transition, CompatibilityTransition::ImprovementCandidate);
+        assert!(reason.contains("improved"));
+        assert!(requires_acceptance);
+        Ok(())
+    }
+
+    #[test]
+    fn compatibility_authority_artifact_binding_rejects_local_tampering() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let observation = temp.path().join("bundle.json");
+        let accepted = temp.path().join("accepted.json");
+        fs::write(&observation, br#"{"bundle":"original"}"#)?;
+        fs::write(&accepted, br#"{"baseline":"original"}"#)?;
+        let observation_digest = sha256_digest_bytes(&fs::read(&observation)?);
+        let accepted_digest = sha256_digest_bytes(&fs::read(&accepted)?);
+
+        validate_authority_artifact_bindings(
+            &observation,
+            &accepted,
+            "bundle.json",
+            &observation_digest,
+            Some("accepted.json"),
+            Some(&accepted_digest),
+            Some(temp.path()),
+        )?;
+
+        fs::write(&observation, br#"{"bundle":"tampered"}"#)?;
+        let error = validate_authority_artifact_bindings(
+            &observation,
+            &accepted,
+            "bundle.json",
+            &observation_digest,
+            Some("accepted.json"),
+            Some(&accepted_digest),
+            Some(temp.path()),
+        );
+        assert!(error.is_err());
         Ok(())
     }
 
@@ -8726,7 +9602,11 @@ exit 1
                 profile: HarnessProfile::Base,
                 runner: HarnessRunner::Test,
                 perl_resolved_ref: "perl-base".into(),
-                lineage: EvidenceBundleLineage { measurement_sha: measurement_sha.clone() },
+                lineage: EvidenceBundleLineage {
+                    measurement_sha: measurement_sha.clone(),
+                    publication_sha: None,
+                    landed_sha: None,
+                },
                 artifacts: vec![EvidenceBundleArtifact {
                     kind: "semantic_boundaries".into(),
                     logical_path: "base-boundaries.json".into(),

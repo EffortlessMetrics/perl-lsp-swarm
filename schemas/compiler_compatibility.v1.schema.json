@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/schemas/compiler_compatibility.v1.schema.json",
+  "title": "Compiler compatibility state v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "repository_commit", "series"],
+  "properties": {
+    "schema_version": {
+      "const": "perl_core_harness.compiler_compatibility.v1"
+    },
+    "repository_commit": {
+      "type": "string",
+      "minLength": 1
+    },
+    "series": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/series"
+      }
+    }
+  },
+  "$defs": {
+    "rail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["availability", "reason", "schema_version", "evidence_refs"],
+      "properties": {
+        "availability": {
+          "enum": ["available", "partial", "not_available", "stale"]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema_version": {
+          "type": ["string", "null"]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "mode",
+        "files_total",
+        "files_passed",
+        "files_failed",
+        "tap_assertions_total",
+        "tap_assertions_passed",
+        "baseline_schema_version",
+        "report_schema_version",
+        "evidence_bundle_id",
+        "cluster_count"
+      ],
+      "properties": {
+        "schema_version": {"type": "string"},
+        "mode": {"enum": ["parse", "compile", "execute"]},
+        "files_total": {"type": "integer", "minimum": 0},
+        "files_passed": {"type": "integer", "minimum": 0},
+        "files_failed": {"type": "integer", "minimum": 0},
+        "tap_assertions_total": {"type": "integer", "minimum": 0},
+        "tap_assertions_passed": {"type": "integer", "minimum": 0},
+        "baseline_schema_version": {"type": "string"},
+        "report_schema_version": {"type": "string"},
+        "evidence_bundle_id": {"type": "string", "minLength": 1},
+        "cluster_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "series": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "current_observation",
+        "transition_candidate",
+        "accepted_ratchet",
+        "parse",
+        "compile",
+        "debt",
+        "clusters",
+        "execution",
+        "curated_gold",
+        "differential_oracle",
+        "eir",
+        "claim_boundary"
+      ],
+      "properties": {
+        "identity": {"$ref": "#/$defs/identity"},
+        "current_observation": {"$ref": "#/$defs/observation"},
+        "transition_candidate": {"$ref": "#/$defs/transition_candidate"},
+        "accepted_ratchet": {"$ref": "#/$defs/accepted_ratchet"},
+        "parse": {"$ref": "#/$defs/run"},
+        "compile": {"$ref": "#/$defs/run"},
+        "debt": {"$ref": "#/$defs/debt"},
+        "clusters": {"$ref": "#/$defs/clusters"},
+        "execution": {"$ref": "#/$defs/rail"},
+        "curated_gold": {"$ref": "#/$defs/rail"},
+        "differential_oracle": {"$ref": "#/$defs/rail"},
+        "eir": {"$ref": "#/$defs/rail"},
+        "claim_boundary": {"type": "string", "minLength": 1}
+      }
+    },
+    "debt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "boundary_count",
+        "source_locked_count",
+        "downstream_blocking_count",
+        "by_disposition",
+        "by_lock_scope",
+        "registry",
+        "history"
+      ],
+      "properties": {
+        "boundary_count": {"type": "integer", "minimum": 0},
+        "source_locked_count": {"type": "integer", "minimum": 0},
+        "downstream_blocking_count": {"type": "integer", "minimum": 0},
+        "by_disposition": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "by_lock_scope": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "registry": {"$ref": "#/$defs/rail"},
+        "history": {"$ref": "#/$defs/rail"}
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_bundle_id",
+        "measurement_sha",
+        "parse",
+        "compile",
+        "debt",
+        "clusters",
+        "execution",
+        "curated_gold",
+        "differential_oracle",
+        "eir",
+        "claim_boundary"
+      ],
+      "properties": {
+        "observation_bundle_id": {"type": "string", "minLength": 1},
+        "measurement_sha": {"type": "string", "minLength": 1},
+        "parse": {"$ref": "#/$defs/run"},
+        "compile": {"$ref": "#/$defs/run"},
+        "debt": {"$ref": "#/$defs/debt"},
+        "clusters": {"$ref": "#/$defs/clusters"},
+        "execution": {"$ref": "#/$defs/rail"},
+        "curated_gold": {"$ref": "#/$defs/rail"},
+        "differential_oracle": {"$ref": "#/$defs/rail"},
+        "eir": {"$ref": "#/$defs/rail"},
+        "claim_boundary": {"type": "string", "minLength": 1}
+      }
+    },
+    "transition_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transition", "reason", "requires_acceptance"],
+      "properties": {
+        "transition": {
+          "enum": [
+            "no_change",
+            "improvement_candidate",
+            "regression",
+            "contract_correction_candidate",
+            "not_proven",
+            "historical"
+          ]
+        },
+        "reason": {"type": "string", "minLength": 1},
+        "requires_acceptance": {"type": "boolean"}
+      }
+    },
+    "accepted_ratchet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseline_schema_version",
+        "baseline_digest",
+        "baseline_evidence_bundle_id",
+        "accepted_transition_id",
+        "files_total",
+        "files_passed"
+      ],
+      "properties": {
+        "baseline_schema_version": {"type": "string", "minLength": 1},
+        "baseline_digest": {"type": "string", "minLength": 1},
+        "baseline_evidence_bundle_id": {"type": ["string", "null"]},
+        "accepted_transition_id": {"type": ["string", "null"]},
+        "files_total": {"type": "integer", "minimum": 0},
+        "files_passed": {"type": "integer", "minimum": 0}
+      }
+    },
+    "clusters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active_count", "unassigned_count", "by_status", "history_bundle_id"],
+      "properties": {
+        "active_count": {"type": "integer", "minimum": 0},
+        "unassigned_count": {"type": "integer", "minimum": 0},
+        "by_status": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "history_bundle_id": {"type": ["string", "null"]}
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "series_id",
+        "profile",
+        "profile_roots",
+        "manifest_hash",
+        "denominator",
+        "repository_commit",
+        "perl_requested_ref",
+        "perl_resolved_ref",
+        "runner",
+        "compiler_subject_identity",
+        "invocation_identity",
+        "capability_identity",
+        "environment_identity",
+        "preparation_receipt_id",
+        "preparation_receipt_digest",
+        "measurement_sha",
+        "publication_sha",
+        "landed_sha",
+        "evidence_bundle_id"
+      ],
+      "properties": {
+        "series_id": {"type": "string", "minLength": 1},
+        "profile": {"enum": ["base", "comp", "run", "core", "lib", "full"]},
+        "profile_roots": {"type": "array", "items": {"type": "string"}},
+        "manifest_hash": {"type": "string", "minLength": 1},
+        "denominator": {"type": "integer", "minimum": 1},
+        "repository_commit": {"type": "string", "minLength": 1},
+        "perl_requested_ref": {"type": "string", "minLength": 1},
+        "perl_resolved_ref": {"type": "string", "minLength": 1},
+        "runner": {"enum": ["test", "harness"]},
+        "compiler_subject_identity": {"type": "string", "minLength": 1},
+        "invocation_identity": {"type": "string", "minLength": 1},
+        "capability_identity": {"type": "string", "minLength": 1},
+        "environment_identity": {"type": "string", "minLength": 1},
+        "preparation_receipt_id": {"type": "string", "minLength": 1},
+        "preparation_receipt_digest": {"type": "string", "minLength": 1},
+        "measurement_sha": {"type": "string", "minLength": 1},
+        "publication_sha": {"type": ["string", "null"]},
+        "landed_sha": {"type": ["string", "null"]},
+        "evidence_bundle_id": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}
