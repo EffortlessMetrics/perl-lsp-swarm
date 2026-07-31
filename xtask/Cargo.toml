@@ -1,6 +1,5 @@
 [package]
 name = "xtask"
-default-run = "xtask"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,10 +12,6 @@ homepage.workspace = true
 readme = "../README.md"
 keywords = ["perl", "parser", "lsp", "tasks"]
 categories = ["development-tools"]
-
-[[bin]]
-name = "release-artifact-size"
-path = "src/bin/release_artifact_size.rs"
 
 [dependencies]
 clap = { workspace = true }
