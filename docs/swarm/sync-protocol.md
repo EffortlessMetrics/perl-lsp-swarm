@@ -254,7 +254,9 @@ Tag, publish, and GitHub release creation still require explicit approval per
 - `docs/project/status/development-moved-to-perl-lsp-swarm.md`
 - `docs/project/status/real_perl_editor_trust_v1.md`
 - `docs/project/status/provider_promotion_ledger.md`
-- `.perl-lsp/goals/active.toml`
+
+Live development selection is reconstructed from current GitHub state and is not
+a sync-protocol artifact.
 
 Do not duplicate generated status tables. Link to the status source instead.
 
