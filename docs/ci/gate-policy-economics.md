@@ -40,11 +40,12 @@ Many gates roll up under a single lane (e.g. all `pr_fast` gates contribute to t
 `pr_smoke` lane's LEM). The mapping is therefore many-to-one for most lanes, but a small
 number of gates (e.g. `lsp_tier_a`) span two lanes.
 
-Current state (as of PR 09):
+Current state — regenerate with `python3 scripts/ci/validate_gate_lane_mapping.py --strict`,
+which is the authority for these counts. Last refreshed 2026-07-31 (#5425):
 
-- 48 gates in `.ci/gate-policy.yaml`
-- 23 lanes in `policy/ci-lanes.toml`
-- 48 / 48 gates have at least one lane mapping
+- 65 gates in `.ci/gate-policy.yaml`
+- 24 lanes in `policy/ci-lanes.toml`
+- 65 / 65 gates have at least one lane mapping
 - 0 gates point at a non-existent lane
 
 ---

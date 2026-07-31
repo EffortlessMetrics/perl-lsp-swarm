@@ -21,6 +21,8 @@ struct PolicyGate {
     tier: String,
     #[serde(default = "default_true")]
     required: bool,
+    #[serde(default)]
+    command: String,
     timeout_seconds: Option<u64>,
     budgets: Option<GateBudgets>,
     planning: Option<GatePlanning>,
@@ -256,6 +258,135 @@ fn gate_registry_alignment_prevents_stale_parser_wiring() -> Result<(), Box<dyn 
             "gate-policy and gate-registry must agree for {policy_name}/{registry_id}"
         );
     }
+
+    Ok(())
+}
+
+/// The six crates that `unit_lsp_full` covered before #5425 split the lane.
+///
+/// This list is the contract. If a crate legitimately leaves the LSP unit
+/// surface, change it here deliberately — do not let it drift by editing one
+/// `command:` string.
+const LSP_UNIT_SURFACE: [&str; 6] = [
+    "perl-lsp-perltidy",
+    "perl-lsp-rs",
+    "perl-lsp-rs-core",
+    "perl-lsp-ux-tests",
+    "perl-subprocess-runtime",
+    "perllsp",
+];
+
+/// Extract the `-p <crate>` package arguments from a gate command string.
+fn package_args(command: &str) -> Vec<String> {
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| **token == "-p")
+        .filter_map(|(index, _)| tokens.get(index + 1))
+        .map(|package| (*package).to_string())
+        .collect()
+}
+
+/// The LSP unit lanes must partition `LSP_UNIT_SURFACE` exactly: every crate
+/// covered once, none covered twice, none lost.
+///
+/// Without this, the split is only guarded by
+/// `no_duplicate_gate_definitions_across_tiers`, which asserts gate *names* are
+/// unique. That would still pass if a crate were dropped from both lanes — the
+/// gates would go green while silently testing less. #5425 split this lane by
+/// editing two `command:` strings, and a future rebalance will edit them again.
+#[test]
+fn lsp_unit_lanes_partition_the_surface_exactly() -> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let content = fs::read_to_string(root.join(".ci/gate-policy.yaml"))?;
+    let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
+
+    let lane_names = ["unit_lsp_core_full", "unit_lsp_full"];
+    let mut seen: Vec<String> = Vec::new();
+
+    for lane_name in lane_names {
+        let lane = parsed
+            .gates
+            .iter()
+            .find(|gate| gate.name == lane_name)
+            .unwrap_or_else(|| panic!("gate '{lane_name}' must exist in .ci/gate-policy.yaml"));
+
+        assert!(
+            lane.required,
+            "{lane_name} must stay required — the LSP unit surface is never-skippable"
+        );
+        assert_eq!(lane.tier, "merge_gate", "{lane_name} must stay in the merge_gate tier");
+        assert!(
+            lane.command.contains("--lib"),
+            "{lane_name} must keep --lib; dropping it silently changes which targets run"
+        );
+
+        seen.extend(package_args(&lane.command));
+    }
+
+    let mut deduped = seen.clone();
+    deduped.sort();
+    deduped.dedup();
+    assert_eq!(
+        deduped.len(),
+        seen.len(),
+        "LSP unit lanes must not run any crate twice; got {seen:?}"
+    );
+
+    let mut expected: Vec<String> = LSP_UNIT_SURFACE.iter().map(|s| (*s).to_string()).collect();
+    expected.sort();
+    assert_eq!(
+        deduped, expected,
+        "LSP unit lanes must cover exactly the crates in LSP_UNIT_SURFACE. \
+         A crate missing here is coverage silently dropped; an extra crate is \
+         coverage silently duplicated or moved from another lane."
+    );
+
+    Ok(())
+}
+
+/// Both LSP unit lanes carry the same ceiling and the same budget.
+///
+/// #5425 split one lane that had been raised 300s -> 420s and still timed out.
+/// The first hosted receipt measured 177s and 219s, i.e. the lanes are close
+/// enough in wall time that differentiating their budgets would be invention.
+#[test]
+fn lsp_unit_lanes_share_ceiling_and_budget() -> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let content = fs::read_to_string(root.join(".ci/gate-policy.yaml"))?;
+    let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
+
+    let lanes: Vec<&PolicyGate> = parsed
+        .gates
+        .iter()
+        .filter(|gate| gate.name == "unit_lsp_core_full" || gate.name == "unit_lsp_full")
+        .collect();
+    assert_eq!(lanes.len(), 2, "both LSP unit lanes must be defined");
+
+    let timeouts: Vec<u64> = lanes.iter().filter_map(|gate| gate.timeout_seconds).collect();
+    assert_eq!(timeouts.len(), 2, "both LSP unit lanes must declare timeout_seconds");
+    assert_eq!(
+        timeouts[0], timeouts[1],
+        "LSP unit lanes must share one ceiling; asymmetry needs measured justification"
+    );
+
+    let budgets: Vec<u64> = lanes
+        .iter()
+        .filter_map(|gate| gate.budgets.as_ref())
+        .filter_map(|budget| budget.max_duration_ms)
+        .collect();
+    assert_eq!(budgets.len(), 2, "both LSP unit lanes must declare a budget");
+    assert_eq!(budgets[0], budgets[1], "LSP unit lane budgets must match each other");
+
+    // Keep the budget:ceiling ratio in line with the other test lanes
+    // (unit_analysis_full, unit_dap_support_full, and lsp_smoke are all 0.80).
+    let ratio = budgets[0] as f64 / (timeouts[0] as f64 * 1000.0);
+    assert!(
+        (0.70..=0.90).contains(&ratio),
+        "LSP unit lane budget:ceiling ratio {ratio:.2} is out of line with the \
+         0.75-0.83 the other test lanes use"
+    );
 
     Ok(())
 }
