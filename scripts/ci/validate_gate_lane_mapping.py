@@ -22,6 +22,12 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+# Repository defaults. Named so resolve_docs_target can tell "the caller left
+# this alone" from "the caller pointed us at a fixture".
+DEFAULT_DOCS = Path("docs/ci/gate-policy-economics.md")
+DEFAULT_GATE_POLICY = Path(".ci/gate-policy.yaml")
+DEFAULT_LANES = Path("policy/ci-lanes.toml")
+
 # Many-to-one and one-to-many mappings between gate-policy.yaml gate names and
 # policy/ci-lanes.toml lane keys. Right-hand side is a list of lane keys (a
 # single gate may map to multiple lanes, e.g. an aggregate gate that runs in
@@ -155,7 +161,9 @@ def check_docs_drift(docs_path: Path, lane_ids: set[str]) -> list[str]:
     fact will keep drifting. Returns a list of problems; empty means consistent.
     """
     if not docs_path.exists():
-        return []
+        # Fail closed. A guard whose input has vanished must not report success:
+        # deleting the doc would otherwise silently satisfy strict mode.
+        return [f"{docs_path}: expected cross-reference doc is missing"]
 
     text = docs_path.read_text(encoding="utf-8")
     problems: list[str] = []
@@ -187,27 +195,61 @@ def check_docs_drift(docs_path: Path, lane_ids: set[str]) -> list[str]:
     unmapped_block = re.search(
         r"Lanes without any gate mapping today:(.*?)(?:These either|\n\n)", text, re.S
     )
-    if unmapped_block:
+    if unmapped_block is None:
+        # Fail closed: removing the section must not silently disable the
+        # phantom-lane and lane-coverage checks it feeds. Treat the list as
+        # empty so the checks below still run and report the resulting gaps.
+        problems.append(
+            f"{docs_path}: the 'Lanes without any gate mapping today:' section is "
+            f"missing, so its lane list cannot be checked"
+        )
+        listed: set[str] = set()
+    else:
         listed = set(re.findall(r"`([a-z0-9_]+)`", unmapped_block.group(1)))
         for lane in sorted(listed - lane_ids):
             problems.append(
                 f"{docs_path}: `{lane}` is listed as an unmapped lane but is not a "
                 f"lane in ci-lanes.toml"
             )
-        for lane in sorted(lane_ids - listed - set(table)):
-            problems.append(
-                f"{docs_path}: lane `{lane}` appears in neither the lane table nor "
-                f"the unmapped-lane list"
-            )
-        total = len(table) + len(listed)
-        if total != len(lane_ids):
-            problems.append(
-                f"{docs_path}: lane enumeration sums to {total} "
-                f"({len(table)} mapped + {len(listed)} unmapped) but ci-lanes.toml "
-                f"defines {len(lane_ids)}"
-            )
+
+    for lane in sorted(lane_ids - listed - set(table)):
+        problems.append(
+            f"{docs_path}: lane `{lane}` appears in neither the lane table nor "
+            f"the unmapped-lane list"
+        )
+    total = len(table) + len(listed)
+    if total != len(lane_ids):
+        problems.append(
+            f"{docs_path}: lane enumeration sums to {total} "
+            f"({len(table)} mapped + {len(listed)} unmapped) but ci-lanes.toml "
+            f"defines {len(lane_ids)}"
+        )
 
     return problems
+
+
+def resolve_docs_target(
+    docs: Path | None, gate_policy: Path, lanes: Path
+) -> Path | None:
+    """Decide which doc, if any, the lane enumeration should be checked against.
+
+    The doc mirrors the *repository's* gate policy and lane set. Checking it
+    against caller-supplied fixtures compares two unrelated things and reports
+    drift that does not exist -- which is exactly what happened to
+    test_validate_gate_lane_mapping.py, whose temporary gate-policy/lanes files
+    made strict mode fail on the real doc.
+
+    So: an explicit --docs is always honoured (the caller asked for it); the
+    repository default is used only when both other inputs are also defaults;
+    otherwise the caller is working with fixtures and docs validation is out of
+    scope. Returning None means "not applicable", which is distinct from "the
+    file is missing" -- that is a discrepancy, handled in check_docs_drift.
+    """
+    if docs is not None:
+        return docs
+    if gate_policy == DEFAULT_GATE_POLICY and lanes == DEFAULT_LANES:
+        return DEFAULT_DOCS
+    return None
 
 
 def main() -> int:
@@ -215,15 +257,15 @@ def main() -> int:
     parser.add_argument(
         "--docs",
         type=Path,
-        default=Path("docs/ci/gate-policy-economics.md"),
-        help="Cross-reference doc whose lane enumeration must match this mapping.",
+        default=None,
+        help=(
+            "Cross-reference doc whose lane enumeration must match this mapping. "
+            f"Defaults to {DEFAULT_DOCS} when --gate-policy and --lanes are also "
+            "left at their repository defaults; see resolve_docs_target."
+        ),
     )
-    parser.add_argument(
-        "--gate-policy", type=Path, default=Path(".ci/gate-policy.yaml")
-    )
-    parser.add_argument(
-        "--lanes", type=Path, default=Path("policy/ci-lanes.toml")
-    )
+    parser.add_argument("--gate-policy", type=Path, default=DEFAULT_GATE_POLICY)
+    parser.add_argument("--lanes", type=Path, default=DEFAULT_LANES)
     parser.add_argument(
         "--strict",
         action="store_true",
@@ -281,8 +323,13 @@ def main() -> int:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
-    docs_problems = check_docs_drift(args.docs, lane_ids)
-    print(f"Docs lane-enumeration drift: {len(docs_problems)}")
+    docs_target = resolve_docs_target(args.docs, args.gate_policy, args.lanes)
+    if docs_target is None:
+        docs_problems: list[str] = []
+        print("Docs lane-enumeration drift: skipped (custom --gate-policy/--lanes)")
+    else:
+        docs_problems = check_docs_drift(docs_target, lane_ids)
+        print(f"Docs lane-enumeration drift: {len(docs_problems)}")
     for problem in docs_problems:
         print(f"  - {problem}")
 

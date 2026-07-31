@@ -23,6 +23,8 @@ struct PolicyGate {
     required: bool,
     #[serde(default)]
     command: String,
+    #[serde(default)]
+    quarantine: bool,
     timeout_seconds: Option<u64>,
     budgets: Option<GateBudgets>,
     planning: Option<GatePlanning>,
@@ -267,6 +269,11 @@ fn gate_registry_alignment_prevents_stale_parser_wiring() -> Result<(), Box<dyn 
 /// This list is the contract. If a crate legitimately leaves the LSP unit
 /// surface, change it here deliberately — do not let it drift by editing one
 /// `command:` string.
+/// The crate the split isolates. It carries 2815 lib tests — nearly twice the
+/// other five combined — which is what pushed the original single lane into its
+/// ceiling. Keeping it alone is the split's load-bearing property.
+const LSP_CORE_CRATE: &str = "perl-lsp-rs-core";
+
 const LSP_UNIT_SURFACE: [&str; 6] = [
     "perl-lsp-perltidy",
     "perl-lsp-rs",
@@ -317,6 +324,14 @@ fn lsp_unit_lanes_partition_the_surface_exactly() -> Result<(), Box<dyn std::err
             "{lane_name} must stay required — the LSP unit surface is never-skippable"
         );
         assert_eq!(lane.tier, "merge_gate", "{lane_name} must stay in the merge_gate tier");
+        // `required` and `tier` do not encode never-skippable on their own: a
+        // quarantined gate stays required and merge_gate while no longer
+        // blocking merge, which is the exact behaviour this lane must not gain.
+        assert!(
+            !lane.quarantine,
+            "{lane_name} must not be quarantined — a quarantined lane still reads as \
+             required but stops blocking merge, which silently un-gates the LSP surface"
+        );
 
         // Both lanes must run under identical flags. The split only preserves
         // coverage if the two invocations differ solely in their package set:
@@ -334,7 +349,32 @@ fn lsp_unit_lanes_partition_the_surface_exactly() -> Result<(), Box<dyn std::err
             );
         }
 
-        seen.extend(package_args(&lane.command));
+        // The union check below is satisfied by any partition of the surface,
+        // including swapping the two lanes or collapsing everything into one.
+        // The split is only meaningful if core stays alone: it is the crate
+        // whose 2815 lib tests forced the original lane against its ceiling.
+        let packages = package_args(&lane.command);
+        if lane_name == "unit_lsp_core_full" {
+            assert_eq!(
+                packages,
+                vec![LSP_CORE_CRATE.to_string()],
+                "unit_lsp_core_full must run exactly {LSP_CORE_CRATE} — isolating it \
+                 is the whole point of the split; adding crates here rebuilds the \
+                 oversized lane #5425 broke up"
+            );
+        } else {
+            let mut others: Vec<String> = LSP_UNIT_SURFACE
+                .iter()
+                .filter(|c| **c != LSP_CORE_CRATE)
+                .map(|c| (*c).to_string())
+                .collect();
+            others.sort();
+            let mut got = packages.clone();
+            got.sort();
+            assert_eq!(got, others, "unit_lsp_full must run exactly the five non-core LSP crates");
+        }
+
+        seen.extend(packages);
     }
 
     let mut deduped = seen.clone();
@@ -390,6 +430,21 @@ fn lsp_unit_lanes_share_ceiling_and_budget() -> Result<(), Box<dyn std::error::E
         .collect();
     assert_eq!(budgets.len(), 2, "both LSP unit lanes must declare a budget");
     assert_eq!(budgets[0], budgets[1], "LSP unit lane budgets must match each other");
+
+    // Equality and the ratio band below are both satisfied by matching-but-wrong
+    // values (e.g. both lanes dropped to 300s/240000). Pin the measured pair:
+    // 420s is the ceiling #5425 kept rather than relaxed, and 336000 is the
+    // 0.80 budget the first hosted receipt confirmed for both lanes.
+    assert_eq!(
+        timeouts[0], 420,
+        "LSP unit lane ceiling must stay 420s — #5425 split the lane precisely so \
+         the ceiling would not have to move again"
+    );
+    assert_eq!(
+        budgets[0], 336_000,
+        "LSP unit lane budget must stay 336000ms (0.80 x 420s), the value the \
+         hosted receipt measured both lanes comfortably inside"
+    );
 
     // Keep the budget:ceiling ratio in line with the sibling test lanes.
     // unit_analysis_full, unit_dap_support_full, and lsp_smoke all sit at
