@@ -189,6 +189,21 @@ fn dollar_hash_dollar_ref_in_string_emits_single_variable() -> R {
     Ok(())
 }
 
+// $#$$ref chains a *double* deref sigil inside the `$#` array-length form
+// (as opposed to `$#$ref`'s single sigil). Verified against real perl
+// 5.38.2:
+//   my @a=(1,2,3); my $r1=\@a; my $ref=\$r1; print "$#$$ref";  # prints 2
+// This is a distinct exercise of the `while self.current_char() == Some('$')`
+// loop at the `Some('$')` sub-arm of `$#` -- the single-`$` case
+// (`dollar_hash_dollar_ref_in_string_emits_single_variable` above) only
+// iterates that loop once; this pins the multi-iteration path.
+#[test]
+fn dollar_hash_double_dollar_ref_in_string_emits_single_variable() -> R {
+    let parts = interpolated_parts(r#""$#$$ref""#).ok_or("no InterpolatedString")?;
+    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$#$$ref"))]);
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Deref-then-brace: $${foo}, $$${foo} (regression from PR #5235 review)
 // ---------------------------------------------------------------------------

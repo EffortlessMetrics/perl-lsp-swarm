@@ -106,6 +106,42 @@ fn array_interpolation_followed_by_text() -> R {
     Ok(())
 }
 
+// Non-ASCII (UTF-8) identifier continuation after '@', mirroring the
+// UTF-8 fast-path fallback the '$' arm already exercises for `$café`
+// (see tokenizer_edge_case_tests.rs). The '@' arm ports the same
+// byte>=128 -> is_perl_identifier_continue fallback loop, but had no
+// direct test forcing that branch: every existing `@`-interpolation
+// test uses pure-ASCII names, so the non-ASCII continuation path was
+// unexercised.
+#[test]
+fn at_followed_by_unicode_identifier_is_variable() -> R {
+    let parts = interp_parts("\"@caf\u{00e9}\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@caf\u{00e9}"))],
+        "\"@café\" should produce Variable(\"@café\"), got {parts:?}"
+    );
+    Ok(())
+}
+
+// Trailing '@' with nothing after it (current_char() is None once the
+// sigil is consumed) must fall into the literal fallback arm rather than
+// panicking or losing the sigil -- mirrors the existing bare-trailing-'$'
+// regression guard in fix_5042_dollar_interpolation.rs.
+#[test]
+fn at_followed_by_nothing_stays_literal() -> R {
+    let parts = interp_parts("\"abc@\"")?;
+    let joined: String = parts
+        .iter()
+        .map(|part| match part {
+            StringPart::Literal(text) => Ok(text.to_string()),
+            other => Err(format!("expected only literal parts, got {other:?}")),
+        })
+        .collect::<Result<String, String>>()?;
+    assert_eq!(joined, "abc@", "trailing '@' in \"abc@\" must survive as literal text");
+    Ok(())
+}
+
 #[test]
 fn array_interpolation_disabled_keeps_at_as_literal_text() -> R {
     let config = LexerConfig { parse_interpolation: false, ..Default::default() };
