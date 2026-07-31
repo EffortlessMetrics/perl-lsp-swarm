@@ -551,7 +551,7 @@ impl CriticRule for DuplicateParameterRule {
     }
 
     fn default_severity(&self) -> Severity {
-        Severity::Gentle
+        Severity::Stern
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
@@ -617,7 +617,7 @@ impl CriticRule for DuplicateLexicalDeclarationRule {
     }
 
     fn default_severity(&self) -> Severity {
-        Severity::Gentle
+        Severity::Stern
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
@@ -4582,7 +4582,7 @@ mod tests {
         let finding = &findings[0];
         assert_eq!(finding.rule_id, "native.variables.duplicate_parameter");
         assert_eq!(finding.category, CriticCategory::Semantic);
-        assert_eq!(finding.severity, Severity::Gentle);
+        assert_eq!(finding.severity, Severity::Stern);
         assert_eq!(finding.message, "Parameter '$arg' appears more than once in this signature");
         assert_eq!(finding.suppression_key, "native.variables.duplicate_parameter");
         assert_eq!(&source[finding.range.start.byte..finding.range.end.byte], "$arg");
@@ -4650,7 +4650,7 @@ mod tests {
             violations[0].explanation,
             "Remove the duplicate parameter or rename it so every signature binding is unique."
         );
-        assert_eq!(violations[0].severity, Severity::Gentle);
+        assert_eq!(violations[0].severity, Severity::Stern);
         assert_eq!(violations[0].file, "lib/App.pm");
     }
 
@@ -4752,7 +4752,7 @@ mod tests {
         let finding = &findings[0];
         assert_eq!(finding.rule_id, "native.variables.duplicate_lexical");
         assert_eq!(finding.category, CriticCategory::Semantic);
-        assert_eq!(finding.severity, Severity::Gentle);
+        assert_eq!(finding.severity, Severity::Stern);
         assert_eq!(
             finding.message,
             "Lexical variable '$dup' is declared more than once in the same scope"
@@ -4825,7 +4825,7 @@ mod tests {
             violations[0].explanation,
             "Remove the duplicate lexical declarator or assign to the existing lexical variable."
         );
-        assert_eq!(violations[0].severity, Severity::Gentle);
+        assert_eq!(violations[0].severity, Severity::Stern);
         assert_eq!(violations[0].file, "lib/App.pm");
     }
 
