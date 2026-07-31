@@ -31,7 +31,6 @@ python3 scripts/worktree-manager.py allocate \
   --slug compiler-recovery \
   --owner lane-a
 python3 scripts/worktree-manager.py release --slot 1 --owner lane-a
-python3 scripts/worktree-manager.py cleanup-current
 ```
 
 `allocate` creates the canonical `agent/<kind>-<id>-<slug>` branch by default. Use `--use-existing-branch` only when that exact canonical branch already exists and is not checked out elsewhere.
