@@ -54,8 +54,9 @@ and the mapping to an LSP diagnostic severity:
 A finding is kept only when `rule_severity >= perlcritic_severity`. At the default
 threshold of `3`, every shipped native rule passes (the lowest native severity
 in use is `Harsh` = 3). Raising the threshold to `4` drops the `Harsh` rules;
-`5` keeps only the two `Gentle` rules. No shipped native rule uses `Cruel` (2)
-or `Brutal` (1), so native diagnostics are only ever `ERROR` or `WARNING`.
+`5` produces no findings (no shipped rule uses `Gentle`). No shipped native rule
+uses `Gentle` (5), `Cruel` (2), or `Brutal` (1), so native diagnostics are
+always `WARNING`.
 
 ## Profiles
 
@@ -91,9 +92,9 @@ but no shipped rule uses them.)
 | `native.security.system_exec` | Security | Harsh (3) | WARNING | `system()`/`exec()` runs a shell command | ✓ | ✓ |
 | `native.variables.unused_lexical` | Semantic | Stern (4) | WARNING | Lexical variable declared but never used | – | ✓ |
 | `native.variables.unused_parameter` | Semantic | Stern (4) | WARNING | Signature parameter is never used | – | ✓ |
-| `native.variables.duplicate_parameter` | Semantic | Gentle (5) | ERROR | Parameter appears more than once in a signature | – | ✓ |
+| `native.variables.duplicate_parameter` | Semantic | Stern (4) | WARNING | Parameter appears more than once in a signature | – | ✓ |
 | `native.variables.parameter_shadows_global` | Semantic | Stern (4) | WARNING | Parameter shadows an outer declaration | – | ✓ |
-| `native.variables.duplicate_lexical` | Semantic | Gentle (5) | ERROR | Lexical declared more than once in the same scope | – | ✓ |
+| `native.variables.duplicate_lexical` | Semantic | Stern (4) | WARNING | Lexical declared more than once in the same scope | – | ✓ |
 | `native.variables.shadowed_lexical` | Semantic | Stern (4) | WARNING | Lexical variable shadows an outer declaration | – | ✓ |
 | `native.regex.capture_without_match` | Semantic | Stern (4) | WARNING | Capture variable used with no preceding regex match | – | ✓ |
 | `native.variables.undeclared` | Semantic | Stern (4) | WARNING | Variable used but not declared | – | ✓ |
