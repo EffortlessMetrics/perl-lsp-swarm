@@ -274,10 +274,10 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 
 ### Diagnostics and quality
 
-| Command                       | Description                                                                                                              |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| **Perl: Check Syntax**        | Run a `perl -c` syntax check on the active file                                                                          |
-| **Perl: Run Critic**          | Run the optional Perl::Critic integration over the active file                                                                                    |
+| Command                       | Description                                                                                                                                            |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Perl: Check Syntax**        | Run a `perl -c` syntax check on the active file                                                                                                        |
+| **Perl: Run Critic**          | Run the optional Perl::Critic integration over the active file                                                                                         |
 | **Perl: Set Critic Severity** | Choose the minimum severity to report from the optional Perl::Critic integration — `5` reports only the most severe violations, `1` reports everything |
 
 ### Navigation and inspection
