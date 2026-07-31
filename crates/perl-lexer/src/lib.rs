@@ -170,8 +170,8 @@ use unicode::{is_perl_identifier_continue, is_perl_identifier_start};
 
 use crate::heredoc::HeredocSpec;
 use crate::lexer::helpers::{
-    empty_arc, is_builtin_function, is_compound_operator, is_keyword_fast, is_quote_op_word_prefix,
-    truncate_preview,
+    empty_arc, is_builtin_function, is_compound_operator, is_keyword_fast,
+    is_perl_punctuation_variable, is_quote_op_word_prefix, truncate_preview,
 };
 use crate::limits::{
     HEREDOC_TIMEOUT_MS, MAX_DELIM_NEST, MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES,
@@ -2562,9 +2562,8 @@ impl<'a> PerlLexer<'a> {
                     match self.current_char() {
                         Some('{') => {
                             let _ = self.consume_balanced_segment_in_string('{', '}', '"');
-                            parts.push(StringPart::Expression(Arc::from(
-                                &self.input[part_start..self.position],
-                            )));
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Expression(Arc::from(part_text)));
                         }
                         Some(ch) if is_perl_identifier_start(ch) => {
                             // Package-qualified array names interpolate as one
@@ -2593,9 +2592,8 @@ impl<'a> PerlLexer<'a> {
                                     break;
                                 }
                             }
-                            parts.push(StringPart::Variable(Arc::from(
-                                &self.input[part_start..self.position],
-                            )));
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
                         }
                         _ => {
                             // '@' not followed by identifier or '{' — treat as literal
@@ -2735,9 +2733,8 @@ impl<'a> PerlLexer<'a> {
                             while self.current_char().is_some_and(|c| c.is_ascii_digit()) {
                                 self.advance();
                             }
-                            parts.push(StringPart::Variable(Arc::from(
-                                &self.input[part_start..self.position],
-                            )));
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
                         }
                         // Control variables: $^W, $^O, $^X, etc.
                         Some('^') => {
@@ -2745,9 +2742,8 @@ impl<'a> PerlLexer<'a> {
                             if self.current_char().is_some_and(|c| c.is_ascii_uppercase()) {
                                 self.advance(); // consume the uppercase letter
                             }
-                            parts.push(StringPart::Variable(Arc::from(
-                                &self.input[part_start..self.position],
-                            )));
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
                         }
                         // Array-length operator: $#array, $#{expr}, $#$ref. All
                         // three interpolate to the last index of the referenced
@@ -2763,43 +2759,21 @@ impl<'a> PerlLexer<'a> {
                         // print "$#main::array"` prints "2").
                         Some('#') => {
                             self.advance(); // consume '#'
-                            match self.current_char() {
-                                Some('{') => {
-                                    let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                            if self.current_char() == Some('{') {
+                                let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                            } else {
+                                // `$#$ref` (and chained `$#$$ref`) first consume a
+                                // deref sigil run; bare `$#array` simply runs that
+                                // loop zero times. Both then take the same
+                                // package-qualified identifier scan, so they share
+                                // one path rather than duplicating it.
+                                while self.current_char() == Some('$') {
+                                    self.advance();
                                 }
-                                Some('$') => {
-                                    // $#$ref (and chained $#$$ref) -- consume the
-                                    // deref sigil chain, then the identifier.
-                                    while self.current_char() == Some('$') {
-                                        self.advance();
-                                    }
-                                    while let Some(ch) = self.current_char() {
-                                        if is_perl_identifier_continue(ch) {
-                                            self.advance();
-                                        } else if ch == ':' && self.peek_char(1) == Some(':') {
-                                            self.advance();
-                                            self.advance();
-                                        } else {
-                                            break;
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    while let Some(ch) = self.current_char() {
-                                        if is_perl_identifier_continue(ch) {
-                                            self.advance();
-                                        } else if ch == ':' && self.peek_char(1) == Some(':') {
-                                            self.advance();
-                                            self.advance();
-                                        } else {
-                                            break;
-                                        }
-                                    }
-                                }
+                                self.consume_qualified_identifier_in_string();
                             }
-                            parts.push(StringPart::Variable(Arc::from(
-                                &self.input[part_start..self.position],
-                            )));
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
                         }
                         // $$ (PID) when not followed by an identifier or brace
                         // group; otherwise `$$foo`, `$$$foo`, `$${foo}`, etc. are
@@ -2831,9 +2805,8 @@ impl<'a> PerlLexer<'a> {
                                     self.advance();
                                 }
                                 let _ = self.consume_balanced_segment_in_string('{', '}', '"');
-                                parts.push(StringPart::Expression(Arc::from(
-                                    &self.input[part_start..self.position],
-                                )));
+                                let part_text = &self.input[part_start..self.position];
+                                parts.push(StringPart::Expression(Arc::from(part_text)));
                             } else if after_run.is_some_and(is_perl_identifier_start) {
                                 // Deref chain: consume the remaining '$' sigils,
                                 // then the identifier they dereference, then any
@@ -2849,9 +2822,8 @@ impl<'a> PerlLexer<'a> {
                                 while self.current_char().is_some_and(is_perl_identifier_continue) {
                                     self.advance();
                                 }
-                                parts.push(StringPart::Variable(Arc::from(
-                                    &self.input[part_start..self.position],
-                                )));
+                                let part_text = &self.input[part_start..self.position];
+                                parts.push(StringPart::Variable(Arc::from(part_text)));
 
                                 // Arrow *subscripts* chain onto the deref and do
                                 // interpolate -- verified against real perl
@@ -2874,48 +2846,33 @@ impl<'a> PerlLexer<'a> {
                                         let _ =
                                             self.consume_balanced_segment_in_string('{', '}', '"');
                                     }
-                                    parts.push(StringPart::MethodCall(Arc::from(
-                                        &self.input[tail_start..self.position],
-                                    )));
+                                    let tail_text = &self.input[tail_start..self.position];
+                                    parts.push(StringPart::MethodCall(Arc::from(tail_text)));
                                 } else if self.current_char() == Some('[') {
                                     let tail_start = self.position;
                                     let _ = self.consume_balanced_segment_in_string('[', ']', '"');
-                                    parts.push(StringPart::ArraySlice(Arc::from(
-                                        &self.input[tail_start..self.position],
-                                    )));
+                                    let tail_text = &self.input[tail_start..self.position];
+                                    parts.push(StringPart::ArraySlice(Arc::from(tail_text)));
                                 } else if self.current_char() == Some('{') {
                                     let tail_start = self.position;
                                     let _ = self.consume_balanced_segment_in_string('{', '}', '"');
-                                    parts.push(StringPart::Expression(Arc::from(
-                                        &self.input[tail_start..self.position],
-                                    )));
+                                    let tail_text = &self.input[tail_start..self.position];
+                                    parts.push(StringPart::Expression(Arc::from(tail_text)));
                                 }
                             } else {
                                 self.advance(); // consume second '$' for PID
-                                parts.push(StringPart::Variable(Arc::from(
-                                    &self.input[part_start..self.position],
-                                )));
+                                let part_text = &self.input[part_start..self.position];
+                                parts.push(StringPart::Variable(Arc::from(part_text)));
                             }
                         }
                         // Punctuation special variables: $!, $@, $?, $&, etc.
-                        //
-                        // '"' is deliberately NOT in this set. Perl does define $"
-                        // (the list separator), but inside a double-quoted string the
-                        // closing delimiter wins: `perl -e 'print "$"'` prints a
-                        // literal '$' rather than interpolating $". Accepting '"'
-                        // here would consume the terminating quote, turning the
-                        // valid string "$" into an unterminated-string error and
-                        // mis-lexing everything after it. A trailing '$' falls
-                        // through to the literal arm below, which is the correct
-                        // reading.
-                        Some(
-                            '?' | '!' | '@' | '&' | '`' | '\'' | '.' | '/' | '\\' | '|' | '+' | '-'
-                            | '[' | ']' | '~' | '=' | '%' | ',' | ';' | '>' | '<' | ')' | '(',
-                        ) => {
+                        // `is_perl_punctuation_variable` owns the exact set and
+                        // documents why '"' is excluded; a trailing '$' falls
+                        // through to the literal arm below.
+                        Some(ch) if is_perl_punctuation_variable(ch) => {
                             self.advance(); // consume the special character
-                            parts.push(StringPart::Variable(Arc::from(
-                                &self.input[part_start..self.position],
-                            )));
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
                         }
                         // Unrecognized '$' — treat as literal character
                         _ => {

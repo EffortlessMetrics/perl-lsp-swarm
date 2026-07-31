@@ -227,3 +227,82 @@ fn at_trailing_package_separator_stays_in_the_variable() -> R {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Non-ASCII scan boundaries in the `@` name loop
+//
+// The `@` identifier scan walks raw bytes and only decodes a `char` when it
+// sees a byte >= 128, at which point `is_perl_identifier_continue(c)` decides
+// whether the multi-byte character continues the name or ends it. Every other
+// `@` test in this file uses either pure ASCII (never enters the byte >= 128
+// arm) or a continuing character such as `é` (always takes the `true` side),
+// so the `false` side of that predicate had no discriminator: an
+// implementation that unconditionally consumed every byte >= 128 would still
+// pass all of them.
+// ---------------------------------------------------------------------------
+
+// Verified against real perl 5.38.2:
+//   our @arr = ("x","y"); print "@arr\x{20AC}"   # prints "x y€"
+// so the euro sign terminates the array name and stays literal text.
+#[test]
+fn at_identifier_scan_stops_when_is_perl_identifier_continue_rejects_a_multibyte_char() -> R {
+    let parts = interp_parts("\"@arr\u{20ac}\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@arr")), StringPart::Literal(Arc::from("\u{20ac}")),],
+        "'\u{20ac}' is not an identifier-continue character, so it must end \"@arr\" and stay \
+         literal, got {parts:?}"
+    );
+    Ok(())
+}
+
+// The complementary positive: a multi-byte character that *is* an
+// identifier-continue character keeps the scan going past the byte >= 128
+// gate, so the name spans it. Together with the test above this pins both
+// sides of the `is_perl_identifier_continue(c)` predicate rather than only
+// the accepting side.
+#[test]
+fn at_identifier_scan_continues_through_an_accepted_multibyte_char_then_stops() -> R {
+    let parts = interp_parts("\"@caf\u{00e9}s\u{20ac}\"")?;
+    assert_eq!(
+        parts,
+        vec![
+            StringPart::Variable(Arc::from("@caf\u{00e9}s")),
+            StringPart::Literal(Arc::from("\u{20ac}")),
+        ],
+        "'é' continues the name and '\u{20ac}' ends it, got {parts:?}"
+    );
+    Ok(())
+}
+
+// The `@` arm opens a variable for anything `is_perl_identifier_start`
+// accepts, which in this lexer deliberately includes emoji as well as
+// XID_Start characters (see `ripr_seam_proof_peek_char.rs`, where `😀xy` is
+// one identifier token). Every other `@` test uses an ASCII or XID_Start
+// name, so an implementation that narrowed the gate to `is_xid_start` would
+// pass all of them and only fail here.
+#[test]
+fn at_sigil_opens_a_variable_for_every_is_perl_identifier_start_char_including_emoji() -> R {
+    let parts = interp_parts("\"@\u{1f600}xy\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@\u{1f600}xy"))],
+        "\"@😀xy\" should produce Variable(\"@😀xy\"), got {parts:?}"
+    );
+    Ok(())
+}
+
+// The `Some('{')` arm of the `@` sigil match must win over the identifier
+// arm even when the braced expression starts with an identifier character.
+// A wrong implementation that checked `is_perl_identifier_start` first would
+// emit Literal("@") + ... instead of one Expression part.
+#[test]
+fn at_brace_arm_wins_over_the_identifier_arm_for_a_braced_name() -> R {
+    let parts = interp_parts("\"@{main::arr}\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Expression(Arc::from("@{main::arr}"))],
+        "\"@{{main::arr}}\" must be one Expression part, got {parts:?}"
+    );
+    Ok(())
+}

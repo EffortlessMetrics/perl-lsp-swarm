@@ -518,3 +518,187 @@ fn deref_chain_arrow_paren_call_stays_literal() -> R {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// The punctuation special-variable set, exhaustively
+//
+// The `Some('?' | '!' | '@' | ...)` arm accepts 23 characters but only four
+// of them (`!`, `@`, `?`, `|`) had a discriminator above. An implementation
+// that shipped a shorter set — or that silently dropped the sigil for the
+// untested members, which is exactly the #5042 bug — would still pass. Each
+// character below is a real Perl special variable: every one of them was
+// confirmed to interpolate under real perl 5.38.2 (`perl -e 'print "[$&]"'`
+// and friends all produce the variable's value, never a literal `$`).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_punctuation_special_variable_in_the_match_arm_emits_one_variable_part() -> R {
+    // '"' is deliberately excluded from the arm (the closing delimiter wins),
+    // so it is the only member of the documented set missing here. '\\' is
+    // covered separately below because writing it inline needs escaping.
+    for punct in [
+        '?', '!', '@', '&', '`', '\'', '.', '/', '|', '+', '-', '[', ']', '~', '=', '%', ',', ';',
+        '>', '<', ')', '(',
+    ] {
+        let source = format!("\"${punct}\"");
+        let expected = format!("${punct}");
+        let parts = interpolated_parts(&source)
+            .ok_or_else(|| format!("\"${punct}\" did not lex as an InterpolatedString"))?;
+        assert_eq!(
+            parts,
+            vec![StringPart::Variable(Arc::from(expected.as_str()))],
+            "\"${punct}\" must interpolate as Variable(\"${punct}\"), got {parts:?}"
+        );
+    }
+    Ok(())
+}
+
+// `$\` is Perl's output record separator and it interpolates: the `$` sigil
+// claims the backslash before it can start an escape sequence. Verified
+// against real perl 5.38.2:
+//   $\ = "!"; print "x$\ny";   # writes  x!ny
+// so `"x$\ny"` is Literal("x") + Variable("$\") + Literal("ny") -- the `n` is
+// ordinary text, not the tail of a `\n` escape. The comment on
+// `dollar_backslash_in_string_emits_variable` above assumed this case was
+// unreachable and tested `$|` instead, leaving the real `$\` shape unpinned.
+#[test]
+fn dollar_backslash_is_the_output_record_separator_not_the_start_of_an_escape() -> R {
+    let parts = interpolated_parts("\"x$\\ny\"").ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![
+            StringPart::Literal(Arc::from("x")),
+            StringPart::Variable(Arc::from("$\\")),
+            StringPart::Literal(Arc::from("ny")),
+        ],
+        "\"x$\\ny\" must interpolate $\\ and leave \"ny\" literal, got {parts:?}"
+    );
+    Ok(())
+}
+
+// The negative side of the same arm: a character that is *not* a Perl
+// punctuation variable must fall through to the literal fallback and keep the
+// sigil. Without this, an implementation that accepted every character after
+// `$` would pass the exhaustive test above.
+#[test]
+fn a_character_outside_the_punctuation_arm_falls_through_to_the_literal_fallback() -> R {
+    let parts = interpolated_parts("\"$*tail\"").ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Literal(Arc::from("$*tail"))],
+        "'*' is not in the punctuation-variable set, so \"$*tail\" stays literal, got {parts:?}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Scan boundaries for the digit, control and array-length arms
+// ---------------------------------------------------------------------------
+
+// The digit arm consumes a maximal run of ASCII digits and must stop at the
+// first non-digit. Verified against real perl 5.38.2:
+//   "abc" =~ /(a)(b)/; print "[$1a]"   # prints "[aa]"
+// i.e. `$1` interpolates and the following `a` is literal text -- a digit
+// variable never absorbs a trailing letter.
+#[test]
+fn dollar_digit_run_stops_at_the_first_non_digit_character() -> R {
+    let parts = interpolated_parts("\"$1a\"").ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$1")), StringPart::Literal(Arc::from("a")),],
+        "\"$1a\" must be Variable(\"$1\") + Literal(\"a\"), got {parts:?}"
+    );
+    Ok(())
+}
+
+// The digit arm is gated on `is_ascii_digit`, not on "any Unicode digit".
+// `٣` (U+0663 ARABIC-INDIC DIGIT THREE) is `Nd` — a Unicode digit — but it is
+// neither an ASCII digit nor an identifier-start character, so it must fall
+// through to the literal fallback rather than being read as a capture-group
+// variable. Perl agrees: `$٣` is not a capture variable. An implementation
+// that used `char::is_numeric` here would emit Variable("$٣") instead.
+#[test]
+fn dollar_digit_arm_uses_is_ascii_digit_and_rejects_a_non_ascii_unicode_digit() -> R {
+    let parts = interpolated_parts("\"$\u{0663}\"").ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Literal(Arc::from("$\u{0663}"))],
+        "\"$٣\" must stay literal, got {parts:?}"
+    );
+    Ok(())
+}
+
+// The control-variable arm only absorbs an *uppercase* letter after `$^`.
+// Verified against real perl 5.38.2: `print "$^w"` prints the value of `$^`
+// (the format-top-name variable, "STDOUT_TOP") immediately followed by a
+// literal "w" -- perl does not read `$^w` as one control variable. A wrong
+// implementation that dropped the `is_ascii_uppercase` guard would produce
+// Variable("$^w") and lose the literal.
+#[test]
+fn dollar_caret_followed_by_a_lowercase_letter_leaves_the_letter_literal() -> R {
+    let parts = interpolated_parts("\"$^w\"").ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$^")), StringPart::Literal(Arc::from("w")),],
+        "\"$^w\" must be Variable(\"$^\") + Literal(\"w\"), got {parts:?}"
+    );
+    Ok(())
+}
+
+// The `$#$ref` deref tail folds `::`-qualified package names the same way the
+// bare `$#array` scan does. Verified against real perl 5.38.2:
+//   our @a=(1,2,3); our $ref=\@a; print "$#$main::ref"   # prints 2
+// so `main::ref` is one name; splitting it would leave a literal "::ref".
+#[test]
+fn dollar_hash_dollar_ref_folds_a_package_qualified_name() -> R {
+    let parts = interpolated_parts("\"$#$main::ref\"").ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$#$main::ref"))],
+        "\"$#$main::ref\" must be one Variable part, got {parts:?}"
+    );
+    Ok(())
+}
+
+// A single colon after `$#$ref` is not a package separator and must end the
+// name, pinning the `else if ch == ':' && peek == ':'` guard rather than a
+// looser "any colon continues" reading.
+#[test]
+fn dollar_hash_dollar_ref_stops_at_a_single_colon() -> R {
+    let parts = interpolated_parts("\"$#$ref:tail\"").ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$#$ref")), StringPart::Literal(Arc::from(":tail")),],
+        "a lone ':' must end \"$#$ref\", got {parts:?}"
+    );
+    Ok(())
+}
+
+// Same guard on the bare `$#array` scan: `$#arr:tail` is `$#arr` plus literal
+// text, while `$#main::arr` (covered above) folds the separator.
+#[test]
+fn dollar_hash_bare_array_stops_at_a_single_colon() -> R {
+    let parts = interpolated_parts("\"$#arr:tail\"").ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$#arr")), StringPart::Literal(Arc::from(":tail")),],
+        "a lone ':' must end \"$#arr\", got {parts:?}"
+    );
+    Ok(())
+}
+
+// `$#{...}` takes the brace sub-arm even though `{` could otherwise look like
+// the start of a subscript, and the whole thing stays one Variable part.
+// This complements the `$#{$ref}` test above with a plain (non-sigil) inner
+// expression, which is the shape that would fragment first if the brace
+// sub-arm were dropped.
+#[test]
+fn dollar_hash_brace_arm_keeps_a_plain_inner_expression_in_one_variable() -> R {
+    let parts = interpolated_parts("\"$#{arr}\"").ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$#{arr}"))],
+        "\"$#{{arr}}\" must be one Variable part, got {parts:?}"
+    );
+    Ok(())
+}
