@@ -58,6 +58,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "unit_foundation_full": {"lanes": ["merge_gate_shards"]},
     "unit_parser_stack_full": {"lanes": ["merge_gate_shards"]},
     "unit_analysis_full": {"lanes": ["merge_gate_shards"]},
+    "unit_lsp_core_full": {"lanes": ["merge_gate_shards"]},
     "unit_lsp_full": {"lanes": ["merge_gate_shards"]},
     "unit_dap_support_full": {"lanes": ["merge_gate_shards"]},
     "compile_all_targets": {"lanes": ["check_all_targets"]},
