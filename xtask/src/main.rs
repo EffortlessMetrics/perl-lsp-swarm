@@ -95,7 +95,8 @@ enum Commands {
     /// Validate Real Perl Editor Trust support claim map.
     CheckSupportClaims,
 
-    /// Validate the active swarm goal manifest and linked docs.
+    /// RETIRED: performs no validation and emits a retirement receipt.
+    /// The active goal manifest it validated no longer exists. Always exits 0.
     CheckActiveGoalManifest,
 
     /// Validate machine-readable Real Perl Editor Trust provider promotion ledger.
@@ -3607,14 +3608,12 @@ enum DevexCommand {
 
 #[derive(Subcommand)]
 enum GoalsCommand {
-    /// Select the next eligible slice of work from live evidence
-    /// (main, live open GitHub PRs, the M2 manifest chain, and — for
-    /// milestone-ledger programs — the `[[milestone]]` ledger).
-    /// READ-ONLY: never creates a branch, worktree, or PR.
+    /// RETIRED: selects no work and emits a retirement receipt.
+    /// The tracked goal portfolio is gone; live GitHub issues, PRs, reviews,
+    /// and checks are the authority. Always exits 0 with `selected_work = none`.
     Next {
-        /// Explicitly select a program by id (`.perl-lsp/goals/programs/<id>.toml`).
-        /// No implicit repository-global program is selected; pass `--program`
-        /// to inspect one program explicitly.
+        /// Accepted for compatibility and ignored. The tracked program files
+        /// this once referenced no longer exist.
         #[arg(long)]
         program: Option<String>,
 
@@ -3627,15 +3626,12 @@ enum GoalsCommand {
         json: bool,
     },
 
-    /// Diagnose milestones whose self-reported ledger status may have
-    /// drifted from live GitHub reality (e.g. `in_progress` with a merged,
-    /// not open, PR) or that lack the identity `next`'s selector needs.
-    /// READ-ONLY, advisory (#3696 item B): never mutates a ledger or PR.
-    /// Exits non-zero when findings exist.
+    /// RETIRED: reports no findings and emits a retirement receipt.
+    /// The tracked milestone ledgers this diagnosed no longer exist; live
+    /// GitHub is the authority. Always exits 0 with `finding_count = 0`.
     Reconcile {
-        /// Explicitly select a program by id (`.perl-lsp/goals/programs/<id>.toml`).
-        /// No implicit repository-global program is selected; pass `--program`
-        /// to reconcile one program explicitly.
+        /// Accepted for compatibility and ignored. The tracked program files
+        /// this once referenced no longer exist.
         #[arg(long)]
         program: Option<String>,
 
