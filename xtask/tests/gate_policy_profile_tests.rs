@@ -379,13 +379,22 @@ fn lsp_unit_lanes_share_ceiling_and_budget() -> Result<(), Box<dyn std::error::E
     assert_eq!(budgets.len(), 2, "both LSP unit lanes must declare a budget");
     assert_eq!(budgets[0], budgets[1], "LSP unit lane budgets must match each other");
 
-    // Keep the budget:ceiling ratio in line with the other test lanes
-    // (unit_analysis_full, unit_dap_support_full, and lsp_smoke are all 0.80).
+    // Keep the budget:ceiling ratio in line with the sibling test lanes.
+    // unit_analysis_full, unit_dap_support_full, and lsp_smoke all sit at
+    // exactly 0.80 (240000/300s), as do both LSP lanes (336000/420s). The
+    // enforced band below is deliberately wider than that single observed
+    // value so a considered retune does not trip the guard, but narrow enough
+    // to catch a budget set without reference to its ceiling. One band, stated
+    // once: the assertion, this comment, and the failure message must agree.
+    const MIN_BUDGET_RATIO: f64 = 0.75;
+    const MAX_BUDGET_RATIO: f64 = 0.85;
+
     let ratio = budgets[0] as f64 / (timeouts[0] as f64 * 1000.0);
     assert!(
-        (0.70..=0.90).contains(&ratio),
-        "LSP unit lane budget:ceiling ratio {ratio:.2} is out of line with the \
-         0.75-0.83 the other test lanes use"
+        (MIN_BUDGET_RATIO..=MAX_BUDGET_RATIO).contains(&ratio),
+        "LSP unit lane budget:ceiling ratio {ratio:.2} is outside the enforced \
+         {MIN_BUDGET_RATIO:.2}-{MAX_BUDGET_RATIO:.2} band; the sibling test lanes \
+         all sit at 0.80"
     );
 
     Ok(())
