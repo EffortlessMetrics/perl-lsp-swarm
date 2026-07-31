@@ -24,6 +24,14 @@ If another PR lands and this candidate remains valid, do nothing. If an actual c
 
 Selecting a claim is not a completion result: invoke `deliver-pr` immediately. When one claim returns `IN_FLIGHT`, resume this loop and advance another distinct actionable claim.
 
+## What this establishes
+
+Bounded advancement of one selected durable outcome through distinct coherent claims, with the current goal boundary, merged results, in-flight work, and every residual required claim stated when the loop terminates.
+
+## What this does not establish
+
+A repository scheduler, tracked active-goal pointer, portfolio queue, build-all-eligible wave, overlap ledger, or merge authorization independent of each candidate's live ruleset and evidence.
+
 ## Terminal results
 
 Return `GOAL_SATISFIED`, `GOAL_PARTIAL`, `EXTERNAL_BLOCKER`, or `NOT_PROVEN`.
