@@ -149,6 +149,7 @@ pub mod keywords;
 mod lexer;
 pub mod limits;
 pub mod mode;
+pub mod numeric;
 mod quote_handler;
 pub mod symbol_table;
 pub mod token;
