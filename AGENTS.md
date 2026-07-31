@@ -72,11 +72,11 @@ Direct execution is normal. Use focused subagents, context forks, external oracl
 or whole-flow workers when another context, tool surface, or review method materially
 changes the evidence or reduces elapsed work.
 
-One coherent claim normally has one current candidate. One writer mutates that
-candidate branch or worktree at a time. Do not inspect sibling worktrees, reserve
-files or semantic surfaces, or create competing implementations merely because other
-PRs exist. When Git or required integration evidence presents an actual conflict, the
-affected lane repairs it and refreshes only the affected proof and review.
+One coherent claim normally has one current candidate, and one writer mutates that
+candidate at a time. Before creating another candidate, check only for an equivalent
+current PR and explicit prerequisites. Otherwise focus on the selected claim. If Git
+or required integration evidence later presents a real conflict, the affected lane
+repairs it and refreshes only the affected proof and review.
 
 Use a direct issue or PR comment when another lane genuinely needs a material fact:
 a prerequisite changed, a governing ruling changed, one claim superseded another, or
