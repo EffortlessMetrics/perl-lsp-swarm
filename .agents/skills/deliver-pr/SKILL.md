@@ -75,6 +75,14 @@ When CI, review, auto-merge, or another external transition owns the next action
 - do not call the claim blocked merely because it is in flight;
 - do not poll unchanged state or refresh the branch for unrelated `main` movement.
 
+## What this establishes
+
+A bounded route for one coherent claim through its current issue, proof, candidate, pull request, integration, and closeout state, returning reconciled truth or an exact in-flight, partial, superseded, blocked, or not-proven result.
+
+## What this does not establish
+
+A repository scheduler, tracked active-claim pointer, competing candidate set, cross-lane overlap ledger, or merge authorization independent of the live ruleset, required checks, and current review evidence.
+
 ## Completion
 
 Return one bounded result:
