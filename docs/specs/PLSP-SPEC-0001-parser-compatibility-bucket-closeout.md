@@ -9,7 +9,7 @@ Implemented by:
 - [parser accuracy next](../project/status/parser_accuracy_next.md)
 - [parser status](../project/status/parser.md)
 - [Real Perl Editor Trust implementation plan](../../plans/real-perl-editor-trust/implementation-plan.md)
-- [completed active goal manifest](../../.perl-lsp/goals/active.toml)
+- GitHub issue/PR history and current generated evidence; the retired goal manifests remain available through Git history
 Status impact: parser accuracy next, parser status, parser receipts
 
 ## Current implementation status
@@ -20,10 +20,10 @@ This spec is implemented as a control-plane rule. Current evidence lives in:
 - [parser raw failure buckets](../project/status/parser.md#raw-failure-buckets)
 - [Real Perl Editor Trust routing dashboard](../project/status/real_perl_editor_trust_v1.md)
 - [Real Perl Editor Trust implementation plan](../../plans/real-perl-editor-trust/implementation-plan.md)
-- [completed active goal manifest](../../.perl-lsp/goals/active.toml)
+- current GitHub issues, PRs, checks, and exact generated receipts
 
-Current next work is not stored here; see the routing dashboard and generated
-parser status.
+Current next work is not stored here or in a tracked selector. Read the current
+GitHub graph and generated parser evidence for the selected concern.
 
 ## Contract
 

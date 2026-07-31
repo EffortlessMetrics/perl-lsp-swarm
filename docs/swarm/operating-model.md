@@ -1,100 +1,107 @@
-# perl-lsp-swarm Operating Model
+# perl-lsp-swarm operating model
 
-`perl-lsp-swarm` is the active execution repo for Real Perl Editor Trust work.
-`perl-lsp` remains the canonical release, history, and package-lineage repo until
-curated sync and release PRs promote swarm work back upstream.
+`perl-lsp-swarm` is the active development repository. `perl-lsp` remains the
+curated release, history, and package-lineage repository until a separate
+history-preserving repository decision changes that relationship.
 
-This document is a control-plane contract. It does not change provider behavior,
-CI workflows, release automation, labels, or package publication.
+This document defines repository roles and live-state ownership. It does not
+create a scheduler, active lane, work queue, or provider runtime topology.
 
-## Repo Roles
+## Repository roles
 
-| Repo | Role | Allowed work |
-|---|---|---|
-| `perl-lsp-swarm` | Active development execution repo | Agent lanes, promotion-ledger work, proof receipts, cleanup trains, spec hardening, compiler substrate work |
-| `perl-lsp` | Release lineage and curated upstream repo | Release sync PRs, history preservation, user-facing package lineage, emergency release fixes |
+| Repository | Role | Normal work |
+| --- | --- | --- |
+| `perl-lsp-swarm` | Active development and proof | Product/compiler/LSP/DAP changes, tests, specs, evidence, cleanup, and current PR integration |
+| `perl-lsp` | Curated release lineage | Release syncs, history preservation, package lineage, and emergency release fixes mirrored back to swarm |
 
-Default routing rule:
-
-```text
-All new development targets perl-lsp-swarm.
-perl-lsp receives curated sync and release-lineage PRs only.
-```
-
-Current lineage rule:
+Default routing:
 
 ```text
-perl-lsp-swarm is currently a content-sync development repo, not a full-history
-mirror of perl-lsp.
+new development → perl-lsp-swarm
+curated release sync → perl-lsp
+emergency release fix → perl-lsp, then mirror/reconcile into swarm
 ```
 
-The full source commit graph and GitHub contributor graph remain authoritative in
-`perl-lsp` until a separate history-preserving mirror/fork decision replaces this
-content-sync model. Sync PRs must record the exact source repository, source
-branch, source SHA, swarm target, and sync commit or PR.
+See [sync-protocol.md](sync-protocol.md) for exact history-preserving sync and
+release mechanics.
 
-## Active Manifest
-
-The machine-readable current lane lives in
-[`.perl-lsp/goals/active.toml`](../../.perl-lsp/goals/active.toml).
-
-The manifest records:
-
-- current repo role
-- lane WIP caps
-- trust, substrate, and reliability lane ownership
-- next work queues
-- proof commands for this control-plane boundary
-
-It points at status and spec documents instead of copying generated status
-tables.
-
-## Lanes
-
-| Lane | WIP cap | Owns | Rule |
-|---|---:|---|---|
-| Trust | 2 PRs | Provider promotion ledger, Real Perl Editor Trust v1 boundary, workspace symbols, semantic tokens, rename, safe-delete, diagnostic explanations, workspace trust report | No broadening. Every provider-facing PR names promotion, fallback, blocker, and receipt boundaries. |
-| Compiler substrate | 2 PRs | Lexer/parser/proptest, constants, prototypes, barewords, PIR, determinism prep, oracle prep | No provider cutover unless the trust lane explicitly promotes a fact class. |
-| Reliability | 4 PRs | Fuzzing, E2E diagnostics, DevEx, docs, SRP refactors, coverage, policy cleanup, published API hygiene | Merge clean leaf work. Escalate trust-adjacent surfaces. |
-
-Work outside those caps parks unless it fixes a red gate.
-
-## Trust-Lane PR Discipline
-
-Every main trust-lane PR must name:
+## State ownership
 
 ```text
-one fact class
-one provider surface
-one promotion rule
-one fallback rule
-one blocker rule
-one receipt
+repository
+  durable product, architecture, method, specification, and proof contracts
+
+GitHub
+  live issues, PRs, reviews, threads, checks, rulesets, merges, and remaining work
+
+runtime
+  selected claim, agent/model choices, task lists, worktrees, retries, and liveness
 ```
 
-If a PR cannot name those boundaries, it is reliability or substrate work, not
-main-lane promotion work.
+No tracked file appoints the repository's current program, lane, queue, or next
+work item. Multi-PR outcomes live as ordinary GitHub umbrella issues, linked
+specifications/ADRs, and current-main evidence. Several outcomes and claim lanes
+may be active simultaneously.
 
-## High-Scrutiny Surfaces
+The retired `.perl-lsp/goals/` manifests remain recoverable through Git history.
+The compatibility commands `cargo xtask goals next`, `cargo xtask goals
+reconcile`, and `cargo xtask check-active-goal-manifest` report retirement and
+select no work.
 
-These surfaces cannot be treated as routine cleanup:
+## Development method
 
-- rename
-- safe-delete
-- code actions
-- subprocess runtime
-- URI and path normalization
-- module path resolution
-- LSP runtime state
-- DAP launch or DAP process state
-- published public APIs
-- provider promotion rows
+The active provider-neutral method is defined by:
 
-Refactors touching those surfaces need explicit behavior boundaries and proof.
+- [Development method](../agents/DEVELOPMENT_METHOD.md)
+- [GitHub surfaces](../agents/GITHUB_SURFACES.md)
+- [Review and proof currentness](../agents/REVIEW_CURRENTNESS.md)
+- [Skill contract](../agents/SKILL_CONTRACT.md)
 
-## Current Control-Plane Boundary
+The six public flows are:
 
-Real Perl Editor Trust stays bounded by the existing specs and status docs:
+```text
+deliver-goal
+deliver-pr
+prepare-issue
+prepare-proof
+build-candidate
+finish-pr
+```
+
+A fresh Claude or Codex session reconstructs only the selected outcome or claim,
+enters at the earliest absent or stale useful judgment, follows locally named
+skill routes, and continues until the requested result is reconciled, explicitly
+left in flight under GitHub authority, or bounded by a real blocker or
+`NOT_PROVEN` evidence.
+
+## Concurrency
+
+One writer mutates each current candidate branch/worktree at a time. Distinct
+claim lanes use ordinary optimistic Git concurrency and may touch the same files,
+crates, or nearby semantics. Do not create file reservations, semantic-surface
+ownership, overlap maps, or sibling-lane surveillance.
+
+When Git reports a conflict, an explicit prerequisite changes, or actual
+merge-group/combined-tree proof fails, the affected lane owns the smallest
+coherent repair and refreshes only affected proof and review.
+
+## High-scrutiny surfaces
+
+These surfaces require explicit behavior, authority, failure, proof, and claim
+boundaries rather than routine-cleanup treatment:
+
+- rename, safe delete, and edit-producing code actions;
+- subprocess and DAP process state;
+- URI/path/module resolution;
+- LSP runtime and workspace-currentness state;
+- published APIs, schemas, packages, and support claims;
+- provider promotion and fallback decisions;
+- compiler fact provenance and dynamic boundaries.
+
+## Current durable control-plane contracts
+
+Real Perl Editor Trust remains bounded by the accepted specifications and
+current generated evidence, including:
 
 - [Real Perl Editor Trust v1 boundary](../specs/PLSP-SPEC-0015-real-perl-editor-trust-v1-boundary.md)
 - [Provider decision receipt v1](../specs/PLSP-SPEC-0016-provider-decision-receipt-v1.md)
@@ -110,12 +117,5 @@ Real Perl Editor Trust stays bounded by the existing specs and status docs:
 - [Real Perl Editor Trust dashboard](../project/status/real_perl_editor_trust_v1.md)
 - [Provider promotion ledger](../project/status/provider_promotion_ledger.md)
 
-## Next Control-Plane PRs
-
-After this manifest PR, keep the next control-plane slices separate:
-
-1. Add the swarm PR template and review rules.
-2. Mark `perl-lsp` as release-lineage only.
-3. Define the curated sync protocol from `perl-lsp-swarm` to `perl-lsp`.
-
-Those follow-ups should not be bundled into this PR.
+Generated status is evidence for its exact generation and inputs. It does not
+select work or create a repository-global current lane.

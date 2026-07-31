@@ -12,7 +12,7 @@ Implemented by:
 - [parser accuracy next](../project/status/parser_accuracy_next.md)
 - [Linux corpus refresh receipt](../forensics/2026-05-18-linux-system-corpus-refresh.md)
 - [Real Perl Editor Trust implementation plan](../../plans/real-perl-editor-trust/implementation-plan.md)
-- [completed active goal manifest](../../.perl-lsp/goals/active.toml)
+- GitHub issue/PR history and current exact corpus receipts; retired goal manifests remain available through Git history
 Status impact: parser status, parser raw buckets, support claims
 
 ## Current implementation status
@@ -25,8 +25,8 @@ This spec is implemented as a control-plane rule. Current evidence lives in:
 - [Real Perl Editor Trust routing dashboard](../project/status/real_perl_editor_trust_v1.md)
 - [Real Perl Editor Trust implementation plan](../../plans/real-perl-editor-trust/implementation-plan.md)
 
-Current next work is not stored here; see the routing dashboard and generated
-parser status.
+Current next work is not stored here or in a tracked selector. Read the current
+GitHub graph and generated parser evidence for the selected concern.
 
 ## Contract
 
