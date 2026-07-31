@@ -43,7 +43,7 @@ merged or deliberately closed but unreconciled
   → $merge-reconcile through $finish-pr
 
 claim already reconciled
-  → return completed result
+  → return `RECONCILED`
 ```
 
 Existing coherent work enters midstream. Create or link a missing issue where it improves continuity, but do not replay completed stages performatively.

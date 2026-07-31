@@ -16,7 +16,8 @@ Route to the earliest absent or stale useful flow:
 - settled intent with weak proof → `prepare-proof`;
 - reviewed proof or incomplete candidate → `build-candidate`;
 - publication-ready candidate or existing PR → `finish-pr`;
-- merged but unreconciled work → `merge-reconcile` through `finish-pr`.
+- merged but unreconciled work → `merge-reconcile` through `finish-pr`;
+- claim already reconciled → return `RECONCILED`.
 
 Existing coherent work enters midstream. One claim normally has one candidate, and one writer mutates that branch/worktree at a time. Focused readers, reviewers, oracles, and subagents may assist without creating rival implementations.
 
