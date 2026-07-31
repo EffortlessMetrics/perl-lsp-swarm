@@ -332,6 +332,10 @@ impl WorkspaceSymbolsProvider {
     ///
     /// Results are sorted by relevance: exact matches first, then prefix matches,
     /// then alphabetically.
+    ///
+    /// Match strategy is [`matches_query`]'s: single-character queries match by
+    /// exact name or prefix only, longer queries also match by substring and
+    /// subsequence. (#5335)
     #[must_use]
     pub fn search_with_candidates(
         &self,
@@ -369,8 +373,12 @@ impl WorkspaceSymbolsProvider {
     /// Supports multiple match strategies:
     /// - Exact match (case-insensitive)
     /// - Prefix match
-    /// - Contains match
-    /// - Fuzzy/subsequence match
+    /// - Contains match (queries of 2+ characters only)
+    /// - Fuzzy/subsequence match (queries of 2+ characters only)
+    ///
+    /// A single-character query therefore matches by exact name or prefix only,
+    /// so that typing one character does not return nearly every symbol in the
+    /// workspace. (#5335)
     ///
     /// Results are sorted by relevance: exact matches first, then prefix matches,
     /// then alphabetically.
@@ -1311,20 +1319,25 @@ sub get_log { 3 }
         let mut provider = WorkspaceSymbolsProvider::new();
         let mut source_map = HashMap::new();
 
-        let source = "sub alpha { 1 }\nsub beta { 2 }\n";
+        // Both subs share the leading "a" so the one-character query matches
+        // each by *prefix*. This test is about candidate de-duplication, not
+        // match semantics; it previously used "alpha"/"beta", which relied on
+        // a one-character query substring-matching the "a" inside "beta" --
+        // behavior deliberately removed in #5335.
+        let source = "sub alpha { 1 }\nsub another { 2 }\n";
         source_map.insert("file:///dedupe.pl".to_string(), source.to_string());
 
         let mut parser = Parser::new(source);
         let ast = must(parser.parse());
         provider.index_document("file:///dedupe.pl", &ast, source);
 
-        let candidates = vec!["alpha".to_string(), "alpha".to_string(), "beta".to_string()];
+        let candidates = vec!["alpha".to_string(), "alpha".to_string(), "another".to_string()];
         let results = provider.search_with_candidates("a", &source_map, &candidates);
         let names: Vec<&str> = results.iter().map(|s| s.name.as_str()).collect();
 
         assert_eq!(
             names,
-            vec!["alpha", "beta"],
+            vec!["alpha", "another"],
             "duplicate candidate names should not duplicate workspace/symbol results"
         );
     }

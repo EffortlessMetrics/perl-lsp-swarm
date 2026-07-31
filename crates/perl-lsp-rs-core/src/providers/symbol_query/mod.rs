@@ -5,6 +5,20 @@
 
 use std::cmp::Ordering;
 
+/// Minimum query length (in `char`s of the lowercased query) that admits the
+/// loose match tiers -- substring and subsequence. (#5335)
+///
+/// A one-character query is too weak to justify loose matching: every symbol
+/// whose name contains that character anywhere would match, which is nearly
+/// the whole workspace. Such queries are restricted to the exact and prefix
+/// tiers instead.
+///
+/// The same threshold is applied to the indexed workspace-symbol search in
+/// `perl_workspace::workspace::workspace_index::search_source_symbols`. The
+/// two matchers are independent implementations, so the constant is
+/// deliberately duplicated rather than shared across the crate boundary.
+pub const MIN_LOOSE_MATCH_QUERY_CHARS: usize = 2;
+
 /// Returns `true` when a symbol name matches the provided query.
 ///
 /// Matching strategy order after trimming leading/trailing query whitespace:
@@ -13,6 +27,10 @@ use std::cmp::Ordering;
 /// 3. Prefix case-insensitive match
 /// 4. Contains case-insensitive match
 /// 5. Subsequence/fuzzy case-insensitive match
+///
+/// Tiers 4 and 5 are the *loose* tiers and require a query of at least
+/// [`MIN_LOOSE_MATCH_QUERY_CHARS`] characters. A single-character query
+/// therefore matches only by exact or prefix. (#5335)
 #[must_use]
 pub fn matches_query(name: &str, query: &str) -> bool {
     let query = query.trim();
@@ -29,6 +47,14 @@ pub fn matches_query(name: &str, query: &str) -> bool {
 
     if name_lower.starts_with(&query_lower) {
         return true;
+    }
+
+    // Length is measured on the *lowercased* query, because lowercasing can
+    // lengthen a one-character input -- 'İ' (U+0130) lowercases to the two
+    // chars "i\u{307}" -- and it is the lowercased form that the tiers below
+    // actually match against.
+    if query_lower.chars().count() < MIN_LOOSE_MATCH_QUERY_CHARS {
+        return false;
     }
 
     if name_lower.contains(&query_lower) {
@@ -136,6 +162,57 @@ mod tests {
     #[test]
     fn empty_query_matches_anything() {
         assert!(matches_query("anything", ""));
+    }
+
+    /// #5335: a one-character query must match by exact name or prefix only,
+    /// so that typing one character does not return nearly every symbol.
+    ///
+    /// Note this is deliberately *not* the fix issue #5335 proposed. Gating the
+    /// subsequence matcher on a minimum needle length changes nothing: for a
+    /// single-`char` needle `is_subsequence` is equivalent to `contains`, and
+    /// `contains` is tested first, so the subsequence branch is unreachable for
+    /// a one-character query. The assertions below fail under that no-op fix
+    /// and pass under the substring-tier restriction actually implemented.
+    #[test]
+    fn one_char_query_matches_exact_and_prefix_only() {
+        // Exact and prefix tiers survive.
+        assert!(matches_query("a", "a"), "exact one-char match must survive");
+        assert!(matches_query("alpha", "a"), "prefix one-char match must survive");
+
+        // Substring-only matches are rejected. A one-character query cannot be
+        // a *subsequence-only* match -- for a single char subsequence and
+        // substring coincide -- so closing the substring tier is what actually
+        // narrows the result set.
+        assert!(!matches_query("alpha", "l"), "one-char query must not substring-match");
+        assert!(!matches_query("normalize", "a"), "one-char query must not substring-match");
+    }
+
+    /// Two-character queries keep both loose tiers. `matches_query("foobar", "fb")`
+    /// is long-standing asserted behavior (see
+    /// `query_matching_covers_exact_prefix_contains_and_fuzzy`); #5335 narrows
+    /// one-character queries only and deliberately does not revisit it.
+    #[test]
+    fn two_char_query_still_matches_substring_and_subsequence() {
+        assert!(matches_query("alpha", "ph"), "two-char substring match must survive");
+        assert!(matches_query("foobar", "fb"), "two-char subsequence match must survive");
+        assert!(!matches_query("alpha", "zq"));
+    }
+
+    /// The threshold is measured on the *lowercased* query, because lowercasing
+    /// can lengthen a one-character input: 'İ' (U+0130) lowercases to the two
+    /// chars "i\u{307}". Such a query keeps the loose tiers.
+    #[test]
+    fn short_query_length_is_measured_after_lowercasing() {
+        let query = "\u{130}"; // 'İ'
+        assert_eq!(query.chars().count(), 1, "raw query is one char");
+        assert_eq!(query.to_lowercase().chars().count(), 2, "lowercased query is two chars");
+
+        // Substring-only match: neither exact nor a prefix. Admitted because the
+        // lowercased query reaches MIN_LOOSE_MATCH_QUERY_CHARS.
+        assert!(
+            matches_query("x_i\u{307}_y", query),
+            "one-char input that lowercases to two chars keeps the loose tiers"
+        );
     }
 
     #[test]

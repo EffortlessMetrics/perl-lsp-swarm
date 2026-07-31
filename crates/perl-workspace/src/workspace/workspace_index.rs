@@ -3731,11 +3731,14 @@ impl WorkspaceIndex {
     ///
     /// # Arguments
     ///
-    /// * `query` - Substring to match against symbol names
+    /// * `query` - Query to match against symbol names
     ///
     /// # Returns
     ///
-    /// Symbols whose names or qualified names contain the query string.
+    /// Symbols whose names or qualified names match the query, ranked
+    /// exact > substring > subsequence. Queries shorter than
+    /// [`MIN_LOOSE_MATCH_QUERY_CHARS`] characters match by exact name or
+    /// prefix only. (#5335)
     ///
     /// # Examples
     ///
@@ -3761,27 +3764,52 @@ impl WorkspaceIndex {
     /// A symbol that is stored under both its bare name key and its qualified
     /// name key is deduplicated by `(uri, start_byte)` so each `WorkspaceSymbol`
     /// appears at most once in the result.
+    ///
+    /// Queries shorter than [`MIN_LOOSE_MATCH_QUERY_CHARS`] characters match
+    /// only by exact name or prefix; the substring and subsequence tiers are
+    /// skipped for them. (#5335)
     pub fn search_source_symbols(&self, query: &str, cap: Option<usize>) -> Vec<WorkspaceSymbol> {
         let query = query.trim();
         let query_lower = query.to_lowercase();
+        // #5335: a one-character query is too weak for the loose match tiers --
+        // substring and subsequence would both admit every name containing that
+        // character, i.e. nearly the whole workspace. Restrict it to exact and
+        // prefix matches.
+        //
+        // Length is measured on the *lowercased* query, because lowercasing can
+        // lengthen a one-character input -- 'İ' (U+0130) lowercases to the two
+        // chars "i\u{307}" -- and it is the lowercased form matched below.
+        let loose_match_allowed = query_lower.chars().count() >= MIN_LOOSE_MATCH_QUERY_CHARS;
         let search_idx = self.search_index.read();
         let mut seen: HashSet<(String, usize)> = HashSet::new();
         // Collect results with a relevance score for ranking. (#5087)
-        // Match priority: exact > substring > subsequence (fuzzy).
+        // Match priority: exact > substring/prefix > subsequence (fuzzy).
         //
-        // Subsequence matching is only used for queries of at least 2 characters;
-        // shorter queries produce too many false positives (e.g. "a" matches
-        // nearly every symbol name). Empty queries are handled by exact/substring
-        // matchers (Rust's `contains("")` returns true for all strings, which is
-        // the desired "list everything" behavior for empty workspace/symbol queries).
-        let allow_subsequence = query_lower.chars().count() >= 2;
+        // An empty query still lists everything: `loose_match_allowed` is false
+        // for it, and the short-query branch below tests `starts_with("")`, which
+        // is true for every key -- the same set, and the same score, that
+        // `contains("")` produced before. That is the desired "list everything"
+        // behavior for an empty `workspace/symbol` query.
         let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
         for (name_key, symbols) in search_idx.iter() {
             let score = if name_key == &query_lower {
                 3 // exact match
+            } else if !loose_match_allowed {
+                // Short query: prefix is the only non-exact tier available.
+                // Prefix matches are a strict subset of the substring matches
+                // this replaces, so no already-returned symbol changes score.
+                if !name_key.starts_with(&query_lower) {
+                    continue;
+                }
+                2 // prefix match
             } else if name_key.contains(&query_lower) {
                 2 // substring match
-            } else if allow_subsequence && is_subsequence(&query_lower, name_key) {
+            } else if is_subsequence(&query_lower, name_key) {
+                // Reaching here implies `loose_match_allowed`, i.e. a query of at
+                // least MIN_LOOSE_MATCH_QUERY_CHARS chars, so no separate
+                // subsequence-length guard is needed. (The one `main` carried was
+                // unreachable anyway: for a one-char needle `is_subsequence` is
+                // equivalent to `contains`, which is tested first.)
                 1 // fuzzy subsequence match
             } else {
                 continue;
@@ -3803,6 +3831,11 @@ impl WorkspaceIndex {
     /// This is a narrow workspace-symbol pilot: returned symbols are explicitly
     /// labeled as generated/framework members and point at the source declaration
     /// that produced the member, not at an exact generated method body.
+    ///
+    /// Queries shorter than [`MIN_LOOSE_MATCH_QUERY_CHARS`] characters match by
+    /// prefix only, matching [`Self::search_source_symbols`]. The two result
+    /// sets are concatenated into one `workspace/symbol` response, so they must
+    /// narrow short queries the same way. (#5335)
     pub fn search_generated_workspace_symbols(
         &self,
         query: &str,
@@ -3814,6 +3847,19 @@ impl WorkspaceIndex {
         }
 
         let query_lower = query.to_lowercase();
+        // #5335: mirror the short-query narrowing that `search_source_symbols`
+        // applies. These results are appended to the *same* `workspace/symbol`
+        // response, so leaving this matcher ungated would keep reproducing the
+        // one-character blowup for every framework-generated member.
+        let loose_match_allowed = query_lower.chars().count() >= MIN_LOOSE_MATCH_QUERY_CHARS;
+        let matches_query_text = |candidate: &str| -> bool {
+            let candidate_lower = candidate.to_lowercase();
+            if loose_match_allowed {
+                candidate_lower.contains(&query_lower)
+            } else {
+                candidate_lower.starts_with(&query_lower)
+            }
+        };
         let source_backed_qualified_names = self.source_backed_qualified_names();
         let shards = self.fact_shards.read();
         let mut results = Vec::new();
@@ -3834,9 +3880,7 @@ impl WorkspaceIndex {
                 else {
                     continue;
                 };
-                if !bare_name.to_lowercase().contains(&query_lower)
-                    && !entity.canonical_name.to_lowercase().contains(&query_lower)
-                {
+                if !matches_query_text(bare_name) && !matches_query_text(&entity.canonical_name) {
                     continue;
                 }
                 let Some(anchor_id) = entity.anchor_id else {
@@ -3921,11 +3965,14 @@ impl WorkspaceIndex {
     ///
     /// # Arguments
     ///
-    /// * `query` - Substring to match against symbol names
+    /// * `query` - Query to match against symbol names
     ///
     /// # Returns
     ///
-    /// Symbols whose names or qualified names contain the query string.
+    /// Symbols whose names or qualified names match the query, ranked
+    /// exact > substring > subsequence. Queries shorter than
+    /// [`MIN_LOOSE_MATCH_QUERY_CHARS`] characters match by exact name or
+    /// prefix only. (#5335)
     ///
     /// # Examples
     ///
@@ -6786,6 +6833,40 @@ use constant {
             "200".to_string(),
         ]);
         assert_eq!(names, vec!["HTTP_OK"]);
+    }
+
+    /// Companion to `search_source_symbols_one_char_query_matches_prefix_only`.
+    ///
+    /// `handle_workspace_symbols_v2` concatenates `search_source_symbols` and
+    /// `search_generated_workspace_symbols` into one `workspace/symbol`
+    /// response, so narrowing only the former would leave the #5335 blowup
+    /// intact for every framework-generated member.
+    #[test]
+    fn search_generated_workspace_symbols_one_char_query_matches_prefix_only() {
+        let index = WorkspaceIndex::new();
+        let code = r#"package Generated::Pilot;
+use Moo;
+has display_name => (is => 'rw');
+1;
+"#;
+        let uri = must(url::Url::parse("file:///lib/Generated/Pilot.pm"));
+        must(index.index_file(uri, code.to_string()));
+
+        let count = |query: &str| index.search_generated_workspace_symbols(query, None).len();
+
+        // Sanity: the generated member is discoverable at all.
+        assert_eq!(count("display_name"), 1, "generated member must be indexed");
+
+        // Prefix match on the bare name survives.
+        assert_eq!(count("d"), 1, "one-char prefix match must still find 'display_name'");
+
+        // 'n' occurs inside "display_name" but starts neither the bare name nor
+        // the qualified name. Before #5335 the substring test admitted it.
+        assert_eq!(count("n"), 0, "one-char query must not substring-match 'display_name'");
+
+        // Longer queries keep substring matching on both bare and qualified name.
+        assert_eq!(count("name"), 1, "multi-char substring match must be unaffected");
+        assert_eq!(count("pilot"), 1, "multi-char qualified-name substring match must survive");
     }
 
     #[test]
@@ -11074,6 +11155,65 @@ mod entity_id_file_scoped_tests {
         );
     }
 
+    /// Regression guard for #5335: a one-character query must not return nearly
+    /// every symbol in the workspace.
+    ///
+    /// Issue #5335 proposed gating the *subsequence* matcher on a minimum needle
+    /// length. That is a no-op: for a single-`char` needle
+    /// `is_subsequence(needle, haystack)` is equivalent to
+    /// `haystack.contains(needle)`, and `contains` is scored first, so the
+    /// subsequence branch is unreachable for a one-character query. The blowup
+    /// came from the substring tier, which is what this test pins.
+    #[test]
+    fn search_source_symbols_one_char_query_matches_prefix_only() {
+        let index = WorkspaceIndex::new();
+
+        must(index.index_file(
+            must(url::Url::parse("file:///lib/Utils.pm")),
+            "package Utils;\nsub alpha { 1 }\nsub normalize { 2 }\nsub beta { 3 }\nsub x { 4 }\n1;\n"
+                .to_string(),
+        ));
+
+        let names = |query: &str| -> Vec<String> {
+            index.search_source_symbols(query, None).into_iter().map(|s| s.name).collect()
+        };
+
+        let a = names("a");
+        assert!(
+            a.contains(&"alpha".to_string()),
+            "one-char prefix match must survive: 'a' must still find 'alpha'; got {a:?}"
+        );
+        // `normalize` and `beta` merely *contain* an 'a'. Before #5335 the
+        // substring tier admitted both.
+        assert!(
+            !a.contains(&"normalize".to_string()),
+            "one-char query must not substring-match 'normalize'; got {a:?}"
+        );
+        assert!(
+            !a.contains(&"beta".to_string()),
+            "one-char query must not substring-match 'beta'; got {a:?}"
+        );
+
+        // `search_source_symbols` is shared with go-to-definition and completion
+        // (via `find_symbols` / `search_symbols_ranked`), which look symbols up by
+        // exact name. A one-character symbol inside a package must still resolve:
+        // the index is keyed by both bare and qualified name, so the bare key
+        // "x" matches exactly even though "utils::x" is not prefixed by "x".
+        let x = names("x");
+        assert!(
+            x.contains(&"x".to_string()),
+            "exact one-char lookup must still resolve for go-to-definition; got {x:?}"
+        );
+
+        // Longer queries keep fuzzy matching: "nrm" is a subsequence of
+        // "normalize" but not a substring of it.
+        let nrm = names("nrm");
+        assert!(
+            nrm.contains(&"normalize".to_string()),
+            "multi-char subsequence matching must be unaffected; got {nrm:?}"
+        );
+    }
+
     #[test]
     fn search_source_symbols_keeps_same_name_from_multiple_workspace_folders() {
         let index = WorkspaceIndex::new();
@@ -12856,8 +12996,29 @@ sub bar { return $greeting; }
     }
 }
 
+/// Minimum query length (in `char`s of the lowercased query) that admits the
+/// loose match tiers -- substring and subsequence. (#5335)
+///
+/// A one-character query is too weak to justify loose matching: every symbol
+/// whose name contains that character anywhere would match, which is nearly
+/// the whole workspace. Such queries are restricted to the exact and prefix
+/// tiers instead.
+///
+/// The same threshold is applied by the open-document fallback matcher,
+/// `perl_lsp_rs_core::providers::symbol_query::matches_query`. The two
+/// matchers are independent implementations, so the constant is deliberately
+/// duplicated rather than shared across the crate boundary.
+pub const MIN_LOOSE_MATCH_QUERY_CHARS: usize = 2;
+
 /// Check if `needle` is a subsequence of `haystack` (fuzzy match).
 /// E.g. "gpn" is a subsequence of "get_page_name". (#5087)
+///
+/// Note: for a single-`char` needle this is equivalent to
+/// `haystack.contains(needle)`, so callers that test `contains` first will
+/// never reach this function for a one-character query. Restricting fuzzy
+/// matching by needle length therefore has no effect on its own -- see
+/// [`MIN_LOOSE_MATCH_QUERY_CHARS`] for how short queries are actually
+/// narrowed. (#5335)
 fn is_subsequence(needle: &str, haystack: &str) -> bool {
     let mut needle_chars = needle.chars();
     let mut current = needle_chars.next();
