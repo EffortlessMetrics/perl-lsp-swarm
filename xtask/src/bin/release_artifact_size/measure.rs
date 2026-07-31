@@ -368,7 +368,11 @@ fn measure_archive(
     let matches_directory = BINARY_NAMES.iter().all(|name| {
         let embedded = embedded_binaries.get(*name);
         let extracted = directory_binaries.get(*name);
-        matches!((embedded, extracted), (Some(left), Some(right)) if left.sha256 == right.sha256 && left.bytes == right.bytes)
+        matches!(
+            (embedded, extracted),
+            (Some(left), Some(right))
+                if left.sha256 == right.sha256 && left.bytes == right.bytes
+        )
     });
 
     Ok(ArchiveEvidence {
@@ -406,15 +410,26 @@ fn read_archive_binaries(path: &Path) -> Result<BTreeMap<String, EmbeddedArtifac
         if binaries.contains_key(&base_name) {
             bail!("archive contains duplicate `{base_name}` entries");
         }
-        let mut bytes = Vec::new();
-        entry
-            .read_to_end(&mut bytes)
-            .with_context(|| format!("reading `{base_name}` from archive"))?;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut bytes_count = 0_u64;
+        loop {
+            let read = entry
+                .read(&mut buffer)
+                .with_context(|| format!("reading `{base_name}` from archive"))?;
+            if read == 0 {
+                break;
+            }
+            bytes_count = bytes_count
+                .checked_add(u64::try_from(read).context("archive read length exceeds u64")?)
+                .ok_or_else(|| eyre!("archive member length exceeds u64"))?;
+            hasher.update(&buffer[..read]);
+        }
         binaries.insert(
             base_name,
             EmbeddedArtifact {
-                bytes: u64::try_from(bytes.len()).context("archive member length exceeds u64")?,
-                sha256: sha256_bytes(&bytes),
+                bytes: bytes_count,
+                sha256: format!("{:x}", hasher.finalize()),
             },
         );
     }
@@ -612,10 +627,4 @@ fn measure_sha256(path: &Path) -> Result<String> {
         hasher.update(&buffer[..read]);
     }
     Ok(format!("{:x}", hasher.finalize()))
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
 }
