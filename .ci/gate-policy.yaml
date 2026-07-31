@@ -783,24 +783,70 @@ gates:
       - unit
       - workspace
 
+  # The LSP unit surface is split across two lanes. It was a single lane until
+  # 2026-07-31, and that lane chased its own ceiling: raised 300s -> 420s on
+  # 2026-07-28 after a timeout, then timed out again at 420s (exit 124) on
+  # 2026-07-31. Because this gate is `required` and appears under `never_skip`,
+  # each timeout blocked merge on PRs whose diff could not affect it — and the
+  # runner honours no retry, so a single capacity blip was a hard block.
+  #
+  # The split is by measured weight, not by theme. Lib-test counts across the
+  # six crates the old lane covered:
+  #
+  #   perl-lsp-rs-core         2815   <- 65% of the surface
+  #   perl-lsp-rs              1399
+  #   perl-lsp-ux-tests          77
+  #   perl-subprocess-runtime    44
+  #   perl-lsp-perltidy          27
+  #   perllsp                     0
+  #
+  # Neither ceiling is relaxed: both lanes keep the same 420s the combined lane
+  # had, so each now carries roughly half the work under a full ceiling rather
+  # than all of it. Coverage is unchanged — the same six crates, same flags,
+  # partitioned exactly once. Both remain required and never-skippable.
+  #
+  # Both lanes carry the same budgets.max_duration_ms (336000 = 0.8 × the 420s
+  # ceiling), matching the ratio the other test lanes already use — analysis,
+  # dap_support, and lsp_smoke all sit at 0.80. They are deliberately identical:
+  # post-split wall time has not been measured yet, so giving the two lanes
+  # different budgets would be invention rather than evidence. Tighten both from
+  # the first hosted receipts.
+  #
+  # Note this field is currently inert: max_duration_ms is parsed into the
+  # Budgets struct (xtask/src/tasks/gates.rs:209) and never read by any
+  # execution or alerting path — the same defect retry_count has.
+  - name: unit_lsp_core_full
+    tier: merge_gate
+    description: "LSP core library tests (heaviest single crate in the LSP surface)"
+    required: true
+    command: >-
+      cargo test --locked --lib
+      -p perl-lsp-rs-core
+      -- --test-threads=4
+    timeout_seconds: 420
+    retry_count: 1
+    budgets:
+      max_duration_ms: 336000
+    quarantine: false
+    tags:
+      - test
+      - unit
+      - workspace
+
   - name: unit_lsp_full
     tier: merge_gate
-    description: "LSP, editor UX, perltidy, and subprocess library tests"
+    description: "LSP server, editor UX, perltidy, and subprocess library tests"
     required: true
     command: >-
       cargo test --locked --lib
       -p perl-lsp-perltidy -p perl-lsp-rs
-      -p perl-lsp-rs-core -p perl-lsp-ux-tests
+      -p perl-lsp-ux-tests
       -p perl-subprocess-runtime -p perllsp
       -- --test-threads=4
-    # Hosted evidence: this lane completed 27 tests before the 300s ceiling
-    # on 2026-07-28 (300237 ms). Keep a 60s measurement margin while the
-    # lane remains unsplit; revisit after the hosted receipt establishes the
-    # completed wall time.
     timeout_seconds: 420
     retry_count: 1
     budgets:
-      max_duration_ms: 360000
+      max_duration_ms: 336000
     quarantine: false
     tags:
       - test
@@ -1477,6 +1523,7 @@ escape_hatches:
       - unit_foundation_full
       - unit_parser_stack_full
       - unit_analysis_full
+      - unit_lsp_core_full
       - unit_lsp_full
       - unit_dap_support_full
 
@@ -1565,6 +1612,7 @@ workflow_integration:
         - clippy_full
         - unit_foundation_full
         - unit_analysis_full
+        - unit_lsp_core_full
         - unit_lsp_full
         - unit_dap_support_full
         - compile_all_targets

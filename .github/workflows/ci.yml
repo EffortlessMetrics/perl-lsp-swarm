@@ -350,7 +350,13 @@ jobs:
   merge-gate-shards:
     name: CI Gate shard (${{ matrix.name }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Outer runaway guard only — per-lane enforcement is gate-level
+    # timeout_seconds in .ci/gate-policy.yaml, which this does not relax.
+    # Raised 20 -> 30 with #5425. Measured job wall time on run 30622858284:
+    # lsp 18.6 min, meta 16.4 min. At 20 the busiest shards had 1.4 and 3.6 min
+    # of headroom, so a ~10% slower runner would kill the job outright — the
+    # same merge-blocking symptom the gate split fixes, one level up.
+    timeout-minutes: 30
     # No functional dependency on pr-smoke output; run in parallel after preflight
     # + conflict guard to reduce end-to-end merge-gate wall time.
     needs: [draft-pr-check, conflict-markers, preflight-latest-check]
@@ -366,7 +372,7 @@ jobs:
           - name: analysis
             gates: unit_analysis_full
           - name: lsp
-            gates: unit_lsp_full lsp_smoke
+            gates: unit_lsp_core_full unit_lsp_full lsp_smoke
           - name: support
             gates: unit_dap_support_full
           - name: corpus
