@@ -721,7 +721,7 @@ jobs:
 
       - name: Generate review guidance
         if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 210
+        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 600
 
       - name: Generate impacted evidence
         if: always()
@@ -880,7 +880,7 @@ jobs:
 
       - name: Generate review guidance
         if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 210
+        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 600
 
       - name: Generate impacted evidence
         if: always()
