@@ -213,3 +213,17 @@ fn at_single_trailing_colon_is_not_a_qualifier() -> R {
     );
     Ok(())
 }
+
+#[test]
+fn at_trailing_package_separator_stays_in_the_variable() -> R {
+    // Verified against real perl 5.38.2: `print "@arr::"` prints the (empty)
+    // package array `@arr::`, not `@arr` followed by literal "::" — so the
+    // trailing separator belongs to the variable name.
+    let parts = interp_parts("\"@arr::\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@arr::"))],
+        "a trailing '::' is part of the package-qualified name, got {parts:?}"
+    );
+    Ok(())
+}

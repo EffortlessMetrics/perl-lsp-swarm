@@ -482,3 +482,39 @@ fn triple_deref_chain_arrow_subscript_chains() -> R {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Arrow forms that must NOT chain (boundary of the `->[` / `->{` branch)
+//
+// The deref-chain arm chains an arrow only when `[` or `{` follows. These pin
+// the two other shapes a trailing arrow can take, both verified against real
+// perl 5.38.2:
+//
+//   my $x=1; my $r=\$x;            print "$$r->"      # prints "1->"
+//   my $ar=\@a; my $rr=\$ar;       print "$$rr->(1)"  # prints "ARRAY(0x..)->(1)"
+//
+// In both cases perl interpolates the deref and leaves the arrow as literal
+// text, so neither may be classified as MethodCall.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn deref_chain_trailing_arrow_without_subscript_stays_literal() -> R {
+    let parts = interpolated_parts("\"$$r->\"").ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$$r")), StringPart::Literal(Arc::from("->")),],
+        "a trailing arrow with nothing after it must stay literal, got {parts:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn deref_chain_arrow_paren_call_stays_literal() -> R {
+    let parts = interpolated_parts("\"$$rr->(1)\"").ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$$rr")), StringPart::Literal(Arc::from("->(1)")),],
+        "an arrow code-deref call does not interpolate and must stay literal, got {parts:?}"
+    );
+    Ok(())
+}
