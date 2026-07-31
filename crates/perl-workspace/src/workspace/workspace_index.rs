@@ -3807,7 +3807,7 @@ impl WorkspaceIndex {
             } else if is_subsequence(&query_lower, name_key) {
                 // Reaching here implies `loose_match_allowed`, i.e. a query of at
                 // least MIN_LOOSE_MATCH_QUERY_CHARS chars, so no separate
-                // subsequence-length guard is needed. (The one main carried was
+                // subsequence-length guard is needed. (The one `main` carried was
                 // unreachable anyway: for a one-char needle `is_subsequence` is
                 // equivalent to `contains`, which is tested first.)
                 1 // fuzzy subsequence match
