@@ -1,0 +1,3 @@
+# Local worktree-manager state and reusable worktrees are disposable runtime data.
+*
+!.gitignore
