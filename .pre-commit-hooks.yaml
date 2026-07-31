@@ -2,7 +2,7 @@
     name: perl-lsp staged commit gate
     description: Validate the exact staged tree with the repository commit-tier policy.
     entry: cargo
-    args: [xtask, precommit, --staged]
+    args: [xtask, precommit]
     language: system
     pass_filenames: false
     always_run: true
