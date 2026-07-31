@@ -181,6 +181,33 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                 }
             }
 
+            // `__CLASS__` — requires the `class` feature, introduced in Perl v5.40.
+            //
+            // `__CLASS__` returns the name of the current class inside method bodies.
+            // The parser accepts it unconditionally (PR #5280), so we emit PL900 when
+            // the declared version is below v5.40 and no explicit `use feature 'class'`
+            // is active at the use site.  We gate on the declared version because
+            // `use v5.40` enables `__CLASS__` natively, even if the pragma tracker does
+            // not propagate version bundles to individual feature flags.
+            NodeKind::FunctionCall { name, .. } | NodeKind::Identifier { name }
+                if name == "__CLASS__" =>
+            {
+                let min_version = PerlVersion::new(5, 40);
+                if !pragma_state.has_feature("class") && declared_version < min_version {
+                    diagnostics.push(make_diagnostic_with_details(
+                        n,
+                        "__CLASS__",
+                        declared_version,
+                        (5, 40),
+                        DiagnosticSeverity::Warning,
+                        Some(format!(
+                            "Update 'use v{}.{}' to 'use v5.40' or add 'use feature \"class\";'",
+                            declared_version.major, declared_version.minor
+                        )),
+                    ));
+                }
+            }
+
             // `given` / `when` / `default` need the `switch` feature (v5.10+),
             // are deprecated in v5.38, and became feature-gated (not removed) in v5.42.
             NodeKind::Given { .. } | NodeKind::When { .. } | NodeKind::Default { .. } => {
@@ -810,5 +837,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // `__CLASS__` PL900 version-compat tests (issue #5279)
+    //
+    // `__CLASS__` was introduced in Perl v5.40 as part of the `class` object
+    // system. The lint emits PL900 whenever `__CLASS__` appears in a file that
+    // declares a version below v5.40 without an explicit `use feature 'class'`.
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn class_token_without_class_feature_emits_pl900() {
+        let diags = version_compat_diags("use v5.36;\nmy $name = __CLASS__;\n");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__")),
+            "v5.36 without class feature should emit PL900 for __CLASS__"
+        );
+        for d in &diags {
+            if d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__") {
+                assert_eq!(
+                    d.severity,
+                    DiagnosticSeverity::Warning,
+                    "__CLASS__ PL900 must be Warning, not Error"
+                );
+                assert!(
+                    d.message.contains("v5.40"),
+                    "__CLASS__ PL900 message should name v5.40 as the minimum: {}",
+                    d.message
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn class_token_with_explicit_class_feature_suppresses_pl900() {
+        let diags =
+            version_compat_diags("use v5.36;\nuse feature 'class';\nmy $name = __CLASS__;\n");
+        assert!(
+            diags
+                .iter()
+                .all(|d| !(d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__"))),
+            "explicit 'use feature class' should suppress PL900 for __CLASS__"
+        );
+    }
+
+    #[test]
+    fn class_token_on_v5_40_suppresses_pl900() {
+        let diags = version_compat_diags("use v5.40;\nmy $name = __CLASS__;\n");
+        assert!(
+            diags
+                .iter()
+                .all(|d| !(d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__"))),
+            "use v5.40 (which implies the class feature) should suppress PL900 for __CLASS__"
+        );
+    }
+
+    #[test]
+    fn class_token_without_declared_version_no_pl900() {
+        let diags = version_compat_diags("my $name = __CLASS__;\n");
+        assert!(
+            diags
+                .iter()
+                .all(|d| !(d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__"))),
+            "no declared version should suppress all PL900 checks including __CLASS__"
+        );
     }
 }
