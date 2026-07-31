@@ -4,7 +4,7 @@
 //! Functions defined in the same package rank higher than those from outer scopes.
 
 use super::scope_distance::compute_scope_sort_key;
-use super::{context::CompletionContext, items::CompletionItem};
+use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
 use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
 
 /// Add function completions with scope-distance ranking.
@@ -52,6 +52,7 @@ pub fn add_function_completions(
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
+                    insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
                 });
             }

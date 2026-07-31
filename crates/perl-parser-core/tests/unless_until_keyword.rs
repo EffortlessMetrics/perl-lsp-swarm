@@ -22,14 +22,14 @@ fn parse(source: &str) -> perl_parser_core::Node {
 }
 
 /// Extract the first top-level statement from a Program node.
-fn first_stmt(source: &str) -> perl_parser_core::Node {
+fn first_stmt(source: &str) -> Result<perl_parser_core::Node, String> {
     let root = parse(source);
     match root.kind {
-        NodeKind::Program { mut statements } => {
-            assert!(!statements.is_empty(), "expected at least one statement");
-            statements.remove(0)
-        }
-        other => panic!("expected Program, got {}", other.kind_name()),
+        NodeKind::Program { statements } => statements
+            .into_iter()
+            .next()
+            .ok_or_else(|| "expected at least one statement".to_string()),
+        other => Err(format!("expected Program, got {}", other.kind_name())),
     }
 }
 
@@ -39,7 +39,7 @@ fn first_stmt(source: &str) -> perl_parser_core::Node {
 
 #[test]
 fn block_unless_carries_keyword_tag() -> Result<(), Box<dyn std::error::Error>> {
-    let node = first_stmt(r#"unless ($x) { print "no" }"#);
+    let node = first_stmt(r#"unless ($x) { print "no" }"#)?;
     match &node.kind {
         NodeKind::If { keyword, .. } => {
             assert_eq!(
@@ -62,7 +62,7 @@ fn block_unless_carries_keyword_tag() -> Result<(), Box<dyn std::error::Error>> 
 
 #[test]
 fn block_unless_sexp_uses_unless_keyword() -> Result<(), Box<dyn std::error::Error>> {
-    let node = first_stmt(r#"unless ($x) { print "no" }"#);
+    let node = first_stmt(r#"unless ($x) { print "no" }"#)?;
     let sexp = node.to_sexp();
     assert!(sexp.starts_with("(unless "), "sexp should start with '(unless', got: {sexp}");
     assert!(
@@ -78,7 +78,7 @@ fn block_unless_sexp_uses_unless_keyword() -> Result<(), Box<dyn std::error::Err
 
 #[test]
 fn block_until_carries_keyword_tag() -> Result<(), Box<dyn std::error::Error>> {
-    let node = first_stmt(r#"until ($done) { work() }"#);
+    let node = first_stmt(r#"until ($done) { work() }"#)?;
     match &node.kind {
         NodeKind::While { keyword, .. } => {
             assert_eq!(
@@ -101,7 +101,7 @@ fn block_until_carries_keyword_tag() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn block_until_sexp_uses_until_keyword() -> Result<(), Box<dyn std::error::Error>> {
-    let node = first_stmt(r#"until ($done) { work() }"#);
+    let node = first_stmt(r#"until ($done) { work() }"#)?;
     let sexp = node.to_sexp();
     assert!(sexp.starts_with("(until "), "sexp should start with '(until', got: {sexp}");
     assert!(
@@ -117,7 +117,7 @@ fn block_until_sexp_uses_until_keyword() -> Result<(), Box<dyn std::error::Error
 
 #[test]
 fn block_if_has_no_keyword_tag() -> Result<(), Box<dyn std::error::Error>> {
-    let node = first_stmt(r#"if ($x) { print "yes" }"#);
+    let node = first_stmt(r#"if ($x) { print "yes" }"#)?;
     match &node.kind {
         NodeKind::If { keyword, .. } => {
             assert_eq!(
@@ -140,7 +140,7 @@ fn block_if_has_no_keyword_tag() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn block_while_has_no_keyword_tag() -> Result<(), Box<dyn std::error::Error>> {
-    let node = first_stmt(r#"while ($x) { work() }"#);
+    let node = first_stmt(r#"while ($x) { work() }"#)?;
     match &node.kind {
         NodeKind::While { keyword, .. } => {
             assert_eq!(
@@ -163,7 +163,7 @@ fn block_while_has_no_keyword_tag() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn block_unless_with_elsif_and_else_chain() -> Result<(), Box<dyn std::error::Error>> {
-    let node = first_stmt(r#"unless ($x) { A() } elsif ($y) { B() } else { C() }"#);
+    let node = first_stmt(r#"unless ($x) { A() } elsif ($y) { B() } else { C() }"#)?;
     match &node.kind {
         NodeKind::If { keyword, elsif_branches, else_branch, .. } => {
             assert_eq!(
@@ -188,7 +188,7 @@ fn block_unless_with_elsif_and_else_chain() -> Result<(), Box<dyn std::error::Er
 
 #[test]
 fn block_unless_condition_is_still_negated() -> Result<(), Box<dyn std::error::Error>> {
-    let node = first_stmt(r#"unless ($x) { }"#);
+    let node = first_stmt(r#"unless ($x) { }"#)?;
     let sexp = node.to_sexp();
     assert!(sexp.contains("unary_not"), "condition must still be negated (unary_not), got: {sexp}");
     Ok(())
@@ -196,7 +196,7 @@ fn block_unless_condition_is_still_negated() -> Result<(), Box<dyn std::error::E
 
 #[test]
 fn block_until_condition_is_still_negated() -> Result<(), Box<dyn std::error::Error>> {
-    let node = first_stmt(r#"until ($done) { }"#);
+    let node = first_stmt(r#"until ($done) { }"#)?;
     let sexp = node.to_sexp();
     assert!(sexp.contains("unary_not"), "condition must still be negated (unary_not), got: {sexp}");
     Ok(())
@@ -208,7 +208,7 @@ fn block_until_condition_is_still_negated() -> Result<(), Box<dyn std::error::Er
 
 #[test]
 fn postfix_unless_modifier_unchanged() -> Result<(), Box<dyn std::error::Error>> {
-    let node = first_stmt(r#"print "no" unless $x;"#);
+    let node = first_stmt(r#"print "no" unless $x;"#)?;
     match &node.kind {
         NodeKind::StatementModifier { modifier, .. } => {
             assert_eq!(
@@ -232,7 +232,7 @@ fn postfix_unless_modifier_unchanged() -> Result<(), Box<dyn std::error::Error>>
 
 #[test]
 fn postfix_until_modifier_unchanged() -> Result<(), Box<dyn std::error::Error>> {
-    let node = first_stmt(r#"work() until $done;"#);
+    let node = first_stmt(r#"work() until $done;"#)?;
     match &node.kind {
         NodeKind::StatementModifier { modifier, .. } => {
             assert_eq!(
@@ -266,7 +266,7 @@ fn until_block_parses_cleanly() {
 
 #[test]
 fn orphaned_else_recovery_has_no_keyword_tag() -> Result<(), Box<dyn std::error::Error>> {
-    let node = first_stmt(r#"else { recover() }"#);
+    let node = first_stmt(r#"else { recover() }"#)?;
     match &node.kind {
         NodeKind::If { keyword, .. } => {
             assert_eq!(keyword.as_deref(), None);
@@ -280,7 +280,7 @@ fn orphaned_else_recovery_has_no_keyword_tag() -> Result<(), Box<dyn std::error:
 
 #[test]
 fn orphaned_elsif_recovery_has_no_keyword_tag() -> Result<(), Box<dyn std::error::Error>> {
-    let node = first_stmt(r#"elsif ($x) { recover() } else { fallback() }"#);
+    let node = first_stmt(r#"elsif ($x) { recover() } else { fallback() }"#)?;
     match &node.kind {
         NodeKind::If { keyword, elsif_branches, else_branch, .. } => {
             assert_eq!(keyword.as_deref(), None);

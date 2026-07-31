@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Fixed
+body: "Formatting, code actions, semantic tokens (full), document symbol, and rename requests now respond promptly to $/cancelRequest instead of always running to completion, improving responsiveness on rapid edits."
+time: 2026-07-22T23:58:10Z
+custom:
+  PR: "4707"
+  Slug: cancellation-5-more-providers
+  Breaking: "no"

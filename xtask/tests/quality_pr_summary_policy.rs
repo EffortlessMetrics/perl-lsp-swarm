@@ -69,7 +69,7 @@ fn quality_gate_summary_names_gates_receipts_and_repair_packets() -> TestResult 
 
     let summary = fs::read_to_string(&paths.summary)?;
     for required in [
-        "## Quality Gates",
+        "## Quality-gate effect",
         "- new RIPR gaps: `2`",
         "- total RIPR+ gaps: `3`",
         "- patch coverage: `94.90%` / `95.00%`",
@@ -80,9 +80,9 @@ fn quality_gate_summary_names_gates_receipts_and_repair_packets() -> TestResult 
         "- review guidance receipt: `present`",
         "- receipt freshness: `coverage=present, repo_ripr=present, diff_ripr=present, review_guidance=present, exceptions=present`",
         "- active temporary exceptions: `1`",
-        "## Proof Commands",
-        "- verify: `rtk cargo xtask quality-gate --mode enforce",
-        "- receipt: `rtk cargo xtask quality-gate --mode enforce",
+        "## Proof",
+        "- verify: `cargo xtask quality-gate --mode enforce",
+        "- receipt: `cargo xtask quality-gate --mode enforce",
         "ripr_total_unresolved",
         "project_coverage_below_target",
         "new_ripr_gap",
@@ -108,12 +108,8 @@ fn pull_request_template_has_quality_gate_repair_packet_fields() -> TestResult {
     let template = fs::read_to_string(root.join(".github/PULL_REQUEST_TEMPLATE.md"))?;
 
     for required in [
-        "## Objective",
-        "## Quality Gates",
-        "target/receipts/quality/quality-gate.md",
-        "## Claim Boundary",
-        "## Non-goals",
-        "## Local Proof Commands",
+        "## Claim",
+        "## Quality-gate effect",
         "new RIPR gaps:",
         "total RIPR+ gaps:",
         "patch coverage:",
@@ -122,9 +118,8 @@ fn pull_request_template_has_quality_gate_repair_packet_fields() -> TestResult {
         "exception status:",
         "local verify command:",
         "receipt command:",
-        "## RIPR / Coverage Effect",
-        "## Cleanup Performed",
-        "## Remaining Work",
+        "## Claim Boundary",
+        "## Remaining work",
     ] {
         assert!(template.contains(required), "PR template missing `{required}`");
     }

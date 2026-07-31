@@ -66,6 +66,7 @@ export class HealthWidget {
   private _fileCount: number | undefined = undefined;
   private _errorCount = 0;
   private _indexingMessage: string | undefined = undefined;
+  private _indexingPercentage: number | undefined = undefined;
   private _activeTokens = new Set<ProgressToken>();
   private _version: string | undefined = undefined;
 
@@ -92,6 +93,26 @@ export class HealthWidget {
       case ClientState.Stopped:
         this._activeTokens.clear();
         this._indexingMessage = undefined;
+        this._indexingPercentage = undefined;
+        // The two counts have different owners, so they are handled
+        // differently here.
+        //
+        // `_errorCount` came from the server session that just ended, so it IS
+        // stale — clear it. It repopulates on its own: HealthWidgetDataSource
+        // subscribes to `onDidChangeDiagnostics` and calls
+        // `refreshErrorCount()`, which the restarted server triggers as it
+        // republishes diagnostics.
+        //
+        // `_fileCount` is client-owned — HealthWidgetDataSource computes it
+        // from `vscode.workspace.findFiles`, never from the server — so a
+        // server restart does not invalidate it; the files on disk did not
+        // change. Do NOT clear it. `refreshFileCount()` short-circuits on the
+        // cached `fileCountPromise`, which is only invalidated when workspace
+        // folders change, and `start()` runs once per data-source lifetime, so
+        // nothing would recompute it. Clearing here blanked the count until the
+        // workspace changed or the extension host reloaded — worse than the
+        // stale value this reset exists to avoid.
+        this._errorCount = 0;
         this._setMode('stopped');
         break;
     }
@@ -108,12 +129,14 @@ export class HealthWidget {
         if (payload.message !== undefined) {
           this._indexingMessage = payload.message;
         }
+        this._indexingPercentage = payload.percentage;
         this._render();
       }
     } else if (payload.kind === 'end') {
       this._activeTokens.delete(token);
       if (this._activeTokens.size === 0) {
         this._indexingMessage = undefined;
+        this._indexingPercentage = undefined;
         this._setMode('running');
       }
     }
@@ -175,7 +198,14 @@ export class HealthWidget {
         break;
 
       case 'indexing': {
-        const msg = this._indexingMessage ?? 'Indexing\u2026';
+        let msg = this._indexingMessage ?? 'Indexing\u2026';
+        // Show file count and percentage when available (UX_GAP_1.1)
+        if (this._fileCount !== undefined && this._fileCount > 0) {
+          msg = `Indexing\u2026 (${this._fileCount} files)`;
+        }
+        if (this._indexingPercentage !== undefined && this._indexingPercentage > 0) {
+          msg += ` ${Math.round(this._indexingPercentage)}%`;
+        }
         this.item.text = `$(sync~spin) perl-lsp: ${msg}`;
         this.item.tooltip = 'Perl Language Server is indexing your workspace (click for options)';
         this.item.backgroundColor = undefined;

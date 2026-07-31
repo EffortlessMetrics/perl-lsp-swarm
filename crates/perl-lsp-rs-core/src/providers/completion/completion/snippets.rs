@@ -1,6 +1,6 @@
 //! Built-in snippet completions for common Perl patterns.
 
-use super::{context::CompletionContext, items::CompletionItem};
+use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
 
 struct Snippet {
     trigger: &'static str,
@@ -21,7 +21,7 @@ const SNIPPETS: &[Snippet] = &[
     Snippet {
         trigger: "submethod",
         label: "submethod",
-        body: "sub ${1:method_name} {\n    my ($self${2:, @args}) = @_;\n    $0\n}",
+        body: "sub ${1:method_name} {\n    my (\\$self${2:, @args}) = @_;\n    $0\n}",
         detail: "method subroutine",
         doc: "Method subroutine with `$self` unpacking.",
     },
@@ -49,14 +49,14 @@ const SNIPPETS: &[Snippet] = &[
     Snippet {
         trigger: "evaldo",
         label: "evaldo",
-        body: "eval {\n    ${1:# try}\n} or do {\n    my \\$err = $@;\n    ${0:# catch}\n};",
+        body: "eval {\n    ${1:# try}\n} or do {\n    my \\$err = \\$@;\n    ${0:# catch}\n};",
         detail: "eval/do (try/catch)",
         doc: "Perl try/catch idiom using `eval { } or do { }`.",
     },
     Snippet {
         trigger: "evaldie",
         label: "evaldie",
-        body: "eval {\n    ${1:# code}\n    1;\n} or die \"${0:Error}: $@\";",
+        body: "eval {\n    ${1:# code}\n    1;\n} or die \"${0:Error}: \\$@\";",
         detail: "eval or die",
         doc: "Eval block with die on failure.",
     },
@@ -133,14 +133,14 @@ const SNIPPETS: &[Snippet] = &[
     Snippet {
         trigger: "openfile",
         label: "openfile",
-        body: "open my \\$${1:fh}, '<', ${2:\\$file} or die \"Cannot open ${2:\\$file}: $!\";\n$0",
+        body: "open my \\$${1:fh}, '<', ${2:\\$file} or die \"Cannot open ${2:\\$file}: \\$!\";\n$0",
         detail: "open file (read)",
         doc: "Open file for reading.",
     },
     Snippet {
         trigger: "openwrite",
         label: "openwrite",
-        body: "open my \\$${1:fh}, '>', ${2:\\$file} or die \"Cannot open ${2:\\$file}: $!\";\n$0",
+        body: "open my \\$${1:fh}, '>', ${2:\\$file} or die \"Cannot open ${2:\\$file}: \\$!\";\n$0",
         detail: "open file (write)",
         doc: "Open file for writing.",
     },
@@ -154,7 +154,7 @@ const SNIPPETS: &[Snippet] = &[
     Snippet {
         trigger: "slurp",
         label: "slurp",
-        body: "open my \\$${1:fh}, '<', ${2:\\$file} or die \"Cannot open ${2:\\$file}: $!\";\nmy \\$${3:content} = do { local $/; <\\$${1:fh}> };\nclose \\$${1:fh};\n$0",
+        body: "open my \\$${1:fh}, '<', ${2:\\$file} or die \"Cannot open ${2:\\$file}: \\$!\";\nmy \\$${3:content} = do { local \\$/; <\\$${1:fh}> };\nclose \\$${1:fh};\n$0",
         detail: "slurp file",
         doc: "Read entire file into scalar.",
     },
@@ -412,6 +412,7 @@ pub fn add_snippet_completions(completions: &mut Vec<CompletionItem>, context: &
                 detail: Some(snippet.detail.to_string()),
                 documentation: Some(snippet.doc.to_string()),
                 insert_text: Some(snippet.body.to_string()),
+                insert_text_format: InsertTextFormat::for_authored_body(snippet.body),
                 sort_text: Some(format!("3_{}", snippet.trigger)),
                 filter_text: Some(snippet.trigger.to_string()),
                 additional_edits: vec![],
@@ -428,6 +429,7 @@ mod tests {
     use super::super::context::CompletionContext;
     use super::*;
     use perl_semantic_analyzer::symbol::SymbolTable;
+    use perl_tdd_support::must_some;
 
     fn make_context(prefix: &str) -> CompletionContext {
         let st = SymbolTable::default();
@@ -476,6 +478,55 @@ mod tests {
             let t = item.insert_text.as_deref();
             assert!(t.is_some_and(|t| t.contains("$0") || t.contains("${0")), "{}", item.label);
         }
+    }
+
+    /// #4956: every snippet body must mean what it says. A literal Perl `$x`
+    /// spelled as a snippet variable is silently client-specific, so the whole
+    /// table is validated rather than the one entry that was reported.
+    #[test]
+    fn every_snippet_body_is_well_formed() {
+        use crate::providers::completion_item::snippet_body_defects;
+
+        for snippet in SNIPPETS {
+            let defects = snippet_body_defects(snippet.body);
+            assert!(defects.is_empty(), "`{}`: {defects:?}", snippet.trigger);
+        }
+    }
+
+    /// Each snippet must also carry a fallback that is literal Perl, since a
+    /// client without `snippetSupport` inserts it verbatim.
+    #[test]
+    fn every_snippet_has_a_literal_plaintext_fallback() {
+        let ctx = make_context("");
+        let mut items = Vec::new();
+        add_snippet_completions(&mut items, &ctx);
+
+        for item in &items {
+            let fallback = must_some(item.insert_text_format.plain_fallback());
+            assert!(
+                !fallback.contains("${") && !fallback.contains("$0") && !fallback.contains('\\'),
+                "`{}` fallback is not literal text: {fallback}",
+                item.label
+            );
+        }
+    }
+
+    /// The reported case, pinned end to end.
+    #[test]
+    fn submethod_unpacks_literal_self() {
+        let ctx = make_context("submethod");
+        let mut items = Vec::new();
+        add_snippet_completions(&mut items, &ctx);
+        let item = must_some(items.iter().find(|i| i.label == "submethod"));
+
+        assert_eq!(
+            item.insert_text.as_deref(),
+            Some("sub ${1:method_name} {\n    my (\\$self${2:, @args}) = @_;\n    $0\n}")
+        );
+        assert_eq!(
+            item.insert_text_format.plain_fallback(),
+            Some("sub method_name {\n    my ($self, @args) = @_;\n    \n}")
+        );
     }
 
     #[test]

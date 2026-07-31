@@ -82,10 +82,14 @@ impl LspServer {
                 .pointer("/textDocument/uri")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
-            let text = params
+            let text_raw = params
                 .pointer("/textDocument/text")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| invalid_params("Missing required parameter: textDocument.text"))?;
+            // Strip UTF-8 BOM if present. Some editors on Windows send the BOM
+            // as part of the document text, which shifts all column-0 offsets
+            // by one character and produces stray glyph artifacts. (#5207)
+            let text = crate::textdoc::strip_utf8_bom(text_raw);
             let version_i64 =
                 params.pointer("/textDocument/version").and_then(|v| v.as_i64()).unwrap_or(0);
             let version = i32::try_from(version_i64).unwrap_or(0);

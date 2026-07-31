@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Fixed
+body: "Configured workspace-index resource limits (max files, max symbols, max cache bytes) are now actually enforced during indexing instead of being silently bypassed, so a workspace that exceeds them degrades in a controlled, observable way rather than growing memory use unbounded."
+time: 2026-07-23T12:25:24Z
+custom:
+  PR: "4701"
+  Slug: workspace-index-resource-limits-enforced
+  Breaking: "no"

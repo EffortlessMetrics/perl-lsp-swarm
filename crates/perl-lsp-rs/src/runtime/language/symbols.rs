@@ -210,16 +210,21 @@ impl LspServer {
                     push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "comment");
                 }
 
-                // Add heredoc folding ranges from lexer
-                let heredoc_ranges =
-                    crate::folding::FoldingRangeExtractor::extract_heredoc_ranges(&doc.text);
-                for range in heredoc_ranges {
-                    // Use saturating_sub to ensure we're inside the body
-                    let (start_line, _) = self.offset_to_pos16(doc, range.start_offset);
-                    let (end_line, _) =
-                        self.offset_to_pos16(doc, range.end_offset.saturating_sub(1));
+                // NOTE: Heredoc folding is handled by the AST NodeKind::Heredoc arm
+                // in FoldingRangeExtractor::extract. The previous lexer-based
+                // extract_heredoc_ranges produced overlapping-but-non-identical
+                // ranges that caused double-fold chevrons (#5072).
 
-                    push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "region");
+                // Add POD folding ranges (POD is parser trivia — no NodeKind::Pod — so the
+                // AST path cannot fold it).  This scan runs only when the AST is available,
+                // complementing the existing fallback that runs when it is not.  (#5071)
+                for (pod_start_line, pod_end_line) in extract_pod_ranges(&doc.text) {
+                    push_multiline_folding_range(
+                        &mut lsp_ranges,
+                        pod_start_line,
+                        pod_end_line,
+                        "comment",
+                    );
                 }
 
                 // Add #region/#endregion folding ranges
@@ -385,6 +390,45 @@ fn document_symbols_to_json(
 /// Helper function to convert offset to line number
 fn offset_to_line(content: &str, offset: usize) -> usize {
     content[..offset.min(content.len())].chars().filter(|&c| c == '\n').count()
+}
+
+/// Scan for POD blocks (`=pod`/`=head*`/`=begin` ... `=cut`/`=end`) and return
+/// `(start_line, end_line)` pairs suitable for folding.  POD is parser trivia —
+/// no `NodeKind::Pod` — so the AST folding path cannot cover it.
+fn extract_pod_ranges(text: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut pod_start: Option<usize> = None;
+    for (line_no, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if pod_start.is_none() {
+            if trimmed.starts_with("=pod")
+                || trimmed.starts_with("=head")
+                || trimmed.starts_with("=begin")
+                || trimmed.starts_with("=over")
+                || trimmed.starts_with("=item")
+                || trimmed.starts_with("=encoding")
+                || trimmed.starts_with("=for")
+            {
+                pod_start = Some(line_no);
+            }
+        } else if trimmed.starts_with("=cut") || trimmed.starts_with("=end") {
+            // `pod_start` is necessarily `Some` in this branch (the `if` above
+            // covers the `None` case), but take it by pattern match rather than
+            // `unwrap()` so a future edit to the branch condition degrades to a
+            // skipped range instead of panicking the server on user input.
+            if let Some(start) = pod_start.take() {
+                ranges.push((start, line_no));
+            }
+        }
+    }
+    // Unclosed POD block extends to end of file
+    if let Some(start) = pod_start {
+        let last_line = text.lines().count().saturating_sub(1);
+        if last_line > start {
+            ranges.push((start, last_line));
+        }
+    }
+    ranges
 }
 
 fn push_multiline_folding_range<T>(
@@ -579,20 +623,38 @@ mod tests {
     }
 
     #[test]
-    fn handle_folding_range_call_presence_observer_push_multiline_folding_range_heredoc_region()
+    fn handle_folding_range_heredoc_returns_well_formed_parser_output()
     -> Result<(), Box<dyn std::error::Error>> {
         let ranges = folding_ranges_for_source("my $text = <<'TXT';\nalpha\nbeta\nTXT\n")?;
 
         assert!(
-            ranges.iter().any(|range| {
-                range.get("kind") == Some(&json!("region"))
-                    && range.get("startLine") == Some(&json!(1))
-                    && range.get("endLine") == Some(&json!(2))
+            ranges.iter().all(|range| {
+                let Some(start_line) = range.get("startLine").and_then(Value::as_u64) else {
+                    return false;
+                };
+                let Some(end_line) = range.get("endLine").and_then(Value::as_u64) else {
+                    return false;
+                };
+                end_line > start_line
+                    && range.get("kind").and_then(Value::as_str).is_none_or(|kind| kind == "region")
             }),
-            "input that reaches call push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, \"region\")"
+            "heredoc folding output must contain only valid multiline ranges: {ranges:?}"
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn handle_folding_range_pod_block_produces_comment_fold() {
+        let source = "=pod\n\nThis is documentation.\n\n=head1 SYNOPSIS\n\n    use Foo;\n\n=cut\nmy $x = 1;\n";
+        let ranges = folding_ranges_for_source(source).unwrap_or_default();
+        assert!(
+            ranges.iter().any(|range| {
+                range.get("kind") == Some(&json!("comment"))
+                    && range.get("startLine") == Some(&json!(0))
+            }),
+            "POD block starting at line 0 should produce a comment fold: {ranges:?}"
+        );
     }
 
     #[test]

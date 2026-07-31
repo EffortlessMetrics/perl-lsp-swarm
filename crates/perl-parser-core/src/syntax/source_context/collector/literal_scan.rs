@@ -136,11 +136,7 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
         }
         _ => return None,
     };
-    if label.is_empty() {
-        None
-    } else {
-        Some((label, allow_indented))
-    }
+    if label.is_empty() { None } else { Some((label, allow_indented)) }
 }
 
 fn push_region(regions: &mut Vec<SourceRegion>, start: usize, end: usize, kind: SourceRegionKind) {

@@ -28,7 +28,7 @@ use perl_dap::{DapMessage, DebugAdapter};
 use perl_tdd_support::{must, must_some};
 use serde_json::json;
 use std::io::Write;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::sync_channel;
 use std::time::Duration;
 use tempfile::NamedTempFile;
 
@@ -115,7 +115,7 @@ fn initialize_reports_configuration_done_and_evaluate_for_hovers() {
 #[test]
 fn successful_initialize_emits_initialized_event_with_no_body() {
     let mut adapter = DebugAdapter::new();
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let response = adapter.handle_request(1, "initialize", None);
@@ -329,7 +329,7 @@ fn unknown_command_returns_unknown_command_prefix() {
 #[test]
 fn response_and_event_sequence_numbers_increase_monotonically() {
     let mut adapter = DebugAdapter::new();
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let r1 = adapter.handle_request(1, "initialize", None);

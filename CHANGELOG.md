@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (`perl-lsp-rs-core`): `AiCompletionConfig` / `AiStreamingConfig`
+  authority fields.** Public structs now carry `user_enabled` /
+  `project_opt_out` (and streaming `user_enabled`) so project `.perl-lsp.toml`
+  can only opt out of AI, never enable it (#4997 / #5022). Exhaustive struct
+  literals must set the new fields or use `..Default::default()`. Semver minor
+  bump lands with the next published release; `Default` is implemented for
+  migration. See [docs/reference/AI_COMPLETION.md](docs/reference/AI_COMPLETION.md).
+
 - **VS Code extension toolchain modernized to TypeScript 7 / Oxc / Rolldown**,
   shrinking the packaged VSIX by ~77% (1.25 MB to 291 KB). See
   [vscode-extension/CHANGELOG.md](vscode-extension/CHANGELOG.md) for detail.

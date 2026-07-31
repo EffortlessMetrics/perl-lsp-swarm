@@ -322,6 +322,14 @@ fn test_initialize_contract_3_17() -> TestResult {
             assert!(version.is_string());
         }
     }
+
+    // The initialize result MUST advertise a protocolVersion string (LSP 3.17+).
+    // Regression guard for issue #5277.
+    assert!(
+        result.get("protocolVersion").is_some(),
+        "initialize result must include protocolVersion"
+    );
+    assert!(result["protocolVersion"].is_string(), "protocolVersion must be a string");
     Ok(())
 }
 

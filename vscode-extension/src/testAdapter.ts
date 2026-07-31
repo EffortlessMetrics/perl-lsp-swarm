@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { spawn } from 'child_process';
 
 /**
@@ -8,6 +9,48 @@ import { spawn } from 'child_process';
  * Discovers `.t` test files in the workspace, parses `subtest` blocks,
  * and runs them via `prove -v`, mapping TAP output to VSCode test results.
  */
+
+/**
+ * Resolve the `prove` command for the current platform.
+ *
+ * On Windows, `prove` is a `.bat` script shim — spawning it without
+ * `shell: true` fails with ENOENT. On all platforms, attempt to derive
+ * `prove` from the directory of the `perl` binary on PATH so that
+ * perlbrew/plenv users get the matching `prove`.
+ *
+ * Returns `{ command, args, shell }` for use with `child_process.spawn`.
+ */
+export function resolveProveCommand(extraArgs: string[]): {
+  command: string;
+  args: string[];
+  shell: boolean;
+} {
+  const isWindows = process.platform === 'win32';
+
+  // Try to find `prove` next to `perl` on PATH.
+  let provePath: string | null = null;
+  try {
+    const { execSync } = require('child_process');
+    const perlPath = execSync('perl -e "print $^X"', {
+      encoding: 'utf8',
+      timeout: 3000,
+    }).trim();
+    const perlDir = path.dirname(perlPath);
+    const candidate = path.join(perlDir, isWindows ? 'prove.bat' : 'prove');
+    if (fs.existsSync(candidate)) {
+      provePath = candidate;
+    }
+  } catch {
+    // perl not on PATH or execSync failed — fall back to bare 'prove'.
+  }
+
+  if (provePath) {
+    return { command: provePath, args: extraArgs, shell: false };
+  }
+
+  // Fallback: bare 'prove' with shell on Windows for .bat resolution.
+  return { command: 'prove', args: extraArgs, shell: isWindows };
+}
 
 export interface SubtestInfo {
   name: string;
@@ -60,7 +103,12 @@ export class PerlTestAdapter implements vscode.Disposable {
     this.testController.items.replace([]);
     this.fileItems.clear();
 
-    const files = await vscode.workspace.findFiles('**/*.t', '{**/node_modules/**,**/blib/**}');
+    // Cap at 500 files to prevent extension host freeze on large workspaces (#5110).
+    const files = await vscode.workspace.findFiles(
+      '**/*.t',
+      '{**/node_modules/**,**/blib/**}',
+      500,
+    );
     for (const uri of files) {
       await this.discoverFileTests(uri);
     }
@@ -197,9 +245,15 @@ export class PerlTestAdapter implements vscode.Disposable {
 
     return new Promise<void>((resolve) => {
       const startTime = Date.now();
-      const proc = spawn('prove', ['-v', '--nocolor', filePath], {
+      const {
+        command: proveCmd,
+        args: proveArgs,
+        shell: useShell,
+      } = resolveProveCommand(['-v', '--nocolor', filePath]);
+      const proc = spawn(proveCmd, proveArgs, {
         cwd,
         env: { ...process.env, HARNESS_ACTIVE: '1' },
+        shell: useShell,
       });
 
       let stdout = '';
@@ -310,21 +364,35 @@ export function parseTapOutput(output: string): {
   total: number;
   passed: number;
   failed: number;
+  skipped: number;
   bailOut: string | null;
 } {
   const lines = output.split('\n');
   let total = 0;
   let passed = 0;
   let failed = 0;
+  let skipped = 0;
   let bailOut: string | null = null;
 
   for (const line of lines) {
     if (/^ok \d+/.test(line)) {
       total++;
-      passed++;
+      // `ok N - desc # SKIP reason` → test was intentionally skipped.
+      if (/\s#\s*SKIP\S*/i.test(line)) {
+        skipped++;
+      } else {
+        passed++;
+      }
     } else if (/^not ok \d+/.test(line)) {
-      total++;
-      failed++;
+      // `not ok N - desc # TODO reason` → a failing TODO test is expected
+      // and must NOT count as a failure per TAP semantics.
+      if (/\s#\s*TODO\S*/i.test(line)) {
+        total++;
+        skipped++;
+      } else {
+        total++;
+        failed++;
+      }
     } else if (/^Bail out!\s*(.*)/.test(line)) {
       bailOut = /^Bail out!\s*(.*)/.exec(line)?.[1] ?? '';
     } else if (/^1\.\.(\d+)/.test(line)) {
@@ -335,7 +403,7 @@ export function parseTapOutput(output: string): {
     }
   }
 
-  return { total, passed, failed, bailOut };
+  return { total, passed, failed, skipped, bailOut };
 }
 
 /** Parse subtest results from verbose prove TAP output. */

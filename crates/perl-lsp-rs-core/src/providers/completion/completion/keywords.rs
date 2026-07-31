@@ -7,7 +7,7 @@
 //! expansion. Users typing a partial identifier are usually looking for their
 //! own symbols or a builtin before a keyword.
 
-use super::{context::CompletionContext, items::CompletionItem};
+use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
 use perl_lexer::LSP_COMPLETION_KEYWORDS;
 
 /// Canonical Perl keywords for completion.
@@ -87,8 +87,8 @@ pub fn add_keyword_completions(
                 "else" => ("else {\n    $0\n}", true),
                 "unless" => ("unless ($1) {\n    $0\n}", true),
                 "while" => ("while ($1) {\n    $0\n}", true),
-                "for" => ("for (my $i = 0; $i < $1; $i++) {\n    $0\n}", true),
-                "foreach" => ("foreach my $${1:item} (@${2:array}) {\n    $0\n}", true),
+                "for" => ("for (my \\$i = 0; \\$i < $1; \\$i++) {\n    $0\n}", true),
+                "foreach" => ("foreach my \\$${1:item} (@${2:array}) {\n    $0\n}", true),
                 "package" => ("package ${1:Name};\n\n$0", true),
                 "use" => ("use ${1:Module};\n$0", true),
                 _ => (keyword, false),
@@ -111,8 +111,80 @@ pub fn add_keyword_completions(
                 additional_edits: vec![],
                 text_edit_range: Some((context.prefix_start, context.position)),
                 commit_characters: None,
+                insert_text_format: InsertTextFormat::for_authored_body(insert_text),
                 label_details: None,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::context::CompletionContext;
+    use super::*;
+    use crate::providers::completion_item::snippet_body_defects;
+    use perl_tdd_support::must_some;
+
+    fn context_for(prefix: &str) -> CompletionContext {
+        CompletionContext {
+            position: prefix.len(),
+            trigger_character: None,
+            in_string: false,
+            in_regex: false,
+            in_comment: false,
+            in_use_statement: false,
+            current_package: "main".to_string(),
+            prefix: prefix.to_string(),
+            prefix_start: 0,
+            cursor_scope_id: 0,
+        }
+    }
+
+    fn completion_for(keyword: &str) -> CompletionItem {
+        let mut items = Vec::new();
+        add_keyword_completions(&mut items, &context_for(keyword), keywords());
+        must_some(items.into_iter().find(|item| item.label == keyword))
+    }
+
+    /// #4956 class: keyword snippet bodies must not spell literal Perl
+    /// variables as snippet variables. `for`'s `$i` did exactly that.
+    #[test]
+    fn every_keyword_snippet_body_is_well_formed() {
+        for &keyword in keywords() {
+            let item = completion_for(keyword);
+            let Some(body) = item.insert_text.as_deref() else { continue };
+            if item.insert_text_format.is_snippet() {
+                let defects = snippet_body_defects(body);
+                assert!(defects.is_empty(), "`{keyword}`: {defects:?}");
+            }
+        }
+    }
+
+    /// The C-style loop counter is literal Perl on both client kinds.
+    #[test]
+    fn for_loop_counter_survives_as_literal_perl() {
+        let item = completion_for("for");
+        assert_eq!(
+            item.insert_text_format.plain_fallback(),
+            Some("for (my $i = 0; $i < ; $i++) {\n    \n}")
+        );
+    }
+
+    /// `foreach` inserts a real `$item` scalar, not an empty placeholder.
+    #[test]
+    fn foreach_inserts_a_literal_scalar() {
+        let item = completion_for("foreach");
+        assert_eq!(
+            item.insert_text_format.plain_fallback(),
+            Some("foreach my $item (@array) {\n    \n}")
+        );
+    }
+
+    /// A keyword with no expansion is inserted verbatim.
+    #[test]
+    fn plain_keyword_is_plaintext() {
+        let item = completion_for("return");
+        assert_eq!(item.insert_text.as_deref(), Some("return"));
+        assert_eq!(item.insert_text_format, InsertTextFormat::PlainText);
     }
 }

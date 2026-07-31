@@ -396,7 +396,10 @@ fn assert_repair_contract(action: &Value) -> TestResult {
             .ok_or_else(|| format!("action missing {field}: {action}"))?;
         assert!(!value.trim().is_empty(), "action {field} must be non-empty: {action}");
         if matches!(field, "verify" | "receipt") {
-            assert!(value.starts_with("rtk "), "action {field} must use rtk: {value}");
+            assert!(
+                value.starts_with("cargo xtask "),
+                "action {field} must use a direct cargo xtask command: {value}"
+            );
         }
     }
     Ok(())

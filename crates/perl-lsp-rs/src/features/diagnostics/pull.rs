@@ -861,11 +861,24 @@ impl PullDiagnosticsProvider {
             .collect();
         let tags = to_lsp_tags(&diagnostic.tags);
 
-        // Append the suggestion to the message when present so users see it inline
-        let message = match diagnostic.suggestion {
-            Some(ref suggestion) => format!("{}\nSuggestion: {}", diagnostic.message, suggestion),
-            None => diagnostic.message,
-        };
+        // Append the context_hint and suggestion to the message so users
+        // see actionable remediation inline (#5109). context_hint comes from
+        // the DiagnosticCode metadata (codes/metadata.rs) and provides
+        // targeted fix instructions for each PL* code.
+        let mut message = diagnostic.message.clone();
+        if let Some(code_str) = code.as_ref().and_then(|c| match c {
+            NumberOrString::String(s) => Some(s.as_str()),
+            _ => None,
+        }) {
+            if let Some(dc) = DiagnosticCode::parse_code(code_str)
+                && let Some(hint) = dc.context_hint()
+            {
+                message = format!("{message}\n\n💡 {hint}");
+            }
+        }
+        if let Some(ref suggestion) = diagnostic.suggestion {
+            message = format!("{message}\nSuggestion: {suggestion}");
+        }
 
         let data = code.as_ref().and_then(|c| {
             if let NumberOrString::String(code_str) = c {
@@ -1174,12 +1187,7 @@ fn to_lsp_severity(severity: InternalDiagnosticSeverity) -> LspDiagnosticSeverit
 }
 
 fn native_critic_severity_to_lsp(severity: Severity) -> LspDiagnosticSeverity {
-    match severity {
-        Severity::Gentle => LspDiagnosticSeverity::ERROR,
-        Severity::Stern | Severity::Harsh => LspDiagnosticSeverity::WARNING,
-        Severity::Cruel => LspDiagnosticSeverity::INFORMATION,
-        Severity::Brutal => LspDiagnosticSeverity::HINT,
-    }
+    severity.to_diagnostic_severity()
 }
 
 fn to_lsp_tags(tags: &[InternalDiagnosticTag]) -> Option<Vec<LspDiagnosticTag>> {
@@ -1838,7 +1846,7 @@ mod tests {
             })
             .ok_or("expected native duplicate parameter finding")?;
         assert_eq!(duplicate_parameter.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(duplicate_parameter.severity, Some(LspDiagnosticSeverity::ERROR));
+        assert_eq!(duplicate_parameter.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(
             duplicate_parameter.message,
             "Parameter '$dup_param' appears more than once in this signature"
@@ -1882,7 +1890,7 @@ mod tests {
             })
             .ok_or("expected native duplicate lexical finding")?;
         assert_eq!(duplicate.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(duplicate.severity, Some(LspDiagnosticSeverity::ERROR));
+        assert_eq!(duplicate.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(
             duplicate.message,
             "Lexical variable '$x' is declared more than once in the same scope"

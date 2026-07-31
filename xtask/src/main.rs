@@ -1,7 +1,7 @@
-//! Xtask automation for tree-sitter-perl
+//! Xtask automation for perl-lsp
 //!
 //! This binary provides custom automation tasks for building, testing,
-//! and maintaining the tree-sitter-perl project.
+//! and maintaining the perl-lsp workspace.
 
 // Task-runner binary — println!/eprintln! are intentional diagnostic output.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
@@ -37,7 +37,7 @@ use types::*;
 
 #[derive(Parser)]
 #[command(name = "xtask")]
-#[command(about = "Custom tasks for tree-sitter-perl")]
+#[command(about = "Custom tasks for perl-lsp")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -901,6 +901,26 @@ enum Commands {
         receipt: PathBuf,
         /// Markdown summary output path.
         #[arg(long, default_value = "target/receipts/ci-contract.md")]
+        summary: PathBuf,
+    },
+
+    /// Run exact-head Taplo and typos checks for changed repository files.
+    ///
+    /// The command composes the shared change-set resolver and invokes both
+    /// tools through the pinned Aqua inventory. Missing tooling is reported as
+    /// NOT_PROVEN and exits non-zero; it never becomes a silent pass.
+    RepoHygiene {
+        /// Base git ref or full SHA for the evaluated range.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+        /// Head git ref or full SHA for the evaluated range.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+        /// JSON receipt output path.
+        #[arg(long, default_value = "target/receipts/repo-hygiene.json")]
+        receipt: PathBuf,
+        /// Markdown summary output path.
+        #[arg(long, default_value = "target/receipts/repo-hygiene.md")]
         summary: PathBuf,
     },
 
@@ -2458,6 +2478,142 @@ enum PerlCoreHarnessCommand {
         output: Option<PathBuf>,
     },
 
+    /// Generate or check the immutable identity manifest for a core series.
+    SeriesManifest {
+        /// Discovery receipt produced for the same pinned Perl tree.
+        #[arg(long)]
+        discovery: PathBuf,
+
+        /// Series manifest JSON to write or check.
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Stable comparison-series identifier.
+        #[arg(long)]
+        series_id: String,
+
+        /// Profile covered by the comparison series.
+        #[arg(long, value_enum)]
+        profile: perl_core_harness::HarnessProfile,
+
+        /// Requested Perl tag or commit.
+        #[arg(long)]
+        perl_requested_ref: String,
+
+        /// Resolved Perl commit recorded by the discovery receipt.
+        #[arg(long)]
+        perl_resolved_ref: String,
+
+        /// Identity of the retained preparation receipt.
+        #[arg(long)]
+        preparation_receipt_id: String,
+
+        /// Digest of the retained preparation receipt.
+        #[arg(long)]
+        preparation_receipt_digest: String,
+
+        /// Compiler and harness subject identity measured by the receipt.
+        #[arg(long)]
+        compiler_subject_identity: String,
+
+        /// Invocation identity for the measured harness command.
+        #[arg(long)]
+        invocation_identity: String,
+
+        /// Capability identity for the measured environment.
+        #[arg(long)]
+        capability_identity: String,
+
+        /// Environment identity for the measured run.
+        #[arg(long)]
+        environment_identity: String,
+
+        /// Prior series identifier when this intentionally replaces a series.
+        #[arg(long)]
+        replaces_series_id: Option<String>,
+
+        /// Reason for creating this series.
+        #[arg(long)]
+        change_reason: Option<String>,
+
+        /// Check the existing manifest instead of writing it.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Validate the semantic-boundary registry against v2 baselines and evidence bundles.
+    Boundaries {
+        /// Machine-readable semantic-boundary registry JSON.
+        #[arg(long)]
+        registry: PathBuf,
+
+        /// Accepted v2 baseline JSON to validate; may be supplied more than once.
+        #[arg(long = "baseline")]
+        baselines: Vec<PathBuf>,
+
+        /// Durable #5171 evidence-bundle index JSON to validate; may be supplied more than once.
+        #[arg(long = "bundle")]
+        bundles: Vec<PathBuf>,
+
+        /// Write the deterministic report to this path.
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Validate the registry and inputs. This is the default mode.
+        #[arg(long)]
+        check: bool,
+
+        /// Emit the deterministic report to stdout.
+        #[arg(long)]
+        report: bool,
+
+        /// Inspect historical evidence without using absence to satisfy current active entries.
+        #[arg(long)]
+        historical: bool,
+    },
+
+    /// Produce deterministic root-cause clusters from one validated evidence bundle.
+    Triage {
+        /// Durable #5171 evidence-bundle index JSON.
+        #[arg(long)]
+        bundle: PathBuf,
+
+        /// Output directory for failure-clusters.json and failure-clusters.md.
+        #[arg(long)]
+        output: PathBuf,
+
+        /// Persistent cluster-history JSON to write or check.
+        #[arg(long)]
+        history: Option<PathBuf>,
+
+        /// Merge the current report into persistent history without resolving absent clusters.
+        #[arg(long, conflicts_with = "check_history", requires = "history")]
+        write_history: bool,
+
+        /// Check that persistent history contains the current report without mutation.
+        #[arg(long, conflicts_with = "write_history", requires = "history")]
+        check_history: bool,
+    },
+
+    /// Validate landed evidence lineage and the deterministic current-authority index.
+    CurrentAuthority {
+        /// Current-authority index JSON.
+        #[arg(long)]
+        index: PathBuf,
+
+        /// Landed-lineage JSON; may be supplied more than once.
+        #[arg(long = "lineage")]
+        lineages: Vec<PathBuf>,
+
+        /// Repository root containing the published evidence artifacts.
+        #[arg(long)]
+        repository_root: PathBuf,
+
+        /// Exact Git commit containing the current-authority records.
+        #[arg(long)]
+        landed_sha: String,
+    },
+
     /// Run discovered tests in parse, compile, or execute mode (future slice).
     Run {
         /// Harness mode to run.
@@ -2513,6 +2669,42 @@ enum PerlCoreHarnessCommand {
         /// Checked-in baseline JSON to read or update.
         #[arg(long)]
         baseline: Option<PathBuf>,
+
+        /// Immutable comparison-series manifest. When present, use baseline v2.
+        #[arg(long)]
+        series: Option<PathBuf>,
+
+        /// Prior v2 baseline used to validate an accepted transition.
+        #[arg(long, requires = "series")]
+        previous_baseline: Option<PathBuf>,
+
+        /// JSON receipt describing reviewed semantic-boundary retirements.
+        #[arg(long, requires = "series")]
+        boundary_retirements: Option<PathBuf>,
+
+        /// Measured compiler and harness subject identity for baseline v2.
+        #[arg(long, requires = "series")]
+        compiler_subject_identity: Option<String>,
+
+        /// Measured invocation identity for baseline v2.
+        #[arg(long, requires = "series")]
+        invocation_identity: Option<String>,
+
+        /// Measured capability identity for baseline v2.
+        #[arg(long, requires = "series")]
+        capability_identity: Option<String>,
+
+        /// Measured environment identity for baseline v2.
+        #[arg(long, requires = "series")]
+        environment_identity: Option<String>,
+
+        /// Reviewed transition identity for baseline v2.
+        #[arg(long, requires = "series")]
+        accepted_transition_id: Option<String>,
+
+        /// Durable evidence bundle reference for baseline v2.
+        #[arg(long, requires = "series")]
+        evidence_bundle: Option<String>,
 
         /// Check the report against the baseline. This is the default when --accept is absent.
         #[arg(long, alias = "enforce")]
@@ -3941,6 +4133,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CiContract { base, head, receipt, summary } => {
             ci_contract::run(ci_contract::CiContractConfig { base, head, receipt, summary })
         }
+        Commands::RepoHygiene { base, head, receipt, summary } => {
+            repo_hygiene::run(repo_hygiene::RepoHygieneConfig { base, head, receipt, summary })
+        }
         Commands::ChangeSet { base, head, format, root } => {
             change_set::run(change_set::ChangeSetConfig { base, head, format, root })
         }
@@ -4169,6 +4364,83 @@ fn run_cli(cli: Cli) -> Result<()> {
                     output,
                 })
             }
+            PerlCoreHarnessCommand::SeriesManifest {
+                discovery,
+                output,
+                series_id,
+                profile,
+                perl_requested_ref,
+                perl_resolved_ref,
+                preparation_receipt_id,
+                preparation_receipt_digest,
+                compiler_subject_identity,
+                invocation_identity,
+                capability_identity,
+                environment_identity,
+                replaces_series_id,
+                change_reason,
+                check,
+            } => perl_core_harness::series_manifest(perl_core_harness::SeriesManifestConfig {
+                discovery,
+                output,
+                series_id,
+                profile,
+                perl_requested_ref,
+                perl_resolved_ref,
+                preparation_receipt_id,
+                preparation_receipt_digest,
+                compiler_subject_identity,
+                invocation_identity,
+                capability_identity,
+                environment_identity,
+                replaces_series_id,
+                change_reason,
+                check,
+            }),
+            PerlCoreHarnessCommand::Boundaries {
+                registry,
+                baselines,
+                bundles,
+                output,
+                check,
+                report,
+                historical,
+            } => perl_core_harness::boundaries(perl_core_harness::BoundaryRegistryConfig {
+                registry,
+                baselines,
+                bundles,
+                output,
+                check: check || !report,
+                report,
+                historical,
+            }),
+            PerlCoreHarnessCommand::Triage {
+                bundle,
+                output,
+                history,
+                write_history,
+                check_history,
+            } => perl_core_harness::triage(perl_core_harness::TriageConfig {
+                bundle,
+                output,
+                history,
+                write_history,
+                check_history,
+            }),
+            PerlCoreHarnessCommand::CurrentAuthority {
+                index,
+                lineages,
+                repository_root,
+                landed_sha,
+            } => perl_core_harness::validate_current_authority(
+                perl_core_harness::CurrentAuthorityConfig {
+                    index,
+                    lineages,
+                    repository_root,
+                    landed_sha,
+                },
+            )
+            .map(|_| ()),
             PerlCoreHarnessCommand::Run {
                 mode,
                 perl_tree,
@@ -4194,6 +4466,15 @@ fn run_cli(cli: Cli) -> Result<()> {
                 profile,
                 report,
                 baseline,
+                series,
+                previous_baseline,
+                boundary_retirements,
+                compiler_subject_identity,
+                invocation_identity,
+                capability_identity,
+                environment_identity,
+                accepted_transition_id,
+                evidence_bundle,
                 check: _,
                 accept,
             } => perl_core_harness::baseline(perl_core_harness::BaselineConfig {
@@ -4202,6 +4483,15 @@ fn run_cli(cli: Cli) -> Result<()> {
                 report,
                 baseline,
                 accept,
+                series,
+                previous_baseline,
+                boundary_retirements,
+                compiler_subject_identity,
+                invocation_identity,
+                capability_identity,
+                environment_identity,
+                accepted_transition_id,
+                evidence_bundle,
             }),
             PerlCoreHarnessCommand::Smoke {
                 perl_tree,

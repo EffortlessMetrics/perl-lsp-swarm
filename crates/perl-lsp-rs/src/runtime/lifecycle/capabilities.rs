@@ -6,6 +6,13 @@ use super::super::*;
 use perl_workspace::folder::{extract_workspace_folder_uris, root_path_to_file_uri};
 use serde_json::{Value, json};
 
+/// The LSP protocol version this server implements.
+///
+/// Advertised in the `initialize` result's `protocolVersion` field (LSP 3.17+).
+/// The server uses 3.18 extensions (e.g. `inlineCompletionProvider`), so the
+/// advertised version reflects the highest spec whose features are surfaced.
+const LSP_PROTOCOL_VERSION: &str = "3.18";
+
 fn is_opencode_client(params: &Value) -> bool {
     params
         .get("clientInfo")
@@ -575,7 +582,10 @@ impl LspServer {
         self.load_and_apply_project_config();
 
         // Detect Perl interpreter and surface an actionable error if not found.
-        // Runs after config load so that perl-lsp.perl.path is already applied.
+        // Runs after config load, but note that no client channel can supply an
+        // interpreter path: workspace-supplied `perlPath` is refused above for
+        // security (#3729) and no such editor setting exists. See
+        // `check_perl_interpreter` for the full reasoning (#5034).
         self.check_perl_interpreter();
 
         // Construct the AI inline-completion backend if enabled in config
@@ -750,6 +760,7 @@ impl LspServer {
 
         Ok(Some(json!({
             "capabilities": capabilities,
+            "protocolVersion": LSP_PROTOCOL_VERSION,
             "serverInfo": {
                 "name": "perl-lsp",
                 "version": env!("CARGO_PKG_VERSION")

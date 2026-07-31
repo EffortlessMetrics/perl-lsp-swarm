@@ -26,13 +26,25 @@ pub(super) fn complete_dispatch(
         return CompletionFlow::SortAndReturn;
     }
 
-    if context.in_string {
+    // If the prefix starts with a sigil inside a string, this is variable
+    // interpolation (e.g. "Hello $na|me"). Run sigil completion first so
+    // variable candidates are offered, then fall through to file-path context
+    // only if the prefix doesn't look like a variable. (COMPOSE-1d)
+    let prefix_starts_with_sigil =
+        context.prefix.chars().next().is_some_and(|c| c == '$' || c == '@' || c == '%');
+
+    if context.in_string && !prefix_starts_with_sigil {
         complete_file_path_context(completions, context, source, is_cancelled);
         return CompletionFlow::SortAndReturn;
     }
 
     if let Some(flow) = complete_sigil_context(provider, completions, context, source, is_cancelled)
     {
+        // If we were in a string and sigil completion matched, we're done.
+        // Otherwise fall through to file-path for string context.
+        if context.in_string {
+            return flow;
+        }
         return flow;
     }
 
@@ -473,7 +485,14 @@ fn complete_general_context(
     is_cancelled: &dyn Fn() -> bool,
 ) -> CompletionFlow {
     let keyword_set = keywords::keywords();
-    if context.prefix.is_empty() || provider.could_be_keyword(&context.prefix, keyword_set) {
+    // Suppress statement keywords in expression positions to reduce noise.
+    // Statement keywords (package, sub, use, etc.) are only valid at the start
+    // of a statement. When the cursor follows =, [, (, {, comma, or an operator,
+    // we're in expression context and should not offer them. (UX_GAP_02)
+    let in_expression_position = is_in_expression_position(source, context.prefix_start);
+    if !in_expression_position
+        && (context.prefix.is_empty() || provider.could_be_keyword(&context.prefix, keyword_set))
+    {
         keywords::add_keyword_completions(completions, context, keyword_set);
         if is_cancelled() {
             return CompletionFlow::Cancelled;
@@ -533,7 +552,10 @@ fn complete_general_context(
 
 #[cfg(test)]
 mod indirect_helper_tests {
-    use super::{indirect_word_end, is_indirect_method_word, parse_indirect_receiver};
+    use super::{
+        indirect_word_end, is_in_expression_position, is_indirect_method_word,
+        parse_indirect_receiver,
+    };
 
     #[test]
     fn is_indirect_method_word_accepts_lowercase_barewords() {
@@ -692,4 +714,38 @@ mod indirect_helper_tests {
         assert_eq!(parse_indirect_receiver("method ", 6), None);
         assert_eq!(parse_indirect_receiver("method", 6), None);
     }
+
+    #[test]
+    fn expression_position_uses_last_non_whitespace_character() {
+        assert!(is_in_expression_position("value = ", 8));
+        assert!(!is_in_expression_position("value ", 6));
+        assert!(!is_in_expression_position("   ", 3));
+    }
+}
+
+/// Heuristic: detect if the cursor is in an expression position where statement
+/// keywords (package, sub, use, etc.) would be invalid. Returns true if the
+/// text immediately before the prefix suggests an expression context.
+/// (UX_GAP_02)
+fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
+    if prefix_start == 0 {
+        return false; // start of file — statement position
+    }
+    // Walk backward past whitespace to find the last non-whitespace char
+    let before = &source[..prefix_start];
+    let trimmed = before.trim_end();
+    let Some(last_char) = trimmed.chars().next_back() else {
+        return false; // blank line — statement position
+    };
+    // Expression indicators: assignment, list, operator contexts
+    matches!(
+        last_char,
+        '=' | ',' | ';' | '(' | '[' | '{' | '+' | '-' | '*' | '/' | '%' | '.' | '&' | '|' | '!' | '<' | '>' | '?' | ':' | '~' | '\\'
+    ) && !before.ends_with("=>") // fat comma is a key context, not expression
+    && !before.ends_with("==")
+    && !before.ends_with("!=")
+    && !before.ends_with("<=")
+    && !before.ends_with(">=")
+    && !before.ends_with("=~")
+    && !before.ends_with("//")
 }

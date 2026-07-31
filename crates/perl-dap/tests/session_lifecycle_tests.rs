@@ -13,7 +13,7 @@ use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_tdd_support::{must, must_some};
 use serde_json::json;
 use std::io::Write;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -21,7 +21,7 @@ use tempfile::NamedTempFile;
 
 /// Helper to create a test adapter with message capture
 fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessage>) {
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     let mut adapter = DebugAdapter::new();
     adapter.set_event_sender(tx);
     (adapter, rx)
@@ -1083,7 +1083,7 @@ fn test_thread_safe_sequence_numbers() {
 // AC:5.3
 fn test_thread_safe_session_state() {
     // Test that session state is properly synchronized across threads
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     let mut adapter = DebugAdapter::new();
     adapter.set_event_sender(tx.clone());
     let adapter = Arc::new(Mutex::new(adapter));

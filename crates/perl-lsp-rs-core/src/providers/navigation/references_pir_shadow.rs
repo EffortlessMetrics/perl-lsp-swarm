@@ -769,7 +769,7 @@ mod promote_tests {
     // ── Sigil discrimination: $x vs @x → disjoint sets ────────────────────
 
     #[test]
-    fn sigil_discrimination_scalar_vs_array_disjoint() {
+    fn sigil_discrimination_scalar_vs_array_disjoint() -> Result<(), String> {
         // Source with both $x (scalar) and @x (array).
         let source = "my $x = 1;\nmy @x = (1, 2);\nprint $x;\nprint @x;\n";
         let receipt = receipt_for(source);
@@ -797,11 +797,11 @@ mod promote_tests {
 
         let scalar_ranges = match scalar_outcome {
             ReferencesPirPromoteOutcome::Exact(r) => r,
-            other => panic!("expected Exact for $x, got {other:?}"),
+            other => return Err(format!("expected Exact for $x, got {other:?}")),
         };
         let array_ranges = match array_outcome {
             ReferencesPirPromoteOutcome::Exact(r) => r,
-            other => panic!("expected Exact for @x, got {other:?}"),
+            other => return Err(format!("expected Exact for @x, got {other:?}")),
         };
 
         // $x and @x have disjoint range sets (different byte positions in source).
@@ -821,6 +821,7 @@ mod promote_tests {
         // Both must have at least 2 occurrences (decl + use).
         assert!(scalar_ranges.len() >= 2, "$x must have >=2 ranges: {scalar_ranges:?}");
         assert!(array_ranges.len() >= 2, "@x must have >=2 ranges: {array_ranges:?}");
+        Ok(())
     }
 
     // ── PromoteExact with empty compiler set → NoExactFacts, not Exact([]) ─
@@ -878,7 +879,7 @@ mod promote_tests {
     }
 
     #[test]
-    fn promote_exact_ranges_sorted_and_deduped() {
+    fn promote_exact_ranges_sorted_and_deduped() -> Result<(), String> {
         // Any valid receipt with multiple facts to check ordering.
         let receipt = receipt_for("my $x = 1;\nprint $x;\n");
         let outcome = references_pir_promote(
@@ -906,8 +907,9 @@ mod promote_tests {
                 assert_ne!(window[0], window[1], "duplicate range found: {:?}", window[0]);
             }
         } else {
-            panic!("expected Exact for valid $x receipt");
+            return Err("expected Exact for valid $x receipt".to_string());
         }
+        Ok(())
     }
 
     // ── Package-qualified name → NotSameFileLexical via PromoteExact ───────
@@ -941,7 +943,7 @@ mod promote_tests {
     // ── includeDeclaration: true includes declaration ──────────────────────
 
     #[test]
-    fn include_declaration_true_includes_write_fact() {
+    fn include_declaration_true_includes_write_fact() -> Result<(), String> {
         let receipt = receipt_for("my $a = 1;\nprint $a;\n");
         let outcome = references_pir_promote(
             PromotionMode::PromoteExact,
@@ -956,8 +958,9 @@ mod promote_tests {
         if let ReferencesPirPromoteOutcome::Exact(ranges) = outcome {
             assert!(ranges.len() >= 2, "with include_declaration=true must have >=2 ranges");
         } else {
-            panic!("expected Exact");
+            return Err("expected Exact".to_string());
         }
+        Ok(())
     }
 
     // ── includeDeclaration: false excludes first Write fact ────────────────
@@ -1009,7 +1012,7 @@ mod promote_tests {
     // ── Legacy result preserved on all fallback paths ──────────────────────
 
     #[test]
-    fn legacy_result_preserved_on_off_fallback() {
+    fn legacy_result_preserved_on_off_fallback() -> Result<(), String> {
         let receipt = receipt_for("my $z = 0;\nprint $z;\n");
         let legacy = vec![(3usize, 5usize), (13usize, 15usize)];
         let outcome = references_pir_promote(
@@ -1025,14 +1028,15 @@ mod promote_tests {
         if let ReferencesPirPromoteOutcome::LegacyFallback { result, .. } = outcome {
             assert_eq!(result, legacy);
         } else {
-            panic!("expected LegacyFallback");
+            return Err("expected LegacyFallback".to_string());
         }
+        Ok(())
     }
 
     // ── uri_mapper is called for each range ───────────────────────────────
 
     #[test]
-    fn uri_mapper_applied_to_all_ranges() {
+    fn uri_mapper_applied_to_all_ranges() -> Result<(), String> {
         let receipt = receipt_for("my $p = 1;");
         let sentinel_mapper = |start: usize, end: usize| lsp_types::Range {
             start: lsp_types::Position { line: 1, character: (start + 1000) as u32 },
@@ -1054,8 +1058,9 @@ mod promote_tests {
                 "uri_mapper must have been applied to all ranges: {ranges:?}"
             );
         } else {
-            panic!("expected Exact for $p");
+            return Err("expected Exact for $p".to_string());
         }
+        Ok(())
     }
 }
 

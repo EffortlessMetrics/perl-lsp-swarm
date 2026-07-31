@@ -1269,7 +1269,22 @@ impl LspServer {
                     // Update workspace config (include paths, @INC)
                     {
                         let mut workspace_config = self.workspace_config.lock();
-                        workspace_config.update_from_value(perl);
+                        let root_path = self.root_path.lock().clone();
+                        let rejected = workspace_config.update_from_value_with_context(
+                            perl,
+                            perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
+                                workspace_root: root_path.as_deref(),
+                                apply_external_include_paths: true,
+                            },
+                        );
+                        for entry in rejected {
+                            tracing::warn!(
+                                target: "perl_lsp::config",
+                                entry = %entry.entry,
+                                reason = %entry.render(),
+                                "rejected client includePaths entry"
+                            );
+                        }
                         tracing::debug!("Updated workspace config from perl settings");
                     }
 
@@ -1290,12 +1305,44 @@ impl LspServer {
                             let mut effective_config =
                                 perl_lsp_rs_core::config::WorkspaceConfig::default();
                             if let Some(init_opts) = init_options_perl.as_ref() {
-                                effective_config.update_from_value(init_opts);
+                                let rejected = effective_config.update_from_value(init_opts);
+                                for entry in rejected {
+                                    tracing::warn!(
+                                        target: "perl_lsp::config",
+                                        folder_uri = %folder.uri,
+                                        entry = %entry.entry,
+                                        reason = %entry.render(),
+                                        "rejected initializationOptions includePaths entry"
+                                    );
+                                }
                             }
                             if let Some(project_config) = &folder.project_config {
-                                project_config.apply_to_workspace_config(&mut effective_config);
+                                // Re-applying an already-loaded, already-warned-about
+                                // project_config; discard the rejection list rather than
+                                // re-warning on every reconfiguration.
+                                if let Some(folder_path) = folder.path.as_deref() {
+                                    let _ = project_config.apply_to_workspace_config(
+                                        &mut effective_config,
+                                        folder_path,
+                                    );
+                                }
                             }
-                            effective_config.update_from_value(perl);
+                            let rejected = effective_config.update_from_value_with_context(
+                                perl,
+                                perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
+                                    workspace_root: folder.path.as_deref(),
+                                    apply_external_include_paths: true,
+                                },
+                            );
+                            for entry in rejected {
+                                tracing::warn!(
+                                    target: "perl_lsp::config",
+                                    folder_uri = %folder.uri,
+                                    entry = %entry.entry,
+                                    reason = %entry.render(),
+                                    "rejected client includePaths entry"
+                                );
+                            }
                             folder.effective_workspace_config = effective_config;
                             folder.refresh_workspace_metadata();
                         }
@@ -1431,7 +1478,14 @@ impl LspServer {
             }
         }
 
-        // Also update our internal document store if the document is open.
+        // For open documents, do NOT overwrite doc.text or bump doc.version.
+        // The document map is authoritative for open files — the editor's
+        // didChange notifications drive the content. Overwriting from disk
+        // clobbers unsaved user edits and the blind version+1 can cause
+        // subsequent didChange to be silently dropped as stale. (#5112, #5040)
+        //
+        // The workspace index above was already re-indexed from disk, which
+        // is sufficient for cross-file features. The document map stays as-is.
         #[cfg(feature = "workspace")]
         {
             let document_is_open = {
@@ -1440,25 +1494,10 @@ impl LspServer {
             };
 
             if document_is_open {
-                if loaded_content.is_none() {
-                    loaded_content = read_watched_file_content(uri, "document store update");
-                }
-
-                if let Some(content) = loaded_content {
-                    let mut documents = self.documents.lock();
-                    if let Some(doc) = self.get_document_mut(&mut documents, uri) {
-                        doc.text = content;
-                        doc.version += 1;
-                        // Invalidate the cached parse so it is regenerated on
-                        // next access. Bumping the generation (rather than
-                        // reaching into the private `parsed` field) makes
-                        // `current_parsed()` correctly report "no fresh
-                        // parse yet" until a new `ParsedSnapshot` is
-                        // published for this generation -- see
-                        // `state::ParsedSnapshot`.
-                        doc.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    }
-                }
+                tracing::debug!(
+                    "File watcher change for open document {} — skipping in-memory overwrite (document map is authoritative)",
+                    uri
+                );
             }
         }
 

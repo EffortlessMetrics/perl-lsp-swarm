@@ -42,6 +42,20 @@ pub(super) fn apply_use_directive(
                 push_state(range, state, ranges);
             }
         }
+        "experimental" => {
+            // `use experimental 'class'` enables the corresponding feature, just
+            // like `use feature 'class'`.  The experimental pragma maps feature
+            // names directly (class, signatures, defer, try, postderef, isa, etc.).
+            // (#5091)
+            let feature_args: Vec<String> = args
+                .iter()
+                .flat_map(|arg| crate::pragma_arg_items(arg))
+                .map(|item| format!("'{item}'"))
+                .collect();
+            if apply_feature_state(state, &feature_args, true) {
+                push_state(range, state, ranges);
+            }
+        }
         "builtin" => {
             if apply_builtin_imports_if_changed(state, args) {
                 push_state(range, state, ranges);
@@ -89,6 +103,11 @@ pub(super) fn apply_no_directive(
             push_state(range, state, ranges);
         }
         "feature" => {
+            if apply_feature_state(state, args, false) {
+                push_state(range, state, ranges);
+            }
+        }
+        "experimental" => {
             if apply_feature_state(state, args, false) {
                 push_state(range, state, ranges);
             }

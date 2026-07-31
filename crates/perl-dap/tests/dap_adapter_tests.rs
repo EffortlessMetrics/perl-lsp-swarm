@@ -15,25 +15,32 @@ mod dap_phase2_tests {
     use serde_json::{Value, json};
     use std::io::Write;
     use std::path::PathBuf;
-    use std::sync::mpsc::{Receiver, channel};
+    use std::sync::mpsc::{Receiver, sync_channel};
     use std::time::{Duration, Instant};
     use tempfile::NamedTempFile;
 
     fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessage>) {
-        let (tx, rx) = channel();
+        let (tx, rx) = sync_channel(64);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(tx);
         (adapter, rx)
     }
 
-    #[allow(clippy::panic)]
-    fn expect_response(msg: DapMessage, command: &str, expected_success: bool) -> Option<Value> {
+    fn expect_response(
+        msg: DapMessage,
+        command: &str,
+        expected_success: bool,
+    ) -> Result<Option<Value>> {
         let DapMessage::Response { success, command: c, body, .. } = msg else {
-            panic!("expected response for command {command}");
+            anyhow::bail!("expected response for command {command}");
         };
-        assert_eq!(c, command, "unexpected command");
-        assert_eq!(success, expected_success, "unexpected success value");
-        body
+        if c != command {
+            anyhow::bail!("unexpected command: expected {command}, got {c}");
+        }
+        if success != expected_success {
+            anyhow::bail!("unexpected success value: expected {expected_success}, got {success}");
+        }
+        Ok(body)
     }
 
     /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac5-adapter-scaffolding
@@ -44,7 +51,7 @@ mod dap_phase2_tests {
 
         let start = Instant::now();
         let init = adapter.handle_request(1, "initialize", None);
-        let init_body = expect_response(init, "initialize", true)
+        let init_body = expect_response(init, "initialize", true)?
             .ok_or_else(|| anyhow::anyhow!("initialize response should include capability body"))?;
         assert!(init_body.get("supportsConfigurationDoneRequest").is_some());
         assert!(start.elapsed() < Duration::from_millis(100), "initialize exceeded latency target");
@@ -56,7 +63,7 @@ mod dap_phase2_tests {
         }
 
         let disconnect = adapter.handle_request(2, "disconnect", None);
-        let _ = expect_response(disconnect, "disconnect", true);
+        let _ = expect_response(disconnect, "disconnect", true)?;
         Ok(())
     }
 
@@ -120,7 +127,7 @@ mod dap_phase2_tests {
             })),
         );
 
-        let body = expect_response(response, "setBreakpoints", true)
+        let body = expect_response(response, "setBreakpoints", true)?
             .ok_or_else(|| anyhow::anyhow!("missing breakpoints response body"))?;
         let breakpoints = body
             .get("breakpoints")
@@ -180,7 +187,7 @@ mod dap_phase2_tests {
         let mut adapter = DebugAdapter::new();
 
         let stack = adapter.handle_request(1, "stackTrace", Some(json!({ "threadId": 1 })));
-        let body = expect_response(stack, "stackTrace", true)
+        let body = expect_response(stack, "stackTrace", true)?
             .ok_or_else(|| anyhow::anyhow!("stackTrace body missing"))?;
         let stack_frames = body
             .get("stackFrames")
@@ -193,7 +200,7 @@ mod dap_phase2_tests {
         );
 
         let scopes = adapter.handle_request(2, "scopes", Some(json!({ "frameId": 1 })));
-        let scope_body = expect_response(scopes, "scopes", true)
+        let scope_body = expect_response(scopes, "scopes", true)?
             .ok_or_else(|| anyhow::anyhow!("scopes body missing"))?;
         let scope_list = scope_body
             .get("scopes")
@@ -226,7 +233,7 @@ mod dap_phase2_tests {
                 "count": 20
             })),
         );
-        let root_body = expect_response(root, "variables", true)
+        let root_body = expect_response(root, "variables", true)?
             .ok_or_else(|| anyhow::anyhow!("variables body missing"))?;
         let vars = root_body
             .get("variables")
@@ -254,7 +261,7 @@ mod dap_phase2_tests {
                     "count": 20
                 })),
             );
-            let _ = expect_response(child, "variables", true);
+            let _ = expect_response(child, "variables", true)?;
         }
 
         Ok(())
@@ -268,16 +275,16 @@ mod dap_phase2_tests {
         let mut adapter = DebugAdapter::new();
 
         let cont = adapter.handle_request(1, "continue", Some(json!({ "threadId": 1 })));
-        let _ = expect_response(cont, "continue", false);
+        let _ = expect_response(cont, "continue", false)?;
 
         let next = adapter.handle_request(2, "next", Some(json!({ "threadId": 1 })));
-        let _ = expect_response(next, "next", false);
+        let _ = expect_response(next, "next", false)?;
 
         let step_in = adapter.handle_request(3, "stepIn", Some(json!({ "threadId": 1 })));
-        let _ = expect_response(step_in, "stepIn", false);
+        let _ = expect_response(step_in, "stepIn", false)?;
 
         let step_out = adapter.handle_request(4, "stepOut", Some(json!({ "threadId": 1 })));
-        let _ = expect_response(step_out, "stepOut", false);
+        let _ = expect_response(step_out, "stepOut", false)?;
 
         Ok(())
     }

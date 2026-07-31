@@ -179,6 +179,31 @@ describe('HealthWidget — $/progress', () => {
     expect(widget.mode).toBe('running');
   });
 
+  test('Stopped clears the server-owned error count but keeps the client-owned file count', () => {
+    const { item, widget } = makeWidget();
+    widget.setFileCount(100);
+    widget.setErrorCount(5);
+    widget.onStateChange(ClientState.Running);
+    expect(item.text).toBe('$(check) perl-lsp: 100 files | 5 errors');
+
+    widget.onStateChange(ClientState.Stopped);
+    widget.onStateChange(ClientState.Running);
+
+    // The error count belonged to the ended server session, so it must not
+    // survive the restart. It repopulates via onDidChangeDiagnostics once the
+    // restarted server republishes.
+    expect(widget.errorCount).toBe(0);
+
+    // The file count is computed client-side from workspace.findFiles, so a
+    // server restart does not invalidate it. It MUST survive: nothing
+    // recomputes it after start(), because refreshFileCount() short-circuits
+    // on the cached fileCountPromise that only a workspace-folder change
+    // clears. Blanking it here left the widget permanently without a file
+    // count after any crash or manual restart.
+    expect(widget.fileCount).toBe(100);
+    expect(item.text).toBe('$(check) perl-lsp: 100 files');
+  });
+
   test('Running during active tokens stays indexing', () => {
     const { widget } = makeWidget();
     widget.onProgress('token-1', { kind: 'begin', title: 'Indexing' });
@@ -230,11 +255,12 @@ describe('HealthWidget — counts', () => {
     expect(item.text).toBe('$(error) perl-lsp: stopped');
   });
 
-  test('counts do not affect indexing display', () => {
+  test('indexing display includes file count when available', () => {
     const { item, widget } = makeWidget();
     widget.onProgress('t', { kind: 'begin', title: 'Indexing' });
     widget.setFileCount(100);
-    expect(item.text).not.toContain('100 files');
+    // UX_GAP_1.1 / #5184: show progress file count while indexing.
+    expect(item.text).toContain('100 files');
   });
 
   test('fileCount accessor returns current value', () => {

@@ -181,7 +181,7 @@ impl CallHierarchyProvider {
                         qualified_name: None,
                     });
                 }
-                NodeKind::FunctionCall { name, .. } => {
+                NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
                     let range = self.node_to_range(node);
                     return Some(CallHierarchyItem {
                         name: name.clone(),
@@ -264,7 +264,7 @@ impl CallHierarchyProvider {
                 }
                 // Anonymous sub — fall through to the bottom visitor.
             }
-            NodeKind::FunctionCall { name, .. } => {
+            NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
                 // Match exact name or package-qualified name (e.g. "Utils::format_string")
                 let matches = name == target_name || name.ends_with(&format!("::{}", target_name));
                 if matches {
@@ -318,7 +318,7 @@ impl CallHierarchyProvider {
     ) {
         let uri = &self.uri;
         match &node.kind {
-            NodeKind::FunctionCall { name, .. } => {
+            NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
                 let qualified_name = self.extract_qualified_call_name(node);
                 let item = CallHierarchyItem {
                     name: name.clone(),
@@ -536,7 +536,7 @@ impl CallHierarchyProvider {
                     return Some(result);
                 }
             }
-            NodeKind::FunctionCall { args, .. } => {
+            NodeKind::FunctionCall { args, .. } | NodeKind::AmperCall { args, .. } => {
                 for arg in args {
                     if let Some(result) = f(arg) {
                         return Some(result);
@@ -608,7 +608,17 @@ impl CallHierarchyProvider {
                     }
                 }
             }
-            _ => {}
+            _ => {
+                // Visit children for any node kind not explicitly handled above.
+                // This catches calls inside BEGIN/END/PhaseBlock, Class/Method bodies,
+                // Try/catch/finally, Given/When/Default, StatementModifier, and
+                // other constructs that contain calls but were silently dropped. (#5084)
+                for child in node.children() {
+                    if let Some(result) = f(child) {
+                        return Some(result);
+                    }
+                }
+            }
         }
         None
     }
@@ -1069,5 +1079,177 @@ sub helper {
             assert_eq!(incoming[0].from.kind, "file");
             assert_eq!(incoming[0].from.uri, "file:///script.pl");
         }
+    }
+
+    /// `&target_func()` inside a named sub must appear as an incoming call.
+    #[test]
+    fn test_incoming_calls_amper_call_is_detected() -> anyhow::Result<()> {
+        let code = r#"
+sub caller1 {
+    &target_func();
+}
+
+sub target_func {
+    print "Target\n";
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let provider = CallHierarchyProvider::new(code.to_string(), "file:///test.pl".to_string());
+        let target_item = CallHierarchyItem {
+            name: "target_func".to_string(),
+            kind: "function".to_string(),
+            uri: "file:///test.pl".to_string(),
+            range: Range {
+                start: Position { line: 5, character: 0 },
+                end: Position { line: 7, character: 1 },
+            },
+            selection_range: Range {
+                start: Position { line: 5, character: 4 },
+                end: Position { line: 5, character: 15 },
+            },
+            detail: None,
+            package_name: None,
+            qualified_name: None,
+        };
+        let incoming = provider.incoming_calls(&ast, &target_item);
+        assert_eq!(incoming.len(), 1, "&target_func() should appear as an incoming call");
+        assert_eq!(incoming[0].from.name, "caller1");
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_callable_at_position_amper_call() -> anyhow::Result<()> {
+        let code = "&target_func(1, 2);\n";
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let provider = CallHierarchyProvider::new(code.to_string(), "file:///test.pl".to_string());
+        let item = provider
+            .find_callable_at_position(&ast, 2)
+            .ok_or_else(|| anyhow::anyhow!("expected callable at ampersand-call name"))?;
+        assert_eq!(item.name, "target_func");
+        assert_eq!(item.kind, "function");
+        Ok(())
+    }
+
+    /// `&target_func()` at the top level must synthesize a file-level caller.
+    #[test]
+    fn test_incoming_calls_top_level_amper_call_synthesizes_file_caller() -> anyhow::Result<()> {
+        let code = "&target_func();\n";
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let provider =
+            CallHierarchyProvider::new(code.to_string(), "file:///script.pl".to_string());
+        let target_item = CallHierarchyItem {
+            name: "target_func".to_string(),
+            kind: "function".to_string(),
+            uri: "file:///lib.pm".to_string(),
+            range: Range {
+                start: Position { line: 0, character: 0 },
+                end: Position { line: 0, character: 15 },
+            },
+            selection_range: Range {
+                start: Position { line: 0, character: 1 },
+                end: Position { line: 0, character: 12 },
+            },
+            detail: None,
+            package_name: None,
+            qualified_name: None,
+        };
+        let incoming = provider.incoming_calls(&ast, &target_item);
+        assert_eq!(incoming.len(), 1, "expected file-level caller for top-level &func()");
+        assert_eq!(incoming[0].from.kind, "file");
+        Ok(())
+    }
+
+    /// `&Pkg::foo()` must not carry a leading `&` in `qualified_name` or `package_name`,
+    /// and a mixed `&Pkg::foo()` + `Pkg::foo()` pair must deduplicate into one outgoing entry.
+    #[test]
+    fn test_outgoing_calls_amper_call_strips_ampersand_from_qualified_name() -> anyhow::Result<()> {
+        let code = r#"
+sub caller {
+    &Pkg::foo();
+    Pkg::foo();
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let provider = CallHierarchyProvider::new(code.to_string(), "file:///test.pl".to_string());
+        let caller_item = CallHierarchyItem {
+            name: "caller".to_string(),
+            kind: "function".to_string(),
+            uri: "file:///test.pl".to_string(),
+            range: Range {
+                start: Position { line: 1, character: 0 },
+                end: Position { line: 4, character: 1 },
+            },
+            selection_range: Range {
+                start: Position { line: 1, character: 4 },
+                end: Position { line: 1, character: 10 },
+            },
+            detail: None,
+            package_name: None,
+            qualified_name: None,
+        };
+        let outgoing = provider.outgoing_calls(&ast, &caller_item);
+        // The two call sites (&Pkg::foo() and Pkg::foo()) must merge into one entry.
+        assert_eq!(
+            outgoing.len(),
+            1,
+            "&Pkg::foo() and Pkg::foo() should merge into one outgoing entry"
+        );
+        let entry = &outgoing[0];
+        assert_eq!(entry.from_ranges.len(), 2, "both call sites must be recorded");
+        assert_eq!(
+            entry.to.qualified_name.as_deref(),
+            Some("Pkg::foo"),
+            "qualified_name must not start with '&'"
+        );
+        assert_eq!(
+            entry.to.package_name.as_deref(),
+            Some("Pkg"),
+            "package_name must not start with '&'"
+        );
+        Ok(())
+    }
+
+    /// `&foo()` inside a sub must appear in outgoing calls.
+    #[test]
+    fn test_outgoing_calls_amper_call_is_detected() -> anyhow::Result<()> {
+        let code = r#"
+sub caller {
+    &helper();
+    &Pkg::method();
+}
+
+sub helper {}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let provider = CallHierarchyProvider::new(code.to_string(), "file:///test.pl".to_string());
+        let caller_item = CallHierarchyItem {
+            name: "caller".to_string(),
+            kind: "function".to_string(),
+            uri: "file:///test.pl".to_string(),
+            range: Range {
+                start: Position { line: 1, character: 0 },
+                end: Position { line: 4, character: 1 },
+            },
+            selection_range: Range {
+                start: Position { line: 1, character: 4 },
+                end: Position { line: 1, character: 10 },
+            },
+            detail: None,
+            package_name: None,
+            qualified_name: None,
+        };
+        let outgoing = provider.outgoing_calls(&ast, &caller_item);
+        let names: Vec<_> = outgoing.iter().map(|c| c.to.name.as_str()).collect();
+        assert!(names.contains(&"helper"), "&helper() should appear in outgoing calls");
+        assert!(
+            names.contains(&"Pkg::method"),
+            "&Pkg::method() should appear in outgoing calls with full qualified name"
+        );
+        Ok(())
     }
 }

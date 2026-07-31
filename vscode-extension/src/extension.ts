@@ -108,6 +108,7 @@ import {
   CRITIC_SETTINGS,
   hasExplicitPerlCriticOverrides,
   syncLanguageClientConfiguration,
+  syncUserAiCompletionConfiguration,
   syncPerlCriticConfiguration as syncPerlCriticConfigurationFromConfig,
 } from './languageClientConfiguration';
 export { buildDisabledFeaturesFromConfig } from './languageClientConfiguration';
@@ -194,7 +195,10 @@ let extensionContext: vscode.ExtensionContext | undefined;
  */
 const MAX_AUTO_RESTART_ATTEMPTS = 3;
 const STABLE_RUN_GRACE_MS = 30_000;
+const WATCHDOG_INTERVAL_MS = 30_000;
+const WATCHDOG_TIMEOUT_MS = 10_000;
 let autoRestartAttempts = 0;
+let watchdogTimer: NodeJS.Timeout | undefined;
 let stableRunningSince: number | undefined;
 let userInitiatedStopPending = false;
 
@@ -479,6 +483,8 @@ export async function copyProviderDecisionReceiptCommand(
 export async function activate(context: vscode.ExtensionContext) {
   languageClientStartupMetrics.markMilestone('activate_entered');
   featureActivationMetrics.beginActivation();
+  // Set activation context so commands are available even without a Perl file open (#UX4.4)
+  vscode.commands.executeCommand('setContext', 'perl-lsp.activated', true);
   // Cache the context so the mid-session crash handler (#4625) can drive an
   // auto-restart without a parameter of its own.
   extensionContext = context;
@@ -711,6 +717,7 @@ export async function activate(context: vscode.ExtensionContext) {
           event.affectsConfiguration('perl-lsp.aiCompletion.streaming.enabled')
         ) {
           refreshStreamingController(client);
+          await syncUserAiCompletionConfiguration(client);
         }
       },
       onRestartRequired: () => promptForClientRefresh(context),
@@ -722,26 +729,30 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
-    const config = vscode.workspace.getConfiguration('perl-lsp');
-    if (!config.get<boolean>('autoPopulateNewFiles', true)) {
-      return;
-    }
-
-    for (const uri of event.files) {
-      const boilerplate = generateBoilerplate(uri.fsPath);
-      if (!boilerplate) {
-        continue;
+    try {
+      const config = vscode.workspace.getConfiguration('perl-lsp');
+      if (!config.get<boolean>('autoPopulateNewFiles', true)) {
+        return;
       }
 
-      const doc = await vscode.workspace.openTextDocument(uri);
-      if (doc.getText().length > 0) {
-        // File already has content — don't overwrite
-        continue;
-      }
+      for (const uri of event.files) {
+        const boilerplate = generateBoilerplate(uri.fsPath);
+        if (!boilerplate) {
+          continue;
+        }
 
-      const edit = new vscode.WorkspaceEdit();
-      edit.insert(uri, new vscode.Position(0, 0), boilerplate.content);
-      await vscode.workspace.applyEdit(edit);
+        const doc = await vscode.workspace.openTextDocument(uri);
+        if (doc.getText().length > 0) {
+          // File already has content — don't overwrite
+          continue;
+        }
+
+        const edit = new vscode.WorkspaceEdit();
+        edit.insert(uri, new vscode.Position(0, 0), boilerplate.content);
+        await vscode.workspace.applyEdit(edit);
+      }
+    } catch (e) {
+      outputChannel.error('File creation handler error', e);
     }
   });
 
@@ -1525,7 +1536,17 @@ function shouldFormatOnSave(document: vscode.TextDocument): boolean {
   }
 
   const config = vscode.workspace.getConfiguration('perl-lsp', document.uri);
-  return config.get<boolean>('formatOnSave', false);
+  if (!config.get<boolean>('formatOnSave', false)) {
+    return false;
+  }
+
+  // Warn if formatting is attempted while server is still indexing. (UX_GAP_2.4)
+  // The format will likely fail silently — log it so users see why.
+  if (healthWidget?.mode === 'indexing') {
+    outputChannel.debug('[formatOnSave] Server is still indexing — formatting may fail');
+  }
+
+  return true;
 }
 
 async function formatDocumentOnSave(document: vscode.TextDocument): Promise<vscode.TextEdit[]> {
@@ -1757,6 +1778,14 @@ export function handleClientStateChange(event: StateChangeEvent): void {
   // is a distinct nominal type, so we cast to number for comparison.
   const newStateNum = event.newState as unknown as number;
   const oldStateNum = event.oldState as unknown as number;
+
+  // Start/stop the watchdog based on client state (#5092)
+  if (newStateNum === ClientState.Running) {
+    startWatchdog();
+  } else if (newStateNum === ClientState.Stopped) {
+    stopWatchdog();
+  }
+
   if (newStateNum !== ClientState.Stopped || oldStateNum !== ClientState.Running) {
     return;
   }
@@ -1802,6 +1831,40 @@ export function handleClientStateChange(event: StateChangeEvent): void {
  * `MAX_AUTO_RESTART_ATTEMPTS` times. Once the budget is exhausted, the toast
  * asks the user to restart manually or run a Health Check.
  */
+/**
+ * Start a periodic liveness watchdog. Every WATCHDOG_INTERVAL_MS, sends a
+ * lightweight workspace/symbol request. If it doesn't respond within
+ * WATCHDOG_TIMEOUT_MS, the server is considered hung and restarted. (#5092)
+ */
+function startWatchdog(): void {
+  stopWatchdog();
+  watchdogTimer = setInterval(async () => {
+    if (languageClientLifecycle?.snapshot.state !== 'running') {
+      return;
+    }
+    try {
+      await Promise.race([
+        languageClientLifecycle.client?.sendRequest('workspace/symbol', { query: '' }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('watchdog timeout')), WATCHDOG_TIMEOUT_MS),
+        ),
+      ]);
+    } catch {
+      outputChannel.warn('[watchdog] Server unresponsive — triggering restart');
+      autoRestartAttempts = 0;
+      await handleUnexpectedServerStop();
+    }
+  }, WATCHDOG_INTERVAL_MS);
+}
+
+/** Stop the watchdog timer. */
+function stopWatchdog(): void {
+  if (watchdogTimer) {
+    clearInterval(watchdogTimer);
+    watchdogTimer = undefined;
+  }
+}
+
 async function handleUnexpectedServerStop(): Promise<void> {
   const context = extensionContext;
   const hint =

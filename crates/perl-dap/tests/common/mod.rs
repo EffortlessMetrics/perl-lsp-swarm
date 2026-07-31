@@ -8,7 +8,7 @@ use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::time::{Duration, Instant};
 
 // ─── Public surface ───────────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ impl DapWorkflowSession {
     /// not received within `timeout`.
     pub fn new(timeout: Duration) -> Result<Self, String> {
         let mut adapter = DebugAdapter::new();
-        let (tx, rx) = channel();
+        let (tx, rx) = sync_channel(64);
         adapter.set_event_sender(tx);
 
         let mut session = Self { adapter, rx, timeout, seq: 0 };
@@ -597,7 +597,33 @@ pub fn workflow_timeout() -> Duration {
     }
 }
 
+/// Environment variable that flips [`perl_available`] from a silent skip
+/// into a hard failure when `perl` cannot be resolved.
+///
+/// Every DAP integration test follows the pattern
+/// `if !perl_available() { eprintln!("SKIP ..."); return Ok(()); }`, which
+/// means a missing perl interpreter makes the whole suite report "N passed"
+/// while exercising nothing. CI jobs that are supposed to actually run
+/// these tests should set `PERL_LSP_DAP_REQUIRE_PERL=1` so a missing
+/// perl fails loudly instead of vacuously greening.
+pub const REQUIRE_PERL_ENV: &str = "PERL_LSP_DAP_REQUIRE_PERL";
+
 /// Returns `true` when `perl` is on `PATH`.
+///
+/// When [`REQUIRE_PERL_ENV`] is set to a truthy value, a missing perl is
+/// treated as a hard failure (an `assert!` panic) instead of a silent skip.
 pub fn perl_available() -> bool {
-    PerlOracleEnv::for_dap_test_fixture().is_some()
+    let available = PerlOracleEnv::for_dap_test_fixture().is_some();
+    if !available {
+        let strict = std::env::var(REQUIRE_PERL_ENV)
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        assert!(
+            !strict,
+            "{REQUIRE_PERL_ENV}=1 is set, which forbids the silent DAP-test \
+             SKIP path — perl interpreter not found on PATH. \
+             Install perl or unset the env var."
+        );
+    }
+    available
 }

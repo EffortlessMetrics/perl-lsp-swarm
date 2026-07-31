@@ -2,10 +2,10 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import * as vscode from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
+import { machineScopedExternalIncludePaths } from './languageClientConfiguration';
 
 type DocumentClient = Pick<LanguageClient, 'sendRequest'>;
 type DocumentOutputChannel = Pick<vscode.OutputChannel, 'appendLine' | 'show'>;
-type AstOutputChannel = Pick<vscode.OutputChannel, 'clear' | 'appendLine' | 'show'>;
 export type ExecFileLike = (
   file: string,
   args: string[],
@@ -19,6 +19,10 @@ export interface DocumentCommandDependencies {
   readonly serverNotRunningMessage: () => string;
   readonly execFile?: ExecFileLike | undefined;
 }
+
+// Cached output channels to avoid creating a new one per invocation. (UX polish)
+let incPathsChannel: vscode.OutputChannel | undefined;
+let parserAstChannel: vscode.OutputChannel | undefined;
 
 /** Check the active Perl document with the local Perl interpreter. */
 export async function runCheckSyntaxCommand(
@@ -37,9 +41,11 @@ export async function runCheckSyntaxCommand(
   const filePath = editor.document.uri.fsPath;
   const config = vscode.workspace.getConfiguration('perl-lsp');
   const includePaths: string[] = config.get('includePaths', ['lib', 'local/lib/perl5']);
+  // Machine scope only — never honor workspace/folder externalIncludePaths (#4998).
+  const externalIncludePaths = machineScopedExternalIncludePaths(config);
   const workspaceRoot = vscode.workspace.getWorkspaceFolder(editor.document.uri)?.uri.fsPath;
   const perlArgs: string[] = [];
-  for (const includePath of includePaths) {
+  for (const includePath of [...includePaths, ...externalIncludePaths]) {
     const resolved =
       workspaceRoot && !path.isAbsolute(includePath)
         ? path.join(workspaceRoot, includePath)
@@ -104,14 +110,17 @@ export async function showIncPathsCommand(execFileOverride?: ExecFileLike): Prom
         .trim()
         .split('\n')
         .filter((line) => line.length > 0);
-      const panel = vscode.window.createOutputChannel('Perl @INC');
-      panel.clear();
-      panel.appendLine('Perl @INC paths:');
-      panel.appendLine('');
-      for (const line of lines) {
-        panel.appendLine(`  ${line}`);
+      // Reuse the channel instead of creating a new one each invocation. (UX polish)
+      if (!incPathsChannel) {
+        incPathsChannel = vscode.window.createOutputChannel('Perl @INC');
       }
-      panel.show();
+      incPathsChannel.clear();
+      incPathsChannel.appendLine('Perl @INC paths:');
+      incPathsChannel.appendLine('');
+      for (const line of lines) {
+        incPathsChannel.appendLine(`  ${line}`);
+      }
+      incPathsChannel.show();
       resolve();
     });
   });
@@ -180,12 +189,15 @@ export async function showParserAstCommand(
       return;
     }
 
-    const panel = vscode.window.createOutputChannel('Perl Parser AST') as AstOutputChannel;
-    panel.clear();
-    panel.appendLine(`AST for: ${vscode.workspace.asRelativePath(editor.document.uri)}`);
-    panel.appendLine('');
-    panel.appendLine(result);
-    panel.show();
+    // Reuse the channel instead of creating a new one each invocation. (UX polish)
+    if (!parserAstChannel) {
+      parserAstChannel = vscode.window.createOutputChannel('Perl Parser AST');
+    }
+    parserAstChannel.clear();
+    parserAstChannel.appendLine(`AST for: ${vscode.workspace.asRelativePath(editor.document.uri)}`);
+    parserAstChannel.appendLine('');
+    parserAstChannel.appendLine(result);
+    parserAstChannel.show();
   } catch {
     vscode.window.showWarningMessage(
       'Show Parser AST is not supported by the current perllsp version',

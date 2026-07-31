@@ -1153,6 +1153,27 @@ impl LspServer {
                 let documents = self.documents_guard();
                 if let Some(doc) = self.get_document(&documents, uri) {
                     let offset = self.pos16_to_offset(doc, line, character);
+
+                    // Skip go-to-definition inside comments — the cursor is not
+                    // on a real symbol.  Without this guard the AST resolver may
+                    // jump to an unrelated symbol on the same line.  (#5066)
+                    //
+                    // This guard runs BEFORE any resolution path (module lookup,
+                    // AST resolver, goto-label, Mason, etc.) so it covers all
+                    // navigation, not just the module-reference path.
+                    //
+                    // String-aware guarding is intentionally omitted: text-based
+                    // quote scanners produce false positives on real Perl code
+                    // (regexes, heredocs, qw(), POD).  The original guard used
+                    // `is_in_comment && !is_in_string`, which was logically
+                    // inverted — it only blocked when in a comment that was NOT
+                    // also classified as a string.  This now blocks whenever the
+                    // offset is inside a comment.
+                    let text = &doc.text;
+                    if perl_lsp_rs_core::providers::rename::is_in_comment(offset, text) {
+                        return Ok(None);
+                    }
+
                     let radius = 50;
                     let (text_start, text_around) =
                         self.get_text_window_around_offset(&doc.text, offset, radius);

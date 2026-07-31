@@ -78,101 +78,136 @@ impl LspServer {
 
             tracing::debug!("Document saved: {}", uri);
 
-            // Re-run diagnostics on save to catch any changes
-            let documents = self.documents.lock();
-            if let Some(doc) = self.get_document(&documents, &normalized_uri) {
-                let parsed = doc.current_parsed();
-                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                    // `parsed` is guaranteed `Some` here since `ast` was
-                    // derived from it.
-                    let empty_errors: Arc<[perl_parser::error::ParseError]> = Arc::from([]);
-                    let parse_errors = parsed
-                        .as_ref()
-                        .map_or_else(|| empty_errors.clone(), |p| p.parse_errors_arc());
-                    // Run diagnostics, threading workspace semantic queries when available.
-                    let provider = DiagnosticsProvider::new(ast, doc.text.clone());
-                    let source_path = source_path_from_uri(uri);
+            // Re-run diagnostics on save to catch any changes. Keep this
+            // snapshot lock scoped: the reconciliation below takes the same
+            // lock again after diagnostics have been published.
+            {
+                let documents = self.documents.lock();
+                if let Some(doc) = self.get_document(&documents, &normalized_uri) {
+                    let parsed = doc.current_parsed();
+                    if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
+                        // `parsed` is guaranteed `Some` here since `ast` was
+                        // derived from it.
+                        let empty_errors: Arc<[perl_parser::error::ParseError]> = Arc::from([]);
+                        let parse_errors = parsed
+                            .as_ref()
+                            .map_or_else(|| empty_errors.clone(), |p| p.parse_errors_arc());
+                        // Run diagnostics, threading workspace semantic queries when available.
+                        let provider = DiagnosticsProvider::new(ast, doc.text.clone());
+                        let source_path = source_path_from_uri(uri);
 
-                    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                    let diagnostics = {
-                        // Attempt semantic-aware path; fall back to legacy when URI not indexed.
-                        let semantic_diags = self.workspace_index().and_then(|workspace_index| {
-                            workspace_index.with_semantic_queries_for_uri(
-                                uri,
-                                |file_id, queries| {
-                                    provider.get_diagnostics_with_path_and_semantics(
-                                        ast,
-                                        &parse_errors,
-                                        &doc.text,
-                                        None,
-                                        &[],
-                                        source_path.as_deref(),
-                                        file_id,
-                                        &queries,
+                        #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+                        let diagnostics = {
+                            // Attempt semantic-aware path; fall back to legacy when URI not indexed.
+                            let semantic_diags =
+                                self.workspace_index().and_then(|workspace_index| {
+                                    workspace_index.with_semantic_queries_for_uri(
+                                        uri,
+                                        |file_id, queries| {
+                                            provider.get_diagnostics_with_path_and_semantics(
+                                                ast,
+                                                &parse_errors,
+                                                &doc.text,
+                                                None,
+                                                &[],
+                                                source_path.as_deref(),
+                                                file_id,
+                                                &queries,
+                                            )
+                                        },
                                     )
-                                },
-                            )
-                        });
-                        semantic_diags.unwrap_or_else(|| {
-                            provider.get_diagnostics_with_path(
-                                ast,
-                                &parse_errors,
-                                &doc.text,
-                                None,
-                                &[],
-                                source_path.as_deref(),
-                            )
-                        })
-                    };
-                    #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-                    let diagnostics = provider.get_diagnostics_with_path(
-                        ast,
-                        &parse_errors,
-                        &doc.text,
-                        None,
-                        &[],
-                        source_path.as_deref(),
-                    );
-
-                    // Convert diagnostics
-                    let lsp_diagnostics: Vec<Value> = diagnostics
-                        .iter()
-                        .map(|diag| {
-                            let (start_line, start_char) = self.offset_to_pos16(doc, diag.range.0);
-                            let (end_line, end_char) = self.offset_to_pos16(doc, diag.range.1);
-
-                            json!({
-                                "range": {
-                                    "start": { "line": start_line, "character": start_char },
-                                    "end": { "line": end_line, "character": end_char }
-                                },
-                                "severity": match diag.severity {
-                                    InternalDiagnosticSeverity::Error => 1,
-                                    InternalDiagnosticSeverity::Warning => 2,
-                                    InternalDiagnosticSeverity::Information => 3,
-                                    InternalDiagnosticSeverity::Hint => 4,
-                                },
-                                "message": diag.message,
-                                "source": "perl"
+                                });
+                            semantic_diags.unwrap_or_else(|| {
+                                provider.get_diagnostics_with_path(
+                                    ast,
+                                    &parse_errors,
+                                    &doc.text,
+                                    None,
+                                    &[],
+                                    source_path.as_deref(),
+                                )
                             })
-                        })
-                        .collect();
+                        };
+                        #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
+                        let diagnostics = provider.get_diagnostics_with_path(
+                            ast,
+                            &parse_errors,
+                            &doc.text,
+                            None,
+                            &[],
+                            source_path.as_deref(),
+                        );
 
-                    // Send diagnostics notification
-                    if let Err(e) = self.notify(
-                        "textDocument/publishDiagnostics",
-                        json!({
-                            "uri": uri,
-                            "diagnostics": lsp_diagnostics
-                        }),
-                    ) {
-                        tracing::warn!("Failed to publish diagnostics for {}: {}", uri, e);
+                        // Convert diagnostics
+                        let lsp_diagnostics: Vec<Value> = diagnostics
+                            .iter()
+                            .map(|diag| {
+                                let (start_line, start_char) =
+                                    self.offset_to_pos16(doc, diag.range.0);
+                                let (end_line, end_char) = self.offset_to_pos16(doc, diag.range.1);
+
+                                json!({
+                                    "range": {
+                                        "start": { "line": start_line, "character": start_char },
+                                        "end": { "line": end_line, "character": end_char }
+                                    },
+                                    "severity": match diag.severity {
+                                        InternalDiagnosticSeverity::Error => 1,
+                                        InternalDiagnosticSeverity::Warning => 2,
+                                        InternalDiagnosticSeverity::Information => 3,
+                                        InternalDiagnosticSeverity::Hint => 4,
+                                    },
+                                    "message": diag.message,
+                                    "source": "perl"
+                                })
+                            })
+                            .collect();
+
+                        // Send diagnostics notification
+                        if let Err(e) = self.notify(
+                            "textDocument/publishDiagnostics",
+                            json!({
+                                "uri": uri,
+                                "diagnostics": lsp_diagnostics
+                            }),
+                        ) {
+                            tracing::warn!("Failed to publish diagnostics for {}: {}", uri, e);
+                        }
                     }
                 }
             }
 
             // Optionally, trigger any post-save hooks here
             // For example: format on save, run tests, etc.
+
+            // Reconcile: if the saved document's index is stale (generation
+            // lag from coalesced parse jobs), re-index it now from the
+            // in-memory text. This prevents permanent index lag where no
+            // async parse ticket ever catches the index up. (#5111)
+            #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+            {
+                // Read both generation and text in a SINGLE lock to avoid TOCTOU.
+                let doc_info = {
+                    let documents = self.documents.lock();
+                    self.get_document(&documents, &normalized_uri)
+                        .map(|d| (d.current_generation(), d.text.clone()))
+                };
+                if let Some((doc_gen_val, text)) = doc_info
+                    && let Some(coordinator) = self.coordinator()
+                {
+                    let index = coordinator.index();
+                    if index.is_index_generation_stale(&normalized_uri, doc_gen_val) {
+                        if let Ok(url) = url::Url::parse(&normalized_uri) {
+                            tracing::debug!(
+                                "Reconciling stale index for {} (doc gen {} > indexed gen)",
+                                normalized_uri,
+                                doc_gen_val
+                            );
+                            let _ = index.index_file(url, text);
+                        }
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -200,61 +235,62 @@ impl LspServer {
     ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(params) = params {
             let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
-            let _reason = params["reason"].as_u64().unwrap_or(1);
 
             tracing::debug!("Document will save wait until: {}", uri);
 
-            let documents = self.documents.lock();
-            if let Some(doc) = self.get_document(&documents, uri) {
-                // Return text edits to be applied before saving
-                // For example: format document, organize imports, etc.
-
-                // Check if we should format on save
-                let config = self.config.lock();
-                if config.test_runner_enabled {
-                    // Using existing config field as example
-                    // Could add format_on_save config option
-                    let formatter = CodeFormatter::new();
-                    let format_options = FormattingOptions {
-                        tab_size: 4,
-                        insert_spaces: true,
-                        trim_trailing_whitespace: Some(true),
-                        insert_final_newline: Some(true),
-                        trim_final_newlines: Some(true),
-                    };
-
-                    if let Ok(edits) = formatter.format_document(&doc.text, &format_options) {
-                        if !edits.is_empty() {
-                            // Convert FormatTextEdit to LSP TextEdit
-                            // The edits already have line/character positions
-                            let lsp_edits: Vec<Value> = edits
-                                .iter()
-                                .map(|edit| {
-                                    json!({
-                                        "range": {
-                                            "start": {
-                                                "line": edit.range.start.line,
-                                                "character": edit.range.start.character
-                                            },
-                                            "end": {
-                                                "line": edit.range.end.line,
-                                                "character": edit.range.end.character
-                                            }
-                                        },
-                                        "newText": edit.new_text
-                                    })
-                                })
-                                .collect();
-
-                            return Ok(Some(json!(lsp_edits)));
-                        }
-                    }
-                }
+            // Phase 1: snapshot text under brief lock, then drop.
+            // Formatting can shell out to perltidy, so we must NOT hold locks
+            // during the format call (#4643 off-lock pattern).
+            if !self.is_formatting_enabled() {
+                return Ok(Some(json!([])));
             }
-        }
+            let text = {
+                let documents = self.documents.lock();
+                match self.get_document(&documents, uri) {
+                    Some(doc) => doc.text.clone(),
+                    None => return Ok(Some(json!([]))),
+                }
+            };
+            // locks dropped here
 
-        // Return empty array if no edits
-        Ok(Some(json!([])))
+            // Phase 2: format off-lock using the user's actual perltidy config.
+            let config = self.build_perltidy_config();
+            let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());
+            let format_options = FormattingOptions {
+                tab_size: 4,
+                insert_spaces: true,
+                trim_trailing_whitespace: Some(true),
+                insert_final_newline: Some(true),
+                trim_final_newlines: Some(true),
+            };
+
+            match formatter.format_document(&text, &format_options) {
+                Ok(edits) if !edits.is_empty() => {
+                    let lsp_edits: Vec<Value> = edits
+                        .iter()
+                        .map(|edit| {
+                            json!({
+                                "range": {
+                                    "start": {
+                                        "line": edit.range.start.line,
+                                        "character": edit.range.start.character
+                                    },
+                                    "end": {
+                                        "line": edit.range.end.line,
+                                        "character": edit.range.end.character
+                                    }
+                                },
+                                "newText": edit.new_text
+                            })
+                        })
+                        .collect();
+                    Ok(Some(json!(lsp_edits)))
+                }
+                _ => Ok(Some(json!([]))),
+            }
+        } else {
+            Ok(Some(json!([])))
+        }
     }
 
     /// Get the end position of a document

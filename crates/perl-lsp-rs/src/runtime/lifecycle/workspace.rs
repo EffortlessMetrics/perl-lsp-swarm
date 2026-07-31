@@ -10,6 +10,88 @@ use std::sync::Once;
 /// Fires at most once per LSP session, when Perl is not found anywhere.
 static PERL_NOT_FOUND_WARNED: Once = Once::new();
 
+/// How a user can actually make the language server find Perl.
+///
+/// Deliberately names **no editor setting**. The language server has no
+/// user-facing interpreter-path setting, so the previous advice to "set
+/// `perl-lsp.perl.path`" pointed at something that cannot be set (#5034):
+///
+/// - `perl-lsp.perl.path` does not appear in the extension's
+///   `contributes.configuration` — the shipped settings are `perl-lsp.serverPath`
+///   (the *server binary*, not the interpreter), `includePaths`, and
+///   `externalIncludePaths`.
+/// - `.perl-lsp.toml`'s `[perl]` section has no interpreter field
+///   (`ProjectPerlConfig` carries only include/discovery/PERL5LIB keys).
+/// - Workspace-scoped `perlPath` is *deliberately ignored*, because a hostile
+///   project could otherwise redirect the interpreter used for the `@INC` probe
+///   and get arbitrary code execution at config-load time (#3729).
+///
+/// `perlPath` in `launch.json` is a DAP-only key; it selects the debuggee's
+/// interpreter and has no effect on the language server. Naming it here would
+/// send users to the wrong place — the DAP side already carries its own,
+/// correct `launch.json` guidance.
+const PERL_REMEDIATION: &str = "Install Perl (https://strawberryperl.com on Windows, \
+     `brew install perl` on macOS, or your system package manager) and make sure `perl` is on \
+     PATH, then reload the window (Ctrl+Shift+P \u{2192} Developer: Reload Window).";
+
+/// Message for "Perl was found, but only via an OS fallback path".
+///
+/// Kept separate from the emitting code so the wording is directly testable.
+fn perl_fallback_message(path: &std::path::Path, label: &str) -> String {
+    format!(
+        "perl-lsp: Perl not found on PATH; using {label} at {}. \
+         Add Perl to PATH to suppress this message.",
+        path.display()
+    )
+}
+
+/// Message for "no Perl interpreter could be used".
+///
+/// `configured` is the interpreter path the server was told to use, when one is
+/// set — in that case the path itself is the thing to check, so the generic
+/// install-Perl advice would be misleading.
+fn perl_not_found_message(searched: &[String], configured: Option<&str>) -> String {
+    // An empty configured path is not a configuration the user can act on, so it
+    // falls through to the generic install guidance rather than telling them to
+    // check `` (#5034 review).
+    match configured.filter(|path| !path.is_empty()) {
+        Some(configured) => {
+            // `find_perl_interpreter` reports a missing configured path as the
+            // sole searched entry (`configured path: <p>`, path trimmed), so
+            // echoing the list verbatim would print the same path twice. Drop
+            // only entries that restate the configured path and nothing else.
+            //
+            // Matched by equality, not `contains`: a configured `/usr` is a
+            // substring of a genuinely distinct `/usr/local/bin` entry, and
+            // suppressing that would lose information rather than dedupe it.
+            let trimmed = configured.trim();
+            let restated = format!("configured path: {trimmed}");
+            let also: Vec<&str> = searched
+                .iter()
+                .map(String::as_str)
+                .filter(|entry| {
+                    let entry = entry.trim();
+                    entry != restated && entry != trimmed
+                })
+                .collect();
+            let also = if also.is_empty() {
+                String::new()
+            } else {
+                format!(" Also searched: {}.", also.join(", "))
+            };
+            format!(
+                "perl-lsp: The configured Perl interpreter was not found at `{configured}`.{also} \
+                 Check that the path exists and is executable, then reload the window \
+                 (Ctrl+Shift+P \u{2192} Developer: Reload Window)."
+            )
+        }
+        None => format!(
+            "perl-lsp: Perl interpreter not found on PATH. Searched: {}. {PERL_REMEDIATION}",
+            searched.join(", ")
+        ),
+    }
+}
+
 impl LspServer {
     /// Set the root path from the root URI during initialization
     ///
@@ -41,15 +123,15 @@ impl LspServer {
 
     /// Detect the Perl interpreter and surface an actionable message if not found.
     ///
-    /// Called once during `handle_initialize`. Reads `perl-lsp.perl.path` from the
-    /// workspace config (if set), then falls back to full OS-aware detection. Emits:
+    /// Called once during `handle_initialize`. Uses the configured interpreter path
+    /// if one is present, then falls back to full OS-aware detection. Emits:
     ///
     /// - `window/logMessage` (Info) if Perl was found via an OS fallback path so the
     ///   user knows which interpreter will be used.
     /// - `window/showMessage` (Error) **once per session** if no Perl interpreter is found
     ///   anywhere, with actionable remediation text.
-    /// - `window/showMessage` (Error) **once per session** if `perl-lsp.perl.path` is set
-    ///   but the configured path does not exist.
+    /// - `window/showMessage` (Error) **once per session** if an interpreter path is
+    ///   configured but does not exist.
     ///
     /// Does not alter any server state. Tracing fallback is preserved alongside user messages.
     pub(crate) fn check_perl_interpreter(&self) {
@@ -64,11 +146,7 @@ impl LspServer {
                 tracing::debug!(path = %path.display(), "Perl interpreter: found on PATH");
             }
             PerlInterpreterResult::FoundViaFallback { ref path, ref label } => {
-                let msg = format!(
-                    "perl-lsp: Perl not found on PATH; using {label} at {}. \
-                     Add Perl to PATH or set `perl-lsp.perl.path` to suppress this message.",
-                    path.display()
-                );
+                let msg = perl_fallback_message(path, label);
                 tracing::info!(path = %path.display(), label = %label, "Perl interpreter found via fallback");
                 if let Err(e) = self.log_message(MessageType::Info, &msg) {
                     tracing::warn!(error = %e, "Failed to send logMessage for perl fallback");
@@ -77,23 +155,7 @@ impl LspServer {
             PerlInterpreterResult::NotFound { ref searched } => {
                 tracing::warn!(searched = ?searched, "Perl interpreter not found");
                 PERL_NOT_FOUND_WARNED.call_once(|| {
-                    let searched_str = searched.join(", ");
-                    let msg = if configured_path.as_deref().is_some_and(|p| !p.is_empty()) {
-                        format!(
-                            "perl-lsp: The configured Perl interpreter was not found. \
-                             Searched: {searched_str}. \
-                             Check `perl-lsp.perl.path` in your settings and reload the window \
-                             (Ctrl+Shift+P \u{2192} Developer: Reload Window)."
-                        )
-                    } else {
-                        format!(
-                            "perl-lsp: Perl interpreter not found on PATH. \
-                             Searched: {searched_str}. \
-                             Install Perl (https://strawberryperl.com on Windows, \
-                             `brew install perl` on macOS, or your system package manager) \
-                             and reload the window, or set `perl-lsp.perl.path` in settings."
-                        )
-                    };
+                    let msg = perl_not_found_message(searched, configured_path.as_deref());
                     if let Err(e) = self.show_message(MessageType::Error, &msg) {
                         tracing::warn!(error = %e, "Failed to send showMessage for perl not found");
                     }
@@ -126,7 +188,14 @@ impl LspServer {
         let mut folders = self.workspace_folders.lock();
 
         if folders.is_empty() {
-            return; // Single-file mode; no workspace root to search
+            // Single-file mode: try to discover .perl-lsp.toml from the
+            // open document's directory. This is a common workflow — opening
+            // a lone .pl file that has a .perl-lsp.toml next to it. (#UX15)
+            if let Some(config) = self.discover_single_file_config() {
+                let mut server_config = self.config.lock();
+                config.apply_to_server_config(&mut server_config);
+            }
+            return;
         }
 
         // Collect (display_name, project_config) for folders that have a
@@ -144,7 +213,16 @@ impl LspServer {
                 // layer .perl-lsp.toml on top so project config wins.
                 let mut effective_config = WorkspaceConfig::default();
                 if let Some(init_opts) = self.initialization_options_perl_settings.lock().as_ref() {
-                    effective_config.update_from_value(init_opts);
+                    let rejected = effective_config.update_from_value(init_opts);
+                    for entry in rejected {
+                        tracing::warn!(
+                            target: "perl_lsp::config",
+                            folder_uri = %folder.uri,
+                            entry = %entry.entry,
+                            reason = %entry.render(),
+                            "rejected initializationOptions includePaths entry"
+                        );
+                    }
                 }
                 folder.effective_workspace_config = effective_config;
 
@@ -160,8 +238,16 @@ impl LspServer {
 
                         // Layer project config on top of the init-options base
                         // already stored in folder.effective_workspace_config.
-                        project_config
-                            .apply_to_workspace_config(&mut folder.effective_workspace_config);
+                        let rejected_include_paths = project_config.apply_to_workspace_config(
+                            &mut folder.effective_workspace_config,
+                            folder_path,
+                        );
+                        if !rejected_include_paths.is_empty() {
+                            self.emit_rejected_include_paths_warning(
+                                folder.display_name(),
+                                &rejected_include_paths,
+                            );
+                        }
 
                         // Defer the server-global sections to the post-loop merge so a
                         // later folder cannot silently clobber an earlier folder's value.
@@ -216,6 +302,18 @@ impl LspServer {
         self.request_workspace_configuration_for_folders();
     }
 
+    /// In single-file mode, try to discover `.perl-lsp.toml` from the
+    /// directory of the first open document. (#UX15)
+    fn discover_single_file_config(&self) -> Option<perl_lsp_rs_core::config::ProjectConfig> {
+        let documents = self.documents.lock();
+        let uri = documents.keys().next()?.to_string();
+        drop(documents);
+
+        let path = super::super::source_path_from_uri(&uri)?;
+        let dir = std::path::Path::new(&path).parent()?;
+        perl_lsp_rs_core::config::load_project_config(dir).ok().flatten()
+    }
+
     /// Emit a `window/showMessage` Warning describing the conflicting
     /// server-global `.perl-lsp.toml` keys across a multi-root workspace.
     ///
@@ -239,6 +337,35 @@ impl LspServer {
         tracing::warn!(conflicts = %rendered, "Multi-root config conflict; first folder wins");
         if let Err(e) = self.show_message(MessageType::Warning, &user_msg) {
             tracing::warn!(error = %e, "Failed to send showMessage for multi-root config conflict");
+        }
+    }
+
+    /// Emit a `window/showMessage` Warning describing `.perl-lsp.toml`
+    /// `include_paths` entries rejected during load — e.g. absolute paths or
+    /// entries that escape the workspace root (see the `# Security` doc
+    /// comment on [`perl_lsp_rs_core::config::ProjectConfig::apply_to_workspace_config`]).
+    ///
+    /// Only called from the initial-load path (this function) — reconfiguration
+    /// re-application call sites re-apply an already-loaded, already-warned-about
+    /// `project_config` and intentionally do not re-warn, to avoid spamming the
+    /// user on every settings change.
+    fn emit_rejected_include_paths_warning(
+        &self,
+        folder_name: &str,
+        rejected: &[perl_lsp_rs_core::config::RejectedIncludePath],
+    ) {
+        let rendered = rejected
+            .iter()
+            .map(perl_lsp_rs_core::config::RejectedIncludePath::render)
+            .collect::<Vec<_>>()
+            .join("; ");
+        let user_msg = format!(
+            "perl-lsp: {folder_name}'s .perl-lsp.toml has include_paths entries that were \
+             ignored: {rendered}"
+        );
+        tracing::warn!(folder = %folder_name, rejected = %rendered, "Rejected include_paths entries");
+        if let Err(e) = self.show_message(MessageType::Warning, &user_msg) {
+            tracing::warn!(error = %e, "Failed to send showMessage for rejected include_paths");
         }
     }
 }
@@ -293,6 +420,151 @@ mod tests {
         server.workspace_config.lock().perl_path = Some(fake_perl.to_string_lossy().to_string());
         // Should not panic
         server.check_perl_interpreter();
+    }
+
+    // =====================================================================
+    // Perl-not-found remediation must not name a setting that does not exist
+    // (#5034). Mirrors the DAP-side guard in
+    // crates/perl-dap/tests/dap_launch_error_remediation_tests.rs.
+    // =====================================================================
+
+    /// Every user-facing interpreter message, for the "must not mention" guards.
+    fn all_perl_interpreter_messages() -> Vec<String> {
+        vec![
+            perl_fallback_message(std::path::Path::new("/usr/local/bin/perl"), "Homebrew"),
+            perl_not_found_message(&["/usr/bin".to_string(), "/bin".to_string()], None),
+            perl_not_found_message(&["/usr/bin".to_string()], Some("/opt/custom/perl")),
+        ]
+    }
+
+    #[test]
+    fn perl_messages_never_name_the_nonexistent_perl_path_setting() {
+        // `perl-lsp.perl.path` is not in the extension's contributes.configuration,
+        // `.perl-lsp.toml`'s [perl] section has no interpreter field, and
+        // workspace-scoped perlPath is ignored for security (#3729). Advising it
+        // sends the user somewhere they cannot act.
+        for msg in all_perl_interpreter_messages() {
+            assert!(
+                !msg.contains("perl-lsp.perl.path"),
+                "message must not point at the nonexistent perl-lsp.perl.path setting, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn perl_messages_never_name_dap_only_launch_json_keys() {
+        // `perlPath` is a launch.json/DAP key and does not affect the language
+        // server, so naming it here would be a different wrong answer.
+        for msg in all_perl_interpreter_messages() {
+            assert!(
+                !msg.contains("launch.json"),
+                "language-server message must not send users to launch.json, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn perl_not_found_message_gives_actionable_install_guidance() {
+        let msg = perl_not_found_message(&["/usr/bin".to_string(), "/bin".to_string()], None);
+        // The searched paths tell the user what was actually tried.
+        assert!(msg.contains("/usr/bin, /bin"), "must list searched paths, got: {msg}");
+        // Remediation the user can actually perform.
+        assert!(msg.contains("PATH"), "must mention PATH, got: {msg}");
+        assert!(msg.contains("Install Perl"), "must tell the user to install Perl, got: {msg}");
+        assert!(msg.contains("Reload Window"), "must say how to re-trigger detection, got: {msg}");
+    }
+
+    #[test]
+    fn not_found_message_names_both_platform_install_routes() {
+        // Guards against the remediation being collapsed to one canonical
+        // sentence: a Windows user needs the Strawberry Perl link and a macOS
+        // user needs the brew line, and neither is inferable from the other.
+        let msg = perl_not_found_message(&["PATH".to_string()], None);
+        assert!(msg.contains("strawberryperl.com"), "must name the Windows route, got: {msg}");
+        assert!(msg.contains("brew install perl"), "must name the macOS route, got: {msg}");
+        assert!(msg.contains("package manager"), "must name the Linux route, got: {msg}");
+    }
+
+    #[test]
+    fn configured_path_message_points_at_the_configured_path_not_at_installing_perl() {
+        // When a path is configured, the path is the problem — generic
+        // "install Perl" advice would be a misdiagnosis.
+        let msg = perl_not_found_message(&["/x".to_string()], Some("/opt/custom/perl"));
+        assert!(msg.contains("/opt/custom/perl"), "must name the configured path, got: {msg}");
+        assert!(
+            !msg.contains("Install Perl"),
+            "a configured-but-missing path is not an install problem, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn configured_path_message_does_not_print_the_same_path_twice() {
+        // `find_perl_interpreter` returns the configured path as the sole
+        // searched entry, so a naive join repeats it.
+        let configured = "/nonexistent/perl";
+        let msg =
+            perl_not_found_message(&[format!("configured path: {configured}")], Some(configured));
+        assert_eq!(
+            msg.matches(configured).count(),
+            1,
+            "configured path should appear exactly once, got: {msg}"
+        );
+        assert!(!msg.contains("Also searched"), "nothing extra was searched, got: {msg}");
+    }
+
+    #[test]
+    fn dedup_does_not_suppress_entries_that_merely_start_with_the_configured_path() {
+        // A configured `/usr` is a substring of `/usr/local/bin`, which is a
+        // genuinely different location — a `contains` filter would eat it.
+        let msg = perl_not_found_message(
+            &["configured path: /usr".to_string(), "/usr/local/bin".to_string()],
+            Some("/usr"),
+        );
+        assert!(
+            msg.contains("Also searched: /usr/local/bin"),
+            "a distinct path that merely shares a prefix must survive, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn messages_contain_no_doubled_whitespace() {
+        // Rust's `\<newline>` continuation strips the newline and the following
+        // line's indentation, so the multi-line literals render as single
+        // spaces. Pinned because it is invisible in the source.
+        for msg in all_perl_interpreter_messages() {
+            assert!(!msg.contains("  "), "message has doubled whitespace: {msg:?}");
+            assert!(!msg.contains('\n'), "message has a newline: {msg:?}");
+        }
+    }
+
+    #[test]
+    fn configured_path_message_still_reports_genuinely_extra_searched_entries() {
+        // Deduping must not swallow entries that add information.
+        let msg = perl_not_found_message(
+            &["configured path: /nonexistent/perl".to_string(), "PATH".to_string()],
+            Some("/nonexistent/perl"),
+        );
+        assert!(msg.contains("Also searched: PATH"), "extra entries must survive, got: {msg}");
+    }
+
+    #[test]
+    fn empty_configured_path_falls_back_to_install_guidance() {
+        // An empty string is not something the user can go check, so it must be
+        // treated as "nothing configured" rather than producing "not found at ``".
+        let msg = perl_not_found_message(&["PATH".to_string()], Some(""));
+        assert!(msg.contains("Install Perl"), "empty config must give install advice, got: {msg}");
+        assert!(!msg.contains("not found at"), "must not render an empty path, got: {msg}");
+    }
+
+    #[test]
+    fn fallback_message_names_the_interpreter_and_how_to_silence_it() {
+        let msg = perl_fallback_message(std::path::Path::new("/opt/homebrew/bin/perl"), "Homebrew");
+        assert!(msg.contains("/opt/homebrew/bin/perl"), "must name the interpreter, got: {msg}");
+        assert!(msg.contains("Homebrew"), "must name the fallback source, got: {msg}");
+        assert!(
+            msg.contains("Add Perl to PATH"),
+            "must give the one action that suppresses it, got: {msg}"
+        );
     }
 
     #[test]
@@ -646,6 +918,43 @@ include_paths = ["stale_lib"]
                 .contains(&"stale_lib".to_string())
         );
         Ok(())
+    }
+
+    #[test]
+    fn handle_client_response_rejects_hostile_absolute_include_paths() {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let folder = temp.path().join("folder");
+        std::fs::create_dir_all(&folder).expect("failed to create folder");
+
+        let uri = url::Url::from_directory_path(&folder).expect("failed to create uri").to_string();
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
+                .with_path(folder.clone()),
+        );
+        server.pending_workspace_configuration_requests.lock().insert(
+            ServerRequestId::for_test(12),
+            crate::runtime::PendingWorkspaceConfigurationRequest {
+                folder_uris: vec![uri.clone()],
+                includes_global_item: true,
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        server.handle_client_response(Some(serde_json::json!({
+            "id": 12,
+            "result": [
+                { "workspace": { "useSystemInc": false } },
+                { "workspace": { "includePaths": [absolute, "lib"] } }
+            ]
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let folder_state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        assert_eq!(folder_state.effective_workspace_config.include_paths, vec!["lib".to_string()]);
+        assert!(folder_state.effective_workspace_config.external_include_paths.is_empty());
     }
 
     #[test]

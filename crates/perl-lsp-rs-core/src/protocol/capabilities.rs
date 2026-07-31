@@ -36,6 +36,8 @@ pub fn completion_trigger_characters() -> Vec<String> {
         "-".to_string(),
         ">".to_string(),
         ":".to_string(),
+        // String concat operator — triggers completion for chained access. (UX_GAP_03)
+        ".".to_string(),
         // File path completion inside string literals.
         "/".to_string(),
         "\\".to_string(),
@@ -122,6 +124,7 @@ pub fn get_supported_commands() -> Vec<String> {
         "perl.runSubtest".to_string(),
         "perl.debugFile".to_string(),
         "perl.debugTest".to_string(),
+        "perl.debugTests".to_string(),
         "perl.debugTestFile".to_string(),
         "perl.goToTest".to_string(),
         "perl.goToImplementation".to_string(),
@@ -332,6 +335,18 @@ mod tests {
         );
     }
 
+    /// Verify that `perl.debugTests` (plural) is advertised alongside
+    /// `perl.debugTest`. Regression guard for issue #5276 — the command was
+    /// dispatched but missing from the advertised capabilities list.
+    #[test]
+    fn debug_tests_plural_command_id_is_registered() {
+        let cmds = get_supported_commands();
+        assert!(
+            cmds.iter().any(|c| c == "perl.debugTests"),
+            "perl.debugTests must be in get_supported_commands"
+        );
+    }
+
     /// Verify that `perl.agentContext` is included in the supported commands list.
     #[test]
     fn agent_context_command_id_is_registered() {
@@ -403,7 +418,10 @@ mod tests {
     #[test]
     fn completion_trigger_characters_include_file_path_and_perl_tokens() {
         let triggers = completion_trigger_characters();
-        for expected in ["$", "@", "%", "-", ">", ":", "/", "\\", "\"", "'"] {
+        // `.` (string concat, UX_GAP_03) is included deliberately: it was
+        // previously guarded only by the insta snapshot, so when the snapshot
+        // went stale nothing asserted the trigger still existed.
+        for expected in ["$", "@", "%", "-", ">", ":", ".", "/", "\\", "\"", "'"] {
             assert!(
                 triggers.iter().any(|trigger| trigger == expected),
                 "missing completion trigger character: {expected}"

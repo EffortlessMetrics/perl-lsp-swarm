@@ -10,7 +10,7 @@
 //! |------|----------|-------------|
 //! | `security-two-arg-open` | Warning | `open(FH, ">file")` -- use 3-arg open for safety |
 //! | `security-string-eval` | Warning | `eval "$string"` -- string eval is a security risk |
-//! | `security-backtick-exec` | Information | Backtick/qx command execution detected |
+//! | `security-backtick-exec` | Warning | Backtick/qx command execution detected |
 //! | `security-signal-handler` | Warning | Global `$SIG{__DIE__}` / `$SIG{__WARN__}` assignment |
 //! | `PL603` | Warning | `system()` call executes shell commands |
 //! | `PL604` | Warning | `exec()` call replaces the current process |
@@ -304,7 +304,7 @@ fn walk_security_node(
         NodeKind::String { value, interpolated: true } if is_backtick_string(value) => {
             diagnostics.push(Diagnostic {
                 range: (node.location.start, node.location.end),
-                severity: DiagnosticSeverity::Information,
+                severity: DiagnosticSeverity::Warning,
                 code: Some(DiagnosticCode::SecurityBacktickExec.as_str().to_string()),
                 message: "Command execution detected. Ensure input is sanitized.".to_string(),
                 related_information: vec![RelatedInformation {

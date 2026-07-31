@@ -92,8 +92,9 @@ fn given_import_backed_candidate_when_inspecting_rank_reason_then_source_module_
         DefinitionRankReason::ExplicitImport { module: "List::Util".to_string() },
     );
 
+    assert!(matches!(&candidate.rank_reason, DefinitionRankReason::ExplicitImport { .. }));
     let DefinitionRankReason::ExplicitImport { module } = &candidate.rank_reason else {
-        panic!("expected ExplicitImport rank reason");
+        return;
     };
     assert_eq!(module, "List::Util");
     assert_eq!(candidate.display_name, "first");
@@ -261,8 +262,9 @@ fn given_explicit_import_spec_when_resolved_then_listed_symbols_available() {
         span_start_byte: Some(20),
     };
 
+    assert!(matches!(&spec.symbols, ImportSymbols::Explicit(_)));
     let ImportSymbols::Explicit(ref symbols) = spec.symbols else {
-        panic!("expected Explicit symbols");
+        return;
     };
     assert_eq!(symbols.len(), 3);
     assert!(symbols.contains(&"blessed".to_string()));
@@ -299,7 +301,8 @@ fn given_manual_import_spec_when_checking_order_sensitivity_then_span_is_used() 
 /// when the provider resolves visible names,
 /// then the tags drive group-based symbol lookup.
 #[test]
-fn given_use_tag_import_spec_when_resolving_then_tags_available() {
+fn given_use_tag_import_spec_when_resolving_then_tags_available()
+-> Result<(), Box<dyn std::error::Error>> {
     let spec = ImportSpec {
         module: "POSIX".to_string(),
         kind: ImportKind::UseTag,
@@ -313,10 +316,13 @@ fn given_use_tag_import_spec_when_resolving_then_tags_available() {
     };
 
     let ImportSymbols::Tags(ref tags) = spec.symbols else {
-        panic!("expected Tags symbols");
+        return Err(
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "expected Tags symbols").into()
+        );
     };
     assert!(tags.contains(&":math".to_string()));
     assert!(tags.contains(&":ctype".to_string()));
+    Ok(())
 }
 
 // ── Scenario 5: Export Set Consumer ───────────────────────────────────────
@@ -442,7 +448,8 @@ fn given_dynamic_unknown_symbol_when_evaluated_then_low_confidence_and_dynamic_s
 /// when the completion provider filters method candidates,
 /// then the package name guides lookup in the class graph.
 #[test]
-fn given_object_value_shape_when_completing_methods_then_package_drives_lookup() {
+fn given_object_value_shape_when_completing_methods_then_package_drives_lookup()
+-> Result<(), Box<dyn std::error::Error>> {
     let shape =
         ValueShape::Object { package: "DateTime".to_string(), confidence: Confidence::High };
 
@@ -451,21 +458,34 @@ fn given_object_value_shape_when_completing_methods_then_package_drives_lookup()
             assert_eq!(package, "DateTime");
             assert_eq!(*confidence, Confidence::High);
         }
-        _ => panic!("expected Object shape"),
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "expected Object shape",
+            )
+            .into());
+        }
     }
+    Ok(())
 }
 
 /// Given a ValueShape::PackageName (static class call like `Foo->new`),
 /// when the provider resolves methods,
 /// then it knows the class at compile time.
 #[test]
-fn given_package_name_shape_when_resolving_class_then_package_known_statically() {
+fn given_package_name_shape_when_resolving_class_then_package_known_statically()
+-> Result<(), Box<dyn std::error::Error>> {
     let shape = ValueShape::PackageName { package: "LWP::UserAgent".to_string() };
 
     let ValueShape::PackageName { package } = &shape else {
-        panic!("expected PackageName shape");
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "expected PackageName shape",
+        )
+        .into());
     };
     assert_eq!(package, "LWP::UserAgent");
+    Ok(())
 }
 
 /// Given a ValueShape::Unknown,

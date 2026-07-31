@@ -127,7 +127,12 @@ impl SourceRegionIndex {
 
     /// Whether `[start, end)` lies entirely inside one of `allowed` kinds.
     #[must_use]
-    pub fn range_fully_within(&self, start: usize, end: usize, allowed: &[SourceRegionKind]) -> bool {
+    pub fn range_fully_within(
+        &self,
+        start: usize,
+        end: usize,
+        allowed: &[SourceRegionKind],
+    ) -> bool {
         match self.classify_range(start, end) {
             RangeClassification::Proven { kind } => allowed.contains(&kind),
             RangeClassification::Ambiguous | RangeClassification::OutOfBounds => false,

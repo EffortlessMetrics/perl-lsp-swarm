@@ -942,6 +942,20 @@ impl ScopeAnalyzer {
                 interpolation::handle_regex(scope);
             }
 
+            NodeKind::StatementModifier { statement, condition, .. } => {
+                // Perl hoists a `my` declaration in the modifier condition to the
+                // enclosing block, so the condition must be analyzed BEFORE the
+                // statement.  The default children() order is statement-first,
+                // which causes a false-positive UndeclaredVariable for idioms like
+                //   `print $x if my $x = 1;`
+                // Analyze the condition first so any `my` it introduces is visible
+                // to the statement.
+                ancestors.push(node);
+                self.analyze_node(condition, scope, ancestors, issues, context);
+                self.analyze_node(statement, scope, ancestors, issues, context);
+                ancestors.pop();
+            }
+
             _ => {
                 // Recursively analyze children
                 ancestors.push(node);
@@ -1917,7 +1931,7 @@ pub(super) fn is_builtin_global(sigil: &str, name: &str) -> bool {
             // Special variables
             "_" | "!" | "@" | "?" | "^" | "$" | "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8"
             | "9" | "." | "," | "/" | "\\" | "\"" | ";" | "%" | "=" | "-" | "~" | "|" | "&"
-            | "`" | "'" | "+" | "[" | "]" | "^A" | "^C" | "^D" | "^E" | "^F" | "^H" | "^I" | "^L"
+            | "`" | "'" | "+" | "[" | "]" | ":" | "^A" | "^C" | "^D" | "^E" | "^F" | "^H" | "^I" | "^L"
             | "^M" | "^N" | "^O" | "^P" | "^R" | "^S" | "^T" | "^V" | "^W" | "^X" |
             // Common globals
             "ARGV" | "VERSION" | "AUTOLOAD" |

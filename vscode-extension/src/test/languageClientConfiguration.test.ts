@@ -3,11 +3,13 @@ import {
   buildDisabledFeaturesFromConfig,
   buildLanguageClientConfigurationPayload,
   buildPerlCriticConfiguration,
+  buildUserAiCompletionConfigurationPayload,
   buildWorkspaceConfigurationPayload,
   classifyConfigurationChange,
   classifyConfigurationSetting,
   DEFAULT_INCLUDE_PATHS,
   hasExplicitPerlCriticOverrides,
+  machineScopedExternalIncludePaths,
   syncLanguageClientConfiguration,
   syncPerlCriticConfiguration,
 } from '../languageClientConfiguration';
@@ -37,6 +39,49 @@ describe('language client configuration', () => {
     expect(payload).toEqual({
       workspace: { includePaths: ['vendor/lib', 'local/lib/perl5'] },
     });
+  });
+
+  test('forwards machine-scoped external include paths from global settings only', () => {
+    const config = {
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'externalIncludePaths') {
+          return ['/opt/perl/lib'];
+        }
+        return defaultValue;
+      }),
+      inspect: jest.fn((key: string) =>
+        key === 'externalIncludePaths' ? { globalValue: ['/opt/perl/lib'] } : undefined,
+      ),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildWorkspaceConfigurationPayload(config)).toEqual({
+      workspace: { externalIncludePaths: ['/opt/perl/lib'] },
+    });
+  });
+
+  test('does not forward workspace attempts to set externalIncludePaths', () => {
+    const config = {
+      get: jest.fn((key: string, defaultValue?: unknown) => defaultValue),
+      inspect: jest.fn((key: string) =>
+        key === 'externalIncludePaths' ? { workspaceValue: ['/etc'] } : undefined,
+      ),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildWorkspaceConfigurationPayload(config)).toBeUndefined();
+    expect(machineScopedExternalIncludePaths(config)).toEqual([]);
+  });
+
+  test('machineScopedExternalIncludePaths returns only globalValue', () => {
+    const config = {
+      get: jest.fn(() => ['/workspace-should-not-win']),
+      inspect: jest.fn((key: string) =>
+        key === 'externalIncludePaths'
+          ? { globalValue: ['/opt/perl/lib'], workspaceValue: ['/etc'] }
+          : undefined,
+      ),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(machineScopedExternalIncludePaths(config)).toEqual(['/opt/perl/lib']);
   });
 
   test('combines workspace and critic settings under the canonical perl payload', () => {
@@ -70,7 +115,15 @@ describe('language client configuration', () => {
     expect(sendNotification).toHaveBeenCalledWith(
       'workspace/didChangeConfiguration',
       expect.objectContaining({
-        settings: { perl: { workspace: { includePaths: ['workspace/lib'] } } },
+        settings: {
+          perl: {
+            aiCompletion: {
+              enabled: false,
+              streaming: { enabled: true },
+            },
+            workspace: { includePaths: ['workspace/lib'] },
+          },
+        },
       }),
     );
   });
@@ -147,6 +200,7 @@ describe('language client configuration', () => {
   test.each([
     ['perl-lsp.trace.server', 'live'],
     ['perl-lsp.includePaths', 'live'],
+    ['perl-lsp.externalIncludePaths', 'live'],
     ['perl-lsp.critic.severity', 'live'],
     ['perl-lsp.enableTestIntegration', 'reconstruct'],
     ['perl-lsp.aiCompletion.enabled', 'reconstruct'],
@@ -169,5 +223,47 @@ describe('language client configuration', () => {
         affectsConfiguration: (setting: string) => changed.has(setting),
       }),
     ).toEqual(['live', 'reconstruct', 'restart']);
+  });
+
+  test('builds machine-scoped AI completion payload from effective settings', () => {
+    const config = {
+      get: jest.fn((key: string, defaultValue: unknown) => {
+        if (key === 'aiCompletion.enabled') {
+          return true;
+        }
+        if (key === 'aiCompletion.streaming.enabled') {
+          return false;
+        }
+        return defaultValue;
+      }),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildUserAiCompletionConfigurationPayload(config)).toEqual({
+      settings: {
+        perl: {
+          aiCompletion: {
+            enabled: true,
+            streaming: { enabled: false },
+          },
+        },
+      },
+    });
+  });
+
+  test('syncs default-off when machine settings are reset', () => {
+    const config = {
+      get: jest.fn((_key: string, defaultValue: unknown) => defaultValue),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildUserAiCompletionConfigurationPayload(config)).toEqual({
+      settings: {
+        perl: {
+          aiCompletion: {
+            enabled: false,
+            streaming: { enabled: true },
+          },
+        },
+      },
+    });
   });
 });

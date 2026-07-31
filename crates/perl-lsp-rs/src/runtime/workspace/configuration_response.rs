@@ -1,5 +1,30 @@
 use crate::runtime::workspace_folder::WorkspaceFolderState;
+use perl_lsp_rs_core::config::WorkspaceConfigUpdateContext;
 use serde_json::Value;
+
+fn apply_workspace_config_layer(
+    config: &mut perl_lsp_rs_core::config::WorkspaceConfig,
+    settings: &Value,
+    folder: &WorkspaceFolderState,
+    apply_external_include_paths: bool,
+) {
+    let rejected = config.update_from_value_with_context(
+        settings,
+        WorkspaceConfigUpdateContext {
+            workspace_root: folder.path.as_deref(),
+            apply_external_include_paths,
+        },
+    );
+    for entry in rejected {
+        tracing::warn!(
+            target: "perl_lsp::config",
+            folder_uri = %folder.uri,
+            entry = %entry.entry,
+            reason = %entry.render(),
+            "rejected client includePaths entry"
+        );
+    }
+}
 
 pub(super) fn apply_workspace_configuration_results(
     folders: &mut [WorkspaceFolderState],
@@ -25,18 +50,42 @@ pub(super) fn apply_workspace_configuration_results(
 
         let mut effective_config = perl_lsp_rs_core::config::WorkspaceConfig::default();
         if let Some(init_opts) = init_options_perl {
-            effective_config.update_from_value(init_opts);
+            let rejected = effective_config.update_from_value(init_opts);
+            for entry in rejected {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    folder_uri = %folder.uri,
+                    entry = %entry.entry,
+                    reason = %entry.render(),
+                    "rejected initializationOptions includePaths entry"
+                );
+            }
         }
         if let Some(project_config) = &folder.project_config {
-            project_config.apply_to_workspace_config(&mut effective_config);
+            // Re-applying an already-loaded project_config (loaded, validated, and
+            // warned about once in lifecycle/workspace.rs). Discard the rejection
+            // list here rather than re-warning on every reconfiguration.
+            if let Some(folder_path) = folder.path.as_deref() {
+                let _ =
+                    project_config.apply_to_workspace_config(&mut effective_config, folder_path);
+            }
+            // else: folder.path is None. This is not "fail-closed" - it is a
+            // silent no-op that skips the ENTIRE project config, dropping
+            // discovery_extensions, perl5lib toggles and everything else, not
+            // just include_paths validation, with no diagnostic.
+            //
+            // It is unreachable today because path and project_config are set
+            // together in lifecycle/workspace.rs. If that invariant is ever
+            // broken the symptom will be project settings silently not applying,
+            // which is hard to trace back to here.
         }
 
         if let Some(global_settings) = global_settings {
-            effective_config.update_from_value(global_settings);
+            apply_workspace_config_layer(&mut effective_config, global_settings, folder, true);
         }
 
         if let Some(perl_settings) = results.get(folder_results_start + idx) {
-            effective_config.update_from_value(perl_settings);
+            apply_workspace_config_layer(&mut effective_config, perl_settings, folder, false);
         } else {
             tracing::warn!(
                 request_id,

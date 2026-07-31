@@ -187,21 +187,39 @@ fn native_defined_replacement(left: &str, right: &str, equal: bool) -> Option<St
     Some(replacement)
 }
 
-pub(super) fn add_use_strict(diagnostic: &Diagnostic) -> Vec<CodeAction> {
+pub(super) fn add_use_strict(
+    provider: &CodeActionsProvider,
+    diagnostic: &Diagnostic,
+) -> Vec<CodeAction> {
     vec![diagnostic_action(
         diagnostic,
         "Add 'use strict'",
         CodeActionKind::QuickFix,
-        TextEdit { range: (0, 0), new_text: "use strict;\n".to_string() },
+        TextEdit {
+            range: {
+                let offset = source_utils::file_scope_pragma_insertion_offset(provider.source());
+                (offset, offset)
+            },
+            new_text: source_utils::file_scope_pragma_text(provider.source(), "use strict"),
+        },
     )]
 }
 
-pub(super) fn add_use_warnings(diagnostic: &Diagnostic) -> Vec<CodeAction> {
+pub(super) fn add_use_warnings(
+    provider: &CodeActionsProvider,
+    diagnostic: &Diagnostic,
+) -> Vec<CodeAction> {
     vec![diagnostic_action(
         diagnostic,
         "Add 'use warnings'",
         CodeActionKind::QuickFix,
-        TextEdit { range: (0, 0), new_text: "use warnings;\n".to_string() },
+        TextEdit {
+            range: {
+                let offset = source_utils::file_scope_pragma_insertion_offset(provider.source());
+                (offset, offset)
+            },
+            new_text: source_utils::file_scope_pragma_text(provider.source(), "use warnings"),
+        },
     )]
 }
 

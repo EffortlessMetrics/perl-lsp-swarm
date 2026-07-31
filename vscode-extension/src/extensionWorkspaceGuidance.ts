@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 const COEXISTENCE_GUIDE_URL =
-  'https://github.com/EffortlessMetrics/perl-lsp/blob/master/vscode-extension/README.md#extension-coexistence';
+  'https://github.com/EffortlessMetrics/perl-lsp/blob/main/vscode-extension/README.md#extension-coexistence';
 
 export async function validateIncludePaths(context: vscode.ExtensionContext): Promise<void> {
   const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -304,7 +304,7 @@ export async function suggestAiCompletionIfSupported(
 
   if (choice === 'Enable') {
     try {
-      await config.update('aiCompletion.enabled', true, vscode.ConfigurationTarget.Workspace);
+      await config.update('aiCompletion.enabled', true, vscode.ConfigurationTarget.Global);
       void vscode.window.showInformationMessage('AI-powered inline completions enabled.');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -4,10 +4,15 @@
 //! The primary provider is OpenAI-compatible, supporting any endpoint that
 //! implements the OpenAI chat completions API with SSE streaming.
 
+pub mod destination;
 pub mod openai;
 pub mod prompt;
 pub mod rate_limiter;
 pub mod sse;
 
+pub use destination::{
+    ApprovedDestination, DestinationError, credential_may_attach, validate_endpoint,
+    validate_endpoint_with_resolver,
+};
 pub use openai::{OpenAiConfig, OpenAiProvider};
 pub use rate_limiter::RateLimiter;

@@ -54,6 +54,7 @@ export const CRITIC_SETTINGS = [
 
 const LIVE_SETTINGS = [
   'perl-lsp.includePaths',
+  'perl-lsp.externalIncludePaths',
   'perl-lsp.trace.server',
   ...CRITIC_SETTINGS,
 ] as const;
@@ -190,18 +191,50 @@ function readIncludePaths(config: ConfigurationReader): string[] {
   return configured.filter((value): value is string => typeof value === 'string');
 }
 
-export function buildWorkspaceConfigurationPayload(
-  config: ConfigurationReader = vscode.workspace.getConfiguration('perl-lsp'),
-): Record<string, unknown> | undefined {
-  if (!hasExplicitOverride(config, 'includePaths')) {
+function readExternalIncludePaths(config: ConfigurationReader): string[] | undefined {
+  const inspected = config.inspect?.('externalIncludePaths') as
+    | {
+        globalValue?: unknown;
+      }
+    | undefined;
+
+  if (!inspected || inspected.globalValue === undefined) {
     return undefined;
   }
 
-  return {
-    workspace: {
-      includePaths: readIncludePaths(config),
-    },
-  };
+  if (!Array.isArray(inspected.globalValue)) {
+    return undefined;
+  }
+
+  return inspected.globalValue.filter((value): value is string => typeof value === 'string');
+}
+
+/** Machine-scoped external roots only (`inspect().globalValue`); never workspace/folder. */
+export function machineScopedExternalIncludePaths(
+  config: ConfigurationReader = vscode.workspace.getConfiguration('perl-lsp'),
+): string[] {
+  return readExternalIncludePaths(config) ?? [];
+}
+
+export function buildWorkspaceConfigurationPayload(
+  config: ConfigurationReader = vscode.workspace.getConfiguration('perl-lsp'),
+): Record<string, unknown> | undefined {
+  const includePathsExplicit = hasExplicitOverride(config, 'includePaths');
+  const externalIncludePaths = readExternalIncludePaths(config);
+
+  if (!includePathsExplicit && externalIncludePaths === undefined) {
+    return undefined;
+  }
+
+  const workspace: Record<string, unknown> = {};
+  if (includePathsExplicit) {
+    workspace.includePaths = readIncludePaths(config);
+  }
+  if (externalIncludePaths !== undefined) {
+    workspace.externalIncludePaths = externalIncludePaths;
+  }
+
+  return { workspace };
 }
 
 export function buildPerlCriticConfiguration(
@@ -237,10 +270,69 @@ export async function syncLanguageClientConfiguration(
     return;
   }
 
-  await activeClient.sendNotification(
-    'workspace/didChangeConfiguration',
-    buildLanguageClientConfigurationPayload(documentUri),
-  );
+  const payload = buildLanguageClientConfigurationPayload(documentUri);
+  const userAi = buildUserAiCompletionConfigurationPayload();
+  if (!payload && !userAi) {
+    return;
+  }
+
+  const settings: Record<string, unknown> = {};
+  if (payload?.settings && typeof payload.settings === 'object') {
+    Object.assign(settings, payload.settings as Record<string, unknown>);
+  }
+  if (userAi?.settings && typeof userAi.settings === 'object') {
+    const perl = (settings.perl as Record<string, unknown> | undefined) ?? {};
+    const userPerl = userAi.settings as { perl?: Record<string, unknown> };
+    if (userPerl.perl) {
+      Object.assign(perl, userPerl.perl);
+    }
+    settings.perl = perl;
+  }
+
+  await activeClient.sendNotification('workspace/didChangeConfiguration', { settings });
+}
+
+/// Read the effective machine-scoped boolean for server sync.
+///
+/// Machine-scoped keys cannot be set from workspace settings, so `get()` is
+/// authoritative — including when the user resets a setting to its default
+/// (`inspect().globalValue` is then `undefined`, but `get()` still returns the
+/// default).
+function readMachineScopedBoolean(
+  config: ConfigurationReader,
+  key: string,
+  defaultValue: boolean,
+): boolean {
+  return config.get<boolean>(key, defaultValue);
+}
+
+export function buildUserAiCompletionConfigurationPayload(
+  config: ConfigurationReader = vscode.workspace.getConfiguration('perl-lsp'),
+): Record<string, unknown> {
+  const enabled = readMachineScopedBoolean(config, 'aiCompletion.enabled', false);
+  const streamingEnabled = readMachineScopedBoolean(config, 'aiCompletion.streaming.enabled', true);
+
+  return {
+    settings: {
+      perl: {
+        aiCompletion: {
+          enabled,
+          streaming: { enabled: streamingEnabled },
+        },
+      },
+    },
+  };
+}
+
+export async function syncUserAiCompletionConfiguration(
+  activeClient: Pick<LanguageClient, 'sendNotification'> | undefined,
+): Promise<void> {
+  if (!activeClient) {
+    return;
+  }
+
+  const payload = buildUserAiCompletionConfigurationPayload();
+  await activeClient.sendNotification('workspace/didChangeConfiguration', payload);
 }
 
 export async function syncPerlCriticConfiguration(

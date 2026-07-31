@@ -16,6 +16,11 @@ on:
       - '.ci/gate-policy.yaml'
       - 'scripts/ci/validate_risk_packs.py'
       - 'scripts/ci/validate_gate_lane_mapping.py'
+      # validate_gate_lane_mapping.py --strict also checks this doc's lane
+      # enumeration against the mapping, so a docs-only edit must trigger the
+      # workflow -- otherwise the drift check is not load-bearing on its own
+      # subject file (#5425).
+      - 'docs/ci/gate-policy-economics.md'
       - 'scripts/ci/validate_trust_lanes.py'
       - 'scripts/ci/check_bounded_result_overflow.py'
       - 'docs/agents/bounded-subagent-result-v1.schema.json'

@@ -119,7 +119,7 @@ Note: Keep all 13 old entries for now — they'll be removed in Phase 2.
 
 **After step 0b:** `cargo metadata` should list both new perl-module and old 13 crates.
 
-**Verify command:** `rtk cargo metadata --no-deps | jq -r '.packages[] | select(.name == "perl-module") | .id'`
+**Verify command:** `cargo metadata --no-deps | jq -r '.packages[] | select(.name == "perl-module") | .id'`
 Expected: non-empty ID string
 
 ---

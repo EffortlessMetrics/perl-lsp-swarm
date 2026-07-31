@@ -247,6 +247,8 @@ impl<'a> Parser<'a> {
                 | "__FILE__"
                 | "__LINE__"
                 | "__PACKAGE__"
+                | "__CLASS__"
+                | "__SUB__"
                 | "time"
                 | "times"
                 | "localtime"
@@ -1294,7 +1296,12 @@ impl<'a> Parser<'a> {
                 // Special tokens like __PACKAGE__, __FILE__, __LINE__, __SUB__ are
                 // nullary builtins that produce values. They are valid bare-call arguments.
                 // e.g. `croak __PACKAGE__, ": error"` (Encode/Encoder.pm)
-                if matches!(next_text.as_ref(), "__PACKAGE__" | "__FILE__" | "__LINE__" | "__SUB__")
+                // __CLASS__ (Perl 5.38) is included so `croak __CLASS__, ": error"` parses
+                // inside a class body.
+                if matches!(
+                    next_text.as_ref(),
+                    "__PACKAGE__" | "__FILE__" | "__LINE__" | "__SUB__" | "__CLASS__"
+                )
                 {
                     return true;
                 }

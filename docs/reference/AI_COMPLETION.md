@@ -14,13 +14,27 @@ Code settings UI.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `perl-lsp.aiCompletion.enabled` | boolean | `false` | Enable AI-powered inline completions. |
-| `perl-lsp.aiCompletion.streaming.enabled` | boolean | `true` | Enable progressive streaming (ghost text updates as tokens arrive). Requires `aiCompletion.enabled`. |
+| `perl-lsp.aiCompletion.enabled` | boolean | `false` | Enable AI-powered inline completions. **Machine scope** — cannot be set per-workspace in `.vscode/settings.json`. |
+| `perl-lsp.aiCompletion.streaming.enabled` | boolean | `true` | Enable progressive streaming (ghost text updates as tokens arrive). Requires `aiCompletion.enabled`. **Machine scope.** |
 
-All other AI parameters (endpoint, model, timeout, rate limits) are
-configured via the LSP server config or the project config file, not VS Code
-settings. The API key is always read from an environment variable -- it is
-never stored in settings.
+Where each field can be set:
+
+| Channel | Fields it accepts |
+|---------|-------------------|
+| `.perl-lsp.toml` | `enabled` only (`false` opt-out; `true` is ignored) |
+| LSP client/server configuration | the complete server field set below |
+| Primary VS Code extension | activation and streaming toggles only — no endpoint or credential surface |
+
+`endpoint` and the API-key fields are **not** accepted from `.perl-lsp.toml` (see
+"Destination and credentials" below, and issue #4955). Timeout, rate limits,
+output bounds, and streaming controls are likewise server-configuration fields,
+not project-config fields.
+
+Project configuration is opt-out only: `enabled = false` can disable AI for a
+repository, while `enabled = true`, `provider`, and `model` are ignored. Users
+must enable AI and choose the provider/model through client settings. The API
+key itself is always read from an environment variable; it is never stored in
+settings.
 
 ## Server Configuration Fields
 
@@ -35,31 +49,62 @@ accepted:
 | `endpoint` | string | `""` (empty) | API endpoint URL (e.g. `https://api.openai.com/v1/chat/completions`). |
 | `model` | string | `"gpt-4o-mini"` | Model identifier sent in the request body. |
 | `apiKeyEnv` | string | `"OPENAI_API_KEY"` | Name of the environment variable containing the API key. |
+| `apiKeyHeader` | string | `"Authorization"` | HTTP header the credential is sent in. Must be a valid header name; an empty or invalid value is ignored and the default is kept. Use e.g. `"x-api-key"` for providers that do not use `Authorization`. |
+| `apiKeyPrefix` | string | `"Bearer"` | Scheme prepended to the key, sent as `<prefix> <key>`. Set to `""` to send the raw key with no prefix — required by providers that expect a bare token. Values containing control characters are ignored. |
 | `timeoutMs` | integer | `1800` | Per-request timeout in milliseconds. |
 | `maxOutputTokens` | integer | `64` | Maximum tokens the model may generate per request. |
 | `rateLimitRps` | float | `1.0` | Maximum requests per second (token-bucket rate). |
 | `maxInflight` | integer | `1` | Maximum concurrent in-flight requests (burst size). |
 | `fallback` | boolean | `true` | Fall back to deterministic completions on AI failure. |
 | `streaming.enabled` | boolean | `true` | Enable streaming mode (progressive ghost text). |
-| `streaming.updateDebounceMs` | integer | `60` | Minimum milliseconds between streamed ghost text updates. |
+| `streaming.updateDebounceMs` | integer | `60` | _(Reserved — not yet implemented.)_ Intended minimum milliseconds between streamed ghost text updates. Currently every chunk is forwarded immediately. |
 
 ## Project Config File (`.perl-lsp.toml`)
 
-For editor-agnostic, team-wide defaults, add an `[ai_completion]` section to
-`.perl-lsp.toml` at the workspace root. These values serve as the base layer;
-LSP client settings always override them.
+For editor-agnostic, team-wide policy, add an `[ai_completion]` section to
+`.perl-lsp.toml` at the workspace root. The only honoured project field is
+`enabled = false` (opt-out). Enabling AI or choosing provider/model requires
+user/machine client settings.
 
 ```toml
 [ai_completion]
-enabled = true
-provider = "openai_compat"
-endpoint = "https://api.openai.com/v1/chat/completions"
-model = "gpt-4o-mini"
-api_key_env = "OPENAI_API_KEY"
+# Opt-out only: set enabled = false to disable AI for this repo.
+# enabled = true is ignored — AI must be turned on in user/machine settings.
+enabled = false
 ```
 
 Only the fields you set will override defaults. Omitted fields retain their
-built-in default values.
+built-in default values. `enabled = true`, `provider`, and `model` in
+`.perl-lsp.toml` are **not honoured** (issue #4997); use client settings to
+enable AI and choose provider/model.
+
+### Destination and credentials cannot come from `.perl-lsp.toml`
+
+`endpoint`, `api_key_env`, `api_key_header`, and `api_key_prefix` **cannot be set
+from `.perl-lsp.toml`**. They are read only from the LSP client/server
+configuration channel — `initializationOptions` or `didChangeConfiguration`, as
+documented under "Server Configuration Fields" above.
+
+`.perl-lsp.toml` is checked into a repository, so honouring those fields let a
+cloned project choose both which environment variable was read as a credential
+and where it was sent — arbitrary named-secret exfiltration, with your source in
+the request body. They were removed for the same reason `perlPath` and `perlArgs`
+are not honoured from workspace settings (issue #3729). See issue #4955.
+
+**These keys are silently ignored, not rejected**, because the TOML deserializer
+drops unknown fields. If you set `endpoint` in `.perl-lsp.toml` and requests keep
+going to the default destination, that is why.
+
+Supply these fields through an LSP client that supports server configuration.
+**The primary VS Code extension currently does not expose that surface** — see
+the known gap below.
+
+> **Activation is user/machine-scoped.** `perl-lsp.aiCompletion.enabled` and
+> `perl-lsp.aiCompletion.streaming.enabled` are declared `scope: machine` in
+> the VS Code extension, and the server ignores project attempts to enable AI
+> (issue #4997). A repository can still opt out with `[ai_completion] enabled =
+> false` in `.perl-lsp.toml`. Issue #4998 covers the same provenance gap for
+> include paths.
 
 ## Environment Variables
 
@@ -106,27 +151,28 @@ For Responses endpoints, the request format uses `"stream": true`,
 ```jsonc
 {
   // Enable the feature
-  "perl-lsp.aiCompletion.enabled": true,
-
-  // Server-side config passed via initializationOptions
-  "perl-lsp.serverConfig": {
-    "aiCompletion": {
-      "enabled": true,
-      "endpoint": "https://api.openai.com/v1/chat/completions",
-      "model": "gpt-4o-mini",
-      "apiKeyEnv": "OPENAI_API_KEY",
-      "timeoutMs": 2000,
-      "maxOutputTokens": 64,
-      "rateLimitRps": 1.0,
-      "maxInflight": 1,
-      "streaming": {
-        "enabled": true,
-        "updateDebounceMs": 60
-      }
-    }
-  }
+  "perl-lsp.aiCompletion.enabled": true
 }
 ```
+
+> **Known gap: there is currently no VS Code setting for `endpoint` or the
+> API-key fields.**
+>
+> Earlier revisions of this document showed a `perl-lsp.serverConfig` block
+> here. **That setting does not exist** — the extension has never contributed
+> it, and its `initializationOptions` carry only `disabledFeatures`. The
+> example was wrong when written.
+>
+> Until a configuration surface is added (issue #4997), the endpoint and
+> credential fields can only be supplied by an LSP client that sends them in
+> `initializationOptions` or `didChangeConfiguration` directly — which the
+> VS Code extension does not currently do. They can no longer be set from
+> `.perl-lsp.toml`, because a checked-in file choosing the credential name and
+> destination is the exfiltration chain closed in issue #4955.
+>
+> If you previously configured `endpoint` via `.perl-lsp.toml`, it will stop
+> taking effect. That is intentional; the replacement surface is tracked in
+> #4997.
 
 Set the API key in your shell profile or VS Code terminal environment:
 
@@ -141,8 +187,9 @@ The server supports two completion delivery modes:
 **Streaming (default, `streaming.enabled: true`)**:
 The server opens an SSE connection to the provider and delivers partial
 completions as ghost text via `$/progress` notifications. Each update
-contains the cumulative text so far (not a delta). Updates are debounced
-by `updateDebounceMs` (default 60ms) to avoid flooding the client. A
+contains the cumulative text so far (not a delta). Updates are currently
+forwarded immediately (the `updateDebounceMs` setting is reserved but
+not yet implemented). A
 session manager tracks active streams with cancel-previous semantics --
 when the user types or moves the cursor, the stale stream is cancelled
 and a new one starts.

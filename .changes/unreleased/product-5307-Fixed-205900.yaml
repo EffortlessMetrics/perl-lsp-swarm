@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Six perl.limits.* settings (documentSymbolCap, codeLensCap, diagnosticsPerFileCap, inlayHintsCap, astCacheTtlSecs, symbolCacheMaxEntries) previously had no effect when set via LSP client settings; they are now correctly applied."
+time: 2026-07-29T20:59:00Z
+custom:
+  PR: "5307"
+  Slug: perl-limits-keys-wired
+  Breaking: "no"
