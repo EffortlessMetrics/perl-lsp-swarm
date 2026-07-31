@@ -310,17 +310,25 @@ fn lsp_unit_lanes_partition_the_surface_exactly() -> Result<(), Box<dyn std::err
             .gates
             .iter()
             .find(|gate| gate.name == lane_name)
-            .unwrap_or_else(|| panic!("gate '{lane_name}' must exist in .ci/gate-policy.yaml"));
+            .ok_or_else(|| format!("gate '{lane_name}' must exist in .ci/gate-policy.yaml"))?;
 
         assert!(
             lane.required,
             "{lane_name} must stay required — the LSP unit surface is never-skippable"
         );
         assert_eq!(lane.tier, "merge_gate", "{lane_name} must stay in the merge_gate tier");
-        assert!(
-            lane.command.contains("--lib"),
-            "{lane_name} must keep --lib; dropping it silently changes which targets run"
-        );
+
+        // Both lanes must run under identical flags. The split only preserves
+        // coverage if the two invocations differ solely in their package set:
+        // --lib pins which targets run, --locked pins the dependency graph, and
+        // --test-threads=4 pins the concurrency the ceilings were measured at.
+        for flag in ["--lib", "--locked", "--test-threads=4"] {
+            assert!(
+                lane.command.contains(flag),
+                "{lane_name} must keep {flag}; the LSP lanes differ only in their \
+                 package set, and dropping a flag silently changes what is executed"
+            );
+        }
 
         seen.extend(package_args(&lane.command));
     }

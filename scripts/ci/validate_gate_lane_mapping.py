@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -145,8 +146,78 @@ def read_lane_ids(lanes_path: Path) -> set[str]:
     return set(doc.get("lane", {}).keys())
 
 
+def check_docs_drift(docs_path: Path, lane_ids: set[str]) -> list[str]:
+    """Check the cross-reference doc's lane enumeration against this mapping.
+
+    The doc names this script as its authority, so the two must agree. It drifted
+    twice during #5425 alone -- once by omitting a gate from a lane row, once by
+    listing lanes that do not exist -- and a hand-maintained mirror of a machine
+    fact will keep drifting. Returns a list of problems; empty means consistent.
+    """
+    if not docs_path.exists():
+        return []
+
+    text = docs_path.read_text(encoding="utf-8")
+    problems: list[str] = []
+
+    # Lane -> gates table rows.
+    table: dict[str, set[str]] = {}
+    for row in re.finditer(r"^\|\s*`([a-z0-9_]+)`\s*\|\s*(.+?)\s*\|\s*$", text, re.M):
+        gates = set(re.findall(r"`([a-z0-9_]+)`", row.group(2)))
+        if gates:
+            table[row.group(1)] = gates
+
+    # Expected lane -> gates, inverted from the mapping table above.
+    expected: dict[str, set[str]] = {}
+    for gate, spec in GATE_TO_LANE_MAP.items():
+        for lane in spec["lanes"]:
+            expected.setdefault(lane, set()).add(gate)
+
+    for lane in sorted(set(expected) | set(table)):
+        want, have = expected.get(lane, set()), table.get(lane, set())
+        for gate in sorted(want - have):
+            problems.append(f"{docs_path}: lane `{lane}` row is missing gate `{gate}`")
+        for gate in sorted(have - want):
+            problems.append(
+                f"{docs_path}: lane `{lane}` row lists `{gate}`, which this mapping "
+                f"does not assign to it"
+            )
+
+    # "Lanes without any gate mapping today" paragraph.
+    unmapped_block = re.search(
+        r"Lanes without any gate mapping today:(.*?)(?:These either|\n\n)", text, re.S
+    )
+    if unmapped_block:
+        listed = set(re.findall(r"`([a-z0-9_]+)`", unmapped_block.group(1)))
+        for lane in sorted(listed - lane_ids):
+            problems.append(
+                f"{docs_path}: `{lane}` is listed as an unmapped lane but is not a "
+                f"lane in ci-lanes.toml"
+            )
+        for lane in sorted(lane_ids - listed - set(table)):
+            problems.append(
+                f"{docs_path}: lane `{lane}` appears in neither the lane table nor "
+                f"the unmapped-lane list"
+            )
+        total = len(table) + len(listed)
+        if total != len(lane_ids):
+            problems.append(
+                f"{docs_path}: lane enumeration sums to {total} "
+                f"({len(table)} mapped + {len(listed)} unmapped) but ci-lanes.toml "
+                f"defines {len(lane_ids)}"
+            )
+
+    return problems
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--docs",
+        type=Path,
+        default=Path("docs/ci/gate-policy-economics.md"),
+        help="Cross-reference doc whose lane enumeration must match this mapping.",
+    )
     parser.add_argument(
         "--gate-policy", type=Path, default=Path(".ci/gate-policy.yaml")
     )
@@ -210,7 +281,12 @@ def main() -> int:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
-    if args.strict and (unmapped_gates or missing_lanes):
+    docs_problems = check_docs_drift(args.docs, lane_ids)
+    print(f"Docs lane-enumeration drift: {len(docs_problems)}")
+    for problem in docs_problems:
+        print(f"  - {problem}")
+
+    if args.strict and (unmapped_gates or missing_lanes or docs_problems):
         return 1
     return 0
 
