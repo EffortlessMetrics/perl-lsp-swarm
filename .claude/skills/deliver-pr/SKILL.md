@@ -25,6 +25,14 @@ This lane owns its own integration cleanup. Behind-only movement requires no act
 
 When CI, review, or auto-merge owns the next transition, leave the candidate in GitHub, record the exact next action once, and return `IN_FLIGHT` to the caller. If invoked from `deliver-goal`, the outer loop may then advance another distinct claim. Do not poll unchanged state or call the claim blocked merely because it is in flight.
 
+## What this establishes
+
+A bounded route for one coherent claim through its current issue, proof, candidate, pull request, integration, and closeout state, returning reconciled truth or an exact bounded result.
+
+## What this does not establish
+
+A repository scheduler, tracked active-claim pointer, competing candidate set, overlap ledger, or merge authorization independent of the live ruleset, required checks, and current review evidence.
+
 ## Completion
 
 Return `RECONCILED`, `IN_FLIGHT`, `PARTIAL`, `SUPERSEDED`, `BLOCKED`, or `NOT_PROVEN`, with current evidence and the issue or PR that exposes remaining work.
