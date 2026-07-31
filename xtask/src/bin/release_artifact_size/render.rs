@@ -56,7 +56,18 @@ pub(crate) fn write_markdown(root: &Path, output: &Path, receipt: &Receipt) -> R
         archive.reduction_basis_points
     ));
     markdown.push_str(&format!(
-        "- Structural parity: `{}`\n- Target architecture match: `{}`\n- Baseline archive identity: `{}`\n- Candidate archive identity: `{}`\n- Baseline smokes: `{}`\n- Candidate smokes: `{}`\n- Baseline smoke identity: `{}`\n- Candidate smoke identity: `{}`\n- Material reduction: `{}`\n- Component growth within policy: `{}`\n",
+        concat!(
+            "- Structural parity: `{}`\n",
+            "- Target architecture match: `{}`\n",
+            "- Baseline archive identity: `{}`\n",
+            "- Candidate archive identity: `{}`\n",
+            "- Baseline smokes: `{}`\n",
+            "- Candidate smokes: `{}`\n",
+            "- Baseline smoke identity: `{}`\n",
+            "- Candidate smoke identity: `{}`\n",
+            "- Material reduction: `{}`\n",
+            "- Component growth within policy: `{}`\n"
+        ),
         receipt.comparison.structural_parity,
         receipt.comparison.target_architecture_match,
         receipt.comparison.baseline_archive_identity,
@@ -87,7 +98,7 @@ pub(crate) fn write_markdown(root: &Path, output: &Path, receipt: &Receipt) -> R
 }
 
 fn ensure_parent(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     Ok(())
