@@ -1162,9 +1162,15 @@ impl LspServer {
                     // AST resolver, goto-label, Mason, etc.) so it covers all
                     // navigation, not just the module-reference path.
                     let text = &doc.text;
-                    if perl_lsp_rs_core::providers::rename::is_in_comment(offset, text)
-                        && !perl_lsp_rs_core::providers::rename::is_in_string(offset, text)
-                    {
+                    // Skip goto-definition inside comments. (#5066)
+                    // Note: string-aware guarding is intentionally omitted here
+                    // because text-based quote scanners produce false positives
+                    // on real Perl code (regexes, heredocs, qw(), POD). The
+                    // original guard used `is_in_comment && !is_in_string` which
+                    // was logically inverted (it only blocked when in a comment
+                    // that was NOT also classified as a string). Now correctly
+                    // blocks whenever in a comment.
+                    if perl_lsp_rs_core::providers::rename::is_in_comment(offset, text) {
                         return Ok(None);
                     }
 
