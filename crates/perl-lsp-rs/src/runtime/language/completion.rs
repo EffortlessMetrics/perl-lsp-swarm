@@ -1550,10 +1550,30 @@ impl LspServer {
             // whether `doc_owned` resolved.
             let _analyze_span =
                 crate::runtime::timing::ScopedSpan::start("provider.completion.analyze", uri);
-            let response = if let Some(doc) = doc_owned.as_ref() {
+            let response = 'completion_response: {
+                let Some(doc) = doc_owned.as_ref() else {
+                    break 'completion_response None;
+                };
                 notify_completion_analysis_started(uri);
 
                 let offset = self.pos16_to_offset(doc, line, character);
+
+                // Skip completions inside comments -- the cursor is not on a
+                // real symbol and no completion path below (AST-based
+                // provider, lexical/keyword fallback, declared-dependency,
+                // or workspace-wide completions) should suggest anything.
+                // Mirrors the goto-definition comment guard (#5066/#5408) at
+                // navigation.rs. String-aware guarding is intentionally
+                // omitted: text-based quote scanners produce false positives
+                // on real Perl code (regexes, heredocs, qw(), POD), and
+                // `is_in_comment && !is_in_string` is the inverted pattern
+                // #5411 fixed for goto-definition -- a position the naive
+                // quote-counter classifies as both comment and string would
+                // wrongly skip this guard.
+                if perl_lsp_rs_core::providers::rename::is_in_comment(offset, &doc.text) {
+                    break 'completion_response None;
+                }
+
                 let ast_available = doc.current_parsed().is_some_and(|p| p.ast().is_some());
 
                 // Create optimized cancellation callback with reduced frequency
@@ -1723,8 +1743,6 @@ impl LspServer {
                     item_defaults_data_support,
                     apply_kind_support,
                 ))
-            } else {
-                None
             };
             if let Some(response) = response {
                 return Ok(Some(response));
