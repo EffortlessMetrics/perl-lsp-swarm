@@ -102,4 +102,4 @@ Do not use project lifecycle hooks, task-completion gates, agent-role permission
 
 ## Historical generations
 
-The removed `.claude/commands/`, `.claude/agents/`, `source-command-*`, and `.codex/agents/` catalogues remain recoverable through Git history and archived research. They preserve how the earlier swarm made useful transformations explicit, but they are no longer active discovery or runtime authority.
+This candidate removes only the `.claude/commands/` and `.claude/agents/` catalogues. Their historical procedures remain recoverable through Git history and archived research, but they are no longer active Claude discovery or runtime authority. Codex compatibility projections have their own separately reviewed disposition and are not evidence for this candidate's completion.
