@@ -3,7 +3,10 @@
 //! This is intentionally small and source-gated so normal Perl files do not
 //! get C API noise.
 
-use super::{context::CompletionContext, items::CompletionItem, items::CompletionItemKind};
+use super::{
+    context::CompletionContext, items::CompletionItem, items::CompletionItemKind,
+    items::InsertTextFormat,
+};
 
 struct XsApiEntry {
     name: &'static str,
@@ -226,6 +229,7 @@ pub fn add_xs_api_completions_for_prefix(
                 additional_edits: vec![],
                 text_edit_range: Some((prefix_start, position)),
                 commit_characters: None,
+                insert_text_format: InsertTextFormat::for_authored_body(entry.insert_text),
                 label_details: None,
             });
         }
@@ -246,6 +250,34 @@ mod tests {
     fn detects_xs_source_by_markers() {
         let source = "#include \"EXTERN.h\"\n#include \"XSUB.h\"\nMODULE = Foo PACKAGE = Foo\n";
         assert!(is_xs_source(source, Some("example.pl")));
+    }
+
+    /// #4956: `SvIV` and `sv_2mortal` are Function-kind entries with snippet
+    /// bodies. Deriving the format from the kind sent their `${1:...}` to the
+    /// editor as literal text.
+    #[test]
+    fn xs_entries_with_tab_stops_are_snippet_formatted() {
+        use crate::providers::completion_item::{InsertTextFormat, snippet_body_defects};
+
+        for entry in super::XS_API_ENTRIES {
+            let format = InsertTextFormat::for_authored_body(entry.insert_text);
+            if entry.insert_text.contains("${") {
+                assert!(
+                    format.is_snippet(),
+                    "`{}` has tab stops but is not snippet-formatted",
+                    entry.name
+                );
+                let defects = snippet_body_defects(entry.insert_text);
+                assert!(defects.is_empty(), "`{}`: {defects:?}", entry.name);
+            } else {
+                assert_eq!(
+                    format,
+                    InsertTextFormat::PlainText,
+                    "`{}` has no snippet construct and must stay plaintext",
+                    entry.name
+                );
+            }
+        }
     }
 
     #[test]

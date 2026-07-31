@@ -4,7 +4,7 @@
 
 use super::{
     context::CompletionContext,
-    items::{CompletionItem, CompletionItemKind},
+    items::{CompletionItem, CompletionItemKind, InsertTextFormat},
     workspace::{self, workspace_auto_import_edits},
 };
 use perl_semantic_analyzer::symbol::{
@@ -204,6 +204,7 @@ fn add_known_core_module_completions(
             additional_edits: vec![],
             text_edit_range: Some((context.prefix_start, context.position)),
             commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
         });
     }
@@ -312,6 +313,7 @@ fn add_local_package_completions(
             additional_edits: vec![],
             text_edit_range: Some((context.prefix_start, context.position)),
             commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
         });
         added += 1;
@@ -414,6 +416,7 @@ pub fn add_package_completions(
                     additional_edits: auto_import_edits.clone(),
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
+                    insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
                 });
             }

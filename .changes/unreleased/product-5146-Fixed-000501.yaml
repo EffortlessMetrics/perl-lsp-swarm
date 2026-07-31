@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Completion no longer suggests lexical (my) variables that are declared later in the file than the cursor position, since they are not yet in scope; package globals (our) remain visible regardless of position."
+time: 2026-07-28T00:05:01Z
+custom:
+  PR: "5146"
+  Slug: completion-filter-not-yet-declared
+  Breaking: "no"

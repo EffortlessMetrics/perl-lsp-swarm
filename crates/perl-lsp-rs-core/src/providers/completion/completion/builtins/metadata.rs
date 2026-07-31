@@ -69,7 +69,7 @@ fn i_o_info(name: &'static str) -> Option<BuiltinInfo> {
             Some("Format a string according to FORMAT, returning the result instead of printing."),
         ),
         "open" => (
-            "open(my $fh, '${1:<}', ${2:\\$file}) or die \"Cannot open ${2:\\$file}: $!\";",
+            "open(my \\$fh, '${1:<}', ${2:\\$file}) or die \"Cannot open ${2:\\$file}: \\$!\";",
             "open FILEHANDLE, MODE, FILENAME",
             Some(
                 "Open a file or pipe. Three-arg form with idiomatic error handling: open(my $fh, '<', $file) or die ...",

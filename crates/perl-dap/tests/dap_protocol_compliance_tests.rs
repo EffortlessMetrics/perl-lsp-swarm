@@ -30,31 +30,32 @@ fn make_adapter_with_events() -> (DebugAdapter, std::sync::mpsc::Receiver<DapMes
     (adapter, rx)
 }
 
-/// Extract success and message from a Response, panicking on non-Response.
-#[allow(clippy::panic)]
+/// Extract success and message from a Response, returning an error on non-Response.
 fn assert_response(
     msg: DapMessage,
     expected_command: &str,
     expected_success: bool,
-) -> Option<Value> {
+) -> Result<Option<Value>, Box<dyn std::error::Error>> {
     match msg {
         DapMessage::Response { success, command, body, .. } => {
             assert_eq!(command, expected_command, "command mismatch");
             assert_eq!(success, expected_success, "success mismatch for {expected_command}");
-            body
+            Ok(body)
         }
-        other => panic!("expected Response for {expected_command}, got {other:?}"),
+        other => Err(format!("expected Response for {expected_command}, got {other:?}").into()),
     }
 }
 
-#[allow(clippy::panic)]
-fn assert_response_message(msg: DapMessage, expected_command: &str) -> Option<String> {
+fn assert_response_message(
+    msg: DapMessage,
+    expected_command: &str,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     match msg {
         DapMessage::Response { command, message, .. } => {
             assert_eq!(command, expected_command);
-            message
+            Ok(message)
         }
-        other => panic!("expected Response for {expected_command}, got {other:?}"),
+        other => Err(format!("expected Response for {expected_command}, got {other:?}").into()),
     }
 }
 
@@ -70,7 +71,7 @@ fn test_breakpoint_locations_missing_args_returns_failure() -> Result<(), Box<dy
 {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "breakpointLocations", None);
-    assert_response(response, "breakpointLocations", false);
+    assert_response(response, "breakpointLocations", false)?;
     Ok(())
 }
 
@@ -84,7 +85,7 @@ fn test_breakpoint_locations_no_source_path_returns_empty_success()
         "line": 5
     });
     let response = adapter.handle_request(1, "breakpointLocations", Some(args));
-    let body = assert_response(response, "breakpointLocations", true);
+    let body = assert_response(response, "breakpointLocations", true)?;
     let body = body.ok_or("breakpointLocations should return a body")?;
     assert!(body.get("breakpoints").is_some(), "body must include breakpoints array");
     Ok(())
@@ -97,7 +98,7 @@ fn test_breakpoint_locations_no_source_path_returns_empty_success()
 fn test_cancel_succeeds_without_args() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "cancel", None);
-    assert_response(response, "cancel", true);
+    assert_response(response, "cancel", true)?;
     Ok(())
 }
 
@@ -107,7 +108,7 @@ fn test_cancel_succeeds_with_args() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let args = json!({ "requestId": 42 });
     let response = adapter.handle_request(1, "cancel", Some(args));
-    assert_response(response, "cancel", true);
+    assert_response(response, "cancel", true)?;
     Ok(())
 }
 
@@ -120,7 +121,7 @@ fn test_exception_info_no_active_session_returns_unknown_exception()
     let mut adapter = make_adapter();
     // No session means last_exception_message is None → "Unknown exception"
     let response = adapter.handle_request(1, "exceptionInfo", None);
-    let body = assert_response(response, "exceptionInfo", true);
+    let body = assert_response(response, "exceptionInfo", true)?;
     let body = body.ok_or("exceptionInfo must return a body")?;
     assert!(body.get("exceptionId").is_some(), "exceptionId required");
     assert!(body.get("breakMode").is_some(), "breakMode required");
@@ -134,7 +135,7 @@ fn test_exception_info_no_active_session_returns_unknown_exception()
 fn test_goto_missing_args_returns_failure() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "goto", None);
-    assert_response(response, "goto", false);
+    assert_response(response, "goto", false)?;
     Ok(())
 }
 
@@ -152,7 +153,7 @@ fn test_goto_unknown_target_id_returns_failure() -> Result<(), Box<dyn std::erro
             assert!(!success, "goto with unregistered targetId must fail");
             assert!(message.is_some(), "failure response must include a message");
         }
-        other => panic!("expected Response, got {other:?}"),
+        other => return Err(format!("expected Response, got {other:?}").into()),
     }
     Ok(())
 }
@@ -164,7 +165,7 @@ fn test_goto_unknown_target_id_returns_failure() -> Result<(), Box<dyn std::erro
 fn test_goto_targets_missing_args_returns_failure() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "gotoTargets", None);
-    assert_response(response, "gotoTargets", false);
+    assert_response(response, "gotoTargets", false)?;
     Ok(())
 }
 
@@ -178,7 +179,7 @@ fn test_goto_targets_no_source_path_returns_empty_success() -> Result<(), Box<dy
         "line": 1
     });
     let response = adapter.handle_request(1, "gotoTargets", Some(args));
-    let body = assert_response(response, "gotoTargets", true);
+    let body = assert_response(response, "gotoTargets", true)?;
     let body = body.ok_or("gotoTargets must return a body")?;
     assert!(body.get("targets").is_some(), "targets array required in response body");
     Ok(())
@@ -192,7 +193,7 @@ fn test_loaded_sources_no_session_returns_empty_sources() -> Result<(), Box<dyn 
 {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "loadedSources", None);
-    let body = assert_response(response, "loadedSources", true);
+    let body = assert_response(response, "loadedSources", true)?;
     let body = body.ok_or("loadedSources must return a body")?;
     let sources = body.get("sources").ok_or("sources array required")?;
     assert!(
@@ -209,7 +210,7 @@ fn test_loaded_sources_no_session_returns_empty_sources() -> Result<(), Box<dyn 
 fn test_restart_frame_always_fails_with_message() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "restartFrame", None);
-    let msg = assert_response_message(response, "restartFrame");
+    let msg = assert_response_message(response, "restartFrame")?;
     assert!(msg.is_some(), "restartFrame must include an error message");
     let msg = msg.ok_or("restartFrame must include an error message")?;
     assert!(
@@ -226,7 +227,7 @@ fn test_restart_frame_always_fails_with_message() -> Result<(), Box<dyn std::err
 fn test_set_expression_missing_args_returns_failure() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "setExpression", None);
-    assert_response(response, "setExpression", false);
+    assert_response(response, "setExpression", false)?;
     Ok(())
 }
 
@@ -237,7 +238,7 @@ fn test_set_expression_empty_expression_returns_failure() -> Result<(), Box<dyn 
     let mut adapter = make_adapter();
     let args = json!({ "expression": "", "value": "42" });
     let response = adapter.handle_request(1, "setExpression", Some(args));
-    assert_response(response, "setExpression", false);
+    assert_response(response, "setExpression", false)?;
     Ok(())
 }
 
@@ -247,7 +248,7 @@ fn test_set_expression_empty_value_returns_failure() -> Result<(), Box<dyn std::
     let mut adapter = make_adapter();
     let args = json!({ "expression": "$x", "value": "" });
     let response = adapter.handle_request(1, "setExpression", Some(args));
-    assert_response(response, "setExpression", false);
+    assert_response(response, "setExpression", false)?;
     Ok(())
 }
 
@@ -258,7 +259,7 @@ fn test_set_expression_empty_value_returns_failure() -> Result<(), Box<dyn std::
 fn test_step_in_targets_missing_args_returns_failure() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "stepInTargets", None);
-    assert_response(response, "stepInTargets", false);
+    assert_response(response, "stepInTargets", false)?;
     Ok(())
 }
 
@@ -269,7 +270,7 @@ fn test_step_in_targets_no_session_returns_empty_success() -> Result<(), Box<dyn
     let mut adapter = make_adapter();
     let args = json!({ "frameId": 1 });
     let response = adapter.handle_request(1, "stepInTargets", Some(args));
-    let body = assert_response(response, "stepInTargets", true);
+    let body = assert_response(response, "stepInTargets", true)?;
     let body = body.ok_or("stepInTargets must return a body")?;
     assert!(body.get("targets").is_some(), "targets array required");
     Ok(())
@@ -282,7 +283,7 @@ fn test_step_in_targets_no_session_returns_empty_success() -> Result<(), Box<dyn
 fn test_terminate_threads_always_fails_with_message() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "terminateThreads", None);
-    let msg = assert_response_message(response, "terminateThreads");
+    let msg = assert_response_message(response, "terminateThreads")?;
     assert!(msg.is_some(), "terminateThreads must include an error message");
     let msg = msg.ok_or("terminateThreads must include an error message")?;
     assert!(
@@ -321,7 +322,7 @@ fn test_goto_targets_path_traversal_blocked_when_workspace_set()
             DapMessage::Response { command, .. } => {
                 assert_eq!(command, "gotoTargets");
             }
-            other => panic!("expected Response, got {other:?}"),
+            other => return Err(format!("expected Response, got {other:?}").into()),
         }
     }
     Ok(())
@@ -345,7 +346,7 @@ fn test_breakpoint_locations_path_traversal_does_not_panic()
         DapMessage::Response { command, .. } => {
             assert_eq!(command, "breakpointLocations");
         }
-        other => panic!("expected Response, got {other:?}"),
+        other => return Err(format!("expected Response, got {other:?}").into()),
     }
     Ok(())
 }
@@ -374,7 +375,7 @@ fn test_evaluate_newline_injection_blocked() -> Result<(), Box<dyn std::error::E
                     "rejection message should mention newlines: {msg}"
                 );
             }
-            other => panic!("expected Response, got {other:?}"),
+            other => return Err(format!("expected Response, got {other:?}").into()),
         }
     }
     Ok(())
@@ -393,7 +394,7 @@ fn test_set_expression_newline_injection_blocked() -> Result<(), Box<dyn std::er
         "value": "42"
     });
     let response = adapter.handle_request(1, "setExpression", Some(args));
-    assert_response(response, "setExpression", false);
+    assert_response(response, "setExpression", false)?;
 
     // Newline in value
     let args = json!({
@@ -401,7 +402,7 @@ fn test_set_expression_newline_injection_blocked() -> Result<(), Box<dyn std::er
         "value": "42\nsystem('evil')"
     });
     let response = adapter.handle_request(2, "setExpression", Some(args));
-    assert_response(response, "setExpression", false);
+    assert_response(response, "setExpression", false)?;
     Ok(())
 }
 
@@ -416,7 +417,7 @@ fn test_set_expression_unsafe_value_blocked() -> Result<(), Box<dyn std::error::
         "value": "system('evil')"
     });
     let response = adapter.handle_request(1, "setExpression", Some(args));
-    assert_response(response, "setExpression", false);
+    assert_response(response, "setExpression", false)?;
     Ok(())
 }
 
@@ -466,7 +467,7 @@ fn test_initialize_response_seq_before_initialized_event_seq()
             assert!(success);
             seq
         }
-        other => panic!("expected initialize Response, got {other:?}"),
+        other => return Err(format!("expected initialize Response, got {other:?}").into()),
     };
 
     let event = rx
@@ -477,7 +478,7 @@ fn test_initialize_response_seq_before_initialized_event_seq()
             assert_eq!(event, "initialized");
             seq
         }
-        other => panic!("expected initialized Event, got {other:?}"),
+        other => return Err(format!("expected initialized Event, got {other:?}").into()),
     };
 
     // The event was emitted after the response, so its sequence must be higher
@@ -512,7 +513,7 @@ fn test_all_commands_return_proper_response_shape() -> Result<(), Box<dyn std::e
                 assert_eq!(request_seq, 1, "{cmd}: request_seq must echo input seq");
                 assert_eq!(command, cmd, "{cmd}: command must echo input command");
             }
-            other => panic!("{cmd}: expected Response, got {other:?}"),
+            other => return Err(format!("{cmd}: expected Response, got {other:?}").into()),
         }
     }
     Ok(())
@@ -533,7 +534,7 @@ fn test_unknown_command_returns_structured_error_response() -> Result<(), Box<dy
             assert_eq!(request_seq, 42, "request_seq must echo the input");
             assert!(message.is_some(), "unknown command must include an error message");
         }
-        other => panic!("expected Response for unknown command, got {other:?}"),
+        other => return Err(format!("expected Response for unknown command, got {other:?}").into()),
     }
     Ok(())
 }
@@ -553,7 +554,7 @@ fn test_goto_targets_response_body_has_targets_array() -> Result<(), Box<dyn std
         "line": 1
     });
     let response = adapter.handle_request(1, "gotoTargets", Some(args));
-    let body = assert_response(response, "gotoTargets", true);
+    let body = assert_response(response, "gotoTargets", true)?;
     let body = body.ok_or("gotoTargets body is required")?;
     let targets = body.get("targets").ok_or("gotoTargets body must have 'targets'")?;
     assert!(targets.is_array(), "'targets' must be an array");
@@ -569,7 +570,7 @@ fn test_step_in_targets_response_body_has_targets_array() -> Result<(), Box<dyn 
     let mut adapter = make_adapter();
     let args = json!({ "frameId": 1 });
     let response = adapter.handle_request(1, "stepInTargets", Some(args));
-    let body = assert_response(response, "stepInTargets", true);
+    let body = assert_response(response, "stepInTargets", true)?;
     let body = body.ok_or("stepInTargets body is required")?;
     let targets = body.get("targets").ok_or("stepInTargets body must have 'targets'")?;
     assert!(targets.is_array(), "'targets' must be an array");
@@ -583,7 +584,7 @@ fn test_step_in_targets_response_body_has_targets_array() -> Result<(), Box<dyn 
 fn test_loaded_sources_response_body_has_sources_array() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "loadedSources", None);
-    let body = assert_response(response, "loadedSources", true);
+    let body = assert_response(response, "loadedSources", true)?;
     let body = body.ok_or("loadedSources body is required")?;
     let sources = body.get("sources").ok_or("loadedSources body must have 'sources'")?;
     assert!(sources.is_array(), "'sources' must be an array");
@@ -602,7 +603,7 @@ fn test_breakpoint_locations_response_body_has_breakpoints_array()
         "line": 1
     });
     let response = adapter.handle_request(1, "breakpointLocations", Some(args));
-    let body = assert_response(response, "breakpointLocations", true);
+    let body = assert_response(response, "breakpointLocations", true)?;
     let body = body.ok_or("breakpointLocations body is required")?;
     let bps = body.get("breakpoints").ok_or("breakpointLocations body must have 'breakpoints'")?;
     assert!(bps.is_array(), "'breakpoints' must be an array");
@@ -617,7 +618,7 @@ fn test_exception_info_response_body_has_required_fields() -> Result<(), Box<dyn
 {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "exceptionInfo", None);
-    let body = assert_response(response, "exceptionInfo", true);
+    let body = assert_response(response, "exceptionInfo", true)?;
     let body = body.ok_or("exceptionInfo body is required")?;
     assert!(body.get("exceptionId").is_some(), "exceptionId is required");
     assert!(body.get("breakMode").is_some(), "breakMode is required");
@@ -637,11 +638,11 @@ fn test_cancel_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
 
     // First cancel
     let r1 = adapter.handle_request(1, "cancel", None);
-    assert_response(r1, "cancel", true);
+    assert_response(r1, "cancel", true)?;
 
     // Second cancel — should still succeed
     let r2 = adapter.handle_request(2, "cancel", None);
-    assert_response(r2, "cancel", true);
+    assert_response(r2, "cancel", true)?;
     Ok(())
 }
 
@@ -652,7 +653,7 @@ fn test_cancel_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
 fn test_disconnect_without_session_succeeds() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "disconnect", None);
-    assert_response(response, "disconnect", true);
+    assert_response(response, "disconnect", true)?;
     Ok(())
 }
 
@@ -664,7 +665,7 @@ fn test_initialize_then_disconnect_lifecycle() -> Result<(), Box<dyn std::error:
     let (mut adapter, rx) = make_adapter_with_events();
 
     let init = adapter.handle_request(1, "initialize", None);
-    assert_response(init, "initialize", true);
+    assert_response(init, "initialize", true)?;
 
     // Consume the initialized event
     let _event = rx
@@ -672,7 +673,7 @@ fn test_initialize_then_disconnect_lifecycle() -> Result<(), Box<dyn std::error:
         .map_err(|_| "initialized event must be emitted")?;
 
     let disconnect = adapter.handle_request(2, "disconnect", None);
-    assert_response(disconnect, "disconnect", true);
+    assert_response(disconnect, "disconnect", true)?;
     Ok(())
 }
 
@@ -683,7 +684,7 @@ fn test_initialize_then_disconnect_lifecycle() -> Result<(), Box<dyn std::error:
 fn test_threads_without_session_succeeds() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "threads", None);
-    let body = assert_response(response, "threads", true);
+    let body = assert_response(response, "threads", true)?;
     let body = body.ok_or("threads must return a body")?;
     assert!(body.get("threads").is_some(), "threads body must include 'threads' array");
     Ok(())
@@ -694,7 +695,7 @@ fn test_threads_without_session_succeeds() -> Result<(), Box<dyn std::error::Err
 fn test_stack_trace_without_session_returns_frames() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "stackTrace", None);
-    let body = assert_response(response, "stackTrace", true);
+    let body = assert_response(response, "stackTrace", true)?;
     let body = body.ok_or("stackTrace must return a body")?;
     assert!(body.get("stackFrames").is_some(), "stackTrace body must include 'stackFrames'");
     Ok(())

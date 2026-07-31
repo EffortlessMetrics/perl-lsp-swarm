@@ -5,7 +5,7 @@
 //! package level, giving users the most relevant completions first.
 
 use super::scope_distance::compute_scope_sort_key;
-use super::{context::CompletionContext, items::CompletionItem};
+use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
 use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
 
 /// Add variable completions with scope-distance ranking.
@@ -58,6 +58,7 @@ pub fn add_variable_completions(
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
+                    insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
                 });
             }
@@ -161,6 +162,7 @@ pub fn add_special_variables(
                 additional_edits: vec![],
                 text_edit_range: Some((context.prefix_start, context.position)),
                 commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
             });
         }
@@ -201,6 +203,7 @@ pub fn add_all_variables(
                         additional_edits: vec![],
                         text_edit_range: Some((context.prefix_start, context.position)),
                         commit_characters: None,
+                        insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
                     });
                 }

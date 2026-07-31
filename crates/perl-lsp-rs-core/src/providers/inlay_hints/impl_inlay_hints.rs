@@ -317,20 +317,32 @@ fn extract_params_from_at_underscore(body: &Node) -> Option<Vec<String>> {
     // Check for: my $self = shift (method invocant)
     if let NodeKind::VariableDeclaration { variable, initializer, .. } = &first.kind {
         if let Some(init) = initializer {
-            let init_text = format!("{}", init.kind);
-            if init_text.contains("shift") {
-                if let NodeKind::Variable { name, .. } = &variable.kind {
+            // Check if initializer is a call to `shift` (the most common Perl
+            // OO unpacking idiom: `my $self = shift;`).
+            // Previously this used `format!("{}", init.kind).contains("shift")`
+            // which never matched because Display for NodeKind returns the
+            // kind name ("FunctionCall"), not the function name.
+            let is_shift = match &init.kind {
+                NodeKind::FunctionCall { name, .. } => name == "shift",
+                _ => false,
+            };
+            if is_shift {
+                if let NodeKind::Variable { name: invocant_name, .. } = &variable.kind {
                     // This is likely a method — self is the invocant.
                     // Check next statement for more @_ unpacking.
                     if statements.len() > 1 {
                         if let NodeKind::VariableListDeclaration {
-                            variables, initializer, ..
+                            variables,
+                            initializer: list_init,
+                            ..
                         } = &statements[1].kind
                         {
-                            if let Some(init2) = initializer {
+                            if let Some(init2) = list_init {
                                 if let NodeKind::Variable { sigil, name } = &init2.kind {
                                     if sigil == "@" && name == "_" {
-                                        let mut params = vec![name.as_str().to_string()];
+                                        // Use the invocant name (e.g. "self"),
+                                        // not "_" which is the name of @_.
+                                        let mut params = vec![invocant_name.clone()];
                                         params.extend(variables.iter().filter_map(|v| {
                                             if let NodeKind::Variable { name, .. } = &v.kind {
                                                 if name.is_empty() {
@@ -348,7 +360,7 @@ fn extract_params_from_at_underscore(body: &Node) -> Option<Vec<String>> {
                             }
                         }
                     }
-                    return Some(vec![name.clone()]);
+                    return Some(vec![invocant_name.clone()]);
                 }
             }
         }

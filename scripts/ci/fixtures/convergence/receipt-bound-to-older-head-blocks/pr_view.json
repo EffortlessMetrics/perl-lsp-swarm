@@ -1,5 +1,6 @@
 {
   "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "body": "## Claim\nFixture review claim.\n\n## What this establishes\nThe fixture establishes one completed formal review.\n\n## What this does not establish\nNo product behavior.\n\n## Risk and rollback\nFixture-only evidence.\n\n## Review index\n- fixture\n",
   "reviewRequests": [],
   "labels": [],
   "author": {

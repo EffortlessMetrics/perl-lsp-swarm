@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Debugging on Windows: pause no longer risks killing the debuggee when the interrupt fallback fails, continue no longer misreports failure when there's nothing to resume, and terminate now sends a graceful Ctrl+C before force-killing, mirroring the Unix SIGTERM-then-SIGKILL escalation."
+time: 2026-07-23T02:01:53Z
+custom:
+  PR: "4719"
+  Slug: dap-windows-signal-delivery
+  Breaking: "no"

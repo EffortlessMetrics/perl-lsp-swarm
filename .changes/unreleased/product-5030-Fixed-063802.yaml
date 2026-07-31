@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Native Perl::Critic fixes marked as merely 'Suggested' (not 'Safe') are no longer offered as one-click quickfixes, preventing them from corrupting declaration-only renames."
+time: 2026-07-28T06:38:02Z
+custom:
+  PR: "5030"
+  Slug: gate-critic-suggested-fixes
+  Breaking: "no"

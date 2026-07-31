@@ -1046,7 +1046,9 @@ impl SemanticAnalyzer {
             .ok()?;
         if let Some(caps) = pod_re.captures(before) {
             if let Some(pod_text) = caps.get(1) {
-                return Some(pod_text.as_str().trim().to_string());
+                // Strip POD inline formatting codes (B<>, I<>, C<>, L<>, E<>, etc.)
+                // so hover displays clean text, not raw POD markup.
+                return Some(perl_pod::strip_pod_formatting(pod_text.as_str().trim()));
             }
         }
 

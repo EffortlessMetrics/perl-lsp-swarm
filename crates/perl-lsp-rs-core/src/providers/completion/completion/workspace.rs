@@ -7,7 +7,7 @@
 use super::{
     auto_import,
     context::CompletionContext,
-    items::{CompletionItem, CompletionItemKind},
+    items::{CompletionItem, CompletionItemKind, InsertTextFormat},
 };
 use crate::providers::completion::module_scan_cache::{ModuleCompletionScanCache, ScanCacheKey};
 use perl_module::path::module_name_to_path;
@@ -160,6 +160,7 @@ pub fn add_workspace_symbol_completions(
                     ),
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
+                    insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
                 });
             }
@@ -193,6 +194,7 @@ pub fn add_workspace_symbol_completions(
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
+                    insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
                 });
             }
@@ -210,6 +212,7 @@ pub fn add_workspace_symbol_completions(
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: Some(vec![":".to_string(), ";".to_string()]),
+                    insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
                 });
             }
@@ -231,6 +234,7 @@ pub fn add_workspace_symbol_completions(
                     ),
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
+                    insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
                 });
             }
@@ -248,6 +252,7 @@ pub fn add_workspace_symbol_completions(
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
+                    insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
                 });
             }
@@ -311,6 +316,7 @@ pub fn add_visible_symbol_completions(
             additional_edits: vec![],
             text_edit_range: Some((context.prefix_start, context.position)),
             commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
         });
     }
@@ -745,6 +751,7 @@ pub fn add_use_module_completions_with_cache(
                 additional_edits: vec![],
                 text_edit_range: Some((context.prefix_start, context.position)),
                 commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
             });
         }
@@ -820,6 +827,7 @@ pub fn add_use_module_completions_with_cache(
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: Some(vec![":".to_string(), ";".to_string()]),
+                    insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
                 });
             }
@@ -904,6 +912,7 @@ pub fn add_use_qw_import_completions(
             additional_edits: vec![],
             text_edit_range: Some((context.prefix_start, context.position)),
             commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
         });
     }
@@ -1682,6 +1691,7 @@ pub fn add_workspace_method_completions(
             additional_edits,
             text_edit_range: Some((context.method_text_edit_start(source), context.position)),
             commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
         });
     }
@@ -1766,6 +1776,7 @@ fn add_unknown_receiver_fallback(
                 ),
                 text_edit_range: Some((context.method_text_edit_start(source), context.position)),
                 commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
             });
         }
@@ -1846,6 +1857,7 @@ fn add_semantic_method_completions(
             additional_edits,
             text_edit_range: Some(method_text_edit_range),
             commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
         });
     }

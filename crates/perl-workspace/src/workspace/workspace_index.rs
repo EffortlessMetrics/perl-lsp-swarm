@@ -3784,6 +3784,12 @@ impl WorkspaceIndex {
         let mut seen: HashSet<(String, usize)> = HashSet::new();
         // Collect results with a relevance score for ranking. (#5087)
         // Match priority: exact > substring/prefix > subsequence (fuzzy).
+        //
+        // An empty query still lists everything: `loose_match_allowed` is false
+        // for it, and the short-query branch below tests `starts_with("")`, which
+        // is true for every key -- the same set, and the same score, that
+        // `contains("")` produced before. That is the desired "list everything"
+        // behavior for an empty `workspace/symbol` query.
         let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
         for (name_key, symbols) in search_idx.iter() {
             let score = if name_key == &query_lower {
@@ -3799,6 +3805,11 @@ impl WorkspaceIndex {
             } else if name_key.contains(&query_lower) {
                 2 // substring match
             } else if is_subsequence(&query_lower, name_key) {
+                // Reaching here implies `loose_match_allowed`, i.e. a query of at
+                // least MIN_LOOSE_MATCH_QUERY_CHARS chars, so no separate
+                // subsequence-length guard is needed. (The one main carried was
+                // unreachable anyway: for a one-char needle `is_subsequence` is
+                // equivalent to `contains`, which is tested first.)
                 1 // fuzzy subsequence match
             } else {
                 continue;

@@ -232,6 +232,19 @@ impl DebugAdapter {
         self.event_sender = Some(sender);
     }
 
+    /// Configure the workspace boundary used to validate launch/attach paths.
+    ///
+    /// This is the server-configured root — normally wired from
+    /// `DapConfig.workspace_root` when the adapter is constructed
+    /// (see `DapServer::new`). It is the authoritative boundary: a
+    /// launch-args `workspaceRoot` may narrow it for a single launch, but
+    /// can never widen it (see `handle_launch`). Takes `&self` because the
+    /// underlying field is an `Arc<Mutex<_>>`, so this is safe to call
+    /// without exclusive access to the adapter.
+    pub fn set_workspace_root(&self, root: PathBuf) {
+        *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
+    }
+
     /// Start a new session generation and reset its terminal-event gate.
     pub(super) fn begin_session_generation(&self) -> u64 {
         let mut state = lock_or_recover(&self.termination_state, "debug_adapter.termination_state");

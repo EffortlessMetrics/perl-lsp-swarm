@@ -1,3 +1,8 @@
+//! Lexer throughput benchmarks. Reports the scorecard path on stdout, which is
+//! how the harness surfaces it, so the workspace-wide `print_stdout = "deny"`
+//! lint is opted out of here rather than worked around.
+#![allow(clippy::print_stdout)]
+
 use criterion::Criterion;
 use perl_lexer::{PerlLexer, Token};
 use serde_json::{Map, Value};

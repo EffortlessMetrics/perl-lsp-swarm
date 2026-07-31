@@ -1,6 +1,3 @@
-// Tests use panic! as structured test failure reporters.
-#![allow(clippy::panic)]
-
 //! Tests for pre-launch syntax checking (issue #3477)
 //!
 //! The DAP server should run `perl -c` on the target script before launching
@@ -14,12 +11,14 @@ use serde_json::json;
 use std::fs;
 
 /// Helper: create a Perl script in a temp dir.
-fn write_script(dir: &tempfile::TempDir, filename: &str, content: &str) -> std::path::PathBuf {
+fn write_script(
+    dir: &tempfile::TempDir,
+    filename: &str,
+    content: &str,
+) -> Result<std::path::PathBuf, std::io::Error> {
     let path = dir.path().join(filename);
-    if let Err(e) = fs::write(&path, content) {
-        panic!("write test script failed: {e}");
-    }
-    path
+    fs::write(&path, content)?;
+    Ok(path)
 }
 
 fn perl_available() -> bool {
@@ -43,7 +42,7 @@ fn test_launch_rejects_missing_semicolon() -> Result<(), Box<dyn std::error::Err
     let tmp = tempfile::tempdir()?;
 
     // Missing semicolon between statements — perl -c catches this
-    let script = write_script(&tmp, "missing_semicolon.pl", "my $x = 1\nprint $x;\n");
+    let script = write_script(&tmp, "missing_semicolon.pl", "my $x = 1\nprint $x;\n")?;
 
     let args = json!({
         "program": must_some(script.to_str()),
@@ -78,7 +77,7 @@ fn test_launch_rejects_unclosed_brace() -> Result<(), Box<dyn std::error::Error>
         &tmp,
         "unclosed_brace.pl",
         "sub foo {\n    my $x = 1;\n# missing closing brace\n",
-    );
+    )?;
 
     let args = json!({
         "program": must_some(script.to_str()),
@@ -114,7 +113,7 @@ fn test_launch_rejects_simple_syntax_error() -> Result<(), Box<dyn std::error::E
         &tmp,
         "simple_syntax_error.pl",
         "use strict;\nmy $x = BAREWORD_NOT_DEFINED;\n",
-    );
+    )?;
 
     let args = json!({
         "program": must_some(script.to_str()),
@@ -153,7 +152,7 @@ fn test_launch_allows_syntactically_valid_script() -> Result<(), Box<dyn std::er
         &tmp,
         "valid.pl",
         "use strict;\nuse warnings;\nmy $x = 42;\nprint \"$x\\n\";\n",
-    );
+    )?;
 
     let args = json!({
         "program": must_some(script.to_str()),
@@ -188,7 +187,7 @@ fn test_syntax_error_message_contains_line_number() -> Result<(), Box<dyn std::e
     let tmp = tempfile::tempdir()?;
 
     // Assignment with no right-hand side on line 2
-    let script = write_script(&tmp, "line_number_test.pl", "my $a = 1;\nmy $b = ;\nmy $c = 3;\n");
+    let script = write_script(&tmp, "line_number_test.pl", "my $a = 1;\nmy $b = ;\nmy $c = 3;\n")?;
 
     let args = json!({
         "program": must_some(script.to_str()),
@@ -230,7 +229,7 @@ fn test_launch_syntax_check_honors_perl5lib_env_override() -> Result<(), Box<dyn
         &tmp,
         "needs_perl5lib.pl",
         "use strict;\nuse warnings;\nuse Local::Helper;\nprint Local::Helper::ok();\n",
-    );
+    )?;
 
     let args = json!({
         "program": must_some(script.to_str()),
@@ -281,7 +280,7 @@ fn test_launch_include_paths_are_receipt_only_until_dap_module_path_cutover()
         &tmp,
         "needs_launch_include_paths.pl",
         "use strict;\nuse warnings;\nuse TrustReceipt::Helper;\nprint TrustReceipt::Helper::ok();\n",
-    );
+    )?;
 
     let args = json!({
         "program": must_some(script.to_str()),
@@ -325,7 +324,7 @@ fn test_launch_reports_missing_module_with_install_hint() -> Result<(), Box<dyn 
             &tmp,
             "missing_module.pl",
             &format!("use strict;\nuse warnings;\nuse {module_name};\n"),
-        );
+        )?;
 
         let args = json!({
             "program": must_some(script.to_str()),
