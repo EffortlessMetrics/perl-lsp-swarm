@@ -167,3 +167,49 @@ fn array_interpolation_disabled_keeps_at_as_literal_text() -> R {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Package-qualified array names (review finding on PR #5235)
+//
+// Verified against real perl 5.38.2:
+//   our @arr = ("x", "y"); print "@main::arr"   # prints "x y"
+// so `::` segments belong to the interpolated variable, not to trailing
+// literal text. The `$#` arm already folds `::`; this pins the `@` arm to
+// the same rule.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn at_package_qualified_array_emits_single_variable() -> R {
+    let parts = interp_parts("\"@main::arr\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@main::arr"))],
+        "\"@main::arr\" should be one Variable, not Variable(\"@main\") + Literal(\"::arr\"), \
+         got {parts:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn at_deeply_qualified_array_emits_single_variable() -> R {
+    let parts = interp_parts("\"@Foo::Bar::baz\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@Foo::Bar::baz"))],
+        "multi-segment package qualifiers should stay in one Variable, got {parts:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn at_single_trailing_colon_is_not_a_qualifier() -> R {
+    // One colon is not a package separator: it must terminate the variable and
+    // stay as literal text.
+    let parts = interp_parts("\"@arr:tail\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@arr")), StringPart::Literal(Arc::from(":tail")),],
+        "a single ':' must end the variable, got {parts:?}"
+    );
+    Ok(())
+}

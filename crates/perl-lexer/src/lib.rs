@@ -2567,10 +2567,18 @@ impl<'a> PerlLexer<'a> {
                             )));
                         }
                         Some(ch) if is_perl_identifier_start(ch) => {
+                            // Package-qualified array names interpolate as one
+                            // variable -- verified against real perl 5.38.2:
+                            // `our @arr=("x","y"); print "@main::arr"` prints
+                            // "x y", so `::` segments belong to the variable,
+                            // not to the following literal text. Mirrors the
+                            // `$#` arm, which already folds `::` segments.
                             while self.position < self.input_bytes.len() {
                                 let byte = self.input_bytes[self.position];
                                 if byte.is_ascii_alphanumeric() || byte == b'_' {
                                     self.position += 1;
+                                } else if byte == b':' && self.peek_byte(1) == Some(b':') {
+                                    self.position += 2;
                                 } else if byte >= 128 {
                                     if let Some(c) = self.current_char() {
                                         if is_perl_identifier_continue(c) {
@@ -2845,7 +2853,31 @@ impl<'a> PerlLexer<'a> {
                                     &self.input[part_start..self.position],
                                 )));
 
-                                if self.current_char() == Some('[') {
+                                // Arrow *subscripts* chain onto the deref and do
+                                // interpolate -- verified against real perl
+                                // 5.38.2: `my $ar=\@a; my $rr=\$ar; print
+                                // "$$rr->[1]"` prints the element. A bare
+                                // arrow *method* call does NOT interpolate
+                                // (`print "$$ro->bar"` prints the deref'd value
+                                // followed by a literal "->bar"), so `->name`
+                                // is deliberately left in the literal bucket.
+                                if self.matches_bytes(b"->")
+                                    && matches!(self.peek_byte(2), Some(b'[') | Some(b'{'))
+                                {
+                                    let tail_start = self.position;
+                                    self.advance();
+                                    self.advance();
+                                    if self.current_char() == Some('[') {
+                                        let _ =
+                                            self.consume_balanced_segment_in_string('[', ']', '"');
+                                    } else {
+                                        let _ =
+                                            self.consume_balanced_segment_in_string('{', '}', '"');
+                                    }
+                                    parts.push(StringPart::MethodCall(Arc::from(
+                                        &self.input[tail_start..self.position],
+                                    )));
+                                } else if self.current_char() == Some('[') {
                                     let tail_start = self.position;
                                     let _ = self.consume_balanced_segment_in_string('[', ']', '"');
                                     parts.push(StringPart::ArraySlice(Arc::from(

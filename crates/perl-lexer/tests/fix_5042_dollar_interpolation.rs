@@ -421,3 +421,64 @@ fn literal_prefix_then_trailing_dollar_stays_literal() -> R {
     assert_eq!(joined, "cost: $", "trailing '$' must survive as literal text");
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Deref chain followed by an arrow (review finding on PR #5235)
+//
+// Verified against real perl 5.38.2:
+//   my @a=(10,20,30); my $ar=\@a; my $rr=\$ar; print "$$rr->[1]"   # prints 20
+//   my %h=(k=>"V");   my $hr=\%h; my $hrr=\$hr; print "$$hrr->{k}" # prints V
+// so an arrow *subscript* chains onto the deref and interpolates.
+//
+//   package Foo; sub new{bless{},shift} sub bar{"M"}
+//   my $o=Foo->new; my $ro=\$o; print "$$ro->bar"
+//     # prints "Foo=HASH(0x...)->bar"
+// so a bare arrow *method* call does NOT interpolate — "->bar" must stay
+// literal. This is the boundary between the two cases.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn deref_chain_arrow_array_subscript_is_method_call_part() -> R {
+    let parts = interpolated_parts("\"$$rr->[1]\"").ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$$rr")), StringPart::MethodCall(Arc::from("->[1]")),],
+        "\"$$rr->[1]\" must chain the arrow subscript, got {parts:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn deref_chain_arrow_hash_subscript_is_method_call_part() -> R {
+    let parts = interpolated_parts("\"$$hrr->{k}\"").ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$$hrr")), StringPart::MethodCall(Arc::from("->{k}")),],
+        "\"$$hrr->{{k}}\" must chain the arrow subscript, got {parts:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn deref_chain_arrow_method_call_stays_literal() -> R {
+    // Real perl does not interpolate a bare "->name" after a deref chain.
+    // Classifying it as MethodCall would over-claim interpolation.
+    let parts = interpolated_parts("\"$$ro->bar\"").ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$$ro")), StringPart::Literal(Arc::from("->bar")),],
+        "a bare arrow method must remain literal text, got {parts:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn triple_deref_chain_arrow_subscript_chains() -> R {
+    let parts = interpolated_parts("\"$$$ref->[0]\"").ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$$$ref")), StringPart::MethodCall(Arc::from("->[0]")),],
+        "a longer deref chain must still chain the arrow subscript, got {parts:?}"
+    );
+    Ok(())
+}
