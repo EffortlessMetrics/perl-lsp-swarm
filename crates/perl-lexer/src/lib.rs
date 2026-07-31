@@ -2544,6 +2544,57 @@ impl<'a> PerlLexer<'a> {
                         self.advance();
                     }
                 }
+                // Array interpolation: @arr, @{expr}, @_. Ported from PR #5355
+                // (branch claude/inspiring-babbage-83z94q) -- issue #5042's
+                // headline claim is the `@` sigil, so this arm closes the gap
+                // left by the `$`-only fix above. `@` followed by neither an
+                // identifier nor `{` is not a valid interpolation opener and
+                // stays literal text (verified against real perl 5.38.2:
+                // `print "@!"` prints a literal `@!`, it does not interpolate
+                // `$!` under the `@` sigil).
+                '@' if self.config.parse_interpolation => {
+                    if !current_literal.is_empty() {
+                        parts.push(StringPart::Literal(Arc::from(current_literal)));
+                        current_literal = String::new();
+                    }
+                    let part_start = self.position;
+                    self.advance(); // consume '@'
+                    match self.current_char() {
+                        Some('{') => {
+                            let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                            parts.push(StringPart::Expression(Arc::from(
+                                &self.input[part_start..self.position],
+                            )));
+                        }
+                        Some(ch) if is_perl_identifier_start(ch) => {
+                            while self.position < self.input_bytes.len() {
+                                let byte = self.input_bytes[self.position];
+                                if byte.is_ascii_alphanumeric() || byte == b'_' {
+                                    self.position += 1;
+                                } else if byte >= 128 {
+                                    if let Some(c) = self.current_char() {
+                                        if is_perl_identifier_continue(c) {
+                                            self.advance();
+                                        } else {
+                                            break;
+                                        }
+                                    } else {
+                                        break;
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                            parts.push(StringPart::Variable(Arc::from(
+                                &self.input[part_start..self.position],
+                            )));
+                        }
+                        _ => {
+                            // '@' not followed by identifier or '{' — treat as literal
+                            current_literal.push('@');
+                        }
+                    }
+                }
                 '$' if self.config.parse_interpolation => {
                     // Handle variable interpolation - avoid unnecessary clone
                     if !current_literal.is_empty() {
@@ -2697,7 +2748,11 @@ impl<'a> PerlLexer<'a> {
                         // array ref `$ref`). Each is emitted as a single Variable
                         // part -- `$#{$ref}`/`$#$ref` must not fragment into
                         // separate Variable/Literal parts the way plain `${expr}`
-                        // subscripting would.
+                        // subscripting would. The bare and `$ref`-tail identifier
+                        // scans also fold `::`-qualified package segments (e.g.
+                        // `$#main::array`), mirroring `try_variable`'s `$#` loop
+                        // (verified against real perl 5.38.2: `our @array=(1,2,3);
+                        // print "$#main::array"` prints "2").
                         Some('#') => {
                             self.advance(); // consume '#'
                             match self.current_char() {
@@ -2710,19 +2765,27 @@ impl<'a> PerlLexer<'a> {
                                     while self.current_char() == Some('$') {
                                         self.advance();
                                     }
-                                    while self
-                                        .current_char()
-                                        .is_some_and(is_perl_identifier_continue)
-                                    {
-                                        self.advance();
+                                    while let Some(ch) = self.current_char() {
+                                        if is_perl_identifier_continue(ch) {
+                                            self.advance();
+                                        } else if ch == ':' && self.peek_char(1) == Some(':') {
+                                            self.advance();
+                                            self.advance();
+                                        } else {
+                                            break;
+                                        }
                                     }
                                 }
                                 _ => {
-                                    while self
-                                        .current_char()
-                                        .is_some_and(is_perl_identifier_continue)
-                                    {
-                                        self.advance();
+                                    while let Some(ch) = self.current_char() {
+                                        if is_perl_identifier_continue(ch) {
+                                            self.advance();
+                                        } else if ch == ':' && self.peek_char(1) == Some(':') {
+                                            self.advance();
+                                            self.advance();
+                                        } else {
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -2730,14 +2793,15 @@ impl<'a> PerlLexer<'a> {
                                 &self.input[part_start..self.position],
                             )));
                         }
-                        // $$ (PID) when not followed by an identifier; otherwise
-                        // `$$foo`, `$$$foo`, etc. are scalar-dereference chains and
-                        // interpolate as a single unit (verified against real perl
-                        // 5.38.2: `my $foo = \$x; print "$$foo"` prints the
-                        // dereferenced value of $x, and `"$$$foo"` double-derefs).
-                        // Emitted as one Variable part spanning the whole chain,
-                        // mirroring how the `${expr}` arm handles a unit. Bare `$$`
-                        // (no trailing identifier) remains the PID.
+                        // $$ (PID) when not followed by an identifier or brace
+                        // group; otherwise `$$foo`, `$$$foo`, `$${foo}`, etc. are
+                        // scalar-dereference chains and interpolate as a single
+                        // unit (verified against real perl 5.38.2: `my $foo =
+                        // \$x; print "$$foo"` prints the dereferenced value of
+                        // $x, `"$$$foo"` double-derefs, and `my $r = \$x; my
+                        // $foo = \$r; print "$$${foo}"` also derefs through the
+                        // brace form). Bare `$$` (no trailing identifier/brace)
+                        // remains the PID.
                         Some('$') => {
                             // Count consecutive '$' sigils starting at the current
                             // position (at least 1, since we matched on '$' here).
@@ -2745,21 +2809,61 @@ impl<'a> PerlLexer<'a> {
                             while self.peek_char(dollar_run) == Some('$') {
                                 dollar_run += 1;
                             }
-                            if self.peek_char(dollar_run).is_some_and(is_perl_identifier_start) {
+                            let after_run = self.peek_char(dollar_run);
+                            if after_run == Some('{') {
+                                // Deref chain terminated by a brace group, e.g.
+                                // `$${foo}` / `$$${foo}` -- consume the sigil run
+                                // then the balanced `{...}` as one Expression
+                                // unit, mirroring the plain `${expr}` arm. No
+                                // postfix subscript follows: verified against
+                                // real perl 5.38.2, `"$${foo}[0]"` interpolates
+                                // `$${foo}` and leaves the literal text "[0]"
+                                // afterward rather than subscripting.
+                                for _ in 0..dollar_run {
+                                    self.advance();
+                                }
+                                let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                                parts.push(StringPart::Expression(Arc::from(
+                                    &self.input[part_start..self.position],
+                                )));
+                            } else if after_run.is_some_and(is_perl_identifier_start) {
                                 // Deref chain: consume the remaining '$' sigils,
-                                // then the identifier they dereference.
+                                // then the identifier they dereference, then any
+                                // postfix subscript -- verified against real perl
+                                // 5.38.2: `my @a=(1,2,3); my $foo=\@a; print
+                                // "$$foo[1]"` prints "2" and `my %h=(a=>1); my
+                                // $foo=\%h; print "$$foo{a}"` prints "1", so a
+                                // trailing `[` / `{` subscript belongs to the
+                                // deref chain, not the following literal text.
                                 for _ in 0..dollar_run {
                                     self.advance();
                                 }
                                 while self.current_char().is_some_and(is_perl_identifier_continue) {
                                     self.advance();
                                 }
+                                parts.push(StringPart::Variable(Arc::from(
+                                    &self.input[part_start..self.position],
+                                )));
+
+                                if self.current_char() == Some('[') {
+                                    let tail_start = self.position;
+                                    let _ = self.consume_balanced_segment_in_string('[', ']', '"');
+                                    parts.push(StringPart::ArraySlice(Arc::from(
+                                        &self.input[tail_start..self.position],
+                                    )));
+                                } else if self.current_char() == Some('{') {
+                                    let tail_start = self.position;
+                                    let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                                    parts.push(StringPart::Expression(Arc::from(
+                                        &self.input[tail_start..self.position],
+                                    )));
+                                }
                             } else {
                                 self.advance(); // consume second '$' for PID
+                                parts.push(StringPart::Variable(Arc::from(
+                                    &self.input[part_start..self.position],
+                                )));
                             }
-                            parts.push(StringPart::Variable(Arc::from(
-                                &self.input[part_start..self.position],
-                            )));
                         }
                         // Punctuation special variables: $!, $@, $?, $&, etc.
                         //

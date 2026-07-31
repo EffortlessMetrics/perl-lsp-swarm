@@ -190,6 +190,91 @@ fn dollar_hash_dollar_ref_in_string_emits_single_variable() -> R {
 }
 
 // ---------------------------------------------------------------------------
+// Deref-then-brace: $${foo}, $$${foo} (regression from PR #5235 review)
+// ---------------------------------------------------------------------------
+
+// `$${foo}` is `${${foo}}` -- a scalar deref through a brace group. Verified
+// against real perl 5.38.2:
+//   my $x = "hello"; my $foo = \$x; print "$${foo}";  # prints "hello"
+// Before this fix the `Some('$')` deref arm only recognized an identifier
+// after the dollar run, so `{` fell through to the PID case and produced
+// [Variable("$$"), Literal("{foo}")] instead of a single interpolation unit.
+#[test]
+fn dollar_dollar_brace_expr_is_single_expression() -> R {
+    let parts = interpolated_parts(r#""$${foo}""#).ok_or("no InterpolatedString")?;
+    assert_eq!(parts, vec![StringPart::Expression(Arc::from("$${foo}"))]);
+    Ok(())
+}
+
+// Chained deref through a brace group: `$$${foo}` derefs twice. Verified
+// against real perl 5.38.2:
+//   my $x = "V"; my $inner = \$x; my $foo = \$inner; print "$$${foo}"; # "V"
+#[test]
+fn triple_dollar_brace_expr_is_single_expression() -> R {
+    let parts = interpolated_parts(r#""$$${foo}""#).ok_or("no InterpolatedString")?;
+    assert_eq!(parts, vec![StringPart::Expression(Arc::from("$$${foo}"))]);
+    Ok(())
+}
+
+// After a brace-closed deref, a following `[...]` is NOT a subscript -- it is
+// literal text. Verified against real perl 5.38.2:
+//   my $x = "V2"; my $foo = \$x; print "$${foo}[0]";  # prints "V2[0]"
+#[test]
+fn dollar_dollar_brace_expr_then_bracket_stays_literal_suffix() -> R {
+    let parts = interpolated_parts(r#""$${foo}[0]""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Expression(Arc::from("$${foo}")), StringPart::Literal(Arc::from("[0]")),]
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Postfix subscripts after a $$foo deref chain (regression from PR #5235
+// review) -- must not land in the literal bucket.
+// ---------------------------------------------------------------------------
+
+// `$$foo[1]` applies the array subscript to the dereferenced array. Verified
+// against real perl 5.38.2:
+//   my @a = (10,20,30); my $foo = \@a; print "$$foo[1]";  # prints "20"
+#[test]
+fn dollar_dollar_identifier_array_subscript_not_literal() -> R {
+    let parts = interpolated_parts(r#""$$foo[1]""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$$foo")), StringPart::ArraySlice(Arc::from("[1]")),]
+    );
+    Ok(())
+}
+
+// `$$foo{a}` applies the hash subscript to the dereferenced hash. Verified
+// against real perl 5.38.2:
+//   my %h = (a=>1); my $foo = \%h; print "$$foo{a}";  # prints "1"
+#[test]
+fn dollar_dollar_identifier_hash_subscript_not_literal() -> R {
+    let parts = interpolated_parts(r#""$$foo{a}""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$$foo")), StringPart::Expression(Arc::from("{a}")),]
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `::`-qualified package names after $# (regression from PR #5235 review)
+// ---------------------------------------------------------------------------
+
+// `$#main::array` must consume the whole `::`-qualified name as one Variable,
+// mirroring try_variable's `$#` handling. Verified against real perl 5.38.2:
+//   package main; our @array = (1,2,3); print "$#main::array";  # prints "2"
+#[test]
+fn dollar_hash_qualified_package_array_emits_single_variable() -> R {
+    let parts = interpolated_parts(r#""$#main::array""#).ok_or("no InterpolatedString")?;
+    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$#main::array"))]);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Escaped `\$foo` must stay a literal, never a Variable
 // ---------------------------------------------------------------------------
 
