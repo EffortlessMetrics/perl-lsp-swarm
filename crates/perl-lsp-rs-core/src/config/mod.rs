@@ -490,9 +490,11 @@ impl ServerConfig {
                 }
             }
             if let Some(include) = string_array(critic.get("include")) {
+                warn_unknown_rule_ids("critic.include", &include);
                 self.native_critic_include = include;
             }
             if let Some(exclude) = string_array(critic.get("exclude")) {
+                warn_unknown_rule_ids("critic.exclude", &exclude);
                 self.native_critic_exclude = exclude;
             }
         }
@@ -680,6 +682,32 @@ const CRITIC_ENGINE_VALID_OPTIONS: &str = "native, legacy (external, perlcritic)
 /// `tracing::warn!` messages when a user supplies an unrecognized value.
 /// Kept in sync with [`parse_native_critic_profile`].
 const NATIVE_CRITIC_PROFILE_VALID_OPTIONS: &str = "recommended, strict";
+
+/// Warn for every entry in `ids` that is not a known native critic rule ID.
+///
+/// The full rule catalog is derived from the strict profile at call time so
+/// warnings stay current when rules are added or removed from the registry.
+/// Values are stored as-is even when unknown — the rule simply never matches.
+fn warn_unknown_rule_ids(setting: &str, ids: &[String]) {
+    let known: std::collections::HashSet<&str> =
+        crate::tooling::perl_critic::NativeCriticRegistry::for_profile(
+            crate::tooling::perl_critic::NativeCriticProfile::Strict,
+        )
+        .rule_ids()
+        .into_iter()
+        .collect();
+    for id in ids {
+        if !known.contains(id.as_str()) {
+            tracing::warn!(
+                target: "perl_lsp::config",
+                setting = %setting,
+                value = %id,
+                "unrecognized native critic rule ID; \
+                 this entry will not match any finding (check spelling or use critic.profile=strict)",
+            );
+        }
+    }
+}
 
 /// Controls whether PERL5LIB paths are prepended or appended to `include_paths`.
 ///
@@ -1774,10 +1802,14 @@ impl ProjectConfig {
             }
         }
         if let Some(ref include) = self.critic.include {
-            config.native_critic_include = normalize_string_list(include);
+            let normalized = normalize_string_list(include);
+            warn_unknown_rule_ids("critic.include", &normalized);
+            config.native_critic_include = normalized;
         }
         if let Some(ref exclude) = self.critic.exclude {
-            config.native_critic_exclude = normalize_string_list(exclude);
+            let normalized = normalize_string_list(exclude);
+            warn_unknown_rule_ids("critic.exclude", &normalized);
+            config.native_critic_exclude = normalized;
         }
         if let Some(ref profile) = self.formatting.perltidy_profile {
             config.perltidy_profile = Some(profile.clone());
@@ -4665,5 +4697,93 @@ api_key_prefix = "Attacker "
         assert_eq!(config.ai_completion.api_key_env, "OPENAI_API_KEY");
         assert_eq!(config.ai_completion.api_key_header, "Authorization");
         assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
+    }
+
+    // ── critic include/exclude rule-ID validation ──────────────────────────
+
+    #[test]
+    fn json_unknown_include_rule_id_warns_keeps_value() {
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "include": ["native.common.typo_rule", "native.testing.require_use_strict"] }
+            }));
+        });
+        // Unknown ID stored, valid ID stored.
+        assert_eq!(
+            config.native_critic_include,
+            vec![
+                "native.common.typo_rule".to_string(),
+                "native.testing.require_use_strict".to_string(),
+            ]
+        );
+        // One warning for the unknown ID, naming the setting and the bad value.
+        assert_warned_contains(&captured, &["critic.include", "native.common.typo_rule"]);
+        // No warning for the valid ID.
+        let combined = captured.join("\n");
+        assert!(
+            !combined.contains("native.testing.require_use_strict"),
+            "unexpected warning for a valid rule ID; captured:\n{combined}"
+        );
+    }
+
+    #[test]
+    fn json_unknown_exclude_rule_id_warns() {
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "exclude": ["native.common.misspelled_rule"] }
+            }));
+        });
+        assert_warned_contains(&captured, &["critic.exclude", "native.common.misspelled_rule"]);
+        // Value is still stored — we only warn, we don't reject.
+        assert_eq!(config.native_critic_exclude, vec!["native.common.misspelled_rule".to_string()]);
+    }
+
+    #[test]
+    fn json_valid_include_rule_ids_produce_no_warnings() {
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": {
+                    "include": ["native.testing.require_use_strict", "native.variables.unused_lexical"],
+                    "exclude": ["native.common.assignment_in_condition"]
+                }
+            }));
+        });
+        assert!(
+            captured.is_empty(),
+            "expected no warnings for valid rule IDs; got:\n{}",
+            captured.join("\n")
+        );
+    }
+
+    #[test]
+    fn toml_unknown_include_rule_id_warns_keeps_value() {
+        let mut config = ServerConfig::default();
+        let mut project = ProjectConfig::default();
+        project.critic.include = Some(vec![
+            "native.variables.typo_rule".to_string(),
+            "native.testing.require_use_strict".to_string(),
+        ]);
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        assert_eq!(
+            config.native_critic_include,
+            vec![
+                "native.variables.typo_rule".to_string(),
+                "native.testing.require_use_strict".to_string(),
+            ]
+        );
+        assert_warned_contains(&captured, &["critic.include", "native.variables.typo_rule"]);
+    }
+
+    #[test]
+    fn toml_unknown_exclude_rule_id_warns() {
+        let mut config = ServerConfig::default();
+        let mut project = ProjectConfig::default();
+        project.critic.exclude = Some(vec!["native.io.bad_rule_name".to_string()]);
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        assert_warned_contains(&captured, &["critic.exclude", "native.io.bad_rule_name"]);
+        assert_eq!(config.native_critic_exclude, vec!["native.io.bad_rule_name".to_string()]);
     }
 }
