@@ -21,6 +21,12 @@ fn assert_retired_json(subcommand: &str) -> Result<()> {
             _ => "unknown",
         })
     );
+    assert!(value.get("selected_work").is_some_and(serde_json::Value::is_null));
+    assert_eq!(value.get("finding_count").and_then(serde_json::Value::as_u64), Some(0));
+    assert_eq!(
+        value.get("mutation_performed").and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
     assert!(stderr.trim().is_empty(), "compatibility command wrote stderr: {stderr:?}");
     Ok(())
 }
