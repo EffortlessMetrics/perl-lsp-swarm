@@ -322,11 +322,15 @@ fn lsp_unit_lanes_partition_the_surface_exactly() -> Result<(), Box<dyn std::err
         // coverage if the two invocations differ solely in their package set:
         // --lib pins which targets run, --locked pins the dependency graph, and
         // --test-threads=4 pins the concurrency the ceilings were measured at.
+        // Match whole whitespace-delimited tokens, not substrings: a substring
+        // check on "--test-threads=4" would also accept "--test-threads=40".
+        let tokens: Vec<&str> = lane.command.split_whitespace().collect();
         for flag in ["--lib", "--locked", "--test-threads=4"] {
             assert!(
-                lane.command.contains(flag),
-                "{lane_name} must keep {flag}; the LSP lanes differ only in their \
-                 package set, and dropping a flag silently changes what is executed"
+                tokens.contains(&flag),
+                "{lane_name} must keep {flag} as an exact argument; the LSP lanes \
+                 differ only in their package set, and changing a flag silently \
+                 changes what is executed"
             );
         }
 
