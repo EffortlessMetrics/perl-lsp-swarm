@@ -16,6 +16,9 @@ struct RetiredGoalCommand<'a> {
     command: &'a str,
     authority: &'a str,
     replacement: [&'a str; 2],
+    selected_work: Option<&'a str>,
+    finding_count: usize,
+    mutation_performed: bool,
     message: &'a str,
 }
 
@@ -26,6 +29,9 @@ fn render_retired(command: &str, json: bool) -> Result<String> {
         command,
         authority: "github",
         replacement: ["GitHub issue/PR graph", "deliver-goal"],
+        selected_work: None,
+        finding_count: 0,
+        mutation_performed: false,
         message: "tracked goal selection is retired; select work from current GitHub state",
     };
 
@@ -33,7 +39,7 @@ fn render_retired(command: &str, json: bool) -> Result<String> {
         Ok(serde_json::to_string_pretty(&receipt)?)
     } else {
         Ok(format!(
-            "{command}: retired — use current GitHub issues/PRs and deliver-goal"
+            "{command}: retired — selected_work=none, finding_count=0, mutation_performed=false; use current GitHub issues/PRs and deliver-goal"
         ))
     }
 }
@@ -57,13 +63,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn retired_json_is_parseable_and_names_github_authority() -> Result<()> {
+    fn retired_json_is_parseable_and_proves_no_selection_or_mutation() -> Result<()> {
         let text = render_retired("goals next", true)?;
         let value: serde_json::Value = serde_json::from_str(&text)?;
 
         assert_eq!(value.get("status").and_then(serde_json::Value::as_str), Some("retired"));
         assert_eq!(value.get("authority").and_then(serde_json::Value::as_str), Some("github"));
         assert_eq!(value.get("command").and_then(serde_json::Value::as_str), Some("goals next"));
+        assert!(value.get("selected_work").is_some_and(serde_json::Value::is_null));
+        assert_eq!(value.get("finding_count").and_then(serde_json::Value::as_u64), Some(0));
+        assert_eq!(
+            value.get("mutation_performed").and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
         Ok(())
     }
 }
