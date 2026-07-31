@@ -15,6 +15,7 @@ printf 'test fixture\n' > "$repo/README.md"
 git -C "$repo" add README.md
 git -C "$repo" commit -qm "initial"
 git -C "$repo" remote add origin .
+git -C "$repo" update-ref refs/remotes/origin/main HEAD
 manager="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/worktree-manager.py"
 
 # Case 1: allocate, list, and release a clean canonical worktree.
