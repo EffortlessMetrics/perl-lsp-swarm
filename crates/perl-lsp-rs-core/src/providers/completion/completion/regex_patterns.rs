@@ -3,7 +3,7 @@
 //! Provides completion suggestions for common regex constructs when the cursor
 //! is inside a regex literal (`/…/`, `m/…/`, `qr/…/`, `s/…/…/`).
 
-use super::items::CompletionItemKind;
+use super::items::{CompletionItemKind, InsertTextFormat};
 use super::{context::CompletionContext, items::CompletionItem};
 
 /// A single regex completion suggestion.
@@ -380,6 +380,7 @@ pub fn add_regex_flag_completions(
             additional_edits: vec![],
             text_edit_range: Some((context.position, context.position)),
             commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
         });
     }
@@ -417,6 +418,7 @@ pub fn add_regex_completions(
                 additional_edits: vec![],
                 text_edit_range: Some((replace_start, context.position)),
                 commit_characters: None,
+                insert_text_format: InsertTextFormat::for_authored_body(suggestion.insert),
                 label_details: None,
             });
         }

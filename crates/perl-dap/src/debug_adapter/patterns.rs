@@ -8,6 +8,14 @@ pub(super) const DEBUGGER_QUERY_WAIT_MS: u64 = 75;
 pub(super) const DEBUGGER_FRAME_POLL_MS: u64 = 10;
 
 pub(super) const RECENT_OUTPUT_MAX_LINES: usize = 2048;
+
+/// Capacity of the outbound DAP event queue.
+///
+/// Mirrors `OUTBOUND_CAPACITY` from `perl-lsp-rs/src/runtime/outbound.rs` and
+/// `EVENT_WRITE_BATCH_MAX` in `transport.rs`.  Output events that arrive when
+/// the queue is full are dropped with a warn log; lifecycle events block until
+/// a slot is available.
+pub(crate) const EVENT_QUEUE_CAPACITY: usize = 64;
 const MAX_DEBUGGER_IDENTIFIER_LEN: usize = 512;
 
 #[derive(Debug, Clone)]

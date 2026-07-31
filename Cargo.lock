@@ -1914,6 +1914,7 @@ version = "0.17.0"
 dependencies = [
  "perl-module",
  "perl-parser-core",
+ "perl-pod",
  "perl-semantic-facts",
  "perl-symbol",
  "perl-tdd-support",

@@ -281,17 +281,22 @@ fn code_action_kinds(build: &BuildFlags) -> Vec<CodeActionKind> {
 
     // Advertise generic `refactor` plus concrete sub-kinds so clients can
     // surface the full refactoring menu and send precise `context.only`
-    // filters (for example `refactor.inline` and `refactor.rewrite`).
+    // filters (for example `refactor.rewrite`).
     kinds.push(CodeActionKind::REFACTOR);
 
     // REFACTOR_EXTRACT is implemented in code_actions_enhanced.rs.
     // Tests verified in lsp_code_actions_tests.rs (Issue #181).
     kinds.push(CodeActionKind::REFACTOR_EXTRACT);
-    kinds.push(CodeActionKind::REFACTOR_INLINE);
+    // Note: refactor.inline is NOT advertised because no inline action
+    // is currently implemented.
     kinds.push(CodeActionKind::REFACTOR_REWRITE);
 
     // SOURCE_FIX_ALL aggregates every safe `quickfix` action into a single invocation.
     kinds.push(CodeActionKind::SOURCE_FIX_ALL);
+
+    // SOURCE_MODERNIZE actions (3-arg open, use strict, Carp::croak, etc.)
+    // are produced by modernize.rs but were missing from the advertised kinds.
+    kinds.push(CodeActionKind::new("source.modernize"));
 
     kinds
 }

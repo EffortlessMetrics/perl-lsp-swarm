@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Security
+body: "Client-supplied includePaths are now split into machine-scoped external roots versus resource-scoped paths and validated server-side (absolute-path and control-character checks), and the VS Code extension now forwards only global externalIncludePaths, closing a trust-boundary gap that let workspace-level settings reach outside the intended scope."
+time: 2026-07-29T02:45:27Z
+custom:
+  PR: "5021"
+  Slug: include-paths-trust-boundary
+  Breaking: "no"

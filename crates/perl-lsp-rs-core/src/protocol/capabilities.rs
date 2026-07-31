@@ -418,7 +418,10 @@ mod tests {
     #[test]
     fn completion_trigger_characters_include_file_path_and_perl_tokens() {
         let triggers = completion_trigger_characters();
-        for expected in ["$", "@", "%", "-", ">", ":", "/", "\\", "\"", "'"] {
+        // `.` (string concat, UX_GAP_03) is included deliberately: it was
+        // previously guarded only by the insta snapshot, so when the snapshot
+        // went stale nothing asserted the trigger still existed.
+        for expected in ["$", "@", "%", "-", ">", ":", ".", "/", "\\", "\"", "'"] {
             assert!(
                 triggers.iter().any(|trigger| trigger == expected),
                 "missing completion trigger character: {expected}"

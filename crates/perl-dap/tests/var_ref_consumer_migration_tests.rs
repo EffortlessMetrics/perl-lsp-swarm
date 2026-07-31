@@ -18,7 +18,7 @@
 
 use perl_dap::{DapMessage, DebugAdapter};
 use serde_json::{Value, json};
-use std::sync::mpsc::channel;
+use std::sync::mpsc::sync_channel;
 
 // ─── Helper: extract response body ───────────────────────────────────────────
 
@@ -36,7 +36,7 @@ fn scope_encode_frame_id_0_locals() {
     // Acceptance § §Test-Grid: Scope with frame_id=0, kind=Locals should encode to wire=1
     // (matches old formula: 0 * 10 + 1 = 1)
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let msg = adapter.handle_scopes(1, 0, Some(json!({ "frameId": 0 })));
@@ -62,7 +62,7 @@ fn scope_encode_frame_id_0_locals() {
 fn scope_encode_frame_id_5000_locals() {
     // Test-Grid: frame_id=5000, kind=Locals should encode to 50_001 (5000*10+1)
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let msg = adapter.handle_scopes(1, 0, Some(json!({ "frameId": 5000 })));
@@ -88,7 +88,7 @@ fn scope_encode_frame_id_5000_locals() {
 fn scope_encode_frame_id_99999_globals() {
     // Test-Grid: frame_id=99_999, kind=Globals should encode to 999_993 (99_999*10+3)
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let msg = adapter.handle_scopes(1, 0, Some(json!({ "frameId": 99_999 })));
@@ -114,7 +114,7 @@ fn scope_encode_frame_id_99999_globals() {
 fn scope_encode_frame_id_99999_package() {
     // All three kinds for frame_id=99_999
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let msg = adapter.handle_scopes(1, 0, Some(json!({ "frameId": 99_999 })));
@@ -141,7 +141,7 @@ fn scope_encode_frame_id_99999_package() {
 fn scope_encode_frame_id_42_all_kinds() {
     // Test all three kinds for a mid-range frame_id (test-grid row 21)
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let msg = adapter.handle_scopes(1, 0, Some(json!({ "frameId": 42 })));
@@ -198,7 +198,7 @@ fn variables_handle_zero_invalid() {
     // Test-Grid row 85: variablesReference=0 should not crash, return empty list
     // (DAP spec: 0 = "no children")
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let msg = adapter.handle_variables(1, 0, Some(json!({ "variablesReference": 0 })));
@@ -216,7 +216,7 @@ fn variables_handle_zero_invalid() {
 fn variables_handle_negative_invalid() {
     // Test-Grid row 86: variablesReference=-1 should not crash, return empty list
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let msg = adapter.handle_variables(1, 0, Some(json!({ "variablesReference": -1 })));
@@ -230,7 +230,7 @@ fn variables_handle_negative_invalid() {
 fn variables_handle_large_negative_invalid() {
     // Test-Grid row 87: variablesReference=-999 should not crash
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let msg = adapter.handle_variables(1, 0, Some(json!({ "variablesReference": -999 })));
@@ -244,7 +244,7 @@ fn variables_handle_large_negative_invalid() {
 fn variables_handle_out_of_range_i64_overflow() {
     // Clamp i64 overflow: refs outside [1, i32::MAX] return empty (DAP-safe)
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let msg = adapter.handle_variables(1, 0, Some(json!({ "variablesReference": i64::MAX })));
@@ -462,7 +462,7 @@ fn integration_frame_scopes_consistency() {
     // Frame 0: encode 3 Scope refs (Locals, Package, Globals)
     // Verify each encodes to the correct wire value and decodes back
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     // Call handle_scopes to get the frame 0 scopes
@@ -523,7 +523,7 @@ fn integration_frame_scopes_consistency() {
 fn integration_multiple_frame_ids_consistency() {
     // Test frames 0, 1, 2 to verify Locals refs 1, 11, 21 (sequence consistency)
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     for frame_id in [0, 1, 2] {
@@ -567,7 +567,7 @@ fn handle_scopes_out_of_range_frame_id_returns_zero_refs() {
     // (not a crash, not a partial result). Verifies the consumer-level unwrap_or(0)
     // degradation path in frames.rs is DAP-correct.
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let msg = adapter.handle_scopes(1, 0, Some(json!({ "frameId": 100_000 })));
@@ -595,7 +595,7 @@ fn handle_scopes_extreme_frame_id_i32_max_returns_zero_refs() {
     // Adversarial: i64 frame_id clamped via i64_to_i32_saturating -> i32::MAX.
     // encode(Scope{i32::MAX, ...}) returns None -> unwrap_or(0). No crash.
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let msg = adapter.handle_scopes(1, 0, Some(json!({ "frameId": i32::MAX })));

@@ -7,7 +7,7 @@
 //! This addresses the documentation gap where "safe eval" could be misinterpreted
 //! as providing strong security isolation when it only performs syntactic validation.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::PathBuf;
 
@@ -107,7 +107,7 @@ fn test_adr_0028_mentions_safe_eval_limitation() -> Result<()> {
     // Either the ADR already has the clarification or it needs to be added
     // This test documents the expected state after documentation clarification
     if !has_policy_validation && !has_not_sandbox {
-        panic!(
+        bail!(
             "ADR-0028 should mention that safe eval provides policy validation,\n\
              not sandboxed isolation. Consider adding clarification about:\n\
              - Safe eval is syntactic validation (admission control)\n\
@@ -147,7 +147,7 @@ fn test_dap_user_guide_safe_eval_context() -> Result<()> {
             || content.contains("timeout enforcement");
 
         if !has_clarification {
-            panic!(
+            bail!(
                 "DAP_USER_GUIDE.md mentions 'safe eval' or 'safe mode' but does not\n\
                  clarify that this is syntactic validation only (admission control),\n\
                  not a sandboxed interpreter. Consider adding a note explaining that\n\
@@ -179,7 +179,7 @@ fn test_adr_0019_safe_eval_limitation_context() -> Result<()> {
             || content.contains("not a sandbox");
 
         if !has_context {
-            panic!(
+            bail!(
                 "ADR-0019 mentions 'safe evaluation defaults' but does not clarify\n\
                  that this is syntactic validation (admission control), not sandboxing.\n\
                  Consider adding context that safe eval:\n\
@@ -241,7 +241,7 @@ fn test_documentation_gap_closure_for_safe_eval() -> Result<()> {
             .copied()
             .collect();
 
-        panic!(
+        bail!(
             "Documentation gap detected! {} docs mention safe eval, \
              but only {} have clarification context about it being syntactic validation only.\n\
              Docs needing clarification: {:?}\n\

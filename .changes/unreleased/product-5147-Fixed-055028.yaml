@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Range formatting now preserves the document's CRLF line endings instead of silently converting them to LF; a type mismatch on well-known boolean config fields now logs a warning instead of being silently ignored; and the `select` builtin's hover signature now shows both its filehandle and 4-argument forms."
+time: 2026-07-28T05:50:28Z
+custom:
+  PR: "5147"
+  Slug: config-warn-crlf-select-sig
+  Breaking: "no"

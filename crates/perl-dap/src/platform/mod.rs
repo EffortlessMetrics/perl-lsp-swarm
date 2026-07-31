@@ -34,7 +34,11 @@ const PERL_EXECUTABLE: &str = "perl";
 /// so callers can log or surface different messages to users.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PerlInterpreterResult {
-    /// Perl was found via the configured `perl-lsp.perl.path` setting.
+    /// Perl was found at the explicitly configured interpreter path.
+    ///
+    /// Deliberately does not name an editor setting: no such language-server
+    /// setting exists (#5034), and DAP callers supply this through `launch.json`'s
+    /// `perlPath` rather than through client configuration.
     ConfiguredPath(PathBuf),
     /// Perl was found on PATH (the normal case).
     FoundOnPath(PathBuf),

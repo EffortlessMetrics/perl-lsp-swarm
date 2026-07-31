@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Fixed
+body: "The extension no longer accumulates duplicate @INC/AST output channels on repeated use, the status bar now renders indexing percentage when the server reports it, and the file count shown in the status bar now refreshes when workspace folders change instead of being computed once and never updated."
+time: 2026-07-28T22:24:30Z
+custom:
+  PR: "5190"
+  Slug: output-channel-leak-and-status-bar
+  Breaking: "no"

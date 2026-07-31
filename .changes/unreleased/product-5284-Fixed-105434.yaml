@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Fixed
+body: "The published perl-module and perl-diagnostics crates on crates.io now carry complete metadata (keywords, categories, readme, docs.rs links) and inherit workspace version/license/repository instead of hardcoding perl-module's own copies, which would have silently drifted on the next version bump."
+time: 2026-07-29T10:54:34Z
+custom:
+  PR: "5284"
+  Slug: crate-publication-metadata
+  Breaking: "no"

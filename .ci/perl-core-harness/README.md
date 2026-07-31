@@ -182,6 +182,21 @@ History accepts an explicit `unassigned` state while work is being routed.
 versioned before/after transition; `accepted_debt` requires a boundary-registry
 reference. These checks are offline and do not query or mutate GitHub.
 
+## Typed compiler compatibility inputs
+
+perl_core_harness.compiler_compatibility.v1 is the typed input state for
+generated compatibility views. The loader consumes one input record per
+independent series: its immutable series manifest, parse and compile reports,
+compile baseline-v2, and complete evidence-bundle index. It rejects subject,
+Perl SHA, runner, profile, denominator, membership, baseline, or bundle
+identity drift before producing state.
+
+The loader keeps parse, compile, boundary debt, active clusters, execution,
+curated gold, differential oracle, and EIR as separate rails. Missing optional
+rails are not_available, never zero or pass. The versioned schema is
+schemas/compiler_compatibility.v1.schema.json; rendering and freshness
+checks belong to #4749.
+
 Or run the smoke against a user-supplied prepared upstream Perl tree:
 
 ```bash

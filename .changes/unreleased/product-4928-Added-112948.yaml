@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: "`perllsp --doctor --json` now emits a machine-readable JSON report, so CI pipelines and scripts can consume doctor output without scraping text."
+time: 2026-07-24T11:29:48Z
+custom:
+  PR: "4928"
+  Slug: doctor-json-flag
+  Breaking: "no"

@@ -265,18 +265,69 @@ impl DebugAdapter {
             };
         }
 
-        let signal_sent = if let Some(ref mut session) =
-            *lock_or_recover(&self.session, "debug_adapter.session")
-        {
-            let pid = session.process.id();
-            session.variable_cache.clear();
-            session.stack_frames.clear();
-            self.send_interrupt_signal(pid)
-        } else if let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
-        {
-            self.send_interrupt_signal(pid)
-        } else {
-            false
+        // Deliver pause while the launched-session guard is held when possible:
+        // - Windows: write interrupt to debugger stdin under this lock. Do not
+        //   call `send_interrupt_signal` here — it re-locks `self.session` and
+        //   deadlocks on the non-reentrant mutex.
+        // - Unix: SIGINT via `send_interrupt_signal` does not re-lock session,
+        //   so keep the guard across the call to avoid a cleanup race between
+        //   cache clear and signal delivery.
+        let (signal_sent, failure_message) = {
+            let mut session_guard = lock_or_recover(&self.session, "debug_adapter.session");
+            if let Some(ref mut session) = *session_guard {
+                session.variable_cache.clear();
+                session.stack_frames.clear();
+                #[cfg(windows)]
+                {
+                    let sent = match session.process.stdin.as_mut() {
+                        Some(stdin) => match stdin.write_all(b"\x03\n") {
+                            Ok(()) => {
+                                let _ = stdin.flush();
+                                true
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to send interrupt via stdin: {}. \
+                                     Pause delivery failed — session left intact.",
+                                    e
+                                );
+                                false
+                            }
+                        },
+                        None => {
+                            tracing::warn!("No stdin handle for launched session pause");
+                            false
+                        }
+                    };
+                    (sent, "Failed to pause debugger")
+                }
+                #[cfg(unix)]
+                {
+                    let pid = session.process.id();
+                    (self.send_interrupt_signal(pid), "Failed to pause debugger")
+                }
+                #[cfg(not(any(unix, windows)))]
+                {
+                    (false, "Failed to pause debugger")
+                }
+            } else {
+                drop(session_guard);
+                if let Some(pid) =
+                    *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
+                {
+                    #[cfg(windows)]
+                    {
+                        let _ = pid;
+                        (false, "Pause is unsupported for PID-attached sessions on Windows")
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        (self.send_interrupt_signal(pid), "Failed to pause debugger")
+                    }
+                } else {
+                    (false, "Failed to pause debugger")
+                }
+            }
         };
 
         DapMessage::Response {
@@ -285,7 +336,7 @@ impl DebugAdapter {
             success: signal_sent,
             command: "pause".to_string(),
             body: None,
-            message: if signal_sent { None } else { Some("Failed to pause debugger".to_string()) },
+            message: if signal_sent { None } else { Some(failure_message.to_string()) },
         }
     }
 

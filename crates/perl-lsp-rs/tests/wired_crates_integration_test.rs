@@ -112,7 +112,7 @@ fn test_wired_symbol_query_matches() {
 #[test]
 fn test_wired_completion_item_dedup() {
     use perl_lsp_rs_core::providers::completion_item::{
-        CompletionItem, CompletionItemKind, deduplicate_and_sort,
+        CompletionItem, CompletionItemKind, InsertTextFormat, deduplicate_and_sort,
     };
     let make = |label: &str| CompletionItem {
         label: label.to_string(),
@@ -125,6 +125,7 @@ fn test_wired_completion_item_dedup() {
         additional_edits: Vec::new(),
         text_edit_range: None,
         commit_characters: None,
+        insert_text_format: InsertTextFormat::PlainText,
         label_details: None,
     };
     let items = vec![make("say"), make("say")];

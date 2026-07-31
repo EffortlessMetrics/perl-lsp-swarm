@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Type hierarchy now recursively lists all ancestor classes instead of only direct parents; call hierarchy traversal now descends into BEGIN/END blocks, try/catch, and other previously-skipped containers instead of dropping calls made inside them; and method calls like ->throw/->abort are now recognized as unconditional exits for unreachable-code analysis."
+time: 2026-07-28T06:37:45Z
+custom:
+  PR: "5151"
+  Slug: type-call-hierarchy-and-exit-terminators
+  Breaking: "no"

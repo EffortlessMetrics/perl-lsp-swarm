@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "The \"Add use strict\"/\"use warnings\" quick fixes now insert after the shebang line instead of at byte offset 0, so applying them no longer breaks script execution by inserting text before #!."
+time: 2026-07-28T13:52:45Z
+custom:
+  PR: "5169"
+  Slug: use-strict-quickfix-shebang-safe
+  Breaking: "no"

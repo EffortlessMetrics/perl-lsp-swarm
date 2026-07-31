@@ -1,0 +1,22 @@
+# Changed-file spelling contract for issue #4149.
+# Keep project vocabulary explicit; do not silence whole file classes.
+
+[default.extend-words]
+  aqua = "aqua"
+  changie = "changie"
+  clippy = "clippy"
+  codex = "codex"
+  crate = "crate"
+  crates = "crates"
+  github = "github"
+  hir = "hir"
+  json = "json"
+  lexer = "lexer"
+  lychee = "lychee"
+  perltidy = "perltidy"
+  rustfmt = "rustfmt"
+  taplo = "taplo"
+  toml = "toml"
+  typos = "typos"
+  xtask = "xtask"
+  zizmor = "zizmor"

@@ -18,7 +18,7 @@ use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use perl_tdd_support::must_some;
 use serde_json::{Value, json};
 use std::fs::write;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::Duration;
 use tempfile::tempdir;
 
@@ -548,7 +548,7 @@ fn test_stacktrace_no_session_returns_empty() -> Result<(), Box<dyn std::error::
 // Each test uses `make_adapter_with_rx` + `wait_cleanup_event` (defined below).
 
 fn make_adapter_with_rx() -> (DebugAdapter, Receiver<DapMessage>) {
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     let mut adapter = DebugAdapter::new();
     adapter.set_event_sender(tx);
     (adapter, rx)

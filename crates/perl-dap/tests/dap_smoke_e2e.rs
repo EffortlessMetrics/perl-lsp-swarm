@@ -4,7 +4,7 @@ use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
 use std::fs::write;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
@@ -104,7 +104,7 @@ print "$x\n";
     let timeout = smoke_timeout();
 
     let mut adapter = DebugAdapter::new();
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let init_body = response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
