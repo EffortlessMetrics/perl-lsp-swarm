@@ -65,6 +65,14 @@ A PR waiting on CI, review, or auto-merge is not a goal blocker. Unrelated movem
 
 Selecting a next claim is an internal continuation, not a completion result. Invoke `$deliver-pr` immediately. An `IN_FLIGHT` result from one claim returns to this loop so another distinct claim may advance.
 
+## What this establishes
+
+Bounded advancement of one selected durable outcome through distinct coherent claims, with the current goal boundary, merged results, in-flight work, and every residual required claim stated when the loop terminates.
+
+## What this does not establish
+
+A repository scheduler, tracked active-goal pointer, portfolio queue, build-all-eligible wave, cross-lane overlap ledger, or merge authorization independent of each candidate's live ruleset and evidence.
+
 ## Terminal results
 
 - `GOAL_SATISFIED`
