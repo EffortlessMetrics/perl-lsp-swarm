@@ -1,18 +1,47 @@
 //! End-to-end DAP stdio transport tests.
 //!
 //! These tests spawn the packaged `perl-dap` binary and communicate over real
-//! `Content-Length` framed stdio messages.  They complement the in-process
+//! `Content-Length` framed stdio messages. They complement the in-process
 //! adapter workflow tests by covering the transport loop, event writer thread,
 //! and request/response framing as an editor client would observe them.
+//!
+//! `PERL_DAP_TEST_BINARY` can point the smoke at an explicitly extracted
+//! release candidate. When it is absent, Cargo's test binary remains the
+//! default so ordinary crate tests preserve their current behavior.
 
 use anyhow::{Context, Result, anyhow};
 use perl_dap::DapMessage;
+use serde::Serialize;
 use serde_json::{Value, json};
+use std::ffi::OsString;
+use std::fs;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::thread;
 use std::time::{Duration, Instant};
+
+const EXPLICIT_DAP_BINARY_ENV: &str = "PERL_DAP_TEST_BINARY";
+const DAP_SMOKE_RECEIPT_ENV: &str = "PERL_DAP_SMOKE_RECEIPT";
+const DAP_SMOKE_SCHEMA_VERSION: &str = "perl_dap_stdio_smoke.v1";
+const DAP_SMOKE_CLAIM_BOUNDARY: &str = concat!(
+    "real Content-Length framed stdio initialize, threads, disconnect, and ",
+    "terminated-event smoke against the configured perl-dap binary; does not ",
+    "prove launch/debug-session semantics or platform-wide process cleanup"
+);
+
+#[derive(Serialize)]
+struct DapSmokeReceipt {
+    schema_version: &'static str,
+    status: &'static str,
+    binary: String,
+    commands: [&'static str; 3],
+    initialized_event: bool,
+    terminated_event: bool,
+    timeout_seconds: u64,
+    claim_boundary: &'static str,
+}
 
 struct DapProcess {
     child: Child,
@@ -21,8 +50,8 @@ struct DapProcess {
 }
 
 impl DapProcess {
-    fn spawn() -> Result<Self> {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_perl-dap"))
+    fn spawn_binary(binary: &OsString) -> Result<Self> {
+        let mut child = Command::new(binary)
             .arg("--stdio")
             .arg("--log-level")
             .arg("error")
@@ -30,7 +59,7 @@ impl DapProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .context("failed to spawn perl-dap binary")?;
+            .with_context(|| format!("failed to spawn configured perl-dap binary {binary:?}"))?;
 
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("child stdin was not piped"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("child stdout was not piped"))?;
@@ -102,6 +131,42 @@ impl Drop for DapProcess {
             let _ = self.child.wait();
         }
     }
+}
+
+fn configured_dap_binary_path() -> OsString {
+    dap_binary_path(std::env::var_os(EXPLICIT_DAP_BINARY_ENV))
+}
+
+fn dap_binary_path(explicit: Option<OsString>) -> OsString {
+    explicit.unwrap_or_else(|| OsString::from(env!("CARGO_BIN_EXE_perl-dap")))
+}
+
+fn write_smoke_receipt(binary: &OsString) -> Result<()> {
+    let Some(output) = std::env::var_os(DAP_SMOKE_RECEIPT_ENV) else {
+        return Ok(());
+    };
+    write_smoke_receipt_to(Path::new(&output), binary)
+}
+
+fn write_smoke_receipt_to(output: &Path, binary: &OsString) -> Result<()> {
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create DAP smoke receipt directory {parent:?}"))?;
+    }
+    let receipt = DapSmokeReceipt {
+        schema_version: DAP_SMOKE_SCHEMA_VERSION,
+        status: "pass",
+        binary: binary.to_string_lossy().into_owned(),
+        commands: ["initialize", "threads", "disconnect"],
+        initialized_event: true,
+        terminated_event: true,
+        timeout_seconds: 5,
+        claim_boundary: DAP_SMOKE_CLAIM_BOUNDARY,
+    };
+    let rendered = serde_json::to_string_pretty(&receipt)?;
+    fs::write(output, format!("{rendered}\n"))
+        .with_context(|| format!("failed to write DAP smoke receipt {output:?}"))?;
+    Ok(())
 }
 
 fn spawn_frame_reader<R>(mut reader: R) -> Receiver<std::result::Result<DapMessage, String>>
@@ -201,8 +266,43 @@ fn message_label(message: &DapMessage) -> String {
 }
 
 #[test]
+fn explicit_binary_override_is_preferred() {
+    let explicit = OsString::from("/tmp/release-candidate/perl-dap");
+    assert_eq!(dap_binary_path(Some(explicit.clone())), explicit);
+}
+
+#[test]
+fn cargo_binary_remains_the_fallback() {
+    assert_eq!(
+        dap_binary_path(None),
+        OsString::from(env!("CARGO_BIN_EXE_perl-dap"))
+    );
+}
+
+#[test]
+fn smoke_receipt_binds_the_configured_binary() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let output = temp.path().join("dap-smoke.json");
+    let binary = OsString::from("/tmp/release-candidate/perl-dap");
+    write_smoke_receipt_to(&output, &binary)?;
+
+    let value: Value = serde_json::from_str(&fs::read_to_string(output)?)?;
+    assert_eq!(
+        value.get("schema_version").and_then(Value::as_str),
+        Some(DAP_SMOKE_SCHEMA_VERSION)
+    );
+    assert_eq!(value.get("status").and_then(Value::as_str), Some("pass"));
+    assert_eq!(
+        value.get("binary").and_then(Value::as_str),
+        Some("/tmp/release-candidate/perl-dap")
+    );
+    Ok(())
+}
+
+#[test]
 fn stdio_transport_framing_initialize_threads_disconnect() -> Result<()> {
-    let mut dap = DapProcess::spawn()?;
+    let binary = configured_dap_binary_path();
+    let mut dap = DapProcess::spawn_binary(&binary)?;
 
     dap.send_request(
         1,
@@ -243,6 +343,7 @@ fn stdio_transport_framing_initialize_threads_disconnect() -> Result<()> {
     dap.send_request(3, "disconnect", Some(json!({})))?;
     dap.wait_for_response(3, "disconnect")?;
     dap.wait_for_event("terminated")?;
+    write_smoke_receipt(&binary)?;
 
     Ok(())
 }
