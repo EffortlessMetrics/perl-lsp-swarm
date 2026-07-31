@@ -20,7 +20,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -136,7 +136,7 @@ fn probe_launch(script_path: &Path, timeout: Duration) -> Result<u128, String> {
         script_path.to_str().ok_or("fixture path contains non-UTF-8 characters")?.to_string();
 
     let mut adapter = DebugAdapter::new();
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let init_resp = adapter.handle_request(1, "initialize", None);
@@ -200,7 +200,7 @@ fn probe_attach(timeout: Duration) -> Result<(), String> {
     });
 
     let mut adapter = DebugAdapter::new();
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     response_success(adapter.handle_request(1, "initialize", None), "initialize")?;

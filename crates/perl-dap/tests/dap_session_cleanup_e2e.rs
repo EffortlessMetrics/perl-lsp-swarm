@@ -13,14 +13,14 @@ mod cleanup_tests {
     use anyhow::Result;
     use perl_dap::{DapMessage, DebugAdapter};
     use serde_json::json;
-    use std::sync::mpsc::channel;
+    use std::sync::mpsc::sync_channel;
 
     use crate::common::perl_available;
 
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
     fn make_adapter() -> (DebugAdapter, std::sync::mpsc::Receiver<DapMessage>) {
-        let (tx, rx) = channel();
+        let (tx, rx) = sync_channel(64);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(tx);
         (adapter, rx)

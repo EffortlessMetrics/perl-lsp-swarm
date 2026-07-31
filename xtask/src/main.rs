@@ -904,6 +904,26 @@ enum Commands {
         summary: PathBuf,
     },
 
+    /// Run exact-head Taplo and typos checks for changed repository files.
+    ///
+    /// The command composes the shared change-set resolver and invokes both
+    /// tools through the pinned Aqua inventory. Missing tooling is reported as
+    /// NOT_PROVEN and exits non-zero; it never becomes a silent pass.
+    RepoHygiene {
+        /// Base git ref or full SHA for the evaluated range.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+        /// Head git ref or full SHA for the evaluated range.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+        /// JSON receipt output path.
+        #[arg(long, default_value = "target/receipts/repo-hygiene.json")]
+        receipt: PathBuf,
+        /// Markdown summary output path.
+        #[arg(long, default_value = "target/receipts/repo-hygiene.md")]
+        summary: PathBuf,
+    },
+
     /// Resolve a change set (base/head SHAs + changed paths) via the single
     /// #3985 `change_set::resolve_change_set` base-resolver + diff — the
     /// runtime-neutral interface `hooks/pre-push` consumes (#3985 Slice 3A)
@@ -4112,6 +4132,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::CiContract { base, head, receipt, summary } => {
             ci_contract::run(ci_contract::CiContractConfig { base, head, receipt, summary })
+        }
+        Commands::RepoHygiene { base, head, receipt, summary } => {
+            repo_hygiene::run(repo_hygiene::RepoHygieneConfig { base, head, receipt, summary })
         }
         Commands::ChangeSet { base, head, format, root } => {
             change_set::run(change_set::ChangeSetConfig { base, head, format, root })

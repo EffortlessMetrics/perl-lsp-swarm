@@ -127,6 +127,7 @@ pub mod release_artifact_check;
 pub mod release_evidence;
 pub mod release_notes;
 pub mod release_turnkey;
+pub mod repo_hygiene;
 pub mod review_receipts;
 pub mod ripr_evidence;
 pub mod seam_diff;

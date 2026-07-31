@@ -9,10 +9,10 @@ mod capability_tests {
     use anyhow::Result;
     use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
     use serde_json::Value;
-    use std::sync::mpsc::channel;
+    use std::sync::mpsc::sync_channel;
 
     fn create_test_adapter() -> DebugAdapter {
-        let (tx, _rx) = channel();
+        let (tx, _rx) = sync_channel(64);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(tx);
         adapter

@@ -6,7 +6,7 @@
 use perl_dap::{DapMessage, DebugAdapter};
 use serde_json::json;
 use std::fs::write;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::sync_channel;
 use tempfile::tempdir;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -65,7 +65,7 @@ say "Done";
 
     let script_path = create_edge_case_script(complex_script)?;
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     // Test that we can handle complex breakpoint scenarios

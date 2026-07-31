@@ -92,8 +92,8 @@ impl DebugAdapter {
         let shared_writer: Arc<Mutex<W>> = Arc::new(Mutex::new(output));
         let event_writer = Arc::clone(&shared_writer);
 
-        // Create channel for asynchronous events.
-        let (tx, rx) = channel::<DapMessage>();
+        // Create bounded channel for asynchronous events.
+        let (tx, rx) = sync_channel::<DapMessage>(EVENT_QUEUE_CAPACITY);
         self.event_sender = Some(tx.clone());
 
         // Clone transport_broken flag to pass to the event handler thread.
