@@ -305,7 +305,7 @@ fn diff_paths(base: &str, head: &str, root: &Path, mode: DiffMode) -> Result<Vec
     }
 
     let three_dot = format!("{base}...{head}");
-    let output = cmd("git", &["diff", "--name-only", &three_dot])
+    let output = cmd("git", &["diff", "--name-only", "-z", &three_dot])
         .dir(root)
         .stdout_capture()
         .stderr_capture()
@@ -314,9 +314,7 @@ fn diff_paths(base: &str, head: &str, root: &Path, mode: DiffMode) -> Result<Vec
         .context("Failed to run git diff")?;
 
     if output.status.success() {
-        let stdout =
-            String::from_utf8(output.stdout).context("git diff output was not valid UTF-8")?;
-        return Ok(stdout.lines().map(str::to_string).collect());
+        return parse_nul_delimited_paths(&output.stdout);
     }
 
     direct_diff_paths(base, head, root)
@@ -327,14 +325,21 @@ fn diff_paths(base: &str, head: &str, root: &Path, mode: DiffMode) -> Result<Vec
 /// the three-dot-failure fallback for [`DiffMode::MergeBaseThreeDot`].
 fn direct_diff_paths(base: &str, head: &str, root: &Path) -> Result<Vec<String>> {
     let two_dot = format!("{base}..{head}");
-    let output = cmd("git", &["diff", "--name-only", &two_dot])
+    let output = cmd("git", &["diff", "--name-only", "-z", &two_dot])
         .dir(root)
         .stdout_capture()
         .stderr_capture()
         .run()
         .context("Failed to run git diff (two-dot)")?;
-    let stdout = String::from_utf8(output.stdout).context("git diff output was not valid UTF-8")?;
-    Ok(stdout.lines().map(str::to_string).collect())
+    parse_nul_delimited_paths(&output.stdout)
+}
+
+fn parse_nul_delimited_paths(output: &[u8]) -> Result<Vec<String>> {
+    output
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8(path.to_vec()).context("git diff path was not valid UTF-8"))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -440,6 +445,20 @@ mod tests {
         run_git(dir, &["config", "user.email", "test@test.local"])?;
         run_git(dir, &["config", "user.name", "Test"])?;
         run_git(dir, &["config", "commit.gpgsign", "false"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn parse_nul_delimited_paths_rejects_quoted_or_invalid_output() -> Result<()> {
+        ensure!(
+            parse_nul_delimited_paths(b"docs/guide.md\0dir/name with spaces.md\0")?
+                == vec!["docs/guide.md", "dir/name with spaces.md"],
+            "NUL-delimited paths must remain literal"
+        );
+        ensure!(
+            parse_nul_delimited_paths(b"bad\xff.md\0").is_err(),
+            "unrepresentable Git paths must not be silently skipped"
+        );
         Ok(())
     }
 
