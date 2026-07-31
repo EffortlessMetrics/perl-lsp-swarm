@@ -272,7 +272,7 @@ export class BinaryDownloader {
       this.lastErrorMessage = errorMsg;
       this.outputChannel.appendLine(`Failed to download binary: ${errorMsg}`);
 
-      const manualInstallUrl = 'https://github.com/EffortlessMetrics/perl-lsp#quick-start';
+      const manualInstallUrl = 'https://github.com/EffortlessMetrics/perl-lsp#install';
       const manualInstallNote =
         'To use a manually installed binary, set the "perl-lsp.serverPath" setting to its path.';
 
