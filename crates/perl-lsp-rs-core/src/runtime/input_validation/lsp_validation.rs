@@ -28,6 +28,14 @@ pub fn validate_lsp_request(method: &str, params: &serde_json::Value) -> Result<
         "workspace/executeCommand" => {
             validate_execute_command_params(params)?;
         }
+        // These methods legitimately carry content derived from the user's own
+        // source: `codeAction`'s `context.diagnostics[].message` can quote
+        // source text verbatim, and `completionItem/resolve`'s `documentation`
+        // can carry POD. A blanket content-pattern scan here would false-positive
+        // on ordinary Perl/POD source the same way it did for Mason buffers on
+        // `didOpen` (issue #5256 follow-up) — so these are exempted from the
+        // catch-all scan below rather than silently rejected.
+        "textDocument/codeAction" | "completionItem/resolve" => {}
         _ => {
             if params_str.contains("javascript:") || params_str.contains("<script") {
                 return Err(anyhow!("Suspicious content in parameters for method: {}", method));

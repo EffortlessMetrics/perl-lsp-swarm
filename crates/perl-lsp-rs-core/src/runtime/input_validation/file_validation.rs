@@ -1,5 +1,5 @@
 use crate::runtime::input_validation::constants::{
-    ALLOWED_EXTENSIONS, MAX_LINE_LENGTH, MAX_PATH_LENGTH, SUSPICIOUS_PATTERNS,
+    ALLOWED_EXTENSIONS, MAX_LINE_LENGTH, MAX_PATH_LENGTH,
 };
 use crate::runtime::limits::max_file_size_bytes as limits_max_file_size_bytes;
 use anyhow::{Result, anyhow};
@@ -32,6 +32,18 @@ pub fn validate_file_path<P: AsRef<Path>>(path: P, workspace_root: &Path) -> Res
 }
 
 /// Validates file content before parsing to prevent resource exhaustion.
+///
+/// This guards the LSP text-synchronization path (`textDocument/didOpen` and
+/// friends) where `content` is the user's own editor buffer, not a file read
+/// off disk on the server's behalf — `validate_file_path` above (and any
+/// future disk-ingestion caller) is responsible for that distinct threat
+/// model. Buffer content is therefore checked only against resource-exhaustion
+/// guards (size, null bytes, per-line length); it deliberately does NOT scan
+/// for HTML/script-injection substrings, because ordinary Perl and templating
+/// source legitimately contains them — e.g. Mason component blocks open with
+/// `<%`, and CGI scripts commonly `print` HTML (including `<script>` tags)
+/// from heredocs. Rejecting those on open made the server refuse to load
+/// every Mason file (issue #5256 follow-up).
 pub fn validate_file_content(content: &str, file_path: &Path) -> Result<()> {
     let max_file_size = limits_max_file_size_bytes();
     if content.len() > max_file_size {
@@ -54,17 +66,6 @@ pub fn validate_file_content(content: &str, file_path: &Path) -> Result<()> {
                 index + 1,
                 file_path.display(),
                 line.len()
-            ));
-        }
-    }
-
-    let lowercase = content.to_lowercase();
-    for pattern in SUSPICIOUS_PATTERNS {
-        if lowercase.contains(pattern) {
-            return Err(anyhow!(
-                "File {} contains suspicious pattern: {}",
-                file_path.display(),
-                pattern
             ));
         }
     }

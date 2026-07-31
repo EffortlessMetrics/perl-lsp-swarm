@@ -98,57 +98,68 @@ fn validate_file_content_long_line_on_second_line_errors() {
 }
 
 // ---------------------------------------------------------------------------
-// validate_file_content: suspicious pattern detection
+// validate_file_content: content-pattern scanning was REMOVED (issue #5256
+// follow-up). `validate_file_content`'s only production caller is the
+// `textDocument/didOpen`/`didChange`/`didSave` buffer path in
+// `lsp_validation.rs`, where `content` is the user's own editor buffer, not
+// an attacker-controlled file read off disk. Scanning it for HTML/script-like
+// substrings made the server refuse to open every Mason file (Mason component
+// blocks open with `<%`) and any Perl heredoc that emits `<script>` HTML.
+// These tests now assert the opposite of the old behavior — the content is
+// ACCEPTED — to guard against the pattern scan being silently reintroduced
+// on this buffer-validation path.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn validate_file_content_rejects_script_tag() {
+fn validate_file_content_accepts_script_tag() -> anyhow::Result<()> {
     let content = "# <script>alert(1)</script>";
-    let result = validate_file_content(content, Path::new("test.pl"));
-    assert!(result.is_err(), "<script> pattern must be rejected");
+    validate_file_content(content, Path::new("test.pl"))?;
+    Ok(())
 }
 
 #[test]
-fn validate_file_content_rejects_javascript_protocol() {
+fn validate_file_content_accepts_javascript_protocol() -> anyhow::Result<()> {
     let content = "# javascript:void(0)";
-    let result = validate_file_content(content, Path::new("test.pl"));
-    assert!(result.is_err(), "javascript: pattern must be rejected");
+    validate_file_content(content, Path::new("test.pl"))?;
+    Ok(())
 }
 
 #[test]
-fn validate_file_content_rejects_data_uri() {
+fn validate_file_content_accepts_data_uri() -> anyhow::Result<()> {
     let content = "# data:text/html,<h1>xss</h1>";
-    let result = validate_file_content(content, Path::new("test.pl"));
-    assert!(result.is_err(), "data:text/html pattern must be rejected");
+    validate_file_content(content, Path::new("test.pl"))?;
+    Ok(())
 }
 
 #[test]
-fn validate_file_content_rejects_php_tag() {
+fn validate_file_content_accepts_php_tag() -> anyhow::Result<()> {
     let content = "<?php echo 'hello'; ?>";
-    let result = validate_file_content(content, Path::new("test.pl"));
-    assert!(result.is_err(), "<?php pattern must be rejected");
+    validate_file_content(content, Path::new("test.pl"))?;
+    Ok(())
 }
 
 #[test]
-fn validate_file_content_rejects_asp_tag() {
-    let content = "<% Response.Write(\"hello\") %>";
-    let result = validate_file_content(content, Path::new("test.pl"));
-    assert!(result.is_err(), "<% pattern must be rejected");
+fn validate_file_content_accepts_mason_component_block_sigil() -> anyhow::Result<()> {
+    // `<%` is the Mason component-block sigil (see
+    // `perl-lsp-rs/tests/mason_navigation_tests.rs`) — this is the exact
+    // pattern that made the server refuse to open every Mason file.
+    let content = "<%method greet>\n  Hello from greet\n</%method>\n";
+    validate_file_content(content, Path::new("test.mason"))?;
+    Ok(())
 }
 
 #[test]
-fn validate_file_content_case_insensitive_script_tag() {
-    // Detection uses `.to_lowercase()` so uppercase variants must also be caught
+fn validate_file_content_accepts_uppercase_script_tag() -> anyhow::Result<()> {
     let content = "# <SCRIPT>alert(1)</SCRIPT>";
-    let result = validate_file_content(content, Path::new("test.pl"));
-    assert!(result.is_err(), "uppercase <SCRIPT> must be rejected (case-insensitive check)");
+    validate_file_content(content, Path::new("test.pl"))?;
+    Ok(())
 }
 
 #[test]
-fn validate_file_content_case_insensitive_javascript_protocol() {
+fn validate_file_content_accepts_uppercase_javascript_protocol() -> anyhow::Result<()> {
     let content = "# JAVASCRIPT:void(0)";
-    let result = validate_file_content(content, Path::new("test.pl"));
-    assert!(result.is_err(), "uppercase JAVASCRIPT: must be rejected");
+    validate_file_content(content, Path::new("test.pl"))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +206,46 @@ fn validate_lsp_request_unknown_method_with_script_tag_in_params_errors() {
     let params = serde_json::json!({ "text": "<script>alert(1)</script>" });
     let result = validate_lsp_request(method, &params);
     assert!(result.is_err(), "unknown method with <script> in params must be rejected");
+}
+
+// ---------------------------------------------------------------------------
+// validate_lsp_request: narrowed content-pattern scan (issue #5256 follow-up)
+//
+// `textDocument/codeAction` and `completionItem/resolve` are exempted from
+// the catch-all content-pattern scan because they legitimately carry content
+// derived from user source (a diagnostic message quoting source text, or POD
+// documentation) that can contain `<script`/`javascript:` substrings without
+// being an attack on the server.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn validate_lsp_request_code_action_with_script_like_diagnostic_message_is_ok() -> anyhow::Result<()>
+{
+    let method = "textDocument/codeAction";
+    let params = serde_json::json!({
+        "textDocument": {"uri": "file:///test.pl"},
+        "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}},
+        "context": {
+            "diagnostics": [{
+                "message": "unexpected token near print '<script>alert(1)</script>';",
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}
+            }]
+        }
+    });
+    validate_lsp_request(method, &params)?;
+    Ok(())
+}
+
+#[test]
+fn validate_lsp_request_completion_item_resolve_with_pod_documentation_is_ok() -> anyhow::Result<()>
+{
+    let method = "completionItem/resolve";
+    let params = serde_json::json!({
+        "label": "some_sub",
+        "documentation": "See also javascript: URIs are unrelated; this quotes <script> from POD."
+    });
+    validate_lsp_request(method, &params)?;
+    Ok(())
 }
 
 #[test]
