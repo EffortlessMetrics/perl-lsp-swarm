@@ -121,9 +121,28 @@ impl LspServer {
     /// the caller's URI therefore does not establish that the workspace snapshot
     /// is safe for cross-file navigation. Generation zero is the intentional
     /// `didOpen` baseline and is not considered stale here. Documents that were
-    /// intentionally kept out of the parser/index (for example templates or
-    /// binary/oversized buffers) are also excluded; a pending parse remains
-    /// eligible because its last published AST is retained as the latest snapshot.
+    /// intentionally kept out of the parser/index (for example templates opened
+    /// under a non-Perl language id) are excluded only while they have never
+    /// reached the index; a pending parse remains eligible because its last
+    /// published AST is retained as the latest snapshot.
+    ///
+    /// Eligibility is deliberately asymmetric, because the two `indexed_generation`
+    /// answers mean different things:
+    ///
+    /// - `Some(indexed)` — this URI already contributes cross-file symbols, so it
+    ///   is stale until the index catches up with the edit, *regardless* of
+    ///   whether the document still parses. A previously indexed document that is
+    ///   edited into a hard parse failure, or past the oversized/binary guards in
+    ///   `handle_did_change_with_cancellation`, keeps its pre-edit entry:
+    ///   `run_post_parse_side_effects` only schedules re-indexing when the
+    ///   snapshot has an AST, and it never removes the superseded entry. Dropping
+    ///   such a document from the gate would report the workspace fresh while
+    ///   go-to-definition still resolved through pre-edit symbols — exactly the
+    ///   stale location this predicate exists to block.
+    /// - `None` — this URI contributes nothing cross-file. It is stale only if it
+    ///   was ever expected to reach the index (its latest snapshot has an AST);
+    ///   an intentionally unindexed buffer cannot make the workspace stale, and
+    ///   must not disable cross-file navigation for every other document.
     #[cfg(feature = "workspace")]
     pub(crate) fn workspace_index_stale_for_any_open_document(&self) -> bool {
         let Some(coordinator) = self.coordinator() else {
@@ -140,25 +159,29 @@ impl LspServer {
                         let expected_to_index = document
                             .latest_parsed()
                             .is_some_and(|snapshot| snapshot.ast().is_some());
-                        (generation > 0 && expected_to_index).then(|| (uri.clone(), generation))
+                        (generation > 0).then(|| (uri.clone(), generation, expected_to_index))
                     })
                     .collect::<Vec<_>>()
             };
 
-            let stale = document_generations.iter().any(|(uri, generation)| {
+            let stale = document_generations.iter().any(|(uri, generation, expected_to_index)| {
                 match coordinator.index().indexed_generation(uri) {
                     Some(indexed_generation) => indexed_generation < *generation,
-                    None => true,
+                    None => *expected_to_index,
                 }
             });
 
             let documents = self.documents.lock();
-            let snapshot_is_current = document_generations.iter().all(|(uri, generation)| {
-                documents.get(uri).is_some_and(|document| {
-                    document.current_generation() == *generation
-                        && document.latest_parsed().is_some_and(|snapshot| snapshot.ast().is_some())
-                })
-            });
+            let snapshot_is_current =
+                document_generations.iter().all(|(uri, generation, expected_to_index)| {
+                    documents.get(uri).is_some_and(|document| {
+                        document.current_generation() == *generation
+                            && document
+                                .latest_parsed()
+                                .is_some_and(|snapshot| snapshot.ast().is_some())
+                                == *expected_to_index
+                    })
+                });
             if snapshot_is_current {
                 return stale;
             }
@@ -507,6 +530,89 @@ mod tests {
 
         if server.workspace_index_stale_for_any_open_document() {
             return Err("intentionally unindexed documents must not block navigation".into());
+        }
+        Ok(())
+    }
+
+    /// Boundary discriminator for `indexed_generation < generation`: an index
+    /// entry that is *ahead* of the open document (a workspace scan committed a
+    /// newer on-disk revision than the buffer has reached) is not stale. A `!=`
+    /// comparison here would block cross-file navigation for the whole server.
+    #[test]
+    fn workspace_index_stale_for_any_open_document_allows_index_ahead_of_document()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///workspace/index-ahead.pl";
+        let text = "package IndexAhead;\nsub target {}\n";
+
+        server.test_apply_did_open(uri, text, 1)?;
+        server.test_replace_document_without_index(uri, text, 2).map_err(std::io::Error::other)?;
+
+        let coordinator = server
+            .index_coordinator
+            .as_ref()
+            .ok_or("test server must have an index coordinator")?;
+        coordinator
+            .index()
+            .index_file_with_generation(url::Url::parse(uri)?, text.to_string(), 7)
+            .map_err(std::io::Error::other)?;
+
+        if server.document_generation(uri) != Some(1) {
+            return Err("the edited document must be at generation 1".into());
+        }
+        if coordinator.index().indexed_generation(uri) != Some(7) {
+            return Err("the index entry must be ahead of the open document".into());
+        }
+        if server.workspace_index_stale_for_any_open_document() {
+            return Err("an index entry ahead of the open document must not be stale".into());
+        }
+        Ok(())
+    }
+
+    /// A document that was already contributing cross-file symbols and is then
+    /// edited past the binary guard in `handle_did_change_with_cancellation`
+    /// keeps its pre-edit workspace-index entry: that path bumps the generation,
+    /// republishes an AST-less `DocumentState`, and returns before scheduling
+    /// any re-index, and nothing removes the superseded entry. If the freshness
+    /// gate dropped such a document because its latest snapshot has no AST, it
+    /// would report the workspace fresh while go-to-definition still resolved
+    /// through the pre-edit symbols.
+    #[test]
+    fn workspace_index_stale_for_any_open_document_retains_indexed_document_that_stops_parsing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///workspace/becomes-unparseable.pl";
+        let text = "package BecomesUnparseable;\nsub target {}\n";
+
+        server.test_apply_did_open(uri, text, 1)?;
+        let coordinator = server
+            .index_coordinator
+            .as_ref()
+            .ok_or("test server must have an index coordinator")?;
+        coordinator
+            .index()
+            .index_file_with_generation(url::Url::parse(uri)?, text.to_string(), 0)
+            .map_err(std::io::Error::other)?;
+
+        // Real production edit that drives the binary guard: generation is
+        // bumped, `parsed` is reset to `None`, and no re-index is scheduled.
+        server.test_handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": "package BecomesUnparseable;\u{0000}\n" }]
+        })))?;
+
+        if server.document_generation(uri) != Some(1) {
+            return Err("the edit must advance the open document generation".into());
+        }
+        if coordinator.index().indexed_generation(uri) != Some(0) {
+            return Err(
+                "the pre-edit index entry must still be present at its older generation".into()
+            );
+        }
+        if !server.workspace_index_stale_for_any_open_document() {
+            return Err(
+                "an indexed document edited into an unindexable state must remain stale".into()
+            );
         }
         Ok(())
     }
