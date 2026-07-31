@@ -149,7 +149,7 @@ fn write_smoke_receipt(binary: &OsString) -> Result<()> {
 }
 
 fn write_smoke_receipt_to(output: &Path, binary: &OsString) -> Result<()> {
-    if let Some(parent) = output.parent() {
+    if let Some(parent) = output.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create DAP smoke receipt directory {parent:?}"))?;
     }
