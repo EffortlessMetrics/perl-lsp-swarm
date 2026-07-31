@@ -75,14 +75,10 @@ materially changes the evidence or reduces elapsed work. Teams are useful when a
 must genuinely communicate; they are not the default lifecycle.
 
 One coherent claim normally has one current candidate, and one writer mutates that
-candidate at a time. Distinct claims may proceed in parallel even when they edit the
-same files, crates, or nearby semantic seams. Same-file or same-crate overlap is not
-ownership and is not a reason to serialize work.
-
-Before creating another candidate, check only for an equivalent current PR and
-explicit prerequisites. Otherwise focus on the selected claim. If Git or required
-integration evidence later presents a real conflict, the affected lane repairs it
-and refreshes only the affected proof and review.
+candidate at a time. Before creating another candidate, check only for an equivalent
+current PR and explicit prerequisites. Otherwise focus on the selected claim. If Git
+or required integration evidence later presents a real conflict, the affected lane
+repairs it and refreshes only the affected proof and review.
 
 A compact whole-flow assignment is enough when the repository skills carry the
 method:
