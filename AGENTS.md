@@ -73,14 +73,10 @@ or whole-flow workers when another context, tool surface, or review method mater
 changes the evidence or reduces elapsed work.
 
 One coherent claim normally has one current candidate, and one writer mutates that
-candidate at a time. Distinct claims may proceed in parallel even when they edit the
-same files, crates, or nearby semantic seams. Same-file or same-crate overlap is not
-ownership and is not a reason to serialize work.
-
-Before creating another candidate, check only for an equivalent current PR and
-explicit prerequisites. Otherwise focus on the selected claim. If Git or required
-integration evidence later presents a real conflict, the affected lane repairs it
-and refreshes only the affected proof and review.
+candidate at a time. Before creating another candidate, check only for an equivalent
+current PR and explicit prerequisites. Otherwise focus on the selected claim. If Git
+or required integration evidence later presents a real conflict, the affected lane
+repairs it and refreshes only the affected proof and review.
 
 Use a direct issue or PR comment when another lane genuinely needs a material fact:
 a prerequisite changed, a governing ruling changed, one claim superseded another, or
