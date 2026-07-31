@@ -2,7 +2,7 @@ use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::json;
 use std::fs::write;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::sync_channel;
 use std::time::Duration;
 use tempfile::tempdir;
 
@@ -30,7 +30,7 @@ print "x=$x\n";
     )?;
 
     let mut adapter = DebugAdapter::new();
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     // Initialize
