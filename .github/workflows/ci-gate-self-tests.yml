@@ -157,7 +157,7 @@ jobs:
           fi
 
   worktree-manager-self-test:
-    name: Worktree-manager allocate self-test
+    name: Worktree-manager safety self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
@@ -165,20 +165,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Run worktree-manager allocate self-test
+      - name: Run worktree-manager safety self-test
         run: bash scripts/tests/test-worktree-manager.sh
 
       - name: Summary
         if: always()
         run: |
           if [ "${{ job.status }}" = "success" ]; then
-            echo "## Worktree-manager allocate self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "## Worktree-manager safety self-test passed" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "scripts/worktree-manager.py \`allocate\` (issue #3749) correctly checks out an already-pushed origin branch's real content on slot re-allocation, and cuts genuinely-new branches from a freshly-fetched origin/main instead of a stale local tracking ref." >> "$GITHUB_STEP_SUMMARY"
+            echo "The retained optional cleanup helper proves canonical slot allocation, repository-root containment, dirty-worktree force semantics, serialized state updates, and owner-bound destructive release." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "## Worktree-manager allocate self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "## Worktree-manager safety self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "The worktree-manager allocate contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
+            echo "The retained worktree-manager safety contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   target-isolation-self-test:
