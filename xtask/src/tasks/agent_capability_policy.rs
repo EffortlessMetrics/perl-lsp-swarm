@@ -48,15 +48,8 @@ pub const OPTIONAL_NON_MUTATING_PROFILES: &[&str] = &[
 /// `Agent`/`Task` are excluded because a profile could proxy mutation through a
 /// child. `Artifact` publishes a hosted artifact and is unnecessary for these
 /// bounded evidence operations.
-pub const FORBIDDEN_DIRECT_MUTATION_TOOLS: &[&str] = &[
-    "Edit",
-    "Write",
-    "MultiEdit",
-    "NotebookEdit",
-    "Agent",
-    "Task",
-    "Artifact",
-];
+pub const FORBIDDEN_DIRECT_MUTATION_TOOLS: &[&str] =
+    &["Edit", "Write", "MultiEdit", "NotebookEdit", "Agent", "Task", "Artifact"];
 
 /// A single policy violation for one governed operation profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,10 +162,7 @@ pub fn enforce_read_only(path: &Path) -> Result<std::result::Result<(), String>>
     if forbidden.is_empty() {
         Ok(Ok(()))
     } else {
-        Ok(Err(format!(
-            "allowlist grants direct mutation/proxy tool(s): {}",
-            forbidden.join(", ")
-        )))
+        Ok(Err(format!("allowlist grants direct mutation/proxy tool(s): {}", forbidden.join(", "))))
     }
 }
 
@@ -261,11 +251,7 @@ mod tests {
     #[test]
     fn accepts_read_only_allowlist() -> Result<()> {
         let tmp = tempfile::tempdir()?;
-        let path = write_agent(
-            tmp.path(),
-            "operation-formal-reviewer",
-            Some(READ_ONLY_TOOLS),
-        )?;
+        let path = write_agent(tmp.path(), "operation-formal-reviewer", Some(READ_ONLY_TOOLS))?;
         assert_eq!(enforce_read_only(&path)?, Ok(()));
         Ok(())
     }
@@ -291,11 +277,8 @@ mod tests {
     #[test]
     fn rejects_agent_sub_spawn_tool() -> Result<()> {
         let tmp = tempfile::tempdir()?;
-        let path = write_agent(
-            tmp.path(),
-            "operation-test-adversary",
-            Some("Read, Grep, Glob, Agent"),
-        )?;
+        let path =
+            write_agent(tmp.path(), "operation-test-adversary", Some("Read, Grep, Glob, Agent"))?;
         match enforce_read_only(&path)? {
             Ok(()) => bail!("a non-mutating profile that can spawn agents must be rejected"),
             Err(reason) => assert!(reason.contains("Agent"), "reason should name Agent: {reason}"),
@@ -331,11 +314,7 @@ mod tests {
     fn audit_dir_flags_present_broken_governed_profile() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let agents_dir = tmp.path().join(".claude/agents");
-        write_agent(
-            &agents_dir,
-            "operation-formal-reviewer",
-            Some("Read, Grep, Write"),
-        )?;
+        write_agent(&agents_dir, "operation-formal-reviewer", Some("Read, Grep, Write"))?;
         let violations = audit_dir(&agents_dir)?;
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].agent, "operation-formal-reviewer");
@@ -347,11 +326,7 @@ mod tests {
     fn run_rejects_broken_governed_profile() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let agents_dir = tmp.path().join(".claude/agents");
-        write_agent(
-            &agents_dir,
-            "operation-ci-triager",
-            Some("Read, Grep, Edit"),
-        )?;
+        write_agent(&agents_dir, "operation-ci-triager", Some("Read, Grep, Edit"))?;
         match run(Some(tmp.path().to_path_buf())) {
             Ok(()) => bail!("run() must fail on a governed profile with a mutation tool"),
             Err(error) => assert!(
