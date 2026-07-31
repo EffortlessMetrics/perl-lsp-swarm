@@ -8,8 +8,6 @@
 use color_eyre::eyre::Result;
 
 pub fn run() -> Result<()> {
-    println!(
-        "active goal manifest check retired: GitHub and deliver-goal own live work selection"
-    );
+    println!("active goal manifest check retired: GitHub and deliver-goal own live work selection");
     Ok(())
 }

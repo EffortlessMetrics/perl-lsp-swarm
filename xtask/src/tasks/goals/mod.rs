@@ -49,11 +49,7 @@ pub fn next(_program: Option<String>, _fixture: Option<PathBuf>, json: bool) -> 
     Ok(())
 }
 
-pub fn reconcile(
-    _program: Option<String>,
-    _fixture: Option<PathBuf>,
-    json: bool,
-) -> Result<usize> {
+pub fn reconcile(_program: Option<String>, _fixture: Option<PathBuf>, json: bool) -> Result<usize> {
     println!("{}", render_retired("goals reconcile", json)?);
     Ok(0)
 }
@@ -67,33 +63,13 @@ mod tests {
         let text = render_retired("goals next", true)?;
         let value: serde_json::Value = serde_json::from_str(&text)?;
 
+        assert_eq!(value.get("status").and_then(serde_json::Value::as_str), Some("retired"));
+        assert_eq!(value.get("authority").and_then(serde_json::Value::as_str), Some("github"));
+        assert_eq!(value.get("command").and_then(serde_json::Value::as_str), Some("goals next"));
+        assert!(value.get("selected_work").is_some_and(serde_json::Value::is_null));
+        assert_eq!(value.get("finding_count").and_then(serde_json::Value::as_u64), Some(0));
         assert_eq!(
-            value.get("status").and_then(serde_json::Value::as_str),
-            Some("retired")
-        );
-        assert_eq!(
-            value.get("authority").and_then(serde_json::Value::as_str),
-            Some("github")
-        );
-        assert_eq!(
-            value.get("command").and_then(serde_json::Value::as_str),
-            Some("goals next")
-        );
-        assert!(
-            value
-                .get("selected_work")
-                .is_some_and(serde_json::Value::is_null)
-        );
-        assert_eq!(
-            value
-                .get("finding_count")
-                .and_then(serde_json::Value::as_u64),
-            Some(0)
-        );
-        assert_eq!(
-            value
-                .get("mutation_performed")
-                .and_then(serde_json::Value::as_bool),
+            value.get("mutation_performed").and_then(serde_json::Value::as_bool),
             Some(false)
         );
         Ok(())

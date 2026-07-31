@@ -3,9 +3,7 @@ use assert_cmd::cargo::cargo_bin_cmd;
 
 #[test]
 fn check_active_goal_manifest_reports_retired_compatibility_command() -> Result<()> {
-    let output = cargo_bin_cmd!("xtask")
-        .arg("check-active-goal-manifest")
-        .output()?;
+    let output = cargo_bin_cmd!("xtask").arg("check-active-goal-manifest").output()?;
 
     assert!(
         output.status.success(),
