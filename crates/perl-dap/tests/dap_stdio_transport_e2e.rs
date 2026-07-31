@@ -11,7 +11,6 @@
 
 use anyhow::{Context, Result, anyhow};
 use perl_dap::DapMessage;
-use serde::Serialize;
 use serde_json::{Value, json};
 use std::ffi::OsString;
 use std::fs;
@@ -30,18 +29,6 @@ const DAP_SMOKE_CLAIM_BOUNDARY: &str = concat!(
     "terminated-event smoke against the configured perl-dap binary; does not ",
     "prove launch/debug-session semantics or platform-wide process cleanup"
 );
-
-#[derive(Serialize)]
-struct DapSmokeReceipt {
-    schema_version: &'static str,
-    status: &'static str,
-    binary: String,
-    commands: [&'static str; 3],
-    initialized_event: bool,
-    terminated_event: bool,
-    timeout_seconds: u64,
-    claim_boundary: &'static str,
-}
 
 struct DapProcess {
     child: Child,
@@ -114,7 +101,7 @@ impl DapProcess {
     fn wait_for_event(&self, event_name: &str) -> Result<Option<Value>> {
         wait_for_message(
             &self.rx,
-            format!("event `{event_name}`"),
+            format!("event `{event_name}"),
             |msg| matches!(msg, DapMessage::Event { event, .. } if event == event_name),
         )
         .and_then(|message| match message {
@@ -153,16 +140,16 @@ fn write_smoke_receipt_to(output: &Path, binary: &OsString) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create DAP smoke receipt directory {parent:?}"))?;
     }
-    let receipt = DapSmokeReceipt {
-        schema_version: DAP_SMOKE_SCHEMA_VERSION,
-        status: "pass",
-        binary: binary.to_string_lossy().into_owned(),
-        commands: ["initialize", "threads", "disconnect"],
-        initialized_event: true,
-        terminated_event: true,
-        timeout_seconds: 5,
-        claim_boundary: DAP_SMOKE_CLAIM_BOUNDARY,
-    };
+    let receipt = json!({
+        "schema_version": DAP_SMOKE_SCHEMA_VERSION,
+        "status": "pass",
+        "binary": binary.to_string_lossy(),
+        "commands": ["initialize", "threads", "disconnect"],
+        "initialized_event": true,
+        "terminated_event": true,
+        "timeout_seconds": 5,
+        "claim_boundary": DAP_SMOKE_CLAIM_BOUNDARY,
+    });
     let rendered = serde_json::to_string_pretty(&receipt)?;
     fs::write(output, format!("{rendered}\n"))
         .with_context(|| format!("failed to write DAP smoke receipt {output:?}"))?;
