@@ -1202,11 +1202,19 @@ impl<'a> Parser<'a> {
             if s.peek_kind() == Some(TokenKind::RightBrace) {
                 s.expect(TokenKind::RightBrace)?;
             } else {
-                // Missing closing brace (EOF or recovery break)
-                let pos = s.current_position();
+                // Missing closing brace (EOF or recovery break).
+                //
+                // Anchor the diagnostic at the opening `{`, not at the position the parser
+                // stopped at. The stop position is end-of-input, which is where the user
+                // is *not* looking: the squiggle lands on the last (often blank) line, it
+                // moves whenever trailing whitespace changes, and nested unclosed blocks
+                // all collapse onto the same offset, so two unclosed braces produce two
+                // identical diagnostics with nothing to tell them apart. The opening brace
+                // is the token the user actually has to close, it is stable under edits
+                // elsewhere in the file, and it is distinct per block.
                 s.errors.push(ParseError::syntax(
                     "Unclosed block: expected '}' but reached end of input",
-                    pos,
+                    start,
                 ));
             }
             let end = s.previous_position();
