@@ -1,76 +1,37 @@
 ---
-description: Manage reusable worktree slots with query, allocate, release, and cleanup lifecycle commands
+name: worktree-manager
+description: Optionally reuse or clean local Git worktrees without creating claim, writer, lane, or repository-state authority.
+user-invocable: true
 ---
 
-# Worktree Manager
+# Worktree manager
 
-Use this skill when you need to manage the repo's reusable worktree pool.
-It is the canonical surface for slot lifecycle, not the low-level git cleanup
-script.
+Use this optional operation when the repository's existing reusable-slot helper is materially cheaper than ordinary `git worktree` commands.
 
-## Ownership Model
+Git and GitHub remain authoritative for repository, branch, candidate, PR, review, and merge state. The helper's `.ops-perl-lsp/worktree-manager/state.json` file and sibling managed-worktree pool are disposable local runtime bookkeeping. They must not select work, reserve files or semantic surfaces, establish claim ownership, authorize lifecycle transitions, or survive as a second work database.
 
-- Policy surface: this skill and `/worktree-manager`
-- Mutable runtime state: `.ops-perl-lsp/worktree-manager/state.json`
-- Physical worktrees: sibling managed root outside the tracked repo,
-  defaulting to `<repo-parent>/<repo-name>-worktrees/<slot>/`
-- Low-level cleanup: `scripts/cleanup-completed-worktrees.sh`
+## Rules
 
-The manager tracks slots, not just paths. A slot can be queried, allocated,
-released for reuse, or cleaned up when stale.
+- one writer mutates each current candidate branch/worktree at a time;
+- inspect actual Git branch/worktree state and current GitHub state before relying on cached slot metadata;
+- an absent, stale, or corrupt helper state file may be repaired or discarded;
+- a slot name or owner label is a local reuse/cleanup hint, not issue ownership or lifecycle state;
+- pass an explicit stable `--owner` value when allocating and releasing a slot so accidental cross-runtime release is visible;
+- use `--force` only after independently proving the worktree contains no unsalvaged work;
+- do not require this helper for ordinary worktree creation, reuse, release, or deletion.
 
-## Core Rules
-
-- Query before allocating if you want to reuse an existing slot.
-- Allocate into a named slot, not into an ad-hoc path.
-- Release marks a slot reusable; it does not delete the worktree.
-- Cleanup prunes stale or retired slots after the state has been synced.
-- Do not mutate the runtime state by hand unless the manager is broken.
-
-When a hook or wrapper knows the agent identity, pass it as
-`WORKTREE_MANAGER_OWNER` or `--owner` so the slot record carries a lead-readable
-owner label through `query --json` and the table view. If no owner is provided,
-the slot remains unowned rather than inheriting stale data from a prior task.
-## Lifecycle
-
-### Query
-
-Show the current pool, including active, idle, missing, and stale slots.
+## Optional commands
 
 ```bash
 python3 scripts/worktree-manager.py query
-```
-
-### Allocate
-
-Reserve a slot for a new task. Prefer reusing an idle slot when one exists.
-
-```bash
-python3 scripts/worktree-manager.py allocate --slot issue-2157 --branch issue/2157 --owner builder-2157
-```
-
-### Release
-
-Mark a completed slot as reusable once the worktree is clean and the work is
-ready for handoff or cleanup.
-
-```bash
-python3 scripts/worktree-manager.py release --slot issue-2157 --owner builder-2157
-```
-
-Passing the same owner on release helps catch mismatched releases; once release
-completes, the slot becomes idle/retired and its current-owner field is cleared.
-
-### Cleanup
-
-Remove stale idle slots and reconcile the state file with git worktree reality.
-
-```bash
+python3 scripts/worktree-manager.py allocate \
+  --slot issue-2157 \
+  --branch issue/2157-compiler-recovery \
+  --owner lane-a
+python3 scripts/worktree-manager.py release --slot issue-2157 --owner lane-a
 python3 scripts/worktree-manager.py cleanup
 ```
 
-## When To Use The Lower-Level Cleanup
+`allocate` checks whether the requested branch already exists on `origin` and fails closed if it cannot verify the remote state. A genuinely new branch is based on freshly fetched default-branch state. The managed pool lives outside the tracked repository by default, under `<repo-parent>/<repo-name>-worktrees/`.
 
-Use `scripts/cleanup-completed-worktrees.sh` when you only need a one-off prune.
-Use this skill when you need slot reuse, explicit release, or lifecycle
-tracking.
+Use `scripts/cleanup-completed-worktrees.sh` for a one-off prune that does not need reusable-slot bookkeeping. When helper output conflicts with Git or GitHub, Git and GitHub win; repair or discard the helper state and continue.
