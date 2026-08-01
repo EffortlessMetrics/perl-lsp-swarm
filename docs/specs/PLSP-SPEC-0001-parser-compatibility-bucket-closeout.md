@@ -22,12 +22,15 @@ This spec is implemented as a control-plane rule. Current evidence lives in:
 - [Real Perl Editor Trust implementation plan](../../plans/real-perl-editor-trust/implementation-plan.md)
 - current GitHub issues, PRs, checks, and exact generated receipts
 
-Current next work is not stored here or in a tracked selector. Read the current
-GitHub graph and generated parser evidence for the selected concern.
+Current next work is not stored here or in a tracked selector. The selected parser
+concern comes from current GitHub and user selection. Once selected, generated
+parser evidence routes the next PR-sized claim inside that concern.
 
 ## Contract
 
-Generated parser status routes parser work.
+Generated parser status routes parser work within an already selected parser
+concern. It does not select repository-global work, assign ownership, or
+outrank current GitHub and user selection.
 
 When [parser accuracy next](../project/status/parser_accuracy_next.md) has active
 failure packets, agents must address those measurement failures before starting
@@ -41,8 +44,9 @@ bucket. The next parser capability lane is the largest raw bucket inside the
 largest nonzero parser failure cluster unless the implementation plan
 explicitly parks it with a reason. If generated status lists `none`, agents
 must not start bucket work from stale context; they must refresh the corpus
-receipt, identify a current failing source-backed fixture, or move to the next
-provider or real-workspace trust lane.
+receipt, identify a current failing source-backed fixture, or return to
+`deliver-goal` and current GitHub selection. Generated parser status does not
+choose the next non-parser concern.
 
 Generated sections are not hand-edited. Status changes must come from xtask
 generators and be covered by the relevant parser status checks.
