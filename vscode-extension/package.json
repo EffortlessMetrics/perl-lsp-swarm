@@ -467,8 +467,8 @@
             "default": [],
             "scope": "resource",
             "order": 36,
-            "description": "Native critic rule IDs to run (e.g. native.testing.require_use_strict). When non-empty, exactly these rules run; IDs are resolved from the full rule catalog, so a strict-only rule works without switching profile.",
-            "markdownDescription": "Native critic rule IDs to run (e.g. `native.testing.require_use_strict`). When non-empty, exactly these rules run; IDs are resolved from the full rule catalog, so a strict-only rule works without switching `#perl-lsp.critic.profile#`."
+            "description": "Only these native critic rule IDs run, including ones outside the selected profile (e.g. native.variables.unused_lexical).",
+            "markdownDescription": "Only these native critic rule IDs run, including ones outside the selected profile (e.g. `native.variables.unused_lexical`)."
           },
           "perl-lsp.critic.exclude": {
             "type": "array",
