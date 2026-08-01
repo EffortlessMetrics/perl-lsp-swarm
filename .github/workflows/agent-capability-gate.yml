@@ -1,9 +1,18 @@
 name: Agent Capability Gate
 
-# M4b (#3763): review/audit agents must be mechanically read-only. This gate
-# parses `.claude/agents/*.md` and fails if any review/audit agent grants a
-# write/mutating tool (Edit/Write/NotebookEdit/MultiEdit/Agent/Task/Artifact)
-# or lacks an explicit read-only tools: allowlist.
+# M4b (#3763): a profile used for a non-mutating operation must not receive
+# direct mutation tools merely because its prose says not to write. This gate
+# parses the optional `.claude/agents/operation-*.md` profiles and fails if a
+# *present* one grants a write/mutation/proxy-spawn tool
+# (Edit/Write/NotebookEdit/MultiEdit/Agent/Task/Artifact) or lacks an explicit
+# tools: allowlist.
+#
+# Absence is valid and the gate passes vacuously: since #4318 retired the
+# persona catalogue there are no governed profiles in-tree, and the warm root
+# runs these operations directly. The `.claude/agents/**` path filter below is
+# retained deliberately so the boundary re-engages the moment such a profile
+# returns. The run output reports how many profiles were actually governed —
+# read that number before treating a green result as proof of a live boundary.
 
 on:
   pull_request:
