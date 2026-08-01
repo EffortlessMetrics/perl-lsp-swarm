@@ -198,7 +198,6 @@
 | `distribution/chocolatey/perl-lsp.nuspec` | `nuspec` |
 | `distribution/chocolatey/tools/chocolateyinstall.ps1` | `ps1` |
 | `distribution/chocolatey/tools/chocolateyuninstall.ps1` | `ps1` |
-| `distribution/homebrew/perllsp.rb` | `rb` |
 | `distribution/linux/apt/control.in` | `in` |
 | `distribution/linux/dnf/perl-lsp.spec.in` | `in` |
 | `distribution/linux/package-metadata.toml` | `toml` |
