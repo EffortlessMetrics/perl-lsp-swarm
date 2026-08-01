@@ -13,6 +13,7 @@
 //! - A null/empty result is acceptable (degraded mode).
 //! - No crash signatures after the request.
 
+use anyhow::Result;
 use perl_lsp_ux_tests::binary_available;
 use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
 use std::time::Duration;
@@ -60,7 +61,7 @@ fn scenario_11_hover_on_variable_does_not_error() {
 }
 
 #[test]
-fn scenario_11_hover_result_has_valid_shape_when_non_null() -> Result<(), String> {
+fn scenario_11_hover_result_has_valid_shape_when_non_null() -> Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_11: perl-lsp binary not found");
         return Ok(());
@@ -100,7 +101,7 @@ fn scenario_11_hover_result_has_valid_shape_when_non_null() -> Result<(), String
             eprintln!("INFO scenario_11: hover returned null (degraded mode acceptable)");
         }
         Err(e) => {
-            return Err(format!("Hover returned a JSON-RPC error — feature grid regression: {e}"));
+            anyhow::bail!("Hover returned a JSON-RPC error — feature grid regression: {e}");
         }
     }
 
@@ -133,7 +134,7 @@ fn scenario_11_hover_on_sub_name_does_not_crash() {
 }
 
 #[test]
-fn scenario_11_hover_range_contains_cursor_when_present() -> Result<(), String> {
+fn scenario_11_hover_range_contains_cursor_when_present() -> Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_11: perl-lsp binary not found");
         return Ok(());
@@ -202,9 +203,9 @@ fn scenario_11_hover_range_contains_cursor_when_present() -> Result<(), String> 
             eprintln!("INFO scenario_11: hover returned null (degraded mode acceptable)");
         }
         Err(e) => {
-            return Err(format!(
+            anyhow::bail!(
                 "Hover returned a JSON-RPC error at function call site — feature grid regression: {e}"
-            ));
+            );
         }
     }
 
