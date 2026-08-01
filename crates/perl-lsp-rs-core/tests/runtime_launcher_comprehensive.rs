@@ -454,23 +454,24 @@ fn parse_unknown_option_returns_error() {
 /// message — usage banner and `--help` pointer included — so the CLI printed
 /// two usage blocks for a single typo.
 #[test]
-fn parse_unknown_option_captures_only_the_offending_token() {
+fn parse_unknown_option_captures_only_the_offending_token() -> anyhow::Result<()> {
     let result = parse_args(["perl-lsp", "--nonexistent-flag"]);
 
     let Err(LaunchParseError::UnknownOption { option, .. }) = result else {
-        panic!("expected UnknownOption, got {result:?}");
+        anyhow::bail!("expected UnknownOption, got {result:?}");
     };
 
     assert_eq!(option, "--nonexistent-flag");
+    Ok(())
 }
 
 /// A near-miss on a real flag names the intended flag.
 #[test]
-fn parse_near_miss_option_suggests_the_real_flag() {
+fn parse_near_miss_option_suggests_the_real_flag() -> anyhow::Result<()> {
     let result = parse_args(["perl-lsp", "--doctr"]);
 
     let Err(LaunchParseError::UnknownOption { option, suggestion }) = result else {
-        panic!("expected UnknownOption, got {result:?}");
+        anyhow::bail!("expected UnknownOption, got {result:?}");
     };
 
     assert_eq!(option, "--doctr");
@@ -478,6 +479,7 @@ fn parse_near_miss_option_suggests_the_real_flag() {
 
     let rendered = format!("{}", LaunchParseError::UnknownOption { option, suggestion });
     assert_eq!(rendered, "Unknown option: --doctr. Did you mean --doctor?");
+    Ok(())
 }
 
 /// Negative control: a token with no near match must not invent a suggestion,
