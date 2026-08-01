@@ -444,3 +444,84 @@ fn at_dollar_ref_stops_at_a_trailing_subscript() -> R {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Package separators in array names: `::` and the old-style `'`
+// ---------------------------------------------------------------------------
+
+// The old-style apostrophe package separator still interpolates in perl
+// 5.38.2 (with the "Old package separator used in string" deprecation
+// warning): `@Foo::Bar=(1,2); print "@Foo'Bar"` prints "1 2". The lexer's own
+// `is_perl_identifier_continue` already accepts `'` for the same reason, so
+// the string scanner must not split the name here.
+#[test]
+fn at_apostrophe_package_separator_stays_in_one_variable() -> R {
+    let parts = interp_parts("\"@Foo'Bar\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@Foo'Bar"))],
+        "\"@Foo'Bar\" should produce one Variable part, got {parts:?}"
+    );
+    Ok(())
+}
+
+// A `'` that does not begin a further name segment is literal text, so the
+// separator handling must look ahead rather than accepting every apostrophe.
+// Verified against real perl 5.38.2: `@foo=(1,2); print "@foo'"` prints "1 2'"
+// and `print "@foo'9"` prints "1 2'9".
+#[test]
+fn at_trailing_apostrophe_is_literal_text() -> R {
+    let parts = interp_parts("\"@foo'\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@foo")), StringPart::Literal(Arc::from("'"))],
+        "a trailing apostrophe must stay literal, got {parts:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn at_apostrophe_before_a_digit_is_literal_text() -> R {
+    let parts = interp_parts("\"@foo'9\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@foo")), StringPart::Literal(Arc::from("'9"))],
+        "an apostrophe followed by a digit must stay literal, got {parts:?}"
+    );
+    Ok(())
+}
+
+// A leading `::` names the array in package `main`. Verified against real perl
+// 5.38.2: `@a=(1,2); print "@::a"` prints "1 2".
+#[test]
+fn at_leading_double_colon_is_a_main_package_array() -> R {
+    let parts = interp_parts("\"@::a\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@::a"))],
+        "\"@::a\" should produce one Variable part, got {parts:?}"
+    );
+    Ok(())
+}
+
+// A lone `:` after `@` does NOT open the `::` package form, so `"@:x"` stays
+// literal text and `x` is not folded into a variable name.
+//
+// Documented divergence: real perl 5.38.2 does consume `@:` as an
+// interpolation unit — `@x=(7,8); print "[@:x]"` prints "[x]" and
+// `print "[@:]"` prints "[]", i.e. it interpolates an always-empty array and
+// leaves "x" literal. This arm deliberately recognizes only an identifier
+// start or a `::` package prefix after `@`; a lone `:` falls into the literal
+// bucket. Literal text is the conservative outcome (it asserts no variable),
+// and the always-empty `@:` form is out of scope for #5042. This test pins the
+// boundary so the `::` sub-arm cannot silently start claiming single colons.
+#[test]
+fn at_single_colon_stays_literal() -> R {
+    let parts = interp_parts("\"@:x\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Literal(Arc::from("@:x"))],
+        "\"@:x\" must stay literal text, got {parts:?}"
+    );
+    Ok(())
+}

@@ -1,7 +1,10 @@
 //! Scanning helpers shared by the `$`/`@` interpolation arms of
 //! `parse_double_quoted_string`.
 
-use crate::{PerlLexer, unicode::is_perl_identifier_continue};
+use crate::{
+    PerlLexer,
+    unicode::{is_perl_identifier_continue, is_perl_identifier_start},
+};
 
 /// Is `ch` one of Perl's punctuation special variables when it directly
 /// follows a `$` sigil inside a double-quoted string?
@@ -21,11 +24,21 @@ use crate::{PerlLexer, unicode::is_perl_identifier_continue};
 /// interpolate. Verified against real perl 5.38.2 — with `$\ = "!"`,
 /// `print "x$\ny"` writes `x!ny`, so the `$` sigil claims the backslash and
 /// the following `n` stays literal text rather than forming a `\n` escape.
+///
+/// `:` *is* included: `$:` is Perl's format line-break set and it interpolates
+/// (verified against real perl 5.38.2: `$: = "S"; print "[$:foo]"` prints
+/// `[Sfoo]`, i.e. `$:` is the variable and `foo` stays literal). It is only a
+/// punctuation variable when the *next* character is not a second `:` — `$::`
+/// starts a package-qualified name (`"$::"` interpolates `$main::`, and
+/// `"$:::foo"` prints `$main::` followed by the literal `:foo`). Callers must
+/// therefore test for the `::` package form *before* consulting this set; the
+/// `$` arm of `parse_double_quoted_string` orders its match arms that way.
 #[inline]
 pub(crate) const fn is_perl_punctuation_variable(ch: char) -> bool {
     matches!(
         ch,
-        '?' | '!'
+        ':' | '?'
+            | '!'
             | '@'
             | '&'
             | '`'
@@ -58,10 +71,27 @@ impl PerlLexer<'_> {
     /// pair is folded into the name. Verified against real perl 5.38.2:
     /// `our @array=(1,2,3); print "$#main::array"` prints `2`, so `main::array`
     /// is one name.
+    ///
+    /// A `'` is the old-style package separator, but only when it is directly
+    /// followed by an identifier-start character. Verified against real perl
+    /// 5.38.2: `@Foo::Bar=(1,2); print "@Foo'Bar"` prints `1 2` (with the
+    /// "Old package separator used in string" deprecation warning), while
+    /// `@foo=(1,2); print "@foo'"` prints `1 2'` and `print "@foo'9"` prints
+    /// `1 2'9` — a `'` that does not begin a further name segment stays
+    /// literal text. `is_perl_identifier_continue` accepts `'` unconditionally
+    /// (it serves bare-word identifiers, where there is no closing delimiter to
+    /// protect), so the `'` case is tested first here rather than falling into
+    /// it.
     #[inline]
     pub(crate) fn consume_qualified_identifier_in_string(&mut self) {
         while let Some(ch) = self.current_char() {
-            if is_perl_identifier_continue(ch) {
+            if ch == '\'' {
+                if self.peek_char(1).is_some_and(is_perl_identifier_start) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            } else if is_perl_identifier_continue(ch) {
                 self.advance();
             } else if ch == ':' && self.peek_char(1) == Some(':') {
                 self.advance();
@@ -80,8 +110,8 @@ mod tests {
     #[test]
     fn is_perl_punctuation_variable_accepts_every_documented_special_variable() {
         for ch in [
-            '?', '!', '@', '&', '`', '\'', '.', '/', '\\', '|', '+', '-', '[', ']', '~', '=', '%',
-            ',', ';', '>', '<', ')', '(',
+            ':', '?', '!', '@', '&', '`', '\'', '.', '/', '\\', '|', '+', '-', '[', ']', '~', '=',
+            '%', ',', ';', '>', '<', ')', '(',
         ] {
             assert!(is_perl_punctuation_variable(ch), "{ch:?} must be a punctuation variable");
         }
@@ -95,7 +125,7 @@ mod tests {
 
     #[test]
     fn is_perl_punctuation_variable_rejects_identifier_and_sigil_characters() {
-        for ch in ['a', 'Z', '_', '0', '9', '$', '{', '#', '^', ':', '*', ' '] {
+        for ch in ['a', 'Z', '_', '0', '9', '$', '{', '#', '^', '*', ' '] {
             assert!(!is_perl_punctuation_variable(ch), "{ch:?} must not be a punctuation variable");
         }
     }
@@ -114,6 +144,27 @@ mod tests {
         lexer.consume_qualified_identifier_in_string();
 
         assert_eq!(lexer.position, "arr".len());
+    }
+
+    #[test]
+    fn consume_qualified_identifier_in_string_folds_old_style_apostrophe_separators() {
+        let mut lexer = PerlLexer::new("Foo'Bar rest");
+        lexer.consume_qualified_identifier_in_string();
+
+        assert_eq!(lexer.position, "Foo'Bar".len());
+    }
+
+    #[test]
+    fn consume_qualified_identifier_in_string_stops_at_a_non_separating_apostrophe() {
+        // perl 5.38.2: `print "@foo'"` prints `1 2'` and `print "@foo'9"`
+        // prints `1 2'9` — the apostrophe is only a separator when a further
+        // name segment follows it.
+        for (input, expected) in [("foo'", 3), ("foo'9", 3), ("foo''bar", 3)] {
+            let mut lexer = PerlLexer::new(input);
+            lexer.consume_qualified_identifier_in_string();
+
+            assert_eq!(lexer.position, expected, "scanning {input:?} must stop at {expected}");
+        }
     }
 
     #[test]

@@ -86,6 +86,47 @@ fn dollar_dollar_dollar_identifier_is_double_scalar_deref() -> R {
     Ok(())
 }
 
+// The dereferenced name is package-qualified, exactly like the `$#$ref` and
+// `@$ref` arms. Verified against real perl 5.38.2:
+//   $v = "deep"; $main::foo = \$v; print "$$main::foo";   # prints "deep"
+// so `$$main::foo` is one deref of `$main::foo`, not Variable("$$main") plus
+// the literal text "::foo".
+#[test]
+fn dollar_dollar_package_qualified_deref_is_one_variable() -> R {
+    let parts = interpolated_parts(r#""$$main::foo""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$$main::foo"))],
+        "\"$$main::foo\" must be one Variable part, got {parts:?}"
+    );
+    Ok(())
+}
+
+// Same folding for a chained deref run and a multi-segment package qualifier.
+#[test]
+fn triple_dollar_multi_segment_package_deref_is_one_variable() -> R {
+    let parts = interpolated_parts(r#""$$$Acme::Deep::Var""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$$$Acme::Deep::Var"))],
+        "\"$$$Acme::Deep::Var\" must be one Variable part, got {parts:?}"
+    );
+    Ok(())
+}
+
+// The `::` folding must not swallow a *lone* colon: `$$ref:tail` is the deref
+// followed by literal text, mirroring the `$#$ref:tail` boundary pinned below.
+#[test]
+fn dollar_dollar_deref_stops_at_a_single_colon() -> R {
+    let parts = interpolated_parts(r#""$$ref:tail""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$$ref")), StringPart::Literal(Arc::from(":tail"))],
+        "a lone ':' must end \"$$ref\", got {parts:?}"
+    );
+    Ok(())
+}
+
 // Bare "$$" (PID) must keep working even though $$foo is now a deref chain —
 // the PID case only fires when no identifier follows the dollar run. Unlike
 // `dollar_dollar_in_string_emits_pid_variable` above, this pins the boundary
@@ -781,6 +822,74 @@ fn dollar_hash_brace_arm_keeps_a_plain_inner_expression_in_one_variable() -> R {
         parts,
         vec![StringPart::Variable(Arc::from("$#{arr}"))],
         "\"$#{{arr}}\" must be one Variable part, got {parts:?}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// $: (format line-break set) vs. $:: (package-qualified name)
+// ---------------------------------------------------------------------------
+
+// `$:` is a real Perl punctuation variable and interpolates. Verified against
+// real perl 5.38.2: `$: = "S"; print "[$:]"` prints "[S]".
+#[test]
+fn dollar_colon_in_string_emits_variable() -> R {
+    let parts = interpolated_parts(r#""$:""#).ok_or("no InterpolatedString")?;
+    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$:"))]);
+    Ok(())
+}
+
+// A single `:` claims only itself — the following identifier stays literal.
+// Verified against real perl 5.38.2: `$: = "S"; print "[$:foo]"` prints
+// "[Sfoo]", i.e. `$:` then the literal "foo", not the variable `$:foo`.
+#[test]
+fn dollar_colon_then_identifier_leaves_literal_tail() -> R {
+    let parts = interpolated_parts(r#""$:foo""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$:")), StringPart::Literal(Arc::from("foo"))],
+        "\"$:foo\" must be Variable(\"$:\") + Literal(\"foo\"), got {parts:?}"
+    );
+    Ok(())
+}
+
+// `$::foo` is `$main::foo`, NOT `$:` followed by the literal ":foo". Verified
+// against real perl 5.38.2: `$foo = "P"; print "[$::foo]"` prints "[P]".
+#[test]
+fn dollar_double_colon_is_a_package_qualified_variable() -> R {
+    let parts = interpolated_parts(r#""$::foo""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$::foo"))],
+        "\"$::foo\" must be one Variable part, got {parts:?}"
+    );
+    Ok(())
+}
+
+// A bare `$::` is itself a variable (the `main::` stash name), not `$:` plus a
+// literal ':'. Verified against real perl 5.38.2: `print "[$::]"` warns
+// "Use of uninitialized value $main::" and prints "[]".
+#[test]
+fn dollar_double_colon_bare_is_one_variable() -> R {
+    let parts = interpolated_parts(r#""$::""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$::"))],
+        "\"$::\" must be one Variable part, got {parts:?}"
+    );
+    Ok(())
+}
+
+// Three colons: perl folds the leading `::` pair and hands the odd colon back
+// to the literal text. Verified against real perl 5.38.2: `print "[$:::foo]"`
+// warns about `$main::` and prints "[:foo]".
+#[test]
+fn dollar_triple_colon_folds_only_the_leading_pair() -> R {
+    let parts = interpolated_parts(r#""$:::foo""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$::")), StringPart::Literal(Arc::from(":foo"))],
+        "\"$:::foo\" must be Variable(\"$::\") + Literal(\":foo\"), got {parts:?}"
     );
     Ok(())
 }

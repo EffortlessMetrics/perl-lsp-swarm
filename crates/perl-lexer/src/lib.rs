@@ -2565,33 +2565,21 @@ impl<'a> PerlLexer<'a> {
                             let part_text = &self.input[part_start..self.position];
                             parts.push(StringPart::Expression(Arc::from(part_text)));
                         }
-                        Some(ch) if is_perl_identifier_start(ch) => {
-                            // Package-qualified array names interpolate as one
-                            // variable -- verified against real perl 5.38.2:
-                            // `our @arr=("x","y"); print "@main::arr"` prints
-                            // "x y", so `::` segments belong to the variable,
-                            // not to the following literal text. Mirrors the
-                            // `$#` arm, which already folds `::` segments.
-                            while self.position < self.input_bytes.len() {
-                                let byte = self.input_bytes[self.position];
-                                if byte.is_ascii_alphanumeric() || byte == b'_' {
-                                    self.position += 1;
-                                } else if byte == b':' && self.peek_byte(1) == Some(b':') {
-                                    self.position += 2;
-                                } else if byte >= 128 {
-                                    if let Some(c) = self.current_char() {
-                                        if is_perl_identifier_continue(c) {
-                                            self.advance();
-                                        } else {
-                                            break;
-                                        }
-                                    } else {
-                                        break;
-                                    }
-                                } else {
-                                    break;
-                                }
-                            }
+                        // Package-qualified array names interpolate as one
+                        // variable -- verified against real perl 5.38.2:
+                        // `our @arr=("x","y"); print "@main::arr"` prints
+                        // "x y", so `::` segments belong to the variable, not
+                        // to the following literal text. A leading `::` names
+                        // the same array in package `main`: `@a=(1,2); print
+                        // "@::a"` prints "1 2". Both share
+                        // `consume_qualified_identifier_in_string` with the
+                        // `$#`, `@$` and `$$` deref arms, so every arm folds
+                        // `::` (and the old-style `'`) segments identically.
+                        Some(ch)
+                            if is_perl_identifier_start(ch)
+                                || (ch == ':' && self.peek_char(1) == Some(':')) =>
+                        {
+                            self.consume_qualified_identifier_in_string();
                             let part_text = &self.input[part_start..self.position];
                             parts.push(StringPart::Variable(Arc::from(part_text)));
                         }
@@ -2848,12 +2836,18 @@ impl<'a> PerlLexer<'a> {
                                 // $foo=\%h; print "$$foo{a}"` prints "1", so a
                                 // trailing `[` / `{` subscript belongs to the
                                 // deref chain, not the following literal text.
+                                //
+                                // The dereferenced name is package-qualified via
+                                // the shared scan, matching the `$#$ref` and
+                                // `@$ref` arms: perl reads `$$main::foo` as one
+                                // deref of `$main::foo`, not as `$$main` plus
+                                // the literal "::foo" (verified against real
+                                // perl 5.38.2: `$v="deep"; $main::foo=\$v;
+                                // print "$$main::foo"` prints "deep").
                                 for _ in 0..dollar_run {
                                     self.advance();
                                 }
-                                while self.current_char().is_some_and(is_perl_identifier_continue) {
-                                    self.advance();
-                                }
+                                self.consume_qualified_identifier_in_string();
                                 let part_text = &self.input[part_start..self.position];
                                 parts.push(StringPart::Variable(Arc::from(part_text)));
 
@@ -2931,10 +2925,25 @@ impl<'a> PerlLexer<'a> {
                                 parts.push(StringPart::Variable(Arc::from(part_text)));
                             }
                         }
-                        // Punctuation special variables: $!, $@, $?, $&, etc.
+                        // Package-qualified scalars written with a leading `::`
+                        // name the variable in package `main`, and they must be
+                        // matched before the punctuation set below, which also
+                        // owns the single-`:` variable `$:`. Verified against
+                        // real perl 5.38.2: `$foo="P"; print "$::foo"` prints
+                        // "P", `print "$::"` interpolates `$main::` (empty),
+                        // and `print "$:::foo"` interpolates `$main::` followed
+                        // by the literal ":foo" -- which is exactly what the
+                        // shared `::`-folding scan produces here.
+                        Some(':') if self.peek_char(1) == Some(':') => {
+                            self.consume_qualified_identifier_in_string();
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        // Punctuation special variables: $!, $@, $?, $&, $:, etc.
                         // `is_perl_punctuation_variable` owns the exact set and
-                        // documents why '"' is excluded; a trailing '$' falls
-                        // through to the literal arm below.
+                        // documents why '"' is excluded and why ':' must be
+                        // tried against the `::` arm above first; a trailing '$'
+                        // falls through to the literal arm below.
                         Some(ch) if is_perl_punctuation_variable(ch) => {
                             self.advance(); // consume the special character
                             let part_text = &self.input[part_start..self.position];
