@@ -30,7 +30,7 @@ sed -i "s/^version = \".*\"/version = \"$VERSION\"/" crates/tree-sitter-perl-rs/
 cargo update
 
 # Verify builds
-cargo build -p perl-parser --bin perl-lsp --release
+cargo build -p perl-parser --bin perllsp --release
 ```
 
 ### 2. Create & Push Tag (2 min)
@@ -176,32 +176,26 @@ If the VS Code extension is ready:
 
 ### 8. Update Documentation (5 min)
 
-Update README.md installation section:
+Review — do not replace — the README installation section.
 
-```markdown
-## Installation
+[`README.md`](../../README.md#install) and
+[`docs/how-to/INSTALLATION.md`](../how-to/INSTALLATION.md) are the authority for
+install commands. This runbook previously carried its own copy of that section
+for the operator to paste over the README; that copy went stale and instructed
+publishing a Windows one-liner that 404s for every user
+([#5461](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5461)).
+Pasting a runbook template over the front door is how the front door regresses.
 
-### Quick Install
+Instead, confirm each command in those two files still runs against the
+candidate release, and correct them in place where it does not. In particular:
 
-#### Unix (Linux/macOS)
-```bash
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
-```
-
-#### Windows PowerShell
-```powershell
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
-```
-
-#### Homebrew
-```bash
-brew install effortlessmetrics/tap/perllsp
-```
-
-### Manual Download
-
-Download the appropriate binary for your platform from the [releases page](https://github.com/EffortlessMetrics/perl-lsp/releases/latest).
-```
+- the Windows PowerShell one-liner stays documented as unusable until the
+  publication repo is synced
+  ([#4348](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4348));
+- `perl-dap` is installed by the POSIX script only
+  ([#5036](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5036));
+- Windows ARM64 is not a published target
+  ([#5007](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5007)).
 
 ### 9. Announce Release (10 min)
 
@@ -222,20 +216,21 @@ This release marks perl-lsp with comprehensive edge case coverage and broad feat
 - **35+ IDE Features**: Complete LSP implementation
 - **World-Class Performance**: 1-150µs parsing times
 - **Property-Based Testing**: Comprehensive test infrastructure
-- **Multi-Platform**: Linux, macOS, Windows (x86_64 & ARM64)
+- **Multi-Platform**: Linux, macOS, Windows (x86_64)
 
 ### 🚀 Quick Install
 
 ```bash
-# Unix
+# macOS and Linux
 curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
-
-# Windows
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
 
 # Homebrew
 brew install effortlessmetrics/tap/perllsp
 ```
+
+Windows (x86_64): download `perllsp-<version>-x86_64-pc-windows-msvc.zip` from
+the release assets, extract it, and put the folder containing `perllsp.exe` on
+your `PATH`.
 
 ### 📊 Performance
 
