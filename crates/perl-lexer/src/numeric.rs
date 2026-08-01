@@ -15,6 +15,30 @@
 //! `1000_`, and `0x_1F` are all accepted and equal to `1000`, `1000`, and `31`
 //! respectively. Verified against perl v5.38.2.
 //!
+//! # Literals are not strings
+//!
+//! It is easy to believe `08` is decimal 8, because *string numification* says
+//! so:
+//!
+//! ```text
+//! $ perl -e 'print "08" + 0'     # 8   — the string "08" numifies to 8
+//! $ perl -e 'print 08'           # Illegal octal digit '8' — compile error
+//! ```
+//!
+//! These are two different rules, and conflating them is what the first draft
+//! of this module did. `perlnumber`'s lenient leading-zero-then-decimal
+//! behaviour applies when a *string* is converted to a number at runtime. A
+//! leading-zero *literal* in source is octal, and an `8` or `9` in it is a
+//! compile-time error.
+//!
+//! [`parse_perl_integer`] takes raw **token text**, so the literal rule is the
+//! one that governs. This also keeps the module consistent with the existing
+//! repository authority in
+//! `perl_lsp_rs_core::tooling::perl_critic::native::is_octal_leading_zero`,
+//! which already declines to interpret these forms, leaving them "to
+//! parser/compiler diagnostics instead of getting a misleading explicit-octal
+//! suggestion".
+//!
 //! This module exposes [`parse_perl_integer`] so value-aware consumers
 //! (native critic, hover, constant folding) can obtain a canonical `(value,
 //! base)` pair without re-deriving these rules ad-hoc.
