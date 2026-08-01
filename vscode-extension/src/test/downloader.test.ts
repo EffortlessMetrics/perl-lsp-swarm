@@ -217,14 +217,21 @@ describe('BinaryDownloader.getPlatformTarget', () => {
     );
   });
 
-  // The bug was requesting an asset the release matrix never produces, which
-  // 404s and surfaces as a generic download failure. Assert the absence of that
-  // triple directly: a target-shape regression fails here even if some future
-  // branch reintroduces it by another route.
-  test('no Windows arch requests a target the release workflow does not build', () => {
-    for (const arch of ['arm64', 'x64', 'ia32']) {
-      expect(withProcess('win32', arch, () => getPlatformTarget(downloader))).not.toContain(
-        'aarch64',
+  // Assert the exact published target rather than the absence of the one
+  // historical bad substring. `not.toContain('aarch64')` would let any other
+  // unbuilt triple through — i686-pc-windows-msvc from a new fallback branch,
+  // or arm64-pc-windows-msvc spelled with Node's arch name.
+  //
+  // The release matrix is the authority for which targets exist, and it is read
+  // directly by assert_only_built_windows_targets in
+  // scripts/tests/test-install-target-selection.sh. This unit test cannot read
+  // that matrix without coupling the extension suite to a repository path, so it
+  // pins the single value the matrix currently yields; the shell gate is what
+  // fails if the matrix and this constant ever diverge.
+  test('every Windows arch resolves to the one published Windows target', () => {
+    for (const arch of ['arm64', 'x64', 'ia32', 'ppc64']) {
+      expect(withProcess('win32', arch, () => getPlatformTarget(downloader))).toBe(
+        'x86_64-pc-windows-msvc',
       );
     }
   });
