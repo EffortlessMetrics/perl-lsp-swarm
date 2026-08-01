@@ -92,6 +92,18 @@ WINDOWS_X64_SHA256="mno345..."
 # Checksums are fetched from GitHub
 ```
 
+Confirm the *published* copy before relying on it. As of 2026-08-01 the script served
+from `perl-lsp/master` still carries `$Name = "perl-lsp"` and therefore requests
+`perl-lsp-<version>-<target>.zip`, while `.github/workflows/release.yml` publishes
+`perllsp-<version>-<target>.zip` — a guaranteed 404 for every Windows user. The fixed
+script exists in the swarm repository; promoting it is
+[#4348](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4348). Until that
+lands, do not advertise the PowerShell one-liner in release output:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | grep '^\$Name'
+```
+
 ### 6. Create Homebrew Formula (10 min)
 
 Create a new repository `homebrew-tap` if it doesn't exist:
@@ -188,10 +200,17 @@ Update README.md installation section:
 curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
 ```
 
-#### Windows PowerShell
-```powershell
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
-```
+#### Windows (x86_64)
+
+Download `perllsp-<version>-x86_64-pc-windows-msvc.zip` from
+[Releases](https://github.com/EffortlessMetrics/perl-lsp/releases), extract it, and
+put the folder containing `perllsp.exe` on your `PATH`.
+
+The PowerShell installer script is **not usable yet**: the copy published at
+`perl-lsp/master` still builds a `perl-lsp-…zip` asset name, and releases ship
+`perllsp-…zip`, so it fails with a 404. The fix exists in the swarm repository but
+has not been promoted to the publication repo
+([#4348](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4348)).
 
 #### Homebrew
 ```bash
@@ -230,12 +249,15 @@ This release marks perl-lsp with comprehensive edge case coverage and broad feat
 # Unix
 curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
 
-# Windows
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
-
 # Homebrew
 brew install effortlessmetrics/tap/perllsp
 ```
+
+Windows (x86_64): download `perllsp-<version>-x86_64-pc-windows-msvc.zip` from the
+release assets, extract it, and put the folder containing `perllsp.exe` on your
+`PATH`. The PowerShell installer script is not usable yet — the published copy builds
+a `perl-lsp-…zip` asset name that releases do not produce, so it 404s
+([#4348](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4348)).
 
 ### 📊 Performance
 
