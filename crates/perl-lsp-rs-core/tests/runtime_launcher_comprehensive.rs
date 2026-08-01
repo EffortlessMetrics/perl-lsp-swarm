@@ -531,11 +531,11 @@ fn conflicting_valid_flags_are_not_reported_as_unknown() -> anyhow::Result<()> {
 
 /// An invalid value keeps the parser's explanation of what was rejected.
 #[test]
-fn invalid_value_keeps_the_parser_diagnostic() {
+fn invalid_value_keeps_the_parser_diagnostic() -> anyhow::Result<()> {
     let result = parse_args(["perl-lsp", "--eager-workspace-indexing", "notabool"]);
 
     let Err(err) = result else {
-        panic!("a non-boolean value must not parse");
+        anyhow::bail!("a non-boolean value must not parse");
     };
 
     let rendered = format!("{err}");
@@ -547,16 +547,17 @@ fn invalid_value_keeps_the_parser_diagnostic() {
         rendered.contains("notabool"),
         "the diagnostic must name the rejected value: {rendered}"
     );
+    Ok(())
 }
 
 /// A missing value keeps the parser's explanation rather than being flattened
 /// into an "unknown option" claim about a flag that exists.
 #[test]
-fn missing_value_keeps_the_parser_diagnostic() {
+fn missing_value_keeps_the_parser_diagnostic() -> anyhow::Result<()> {
     let result = parse_args(["perl-lsp", "--diagnostic-debounce-ms"]);
 
     let Err(err) = result else {
-        panic!("a flag missing its value must not parse");
+        anyhow::bail!("a flag missing its value must not parse");
     };
 
     let rendered = format!("{err}");
@@ -568,6 +569,7 @@ fn missing_value_keeps_the_parser_diagnostic() {
         rendered.contains("--diagnostic-debounce-ms"),
         "the diagnostic must name the flag: {rendered}"
     );
+    Ok(())
 }
 
 /// Whatever the token, the message never carries clap's usage banner or its
