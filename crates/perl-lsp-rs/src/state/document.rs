@@ -377,8 +377,8 @@ impl ParsedSnapshot {
             #[cfg(test)]
             self.source_region_index_build_count
                 .set(self.source_region_index_build_count.get() + 1);
-            Arc::new(perl_parser_core::SourceRegionIndex::build_with_hash(
-                &self.source,
+            Arc::new(perl_parser_core::SourceRegionIndex::build_with_hash_arc(
+                Arc::clone(&self.source),
                 self.content_hash,
             ))
         }))

@@ -44,6 +44,20 @@ impl SourceRegionIndex {
         Self::from_regions(source, content_hash, regions)
     }
 
+    /// Build an index from an already-owned `Arc<str>`, sharing its allocation.
+    ///
+    /// Use this when the caller already holds an `Arc<str>` (e.g. `ParsedSnapshot`).
+    /// `build_with_hash` allocates a second copy via `Arc::from(&str)`; this path
+    /// stores the caller's `Arc` directly so the index and the snapshot share one
+    /// allocation instead of two.
+    #[must_use]
+    pub fn build_with_hash_arc(source: Arc<str>, content_hash: u64) -> Self {
+        let regions = collector::collect_regions(&source);
+        let source_len = source.len();
+        let regions = normalize_regions(regions, source_len);
+        Self { content_hash, source, regions }
+    }
+
     /// Construct from pre-normalized regions (tests and `with_overrides`).
     #[must_use]
     pub fn from_regions(source: &str, content_hash: u64, regions: Vec<SourceRegion>) -> Self {
@@ -172,6 +186,15 @@ fn normalize_regions(mut regions: Vec<SourceRegion>, source_len: usize) -> Vec<S
     collector::coalesce_regions(regions, source_len)
 }
 
+impl SourceRegionIndex {
+    /// Test-only: borrow the stored source `Arc` so tests can verify pointer
+    /// identity rather than value equality.
+    #[cfg(test)]
+    pub fn source_arc(&self) -> &Arc<str> {
+        &self.source
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +208,37 @@ mod tests {
         let index = SourceRegionIndex::from_regions("xxxxx", 0, regions);
         assert_eq!(index.region_count(), 1);
         assert_eq!(index.regions()[0].end, 5);
+    }
+
+    /// `build_with_hash_arc` must share the caller's `Arc<str>` allocation
+    /// rather than copying the source text into a new one.
+    ///
+    /// An equality check (`assert_eq!(index.source, *source)`) would pass today
+    /// regardless of the bug: two distinct `Arc<str>` with the same bytes compare
+    /// equal. `Arc::ptr_eq` is the discriminating oracle: it fails on a copy,
+    /// passes only when both pointers address the same heap allocation.
+    #[test]
+    fn build_with_hash_arc_shares_allocation() {
+        let source: Arc<str> = Arc::from("# a comment\nmy $x = 1;\n");
+        let hash = hash_source_content(&source);
+        let index = SourceRegionIndex::build_with_hash_arc(Arc::clone(&source), hash);
+        assert!(
+            Arc::ptr_eq(&source, index.source_arc()),
+            "index must share the caller's Arc<str>, not allocate a second copy"
+        );
+        assert_eq!(index.content_hash(), hash);
+    }
+
+    /// `build_with_hash` (the `&str` path) still works and produces an equal
+    /// index; this guards against accidental breakage of the original constructor.
+    #[test]
+    fn build_with_hash_str_path_still_works() {
+        let src = "my $y = 2;\n";
+        let hash = hash_source_content(src);
+        let from_str = SourceRegionIndex::build_with_hash(src, hash);
+        let from_arc = SourceRegionIndex::build_with_hash_arc(Arc::from(src), hash);
+        assert_eq!(from_str.content_hash(), from_arc.content_hash());
+        assert_eq!(from_str.region_count(), from_arc.region_count());
+        assert_eq!(from_str.regions(), from_arc.regions());
     }
 }
