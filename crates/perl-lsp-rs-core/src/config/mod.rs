@@ -803,9 +803,17 @@ fn suggest_rule_id(unknown: &str, known: &[&'static str]) -> Option<&'static str
         .iter()
         .copied()
         .filter_map(|candidate| {
+            let threshold = rule_id_suggestion_threshold(unknown, candidate);
+            // Levenshtein distance is never smaller than the length difference,
+            // so a candidate this far off in length cannot clear the threshold.
+            // Skipping it here is exactly equivalent to computing the distance
+            // and rejecting it, and it keeps a pathological `.perl-lsp.toml`
+            // entry from paying the quadratic cost 28 times over.
+            if unknown.len().abs_diff(candidate.len()) > threshold {
+                return None;
+            }
             let distance = rule_id_edit_distance(unknown, candidate);
-            (distance <= rule_id_suggestion_threshold(unknown, candidate))
-                .then_some((candidate, distance))
+            (distance <= threshold).then_some((candidate, distance))
         })
         .min_by_key(|(candidate, distance)| (*distance, candidate.len()))
         .map(|(candidate, _)| candidate)
@@ -5082,6 +5090,86 @@ api_key_prefix = "Attacker "
         // threshold must still reject it.
         assert_eq!(suggest_rule_id("native.common.typo_rule", &known), None);
         assert_eq!(suggest_rule_id("", &known), None);
+    }
+
+    #[test]
+    fn suggest_rule_id_length_guard_matches_unguarded_distance_result() {
+        // The length short-circuit must be a pure optimization. For every rule
+        // ID plus a spread of near-misses and junk, the guarded result has to
+        // equal what the plain threshold check alone would return.
+        let known = crate::tooling::perl_critic::NativeCriticRegistry::for_profile(
+            crate::tooling::perl_critic::NativeCriticProfile::Strict,
+        )
+        .rule_ids();
+
+        let unguarded = |unknown: &str| -> Option<&'static str> {
+            known
+                .iter()
+                .copied()
+                .filter_map(|candidate| {
+                    let distance = rule_id_edit_distance(unknown, candidate);
+                    (distance <= rule_id_suggestion_threshold(unknown, candidate))
+                        .then_some((candidate, distance))
+                })
+                .min_by_key(|(candidate, distance)| (*distance, candidate.len()))
+                .map(|(candidate, _)| candidate)
+        };
+
+        let mut probes: Vec<String> = vec![
+            String::new(),
+            "x".to_string(),
+            "native".to_string(),
+            "native.common.typo_rule".to_string(),
+            "completely.made.up.thing".to_string(),
+            "native.common.assignment_in_conditon".to_string(),
+            "native.io.pipe_opennnnn".to_string(),
+        ];
+        for id in &known {
+            probes.push((*id).to_string());
+            probes.push(format!("{id}x"));
+            probes.push(id.replace('_', "-"));
+            probes.push(id.chars().rev().collect());
+        }
+
+        for probe in &probes {
+            // Only the edit-distance pass is under test, so compare against the
+            // unguarded form of that same pass.
+            let guarded = known
+                .iter()
+                .copied()
+                .filter_map(|candidate| {
+                    let threshold = rule_id_suggestion_threshold(probe, candidate);
+                    if probe.len().abs_diff(candidate.len()) > threshold {
+                        return None;
+                    }
+                    let distance = rule_id_edit_distance(probe, candidate);
+                    (distance <= threshold).then_some((candidate, distance))
+                })
+                .min_by_key(|(candidate, distance)| (*distance, candidate.len()))
+                .map(|(candidate, _)| candidate);
+            assert_eq!(guarded, unguarded(probe), "length guard changed the result for {probe:?}");
+        }
+    }
+
+    #[test]
+    fn suggest_rule_id_stays_bounded_for_a_pathological_entry() {
+        // `.perl-lsp.toml` is workspace-controlled, so a hostile or simply
+        // broken project file must not be able to stall config application in
+        // the edit-distance pass.
+        let known = crate::tooling::perl_critic::NativeCriticRegistry::for_profile(
+            crate::tooling::perl_critic::NativeCriticProfile::Strict,
+        )
+        .rule_ids();
+        let huge = "a".repeat(2_000_000);
+        let started = std::time::Instant::now();
+        assert_eq!(suggest_rule_id(&huge, &known), None);
+        // Generous bound — the point is that it is bounded at all. Without the
+        // length guard this runs ~28 full 2M-cell Levenshtein matrices.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "suggestion pass must short-circuit on absurd input; took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
