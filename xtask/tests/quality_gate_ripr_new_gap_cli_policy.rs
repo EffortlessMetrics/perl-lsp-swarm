@@ -770,6 +770,128 @@ fn quality_gate_cli_blocks_new_ripr_when_review_guidance_generation_failed_with_
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// #5459 — a blocking gate must never present an unproven gap list as an empty
+// one. When the guidance producer times out the gate still knows how many new
+// seams exist, but not which; that is NOT_PROVEN, and saying so is the whole
+// difference between an actionable failure and an unactionable one.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn quality_gate_cli_marks_gap_list_unproven_when_guidance_times_out() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let ripr = dir.path().join("ripr-plus.json");
+    let ripr_pr = dir.path().join("repo-exposure.json");
+    let review = dir.path().join("comments.json");
+    let receipt = dir.path().join("quality-gate.json");
+    let summary = dir.path().join("quality-gate.md");
+    let head = current_head(&root)?;
+
+    write_ripr_plus_receipt(&ripr, &head)?;
+    write_ripr_pr_receipt(&ripr_pr, &head, 25)?;
+    // The exact producer message observed on #5026.
+    write_error_review_guidance_receipt_with_message(&review, &head, "ripr timed out after 600s")?;
+
+    let output =
+        new_ripr_quality_gate_command(&root, &ripr, &ripr_pr, &review, &receipt, &summary)?
+            .output()?;
+    assert!(!output.status.success(), "new RIPR gaps must still block when guidance timed out");
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+    let action = next_action(&payload, "new_ripr_gap")?;
+
+    // The count is still known and still reported...
+    assert_eq!(action.get("new_unresolved").and_then(Value::as_u64), Some(25));
+    // ...but the gate must say the list backing it could not be produced.
+    assert_eq!(
+        action.get("gap_list_proven").and_then(Value::as_bool),
+        Some(false),
+        "an empty top_gaps caused by a failed producer must not read as a proven empty list: {action}"
+    );
+    assert_eq!(action.get("guidance_status").and_then(Value::as_str), Some("error"));
+    assert_eq!(
+        action.get("guidance_unavailable_reason").and_then(Value::as_str),
+        Some("ripr timed out after 600s"),
+        "the producer's own failure message must reach the author: {action}"
+    );
+    assert_eq!(
+        payload.pointer("/review_guidance/unavailable_reason").and_then(Value::as_str),
+        Some("ripr timed out after 600s")
+    );
+
+    // The repair must not tell the author to fix seams the gate refused to name.
+    let repair = action.get("repair").and_then(Value::as_str).unwrap_or_default();
+    assert!(
+        repair.contains("Re-run RIPR review guidance"),
+        "unproven gap lists must be repaired by finishing the analysis, not by guessing: {repair}"
+    );
+
+    let markdown = fs::read_to_string(&summary)?;
+    assert!(
+        markdown.contains("NOT_PROVEN") && markdown.contains("could not be produced"),
+        "the human-readable summary must distinguish instrument failure from an empty result: {markdown}"
+    );
+    assert!(
+        markdown.contains("ripr timed out after 600s"),
+        "the summary must name why the list is missing: {markdown}"
+    );
+
+    assert_blocking_actions_have_repair_contract(&payload)?;
+
+    Ok(())
+}
+
+#[test]
+fn quality_gate_cli_marks_gap_list_proven_when_guidance_named_the_seams() -> TestResult {
+    // Negative control for the test above: when guidance completed and named
+    // seams, the unproven markers must be absent. Without this, marking every
+    // gap list unproven would satisfy the timeout test.
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let ripr = dir.path().join("ripr-plus.json");
+    let ripr_pr = dir.path().join("repo-exposure.json");
+    let review = dir.path().join("comments.json");
+    let receipt = dir.path().join("quality-gate.json");
+    let summary = dir.path().join("quality-gate.md");
+    let head = current_head(&root)?;
+
+    write_ripr_plus_receipt(&ripr, &head)?;
+    write_ripr_pr_receipt(&ripr_pr, &head, 1)?;
+    write_review_guidance_receipt(&review, &head)?;
+
+    let output =
+        new_ripr_quality_gate_command(&root, &ripr, &ripr_pr, &review, &receipt, &summary)?
+            .output()?;
+    assert!(!output.status.success(), "a genuine new gap must still block");
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+    let action = next_action(&payload, "new_ripr_gap")?;
+
+    assert_eq!(
+        action.get("gap_list_proven").and_then(Value::as_bool),
+        Some(true),
+        "a completed guidance run that named seams is a proven list: {action}"
+    );
+    assert_eq!(action.get("guidance_status").and_then(Value::as_str), Some("present"));
+    assert!(
+        action.get("guidance_unavailable_reason").is_none_or(Value::is_null),
+        "a successful guidance run has no unavailable reason: {action}"
+    );
+    assert!(
+        action.get("top_gaps").and_then(Value::as_array).is_some_and(|gaps| !gaps.is_empty()),
+        "this fixture must produce named seams or the control proves nothing: {action}"
+    );
+
+    let markdown = fs::read_to_string(&summary)?;
+    assert!(
+        !markdown.contains("NOT_PROVEN"),
+        "a proven gap list must not be labelled NOT_PROVEN: {markdown}"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn quality_gate_cli_blocks_new_ripr_when_review_guidance_is_not_actionable() -> TestResult {
     let root = repo_root()?;
@@ -1212,6 +1334,14 @@ fn write_nonproduction_only_review_guidance_receipt(path: &Path, head: &str) -> 
 }
 
 fn write_error_review_guidance_receipt(path: &Path, head: &str) -> TestResult {
+    write_error_review_guidance_receipt_with_message(path, head, "ripr review-comments failed")
+}
+
+fn write_error_review_guidance_receipt_with_message(
+    path: &Path,
+    head: &str,
+    message: &str,
+) -> TestResult {
     write_json(
         path,
         json!({
@@ -1233,7 +1363,7 @@ fn write_error_review_guidance_receipt(path: &Path, head: &str) -> TestResult {
             "warnings": [
                 {
                     "kind": "tool_error",
-                    "message": "ripr review-comments failed",
+                    "message": message,
                     "path": null
                 }
             ]
