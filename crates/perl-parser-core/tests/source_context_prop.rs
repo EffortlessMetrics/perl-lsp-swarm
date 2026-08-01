@@ -22,6 +22,72 @@ fn region_invariants(source: &str, regions: &[SourceRegion]) -> bool {
 // repetition — `[...]*{0,200}` is nested repetition, so the bound was inert.
 const SOURCE_ALPHABET: &str = r#"[a-zA-Z0-9_ \t\n\r#"'`/\\{}\[\]();,=é€😀]{0,200}"#;
 
+/// Arm the property oracle itself.
+///
+/// `region_invariants` is the only discriminator the two properties below have.
+/// A helper that returned `true` unconditionally would make both properties
+/// vacuous and every mutation of the collector invisible, so each rejection
+/// branch is exercised directly against hand-built counterexamples.
+#[test]
+fn region_invariants_rejects_each_violation_it_claims_to_catch() {
+    let source = "héllo world";
+    let e_end = 'é'.len_utf8() + 1;
+
+    assert!(
+        region_invariants(
+            source,
+            &[
+                SourceRegion { start: 0, end: 1, kind: SourceRegionKind::LineComment },
+                SourceRegion { start: 1, end: e_end, kind: SourceRegionKind::Pod },
+            ],
+        ),
+        "sorted, disjoint, in-bounds, boundary-aligned regions must be accepted"
+    );
+
+    assert!(
+        !region_invariants(
+            source,
+            &[
+                SourceRegion { start: 0, end: 6, kind: SourceRegionKind::LineComment },
+                SourceRegion { start: 3, end: 8, kind: SourceRegionKind::Pod },
+            ],
+        ),
+        "overlapping regions must be rejected"
+    );
+
+    assert!(
+        !region_invariants(
+            source,
+            &[SourceRegion { start: 4, end: 4, kind: SourceRegionKind::Pod }],
+        ),
+        "an empty region must be rejected"
+    );
+
+    assert!(
+        !region_invariants(
+            source,
+            &[SourceRegion { start: 0, end: source.len() + 1, kind: SourceRegionKind::Pod }],
+        ),
+        "a region past end-of-source must be rejected"
+    );
+
+    assert!(
+        !region_invariants(
+            source,
+            &[SourceRegion { start: 2, end: 6, kind: SourceRegionKind::Pod }],
+        ),
+        "a start inside the 'é' codepoint must be rejected"
+    );
+
+    assert!(
+        !region_invariants(
+            source,
+            &[SourceRegion { start: 0, end: 2, kind: SourceRegionKind::Pod }],
+        ),
+        "an end inside the 'é' codepoint must be rejected"
+    );
+}
+
 proptest! {
     #[test]
     fn random_sources_maintain_region_invariants(body in SOURCE_ALPHABET) {
