@@ -48,16 +48,17 @@ release `SHA256SUMS` when that file is available, and installs `perllsp` and
 published; the script is a convenience over that same archive, not a separate
 channel.
 
-### Option 3: Installer script, Windows
+### Option 3: Windows
 
-```powershell
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
-```
+Use the release archive. Download
+`perllsp-<version>-x86_64-pc-windows-msvc.zip` from
+[Releases](https://github.com/EffortlessMetrics/perl-lsp/releases), extract it,
+and add the folder containing `perllsp.exe` to your `PATH`.
 
-Windows support is narrower: `x86_64` only, and the script installs
-`perllsp.exe` without the `perl-dap.exe` debug adapter. See
-[INSTALLATION.md](../how-to/INSTALLATION.md#windows) for the current limits and
-the manual-archive alternative.
+The PowerShell installer script does not work yet — the published copy resolves
+a `perl-lsp-…zip` asset that releases do not produce, so it fails with a 404.
+Windows support is also narrower generally: `x86_64` only. See
+[INSTALLATION.md](../how-to/INSTALLATION.md#windows) for the current limits.
 
 ### Option 4: GitHub release archive
 

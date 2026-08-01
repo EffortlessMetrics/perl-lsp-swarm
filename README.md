@@ -84,11 +84,17 @@ curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/i
 brew install effortlessmetrics/tap/perllsp
 ```
 
-**Windows** (x86_64) — installer script; installs `perllsp.exe` only:
+**Windows** (x86_64) — download
+`perllsp-<version>-x86_64-pc-windows-msvc.zip` from
+[Releases](https://github.com/EffortlessMetrics/perl-lsp/releases), extract it,
+and put the folder containing `perllsp.exe` on your `PATH`.
 
-```powershell
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
-```
+The PowerShell installer script is **not usable yet**: the copy published at
+`perl-lsp/master` still builds a `perl-lsp-…zip` asset name, and releases ship
+`perllsp-…zip`, so it fails with a 404. The fix exists in this repository but
+has not been promoted to the publication repo
+([#4348](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4348)). Use
+the manual archive until it has.
 
 Then confirm the install before wiring it into an editor or CI:
 

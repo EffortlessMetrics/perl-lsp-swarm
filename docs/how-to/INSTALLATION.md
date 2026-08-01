@@ -82,19 +82,34 @@ archive. Prefer a manual archive download and checksum check in that case.
 
 ## Windows
 
-### Installer script
+Use the [manual archive](#manual-archive) below. It is the only Windows path
+that works today.
 
-```powershell
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
+### Installer script — currently broken, do not use
+
+The published script fails for every user. The copy served from
+`perl-lsp/master` still derives its download name from `$Name = "perl-lsp"`,
+producing `perl-lsp-<version>-x86_64-pc-windows-msvc.zip`, but
+`.github/workflows/release.yml` publishes assets as
+`perllsp-<version>-<target>.zip`. The requested URL 404s and the script exits
+with `Failed to download from ...`; there is no fallback.
+
+Verified against the live v0.17.0 release:
+
+```text
+perllsp-0.17.0-x86_64-pc-windows-msvc.zip   -> 200
+perl-lsp-0.17.0-x86_64-pc-windows-msvc.zip  -> 404
 ```
 
-[`install.ps1`](../../install.ps1) downloads the matching release zip, verifies
-it against the release `SHA256SUMS` when that file downloads successfully
-(it warns and continues if it does not), installs `perllsp.exe` into
-`%USERPROFILE%\.local\bin`, and tells you how to add that directory to your
-`PATH` if it is not already there.
+[`install.ps1`](../../install.ps1) in this repository already carries the fix,
+but the publication repo has not been synced
+([#4348](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4348)).
+Once it is, the script will download the matching release zip, verify it
+against `SHA256SUMS` when that file downloads successfully (warning and
+continuing if it does not), and install `perllsp.exe` into
+`%USERPROFILE%\.local\bin`.
 
-Two limits apply today, and neither is fixed by this page:
+Two further limits apply to the script even after that sync:
 
 - The script installs `perllsp.exe` only. It does not install the `perl-dap.exe`
   debug adapter, unlike the POSIX installer. Take `perl-dap.exe` from the
