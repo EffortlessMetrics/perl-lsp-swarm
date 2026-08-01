@@ -485,11 +485,11 @@ fn parse_near_miss_option_suggests_the_real_flag() -> anyhow::Result<()> {
 /// Negative control: a token with no near match must not invent a suggestion,
 /// and the message stays a single actionable line.
 #[test]
-fn parse_unrelated_option_offers_no_suggestion() {
+fn parse_unrelated_option_offers_no_suggestion() -> anyhow::Result<()> {
     let result = parse_args(["perl-lsp", "--zzzzzzzzzz"]);
 
     let Err(LaunchParseError::UnknownOption { option, suggestion }) = result else {
-        panic!("expected UnknownOption, got {result:?}");
+        anyhow::bail!("expected UnknownOption, got {result:?}");
     };
 
     assert_eq!(option, "--zzzzzzzzzz");
@@ -497,6 +497,7 @@ fn parse_unrelated_option_offers_no_suggestion() {
 
     let rendered = format!("{}", LaunchParseError::UnknownOption { option, suggestion });
     assert_eq!(rendered, "Unknown option: --zzzzzzzzzz");
+    Ok(())
 }
 
 /// A conflict between two *valid* flags must never be reported as an unknown
@@ -504,11 +505,11 @@ fn parse_unrelated_option_offers_no_suggestion() {
 /// be combined, and naming `--stdio` as unknown states a falsehood while
 /// hiding the actual cause.
 #[test]
-fn conflicting_valid_flags_are_not_reported_as_unknown() {
+fn conflicting_valid_flags_are_not_reported_as_unknown() -> anyhow::Result<()> {
     let result = parse_args(["perl-lsp", "--stdio", "--socket"]);
 
     let Err(err) = result else {
-        panic!("--stdio --socket must not parse");
+        anyhow::bail!("--stdio --socket must not parse");
     };
 
     assert!(
@@ -525,6 +526,7 @@ fn conflicting_valid_flags_are_not_reported_as_unknown() {
         rendered.contains("--stdio") && rendered.contains("--socket"),
         "the diagnostic must name both sides of the conflict: {rendered}"
     );
+    Ok(())
 }
 
 /// An invalid value keeps the parser's explanation of what was rejected.
