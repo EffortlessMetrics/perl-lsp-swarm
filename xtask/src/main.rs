@@ -134,9 +134,10 @@ enum Commands {
     /// Validate workspace-symbol class promotion registry.
     CheckWorkspaceSymbolClasses,
 
-    /// Deterministic, program-aware work selector (#3624, M3 of the
-    /// enablement train #3612). READ-ONLY: selects the next eligible
-    /// slice of work from live evidence, never creates branches/worktrees/PRs.
+    /// RETIRED: receipt-only compatibility surface for the former tracked
+    /// work selector. Every subcommand selects no work, mutates nothing, and
+    /// exits 0 with a retirement receipt. Current GitHub issues, PRs,
+    /// reviews, and checks own live work selection.
     Goals {
         #[command(subcommand)]
         command: GoalsCommand,
@@ -3617,7 +3618,8 @@ enum GoalsCommand {
         #[arg(long)]
         program: Option<String>,
 
-        /// Optional fixture JSON to parse instead of live `gh pr list` data.
+        /// Accepted for compatibility and ignored. The retirement receipt is
+        /// generated from no input; no fixture or live `gh` data is read.
         #[arg(long)]
         fixture: Option<PathBuf>,
 
@@ -3635,7 +3637,8 @@ enum GoalsCommand {
         #[arg(long)]
         program: Option<String>,
 
-        /// Optional fixture JSON to parse instead of live `gh pr list` data.
+        /// Accepted for compatibility and ignored. The retirement receipt is
+        /// generated from no input; no fixture or live `gh` data is read.
         #[arg(long)]
         fixture: Option<PathBuf>,
 
@@ -3807,16 +3810,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::Goals { command } => match command {
             GoalsCommand::Next { program, fixture, json } => goals::next(program, fixture, json),
             GoalsCommand::Reconcile { program, fixture, json } => {
-                let finding_count = goals::reconcile(program, fixture, json)?;
-                if finding_count > 0 {
-                    // Exit 1: findings exist. Distinct from a hard parse/gh
-                    // error (which already propagates via `?` above) --
-                    // mirrors the `pr-close-proof` non-zero-exit-lives-in-
-                    // main.rs pattern (#3696 item B); the `goals` module
-                    // itself never calls `process::exit`.
-                    std::process::exit(1);
-                }
-                Ok(())
+                goals::reconcile(program, fixture, json)
             }
         },
         Commands::SessionReceipt { json, program, lane, out, warn_threshold } => {

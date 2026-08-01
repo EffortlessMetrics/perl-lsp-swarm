@@ -18,7 +18,7 @@ This spec is implemented as a control-plane rule. Current evidence lives in:
 
 - [parser accuracy next](../project/status/parser_accuracy_next.md)
 - [parser raw failure buckets](../project/status/parser.md#raw-failure-buckets)
-- [Real Perl Editor Trust routing dashboard](../project/status/real_perl_editor_trust_v1.md)
+- [Real Perl Editor Trust evidence index](../project/status/real_perl_editor_trust_v1.md)
 - [Real Perl Editor Trust implementation plan](../../plans/real-perl-editor-trust/implementation-plan.md)
 - current GitHub issues, PRs, checks, and exact generated receipts
 

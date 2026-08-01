@@ -44,14 +44,25 @@ fn render_retired(command: &str, json: bool) -> Result<String> {
     }
 }
 
+/// Emit the `goals next` retirement receipt.
+///
+/// `_program` and `_fixture` are accepted for CLI compatibility and ignored:
+/// no tracked program file is read and no fixture or live `gh` data is
+/// parsed. Always succeeds, selects no work, and mutates nothing.
 pub fn next(_program: Option<String>, _fixture: Option<PathBuf>, json: bool) -> Result<()> {
     println!("{}", render_retired("goals next", json)?);
     Ok(())
 }
 
-pub fn reconcile(_program: Option<String>, _fixture: Option<PathBuf>, json: bool) -> Result<usize> {
+/// Emit the `goals reconcile` retirement receipt.
+///
+/// `_program` and `_fixture` are accepted for CLI compatibility and ignored:
+/// no tracked milestone ledger is read and no fixture or live `gh` data is
+/// parsed. Always succeeds with no findings and mutates nothing, so callers
+/// have no non-zero exit path to branch on.
+pub fn reconcile(_program: Option<String>, _fixture: Option<PathBuf>, json: bool) -> Result<()> {
     println!("{}", render_retired("goals reconcile", json)?);
-    Ok(0)
+    Ok(())
 }
 
 #[cfg(test)]

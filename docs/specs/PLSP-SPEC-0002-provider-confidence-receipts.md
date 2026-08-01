@@ -24,7 +24,7 @@ This spec is implemented as a control-plane rule. Current evidence lives in:
 - [semantic scorecard](../project/status/semantic_scorecard.md)
 - [semantic shadow compare](../project/status/semantic_shadow_compare.md)
 - [support tiers](../project/status/SUPPORT_TIERS.md)
-- [Real Perl Editor Trust routing dashboard](../project/status/real_perl_editor_trust_v1.md)
+- [Real Perl Editor Trust evidence index](../project/status/real_perl_editor_trust_v1.md)
 - [Real Perl Editor Trust implementation plan](../../plans/real-perl-editor-trust/implementation-plan.md)
 
 Current next work is not stored here or in a tracked selector. Read the current
