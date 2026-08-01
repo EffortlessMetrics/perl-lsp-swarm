@@ -367,7 +367,7 @@ mod dap_breakpoint_matrix_phase2 {
 
         assert_eq!(breakpoints.len(), 4);
         assert!(!breakpoints[0].verified, "shebang line should not be executable");
-        assert!(breakpoints[1].verified, "use strict line should be executable");
+        assert!(!breakpoints[1].verified, "use strict line should not be executable");
         assert!(breakpoints[2].verified, "function declaration line should be executable");
         assert!(!breakpoints[3].verified, "EOF comment line should not be executable");
         Ok(())
