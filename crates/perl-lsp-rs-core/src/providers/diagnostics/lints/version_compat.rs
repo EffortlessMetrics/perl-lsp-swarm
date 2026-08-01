@@ -897,7 +897,6 @@ mod tests {
             !class_diags.is_empty(),
             "'use feature class' must not suppress PL900 for __CLASS__ below v5.40: {diags:#?}"
         );
-        // The suggested fix must not point at the pragma that does not help.
         for d in class_diags {
             assert!(
                 d.message.contains("v5.40"),
@@ -905,6 +904,31 @@ mod tests {
                 d.message
             );
         }
+    }
+
+    #[test]
+    fn class_token_suggestion_does_not_offer_the_feature_pragma() {
+        // Asserted on `suggestion`, not `message`: `message` is built by
+        // `make_diagnostic_with_details` and always reads "'__CLASS__' requires
+        // Perl v5.40+; declared version is vX.Y", so a `message.contains("v5.40")`
+        // check passes no matter what the remediation says. The suggestion is
+        // the field the author actually acts on, and it is the field that used
+        // to steer them into `use feature 'class'` — a pragma that silences
+        // nothing and fixes nothing here.
+        let diags = version_compat_diags("use v5.36;\nmy $name = __CLASS__;\n");
+        let suggestion = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__"))
+            .and_then(|d| d.suggestion.clone())
+            .unwrap_or_default();
+        assert!(
+            suggestion.contains("v5.40"),
+            "suggestion must name v5.40 as the fix: {suggestion}"
+        );
+        assert!(
+            suggestion.contains("not available before v5.40"),
+            "suggestion must say the class pragma is not an alternative fix: {suggestion}"
+        );
     }
 
     #[test]
