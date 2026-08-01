@@ -87,9 +87,20 @@ WINDOWS_X64_SHA256="mno345..."
 
 #### Update install.ps1
 
+This repository's `install.ps1` is correct, but the copy users actually run is
+the one served from `perl-lsp/master`. That copy is stale and still derives
+`perl-lsp-<version>-<target>.zip`, while `release.yml` publishes
+`perllsp-<version>-<target>.zip` — so the piped one-liner 404s for every
+Windows user ([#5461](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5461)).
+The publication-repo sync ([#4348](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4348))
+is what fixes it.
+
+Verify the published script before advertising it, and keep release notes
+pointing Windows at the archive until this returns `perllsp`:
+
 ```bash
-# Already points to latest release, no changes needed
-# Checksums are fetched from GitHub
+curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 \
+  | grep '^\$Name'
 ```
 
 ### 6. Create Homebrew Formula (10 min)
@@ -188,10 +199,11 @@ Update README.md installation section:
 curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
 ```
 
-#### Windows PowerShell
-```powershell
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
-```
+#### Windows
+
+Download `perllsp-<version>-x86_64-pc-windows-msvc.zip` from the
+[releases page](https://github.com/EffortlessMetrics/perl-lsp/releases/latest),
+extract it, and add the extracted directory to your `PATH`.
 
 #### Homebrew
 ```bash
@@ -230,12 +242,12 @@ This release marks perl-lsp with comprehensive edge case coverage and broad feat
 # Unix
 curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
 
-# Windows
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
-
 # Homebrew
 brew install effortlessmetrics/tap/perllsp
 ```
+
+Windows: download `perllsp-<version>-x86_64-pc-windows-msvc.zip` from the
+release assets, extract it, and add the extracted directory to your `PATH`.
 
 ### 📊 Performance
 

@@ -30,7 +30,7 @@ sed -i "s/^version = \".*\"/version = \"$VERSION\"/" crates/tree-sitter-perl-rs/
 cargo update
 
 # Verify builds
-cargo build -p perl-parser --bin perllsp --release
+cargo build -p perl-parser --bin perl-lsp --release
 ```
 
 ### 2. Create & Push Tag (2 min)
@@ -87,9 +87,20 @@ WINDOWS_X64_SHA256="mno345..."
 
 #### Update install.ps1
 
+This repository's `install.ps1` is correct, but the copy users actually run is
+the one served from `perl-lsp/master`. That copy is stale and still derives
+`perl-lsp-<version>-<target>.zip`, while `release.yml` publishes
+`perllsp-<version>-<target>.zip` — so the piped one-liner 404s for every
+Windows user ([#5461](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5461)).
+The publication-repo sync ([#4348](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4348))
+is what fixes it.
+
+Verify the published script before advertising it, and keep release notes
+pointing Windows at the archive until this returns `perllsp`:
+
 ```bash
-# Already points to latest release, no changes needed
-# Checksums are fetched from GitHub
+curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 \
+  | grep '^\$Name'
 ```
 
 ### 6. Create Homebrew Formula (10 min)
@@ -110,37 +121,40 @@ Create `Formula/perllsp.rb`:
 class Perllsp < Formula
   desc "Native Rust language server and debug adapter for Perl"
   homepage "https://github.com/EffortlessMetrics/perl-lsp"
-  version "0.8.3"
-  license "MIT"
+  version "0.13.1"
+  license any_of: ["MIT", "Apache-2.0"]
 
   on_macos do
-    on_arm do
-      url "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.8.3/perllsp-0.8.3-aarch64-apple-darwin.tar.gz"
+    if Hardware::CPU.arm?
+      url "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v#{version}/perllsp-#{version}-aarch64-apple-darwin.tar.gz"
       sha256 "ACTUAL_SHA256_FROM_RELEASE"
-    end
-    on_intel do
-      url "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.8.3/perllsp-0.8.3-x86_64-apple-darwin.tar.gz"
+    else
+      url "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v#{version}/perllsp-#{version}-x86_64-apple-darwin.tar.gz"
       sha256 "ACTUAL_SHA256_FROM_RELEASE"
     end
   end
 
   on_linux do
-    on_arm do
-      url "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.8.3/perllsp-0.8.3-aarch64-unknown-linux-musl.tar.gz"
+    if Hardware::CPU.arm?
+      url "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v#{version}/perllsp-#{version}-aarch64-unknown-linux-gnu.tar.gz"
       sha256 "ACTUAL_SHA256_FROM_RELEASE"
-    end
-    on_intel do
-      url "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.8.3/perllsp-0.8.3-x86_64-unknown-linux-musl.tar.gz"
+    else
+      url "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v#{version}/perllsp-#{version}-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "ACTUAL_SHA256_FROM_RELEASE"
     end
   end
 
   def install
-    bin.install "perllsp"
+    extracted_dir = Dir.glob("perllsp-#{version}-*").find { |path| File.directory?(path) }
+    raise "expected release archive directory perllsp-#{version}-<target>" unless extracted_dir
+
+    bin.install "#{extracted_dir}/perllsp"
+    bin.install "#{extracted_dir}/perl-dap"
   end
 
   test do
-    assert_match "perllsp", shell_output("#{bin}/perllsp --version")
+    assert_match version.to_s, shell_output("#{bin}/perllsp --version")
+    assert_match version.to_s, shell_output("#{bin}/perl-dap --version")
   end
 end
 ```
@@ -149,7 +163,7 @@ Push the tap:
 
 ```bash
 git add Formula/perllsp.rb
-git commit -m "Add perllsp v0.8.3"
+git commit -m "Add perllsp v0.13.1"
 git remote add origin https://github.com/EffortlessMetrics/homebrew-tap.git
 git push -u origin main
 ```
@@ -185,10 +199,11 @@ Update README.md installation section:
 curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
 ```
 
-#### Windows PowerShell
-```powershell
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
-```
+#### Windows
+
+Download `perllsp-<version>-x86_64-pc-windows-msvc.zip` from the
+[releases page](https://github.com/EffortlessMetrics/perl-lsp/releases/latest),
+extract it, and add the extracted directory to your `PATH`.
 
 #### Homebrew
 ```bash
@@ -227,12 +242,12 @@ This release marks perl-lsp with comprehensive edge case coverage and broad feat
 # Unix
 curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
 
-# Windows
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
-
 # Homebrew
 brew install effortlessmetrics/tap/perllsp
 ```
+
+Windows: download `perllsp-<version>-x86_64-pc-windows-msvc.zip` from the
+release assets, extract it, and add the extracted directory to your `PATH`.
 
 ### 📊 Performance
 
