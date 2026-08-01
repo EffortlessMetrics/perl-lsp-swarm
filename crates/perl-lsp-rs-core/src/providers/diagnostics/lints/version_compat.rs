@@ -485,6 +485,19 @@ fn builtin_import_names(arg: &str) -> Vec<String> {
 }
 
 /// Build a PL900 diagnostic for a version-incompatible feature use.
+///
+/// Serves the *bundled* arms, where a `use vX.Y` bundle really does turn the
+/// feature on so the version bump is a genuine remediation.
+///
+/// KNOWN DEFECT, tracked in #5554 and deliberately out of this candidate's
+/// claim: this helper interpolates `display` into the `use feature "..."` slot,
+/// so arms whose display name is not the pragma name emit advice perl rejects
+/// (`use feature "subroutine signatures";` →
+/// `Feature "subroutine signatures" is not supported by Perl 5.38.2`). It also
+/// still emits the self-referential `Update 'use v5.36' to 'use v5.36'` when
+/// `no feature` disables a bundled feature at or above its minimum. The
+/// pragma-gated arms this PR owns (`class`, `defer`, `try`) route through
+/// [`make_experimental_feature_diagnostic`] instead and are free of both.
 fn make_diagnostic(
     node: &Node,
     display: &str,
@@ -527,6 +540,14 @@ fn make_diagnostic(
 /// `feature` is the pragma name perl actually accepts (`try`). They differ, and
 /// conflating them produced `use feature "try/catch";`, which perl rejects with
 /// `Feature "try/catch" is not supported`.
+///
+/// Message and suggestion are derived from the same `(version_ok, feature_ok)`
+/// pair here so they cannot contradict each other. The shared
+/// `'X' requires Perl vN.M+` wording is deliberately *not* used when the
+/// declared version already meets the minimum: for `use v5.40; class Foo {}`
+/// that read `'class' requires Perl v5.38+; declared version is v5.40`, which
+/// states a satisfied condition as the reason for the warning and reads as a
+/// false positive even though the code genuinely does not compile.
 fn make_experimental_feature_diagnostic(
     node: &Node,
     display: &str,
@@ -539,32 +560,53 @@ fn make_experimental_feature_diagnostic(
     let target = format!("v{}.{}", min_version.major, min_version.minor);
     let version_ok = declared_version >= min_version;
 
-    let suggestion = match (version_ok, feature_ok) {
-        // Declared version already supports the pragma; only the pragma is missing.
-        (true, false) => format!(
-            "Add 'use feature \"{feature}\";' — 'use {declared}' does not enable the \
-             '{feature}' feature"
+    let (message, suggestion) = match (version_ok, feature_ok) {
+        // Declared version already supports the pragma; only the pragma is
+        // missing. The version is not the problem, so the message must not
+        // cite one.
+        (true, false) => (
+            format!(
+                "'{display}' requires the '{feature}' feature, which 'use {declared}' does not \
+                 enable"
+            ),
+            format!(
+                "Add 'use feature \"{feature}\";' — 'use {declared}' does not enable the \
+                 '{feature}' feature"
+            ),
         ),
         // Pragma is present but perl would reject it on the declared version.
-        (false, true) => format!(
-            "Update 'use {declared}' to 'use {target}' — 'use feature \"{feature}\";' is not \
-             supported before {target}"
+        (false, true) => (
+            format!(
+                "'{display}' requires Perl {target}+; declared version is {declared}, which does \
+                 not support 'use feature \"{feature}\";'"
+            ),
+            format!(
+                "Update 'use {declared}' to 'use {target}' — 'use feature \"{feature}\";' is not \
+                 supported before {target}"
+            ),
         ),
         // Both halves missing; neither alone compiles.
-        _ => format!(
-            "Update 'use {declared}' to 'use {target}' and add 'use feature \"{feature}\";' \
-             — '{display}' requires both"
+        _ => (
+            format!(
+                "'{display}' requires Perl {target}+ and the '{feature}' feature; declared \
+                 version is {declared}"
+            ),
+            format!(
+                "Update 'use {declared}' to 'use {target}' and add 'use feature \"{feature}\";' \
+                 — '{display}' requires both"
+            ),
         ),
     };
 
-    make_diagnostic_with_details(
-        node,
-        display,
-        declared_version,
-        (min_version.major, min_version.minor),
-        DiagnosticSeverity::Warning,
-        Some(suggestion),
-    )
+    Diagnostic {
+        range: (node.location.start, node.location.end),
+        severity: DiagnosticSeverity::Warning,
+        code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
+        message,
+        related_information: vec![],
+        tags: vec![],
+        suggestion: Some(suggestion),
+    }
 }
 
 /// Build a PL900 deprecation Warning for given/when/default (v5.38–v5.41).
@@ -1398,26 +1440,10 @@ mod tests {
         // 'use vC.D'`, the target must be strictly newer than the declared
         // version. Anything else is a no-op or a downgrade.
         //
-        // Scoped to the three arms this claim owns. The generic `make_diagnostic`
-        // helper can still produce a self-referential bump via `no feature` on a
-        // bundled feature (e.g. `use v5.36; no feature 'signatures';`); that is a
-        // separate defect, tracked apart from this claim.
-        let sources = [
-            "use v5.10;\nclass Foo { }\n",
-            "use v5.36;\nclass Foo { }\n",
-            "use v5.38;\nclass Foo { }\n",
-            "use v5.40;\nclass Foo { }\n",
-            "use v5.42;\nclass Foo { }\n",
-            "use v5.36;\nuse feature 'class';\nclass Foo { }\n",
-            "use v5.10;\ndefer { 1 }\n",
-            "use v5.36;\ndefer { 1 }\n",
-            "use v5.40;\ndefer { 1 }\n",
-            "use v5.10;\ntry { 1 } catch ($e) { 2 }\n",
-            "use v5.34;\ntry { 1 } catch ($e) { 2 }\n",
-            "use v5.38;\ntry { 1 } catch ($e) { 2 }\n",
-        ];
-
-        for source in &sources {
+        // Covers the pragma-gated arms and the bundled arms reachable through
+        // `no feature`, which produce the same shape via the shared
+        // `make_diagnostic` helper.
+        for source in PL900_REMEDIATION_SOURCES {
             for d in version_compat_diags(source) {
                 if d.code.as_deref() != Some("PL900") {
                     continue;
@@ -1443,5 +1469,150 @@ mod tests {
         let (declared, rest) = rest.split_once("' to 'use ")?;
         let (target, _) = rest.split_once('\'')?;
         Some((parse_perl_version(declared)?, parse_perl_version(target)?))
+    }
+
+    /// Sources driving the three pragma-gated arms this claim owns, across the
+    /// declared-version range.
+    ///
+    /// SCOPE, stated so this list is not mistaken for full coverage of PL900:
+    /// the bundled arms served by [`make_diagnostic`] (`say`, `state`, `isa`,
+    /// `signatures`, `switch`/given/when, smartmatch, `builtin::*`) are
+    /// deliberately absent. They carry the same two defects — a display name
+    /// used as the pragma name, and a self-referential bump reachable through
+    /// `no feature` — and both are reproduced and tracked in #5554 rather than
+    /// fixed here, because fixing them widens this candidate past its claim.
+    /// Adding those rows to this list is the first step of that follow-up: the
+    /// invariants below already fail against them.
+    const PL900_REMEDIATION_SOURCES: &[&str] = &[
+        "use v5.10;\nclass Foo { }\n",
+        "use v5.36;\nclass Foo { }\n",
+        "use v5.38;\nclass Foo { }\n",
+        "use v5.40;\nclass Foo { }\n",
+        "use v5.42;\nclass Foo { }\n",
+        "use v5.36;\nuse feature 'class';\nclass Foo { }\n",
+        "use v5.10;\ndefer { 1 }\n",
+        "use v5.36;\ndefer { 1 }\n",
+        "use v5.40;\ndefer { 1 }\n",
+        "use v5.36;\nuse feature 'defer';\ndefer { 1 }\n",
+        "use v5.10;\ntry { 1 } catch ($e) { 2 }\n",
+        "use v5.34;\ntry { 1 } catch ($e) { 2 }\n",
+        "use v5.38;\ntry { 1 } catch ($e) { 2 }\n",
+        "use v5.10;\nuse feature 'try';\ntry { 1 } catch ($e) { 2 }\n",
+    ];
+
+    /// Every feature name perl itself accepts in `use feature '...'`.
+    ///
+    /// Mirrors `ALL_KNOWN_FEATURES` in `perl-pragma`. Spot-checked against perl
+    /// v5.38.2, which rejects anything outside this set with
+    /// `Feature "NAME" is not supported by Perl 5.38.2` — including the three
+    /// names this lint used to emit: `try/catch`, `subroutine signatures`, and
+    /// `postfix_deref`.
+    const REAL_PERL_FEATURE_NAMES: &[&str] = &[
+        "say",
+        "state",
+        "smartmatch",
+        "switch",
+        "unicode_strings",
+        "unicode_eval",
+        "evalbytes",
+        "current_sub",
+        "fc",
+        "lexical_subs",
+        "postderef",
+        "postderef_qq",
+        "signatures",
+        "refaliasing",
+        "bitwise",
+        "declared_refs",
+        "isa",
+        "indirect",
+        "multidimensional",
+        "bareword_filehandles",
+        "try",
+        "defer",
+        "extra_paired_delimiters",
+        "module_true",
+        "class",
+        "field",
+        "method",
+        "apostrophe_as_package_separator",
+        "keyword_any",
+        "keyword_all",
+    ];
+
+    #[test]
+    fn pragma_gated_message_and_suggestion_never_contradict_each_other() {
+        // Review finding (#5544, factory-droid P1): for `use v5.40; class Foo {}`
+        // the message read `'class' requires Perl v5.38+; declared version is
+        // v5.40` while the suggestion correctly asked only for the pragma. The
+        // diagnostic simultaneously asserted a version problem and denied the
+        // version half mattered, which reads as a false positive on code that
+        // genuinely does not compile.
+        //
+        // The rule: a message may cite a minimum version only when the declared
+        // version actually falls short of it. Message and suggestion are built
+        // from one `(version_ok, feature_ok)` match so they cannot drift.
+        for source in PL900_REMEDIATION_SOURCES {
+            for d in version_compat_diags(source) {
+                if d.code.as_deref() != Some("PL900") {
+                    continue;
+                }
+                let Some(suggestion) = d.suggestion.as_deref() else {
+                    continue;
+                };
+                let suggestion_asks_for_a_bump = suggestion.contains("Update 'use ");
+                let message_cites_a_minimum = d.message.contains("requires Perl v");
+
+                assert_eq!(
+                    message_cites_a_minimum, suggestion_asks_for_a_bump,
+                    "message and suggestion disagree about whether the declared version is the \
+                     problem (source: {source:?}, message: {}, suggestion: {suggestion})",
+                    d.message
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_pl900_remediation_names_a_feature_perl_accepts() {
+        // The second half of the defect: the shared helper interpolated the
+        // construct's *display* name into the `use feature "..."` slot, so
+        // following the advice replaced the original error with
+        // `Feature "subroutine signatures" is not supported by Perl 5.38.2`.
+        // Any pragma this lint tells an author to add must be a name perl will
+        // actually accept.
+        for source in PL900_REMEDIATION_SOURCES {
+            for d in version_compat_diags(source) {
+                if d.code.as_deref() != Some("PL900") {
+                    continue;
+                }
+                let Some(suggestion) = d.suggestion.as_deref() else {
+                    continue;
+                };
+                for named in named_features(suggestion) {
+                    assert!(
+                        REAL_PERL_FEATURE_NAMES.contains(&named.as_str()),
+                        "remediation names '{named}', which perl rejects \
+                         (source: {source:?}, suggestion: {suggestion})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every `NAME` appearing in a `use feature "NAME"` clause of `suggestion`.
+    fn named_features(suggestion: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut rest = suggestion;
+        while let Some((_, after)) = rest.split_once("use feature \"") {
+            match after.split_once('"') {
+                Some((name, tail)) => {
+                    out.push(name.to_string());
+                    rest = tail;
+                }
+                None => break,
+            }
+        }
+        out
     }
 }
