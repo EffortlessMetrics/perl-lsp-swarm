@@ -46,7 +46,7 @@ where
         Ok(plan) => plan,
         Err(error) => {
             eprintln!("{error}");
-            eprintln!("{}", render_help_text(&command_name));
+            eprintln!("Run '{command_name} --help' for available options.");
             return 1;
         }
     };

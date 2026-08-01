@@ -449,6 +449,73 @@ fn parse_unknown_option_returns_error() {
     assert!(result.is_err());
 }
 
+/// The parse error must carry only the offending token, never clap's rendered
+/// error block. Before this was fixed, `option` held the whole multi-line clap
+/// message — usage banner and `--help` pointer included — so the CLI printed
+/// two usage blocks for a single typo.
+#[test]
+fn parse_unknown_option_captures_only_the_offending_token() {
+    let result = parse_args(["perl-lsp", "--nonexistent-flag"]);
+
+    let Err(LaunchParseError::UnknownOption { option, .. }) = result else {
+        panic!("expected UnknownOption, got {result:?}");
+    };
+
+    assert_eq!(option, "--nonexistent-flag");
+}
+
+/// A near-miss on a real flag names the intended flag.
+#[test]
+fn parse_near_miss_option_suggests_the_real_flag() {
+    let result = parse_args(["perl-lsp", "--doctr"]);
+
+    let Err(LaunchParseError::UnknownOption { option, suggestion }) = result else {
+        panic!("expected UnknownOption, got {result:?}");
+    };
+
+    assert_eq!(option, "--doctr");
+    assert_eq!(suggestion.as_deref(), Some("--doctor"));
+
+    let rendered = format!("{}", LaunchParseError::UnknownOption { option, suggestion });
+    assert_eq!(rendered, "Unknown option: --doctr. Did you mean --doctor?");
+}
+
+/// Negative control: a token with no near match must not invent a suggestion,
+/// and the message stays a single actionable line.
+#[test]
+fn parse_unrelated_option_offers_no_suggestion() {
+    let result = parse_args(["perl-lsp", "--zzzzzzzzzz"]);
+
+    let Err(LaunchParseError::UnknownOption { option, suggestion }) = result else {
+        panic!("expected UnknownOption, got {result:?}");
+    };
+
+    assert_eq!(option, "--zzzzzzzzzz");
+    assert_eq!(suggestion, None);
+
+    let rendered = format!("{}", LaunchParseError::UnknownOption { option, suggestion });
+    assert_eq!(rendered, "Unknown option: --zzzzzzzzzz");
+}
+
+/// Whatever the token, the message never carries clap's usage banner or its
+/// `--help` pointer — the CLI owns that output.
+#[test]
+fn unknown_option_message_never_embeds_clap_usage_block() {
+    for token in ["--doctr", "--zzzzzzzzzz", "--por"] {
+        let Err(err) = parse_args(["perl-lsp", token]) else {
+            panic!("expected a parse error for {token}");
+        };
+
+        let rendered = format!("{err}");
+        assert!(!rendered.contains('\n'), "{token}: message must stay one line: {rendered}");
+        assert!(!rendered.contains("Usage:"), "{token}: leaked clap usage: {rendered}");
+        assert!(
+            !rendered.contains("For more information"),
+            "{token}: leaked clap help pointer: {rendered}"
+        );
+    }
+}
+
 #[test]
 fn parse_invalid_feature_profile_returns_error() {
     let result = parse_args(["perl-lsp", "--feature-profile", "bogus_profile"]);
@@ -494,7 +561,7 @@ fn parse_empty_feature_profile_returns_error() {
 
 #[test]
 fn error_display_unknown_option() {
-    let err = LaunchParseError::UnknownOption { option: "--bad".to_string() };
+    let err = LaunchParseError::UnknownOption { option: "--bad".to_string(), suggestion: None };
     let msg = format!("{err}");
     assert!(msg.contains("--bad"), "display should contain the option");
 }
@@ -528,7 +595,7 @@ fn error_display_invalid_port() {
 
 #[test]
 fn error_implements_std_error() {
-    let err = LaunchParseError::UnknownOption { option: "x".to_string() };
+    let err = LaunchParseError::UnknownOption { option: "x".to_string(), suggestion: None };
     // Verify Error trait is implemented by calling source()
     let _source: Option<&dyn std::error::Error> = std::error::Error::source(&err);
 }

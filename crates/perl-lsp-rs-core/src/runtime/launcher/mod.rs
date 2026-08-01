@@ -13,6 +13,7 @@ use std::io;
 use std::io::IsTerminal;
 use std::sync::{Once, OnceLock};
 
+use clap::error::{ContextKind, ContextValue};
 use clap::{Args, Parser};
 pub mod timing;
 pub use crate::features::contracts::trackable_feature_count_for_grid;
@@ -507,6 +508,8 @@ pub enum LaunchParseError {
     UnknownOption {
         /// Unknown token passed on CLI.
         option: String,
+        /// Closest known option, when the parser can name one.
+        suggestion: Option<String>,
     },
     /// A flag was missing its required value.
     MissingValue {
@@ -545,9 +548,12 @@ pub enum LaunchParseError {
 impl fmt::Display for LaunchParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnknownOption { option } => {
-                write!(f, "Unknown option: {option}")
-            }
+            Self::UnknownOption { option, suggestion } => match suggestion {
+                Some(candidate) => {
+                    write!(f, "Unknown option: {option}. Did you mean {candidate}?")
+                }
+                None => write!(f, "Unknown option: {option}"),
+            },
             Self::MissingValue { option } => {
                 write!(f, "Missing value for {option}")
             }
@@ -677,8 +683,41 @@ where
                 });
             }
 
-            Err(LaunchParseError::UnknownOption { option: err.to_string() })
+            Err(unknown_option_error(&err))
         }
+    }
+}
+
+/// Build an `UnknownOption` error from a clap parse failure.
+///
+/// Clap's rendered error is a multi-line block carrying its own usage banner
+/// and `--help` pointer. Embedding that whole block in a one-line message
+/// duplicates the usage output the CLI prints itself, so take the structured
+/// context instead and fall back to the leading line only.
+fn unknown_option_error(err: &clap::Error) -> LaunchParseError {
+    let option = match context_string(err, ContextKind::InvalidArg) {
+        Some(invalid_arg) => invalid_arg,
+        None => err
+            .to_string()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim_start_matches("error:")
+            .trim()
+            .to_string(),
+    };
+
+    let suggestion = context_string(err, ContextKind::SuggestedArg);
+
+    LaunchParseError::UnknownOption { option, suggestion }
+}
+
+/// Read a single-valued clap error context entry as an owned string.
+fn context_string(err: &clap::Error, kind: ContextKind) -> Option<String> {
+    match err.get(kind)? {
+        ContextValue::String(value) => Some(value.clone()),
+        ContextValue::Strings(values) => values.first().cloned(),
+        _ => None,
     }
 }
 
