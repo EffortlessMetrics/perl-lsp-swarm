@@ -238,6 +238,10 @@ mod tests {
             RELEASE_RUNBOOK_FORBIDDEN.iter().any(|(literal, _)| literal.contains("Edge Case")),
             "the templated coverage headline must stay forbidden"
         );
+        assert!(
+            RELEASE_RUNBOOK_FORBIDDEN.iter().any(|(literal, _)| *literal == "141 edge cases"),
+            "the templated coverage figure must stay forbidden"
+        );
         assert_eq!(
             RELEASE_RUNBOOK_FORBIDDEN_VERSIONS,
             ["0.8.3", "0.13.1", "0.6.0"],
