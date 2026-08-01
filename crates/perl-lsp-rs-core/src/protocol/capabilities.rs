@@ -109,33 +109,40 @@ pub fn capabilities_json(build: BuildFlags) -> Value {
     json
 }
 
+/// Command identifiers advertised in the `executeCommand` server capability.
+///
+/// This is the canonical advertised set. Request validation must accept every
+/// entry here — rejecting an advertised command before dispatch would make the
+/// server refuse work it just told the client it could do.
+pub const SUPPORTED_COMMANDS: &[&str] = &[
+    "perl.runTests",
+    "perl.runFile",
+    "perl.runTestSub",
+    "perl.runCritic",
+    "perl.runTest",
+    "perl.runTestFile",
+    "perl.runSubtest",
+    "perl.debugFile",
+    "perl.debugTest",
+    "perl.debugTests",
+    "perl.debugTestFile",
+    "perl.goToTest",
+    "perl.goToImplementation",
+    "perl.explainProviderDecision",
+    "perl.workspaceTrustReport",
+    "perl.agentContext",
+    "perl.previewSafeDelete",
+    "perl.safeDeleteSymbol",
+    "perl.previewPackageRename",
+    "perl.explainMissingModuleLookup",
+];
+
 /// Get the list of supported commands for the LSP executeCommand capability.
 ///
 /// Returns all command identifiers that can be executed via the LSP executeCommand
 /// method. This list is used for capability registration and command validation.
 pub fn get_supported_commands() -> Vec<String> {
-    vec![
-        "perl.runTests".to_string(),
-        "perl.runFile".to_string(),
-        "perl.runTestSub".to_string(),
-        "perl.runCritic".to_string(),
-        "perl.runTest".to_string(),
-        "perl.runTestFile".to_string(),
-        "perl.runSubtest".to_string(),
-        "perl.debugFile".to_string(),
-        "perl.debugTest".to_string(),
-        "perl.debugTests".to_string(),
-        "perl.debugTestFile".to_string(),
-        "perl.goToTest".to_string(),
-        "perl.goToImplementation".to_string(),
-        "perl.explainProviderDecision".to_string(),
-        "perl.workspaceTrustReport".to_string(),
-        "perl.agentContext".to_string(),
-        "perl.previewSafeDelete".to_string(),
-        "perl.safeDeleteSymbol".to_string(),
-        "perl.previewPackageRename".to_string(),
-        "perl.explainMissingModuleLookup".to_string(),
-    ]
+    SUPPORTED_COMMANDS.iter().map(|command| (*command).to_string()).collect()
 }
 
 /// Check if a capability is a boolean or object (for flexible assertions)

@@ -7,6 +7,7 @@
 //! - sanitize_string: exactly which characters are kept vs removed
 //! - validate_file_path: extension filtering
 
+use perl_lsp_rs_core::protocol::capabilities::get_supported_commands;
 use perl_lsp_rs_core::runtime::input_validation::{
     sanitize_string, validate_file_content, validate_lsp_request,
 };
@@ -353,4 +354,44 @@ fn sanitize_string_empty_input_returns_empty() {
 fn sanitize_string_all_safe_returns_unchanged() {
     let input = "sub foo { return 42; }";
     assert_eq!(sanitize_string(input), input, "safe Perl code must be unchanged");
+}
+
+// ---------------------------------------------------------------------------
+// executeCommand validation must accept everything the server advertises.
+//
+// `validate_lsp_request` became reachable from dispatch preflight in #5256.
+// Before that it was dead code, so a drift between the advertised command set
+// and the validation allowlist was invisible. Once reachable, any advertised
+// command missing from the allowlist is rejected with -32600 *before* dispatch
+// — the server refusing work it just told the client it could do.
+//
+// At the time this guard was added the allowlist was missing 13 of the 20
+// advertised commands: every `run*` and `debug*` command plus `goToTest`,
+// `goToImplementation`, and `explainProviderDecision`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_advertised_command_passes_validation() {
+    let mut rejected = Vec::new();
+    for command in get_supported_commands() {
+        let params = serde_json::json!({ "command": command, "arguments": [] });
+        if validate_lsp_request("workspace/executeCommand", &params).is_err() {
+            rejected.push(command);
+        }
+    }
+    assert!(
+        rejected.is_empty(),
+        "these commands are advertised in the executeCommand capability but \
+         rejected by validation, so the server would refuse them before dispatch: {rejected:?}"
+    );
+}
+
+#[test]
+fn unknown_command_is_still_rejected() {
+    // Negative control: the union must not have become an accept-everything gate.
+    let params = serde_json::json!({ "command": "perl.notARealCommand", "arguments": [] });
+    assert!(
+        validate_lsp_request("workspace/executeCommand", &params).is_err(),
+        "an unadvertised, undispatchable command must still be rejected"
+    );
 }

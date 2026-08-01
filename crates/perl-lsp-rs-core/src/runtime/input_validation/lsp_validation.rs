@@ -1,3 +1,4 @@
+use crate::protocol::capabilities::SUPPORTED_COMMANDS;
 use crate::runtime::input_validation::constants::{
     ALLOWED_COMMANDS, ALLOWED_TEXT_DOCUMENT_URI_SCHEMES, MAX_METHOD_LENGTH, MAX_PARAMS_SIZE,
     MAX_URI_LENGTH,
@@ -35,7 +36,10 @@ pub fn validate_lsp_request(method: &str, params: &serde_json::Value) -> Result<
         // on ordinary Perl/POD source the same way it did for Mason buffers on
         // `didOpen` (issue #5256 follow-up) — so these are exempted from the
         // catch-all scan below rather than silently rejected.
-        "textDocument/codeAction" | "completionItem/resolve" => {}
+        // `codeAction/resolve` carries the same server-authored diagnostics back
+        // for resolution, so it needs the exemption for the same reason
+        // `textDocument/codeAction` does.
+        "textDocument/codeAction" | "codeAction/resolve" | "completionItem/resolve" => {}
         _ => {
             if params_str.contains("javascript:") || params_str.contains("<script") {
                 return Err(anyhow!("Suspicious content in parameters for method: {}", method));
@@ -72,9 +76,28 @@ fn validate_text_document_params(params: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
+/// Returns `true` when `command` is one the server will actually dispatch.
+///
+/// Two sources, deliberately unioned:
+///
+/// - [`SUPPORTED_COMMANDS`] is the set advertised in the `executeCommand`
+///   capability. Rejecting any of these before dispatch would make the server
+///   refuse work it just told the client it could do — with this validator now
+///   reachable from preflight, that would have disabled every `run*`/`debug*`
+///   command plus `goToTest`, `goToImplementation`, and
+///   `explainProviderDecision`.
+/// - [`ALLOWED_COMMANDS`] carries handlers that are dispatchable but not
+///   advertised (for example `perl.extractVariable`, exercised by the
+///   LSP 3.17 workspace and comprehensive e2e suites).
+///
+/// Anything in neither set is still rejected, which is the point of the check.
+fn is_dispatchable_command(command: &str) -> bool {
+    SUPPORTED_COMMANDS.contains(&command) || ALLOWED_COMMANDS.contains(&command)
+}
+
 fn validate_execute_command_params(params: &serde_json::Value) -> Result<()> {
     if let Some(command) = params.get("command").and_then(serde_json::Value::as_str)
-        && !ALLOWED_COMMANDS.contains(&command)
+        && !is_dispatchable_command(command)
     {
         return Err(anyhow!("Command not allowed: {}", command));
     }
