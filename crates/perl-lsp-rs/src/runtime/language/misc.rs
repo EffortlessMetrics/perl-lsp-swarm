@@ -316,6 +316,13 @@ impl LspServer {
             json!(u64::try_from(shape.result_count).unwrap_or(u64::MAX)),
         );
         receipt.insert("trace_only_no_live_behavior_change".to_string(), json!(true));
+        if provider == "hover" {
+            // Request-scoped: the hover handler that just ran set this on this
+            // same thread inside the dispatcher's blocking task (#5003 PR1).
+            if let Some(kind) = super::hover::take_hover_trace_source_region_kind() {
+                receipt.insert("source_region_kind".to_string(), json!(kind));
+            }
+        }
         receipt.insert(
             "claim_boundary".to_string(),
             json!(
