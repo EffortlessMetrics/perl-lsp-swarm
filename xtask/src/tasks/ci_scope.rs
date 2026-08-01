@@ -430,6 +430,28 @@ fn has_features_toml_change(files: &[String]) -> bool {
     files.iter().any(|f| f == "features.toml")
 }
 
+/// Repository inputs that xtask's policy guards assert over, but which are not
+/// xtask source.
+///
+/// `crates_from_files` selects a crate from the *directory a file lives in*, so
+/// these route to `perllsp`, `perl-lsp-rs`, or nothing at all — never to xtask.
+/// That matters because `unit_routed_full` is scope-aware (`{package_args}`),
+/// so a PR changing only one of these would skip the very guard that exists to
+/// catch it: the binstall metadata in `crates/*/Cargo.toml` is only meaningful
+/// against the packaging step in `release.yml`, and the test asserting they
+/// agree lives in xtask (#5036).
+///
+/// Kept deliberately narrow. Every path here costs an extra crate in the routed
+/// test scope, so this is not the place for "xtask might care about it" — only
+/// inputs an xtask test reads and asserts on.
+fn is_xtask_policy_guarded_input(file: &str) -> bool {
+    // Packaging contract: asserted by release_artifact_check's binstall tests.
+    file == ".github/workflows/release.yml"
+        // Publishable-crate manifests: binstall metadata, publish metadata, and
+        // version-sync are all xtask-owned assertions over these files.
+        || (file.starts_with("crates/") && file.ends_with("/Cargo.toml"))
+}
+
 /// Extract unique crate names from cargo metadata JSON for crate dirs in the changed files.
 fn crates_from_files(
     files: &[String],
@@ -442,6 +464,12 @@ fn crates_from_files(
         if parts.len() >= 2 && parts[0] == "crates" && !parts[1].is_empty() {
             crate_dirs.insert(format!("crates/{}", parts[1]));
         } else if file == "xtask/Cargo.toml" || file.starts_with("xtask/") {
+            crate_dirs.insert("xtask".to_string());
+        }
+
+        // Not an `else`: a guarded input can also belong to another crate.
+        // `crates/perllsp/Cargo.toml` selects `perllsp` above *and* xtask here.
+        if is_xtask_policy_guarded_input(file) {
             crate_dirs.insert("xtask".to_string());
         }
     }
@@ -1042,6 +1070,60 @@ mod tests {
         let crates = crates_from_files(&files, &metadata, "/workspace")?;
         assert!(crates.contains("xtask"));
         assert_eq!(crates.len(), 1);
+        Ok(())
+    }
+
+    // --- xtask policy-guarded inputs (#5036) ---
+    //
+    // `unit_routed_full` is scope-aware, so a guard only runs when its crate is
+    // selected. The binstall tests in `release_artifact_check` read
+    // `release.yml` and the publishable manifests — none of which are xtask
+    // source — so without these rules a PR changing exactly the guarded input
+    // skips the guard that exists to catch it.
+
+    #[test]
+    fn release_workflow_change_selects_xtask() -> Result<()> {
+        let files = vec![".github/workflows/release.yml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing the packaging step must route to the guard that asserts on it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn publishable_manifest_change_selects_both_its_crate_and_xtask() -> Result<()> {
+        let files = vec!["crates/perllsp/Cargo.toml".to_string()];
+        let metadata = fake_metadata(&[("perllsp", "crates/perllsp"), ("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        // The manifest's own crate must still be selected — the xtask rule adds
+        // to the scope, it does not redirect it.
+        assert!(crates.contains("perllsp"), "manifest's own crate must stay selected");
+        assert!(crates.contains("xtask"), "binstall/version-sync guards live in xtask");
+        Ok(())
+    }
+
+    #[test]
+    fn unrelated_workflow_change_does_not_select_xtask() -> Result<()> {
+        // The rule is deliberately narrow: every extra path costs a crate in
+        // the routed test scope. Only release.yml is a guarded packaging input.
+        let files = vec![".github/workflows/docs-deploy.yml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(!crates.contains("xtask"), "unrelated workflows must not widen the routed scope");
+        Ok(())
+    }
+
+    #[test]
+    fn crate_source_change_does_not_select_xtask() -> Result<()> {
+        // Guards against the rule degenerating into "any crates/ path".
+        let files = vec!["crates/perllsp/src/main.rs".to_string()];
+        let metadata = fake_metadata(&[("perllsp", "crates/perllsp"), ("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(crates.contains("perllsp"));
+        assert!(!crates.contains("xtask"), "only manifests carry xtask-asserted policy");
         Ok(())
     }
 
