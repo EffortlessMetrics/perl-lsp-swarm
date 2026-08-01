@@ -101,7 +101,7 @@ impl DapProcess {
     fn wait_for_event(&self, event_name: &str) -> Result<Option<Value>> {
         wait_for_message(
             &self.rx,
-            format!("event `{event_name}"),
+            format!("event `{event_name}`"),
             |msg| matches!(msg, DapMessage::Event { event, .. } if event == event_name),
         )
         .and_then(|message| match message {
@@ -260,10 +260,7 @@ fn explicit_binary_override_is_preferred() {
 
 #[test]
 fn cargo_binary_remains_the_fallback() {
-    assert_eq!(
-        dap_binary_path(None),
-        OsString::from(env!("CARGO_BIN_EXE_perl-dap"))
-    );
+    assert_eq!(dap_binary_path(None), OsString::from(env!("CARGO_BIN_EXE_perl-dap")));
 }
 
 #[test]
@@ -274,10 +271,7 @@ fn smoke_receipt_binds_the_configured_binary() -> Result<()> {
     write_smoke_receipt_to(&output, &binary)?;
 
     let value: Value = serde_json::from_str(&fs::read_to_string(output)?)?;
-    assert_eq!(
-        value.get("schema_version").and_then(Value::as_str),
-        Some(DAP_SMOKE_SCHEMA_VERSION)
-    );
+    assert_eq!(value.get("schema_version").and_then(Value::as_str), Some(DAP_SMOKE_SCHEMA_VERSION));
     assert_eq!(value.get("status").and_then(Value::as_str), Some("pass"));
     assert_eq!(
         value.get("binary").and_then(Value::as_str),
