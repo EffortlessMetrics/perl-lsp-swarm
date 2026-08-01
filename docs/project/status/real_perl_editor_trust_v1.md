@@ -4,7 +4,7 @@
 > evidence boundary. It does not select work, generate metrics, broaden live
 > provider behavior, or replace provider-specific proof surfaces.
 
-Last reviewed: 2026-05-24.
+Last reviewed: 2026-07-31.
 
 This page answers:
 
