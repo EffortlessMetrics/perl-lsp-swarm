@@ -490,11 +490,19 @@ impl ServerConfig {
                 }
             }
             if let Some(include) = string_array(critic.get("include")) {
-                warn_unknown_rule_ids("critic.include", &include);
+                warn_unknown_rule_ids(
+                    CriticRuleIdSource::ClientSettings,
+                    "critic.include",
+                    &include,
+                );
                 self.native_critic_include = include;
             }
             if let Some(exclude) = string_array(critic.get("exclude")) {
-                warn_unknown_rule_ids("critic.exclude", &exclude);
+                warn_unknown_rule_ids(
+                    CriticRuleIdSource::ClientSettings,
+                    "critic.exclude",
+                    &exclude,
+                );
                 self.native_critic_exclude = exclude;
             }
         }
@@ -683,6 +691,31 @@ const CRITIC_ENGINE_VALID_OPTIONS: &str = "native, legacy (external, perlcritic)
 /// Kept in sync with [`parse_native_critic_profile`].
 const NATIVE_CRITIC_PROFILE_VALID_OPTIONS: &str = "recommended, strict";
 
+/// Which config channel supplied a critic rule-ID list.
+///
+/// The warning names this so the user knows *which* of the two places that can
+/// set `critic.include` / `critic.exclude` they actually have to go and edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CriticRuleIdSource {
+    /// Settings delivered by the editor over LSP — `initializationOptions`,
+    /// `workspace/didChangeConfiguration`, or a `workspace/configuration`
+    /// response. Deliberately labelled as one channel: [`ServerConfig::update_from_value`]
+    /// serves all three and cannot tell them apart.
+    ClientSettings,
+    /// The project's `.perl-lsp.toml` file.
+    ProjectFile,
+}
+
+impl CriticRuleIdSource {
+    /// Label naming the concrete place the user edits to fix the entry.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ClientSettings => "LSP client settings",
+            Self::ProjectFile => ".perl-lsp.toml",
+        }
+    }
+}
+
 /// Warn for every entry in `ids` that is not a known native critic rule ID.
 ///
 /// The full rule catalog is derived from the strict profile at call time so
@@ -691,7 +724,11 @@ const NATIVE_CRITIC_PROFILE_VALID_OPTIONS: &str = "recommended, strict";
 /// under every profile — which is why the warning points at the catalog and
 /// spelling rather than suggesting a profile change.
 /// Values are stored as-is even when unknown — the rule simply never matches.
-fn warn_unknown_rule_ids(setting: &str, ids: &[String]) {
+///
+/// Each warning names the offending ID, the setting key, the config channel it
+/// arrived on, and — when one can be identified honestly — the closest valid
+/// rule ID.
+fn warn_unknown_rule_ids(source: CriticRuleIdSource, setting: &str, ids: &[String]) {
     if ids.is_empty() {
         return;
     }
@@ -699,18 +736,118 @@ fn warn_unknown_rule_ids(setting: &str, ids: &[String]) {
         crate::tooling::perl_critic::NativeCriticProfile::Strict,
     )
     .rule_ids();
+    let origin = source.as_str();
     for id in ids {
-        if !known.contains(&id.as_str()) {
-            tracing::warn!(
+        if known.contains(&id.as_str()) {
+            continue;
+        }
+        match suggest_rule_id(id, &known) {
+            Some(suggestion) => tracing::warn!(
                 target: "perl_lsp::config",
+                source = %origin,
                 setting = %setting,
                 value = %id,
-                "unrecognized native critic rule ID; \
-                 this entry will not match any finding; \
-                 check the spelling against the native critic rule catalog",
-            );
+                suggestion = %suggestion,
+                "unrecognized native critic rule ID '{id}' in `{setting}` from {origin}; \
+                 did you mean '{suggestion}'? until it is corrected this entry \
+                 matches no finding",
+            ),
+            None => tracing::warn!(
+                target: "perl_lsp::config",
+                source = %origin,
+                setting = %setting,
+                value = %id,
+                "unrecognized native critic rule ID '{id}' in `{setting}` from {origin}; \
+                 no close match found — check the spelling against the native critic \
+                 rule catalog; until it is corrected this entry matches no finding",
+            ),
         }
     }
+}
+
+/// Final dotted segment of a rule ID — the bare rule name without its namespace.
+fn rule_id_leaf(id: &str) -> &str {
+    id.rsplit('.').next().unwrap_or(id)
+}
+
+/// Best-guess replacement for an unrecognized rule ID, or `None` when nothing is
+/// close enough to suggest honestly.
+///
+/// Three cheap passes, in decreasing confidence:
+/// 1. exact match ignoring ASCII case (`Native.IO.Pipe_Open`);
+/// 2. a unique match on the bare rule name, which catches a dropped or wrong
+///    namespace (`unused_lexical`, `native.vars.unused_lexical`);
+/// 3. nearest edit distance within a length-scaled threshold (`...conditon`).
+///
+/// Returning `None` is deliberate. A confidently wrong suggestion sends the user
+/// to edit the wrong rule, which costs more than offering no suggestion at all.
+fn suggest_rule_id(unknown: &str, known: &[&'static str]) -> Option<&'static str> {
+    if let Some(same_ignoring_case) =
+        known.iter().copied().find(|candidate| candidate.eq_ignore_ascii_case(unknown))
+    {
+        return Some(same_ignoring_case);
+    }
+
+    let unknown_leaf = rule_id_leaf(unknown);
+    let mut leaf_matches = known
+        .iter()
+        .copied()
+        .filter(|candidate| rule_id_leaf(candidate).eq_ignore_ascii_case(unknown_leaf));
+    if let Some(only_leaf_match) = leaf_matches.next()
+        && leaf_matches.next().is_none()
+    {
+        return Some(only_leaf_match);
+    }
+
+    known
+        .iter()
+        .copied()
+        .filter_map(|candidate| {
+            let distance = rule_id_edit_distance(unknown, candidate);
+            (distance <= rule_id_suggestion_threshold(unknown, candidate))
+                .then_some((candidate, distance))
+        })
+        .min_by_key(|(candidate, distance)| (*distance, candidate.len()))
+        .map(|(candidate, _)| candidate)
+}
+
+/// How far apart two rule IDs may be and still be offered as a suggestion.
+///
+/// Scaled by the longer ID so a short bare name is held to a tighter budget than
+/// a 38-character fully-qualified ID, and capped so an unrelated string never
+/// drifts into range.
+fn rule_id_suggestion_threshold(unknown: &str, known: &str) -> usize {
+    unknown.len().max(known.len()).saturating_div(4).clamp(1, 4)
+}
+
+/// Levenshtein distance between two rule IDs, compared case-insensitively.
+///
+/// Rule IDs are ASCII (`native.<area>.<rule_name>`), so byte-wise comparison is
+/// exact here and avoids the cost of building char vectors.
+fn rule_id_edit_distance(left: &str, right: &str) -> usize {
+    let left = left.to_ascii_lowercase();
+    let right = right.to_ascii_lowercase();
+    let left_bytes = left.as_bytes();
+    let right_bytes = right.as_bytes();
+
+    let mut previous: Vec<usize> = (0..=right_bytes.len()).collect();
+    let mut current = vec![0; right_bytes.len() + 1];
+
+    for (left_index, left_byte) in left_bytes.iter().enumerate() {
+        current[0] = left_index + 1;
+
+        for (right_index, right_byte) in right_bytes.iter().enumerate() {
+            let substitution_cost = usize::from(left_byte != right_byte);
+            let deletion = previous[right_index + 1] + 1;
+            let insertion = current[right_index] + 1;
+            let substitution = previous[right_index] + substitution_cost;
+            current[right_index + 1] = deletion.min(insertion).min(substitution);
+        }
+
+        std::mem::swap(&mut previous, &mut current);
+    }
+
+    previous[right_bytes.len()]
 }
 
 /// Controls whether PERL5LIB paths are prepended or appended to `include_paths`.
@@ -1807,12 +1944,12 @@ impl ProjectConfig {
         }
         if let Some(ref include) = self.critic.include {
             let normalized = normalize_string_list(include);
-            warn_unknown_rule_ids("critic.include", &normalized);
+            warn_unknown_rule_ids(CriticRuleIdSource::ProjectFile, "critic.include", &normalized);
             config.native_critic_include = normalized;
         }
         if let Some(ref exclude) = self.critic.exclude {
             let normalized = normalize_string_list(exclude);
-            warn_unknown_rule_ids("critic.exclude", &normalized);
+            warn_unknown_rule_ids(CriticRuleIdSource::ProjectFile, "critic.exclude", &normalized);
             config.native_critic_exclude = normalized;
         }
         if let Some(ref profile) = self.formatting.perltidy_profile {
@@ -4835,7 +4972,129 @@ api_key_prefix = "Attacker "
     #[test]
     fn warn_unknown_rule_ids_is_silent_for_empty_list() {
         // `include`/`exclude` set to an empty list must not warn.
-        let captured = capture_warnings(|| warn_unknown_rule_ids("critic.include", &[]));
+        let captured = capture_warnings(|| {
+            warn_unknown_rule_ids(CriticRuleIdSource::ClientSettings, "critic.include", &[])
+        });
         assert!(captured.is_empty(), "empty ID list must not warn; got:\n{}", captured.join("\n"));
+    }
+
+    // ── warning is actionable: names the source and the nearest valid ID ───
+
+    #[test]
+    fn json_unknown_rule_id_warning_names_the_client_settings_source() {
+        // A user reading the log has to know which of the two config channels
+        // to go and edit; "critic.include" alone does not tell them.
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "include": ["native.common.typo_rule"] }
+            }));
+        });
+        assert_warned_contains(&captured, &["LSP client settings"]);
+        let combined = captured.join("\n");
+        assert!(
+            !combined.contains(".perl-lsp.toml"),
+            "client-settings warning must not blame the project file; got:\n{combined}"
+        );
+    }
+
+    #[test]
+    fn toml_unknown_rule_id_warning_names_the_project_file_source() {
+        let mut config = ServerConfig::default();
+        let mut project = ProjectConfig::default();
+        project.critic.include = Some(vec!["native.variables.typo_rule".to_string()]);
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        assert_warned_contains(&captured, &[".perl-lsp.toml"]);
+        let combined = captured.join("\n");
+        assert!(
+            !combined.contains("LSP client settings"),
+            "project-file warning must not blame client settings; got:\n{combined}"
+        );
+    }
+
+    #[test]
+    fn unknown_rule_id_warning_suggests_the_closest_valid_id_for_a_typo() {
+        // One transposed/dropped letter is the overwhelmingly common mistake.
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "exclude": ["native.common.assignment_in_conditon"] }
+            }));
+        });
+        assert_warned_contains(
+            &captured,
+            &["did you mean", "native.common.assignment_in_condition"],
+        );
+    }
+
+    #[test]
+    fn unknown_rule_id_warning_suggests_the_qualified_id_for_a_bare_rule_name() {
+        // Writing the rule name without its `native.<area>.` namespace is a
+        // realistic mistake that plain edit distance is far too coarse to catch.
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "include": ["unused_lexical"] }
+            }));
+        });
+        assert_warned_contains(&captured, &["did you mean", "native.variables.unused_lexical"]);
+    }
+
+    #[test]
+    fn unknown_rule_id_warning_suggests_the_canonical_casing() {
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "include": ["Native.IO.Pipe_Open"] }
+            }));
+        });
+        assert_warned_contains(&captured, &["did you mean", "native.io.pipe_open"]);
+    }
+
+    #[test]
+    fn unrelated_rule_id_gets_no_invented_suggestion() {
+        // An honest "no close match" beats confidently sending the user to edit
+        // the wrong rule.
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "include": ["completely.made.up.thing"] }
+            }));
+        });
+        let combined = captured.join("\n");
+        assert!(
+            combined.contains("no close match"),
+            "expected an explicit no-close-match warning; got:\n{combined}"
+        );
+        assert!(
+            !combined.contains("did you mean"),
+            "must not invent a suggestion for an unrelated ID; got:\n{combined}"
+        );
+    }
+
+    #[test]
+    fn suggest_rule_id_returns_none_when_nothing_is_close() {
+        let known = crate::tooling::perl_critic::NativeCriticRegistry::for_profile(
+            crate::tooling::perl_critic::NativeCriticProfile::Strict,
+        )
+        .rule_ids();
+        // Shares the `native.` prefix but nothing else — the length-scaled
+        // threshold must still reject it.
+        assert_eq!(suggest_rule_id("native.common.typo_rule", &known), None);
+        assert_eq!(suggest_rule_id("", &known), None);
+    }
+
+    #[test]
+    fn suggest_rule_id_prefers_the_nearest_candidate() {
+        let known = crate::tooling::perl_critic::NativeCriticRegistry::for_profile(
+            crate::tooling::perl_critic::NativeCriticProfile::Strict,
+        )
+        .rule_ids();
+        // `unused_lexical` and `unused_parameter` are both near; the exact leaf
+        // match must win rather than whichever the edit-distance pass reaches.
+        assert_eq!(
+            suggest_rule_id("native.vars.unused_parameter", &known),
+            Some("native.variables.unused_parameter")
+        );
     }
 }
