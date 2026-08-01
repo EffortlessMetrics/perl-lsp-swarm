@@ -847,9 +847,14 @@ impl<'a> Parser<'a> {
     }
 
     /// Returns true if the node is a compound statement that cannot take a postfix modifier.
-    /// In Perl, compound statements (if/while/for/foreach/given/default/try/sub/package)
-    /// are terminated by their own closing brace — a modifier keyword that follows is a
-    /// new top-level statement, not a modifier on the compound statement.
+    /// In Perl a compound statement is terminated by its own closing brace, so a modifier
+    /// keyword that follows one begins a new top-level statement rather than modifying it.
+    ///
+    /// The full set this accepts: `if`, `while`, `for`, `foreach`, `given`, `default`,
+    /// `try`, `defer`, `sub`, `package`, `class`, `method`, `format`, a bare block, and a
+    /// phase block (`BEGIN`/`END`/`CHECK`/`INIT`/`UNITCHECK`). Keep this list and the
+    /// `matches!` arm below in step — a summary that lags the arm is how a reader ends up
+    /// reasoning about a predicate that does something else (#5503).
     ///
     /// A bare `Block` is also compound: `{ ... } for @arr` is a syntax error in Perl
     /// (verified: `perl -c` rejects it). Without this, `{ ... }\nfor my $x (...) { }`
