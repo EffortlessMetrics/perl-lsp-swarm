@@ -1111,10 +1111,14 @@ pub fn format_health_output(version: &str, use_color: bool) -> String {
 
 /// Format the `--info` output block.
 ///
-/// `version`, `git_tag`, `exe_path` are supplied by the binary crate.
+/// `version`, `exe_path` are supplied by the binary crate, as is the source
+/// revision — split into `revision_label` and `revision` because only the
+/// binary crate's build script knows whether the value is a tag, a commit, or
+/// neither. Passing the label in keeps this function from having to guess.
 pub fn format_info_output(
     version: &str,
-    git_tag: &str,
+    revision_label: &str,
+    revision: &str,
     exe_path: &str,
     profile: FeatureProfile,
     use_color: bool,
@@ -1130,7 +1134,7 @@ pub fn format_info_output(
     } else {
         out.push_str(&format!("perl-lsp {version}\n"));
     }
-    out.push_str(&format!("Git tag:          {git_tag}\n"));
+    out.push_str(&format!("{revision_label:<18}{revision}\n"));
     out.push_str("Parser:           perl-parser v3 (recursive descent)\n");
     out.push_str(&format!("Profile:          {}\n", profile.as_str()));
     out.push_str(&format!("Features:         {feature_count}/{feature_count} active (100%)\n"));
@@ -1446,6 +1450,7 @@ mod tests {
     fn info_output_contains_essential_fields() {
         let out = super::format_info_output(
             "0.10.0",
+            "Git tag:",
             "v0.10.0",
             "/usr/bin/perl-lsp",
             super::FeatureProfile::current(),
@@ -1456,6 +1461,23 @@ mod tests {
         assert!(out.contains("active (100%)"));
         assert!(out.contains("LSP spec coverage:"));
         assert!(out.contains("/usr/bin/perl-lsp"));
+    }
+
+    #[test]
+    fn info_output_uses_the_caller_supplied_revision_label() {
+        // An untagged build reports a commit, not a tag. This function must
+        // render whatever label the binary crate determined rather than
+        // hard-coding "Git tag:" over a value that is not one.
+        let out = super::format_info_output(
+            "0.17.0",
+            "Git commit:",
+            "ba92efb",
+            "/usr/bin/perl-lsp",
+            super::FeatureProfile::current(),
+            false,
+        );
+        assert!(out.contains("Git commit:       ba92efb"), "got:\n{out}");
+        assert!(!out.contains("Git tag:"), "must not relabel a commit as a tag; got:\n{out}");
     }
 
     // ── port_in_use_message ───────────────────────────────────────
