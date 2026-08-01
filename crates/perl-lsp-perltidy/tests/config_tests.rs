@@ -9,8 +9,32 @@ use std::sync::Arc;
 fn config_to_args_includes_core_flags() {
     let args = PerlTidyConfig::default().to_args();
     assert!(args.contains(&"--maximum-line-length=80".to_string()));
-    assert!(args.contains(&"--indent-columns=4".to_string()));
-    assert!(args.contains(&"--notabs".to_string()));
+    assert!(args.contains(&"--opening-brace-always-on-right".to_string()));
+}
+
+#[test]
+fn unset_indentation_emits_no_indentation_flags() {
+    // Indentation is unset by default so callers can decide: the LSP path
+    // falls back to the editor's tabSize/insertSpaces, and perltidy applies
+    // its own default. Emitting `--indent-columns=4` here would silently pin
+    // every unconfigured project to 4 columns.
+    let config = PerlTidyConfig::default();
+    assert_eq!(config.indent_columns, None);
+    assert_eq!(config.tabs, None);
+
+    let args = config.to_args();
+    assert!(!args.iter().any(|arg| arg.starts_with("--indent-columns=")), "{args:?}");
+    assert!(!args.contains(&"--tabs".to_string()), "{args:?}");
+    assert!(!args.contains(&"--notabs".to_string()), "{args:?}");
+}
+
+#[test]
+fn explicit_indentation_still_emits_flags() {
+    let config =
+        PerlTidyConfig { indent_columns: Some(2), tabs: Some(false), ..PerlTidyConfig::default() };
+    let args = config.to_args();
+    assert!(args.contains(&"--indent-columns=2".to_string()), "{args:?}");
+    assert!(args.contains(&"--notabs".to_string()), "{args:?}");
 }
 
 #[test]

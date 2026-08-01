@@ -138,9 +138,19 @@ pub struct ServerConfig {
     pub perltidy_maximum_line_length: Option<u32>,
 
     /// Indent size in spaces for perltidy.
+    ///
+    /// `None` means the workspace has not configured an indent width, in which
+    /// case formatting falls back to the editor-supplied `tabSize`. When set —
+    /// from `.perl-lsp.toml`, a discovered `.perltidyrc`, or
+    /// `didChangeConfiguration` — the configured width wins over `tabSize` on
+    /// both the native and external formatting paths.
     pub perltidy_indent_columns: Option<u32>,
 
     /// Use tabs instead of spaces for perltidy.
+    ///
+    /// `None` means unconfigured; formatting falls back to the editor-supplied
+    /// `insertSpaces`. See [`ServerConfig::perltidy_indent_columns`] for the
+    /// precedence rule.
     pub perltidy_tabs: Option<bool>,
 
     /// Opening brace on new line for perltidy.
@@ -346,8 +356,10 @@ impl Default for ServerConfig {
             formatting_engine: FormatterMode::Native,
             perltidy_profile: None,
             perltidy_maximum_line_length: Some(80),
-            perltidy_indent_columns: Some(4),
-            perltidy_tabs: Some(false),
+            // Unset by default: unconfigured workspaces defer to the editor's
+            // `tabSize` / `insertSpaces`.
+            perltidy_indent_columns: None,
+            perltidy_tabs: None,
             perltidy_opening_brace_on_new_line: Some(false),
             perltidy_cuddled_else: Some(true),
             perltidy_space_after_keyword: Some(true),
@@ -2828,9 +2840,11 @@ perlcritic_severity = 2
     #[test]
     fn apply_perltidy_native_options_overrides_only_specified_fields() {
         let mut config = ServerConfig::default();
-        // Built-in defaults that the profile must be able to override.
+        // A built-in default the profile must be able to override.
         assert_eq!(config.perltidy_maximum_line_length, Some(80));
-        assert_eq!(config.perltidy_indent_columns, Some(4));
+        // Indentation ships unset so unconfigured workspaces keep deferring to
+        // the editor's tabSize.
+        assert_eq!(config.perltidy_indent_columns, None);
 
         // Profile sets only the line width.
         let options =
@@ -2843,10 +2857,23 @@ perlcritic_severity = 2
             "the profile's line width must override the built-in default"
         );
         assert_eq!(
-            config.perltidy_indent_columns,
-            Some(4),
+            config.perltidy_indent_columns, None,
             "fields the profile does not set must be left unchanged"
         );
+    }
+
+    #[test]
+    fn perltidy_profile_indent_columns_reach_the_server_config() {
+        // The discovered-profile layer is one of the sources that turns
+        // indentation from "unset" into an explicit value the formatter must
+        // honour over the editor's tabSize.
+        let mut config = ServerConfig::default();
+        let options =
+            crate::tooling::native_compat::classify_perltidy_profile("-i=2\n-t\n").suggested_config;
+        config.apply_perltidy_native_options(&options);
+
+        assert_eq!(config.perltidy_indent_columns, Some(2));
+        assert_eq!(config.perltidy_tabs, Some(true));
     }
 
     #[test]
