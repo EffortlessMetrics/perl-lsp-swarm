@@ -22,6 +22,14 @@ const SCAN_ROOTS: &[&str] = &[
     "docs",
     "vscode-extension",
     "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+    // The installer scripts are install surfaces themselves, not just things
+    // the docs describe: install.ps1 documents its own invocation, and
+    // scripts/install.sh tells MINGW/MSYS/CYGWIN users which Windows command
+    // to run. Both were outside the scan, so a command this validator forbids
+    // in the docs could still be handed to a user by the installers.
+    "install.ps1",
+    "install.sh",
+    "scripts",
 ];
 
 const FORBIDDEN_PATTERNS: &[(&str, &str)] = &[
@@ -141,7 +149,7 @@ fn root_relative<'a>(root: &Path, path: &'a Path) -> Option<&'a Path> {
 fn is_scan_candidate(path: &Path) -> bool {
     matches!(
         path.extension().and_then(OsStr::to_str),
-        Some("md" | "json" | "rs" | "sh" | "ts" | "js" | "yml" | "yaml" | "toml")
+        Some("md" | "json" | "rs" | "sh" | "ps1" | "ts" | "js" | "yml" | "yaml" | "toml")
     )
 }
 
@@ -355,6 +363,26 @@ mod tests {
             "the flagged line must be the piped command, got: {}",
             piped[0].location
         );
+    }
+
+    /// #5477 review finding: the guard reported the tree clean while
+    /// `install.ps1` and `scripts/install.sh` still handed users the forbidden
+    /// command, because neither was in `SCAN_ROOTS` and `.ps1` was not a scan
+    /// candidate. Pin both surfaces so a future scan-root edit cannot silently
+    /// drop the installers back out of coverage.
+    #[test]
+    fn installer_scripts_are_in_scan_scope() -> Result<()> {
+        let root = project_root()?;
+        let files = collect_source_files(&root)?;
+        let scanned: Vec<_> = files.iter().map(|f| f.rel_path.as_path()).collect();
+
+        for required in ["install.ps1", "install.sh", "scripts/install.sh"] {
+            assert!(
+                scanned.contains(&Path::new(required)),
+                "{required} must be scanned by the install-surface guard"
+            );
+        }
+        Ok(())
     }
 
     /// The guard is only worth having if the tree it guards is actually clean.

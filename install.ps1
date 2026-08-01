@@ -1,5 +1,14 @@
 # Perl LSP installer for Windows
-# Usage: irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
+#
+# The piped one-liner is not usable yet. The copy published at
+# perl-lsp/master still derives a `perl-lsp-<version>-...zip` asset name while
+# releases ship `perllsp-<version>-...zip`, so piping that URL into iex 404s
+# (#5461). This file already carries the fix; promoting it to the publication
+# repo is #4348.
+#
+# Until that lands, run it from a clone or a downloaded copy:
+#   .\install.ps1                                    # latest, default dir
+#   .\install.ps1 -Version 0.17.0 -InstallDir C:\tools\bin
 
 param(
     [string]$Version = "latest",

@@ -178,8 +178,10 @@ If the VS Code extension is ready:
 
 Review — do not replace — the README installation section.
 
-[`README.md`](../../README.md#install) and
-[`docs/how-to/INSTALLATION.md`](../how-to/INSTALLATION.md) are the authority for
+[`README.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/README.md#install)
+and
+[`docs/how-to/INSTALLATION.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md)
+are the authority for
 install commands. This runbook previously carried its own copy of that section
 for the operator to paste over the README; that copy went stale and instructed
 publishing a Windows one-liner that 404s for every user
