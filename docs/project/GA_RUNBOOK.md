@@ -135,10 +135,10 @@ class Perllsp < Formula
 
   def install
     extracted_dir = Dir.glob("perllsp-#{version}-*").find { |path| File.directory?(path) }
-    raise "expected release archive directory perllsp-#{version}-<target>" unless extracted_dir
+    package_dir = extracted_dir || "."
 
-    bin.install "#{extracted_dir}/perllsp"
-    bin.install "#{extracted_dir}/perl-dap"
+    bin.install "#{package_dir}/perllsp"
+    bin.install "#{package_dir}/perl-dap"
   end
 
   test do
