@@ -11,7 +11,10 @@ Implemented by:
 - [semantic scorecard](../project/status/semantic_scorecard.md)
 - [semantic shadow compare](../project/status/semantic_shadow_compare.md)
 - [support tiers](../project/status/SUPPORT_TIERS.md)
-- GitHub issue/PR history and current exact-candidate provider evidence; retired goal manifests remain available through Git history
+
+Live evidence: current GitHub issue/PR history and exact-candidate provider
+evidence. The retired goal manifests remain available through Git history.
+
 Status impact: provider cutover, semantic scorecard, semantic shadow compare,
 UX capability dashboard
 
