@@ -8,13 +8,30 @@ fn health_prints_ok() {
 }
 
 #[test]
-fn version_shows_git_tag() {
+fn version_shows_source_revision() -> Result<(), Box<dyn std::error::Error>> {
+    // The revision line is labelled by kind: "Git tag:" only when a tag is
+    // actually checked out, "Git commit:" otherwise, and "Git revision:" for a
+    // build made outside a git checkout. Any of the three is correct — what is
+    // not acceptable is a blank value, which is what this line printed before
+    // the build script checked whether `git` had actually succeeded.
     let mut cmd = cargo_bin_cmd!("perl-lsp");
-    cmd.arg("--version")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("perl-lsp"))
-        .stdout(predicates::str::contains("Git tag:"));
+    let output = cmd.arg("--version").output()?;
+    let stdout = String::from_utf8(output.stdout)?;
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(stdout.contains("perl-lsp"), "version should name the binary: {stdout:?}");
+
+    let revision_line = stdout
+        .lines()
+        .find(|line| line.starts_with("Git "))
+        .ok_or("version output is missing the source-revision line")?;
+    let (label, value) = revision_line.split_once(": ").ok_or("revision line has no ': '")?;
+    assert!(
+        matches!(label, "Git tag" | "Git commit" | "Git revision"),
+        "unexpected revision label {label:?} in {revision_line:?}"
+    );
+    assert!(!value.trim().is_empty(), "revision value must never be blank: {revision_line:?}");
+    Ok(())
 }
 
 #[test]

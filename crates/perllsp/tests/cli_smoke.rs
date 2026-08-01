@@ -43,10 +43,28 @@ fn help_examples_use_facade_name() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn version_mentions_facade_name_and_git_tag() -> Result<(), Box<dyn std::error::Error>> {
+fn version_mentions_facade_name_and_source_revision() -> Result<(), Box<dyn std::error::Error>> {
     let stdout = successful_stdout(run_perllsp(&["--version"])?)?;
     assert!(stdout.contains("perllsp "), "version should print the facade name");
-    assert!(stdout.contains("Git tag:"), "version should include the git tag line");
+
+    // The revision line is labelled by kind: a tagged build says "Git tag:",
+    // an untagged one "Git commit:", and a build made outside a git checkout
+    // "Git revision: unknown". Any of the three is correct; none of them may
+    // be blank.
+    let revision_line = stdout
+        .lines()
+        .find(|line| line.starts_with("Git "))
+        .ok_or("version output is missing the source-revision line")?;
+    let (label, value) = revision_line.split_once(": ").ok_or("revision line has no ': '")?;
+    assert!(
+        matches!(label, "Git tag" | "Git commit" | "Git revision"),
+        "unexpected revision label {label:?} in {revision_line:?}"
+    );
+    assert!(
+        !value.trim().is_empty(),
+        "the revision value must never be blank — an empty field here is what a \
+         build outside a git checkout used to print: {revision_line:?}"
+    );
     Ok(())
 }
 

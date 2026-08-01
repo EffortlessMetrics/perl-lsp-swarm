@@ -66,11 +66,13 @@ where
             let exe_path = env::current_exe()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "<unknown>".to_string());
+            let (revision_label, revision) = build_revision();
             print!(
                 "{}",
                 format_info_output(
                     env!("CARGO_PKG_VERSION"),
-                    env!("GIT_TAG"),
+                    revision_label,
+                    revision,
                     &exe_path,
                     launch_plan.config.feature_profile,
                     use_color,
@@ -497,9 +499,28 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
     }
 }
 
+/// The label and value for the embedded source revision.
+///
+/// The kind is decided at build time (see `build.rs`) rather than inferred
+/// here, because the two cases are indistinguishable from the value alone: a
+/// short commit SHA and an abbreviated tag are both just text. Reporting a
+/// commit under a "Git tag:" label sends anyone reading a bug report looking
+/// for a tag that was never cut.
+pub(crate) fn build_revision() -> (&'static str, &'static str) {
+    let revision = env!("BUILD_REVISION");
+    match env!("BUILD_REVISION_KIND") {
+        "tag" => ("Git tag:", revision),
+        "commit" => ("Git commit:", revision),
+        // Built outside a git checkout — a release tarball, a vendored tree,
+        // or `cargo install` from a registry.
+        _ => ("Git revision:", revision),
+    }
+}
+
 fn print_version(command_name: &str) {
+    let (label, revision) = build_revision();
     println!("{command_name} {}", env!("CARGO_PKG_VERSION"));
-    println!("Git tag: {}", env!("GIT_TAG"));
+    println!("{label} {revision}");
     println!("Perl Language Server using perl-parser v3");
 }
 
