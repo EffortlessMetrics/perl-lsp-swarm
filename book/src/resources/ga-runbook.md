@@ -29,8 +29,9 @@ sed -i "s/^version = \".*\"/version = \"$VERSION\"/" crates/tree-sitter-perl-rs/
 # Update lock file
 cargo update
 
-# Verify builds
-cargo build -p perl-parser --bin perllsp --release
+# Verify builds. The published binary lives in the perllsp crate
+# (crates/perllsp/Cargo.toml); perl-parser only declares perl-parse.
+cargo build -p perllsp --release
 ```
 
 ### 2. Create & Push Tag (2 min)
