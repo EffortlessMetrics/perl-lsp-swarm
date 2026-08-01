@@ -3,36 +3,13 @@
 //! Handles workspace folders and root URI/path management.
 
 use super::super::*;
+use crate::perl_remediation::PERL_REMEDIATION;
 use perl_dap::platform::{PerlInterpreterResult, find_perl_interpreter};
 use perl_lsp_rs_core::config::WorkspaceConfig;
 use std::sync::Once;
 
 /// Fires at most once per LSP session, when Perl is not found anywhere.
 static PERL_NOT_FOUND_WARNED: Once = Once::new();
-
-/// How a user can actually make the language server find Perl.
-///
-/// Deliberately names **no editor setting**. The language server has no
-/// user-facing interpreter-path setting, so the previous advice to "set
-/// `perl-lsp.perl.path`" pointed at something that cannot be set (#5034):
-///
-/// - `perl-lsp.perl.path` does not appear in the extension's
-///   `contributes.configuration` — the shipped settings are `perl-lsp.serverPath`
-///   (the *server binary*, not the interpreter), `includePaths`, and
-///   `externalIncludePaths`.
-/// - `.perl-lsp.toml`'s `[perl]` section has no interpreter field
-///   (`ProjectPerlConfig` carries only include/discovery/PERL5LIB keys).
-/// - Workspace-scoped `perlPath` is *deliberately ignored*, because a hostile
-///   project could otherwise redirect the interpreter used for the `@INC` probe
-///   and get arbitrary code execution at config-load time (#3729).
-///
-/// `perlPath` in `launch.json` is a DAP-only key; it selects the debuggee's
-/// interpreter and has no effect on the language server. Naming it here would
-/// send users to the wrong place — the DAP side already carries its own,
-/// correct `launch.json` guidance.
-const PERL_REMEDIATION: &str = "Install Perl (https://strawberryperl.com on Windows, \
-     `brew install perl` on macOS, or your system package manager) and make sure `perl` is on \
-     PATH, then reload the window (Ctrl+Shift+P \u{2192} Developer: Reload Window).";
 
 /// Message for "Perl was found, but only via an OS fallback path".
 ///

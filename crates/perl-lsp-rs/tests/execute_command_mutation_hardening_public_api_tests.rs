@@ -119,7 +119,7 @@ fn setup_initialized_server() -> perl_lsp::LspServer {
 #[test]
 fn test_execute_command_not_default_comprehensive() -> TestResult {
     // Use a provider with WorkspaceConfig so perl.runFile / perl.runTestSub
-    // do not reject with "refusing ambient fallback" (PR #8966).
+    // do not reject with an unresolved-interpreter error (PR #8966).
     let (workspace, provider) = setup_provider_workspace_with_perl()?;
 
     // Create test files for comprehensive testing
@@ -263,7 +263,7 @@ fn test_execute_command_not_default_comprehensive() -> TestResult {
 #[test]
 fn test_command_routing_specificity_comprehensive() -> TestResult {
     // Use a provider with WorkspaceConfig so perl.runFile does not reject with
-    // "refusing ambient fallback" (PR #8966).
+    // an unresolved-interpreter error (PR #8966).
     let (workspace, provider) = setup_provider_workspace_with_perl()?;
 
     // Create test file
@@ -652,7 +652,7 @@ fn test_file_not_found_error_structure() -> TestResult {
 #[test]
 fn test_command_execution_success_failure_logic() -> TestResult {
     // Use a provider with WorkspaceConfig so perl.runFile / perl.runTestSub
-    // do not reject with "refusing ambient fallback" (PR #8966).
+    // do not reject with an unresolved-interpreter error (PR #8966).
     let (workspace, provider) = setup_provider_workspace_with_perl()?;
 
     // Create files for testing different execution scenarios
@@ -798,7 +798,7 @@ fn test_supported_commands_structure() -> TestResult {
 #[test]
 fn test_comprehensive_workflow_validation() -> TestResult {
     // Use a provider with WorkspaceConfig so perl.runFile / perl.runTestSub
-    // do not reject with "refusing ambient fallback" (PR #8966).
+    // do not reject with an unresolved-interpreter error (PR #8966).
     let (workspace, provider) = setup_provider_workspace_with_perl()?;
 
     // Create comprehensive test file

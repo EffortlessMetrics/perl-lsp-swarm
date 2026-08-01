@@ -2369,8 +2369,10 @@ mod tests {
         })?;
 
         assert_eq!(err.code, -32603);
+        // Wording lives in `debug_launch::unresolved_debug_perl_error` and is
+        // guarded there; this case asserts the refusal survives the oracle seam.
         assert!(
-            err.message.contains("refusing ambient fallback"),
+            err.message.contains("does not fall back to an ambient interpreter"),
             "debugFile should fail closed instead of falling back to ambient perl: {}",
             err.message
         );

@@ -4,6 +4,7 @@ use crate::perl_critic::{
     BuiltInAnalyzer, CriticAnalyzer, CriticConfig, CriticContext, NativeCriticProfile,
     NativeCriticRegistry,
 };
+use crate::perl_remediation::PERL_REMEDIATION;
 #[cfg(not(target_arch = "wasm32"))]
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_lsp_rs_core::config::{CriticEngine, WorkspaceConfig};
@@ -169,9 +170,17 @@ impl ExecuteCommandProvider {
         Err(Self::unresolved_execute_command_perl_error(file_path))
     }
 
+    /// Message for "this command needs Perl and none could be resolved".
+    ///
+    /// The refusal itself is deliberate — perl-lsp will not silently run some
+    /// arbitrary ambient interpreter — so the message states that, then gives
+    /// the only remediation the user can actually perform. It names no
+    /// interpreter-path setting, because none exists; see
+    /// [`crate::perl_remediation`] for why every candidate is wrong (#5376).
     fn unresolved_execute_command_perl_error(file_path: &Path) -> String {
         format!(
-            "Cannot run Perl command for '{}': Perl binary could not be resolved from `perl.path` or PATH. Configure `perl.path` to an explicit Perl executable; refusing ambient fallback.",
+            "Cannot run Perl command for '{}': no Perl interpreter was found on PATH, and \
+             perl-lsp does not fall back to an ambient interpreter. {PERL_REMEDIATION}",
             file_path.display()
         )
     }
@@ -1707,3 +1716,6 @@ pub fn get_supported_commands() -> Vec<String> {
 
 #[cfg(test)]
 mod normalize_path_tests;
+
+#[cfg(test)]
+mod remediation_tests;

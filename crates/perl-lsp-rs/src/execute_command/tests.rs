@@ -825,8 +825,11 @@ fn test_run_file_rejects_unresolved_perl_fallback() -> Result<(), Box<dyn std::e
 
     assert!(result.is_err(), "perl.runFile must reject missing oracle config");
     let error = result.err().ok_or("expected error")?;
+    // Wording lives in `ExecuteCommandProvider::unresolved_execute_command_perl_error`
+    // and is guarded there (provider/remediation_tests.rs); this end-to-end case
+    // asserts the refusal actually reaches the caller through `execute_command`.
     assert!(
-        error.contains("refusing ambient fallback"),
+        error.contains("does not fall back to an ambient interpreter"),
         "error should explain ambient fallback refusal: {error}"
     );
     Ok(())
@@ -847,8 +850,11 @@ fn test_run_test_sub_rejects_unresolved_perl_fallback() -> Result<(), Box<dyn st
 
     assert!(result.is_err(), "perl.runTestSub must reject missing oracle config");
     let error = result.err().ok_or("expected error")?;
+    // Wording lives in `ExecuteCommandProvider::unresolved_execute_command_perl_error`
+    // and is guarded there (provider/remediation_tests.rs); this end-to-end case
+    // asserts the refusal actually reaches the caller through `execute_command`.
     assert!(
-        error.contains("refusing ambient fallback"),
+        error.contains("does not fall back to an ambient interpreter"),
         "error should explain ambient fallback refusal: {error}"
     );
     Ok(())

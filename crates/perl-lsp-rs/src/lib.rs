@@ -333,6 +333,7 @@ pub mod execute_command;
 pub mod fallback;
 pub mod features;
 pub mod handlers;
+pub(crate) mod perl_remediation;
 pub mod protocol;
 pub mod runtime;
 pub mod security;
