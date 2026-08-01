@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "`perllsp --check-project` now reports where each problem is. Findings render grep-style as `path:line:column: message` at the same position `--check` reports for the same error, so a project scan is directly navigable from an editor or `:cfile` instead of naming a file and leaving you to find the line. Read errors, which have no source to locate, still render as `path: message` rather than a fabricated position. The unclosed-block remediation is also reachable again: the categorizer tested for \"Unexpected end of input\", but the parser emits \"Unclosed block: expected '}' but reached end of input\" and falls back to \"end of input\" or \"EOF\" for a missing found-token, so real end-of-input failures were sorted into the syntax and token buckets and the \"check for unclosed blocks, quotes, or heredocs\" hint never fired."
+time: 2026-08-01T00:00:00Z
+custom:
+  PR: "5506"
+  Slug: check-project-locations-eof-1991
+  Breaking: "no"
