@@ -39,7 +39,7 @@ fn render_retired(command: &str, json: bool) -> Result<String> {
         Ok(serde_json::to_string_pretty(&receipt)?)
     } else {
         Ok(format!(
-            "{command}: retired — selected_work=none, finding_count=0, mutation_performed=false; use current GitHub issues/PRs and deliver-goal"
+            "{command}: retired: selected_work=none, finding_count=0, mutation_performed=false; use current GitHub issues/PRs and deliver-goal"
         ))
     }
 }
@@ -72,6 +72,17 @@ mod tests {
             value.get("mutation_performed").and_then(serde_json::Value::as_bool),
             Some(false)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn retired_human_output_states_the_inert_contract() -> Result<()> {
+        let text = render_retired("goals reconcile", false)?;
+        assert!(text.contains("retired:"));
+        assert!(text.contains("selected_work=none"));
+        assert!(text.contains("finding_count=0"));
+        assert!(text.contains("mutation_performed=false"));
+        assert!(!text.contains('—'));
         Ok(())
     }
 }
