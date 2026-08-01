@@ -14,9 +14,10 @@ use tar::Archive;
 use super::model::{
     ArchiveEvidence, ComparisonEvidence, DecisionFacts, DecisionPolicy, EmbeddedArtifact,
     FileArtifact, Recommendation, SmokeEvidence, SmokeStatus, SubjectIdentity, ToolIdentity,
-    VariantEvidence, component_growth_exceeds, decide, size_delta, smokes_pass,
+    VariantEvidence, component_growth_exceeds, decide, repeat_requirement_satisfied, size_delta,
+    smokes_pass,
 };
-use super::{BINARY_NAMES, REPOSITORY, SAFE_ICF_RUSTFLAGS};
+use super::{BINARY_NAMES, GOVERNED_TARGETS, REPOSITORY, SAFE_ICF_RUSTFLAGS};
 
 #[derive(Debug, Deserialize)]
 struct SmokeSuccessShape {
@@ -39,18 +40,11 @@ pub(crate) fn project_root() -> Result<PathBuf> {
 }
 
 pub(crate) fn resolve_path(root: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    }
+    if path.is_absolute() { path.to_path_buf() } else { root.join(path) }
 }
 
 pub(crate) fn display_path(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
+    path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
 }
 
 pub(crate) fn subject_identity(
@@ -65,8 +59,8 @@ pub(crate) fn subject_identity(
     let host = parse_rustc_host(&rustc).unwrap_or_else(|| "unknown".to_string());
     let git_sha =
         capture_in(root, "git", &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
-    let tree_clean = capture_in(root, "git", &["status", "--porcelain"])
-        .is_some_and(|value| value.is_empty());
+    let tree_clean =
+        capture_in(root, "git", &["status", "--porcelain"]).is_some_and(|value| value.is_empty());
     let workspace_version = workspace_version(root).unwrap_or_else(|error| {
         limitations.push(format!("workspace version unavailable: {error}"));
         "unknown".to_string()
@@ -137,6 +131,7 @@ pub(crate) fn measure_variant(
     archive: &Path,
     lsp_smoke: &Path,
     dap_smoke: &Path,
+    source_sha: &str,
     label: &str,
     limitations: &mut Vec<String>,
 ) -> VariantEvidence {
@@ -168,8 +163,13 @@ pub(crate) fn measure_variant(
     let lsp_smoke = load_smoke(root, lsp_smoke, &format!("{label} LSP"), lsp_expected, limitations);
     let dap_smoke = load_smoke(root, dap_smoke, &format!("{label} DAP"), dap_expected, limitations);
 
+    if !is_full_git_sha(source_sha) {
+        limitations.push(format!("{label} artifacts declare no full 40-character source SHA"));
+    }
+
     VariantEvidence {
         directory: display_path(root, &directory),
+        source_sha: normalize_git_sha(source_sha),
         binaries,
         archive,
         lsp_smoke,
@@ -177,11 +177,14 @@ pub(crate) fn measure_variant(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compare_variants(
     baseline: &VariantEvidence,
     candidate: &VariantEvidence,
+    subject: &SubjectIdentity,
     policy: &DecisionPolicy,
     target: &str,
+    repeat_confirmed: bool,
     limitations: &mut Vec<String>,
 ) -> ComparisonEvidence {
     let mut binaries = BTreeMap::new();
@@ -236,6 +239,26 @@ pub(crate) fn compare_variants(
     let material_reduction = combined.reduction_bytes >= policy.minimum_reduction_bytes
         && combined.reduction_basis_points >= policy.minimum_reduction_basis_points;
 
+    let source_identity_bound =
+        source_identity_bound(&subject.git_sha, &baseline.source_sha, &candidate.source_sha);
+    if !source_identity_bound {
+        limitations.push(
+            "baseline and candidate artifacts are not bound to one declared source SHA matching \
+             the measured checkout"
+                .to_string(),
+        );
+    }
+
+    let repeat_satisfied =
+        repeat_requirement_satisfied(&combined, policy, material_reduction, repeat_confirmed);
+    if !repeat_satisfied {
+        limitations.push(format!(
+            "combined reduction of {} bp is below the {} bp repeat-confirmation threshold and no \
+             confirming repeat measurement was declared",
+            combined.reduction_basis_points, policy.repeat_required_below_basis_points
+        ));
+    }
+
     ComparisonEvidence {
         binaries,
         combined,
@@ -252,9 +275,42 @@ pub(crate) fn compare_variants(
             .is_some_and(|value| value.matches_directory),
         baseline_smokes_pass: smokes_pass(baseline),
         candidate_smokes_pass: smokes_pass(candidate),
+        source_identity_bound,
         material_reduction,
         component_growth_within_policy,
+        repeat_confirmed,
+        repeat_requirement_satisfied: repeat_satisfied,
     }
+}
+
+/// Artifacts are source-bound only when both variants declare the same full
+/// source SHA and that SHA is the checkout the receipt is labelled with.
+///
+/// This is a declaration check, not a cryptographic build attestation: it stops
+/// a receipt from labelling artifacts with an unrelated checkout SHA, but it
+/// cannot prove the declared SHA actually produced the measured bytes.
+pub(crate) fn source_identity_bound(
+    subject_sha: &str,
+    baseline_sha: &str,
+    candidate_sha: &str,
+) -> bool {
+    if !is_full_git_sha(subject_sha)
+        || !is_full_git_sha(baseline_sha)
+        || !is_full_git_sha(candidate_sha)
+    {
+        return false;
+    }
+    let subject = normalize_git_sha(subject_sha);
+    subject == normalize_git_sha(baseline_sha) && subject == normalize_git_sha(candidate_sha)
+}
+
+fn is_full_git_sha(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.len() == 40 && trimmed.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn normalize_git_sha(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -294,11 +350,13 @@ pub(crate) fn recommend(
             && candidate.dap_smoke.binary_matches,
         complete_artifacts,
         subject_complete,
-        apple_target: target.ends_with("-apple-darwin"),
+        source_identity_bound: comparison.source_identity_bound,
+        governed_target: GOVERNED_TARGETS.contains(&target),
         baseline_flags_clean: baseline_rustflags.trim().is_empty(),
         candidate_flags_exact: candidate_rustflags.trim() == SAFE_ICF_RUSTFLAGS,
         material_reduction: comparison.material_reduction,
         component_growth_within_policy: comparison.component_growth_within_policy,
+        repeat_requirement_satisfied: comparison.repeat_requirement_satisfied,
     };
     let recommendation = decide(&facts);
 
@@ -317,23 +375,25 @@ pub(crate) fn recommend(
     } else if facts.baseline_smoke_identity && !facts.candidate_smoke_identity {
         limitations.push("candidate smoke is not bound to the measured binary".to_string());
     } else if facts.baseline_archive_identity && !facts.candidate_archive_identity {
-        limitations.push(
-            "candidate archive does not contain the measured extracted binaries".to_string(),
-        );
+        limitations
+            .push("candidate archive does not contain the measured extracted binaries".to_string());
     } else if !facts.complete_artifacts
         || !facts.subject_complete
+        || !facts.source_identity_bound
         || !facts.baseline_smoke_identity
         || !facts.candidate_smoke_identity
     {
         limitations.push("required artifact or subject identity is incomplete".to_string());
-    } else if !facts.apple_target {
-        limitations.push("safe-ICF adoption policy is limited to native Apple targets".to_string());
+    } else if !facts.governed_target {
+        limitations.push(format!(
+            "safe-ICF adoption policy is limited to the governed targets {}",
+            GOVERNED_TARGETS.join(", ")
+        ));
     } else if !facts.baseline_flags_clean {
         limitations.push("baseline rustflags are not empty".to_string());
     } else if !facts.candidate_flags_exact {
-        limitations.push(
-            "candidate rustflags do not match the governed safe-ICF policy".to_string(),
-        );
+        limitations
+            .push("candidate rustflags do not match the governed safe-ICF policy".to_string());
     } else if !facts.component_growth_within_policy {
         limitations.push("one or more binaries exceed the component growth ceiling".to_string());
     }
@@ -375,11 +435,7 @@ fn measure_archive(
         )
     });
 
-    Ok(ArchiveEvidence {
-        artifact,
-        embedded_binaries,
-        matches_directory,
-    })
+    Ok(ArchiveEvidence { artifact, embedded_binaries, matches_directory })
 }
 
 fn read_archive_binaries(path: &Path) -> Result<BTreeMap<String, EmbeddedArtifact>> {
@@ -393,14 +449,8 @@ fn read_archive_binaries(path: &Path) -> Result<BTreeMap<String, EmbeddedArtifac
         if !entry.header().entry_type().is_file() {
             continue;
         }
-        let entry_path = entry
-            .path()
-            .context("reading archive entry path")?
-            .into_owned();
-        let Some(base_name) = entry_path
-            .file_name()
-            .and_then(OsStr::to_str)
-            .map(ToOwned::to_owned)
+        let entry_path = entry.path().context("reading archive entry path")?.into_owned();
+        let Some(base_name) = entry_path.file_name().and_then(OsStr::to_str).map(ToOwned::to_owned)
         else {
             continue;
         };
@@ -427,10 +477,7 @@ fn read_archive_binaries(path: &Path) -> Result<BTreeMap<String, EmbeddedArtifac
         }
         binaries.insert(
             base_name,
-            EmbeddedArtifact {
-                bytes: bytes_count,
-                sha256: format!("{:x}", hasher.finalize()),
-            },
+            EmbeddedArtifact { bytes: bytes_count, sha256: hex_lower(&hasher.finalize()) },
         );
     }
 
@@ -490,11 +537,10 @@ fn load_smoke(
             };
         }
     };
-    let observed_status = shape.status.or(shape.outcome).or_else(|| {
-        shape
-            .success
-            .map(|success| if success { "pass" } else { "fail" }.to_string())
-    });
+    let observed_status = shape
+        .status
+        .or(shape.outcome)
+        .or_else(|| shape.success.map(|success| if success { "pass" } else { "fail" }.to_string()));
     let normalized_status = observed_status.as_deref().map(str::to_ascii_lowercase);
     let status = match normalized_status.as_deref() {
         Some("pass" | "passed" | "success" | "ok") => SmokeStatus::Pass,
@@ -502,9 +548,7 @@ fn load_smoke(
         Some(_) | None => SmokeStatus::Invalid,
     };
     if status == SmokeStatus::Invalid {
-        limitations.push(format!(
-            "{label} smoke receipt has no recognized terminal status"
-        ));
+        limitations.push(format!("{label} smoke receipt has no recognized terminal status"));
     }
     let binary = shape.binary.map(|value| normalize_reported_path(root, &value));
     let binary_matches = match (binary.as_deref(), expected_binary) {
@@ -512,17 +556,9 @@ fn load_smoke(
         _ => false,
     };
     if !binary_matches {
-        limitations.push(format!(
-            "{label} smoke receipt is not bound to the measured binary path"
-        ));
+        limitations.push(format!("{label} smoke receipt is not bound to the measured binary path"));
     }
-    SmokeEvidence {
-        path: display,
-        status,
-        observed_status,
-        binary,
-        binary_matches,
-    }
+    SmokeEvidence { path: display, status, observed_status, binary, binary_matches }
 }
 
 fn normalize_reported_path(root: &Path, value: &str) -> String {
@@ -530,13 +566,13 @@ fn normalize_reported_path(root: &Path, value: &str) -> String {
     display_path(root, &resolve_path(root, path))
 }
 
+/// Match only the exact governed triples. Prefix matching would accept an
+/// arbitrary vendor triple such as `aarch64-anything-apple-darwin`.
 fn target_matches_file_description(target: &str, description: &str) -> bool {
-    if target.starts_with("aarch64-") {
-        description.contains("arm64") || description.contains("aarch64")
-    } else if target.starts_with("x86_64-") {
-        description.contains("x86_64")
-    } else {
-        false
+    match target {
+        "aarch64-apple-darwin" => description.contains("arm64") || description.contains("aarch64"),
+        "x86_64-apple-darwin" => description.contains("x86_64"),
+        _ => false,
     }
 }
 
@@ -553,9 +589,7 @@ fn workspace_version(root: &Path) -> Result<String> {
 }
 
 fn parse_rustc_host(rustc_verbose: &str) -> Option<String> {
-    rustc_verbose
-        .lines()
-        .find_map(|line| line.strip_prefix("host: ").map(ToOwned::to_owned))
+    rustc_verbose.lines().find_map(|line| line.strip_prefix("host: ").map(ToOwned::to_owned))
 }
 
 fn rust_lld_identity(host: &str) -> Result<Option<ToolIdentity>> {
@@ -565,22 +599,15 @@ fn rust_lld_identity(host: &str) -> Result<Option<ToolIdentity>> {
     let Some(sysroot) = capture("rustc", &["--print", "sysroot"]) else {
         return Ok(None);
     };
-    let path = PathBuf::from(sysroot)
-        .join("lib")
-        .join("rustlib")
-        .join(host)
-        .join("bin")
-        .join("rust-lld");
+    let path =
+        PathBuf::from(sysroot).join("lib").join("rustlib").join(host).join("bin").join("rust-lld");
     if !path.is_file() {
         return Ok(None);
     }
     let version = capture_path(&path, &["-flavor", "darwin", "--version"])
         .or_else(|| capture_path(&path, &["--version"]))
         .unwrap_or_else(|| "unknown".to_string());
-    Ok(Some(ToolIdentity {
-        version,
-        sha256: measure_sha256(&path)?,
-    }))
+    Ok(Some(ToolIdentity { version, sha256: measure_sha256(&path)? }))
 }
 
 fn capture(program: &str, args: &[&str]) -> Option<String> {
@@ -618,13 +645,96 @@ fn measure_sha256(path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
-        let read = file
-            .read(&mut buffer)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let read = file.read(&mut buffer).with_context(|| format!("reading {}", path.display()))?;
         if read == 0 {
             break;
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex_lower(&hasher.finalize()))
+}
+
+/// `sha2` digests are byte arrays with no `LowerHex` implementation; render
+/// them the way the other xtask hashing paths already do.
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
+        output.push(char::from_digit(u32::from(byte & 0x0f), 16).unwrap_or('0'));
+    }
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        GOVERNED_TARGETS, hex_lower, source_identity_bound, target_matches_file_description,
+    };
+    use sha2::{Digest, Sha256};
+
+    const SHA_A: &str = "0123456789abcdef0123456789abcdef01234567";
+    const SHA_B: &str = "89abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn source_identity_binds_only_when_every_declared_sha_agrees() {
+        assert!(source_identity_bound(SHA_A, SHA_A, SHA_A));
+        assert!(source_identity_bound(SHA_A, &SHA_A.to_ascii_uppercase(), SHA_A));
+    }
+
+    #[test]
+    fn source_identity_is_unbound_when_variants_came_from_different_shas() {
+        // Baseline from SHA A and candidate from SHA B, compared from a clean
+        // checkout at a third SHA, must not earn an artifact-bound receipt.
+        let checkout = "fedcba9876543210fedcba9876543210fedcba98";
+        assert!(!source_identity_bound(checkout, SHA_A, SHA_B));
+        assert!(!source_identity_bound(checkout, SHA_A, SHA_A));
+        assert!(!source_identity_bound(SHA_A, SHA_A, SHA_B));
+    }
+
+    #[test]
+    fn source_identity_is_unbound_without_a_full_sha() {
+        assert!(!source_identity_bound(SHA_A, "", SHA_A));
+        assert!(!source_identity_bound(SHA_A, "0123456", SHA_A));
+        assert!(!source_identity_bound("unknown", SHA_A, SHA_A));
+        assert!(!source_identity_bound(SHA_A, "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", SHA_A));
+    }
+
+    #[test]
+    fn digests_render_as_lowercase_hex() {
+        assert_eq!(hex_lower(&[0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
+        // Known SHA-256 of the empty input.
+        assert_eq!(
+            hex_lower(&Sha256::new().finalize()),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn adoption_is_restricted_to_the_exact_governed_triples() {
+        assert!(GOVERNED_TARGETS.contains(&"aarch64-apple-darwin"));
+        assert!(GOVERNED_TARGETS.contains(&"x86_64-apple-darwin"));
+        assert!(!GOVERNED_TARGETS.contains(&"aarch64-anything-apple-darwin"));
+        assert!(!GOVERNED_TARGETS.contains(&"aarch64-apple-ios"));
+    }
+
+    #[test]
+    fn file_description_matching_rejects_ungoverned_triples() {
+        assert!(target_matches_file_description(
+            "aarch64-apple-darwin",
+            "Mach-O 64-bit executable arm64"
+        ));
+        assert!(target_matches_file_description(
+            "x86_64-apple-darwin",
+            "Mach-O 64-bit executable x86_64"
+        ));
+        // Suffix/prefix matching previously accepted this fabricated triple.
+        assert!(!target_matches_file_description(
+            "aarch64-anything-apple-darwin",
+            "Mach-O 64-bit executable arm64"
+        ));
+        assert!(!target_matches_file_description(
+            "aarch64-unknown-linux-gnu",
+            "ELF 64-bit LSB pie executable, ARM aarch64"
+        ));
+    }
 }

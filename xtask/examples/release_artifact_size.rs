@@ -30,6 +30,9 @@ pub(crate) const CLAIM_BOUNDARY: &str = concat!(
 pub(crate) const SAFE_ICF_RUSTFLAGS: &str =
     "-C linker=rust-lld -C linker-flavor=ld64.lld -C link-arg=--icf=safe";
 pub(crate) const BINARY_NAMES: [&str; 2] = ["perllsp", "perl-dap"];
+/// The exact native macOS target triples governed by issue #5432. Adoption is
+/// restricted to these; no other triple may earn `adopt`.
+pub(crate) const GOVERNED_TARGETS: [&str; 2] = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
 
 #[derive(Debug, Parser)]
 #[command(name = "release-artifact-size")]
@@ -71,6 +74,19 @@ struct Args {
     #[arg(long)]
     candidate_dap_smoke: PathBuf,
 
+    /// Full 40-character source SHA the baseline artifacts were built from.
+    #[arg(long)]
+    baseline_source_sha: String,
+
+    /// Full 40-character source SHA the candidate artifacts were built from.
+    #[arg(long)]
+    candidate_source_sha: String,
+
+    /// Declares that the confirming repeat measurement required by #5432 for a
+    /// 0.5%-1.0% combined reduction has been performed.
+    #[arg(long)]
+    repeat_confirmed: bool,
+
     /// Minimum combined reduction, in basis points, required for adoption.
     #[arg(long, default_value_t = 50)]
     minimum_reduction_basis_points: i64,
@@ -86,6 +102,11 @@ struct Args {
     /// Maximum permitted growth for either component, in bytes.
     #[arg(long, default_value_t = 32_768)]
     maximum_component_growth_bytes: i64,
+
+    /// Combined reductions below this many basis points require one confirming
+    /// repeat measurement before adoption.
+    #[arg(long, default_value_t = 100)]
+    repeat_required_below_basis_points: i64,
 
     /// Declared baseline linker flags. Must be empty for a valid safe-ICF A/B.
     #[arg(long, default_value = "")]
@@ -111,6 +132,7 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
     let root = measure::project_root()?;
+    check_distinct_outputs(&root, &args.json, args.markdown.as_deref())?;
     let receipt = evaluate(&root, &args)?;
 
     render::write_json(&root, &args.json, &receipt)?;
@@ -135,12 +157,31 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// The Markdown summary is written after the JSON receipt, so identical
+/// resolved paths would silently replace the machine-readable receipt with
+/// prose. Fail before writing either output.
+fn check_distinct_outputs(root: &Path, json: &Path, markdown: Option<&Path>) -> Result<()> {
+    let Some(markdown) = markdown else {
+        return Ok(());
+    };
+    let json_resolved = measure::resolve_path(root, json);
+    let markdown_resolved = measure::resolve_path(root, markdown);
+    if json_resolved == markdown_resolved {
+        bail!(
+            "--json and --markdown resolve to the same path `{}`; give each receipt its own output path",
+            measure::display_path(root, &json_resolved)
+        );
+    }
+    Ok(())
+}
+
 fn evaluate(root: &Path, args: &Args) -> Result<Receipt> {
     let policy = DecisionPolicy {
         minimum_reduction_basis_points: args.minimum_reduction_basis_points,
         minimum_reduction_bytes: args.minimum_reduction_bytes,
         maximum_component_growth_basis_points: args.maximum_component_growth_basis_points,
         maximum_component_growth_bytes: args.maximum_component_growth_bytes,
+        repeat_required_below_basis_points: args.repeat_required_below_basis_points,
     };
     policy.validate()?;
 
@@ -158,6 +199,7 @@ fn evaluate(root: &Path, args: &Args) -> Result<Receipt> {
         &args.baseline_archive,
         &args.baseline_lsp_smoke,
         &args.baseline_dap_smoke,
+        &args.baseline_source_sha,
         "baseline",
         &mut limitations,
     );
@@ -167,6 +209,7 @@ fn evaluate(root: &Path, args: &Args) -> Result<Receipt> {
         &args.candidate_archive,
         &args.candidate_lsp_smoke,
         &args.candidate_dap_smoke,
+        &args.candidate_source_sha,
         "candidate",
         &mut limitations,
     );
@@ -174,8 +217,10 @@ fn evaluate(root: &Path, args: &Args) -> Result<Receipt> {
     let comparison = measure::compare_variants(
         &baseline,
         &candidate,
+        &subject,
         &policy,
         &args.target,
+        args.repeat_confirmed,
         &mut limitations,
     );
     let recommendation = measure::recommend(
@@ -205,4 +250,45 @@ fn evaluate(root: &Path, args: &Args) -> Result<Receipt> {
         comparison,
         limitations,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_distinct_outputs;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn identical_json_and_markdown_paths_are_rejected() {
+        let root = Path::new("/repo");
+        let error = check_distinct_outputs(root, Path::new("receipt"), Some(Path::new("receipt")))
+            .expect_err("equal output paths must be rejected before writing");
+        assert!(error.to_string().contains("same path"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn equivalent_relative_and_absolute_output_paths_are_rejected() {
+        let root = Path::new("/repo");
+        assert!(
+            check_distinct_outputs(
+                root,
+                Path::new("out/receipt.json"),
+                Some(&PathBuf::from("/repo/out/receipt.json")),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn distinct_or_absent_markdown_paths_are_accepted() {
+        let root = Path::new("/repo");
+        assert!(
+            check_distinct_outputs(
+                root,
+                Path::new("out/receipt.json"),
+                Some(Path::new("out/receipt.md")),
+            )
+            .is_ok()
+        );
+        assert!(check_distinct_outputs(root, Path::new("out/receipt.json"), None).is_ok());
+    }
 }

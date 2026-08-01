@@ -88,6 +88,9 @@ pub(crate) struct DecisionPolicy {
     pub(crate) minimum_reduction_bytes: i64,
     pub(crate) maximum_component_growth_basis_points: i64,
     pub(crate) maximum_component_growth_bytes: i64,
+    /// Combined reductions below this threshold are borderline and require one
+    /// confirming repeat measurement before adoption (issue #5432).
+    pub(crate) repeat_required_below_basis_points: i64,
 }
 
 impl DecisionPolicy {
@@ -96,8 +99,14 @@ impl DecisionPolicy {
             || self.minimum_reduction_bytes < 0
             || self.maximum_component_growth_basis_points < 0
             || self.maximum_component_growth_bytes < 0
+            || self.repeat_required_below_basis_points < 0
         {
             bail!("size comparison policy values must be non-negative");
+        }
+        if self.repeat_required_below_basis_points < self.minimum_reduction_basis_points {
+            bail!(
+                "repeat-confirmation threshold must not be below the minimum reduction threshold"
+            );
         }
         Ok(())
     }
@@ -106,6 +115,8 @@ impl DecisionPolicy {
 #[derive(Debug, Serialize)]
 pub(crate) struct VariantEvidence {
     pub(crate) directory: String,
+    /// Source SHA declared by the builder that produced these artifacts.
+    pub(crate) source_sha: String,
     pub(crate) binaries: BTreeMap<String, FileArtifact>,
     pub(crate) archive: Option<ArchiveEvidence>,
     pub(crate) lsp_smoke: SmokeEvidence,
@@ -153,8 +164,11 @@ pub(crate) struct ComparisonEvidence {
     pub(crate) candidate_archive_identity: bool,
     pub(crate) baseline_smokes_pass: bool,
     pub(crate) candidate_smokes_pass: bool,
+    pub(crate) source_identity_bound: bool,
     pub(crate) material_reduction: bool,
     pub(crate) component_growth_within_policy: bool,
+    pub(crate) repeat_confirmed: bool,
+    pub(crate) repeat_requirement_satisfied: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -178,11 +192,13 @@ pub(crate) struct DecisionFacts {
     pub(crate) candidate_smoke_identity: bool,
     pub(crate) complete_artifacts: bool,
     pub(crate) subject_complete: bool,
-    pub(crate) apple_target: bool,
+    pub(crate) source_identity_bound: bool,
+    pub(crate) governed_target: bool,
     pub(crate) baseline_flags_clean: bool,
     pub(crate) candidate_flags_exact: bool,
     pub(crate) material_reduction: bool,
     pub(crate) component_growth_within_policy: bool,
+    pub(crate) repeat_requirement_satisfied: bool,
 }
 
 pub(crate) fn decide(facts: &DecisionFacts) -> Recommendation {
@@ -213,31 +229,53 @@ pub(crate) fn decide(facts: &DecisionFacts) -> Recommendation {
         || !facts.baseline_smoke_identity
         || !facts.candidate_smoke_identity
         || !facts.subject_complete
-        || !facts.apple_target
+        || !facts.source_identity_bound
+        || !facts.governed_target
         || !facts.baseline_flags_clean
         || !facts.candidate_flags_exact
     {
         return Recommendation::NotProven;
     }
     if facts.material_reduction && facts.component_growth_within_policy {
+        if !facts.repeat_requirement_satisfied {
+            return Recommendation::NotProven;
+        }
         Recommendation::Adopt
     } else {
         Recommendation::DoNotAdopt
     }
 }
 
-pub(crate) fn smokes_pass(variant: &VariantEvidence) -> bool {
-    variant.lsp_smoke.status == SmokeStatus::Pass
-        && variant.dap_smoke.status == SmokeStatus::Pass
+/// Issue #5432 requires one confirming repeat measurement before adopting a
+/// borderline win — a combined reduction at or above the minimum threshold but
+/// below `repeat_required_below_basis_points` (0.5%–1.0% by default).
+pub(crate) fn repeat_requirement_satisfied(
+    combined: &SizeDelta,
+    policy: &DecisionPolicy,
+    material_reduction: bool,
+    repeat_confirmed: bool,
+) -> bool {
+    if !material_reduction {
+        return true;
+    }
+    if combined.reduction_basis_points >= policy.repeat_required_below_basis_points {
+        return true;
+    }
+    repeat_confirmed
 }
 
-pub(crate) fn component_growth_exceeds(
-    delta: &SizeDelta,
-    policy: &DecisionPolicy,
-) -> bool {
+pub(crate) fn smokes_pass(variant: &VariantEvidence) -> bool {
+    variant.lsp_smoke.status == SmokeStatus::Pass && variant.dap_smoke.status == SmokeStatus::Pass
+}
+
+pub(crate) fn component_growth_exceeds(delta: &SizeDelta, policy: &DecisionPolicy) -> bool {
     if delta.reduction_bytes >= 0 {
         return false;
     }
+    // `reduction_basis_points` is floored, so for a growth (negative reduction)
+    // its magnitude is the *ceiling* of the true growth ratio. Comparing that
+    // magnitude against an integer ceiling is therefore exact: a 25.999 bp
+    // growth reports 26 bp and is correctly rejected by a 25 bp ceiling.
     let growth_bytes = delta.reduction_bytes.saturating_abs();
     let growth_basis_points = delta.reduction_basis_points.saturating_abs();
     growth_bytes > policy.maximum_component_growth_bytes
@@ -248,10 +286,15 @@ pub(crate) fn size_delta(baseline_bytes: u64, candidate_bytes: u64) -> SizeDelta
     let baseline_i128 = i128::from(baseline_bytes);
     let candidate_i128 = i128::from(candidate_bytes);
     let reduction_i128 = baseline_i128 - candidate_i128;
+    // Round toward negative infinity rather than toward zero. Truncating
+    // division understates growth (a 25.999 bp growth would report 25 bp and
+    // slip under a 25 bp ceiling) while flooring is conservative in both
+    // directions: it never overstates a reduction and never understates a
+    // growth, so integer threshold comparisons stay exact.
     let basis_points_i128 = if baseline_i128 == 0 {
         0
     } else {
-        reduction_i128.saturating_mul(10_000) / baseline_i128
+        reduction_i128.saturating_mul(10_000).div_euclid(baseline_i128)
     };
     SizeDelta {
         baseline_bytes,
@@ -275,7 +318,7 @@ fn clamp_i128_to_i64(value: i128) -> i64 {
 mod tests {
     use super::{
         DecisionFacts, DecisionPolicy, Recommendation, SizeDelta, component_growth_exceeds, decide,
-        size_delta,
+        repeat_requirement_satisfied, size_delta,
     };
 
     fn policy() -> DecisionPolicy {
@@ -284,6 +327,7 @@ mod tests {
             minimum_reduction_bytes: 131_072,
             maximum_component_growth_basis_points: 25,
             maximum_component_growth_bytes: 32_768,
+            repeat_required_below_basis_points: 100,
         }
     }
 
@@ -300,11 +344,13 @@ mod tests {
             candidate_smoke_identity: true,
             complete_artifacts: true,
             subject_complete: true,
-            apple_target: true,
+            source_identity_bound: true,
+            governed_target: true,
             baseline_flags_clean: true,
             candidate_flags_exact: true,
             material_reduction: true,
             component_growth_within_policy: true,
+            repeat_requirement_satisfied: true,
         }
     }
 
@@ -386,5 +432,77 @@ mod tests {
         let mut facts = ready_facts();
         facts.candidate_smoke_identity = false;
         assert_eq!(decide(&facts), Recommendation::Reject);
+    }
+
+    #[test]
+    fn size_delta_does_not_understate_fractional_growth() {
+        // Truncating toward zero reports 25 bp for a true 25.999 bp growth,
+        // which slips under a 25 bp ceiling. Flooring reports 26 bp.
+        let delta = size_delta(10_000_000, 10_025_999);
+        assert_eq!(delta.reduction_bytes, -25_999);
+        assert_eq!(delta.reduction_basis_points, -26);
+    }
+
+    #[test]
+    fn component_growth_ceiling_rejects_a_fractional_growth_under_the_byte_ceiling() {
+        // 25_999 bytes is inside the 32_768-byte ceiling, so only the basis
+        // point ceiling can catch this growth.
+        let delta = size_delta(10_000_000, 10_025_999);
+        assert!(delta.reduction_bytes.abs() < policy().maximum_component_growth_bytes);
+        assert!(component_growth_exceeds(&delta, &policy()));
+    }
+
+    #[test]
+    fn component_growth_ceiling_admits_growth_exactly_at_the_ceiling() {
+        let delta = size_delta(10_000_000, 10_025_000);
+        assert_eq!(delta.reduction_basis_points, -25);
+        assert!(!component_growth_exceeds(&delta, &policy()));
+    }
+
+    #[test]
+    fn size_delta_does_not_overstate_a_fractional_reduction() {
+        let delta = size_delta(10_000_000, 9_950_001);
+        assert_eq!(delta.reduction_bytes, 49_999);
+        assert_eq!(delta.reduction_basis_points, 49);
+    }
+
+    #[test]
+    fn decision_is_not_proven_when_source_identity_is_not_bound() {
+        let mut facts = ready_facts();
+        facts.source_identity_bound = false;
+        assert_eq!(decide(&facts), Recommendation::NotProven);
+    }
+
+    #[test]
+    fn decision_is_not_proven_for_a_borderline_win_without_a_confirming_repeat() {
+        let mut facts = ready_facts();
+        facts.repeat_requirement_satisfied = false;
+        assert_eq!(decide(&facts), Recommendation::NotProven);
+    }
+
+    #[test]
+    fn borderline_win_requires_a_repeat_and_a_clear_win_does_not() {
+        let borderline = size_delta(10_000_000, 9_940_000);
+        assert_eq!(borderline.reduction_basis_points, 60);
+        assert!(!repeat_requirement_satisfied(&borderline, &policy(), true, false));
+        assert!(repeat_requirement_satisfied(&borderline, &policy(), true, true));
+
+        let clear = size_delta(10_000_000, 9_890_000);
+        assert_eq!(clear.reduction_basis_points, 110);
+        assert!(repeat_requirement_satisfied(&clear, &policy(), true, false));
+    }
+
+    #[test]
+    fn repeat_requirement_does_not_apply_without_a_material_reduction() {
+        let small = size_delta(10_000_000, 9_990_000);
+        assert!(repeat_requirement_satisfied(&small, &policy(), false, false));
+    }
+
+    #[test]
+    fn policy_rejects_a_repeat_threshold_below_the_minimum_reduction() {
+        let mut invalid = policy();
+        invalid.repeat_required_below_basis_points = 40;
+        assert!(invalid.validate().is_err());
+        assert!(policy().validate().is_ok());
     }
 }

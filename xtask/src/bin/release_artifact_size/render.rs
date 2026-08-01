@@ -21,10 +21,7 @@ pub(crate) fn write_markdown(root: &Path, output: &Path, receipt: &Receipt) -> R
     markdown.push_str("# Safe ICF artifact comparison\n\n");
     markdown.push_str(&format!("- **Target:** `{}`\n", receipt.subject.target));
     markdown.push_str(&format!("- **Git SHA:** `{}`\n", receipt.subject.git_sha));
-    markdown.push_str(&format!(
-        "- **Recommendation:** `{}`\n",
-        receipt.recommendation.as_str()
-    ));
+    markdown.push_str(&format!("- **Recommendation:** `{}`\n", receipt.recommendation.as_str()));
     markdown.push_str(&format!("- **Status:** `{}`\n\n", receipt.status));
     markdown.push_str(
         "| Artifact | Baseline bytes | Candidate bytes | Reduction bytes | Reduction bp |\n",
@@ -65,8 +62,11 @@ pub(crate) fn write_markdown(root: &Path, output: &Path, receipt: &Receipt) -> R
             "- Candidate smokes: `{}`\n",
             "- Baseline smoke identity: `{}`\n",
             "- Candidate smoke identity: `{}`\n",
+            "- Source identity bound: `{}`\n",
             "- Material reduction: `{}`\n",
-            "- Component growth within policy: `{}`\n"
+            "- Component growth within policy: `{}`\n",
+            "- Repeat confirmed: `{}`\n",
+            "- Repeat requirement satisfied: `{}`\n"
         ),
         receipt.comparison.structural_parity,
         receipt.comparison.target_architecture_match,
@@ -76,8 +76,11 @@ pub(crate) fn write_markdown(root: &Path, output: &Path, receipt: &Receipt) -> R
         receipt.comparison.candidate_smokes_pass,
         receipt.baseline.lsp_smoke.binary_matches && receipt.baseline.dap_smoke.binary_matches,
         receipt.candidate.lsp_smoke.binary_matches && receipt.candidate.dap_smoke.binary_matches,
+        receipt.comparison.source_identity_bound,
         receipt.comparison.material_reduction,
-        receipt.comparison.component_growth_within_policy
+        receipt.comparison.component_growth_within_policy,
+        receipt.comparison.repeat_confirmed,
+        receipt.comparison.repeat_requirement_satisfied
     ));
     if !receipt.limitations.is_empty() {
         markdown.push_str("\n## Limitations\n\n");
@@ -89,12 +92,8 @@ pub(crate) fn write_markdown(root: &Path, output: &Path, receipt: &Receipt) -> R
     markdown.push_str(receipt.claim_boundary);
     markdown.push('\n');
 
-    fs::write(&output, markdown).with_context(|| {
-        format!(
-            "writing Markdown receipt {}",
-            display_path(root, &output)
-        )
-    })
+    fs::write(&output, markdown)
+        .with_context(|| format!("writing Markdown receipt {}", display_path(root, &output)))
 }
 
 fn ensure_parent(path: &Path) -> Result<()> {
