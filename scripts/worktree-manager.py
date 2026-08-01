@@ -222,6 +222,15 @@ def worktree_is_clean(path: Path) -> bool:
     return result.stdout == ""
 
 
+def branch_exists(repo_root: Path, branch: str) -> bool:
+    result = run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=repo_root,
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def branch_checked_out_at(repo_root: Path, branch: str) -> Path | None:
     result = run(["git", "worktree", "list", "--porcelain"], cwd=repo_root)
     worktree: Path | None = None
@@ -240,8 +249,12 @@ def prune_stale_allocations(repo_root: Path, state: JsonObject) -> bool:
         try:
             path = ensure_contained_path(repo_root, entry["path"])
             path_exists = path.exists() or path.is_symlink()
-            ensure_git_repository(repo_root, path)
-        except (KeyError, TypeError, ManagerError):
+            # Only validate a path that is still present. Probing a removed
+            # directory raises OSError from the subprocess cwd, which would
+            # abort list/allocate/release instead of pruning the stale entry.
+            if path_exists:
+                ensure_git_repository(repo_root, path)
+        except (KeyError, TypeError, OSError, ManagerError):
             path_exists = False
         if not path_exists:
             allocations.pop(slot, None)
@@ -298,6 +311,12 @@ def allocate(args: argparse.Namespace, repo_root: Path) -> JsonObject:
         if changed:
             write_state(repo_root, state)
 
+        # Captured before the mutation so rollback only ever removes Git state
+        # that this invocation is responsible for creating. A pre-existing
+        # branch (always the case under --use-existing-branch) must survive a
+        # failed allocation.
+        branch_preexisting = branch_exists(repo_root, branch)
+
         try:
             run(git_args, cwd=repo_root)
             entry = {
@@ -313,10 +332,15 @@ def allocate(args: argparse.Namespace, repo_root: Path) -> JsonObject:
             state["allocations"][key] = entry
             write_state(repo_root, state)
         except Exception:
+            # The managed path was proven absent above, so anything now at it
+            # was created here and is safe to remove.
             with contextlib.suppress(subprocess.CalledProcessError):
                 run(["git", "worktree", "remove", "--force", str(path)], cwd=repo_root)
-            with contextlib.suppress(subprocess.CalledProcessError):
-                run(["git", "branch", "-D", branch], cwd=repo_root)
+            # Never force-delete a branch this invocation did not create;
+            # doing so destroys another work item's unmerged commits.
+            if not branch_preexisting:
+                with contextlib.suppress(subprocess.CalledProcessError):
+                    run(["git", "branch", "-D", branch], cwd=repo_root)
             raise
 
     return allocation_payload(entry)

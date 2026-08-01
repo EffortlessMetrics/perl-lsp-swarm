@@ -177,3 +177,53 @@ if python3 "$manager" --repo-root "$repo" release --slot 7 --owner lane-b \
 fi
 grep -q "owned by" "$repo/wrong-owner.stderr"
 python3 "$manager" --repo-root "$repo" release --slot 7 --owner lane-a >/dev/null
+
+# Case 8: a failed allocation must not destroy a branch it did not create.
+# `--use-existing-branch` adopts another work item's branch, so the rollback
+# path must never force-delete it.
+git -C "$repo" branch agent/pr-8-keep
+keep_sha=$(git -C "$repo" rev-parse refs/heads/agent/pr-8-keep)
+shim=$(mktemp -d)
+cat >"$shim/git" <<'SHIM'
+#!/usr/bin/env bash
+# Fail only the allocating mutation; every other git call is genuine.
+for arg in "$@"; do
+  if [ "$arg" = "worktree" ]; then
+    case " $* " in
+      *" worktree add "*)
+        echo "injected worktree add failure" >&2
+        exit 1
+        ;;
+    esac
+  fi
+done
+exec /usr/bin/env -i PATH="/usr/bin:/bin" HOME="$HOME" git "$@"
+SHIM
+chmod +x "$shim/git"
+if PATH="$shim:$PATH" python3 "$manager" --repo-root "$repo" allocate \
+  --slot 8 --kind pr --id 8 --slug keep --use-existing-branch \
+  >"$repo/rollback.stdout" 2>"$repo/rollback.stderr"; then
+  echo "allocation unexpectedly succeeded under injected failure" >&2
+  exit 1
+fi
+rm -rf "$shim"
+if ! git -C "$repo" show-ref --verify --quiet refs/heads/agent/pr-8-keep; then
+  echo "rollback force-deleted a pre-existing branch" >&2
+  exit 1
+fi
+test "$(git -C "$repo" rev-parse refs/heads/agent/pr-8-keep)" = "$keep_sha"
+git -C "$repo" branch -D agent/pr-8-keep >/dev/null
+
+# Case 9: an externally deleted worktree is pruned rather than crashing the
+# commands that read state.
+python3 "$manager" --repo-root "$repo" allocate \
+  --slot 9 --kind issue --id 9 --slug vanished >/dev/null
+rm -rf "$repo/.agent-worktrees/0009-issue-9-vanished"
+pruned=$(python3 "$manager" --repo-root "$repo" list)
+python3 - "$pruned" <<'PY'
+import json
+import sys
+
+value = json.loads(sys.argv[1])
+assert value == [], value
+PY
