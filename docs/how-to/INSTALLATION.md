@@ -69,6 +69,13 @@ curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/i
 
 From a clone, run `bash scripts/install.sh --help` for the current option list.
 
+`BUILD_FROM_SOURCE=1` installs **`perllsp` only**, not `perl-dap`. That mode
+runs `cargo install perllsp`, and the `perllsp` package declares just the one
+binary, so the debug adapter is skipped without an error. If you need the
+debugger, use a release archive instead — the archives ship both binaries — or
+build `perl-dap` yourself from a clone with
+`cargo build -p perl-dap --release`.
+
 If the script warns that no checksum entry was found, or that neither
 `sha256sum` nor `shasum` is available, it installs without verifying the
 archive. Prefer a manual archive download and checksum check in that case.

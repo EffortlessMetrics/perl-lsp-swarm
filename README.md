@@ -72,7 +72,7 @@ The README is a front door, not the metric source of truth. Current release post
 code --install-extension EffortlessMetrics.perl-lsp-rs
 ```
 
-**macOS and Linux** — installer script; checksum-verifies the release archive and installs `perllsp` and `perl-dap`:
+**macOS and Linux** — installer script; installs `perllsp` and `perl-dap`, and verifies the release archive against the published `SHA256SUMS` when that file and a checksum tool are both available ([details](docs/how-to/INSTALLATION.md#installer-script-macos-and-linux)):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
