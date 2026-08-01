@@ -687,6 +687,9 @@ const NATIVE_CRITIC_PROFILE_VALID_OPTIONS: &str = "recommended, strict";
 ///
 /// The full rule catalog is derived from the strict profile at call time so
 /// warnings stay current when rules are added or removed from the registry.
+/// Strict is a superset of recommended, so an ID missing from it is unknown
+/// under every profile — which is why the warning points at the catalog and
+/// spelling rather than suggesting a profile change.
 /// Values are stored as-is even when unknown — the rule simply never matches.
 fn warn_unknown_rule_ids(setting: &str, ids: &[String]) {
     if ids.is_empty() {
@@ -703,7 +706,8 @@ fn warn_unknown_rule_ids(setting: &str, ids: &[String]) {
                 setting = %setting,
                 value = %id,
                 "unrecognized native critic rule ID; \
-                 this entry will not match any finding (check spelling or use critic.profile=strict)",
+                 this entry will not match any finding; \
+                 check the spelling against the native critic rule catalog",
             );
         }
     }
@@ -4785,5 +4789,53 @@ api_key_prefix = "Attacker "
         let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
         assert_warned_contains(&captured, &["critic.exclude", "native.io.bad_rule_name"]);
         assert_eq!(config.native_critic_exclude, vec!["native.io.bad_rule_name".to_string()]);
+    }
+
+    #[test]
+    fn toml_valid_rule_ids_produce_no_warnings() {
+        // Negative control for the `.perl-lsp.toml` channel: the unknown-ID
+        // tests above prove the warning fires, this proves it stays silent for
+        // valid IDs on the same code path.
+        let mut config = ServerConfig::default();
+        let mut project = ProjectConfig::default();
+        project.critic.include = Some(vec![
+            "native.testing.require_use_strict".to_string(),
+            "native.variables.unused_lexical".to_string(),
+        ]);
+        project.critic.exclude = Some(vec!["native.common.assignment_in_condition".to_string()]);
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        assert!(
+            captured.is_empty(),
+            "expected no warnings for valid TOML rule IDs; got:\n{}",
+            captured.join("\n")
+        );
+    }
+
+    #[test]
+    fn unknown_rule_id_warning_does_not_suggest_a_profile_change() {
+        // The catalog is the strict profile, so no profile change can make an
+        // unknown ID valid. The warning must not send users down that path.
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "include": ["native.common.typo_rule"] }
+            }));
+        });
+        let combined = captured.join("\n");
+        assert!(
+            !combined.contains("critic.profile"),
+            "warning must not suggest a profile change as remediation; got:\n{combined}"
+        );
+        assert!(
+            combined.contains("spelling"),
+            "warning should point at spelling/catalog as the actionable fix; got:\n{combined}"
+        );
+    }
+
+    #[test]
+    fn warn_unknown_rule_ids_is_silent_for_empty_list() {
+        // `include`/`exclude` set to an empty list must not warn.
+        let captured = capture_warnings(|| warn_unknown_rule_ids("critic.include", &[]));
+        assert!(captured.is_empty(), "empty ID list must not warn; got:\n{}", captured.join("\n"));
     }
 }
