@@ -123,4 +123,43 @@ mod tests {
 
         assert_eq!(lexer.position, 0);
     }
+
+    /// Call-observation over every call site in the scan loop.
+    ///
+    /// The tests above each drive one path and only observe the final
+    /// position, so an implementation that reached the right end offset by a
+    /// different route — for example advancing two bytes for a *lone* `:`, or
+    /// consuming a byte before testing `is_perl_identifier_continue` — would
+    /// still pass them. This observes the loop one call at a time: it runs the
+    /// scan from every start offset of a single input that mixes all three
+    /// branches (identifier-continue, `::` pair, and the terminating `break`)
+    /// and pins the exact offset each run stops at.
+    ///
+    /// Concretely, for `a::b:c` the expected stop offset from each start is:
+    ///
+    /// | start | at  | stops at | why                                       |
+    /// |-------|-----|----------|-------------------------------------------|
+    /// | 0     | `a` | 4        | `a`, `::`, `b`, then the lone `:` breaks   |
+    /// | 1     | `:` | 4        | `::` pair, `b`, then the lone `:` breaks   |
+    /// | 2     | `:` | 2        | lone `:` (next is `b`), immediate break    |
+    /// | 3     | `b` | 4        | one identifier char, then the lone `:`     |
+    /// | 4     | `:` | 4        | lone `:` (next is `c`), immediate break    |
+    /// | 5     | `c` | 6        | trailing identifier char to end of input   |
+    /// | 6     | eof | 6        | `current_char()` is None, loop never runs  |
+    #[test]
+    fn consume_qualified_identifier_in_string_call_presence_observer() {
+        const INPUT: &str = "a::b:c";
+        const EXPECTED_STOPS: [usize; 7] = [4, 4, 2, 4, 4, 6, 6];
+
+        for (start, expected_stop) in EXPECTED_STOPS.into_iter().enumerate() {
+            let mut lexer = PerlLexer::new(INPUT);
+            lexer.position = start;
+            lexer.consume_qualified_identifier_in_string();
+
+            assert_eq!(
+                lexer.position, expected_stop,
+                "scanning {INPUT:?} from offset {start} must stop at {expected_stop}"
+            );
+        }
+    }
 }

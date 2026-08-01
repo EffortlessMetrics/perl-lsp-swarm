@@ -2595,6 +2595,38 @@ impl<'a> PerlLexer<'a> {
                             let part_text = &self.input[part_start..self.position];
                             parts.push(StringPart::Variable(Arc::from(part_text)));
                         }
+                        // Array dereference: `@$ref`, `@$$ref`, `@$main::ref`.
+                        // Perl interpolates the whole deref chain as one array
+                        // (verified against real perl 5.38.2:
+                        // `our @a=(1,2); our $r=\@a; print "@$r"` prints "1 2",
+                        // and `my $rr=\$r; print "@$$rr"` prints "1 2" too).
+                        // Mirrors the `$#$ref` arm below, which already consumes
+                        // a `$` sigil run before the qualified identifier, so the
+                        // two arms agree on the same shape. A degenerate `@$`
+                        // with no identifier is still consumed as one unit, which
+                        // is what perl does: `print "@$ x"` prints " x", not
+                        // "@$ x".
+                        Some('$') => {
+                            while self.current_char() == Some('$') {
+                                self.advance();
+                            }
+                            self.consume_qualified_identifier_in_string();
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        // Regex match-offset special arrays `@+` and `@-`. These
+                        // are real Perl array variables and DO interpolate
+                        // (verified against real perl 5.38.2:
+                        // `"foobar"=~/(o+)(b)/; print "@-"` prints "1 1 3" and
+                        // `print "@+"` prints "4 3 4"), so they must not fall
+                        // into the literal fallback below. `try_variable` already
+                        // recognizes the same two forms at token level, so this
+                        // keeps the string scanner consistent with it.
+                        Some('+' | '-') => {
+                            self.advance(); // consume the '+' or '-'
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
                         _ => {
                             // '@' not followed by identifier or '{' — treat as literal
                             current_literal.push('@');
@@ -2859,8 +2891,42 @@ impl<'a> PerlLexer<'a> {
                                     let tail_text = &self.input[tail_start..self.position];
                                     parts.push(StringPart::Expression(Arc::from(tail_text)));
                                 }
+                            } else if after_run.is_some_and(|c| c.is_ascii_digit()) {
+                                // Digits do not start an identifier, but they do
+                                // name capture variables, and a `$` run in front
+                                // of one is a scalar deref of that capture --
+                                // not a PID followed by literal text (verified
+                                // against real perl 5.38.2:
+                                // `perl -W -e '"abc"=~/(a)/; print "$$1X"'`
+                                // prints just "X" with one "uninitialized value"
+                                // warning, i.e. `$$1` is one deref unit that
+                                // interpolates empty, leaving "X" literal). The
+                                // whole digit run belongs to the variable for
+                                // the same reason `"$10"` is capture group 10.
+                                for _ in 0..dollar_run {
+                                    self.advance();
+                                }
+                                while self.current_char().is_some_and(|c| c.is_ascii_digit()) {
+                                    self.advance();
+                                }
+                                let part_text = &self.input[part_start..self.position];
+                                parts.push(StringPart::Variable(Arc::from(part_text)));
                             } else {
-                                self.advance(); // consume second '$' for PID
+                                // Bare `$$` is the PID. A longer pure sigil run
+                                // (`$$$`, `$$$$`) is still one interpolation
+                                // unit, so consume the whole run rather than a
+                                // single '$' -- verified against real perl
+                                // 5.38.2: `print "[$$]"` prints the PID, while
+                                // `print "[$$$]"` and `print "[$$$$]"` both
+                                // print "[]" (one deref unit that interpolates
+                                // empty), never the PID followed by a literal
+                                // '$'. A trailing punctuation variable is NOT
+                                // part of the run: `print "[$$!]"` prints the
+                                // PID followed by a literal '!', which is what
+                                // consuming only the run leaves behind.
+                                for _ in 0..dollar_run {
+                                    self.advance();
+                                }
                                 let part_text = &self.input[part_start..self.position];
                                 parts.push(StringPart::Variable(Arc::from(part_text)));
                             }

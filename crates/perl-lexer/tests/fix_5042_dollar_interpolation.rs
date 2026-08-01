@@ -87,11 +87,93 @@ fn dollar_dollar_dollar_identifier_is_double_scalar_deref() -> R {
 }
 
 // Bare "$$" (PID) must keep working even though $$foo is now a deref chain —
-// the PID case only fires when no identifier follows the dollar run.
+// the PID case only fires when no identifier follows the dollar run. Unlike
+// `dollar_dollar_in_string_emits_pid_variable` above, this pins the boundary
+// with a *following character*: the PID arm must stop after the second `$` and
+// hand `;` back to the literal bucket rather than folding it into the variable.
 #[test]
 fn dollar_dollar_bare_still_emits_pid_variable() -> R {
-    let parts = interpolated_parts(r#""$$""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$$"))]);
+    let parts = interpolated_parts(r#""pid=$$;""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![
+            StringPart::Literal(Arc::from("pid=")),
+            StringPart::Variable(Arc::from("$$")),
+            StringPart::Literal(Arc::from(";")),
+        ]
+    );
+    Ok(())
+}
+
+// A punctuation special variable is NOT part of the dollar run. Verified
+// against real perl 5.38.2: `print "[$$!]"` prints the PID followed by a
+// literal `!` (e.g. "[32509!]"), so `$$!` is the PID plus literal text, not
+// `$$` + the `$!` special variable and not a three-character variable.
+#[test]
+fn dollar_dollar_then_punctuation_is_pid_plus_literal_text() -> R {
+    let parts = interpolated_parts(r#""$$!""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$$")), StringPart::Literal(Arc::from("!"))]
+    );
+    Ok(())
+}
+
+// A pure sigil run longer than two is still ONE interpolation unit, not the
+// PID followed by a stray literal `$`. Verified against real perl 5.38.2:
+//   perl -e 'no strict; print "[$$]"'    # prints "[<pid>]"
+//   perl -e 'no strict; print "[$$$]"'   # prints "[]"
+//   perl -e 'no strict; print "[$$$$]"'  # prints "[]"
+// The empty output for the longer runs shows perl parsed each as one deref
+// unit; had it read `$$` + literal `$` the PID digits would have appeared.
+// A single `self.advance()` in the fallback would emit
+// [Variable("$$"), Literal("$")] here.
+#[test]
+fn triple_dollar_run_is_one_variable_not_pid_plus_literal_dollar() -> R {
+    let parts = interpolated_parts(r#""$$$""#).ok_or("no InterpolatedString")?;
+    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$$$"))]);
+    Ok(())
+}
+
+#[test]
+fn quadruple_dollar_run_is_one_variable() -> R {
+    let parts = interpolated_parts(r#""$$$$""#).ok_or("no InterpolatedString")?;
+    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$$$$"))]);
+    Ok(())
+}
+
+// Digits do not start an identifier, but a `$` run in front of one is a scalar
+// deref of that capture variable — not the PID followed by literal digits.
+// Verified against real perl 5.38.2:
+//   perl -W -e '"abc"=~/(a)/; print "$$1X"'
+//   # one "uninitialized value" warning, prints just "X"
+// i.e. `$$1` is one unit that interpolates empty and leaves "X" literal. A
+// fallback that advanced once would emit [Variable("$$"), Literal("1X")].
+#[test]
+fn dollar_dollar_digit_is_a_capture_deref_not_pid_plus_digit() -> R {
+    let parts = interpolated_parts(r#""$$1X""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$$1")), StringPart::Literal(Arc::from("X"))]
+    );
+    Ok(())
+}
+
+// The digit run is consumed whole, for the same reason `"$10"` is capture
+// group 10 rather than `$1` + "0".
+#[test]
+fn dollar_dollar_multi_digit_capture_deref_consumes_the_whole_digit_run() -> R {
+    let parts = interpolated_parts(r#""$$12""#).ok_or("no InterpolatedString")?;
+    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$$12"))]);
+    Ok(())
+}
+
+// The digit branch must also carry a longer sigil run, so it agrees with the
+// identifier branch above (`$$$foo`) rather than dropping sigils.
+#[test]
+fn triple_dollar_digit_capture_deref_keeps_the_whole_sigil_run() -> R {
+    let parts = interpolated_parts(r#""$$$9""#).ok_or("no InterpolatedString")?;
+    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$$$9"))]);
     Ok(())
 }
 

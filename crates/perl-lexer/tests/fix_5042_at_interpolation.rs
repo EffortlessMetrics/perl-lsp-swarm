@@ -70,8 +70,9 @@ fn at_brace_expr_is_expression() -> R {
 }
 
 // Verified against real perl 5.38.2: `perl -e 'print "@!"'` prints a literal
-// `@!` -- `@` has no punctuation-variable forms the way `$` does, so a `@`
-// not followed by an identifier or `{` must stay literal text.
+// `@!`. `@` has only two punctuation forms -- the match-offset arrays `@+` and
+// `@-` (covered further down) -- so every *other* `@` that is followed by
+// neither an identifier, `{`, nor `$` must stay literal text.
 #[test]
 fn at_followed_by_punct_stays_literal() -> R {
     let parts = interp_parts("\"@!\"")?;
@@ -303,6 +304,143 @@ fn at_brace_arm_wins_over_the_identifier_arm_for_a_braced_name() -> R {
         parts,
         vec![StringPart::Expression(Arc::from("@{main::arr}"))],
         "\"@{{main::arr}}\" must be one Expression part, got {parts:?}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Regex match-offset special arrays — @+ and @-
+//
+// `@+` and `@-` are real Perl array variables holding the end/start offsets of
+// the most recent successful match, and they DO interpolate in double-quoted
+// strings. Verified against real perl 5.38.2:
+//
+//   perl -e '"foobar"=~/(o+)(b)/; print "@-\n"'   # prints "1 1 3"
+//   perl -e '"foobar"=~/(o+)(b)/; print "@+\n"'   # prints "4 3 4"
+//
+// so the literal fallback must not claim them. `try_variable` already
+// recognizes the same two forms at token level (the
+// `(sigil == '@' || sigil == '%') && matches!(ch, '+' | '-')` branch in
+// `lib.rs`), so the string scanner has to agree with it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn at_plus_match_end_offsets_array_is_variable() -> R {
+    let parts = interp_parts("\"@+\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@+"))],
+        "\"@+\" is the match-end-offset array and must interpolate, got {parts:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn at_minus_match_start_offsets_array_is_variable() -> R {
+    let parts = interp_parts("\"@-\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@-"))],
+        "\"@-\" is the match-start-offset array and must interpolate, got {parts:?}"
+    );
+    Ok(())
+}
+
+// Both offset arrays inside surrounding literal text: pins that the `+`/`-`
+// arm emits exactly one Variable part each and hands everything else back to
+// the literal bucket, rather than swallowing neighbouring characters.
+#[test]
+fn at_plus_and_at_minus_interpolate_inside_surrounding_literal_text() -> R {
+    let parts = interp_parts("\"match at @+..@- end\"")?;
+    assert_eq!(
+        parts,
+        vec![
+            StringPart::Literal(Arc::from("match at ")),
+            StringPart::Variable(Arc::from("@+")),
+            StringPart::Literal(Arc::from("..")),
+            StringPart::Variable(Arc::from("@-")),
+            StringPart::Literal(Arc::from(" end")),
+        ],
+        "both offset arrays must interpolate as separate Variable parts, got {parts:?}"
+    );
+    Ok(())
+}
+
+// The `+`/`-` arm must consume exactly one character. An implementation that
+// scanned a run of punctuation would emit Variable("@++") for this input.
+#[test]
+fn at_plus_consumes_exactly_one_sigil_character() -> R {
+    let parts = interp_parts("\"@++\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@+")), StringPart::Literal(Arc::from("+"))],
+        "\"@++\" is `@+` followed by a literal `+`, got {parts:?}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Array dereference — @$ref, @$$ref, @$Pkg::ref
+//
+// Verified against real perl 5.38.2:
+//
+//   perl -e 'our @a=(1,2); our $r=\@a; print "@$r"'                # "1 2"
+//   perl -e 'our @a=(1,2); our $r=\@a; my $rr=\$r; print "@$$rr"'  # "1 2"
+//
+// so the `$` sigil run plus the dereferenced name is one interpolation unit,
+// exactly like the `$#$ref` arm. Before this arm existed the `$` fell into the
+// literal fallback and `"@$aref"` emitted Literal("@") + Variable("$aref"),
+// splitting the `@` sigil away from its own interpolation unit.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn at_dollar_ref_is_a_single_array_deref_variable() -> R {
+    let parts = interp_parts("\"@$aref\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@$aref"))],
+        "\"@$aref\" must be one Variable part, got {parts:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn at_double_dollar_ref_chains_the_whole_sigil_run() -> R {
+    let parts = interp_parts("\"@$$rr\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@$$rr"))],
+        "\"@$$rr\" must keep the whole sigil run in one Variable part, got {parts:?}"
+    );
+    Ok(())
+}
+
+// The deref arm reuses `consume_qualified_identifier_in_string`, so it folds
+// `::` package segments for the same reason `@main::arr` and `$#main::array`
+// do. An implementation that stopped at the first `:` would emit
+// Variable("@$Foo") + Literal("::Bar::ref").
+#[test]
+fn at_dollar_ref_folds_package_qualifiers() -> R {
+    let parts = interp_parts("\"@$Foo::Bar::ref\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@$Foo::Bar::ref"))],
+        "\"@$Foo::Bar::ref\" must be one Variable part, got {parts:?}"
+    );
+    Ok(())
+}
+
+// The deref arm must stop at the first non-identifier character and hand the
+// rest back to the literal bucket, so a trailing subscript is not silently
+// folded into the variable name. `@arr[...]` slice interpolation stays a
+// documented non-goal for this PR.
+#[test]
+fn at_dollar_ref_stops_at_a_trailing_subscript() -> R {
+    let parts = interp_parts("\"@$aref[0]\"")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("@$aref")), StringPart::Literal(Arc::from("[0]"))],
+        "the `@$ref` arm must not consume the trailing subscript, got {parts:?}"
     );
     Ok(())
 }
