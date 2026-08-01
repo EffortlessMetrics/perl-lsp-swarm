@@ -68,13 +68,18 @@ $HostArch = if ($env:PROCESSOR_ARCHITEW6432) {
 
 $IsArm64Host = $HostArch -eq "ARM64"
 
-$Arch = if ($IsArm64Host -or $HostArch -eq "AMD64") {
-    "x86_64"
+# Name the target as a whole literal rather than assembling it from an arch
+# variable and a "-pc-windows-msvc" suffix. PowerShell cannot be executed on
+# the Linux CI host, so the contract test in
+# scripts/tests/test-install-target-selection.sh checks which targets this
+# script can request by reading them out of the source. Assembling the triple
+# from a variable hides it from that check, which is how the original defect
+# ($Arch = "aarch64") stayed invisible.
+$Target = if ($IsArm64Host -or $HostArch -eq "AMD64") {
+    "x86_64-pc-windows-msvc"
 } else {
     Write-Error "Unsupported architecture: $HostArch. Only x86_64 Windows binaries are published. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
 }
-
-$Target = "$Arch-pc-windows-msvc"
 
 if ($IsArm64Host) {
     Write-Info "Detected system: Windows (ARM64) - installing $Target"

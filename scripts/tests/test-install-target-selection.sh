@@ -124,6 +124,17 @@ assert_only_built_windows_targets() {
     referenced="$(strip_comments "$file" \
         | grep -Eo '(x86_64|aarch64|arm64|i686|armv7)-pc-windows-[a-z]+' | sort -u || true)"
 
+    # An empty result must fail, not pass. The original defect assigned only the
+    # arch ($Arch = "aarch64") and appended the suffix separately, so no whole
+    # triple appeared in the source and a membership-only check saw nothing to
+    # object to — it would have certified the very bug it exists to catch. Each
+    # surface must name at least one target literally so there is something to
+    # check.
+    if [[ -z "$referenced" ]]; then
+        fail "$label" "names no Windows target literally; the contract cannot be checked (assemble no triple from a variable)"
+        return
+    fi
+
     offenders="$(comm -23 <(printf '%s\n' "$referenced") <(printf '%s\n' "$built"))"
 
     if [[ -n "$offenders" ]]; then
