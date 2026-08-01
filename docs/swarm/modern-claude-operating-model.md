@@ -12,8 +12,9 @@ fixed role conveyor, lifecycle-label chain, or durable executor topology.
 
 Use the highest applicable current authority:
 
-1. current `origin/main`, live GitHub issues/PRs/reviews/checks/rulesets, and
-   actual repository behavior;
+1. current GitHub default-branch HEAD, or a fetched and explicitly verified local
+   `origin/main` that matches it, plus live GitHub issues/PRs/reviews/checks/
+   rulesets and actual repository behavior;
 2. accepted specifications, ADRs, policies, generated contracts, independent
    proof, and exact-candidate receipts;
 3. root and package-local `CLAUDE.md` guidance plus provider-native skills;
