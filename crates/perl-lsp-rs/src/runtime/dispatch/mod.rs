@@ -201,6 +201,27 @@ mod tests {
         );
     }
 
+    /// An invalid *notification* (no `id`) must be dropped silently rather than
+    /// answered, because JSON-RPC forbids replying to a notification. This
+    /// covers the `!context.should_respond` branch of the preflight rejection,
+    /// which the request-shaped tests below cannot reach.
+    #[test]
+    fn invalid_notification_is_dropped_without_a_response() {
+        let server = LspServer::new();
+        let _ = server.handle_request(request(1, "initialize", Some(json!({}))));
+
+        let notification = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "textDocument/<script>".to_string(),
+            params: None,
+        };
+        assert!(
+            server.handle_request(notification).is_none(),
+            "an invalid notification must be dropped, not answered"
+        );
+    }
+
     /// Preflight input-validation rejects requests whose method name contains
     /// characters outside `[a-zA-Z0-9/$]` with JSON-RPC INVALID_REQUEST (-32600).
     /// This is the end-to-end wiring test for the `validate_lsp_request` call

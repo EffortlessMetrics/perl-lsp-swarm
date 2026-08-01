@@ -386,6 +386,68 @@ fn every_advertised_command_passes_validation() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The generic params-size guard must not undercut the configured file limit.
+//
+// MAX_PARAMS_SIZE is 1,000,000; the default maxFileSizeBytes is 1,048,576. A
+// document in that band was rejected by the params guard before the configured
+// file limit was consulted — and on didOpen/didChange, which are notifications,
+// that rejection is silent, so the document is simply never stored.
+// ---------------------------------------------------------------------------
+
+/// Build a document of exactly `len` bytes shaped like real source: short
+/// lines, so the separate per-line length guard is not what is under test.
+fn document_of_len(len: usize) -> String {
+    // 80 source bytes + '\n' per line.
+    let line = format!("{}\n", "a".repeat(79));
+    let mut text = line.repeat(len / line.len());
+    text.push_str(&"b".repeat(len - text.len()));
+    debug_assert_eq!(text.len(), len);
+    text
+}
+
+#[test]
+fn text_sync_params_at_the_configured_file_limit_are_accepted() -> anyhow::Result<()> {
+    // A document exactly at the configured file limit must survive the params
+    // guard. Sized from the live limit rather than a literal so the test tracks
+    // configuration instead of pinning today's default.
+    let text = document_of_len(max_file_size_bytes());
+    for method in ["textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"] {
+        let params = serde_json::json!({
+            "textDocument": { "uri": "file:///big.pl", "text": text }
+        });
+        validate_lsp_request(method, &params).map_err(|e| {
+            anyhow::anyhow!("{method} rejected a document at the configured file limit: {e}")
+        })?;
+    }
+    Ok(())
+}
+
+#[test]
+fn text_sync_params_over_the_configured_file_limit_are_rejected() {
+    // Negative control: raising the ceiling for text sync must not remove the
+    // bound. One byte over the configured file limit is still refused.
+    let text = document_of_len(max_file_size_bytes() + 1);
+    let params = serde_json::json!({
+        "textDocument": { "uri": "file:///toobig.pl", "text": text }
+    });
+    assert!(
+        validate_lsp_request("textDocument/didOpen", &params).is_err(),
+        "a document over the configured file limit must still be rejected"
+    );
+}
+
+#[test]
+fn non_text_sync_params_keep_the_flat_one_megabyte_bound() {
+    // The relaxed ceiling is scoped to text synchronization; an arbitrary
+    // method must not gain it.
+    let params = serde_json::json!({ "blob": "a".repeat(1_000_001) });
+    assert!(
+        validate_lsp_request("custom/whatever", &params).is_err(),
+        "non-text-sync methods must keep the flat MAX_PARAMS_SIZE bound"
+    );
+}
+
 #[test]
 fn unknown_command_is_still_rejected() {
     // Negative control: the union must not have become an accept-everything gate.

@@ -4,8 +4,40 @@ use crate::runtime::input_validation::constants::{
     MAX_URI_LENGTH,
 };
 use crate::runtime::input_validation::file_validation::validate_file_content;
+use crate::runtime::limits::max_file_size_bytes as limits_max_file_size_bytes;
 use anyhow::{Result, anyhow};
 use std::path::Path;
+
+/// Methods whose params legitimately carry a whole editor buffer.
+const TEXT_SYNC_METHODS: &[&str] =
+    &["textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"];
+
+/// Serialized-params ceiling for `method`.
+///
+/// The flat [`MAX_PARAMS_SIZE`] guard is a generic resource bound, but for
+/// text-synchronization methods the params *are* the document, and the
+/// authority on how large a document may be is the configurable
+/// `maxFileSizeBytes` limit enforced by [`validate_file_content`].
+///
+/// Those two disagreed: `MAX_PARAMS_SIZE` is 1,000,000 while the default file
+/// limit is 1,048,576, so a document in that band — or any document at all once
+/// an operator *raised* `maxFileSizeBytes` — was rejected here before the
+/// configured limit was ever consulted. On `didOpen`/`didChange`, which are
+/// notifications, that rejection is silent: the document is simply never
+/// stored, with no diagnostic explaining why.
+///
+/// So text-sync methods get a ceiling derived from the configured file limit,
+/// with headroom for JSON envelope and string escaping (worst-case escaping
+/// roughly doubles the payload). `validate_file_content` then enforces the real
+/// configured limit precisely. Every other method keeps the flat bound.
+fn max_params_size_for(method: &str) -> usize {
+    if TEXT_SYNC_METHODS.contains(&method) {
+        let file_limit = limits_max_file_size_bytes();
+        MAX_PARAMS_SIZE.max(file_limit.saturating_mul(2).saturating_add(4_096))
+    } else {
+        MAX_PARAMS_SIZE
+    }
+}
 
 /// Validates LSP request parameters to ensure they're safe.
 pub fn validate_lsp_request(method: &str, params: &serde_json::Value) -> Result<()> {
@@ -18,7 +50,7 @@ pub fn validate_lsp_request(method: &str, params: &serde_json::Value) -> Result<
     }
 
     let params_str = serde_json::to_string(params)?;
-    if params_str.len() > MAX_PARAMS_SIZE {
+    if params_str.len() > max_params_size_for(method) {
         return Err(anyhow!("LSP parameters too large for method: {}", method));
     }
 

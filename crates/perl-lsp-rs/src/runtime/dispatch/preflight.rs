@@ -35,10 +35,16 @@ pub(super) fn prepare_request(
         return PreflightOutcome::NotificationHandled;
     }
 
-    if let Some(cancelled) = register_request_cancellation(server, context.id.as_ref(), request) {
-        return PreflightOutcome::Respond(cancelled);
-    }
-
+    // Input validation runs *before* cancellation registration, deliberately.
+    //
+    // `register_request_cancellation` inserts a token and a cloned cleanup
+    // context into the global registry, and the entry is normally removed by
+    // `finalize_response` or a handler cleanup guard. Rejecting here returns
+    // early and reaches neither, so validating after registration would leak one
+    // registry entry — holding its cloned params — per rejected request, letting
+    // a client grow server memory without bound by replaying invalid requests
+    // under fresh ids. Nothing in validation needs the registry, so the check
+    // simply moves ahead of it.
     let null = Value::Null;
     let params_ref = request.params.as_ref().unwrap_or(&null);
     if let Err(err) = crate::security::validate_lsp_request(&request.method, params_ref) {
@@ -56,6 +62,10 @@ pub(super) fn prepare_request(
                 data: None,
             }),
         });
+    }
+
+    if let Some(cancelled) = register_request_cancellation(server, context.id.as_ref(), request) {
+        return PreflightOutcome::Respond(cancelled);
     }
 
     auto_initialize_for_compat(server, request);
