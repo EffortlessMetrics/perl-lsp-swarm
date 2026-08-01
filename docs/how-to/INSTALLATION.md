@@ -20,7 +20,7 @@ Use one of the public install paths that matches how you work:
 
 - VS Code: install the `EffortlessMetrics.perl-lsp-rs` extension and let it download the matching `perllsp` binary.
 - macOS or Linux: run the [installer script](#installer-script-macos-and-linux), or install via the [EffortlessMetrics Homebrew tap](#homebrew-via-the-effortlessmetrics-tap).
-- Windows: run the [PowerShell installer script](#windows).
+- Windows: install from the [manual archive](#manual-archive). The PowerShell installer script does not work against the published assets yet ([#5461](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5461)).
 - Other editors: download a prebuilt binary from [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) and put it on your `PATH`.
 - Local testing or pre-release validation: install from this repo with `cargo install --path crates/perllsp`.
 
