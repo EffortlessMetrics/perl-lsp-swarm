@@ -30,7 +30,7 @@ sed -i "s/^version = \".*\"/version = \"$VERSION\"/" crates/tree-sitter-perl-rs/
 cargo update
 
 # Verify builds
-cargo build -p perl-parser --bin perl-lsp --release
+cargo build -p perllsp --release
 ```
 
 ### 2. Create & Push Tag (2 min)
