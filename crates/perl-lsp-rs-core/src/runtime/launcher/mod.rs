@@ -1490,7 +1490,7 @@ mod tests {
     }
 
     #[test]
-    fn info_coverage_fraction_evaluates_to_its_printed_percentage() {
+    fn info_coverage_fraction_evaluates_to_its_printed_percentage() -> Result<(), String> {
         // The line read `33/60 (53%)` — 33/60 is 55%. The numerator was the raw
         // advertised count while the percent came from the trackable count.
         // Recompute the printed percentage from the printed fraction and
@@ -1508,19 +1508,26 @@ mod tests {
         let line = out
             .lines()
             .find(|line| line.starts_with("LSP spec coverage:"))
-            .unwrap_or_else(|| panic!("no coverage line in:\n{out}"));
+            .ok_or_else(|| format!("no coverage line in:\n{out}"))?;
         let rendered = line.trim_start_matches("LSP spec coverage:").trim();
         let (fraction, percent) = rendered
             .split_once(" (")
-            .unwrap_or_else(|| panic!("unexpected coverage format: {line:?}"));
+            .ok_or_else(|| format!("unexpected coverage format: {line:?}"))?;
         let (covered, total) = fraction
             .split_once('/')
-            .unwrap_or_else(|| panic!("unexpected fraction format: {fraction:?}"));
+            .ok_or_else(|| format!("unexpected fraction format: {fraction:?}"))?;
 
-        let covered: f64 = covered.trim().parse().unwrap_or_else(|_| panic!("{covered:?}"));
-        let total: f64 = total.trim().parse().unwrap_or_else(|_| panic!("{total:?}"));
-        let printed: f64 =
-            percent.trim_end_matches("%)").trim().parse().unwrap_or_else(|_| panic!("{percent:?}"));
+        let covered: f64 = covered
+            .trim()
+            .parse()
+            .map_err(|err| format!("invalid covered value {covered:?}: {err}"))?;
+        let total: f64 =
+            total.trim().parse().map_err(|err| format!("invalid total value {total:?}: {err}"))?;
+        let printed: f64 = percent
+            .trim_end_matches("%)")
+            .trim()
+            .parse()
+            .map_err(|err| format!("invalid printed percentage {percent:?}: {err}"))?;
 
         assert!(total > 0.0, "coverage denominator must be positive: {line:?}");
         let recomputed = (covered / total * 100.0).round();
@@ -1529,10 +1536,11 @@ mod tests {
             "coverage fraction and percentage disagree: {line:?} \
              — {covered}/{total} is {recomputed}%, printed {printed}%"
         );
+        Ok(())
     }
 
     #[test]
-    fn info_does_not_compare_a_quantity_against_itself() {
+    fn info_does_not_compare_a_quantity_against_itself() -> Result<(), String> {
         // `Features: N/N active (100%)` compared one binding to itself, so it
         // could only ever print 100% regardless of what was advertised.
         let out = super::format_info_output(
@@ -1546,12 +1554,13 @@ mod tests {
         let line = out
             .lines()
             .find(|line| line.starts_with("Features:"))
-            .unwrap_or_else(|| panic!("no features line in:\n{out}"));
+            .ok_or_else(|| format!("no features line in:\n{out}"))?;
         assert!(
             !line.contains("100%"),
             "the features line must report a real quantity, not a tautology: {line:?}"
         );
         assert!(line.contains("advertised"), "features line should say what it counts: {line:?}");
+        Ok(())
     }
 
     // ── port_in_use_message ───────────────────────────────────────
