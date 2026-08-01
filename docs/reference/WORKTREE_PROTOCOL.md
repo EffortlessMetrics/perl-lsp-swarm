@@ -47,7 +47,7 @@ Reusing a worktree for a second PR risks:
 - Branch state mismatch when the worktree branch diverges from the remote.
 - Stale `CARGO_TARGET_DIR` artifacts producing phantom test failures.
 
-The worktree-manager script (`scripts/worktree-manager.py`) tracks numbered slots
+The worktree-manager script (`scripts/worktree-manager.py`) tracks named slots
 to make slot reuse predictable and auditable — but a slot must be fully released
 and cleaned before it can be legitimately reallocated.
 
@@ -363,29 +363,19 @@ allocation with owner tracking:
 ```bash
 # Box A — claim slot before creating worktree
 python3 scripts/worktree-manager.py allocate \
-    --slot 1 \
-    --kind issue \
-    --id 7042 \
-    --slug rename-provider \
+    --slot issue-7042 \
+    --branch impl/7042-rename-provider \
     --owner builder-box-a
 
 # Box A — release when done
 python3 scripts/worktree-manager.py release \
-    --slot 1 \
+    --slot issue-7042 \
     --owner builder-box-a
 ```
 
-Slots are integers. `allocate` derives both the branch
-(`agent/<kind>-<id>-<slug>`) and the worktree path
-(`.agent-worktrees/<slot>-<kind>-<id>-<slug>`, with the slot zero-padded to four
-digits — `--slot 1` yields `.agent-worktrees/0001-…`) from `--kind`, `--id`, and
-`--slug`; there is no `--branch` option. Pass `--use-existing-branch` to adopt a
-branch that already exists instead of creating one.
-
-State is stored in `.agent-worktrees/.worktree-manager/state.json`. A mismatch
+State is stored in `.ops-perl-lsp/worktree-manager/state.json`. A mismatch
 between `--owner` on `release` and the recorded owner is rejected unless
-`--force` is set, and a release that omits `--owner` for an owned slot is
-rejected the same way.
+`--force` is set.
 
 For durable, cross-machine coordination, the claim/lease protocol described in
 issue [#7100](https://github.com/EffortlessMetrics/perl-lsp/issues/7100) stores

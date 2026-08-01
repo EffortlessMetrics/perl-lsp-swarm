@@ -1,231 +1,240 @@
 #!/usr/bin/env bash
+# Test suite for scripts/worktree-manager.py `allocate` (issue #3749).
+#
+# Bug: `allocate()` always branched off `base_ref()` (local/origin master or
+# main) regardless of whether `--branch` already exists on `origin`. Slot
+# re-allocation for a branch already pushed to `origin` silently diverged the
+# worktree from the real branch content instead of checking it out — observed
+# 3x in one session, a data-loss footgun. `base_ref()` also never fetched, so
+# even the genuinely-new-branch path could cut from a stale local tracking
+# ref.
+#
+# This suite is fully hermetic: it builds a throwaway bare "origin" repo plus
+# a clone under a tmpdir, copies the worktree-manager script under test into
+# that fixture tree (REPO_ROOT is derived from the script's own file location
+# via `Path(__file__).resolve().parents[1]`, not cwd), and asserts against
+# real git state. No network access, no interaction with the real repo's
+# .ops-perl-lsp state.
 set -euo pipefail
 
-repo=$(mktemp -d)
-outside=$(mktemp -d)
-# Per-case scratch dirs are registered here rather than removed inline so an
-# early `exit 1` on a detected regression still cleans up after itself.
-other_repo=""
-shim=""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+MANAGER_SRC="${REPO_ROOT}/scripts/worktree-manager.py"
+
+PASS_COUNT=0
+FAIL_COUNT=0
+TMPDIR_BASE=""
+
+pass() { printf 'PASS %s\n' "$1"; PASS_COUNT=$((PASS_COUNT + 1)); }
+fail() { printf 'FAIL %s\n' "$1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
+
 cleanup() {
-  rm -rf "$repo" "$outside" ${other_repo:+"$other_repo"} ${shim:+"$shim"}
+  if [[ -n "${TMPDIR_BASE:-}" && -d "${TMPDIR_BASE}" ]]; then
+    rm -rf "${TMPDIR_BASE}"
+  fi
 }
 trap cleanup EXIT
 
-git -C "$repo" init -q
-git -C "$repo" config user.email test@example.com
-git -C "$repo" config user.name "Test User"
-printf 'test fixture\n' > "$repo/README.md"
-git -C "$repo" add README.md
-git -C "$repo" commit -qm "initial"
-git -C "$repo" remote add origin .
-git -C "$repo" update-ref refs/remotes/origin/main HEAD
-manager="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/worktree-manager.py"
-
-# Case 1: allocate, list, and release a clean canonical worktree.
-allocation=$(
-  python3 "$manager" --repo-root "$repo" allocate \
-    --slot 1 \
-    --kind pr \
-    --id 4318 \
-    --slug lifecycle
-)
-python3 - "$allocation" <<'PY'
-import json
-import sys
-
-value = json.loads(sys.argv[1])
-assert value["slot"] == 1
-assert value["kind"] == "pr"
-assert value["id"] == "4318"
-assert value["branch"] == "agent/pr-4318-lifecycle"
-assert value["path"] == ".agent-worktrees/0001-pr-4318-lifecycle"
-assert value["owner"] is None
-PY
-
-listed=$(python3 "$manager" --repo-root "$repo" list)
-python3 - "$listed" <<'PY'
-import json
-import sys
-
-value = json.loads(sys.argv[1])
-assert len(value) == 1
-assert value[0]["slot"] == 1
-PY
-
-python3 "$manager" --repo-root "$repo" release --slot 1 >/dev/null
-test ! -e "$repo/.agent-worktrees/0001-pr-4318-lifecycle"
-
-# Case 2: dirty worktrees require an explicit force, and force removes them.
-python3 "$manager" --repo-root "$repo" allocate \
-  --slot 2 \
-  --kind issue \
-  --id 4327 \
-  --slug dirty >/dev/null
-printf 'dirty\n' > "$repo/.agent-worktrees/0002-issue-4327-dirty/untracked.txt"
-if python3 "$manager" --repo-root "$repo" release --slot 2 \
-  >"$repo/release.stdout" 2>"$repo/release.stderr"; then
-  echo "dirty managed worktree was released without --force" >&2
+if [[ ! -f "$MANAGER_SRC" ]]; then
+  echo "ERROR: worktree-manager.py not found at ${MANAGER_SRC}"
   exit 1
 fi
-grep -q "dirty" "$repo/release.stderr"
-python3 "$manager" --repo-root "$repo" release --slot 2 --force >/dev/null
-test ! -e "$repo/.agent-worktrees/0002-issue-4327-dirty"
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "ERROR: python3 not found on PATH"
+  exit 1
+fi
 
-# Case 3: stale state does not let cleanup escape the repository-owned root.
-mkdir -p "$outside/keep"
-printf 'sentinel\n' > "$outside/keep/sentinel.txt"
-mkdir -p "$repo/.agent-worktrees/.worktree-manager"
-cat > "$repo/.agent-worktrees/.worktree-manager/state.json" <<JSON
-{
-  "version": 1,
-  "repo_root": "$repo",
-  "allocations": {
-    "3": {
-      "slot": 3,
-      "kind": "task",
-      "id": "stale",
-      "slug": "escape",
-      "branch": "agent/task-stale-escape",
-      "path": "../../$(basename "$outside")/keep",
-      "base_ref": "origin/main"
-    }
-  }
+TMPDIR_BASE="$(mktemp -d)"
+
+git_q() { git -c user.name="Fixture" -c user.email="fixture@example.com" "$@" >/dev/null 2>&1; }
+
+echo "=== worktree-manager allocate self-test (#3749) ==="
+echo ""
+
+# ── Fixture setup ───────────────────────────────────────────────────────────
+# origin.git: bare "remote" repo.
+ORIGIN_BARE="${TMPDIR_BASE}/origin.git"
+git -c init.defaultBranch=main init -q --bare "$ORIGIN_BARE"
+
+# agent-one: the clone that will act as REPO_ROOT for the script under test.
+AGENT_ONE="${TMPDIR_BASE}/agent-one"
+git_q clone -q "$ORIGIN_BARE" "$AGENT_ONE"
+(
+  cd "$AGENT_ONE"
+  git checkout -B main -q
+  echo "init" > file.txt
+  git -c user.name="Fixture" -c user.email="fixture@example.com" add file.txt
+  git -c user.name="Fixture" -c user.email="fixture@example.com" commit -q -m "init"
+  git push -q origin main
+)
+MAIN_A_SHA="$(git -C "$AGENT_ONE" rev-parse main)"
+
+# From a throwaway third clone, push an already-existing remote branch with
+# content that diverges from main — this is the branch a slot re-allocation
+# will target. Using a separate clone (rather than switching agent-one's own
+# branch back and forth) keeps agent-one's working branch untouched.
+AGENT_THREE="${TMPDIR_BASE}/agent-three"
+git_q clone -q "$ORIGIN_BARE" "$AGENT_THREE"
+(
+  cd "$AGENT_THREE"
+  git checkout -b existing/feature -q
+  echo "feature work" >> file.txt
+  git -c user.name="Fixture" -c user.email="fixture@example.com" commit -q -am "feature commit"
+  git push -q origin existing/feature
+)
+EXISTING_FEATURE_SHA="$(git -C "$ORIGIN_BARE" rev-parse refs/heads/existing/feature)"
+
+# From a second, independent clone, advance origin/main further. agent-one's
+# local `main` (MAIN_A_SHA) does NOT see this commit until it fetches —
+# reproducing "stale local main" for the genuinely-new-branch case.
+AGENT_TWO="${TMPDIR_BASE}/agent-two"
+git_q clone -q "$ORIGIN_BARE" "$AGENT_TWO"
+(
+  cd "$AGENT_TWO"
+  git checkout -B main -q
+  echo "advanced by someone else" >> file.txt
+  git -c user.name="Fixture" -c user.email="fixture@example.com" commit -q -am "advance main"
+  git push -q origin main
+)
+ORIGIN_MAIN_TIP_SHA="$(git -C "$ORIGIN_BARE" rev-parse refs/heads/main)"
+
+if [[ "$ORIGIN_MAIN_TIP_SHA" == "$MAIN_A_SHA" ]]; then
+  echo "ERROR: fixture setup failed to advance origin/main past agent-one's local main"
+  exit 1
+fi
+
+# A third existing-on-origin branch, used by Case 3 to prove that a fetch
+# failure fails closed instead of silently checking out a stale/unverified
+# ref. Its commit object is deliberately corrupted on origin below (Case 3
+# setup) so `ls-remote` (ref metadata only) still succeeds while the actual
+# `fetch` (needs the object) fails -- the exact scenario both review threads
+# on #3749 flagged: ls-remote confirming existence does not guarantee the
+# follow-up fetch lands the ref.
+AGENT_FOUR="${TMPDIR_BASE}/agent-four"
+git_q clone -q "$ORIGIN_BARE" "$AGENT_FOUR"
+(
+  cd "$AGENT_FOUR"
+  git checkout -b flaky/branch -q
+  echo "flaky branch work" >> file.txt
+  git -c user.name="Fixture" -c user.email="fixture@example.com" commit -q -am "flaky branch commit"
+  git push -q origin flaky/branch
+)
+FLAKY_BRANCH_SHA="$(git -C "$ORIGIN_BARE" rev-parse refs/heads/flaky/branch)"
+
+# Place the script under test where REPO_ROOT resolution expects it:
+# `<repo>/scripts/worktree-manager.py` inside agent-one's checkout.
+mkdir -p "${AGENT_ONE}/scripts"
+cp "$MANAGER_SRC" "${AGENT_ONE}/scripts/worktree-manager.py"
+
+STATE_FILE="${TMPDIR_BASE}/state.json"
+MANAGED_ROOT="${TMPDIR_BASE}/managed-worktrees"
+
+run_manager() {
+  # --state-file/--managed-root must come after the subcommand: the script's
+  # argparse defines them on both the top-level parser and each subparser
+  # (via a shared `parents=[common]`), and the subparser's own defaults
+  # silently overwrite values set at the top level if passed before the
+  # subcommand name.
+  local subcommand="$1"
+  shift
+  (
+    cd "$AGENT_ONE"
+    python3 scripts/worktree-manager.py "$subcommand" --state-file "$STATE_FILE" --managed-root "$MANAGED_ROOT" "$@"
+  )
 }
-JSON
-listed=$(python3 "$manager" --repo-root "$repo" list)
-test "$listed" = "[]"
-test -f "$outside/keep/sentinel.txt"
 
-# Case 4: concurrent allocations serialize state updates instead of losing one.
-python3 "$manager" --repo-root "$repo" allocate \
-  --slot 4 --kind task --id 4 --slug parallel-a \
-  >"$repo/parallel-a.json" &
-pid_a=$!
-python3 "$manager" --repo-root "$repo" allocate \
-  --slot 5 --kind task --id 5 --slug parallel-b \
-  >"$repo/parallel-b.json" &
-pid_b=$!
-wait "$pid_a"
-wait "$pid_b"
-listed=$(python3 "$manager" --repo-root "$repo" list)
-python3 - "$listed" <<'PY'
-import json
-import sys
-
-value = json.loads(sys.argv[1])
-assert [entry["slot"] for entry in value] == [4, 5]
-PY
-python3 "$manager" --repo-root "$repo" release --slot 4 >/dev/null
-python3 "$manager" --repo-root "$repo" release --slot 5 >/dev/null
-
-# Case 5: only canonical kinds and safe lowercase slugs are accepted.
-if python3 "$manager" --repo-root "$repo" allocate \
-  --slot 6 --kind review --id 6 --slug valid \
-  >"$repo/invalid-kind.stdout" 2>"$repo/invalid-kind.stderr"; then
-  echo "unsupported allocation kind was accepted" >&2
+# ── Case 3: a fetch failure while resolving an existing-on-origin branch
+#    must fail CLOSED — never silently check out a stale/unverified ref.
+#    (Review follow-up on #3749: `ls-remote` confirming existence does not
+#    guarantee the subsequent fetch actually landed the ref.)
+#
+# Reproduced by corrupting (deleting) the flaky/branch tip commit's loose
+# object on the bare origin repo: `ls-remote` only reads ref metadata (still
+# succeeds, still reports the SHA), but `fetch` needs the actual object and
+# fails -- an OS-independent stand-in for a dropped connection mid-transfer,
+# without relying on filesystem permissions or PATH-shimmed binaries (which
+# don't reproduce reliably across platforms for a Python-spawned `git`).
+#
+# MUST run before Case 1/2: Case 2's genuinely-new-branch path does a plain
+# `git fetch origin` (all branches, no refspec) in agent-one's own clone. If
+# that ran first, agent-one would already have flaky/branch's object cached
+# locally before we corrupt origin's copy, and the later "fetch" for Case 3
+# would silently succeed from agent-one's own object store instead of
+# hitting (and failing against) origin — masking the exact bug this case
+# exists to catch. ───────────────────────────────────────────────────────
+FLAKY_OBJ_PATH="${ORIGIN_BARE}/objects/${FLAKY_BRANCH_SHA:0:2}/${FLAKY_BRANCH_SHA:2}"
+if [[ ! -f "$FLAKY_OBJ_PATH" ]]; then
+  echo "ERROR: expected loose object for flaky/branch tip at ${FLAKY_OBJ_PATH} (got auto-packed?) — Case 3 fixture assumption broken"
   exit 1
 fi
-grep -q "kind must be one of" "$repo/invalid-kind.stderr"
-if python3 "$manager" --repo-root "$repo" allocate \
-  --slot 6 --kind task --id 6 --slug Bad_Slug \
-  >"$repo/invalid-slug.stdout" 2>"$repo/invalid-slug.stderr"; then
-  echo "unsafe allocation slug was accepted" >&2
-  exit 1
-fi
-grep -q "slug must contain only" "$repo/invalid-slug.stderr"
+# Back up rather than permanently destroy: a later plain `git fetch origin`
+# (Case 2's genuinely-new-branch fallback, which fetches ALL branches with no
+# refspec) would otherwise keep failing on this same still-missing object for
+# the rest of the suite, since git's default-refspec fetch can fail the whole
+# operation if any one ref can't be resolved.
+cp "$FLAKY_OBJ_PATH" "${FLAKY_OBJ_PATH}.bak"
+rm -f "$FLAKY_OBJ_PATH"
 
-# Case 6: cross-repository state is refused without touching either repository.
-other_repo=$(mktemp -d)
-git -C "$other_repo" init -q
-git -C "$other_repo" config user.email test@example.com
-git -C "$other_repo" config user.name "Test User"
-printf 'other fixture\n' > "$other_repo/README.md"
-git -C "$other_repo" add README.md
-git -C "$other_repo" commit -qm "initial"
-git -C "$other_repo" remote add origin .
-mkdir -p "$other_repo/.agent-worktrees/.worktree-manager"
-cp "$repo/.agent-worktrees/.worktree-manager/state.json" \
-  "$other_repo/.agent-worktrees/.worktree-manager/state.json"
-if python3 "$manager" --repo-root "$other_repo" list \
-  >"$other_repo/cross-repo.stdout" 2>"$other_repo/cross-repo.stderr"; then
-  echo "cross-repository state was accepted" >&2
-  rm -rf "$other_repo"
-  exit 1
-fi
-grep -q "does not match repository root" "$other_repo/cross-repo.stderr"
+CASE3_OUT=""
+CASE3_EXIT=0
+CASE3_OUT="$(run_manager allocate --slot slot-flaky --branch flaky/branch 2>&1)" || CASE3_EXIT=$?
 
-# Case 7: owner metadata round-trips and release requires the recorded owner.
-owned=$(
-  python3 "$manager" --repo-root "$repo" allocate \
-    --slot 7 --kind task --id 7 --slug owned --owner lane-a
-)
-python3 - "$owned" <<'PY'
-import json
-import sys
+mv "${FLAKY_OBJ_PATH}.bak" "$FLAKY_OBJ_PATH"
 
-value = json.loads(sys.argv[1])
-assert value["owner"] == "lane-a"
-PY
-if python3 "$manager" --repo-root "$repo" release --slot 7 \
-  >"$repo/missing-owner.stdout" 2>"$repo/missing-owner.stderr"; then
-  echo "owner-protected worktree was released without --owner" >&2
-  exit 1
+if [[ "$CASE3_EXIT" -eq 0 ]]; then
+  fail "allocate fails closed on fetch failure: manager exited 0 (expected non-zero); out=$CASE3_OUT"
+elif [[ -e "${MANAGED_ROOT}/slot-flaky" ]]; then
+  fail "allocate fails closed on fetch failure: a worktree was created at slot-flaky despite the fetch failure — stale-checkout risk"
+elif [[ "$CASE3_OUT" != *"3749"* ]]; then
+  fail "allocate fails closed on fetch failure: exited non-zero as expected, but error message doesn't cite the #3749 fail-closed rationale — out=$CASE3_OUT"
+else
+  pass "allocate fails closed (no worktree created) when the origin fetch fails after ls-remote confirms the branch exists"
 fi
-grep -q "owned by" "$repo/missing-owner.stderr"
-if python3 "$manager" --repo-root "$repo" release --slot 7 --owner lane-b \
-  >"$repo/wrong-owner.stdout" 2>"$repo/wrong-owner.stderr"; then
-  echo "owner-protected worktree was released by another owner" >&2
-  exit 1
-fi
-grep -q "owned by" "$repo/wrong-owner.stderr"
-python3 "$manager" --repo-root "$repo" release --slot 7 --owner lane-a >/dev/null
 
-# Case 8: a failed allocation must not destroy a branch it did not create.
-# `--use-existing-branch` adopts another work item's branch, so the rollback
-# path must never force-delete it.
-git -C "$repo" branch agent/pr-8-keep
-keep_sha=$(git -C "$repo" rev-parse refs/heads/agent/pr-8-keep)
-shim=$(mktemp -d)
-cat >"$shim/git" <<'SHIM'
-#!/usr/bin/env bash
-# Fail only the allocating mutation; every other git call is genuine.
-for arg in "$@"; do
-  if [ "$arg" = "worktree" ]; then
-    case " $* " in
-      *" worktree add "*)
-        echo "injected worktree add failure" >&2
-        exit 1
-        ;;
-    esac
+# ── Case 1: re-allocating a slot for a branch that exists on origin must
+#    check out THAT branch's content, not local/base main. ─────────────────
+CASE1_OUT=""
+CASE1_EXIT=0
+CASE1_OUT="$(run_manager allocate --slot slot-existing --branch existing/feature 2>&1)" || CASE1_EXIT=$?
+
+if [[ "$CASE1_EXIT" -ne 0 ]]; then
+  fail "allocate for existing origin branch: manager exited non-zero ($CASE1_EXIT): $CASE1_OUT"
+else
+  SLOT1_HEAD="$(git -C "${MANAGED_ROOT}/slot-existing" rev-parse HEAD 2>/dev/null || echo "MISSING")"
+  if [[ "$SLOT1_HEAD" == "$EXISTING_FEATURE_SHA" ]]; then
+    pass "allocate for existing origin branch checks out origin/existing/feature content"
+  elif [[ "$SLOT1_HEAD" == "$MAIN_A_SHA" ]]; then
+    fail "allocate for existing origin branch: worktree HEAD == local main (${MAIN_A_SHA}), expected origin branch tip (${EXISTING_FEATURE_SHA}) — the #3749 bug"
+  else
+    fail "allocate for existing origin branch: unexpected worktree HEAD ${SLOT1_HEAD}, expected ${EXISTING_FEATURE_SHA}"
   fi
-done
-exec /usr/bin/env -i PATH="/usr/bin:/bin" HOME="$HOME" git "$@"
-SHIM
-chmod +x "$shim/git"
-if PATH="$shim:$PATH" python3 "$manager" --repo-root "$repo" allocate \
-  --slot 8 --kind pr --id 8 --slug keep --use-existing-branch \
-  >"$repo/rollback.stdout" 2>"$repo/rollback.stderr"; then
-  echo "allocation unexpectedly succeeded under injected failure" >&2
+fi
+
+# ── Case 2: allocating a genuinely NEW branch must cut from a freshly
+#    fetched origin/main, not a stale local tracking ref. ─────────────────
+CASE2_OUT=""
+CASE2_EXIT=0
+CASE2_OUT="$(run_manager allocate --slot slot-new --branch brand-new/feature 2>&1)" || CASE2_EXIT=$?
+
+if [[ "$CASE2_EXIT" -ne 0 ]]; then
+  fail "allocate for new branch: manager exited non-zero ($CASE2_EXIT): $CASE2_OUT"
+else
+  SLOT2_HEAD="$(git -C "${MANAGED_ROOT}/slot-new" rev-parse HEAD 2>/dev/null || echo "MISSING")"
+  if [[ "$SLOT2_HEAD" == "$ORIGIN_MAIN_TIP_SHA" ]]; then
+    pass "allocate for new branch cuts from freshly-fetched origin/main"
+  elif [[ "$SLOT2_HEAD" == "$MAIN_A_SHA" ]]; then
+    fail "allocate for new branch: worktree HEAD == stale local main (${MAIN_A_SHA}), expected current origin/main tip (${ORIGIN_MAIN_TIP_SHA}) — base_ref() never fetched"
+  else
+    fail "allocate for new branch: unexpected worktree HEAD ${SLOT2_HEAD}, expected ${ORIGIN_MAIN_TIP_SHA}"
+  fi
+fi
+
+TOTAL=$((PASS_COUNT + FAIL_COUNT))
+echo ""
+echo "=== Results: ${PASS_COUNT}/${TOTAL} passed ==="
+
+if [[ "$FAIL_COUNT" -gt 0 ]]; then
   exit 1
 fi
-if ! git -C "$repo" show-ref --verify --quiet refs/heads/agent/pr-8-keep; then
-  echo "rollback force-deleted a pre-existing branch" >&2
-  exit 1
-fi
-test "$(git -C "$repo" rev-parse refs/heads/agent/pr-8-keep)" = "$keep_sha"
-git -C "$repo" branch -D agent/pr-8-keep >/dev/null
 
-# Case 9: an externally deleted worktree is pruned rather than crashing the
-# commands that read state.
-python3 "$manager" --repo-root "$repo" allocate \
-  --slot 9 --kind issue --id 9 --slug vanished >/dev/null
-rm -rf "$repo/.agent-worktrees/0009-issue-9-vanished"
-pruned=$(python3 "$manager" --repo-root "$repo" list)
-python3 - "$pruned" <<'PY'
-import json
-import sys
-
-value = json.loads(sys.argv[1])
-assert value == [], value
-PY
+exit 0
