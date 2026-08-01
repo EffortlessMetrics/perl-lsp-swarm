@@ -863,7 +863,8 @@ pub fn help_text() -> String {
     out.push('\n');
     out.push_str("Tool options:\n");
     out.push_str("  --check <files...>   Validate Perl files and report parse errors\n");
-    out.push_str("  --check-project [dir] Scan project directory for parsability report\n");
+    out.push_str("  --check-project [dir]\n");
+    out.push_str("                       Scan project directory for parsability report\n");
     out.push_str("  --doctor [dir]       Explain Perl path, config, and effective @INC roots\n");
     out.push_str(
         "  --json               Machine-readable JSON output (currently affects --doctor)\n",
@@ -892,16 +893,16 @@ pub fn help_text() -> String {
     out.push_str("Examples:\n");
     out.push_str("  perllsp --stdio                        # stdio mode (default)\n");
     out.push_str("  perllsp --mcp                          # stdio mode alias for MCP clients\n");
-    out.push_str("  perllsp --stdio --log                   # with logging\n");
-    out.push_str("  perllsp --socket --port 9257            # TCP socket mode\n");
-    out.push_str("  perllsp --stdio --feature-profile=prod  # production profile\n");
-    out.push_str("  perllsp --check lib/MyModule.pm         # syntax check\n");
-    out.push_str("  perllsp --check-project lib/             # project scan\n");
-    out.push_str("  perllsp --doctor .                       # first-run setup report\n");
+    out.push_str("  perllsp --stdio --log                  # with logging\n");
+    out.push_str("  perllsp --socket --port 9257           # TCP socket mode\n");
+    out.push_str("  perllsp --stdio --feature-profile=prod # production profile\n");
+    out.push_str("  perllsp --check lib/MyModule.pm        # syntax check\n");
+    out.push_str("  perllsp --check-project lib/           # project scan\n");
+    out.push_str("  perllsp --doctor .                     # first-run setup report\n");
     out.push_str("  perllsp --perltidy-compat-report .perltidyrc\n");
     out.push_str("  perllsp --perlcritic-compat-report .perlcriticrc\n");
-    out.push_str("  perllsp --info                          # server information\n");
-    out.push_str("  perllsp --completion bash >> ~/.bashrc   # install completions\n");
+    out.push_str("  perllsp --info                         # server information\n");
+    out.push_str("  perllsp --completion bash >> ~/.bashrc # install completions\n");
     out.push('\n');
     out.push_str("Environment:\n");
     out.push_str("  PERL_LSP_LOG=1       Enable logging (alternative to --log)\n");
@@ -2143,5 +2144,89 @@ mod tests {
         assert!(text.contains("--diagnostic-mode"));
         assert!(text.contains("--diagnostic-debounce-ms"));
         assert!(text.contains("PERL_LSP_E2E"));
+    }
+
+    #[test]
+    fn help_option_descriptions_share_one_column() {
+        let text = super::help_text();
+
+        let mut columns = std::collections::BTreeMap::new();
+        for line in text.lines() {
+            let Some(column) = description_column(line) else {
+                continue;
+            };
+            columns.entry(column).or_insert_with(Vec::new).push(line);
+        }
+
+        assert!(!columns.is_empty(), "no aligned option lines found in help text");
+        assert_eq!(
+            columns.len(),
+            1,
+            "option descriptions must start at one column; found {columns:#?}"
+        );
+    }
+
+    /// Column at which `line`'s description starts, or `None` when the line is
+    /// not an option line or carries no description of its own.
+    ///
+    /// The flag spec is consumed token by token rather than by scanning for a
+    /// run of two spaces: a line whose description was accidentally left one
+    /// space from its flag has no such run, and a scanning check would skip
+    /// exactly the misalignment it exists to catch.
+    fn description_column(line: &str) -> Option<usize> {
+        if !line.starts_with("  --") {
+            return None;
+        }
+
+        let mut index = 2;
+        let bytes = line.as_bytes();
+        loop {
+            let token_start = index;
+            while index < bytes.len() && bytes[index] != b' ' {
+                index += 1;
+            }
+            let token = &line[token_start..index];
+
+            // Flag specs are `--flag`, an alias continuation `--flag,`, or a
+            // value placeholder `<name>` / `[name]` belonging to the flag.
+            let is_flag_spec = token.starts_with("--")
+                || (token.starts_with('<') && token.ends_with('>'))
+                || (token.starts_with('[') && token.ends_with(']'));
+            if !is_flag_spec {
+                // `token_start` is the first character of the description.
+                return (token_start < line.len()).then_some(token_start);
+            }
+
+            while index < bytes.len() && bytes[index] == b' ' {
+                index += 1;
+            }
+            if index >= bytes.len() {
+                // Flag spec alone; its description is on the following line.
+                return None;
+            }
+        }
+    }
+
+    #[test]
+    fn help_example_comments_share_one_column() {
+        let text = super::help_text();
+
+        let mut columns = std::collections::BTreeMap::new();
+        for line in text.lines() {
+            if !line.starts_with("  perllsp ") {
+                continue;
+            }
+            let Some(column) = line.find(" # ") else {
+                continue;
+            };
+            columns.entry(column).or_insert_with(Vec::new).push(line);
+        }
+
+        assert!(!columns.is_empty(), "no commented example lines found in help text");
+        assert_eq!(
+            columns.len(),
+            1,
+            "example comments must start at one column; found {columns:#?}"
+        );
     }
 }
