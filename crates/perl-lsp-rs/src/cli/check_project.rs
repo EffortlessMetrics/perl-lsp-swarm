@@ -1,6 +1,27 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+/// One diagnostic, with the source position it was raised at when the parser
+/// could supply one.
+///
+/// Read errors have no position because there is no source to locate them in.
+struct Finding {
+    /// 1-based line and column, as `--check` reports them.
+    position: Option<(usize, usize)>,
+    message: String,
+}
+
+impl Finding {
+    /// Render as `path:line:column: message`, the grep-style form editors and
+    /// `:cfile` can jump to. Falls back to `path: message` without a position.
+    fn render(&self, path: &str) -> String {
+        match self.position {
+            Some((line, column)) => format!("{path}:{line}:{column}: {}", self.message),
+            None => format!("{path}: {}", self.message),
+        }
+    }
+}
+
 /// Blocking parse errors and advisory diagnostics recorded for one scanned file.
 ///
 /// The two lists are kept apart because only `blocking` decides whether the file
@@ -9,8 +30,8 @@ use std::path::Path;
 /// draws the same line in `cli.rs::run_check`.
 struct FileFindings {
     path: String,
-    blocking: Vec<String>,
-    advisory: Vec<String>,
+    blocking: Vec<Finding>,
+    advisory: Vec<Finding>,
 }
 
 /// A path the directory walk could not read.
@@ -119,19 +140,19 @@ fn process_file(path: &Path, path_str: String, results: &mut ProjectCheckResults
     let (blocking_errors, advisory_errors): (Vec<_>, Vec<_>) =
         parser.errors().iter().partition(|err| err.blocks_clean_parse());
 
-    let mut blocking: Vec<String> = Vec::new();
-    let advisory: Vec<String> = advisory_errors.iter().map(|err| format!("{err}")).collect();
+    let mut blocking: Vec<Finding> = Vec::new();
+    let advisory: Vec<Finding> = advisory_errors.iter().map(|err| locate(err, &source)).collect();
 
     if let Err(ref e) = parse_result {
-        let message = format!("{e}");
-        record_category(&message, results);
-        blocking.push(message);
+        let finding = locate(e, &source);
+        record_category(&finding.message, results);
+        blocking.push(finding);
     }
 
     for err in &blocking_errors {
-        let message = format!("{err}");
-        record_category(&message, results);
-        blocking.push(message);
+        let finding = locate(err, &source);
+        record_category(&finding.message, results);
+        blocking.push(finding);
     }
 
     if blocking.is_empty() {
@@ -143,11 +164,22 @@ fn process_file(path: &Path, path_str: String, results: &mut ProjectCheckResults
     }
 }
 
+/// Resolve one parse error to a 1-based line and column in `source`.
+///
+/// Uses the same context lookup `--check` renders its `--> line L, column C`
+/// from, so the two subcommands report identical positions for identical errors.
+fn locate(error: &perl_parser::ParseError, source: &str) -> Finding {
+    let message = format!("{error}");
+    let contexts = perl_parser::error::get_error_contexts(std::slice::from_ref(error), source);
+    let position = contexts.first().map(|context| (context.line + 1, context.column + 1));
+    Finding { position, message }
+}
+
 fn record_file_error(path: String, message: String, results: &mut ProjectCheckResults) {
     record_category(&message, results);
     results.file_findings.push(FileFindings {
         path,
-        blocking: vec![message],
+        blocking: vec![Finding { position: None, message }],
         advisory: Vec::new(),
     });
 }
@@ -181,7 +213,7 @@ fn emit_report(dir: &str, results: &ProjectCheckResults) -> i32 {
         println!("Parse errors:");
         for file in blocking_files {
             for err in &file.blocking {
-                println!("  {}: {err}", file.path);
+                println!("  {}", err.render(&file.path));
             }
         }
         println!();
@@ -193,7 +225,7 @@ fn emit_report(dir: &str, results: &ProjectCheckResults) -> i32 {
         println!("Advisories (do not affect the parsability verdict):");
         for file in advisory_files {
             for err in &file.advisory {
-                println!("  {}: {err}", file.path);
+                println!("  {}", err.render(&file.path));
             }
         }
         println!();
@@ -255,8 +287,24 @@ fn emit_category_section(category_counts: &HashMap<String, usize>) {
     println!();
 }
 
+/// Does this message report that the parser ran out of input?
+///
+/// The parser has several wordings for it and only one of them is literally
+/// "Unexpected end of input": `statements.rs` emits "Unclosed block: expected
+/// '}' but reached end of input", and the expected/found builders fall back to
+/// "end of input" or "EOF" for the found token. `EOF` is matched case-sensitively
+/// so it cannot collide with ordinary prose.
+fn indicates_end_of_input(msg: &str) -> bool {
+    msg.contains("end of input") || msg.contains("EOF")
+}
+
 fn categorize_error(msg: &str) -> String {
-    if msg.contains("Unexpected end of input") {
+    // End-of-input has to be tested first. "Unclosed block: expected '}' but
+    // reached end of input" also matches the expected/found shape below and
+    // contains "Invalid syntax" upstream, so testing it later sorted every real
+    // EOF failure into another bucket and the unclosed-block remediation never
+    // fired. See #1991 / #2680.
+    if indicates_end_of_input(msg) {
         "Unexpected EOF".to_string()
     } else if msg.contains("expected") && msg.contains("found") {
         "Unexpected token".to_string()
@@ -299,7 +347,7 @@ fn remediation_hint_for_category(category: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{categorize_error, remediation_hint_for_category};
+    use super::{Finding, categorize_error, remediation_hint_for_category};
 
     #[test]
     fn categorize_error_maps_known_cases() {
@@ -325,5 +373,52 @@ mod tests {
     #[test]
     fn remediation_hints_skip_unknown_categories() {
         assert!(remediation_hint_for_category("Other").is_none());
+    }
+
+    /// The parser has more than one wording for running out of input, and only
+    /// one of them is "Unexpected end of input". Each of these is a message
+    /// shape the parser actually emits; before #1991 / #2680 every one but the
+    /// first was sorted elsewhere, so the unclosed-block hint never fired.
+    #[test]
+    fn categorize_error_recognizes_every_end_of_input_wording() {
+        // `engine/parser/statements.rs` — the recovered unclosed-block message.
+        assert_eq!(
+            categorize_error(
+                "Invalid syntax at position 8: Unclosed block: expected '}' but reached end of input"
+            ),
+            "Unexpected EOF"
+        );
+        // expected/found builders fall back to "end of input" for the found token.
+        assert_eq!(categorize_error("expected ';' but found end of input"), "Unexpected EOF");
+        // `engine/parser/declarations.rs` falls back to the literal "EOF".
+        assert_eq!(categorize_error("expected identifier but found EOF"), "Unexpected EOF");
+    }
+
+    /// Opposite-direction control: widening the EOF bucket must not swallow the
+    /// other categories. Each of these would land in "Unexpected EOF" if the
+    /// detector matched loosely — for example on a bare "eof" substring.
+    #[test]
+    fn categorize_error_keeps_non_eof_messages_in_their_own_categories() {
+        assert_eq!(categorize_error("expected ; but found }"), "Unexpected token");
+        assert_eq!(categorize_error("Invalid syntax near token"), "Syntax error");
+        assert_eq!(categorize_error("Lexer error: invalid byte"), "Lexer error");
+        assert_eq!(categorize_error("read error: permission denied"), "IO error");
+        // Lowercase "eof" inside ordinary prose is not an end-of-input report.
+        assert_eq!(categorize_error("undefined subroutine &main::eofcheck"), "Other");
+    }
+
+    /// A read error has no source to locate, so it must render without inventing
+    /// a position — `path: message`, not `path:1:1: message`.
+    #[test]
+    fn finding_without_position_renders_bare_path() {
+        let finding =
+            Finding { position: None, message: "read error: permission denied".to_string() };
+        assert_eq!(finding.render("lib/Foo.pm"), "lib/Foo.pm: read error: permission denied");
+    }
+
+    #[test]
+    fn finding_with_position_renders_grep_style_location() {
+        let finding = Finding { position: Some((12, 5)), message: "Missing operand".to_string() };
+        assert_eq!(finding.render("lib/Foo.pm"), "lib/Foo.pm:12:5: Missing operand");
     }
 }

@@ -488,6 +488,68 @@ fn check_project_reports_paths_it_could_not_scan() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+/// `--check` reports `--> line L, column C`; `--check-project` reported only the
+/// message, so a project scan could name a failing file but not where in it.
+/// Both subcommands read the same error contexts, so both must report the same
+/// position for the same error.
+#[test]
+fn check_project_reports_the_same_positions_as_check() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let broken = dir.path().join("broken.pl");
+    // `my $value = ;` — the missing operand is at line 1, column 11.
+    std::fs::write(&broken, "my $value = ;\n")?;
+    let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut check = cargo_bin_cmd!("perl-lsp");
+    let check_stdout = String::from_utf8(
+        check.args(["--check", broken.to_str().ok_or("non-UTF-8 temp path")?]).output()?.stdout,
+    )?;
+    let position = check_stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("--> "))
+        .ok_or("--check did not report a position")?;
+    let (line, column) = position
+        .strip_prefix("line ")
+        .and_then(|rest| rest.split_once(", column "))
+        .ok_or("unexpected --check position format")?;
+
+    let mut project = cargo_bin_cmd!("perl-lsp");
+    let stdout = String::from_utf8(project.args(["--check-project", dir_str]).output()?.stdout)?;
+
+    let expected = format!("broken.pl:{line}:{column}: ");
+    assert!(
+        stdout.contains(&expected),
+        "--check-project should report {expected:?} to match --check, got:\n{stdout}"
+    );
+
+    Ok(())
+}
+
+/// The unclosed-block remediation was unreachable: `categorize_error` matched
+/// "Unexpected end of input", but the parser emits "reached end of input" for a
+/// recovered unclosed block, so it sorted into the generic syntax bucket.
+#[test]
+fn check_project_suggests_remediation_for_unclosed_blocks() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("unclosed.pl"), "sub f {\n")?;
+    let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let stdout = String::from_utf8(cmd.args(["--check-project", dir_str]).output()?.stdout)?;
+
+    assert!(
+        stdout.contains("Unexpected EOF"),
+        "an unclosed block should be categorized as end-of-input, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Check for unclosed blocks, quotes, or heredocs"),
+        "the unclosed-block remediation should be suggested, got:\n{stdout}"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn completion_fish_produces_output() {
     let mut cmd = cargo_bin_cmd!("perl-lsp");
