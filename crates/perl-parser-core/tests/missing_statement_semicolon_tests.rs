@@ -71,6 +71,26 @@ fn last_statement_in_a_block_without_semicolon_is_clean() {
     assert_eq!(missing_semicolons("{\n    my $bare = 1\n}\n1;\n"), 0);
 }
 
+/// `__END__`/`__DATA__` end the program text exactly like EOF, so the statement
+/// before the marker may omit its terminator. This is the idiomatic module
+/// ending — a bare `1` truth value followed by `__END__` and POD — and real
+/// `perl -c` accepts it.
+///
+/// Missed by the first corpus sweep: the shape needs an unterminated statement
+/// *immediately* before the marker, and every `__END__`/`__DATA__` file in
+/// `test_corpus` has a `;` on the preceding line. Found in review (#5503).
+#[test]
+fn statement_before_a_data_marker_needs_no_terminator() {
+    assert_eq!(missing_semicolons("my $x = 1\n__END__\ndocs\n"), 0);
+    assert_eq!(missing_semicolons("my $x = 1\n__DATA__\nrow1\n"), 0);
+    assert_eq!(
+        missing_semicolons("package Foo;\nsub f { 1 }\n1\n__END__\n\n=head1 NAME\n\n=cut\n"),
+        0
+    );
+    // The control: the marker is not a blanket amnesty for the file.
+    assert_eq!(missing_semicolons("my $x = 1\nprint \"hi\";\n__END__\ndocs\n"), 1);
+}
+
 /// A brace-terminated compound statement never needs one, and the statement
 /// after it does not inherit a missing terminator from it.
 #[test]

@@ -550,8 +550,21 @@ impl<'a> Parser<'a> {
         }
 
         // `None` is end of token stream; `RightBrace` closes the enclosing
-        // block. Both are the legitimate omissions.
-        if matches!(self.peek_kind(), None | Some(TokenKind::Eof) | Some(TokenKind::RightBrace)) {
+        // block; `DataMarker` is `__END__`/`__DATA__`, which ends the program
+        // text exactly like EOF — `1\n__END__\n\n=head1 …` is the idiomatic
+        // module ending and real `perl -c` accepts it. `UnknownRest` means the
+        // lexer hit its budget and stopped, so the statement's terminator is
+        // unknowable rather than absent; blaming the user for it would be
+        // wrong for the same reason.
+        if matches!(
+            self.peek_kind(),
+            None | Some(
+                TokenKind::Eof
+                    | TokenKind::RightBrace
+                    | TokenKind::DataMarker
+                    | TokenKind::UnknownRest
+            )
+        ) {
             return Ok(());
         }
 
