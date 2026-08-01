@@ -377,7 +377,8 @@ python3 scripts/worktree-manager.py release \
 
 Slots are integers. `allocate` derives both the branch
 (`agent/<kind>-<id>-<slug>`) and the worktree path
-(`.agent-worktrees/<slot>-<kind>-<id>-<slug>`) from `--kind`, `--id`, and
+(`.agent-worktrees/<slot>-<kind>-<id>-<slug>`, with the slot zero-padded to four
+digits — `--slot 1` yields `.agent-worktrees/0001-…`) from `--kind`, `--id`, and
 `--slug`; there is no `--branch` option. Pass `--use-existing-branch` to adopt a
 branch that already exists instead of creating one.
 

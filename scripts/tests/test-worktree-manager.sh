@@ -3,8 +3,12 @@ set -euo pipefail
 
 repo=$(mktemp -d)
 outside=$(mktemp -d)
+# Per-case scratch dirs are registered here rather than removed inline so an
+# early `exit 1` on a detected regression still cleans up after itself.
+other_repo=""
+shim=""
 cleanup() {
-  rm -rf "$repo" "$outside"
+  rm -rf "$repo" "$outside" ${other_repo:+"$other_repo"} ${shim:+"$shim"}
 }
 trap cleanup EXIT
 
@@ -150,7 +154,6 @@ if python3 "$manager" --repo-root "$other_repo" list \
   exit 1
 fi
 grep -q "does not match repository root" "$other_repo/cross-repo.stderr"
-rm -rf "$other_repo"
 
 # Case 7: owner metadata round-trips and release requires the recorded owner.
 owned=$(
@@ -206,7 +209,6 @@ if PATH="$shim:$PATH" python3 "$manager" --repo-root "$repo" allocate \
   echo "allocation unexpectedly succeeded under injected failure" >&2
   exit 1
 fi
-rm -rf "$shim"
 if ! git -C "$repo" show-ref --verify --quiet refs/heads/agent/pr-8-keep; then
   echo "rollback force-deleted a pre-existing branch" >&2
   exit 1
