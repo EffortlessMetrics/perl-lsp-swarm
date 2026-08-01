@@ -26,6 +26,52 @@ use perl_lsp_rs_core::runtime::launcher::{init_logging, log_server_startup};
 
 const DEFAULT_DAP_PORT: u16 = 13_603;
 
+/// Explain a taken editor-facing port, naming which listener failed.
+///
+/// `perl_lsp_rs_core::runtime::launcher::port_in_use_message` handles the same
+/// failure for the language server, but it is not reusable here: its
+/// remediation names `perllsp --socket --port N`, which is the wrong binary and
+/// the wrong flags for a debug session. Telling someone whose debugger will not
+/// start to run the language server is worse than saying nothing.
+///
+/// `role` distinguishes the listeners, because `perl-dap` opens an
+/// editor-facing socket from three different paths and a user with more than
+/// one configured cannot otherwise tell which port to change.
+fn editor_port_in_use_message(port: u16, role: &str) -> String {
+    let alt1 = port.wrapping_add(1);
+    let alt2 = port.wrapping_add(10);
+    format!(
+        "Port {port} is already in use, so perl-dap could not open its {role}.\n\
+         Another debug session may still be running.\n\
+         \n\
+         Try a different port:\n\
+         \n\
+         \x20 perl-dap --port {alt1}\n\
+         \x20 perl-dap --port {alt2}\n\
+         \n\
+         Or stop the process already using port {port}."
+    )
+}
+
+/// Map a bind failure on an editor-facing listener to an actionable error.
+///
+/// The non-`AddrInUse` arm matters as much as the `AddrInUse` one: a bare `?`
+/// also discards the port on permission-denied and address-not-available, which
+/// are the other two ways this bind realistically fails.
+fn describe_editor_bind_error(port: u16, role: &str, error: &std::io::Error) -> anyhow::Error {
+    if error.kind() == std::io::ErrorKind::AddrInUse {
+        anyhow::anyhow!("{}", editor_port_in_use_message(port, role))
+    } else {
+        anyhow::anyhow!("failed to bind the {role} on 127.0.0.1:{port}: {error}")
+    }
+}
+
+/// Bind an editor-facing listener, reporting failures in terms the user can act on.
+fn bind_editor_listener(port: u16, role: &str) -> anyhow::Result<std::net::TcpListener> {
+    std::net::TcpListener::bind(("127.0.0.1", port))
+        .map_err(|error| describe_editor_bind_error(port, role, &error))
+}
+
 /// How long to wait for the external peer handshake / a session poll tick.
 const EXTERNAL_PEER_TIMEOUT: Duration = Duration::from_secs(10);
 const EXTERNAL_PEER_POLL: Duration = Duration::from_millis(50);
@@ -34,14 +80,12 @@ const EXTERNAL_PEER_POLL: Duration = Duration::from_millis(50);
 /// (socket transport), we connect to the running debugger peer at `peer_addr`
 /// (e.g. Devel::ptkdb), and bridge DAP ↔ the Perl Debugger Peer Protocol.
 fn run_external_peer_bridge(editor_port: u16, peer_addr: &str) -> anyhow::Result<()> {
-    use std::net::TcpListener;
-
     tracing::info!(port = editor_port, peer = peer_addr, "Starting external-peer DAP bridge");
     // Bind the editor-facing listener FIRST so the port is open (and the editor's
     // connect can queue in the listen backlog) while we connect to the peer, which
     // may take up to EXTERNAL_PEER_TIMEOUT. Otherwise an editor that spawns us and
     // immediately connects could fail before the port ever opened.
-    let listener = TcpListener::bind(("127.0.0.1", editor_port))?;
+    let listener = bind_editor_listener(editor_port, "editor-facing bridge listener")?;
     let backend = ExternalDebuggerPeerBackend::connect(peer_addr, EXTERNAL_PEER_TIMEOUT)
         .map_err(|e| anyhow::anyhow!("failed to connect to debugger peer {peer_addr}: {e}"))?;
     let bridge = DapPeerBridge::new(Box::new(backend));
@@ -143,8 +187,7 @@ fn run_external_peer_listen(spec: &str, editor_port: Option<u16>) -> anyhow::Res
 
     match editor_port {
         Some(port) => {
-            use std::net::TcpListener;
-            let editor_listener = TcpListener::bind(("127.0.0.1", port))?;
+            let editor_listener = bind_editor_listener(port, "editor-facing listen-mode listener")?;
             let (editor, _) = editor_listener.accept()?;
             run_mirror_listen_session_socket(
                 editor,
@@ -271,7 +314,22 @@ fn main() -> anyhow::Result<()> {
 
     if let Some(port) = resolve_socket_port(&args.transport) {
         tracing::info!("Starting DAP server on port {}", port);
-        server.run_socket(port)?;
+        // `run_socket` returns `io::Result`, so its bind failure would otherwise
+        // reach the user as a bare `Address already in use (os error 98)`. This
+        // is the default `--socket` path and the most commonly hit of the three.
+        //
+        // Only `AddrInUse` is rewritten. `run_socket` also accepts a connection
+        // and then runs the whole session, so relabelling every one of its
+        // errors as a bind failure would attribute mid-session I/O faults to a
+        // port conflict. `AddrInUse` is the one kind that can only come from the
+        // bind — accept and stream I/O do not produce it — so it is safe to
+        // attribute and everything else passes through untouched.
+        server.run_socket(port).map_err(|error| match error.downcast_ref::<std::io::Error>() {
+            Some(io) if io.kind() == std::io::ErrorKind::AddrInUse => {
+                anyhow::anyhow!("{}", editor_port_in_use_message(port, "DAP socket transport"))
+            }
+            _ => error,
+        })?;
         return Ok(());
     }
 
@@ -283,8 +341,67 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, DEFAULT_DAP_PORT, resolve_socket_port};
+    use super::{
+        Args, DEFAULT_DAP_PORT, bind_editor_listener, describe_editor_bind_error,
+        editor_port_in_use_message, resolve_socket_port,
+    };
     use clap::{CommandFactory, Parser};
+
+    /// A taken port must produce an actionable message, not `os error 98`.
+    ///
+    /// Binds a real listener first, so this exercises the actual `AddrInUse`
+    /// path rather than a synthesized error.
+    #[test]
+    fn taken_editor_port_is_explained_not_dumped() -> Result<(), Box<dyn std::error::Error>> {
+        let occupied = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        let port = occupied.local_addr()?.port();
+
+        let Err(error) = bind_editor_listener(port, "editor-facing bridge listener") else {
+            return Err("binding an already-bound port must fail".into());
+        };
+        let rendered = error.to_string();
+
+        assert!(rendered.contains(&port.to_string()), "must name the port: {rendered}");
+        assert!(
+            rendered.contains("editor-facing bridge listener"),
+            "must name which listener failed: {rendered}"
+        );
+        assert!(rendered.contains("perl-dap --port"), "must suggest a remedy: {rendered}");
+        assert!(
+            !rendered.contains("perllsp"),
+            "must not send a debug-adapter user to the language server binary: {rendered}"
+        );
+        assert!(
+            !rendered.contains("os error"),
+            "the raw errno must not be the whole message: {rendered}"
+        );
+        Ok(())
+    }
+
+    /// A non-`AddrInUse` bind failure must still name the port and the listener.
+    /// A bare `?` discarded both.
+    #[test]
+    fn other_bind_failures_still_name_the_port() {
+        let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let rendered =
+            describe_editor_bind_error(13_603, "DAP socket transport", &error).to_string();
+
+        assert!(rendered.contains("13603"), "must name the port: {rendered}");
+        assert!(rendered.contains("DAP socket transport"), "must name the listener: {rendered}");
+        assert!(
+            !rendered.contains("already in use"),
+            "a permission failure must not be reported as a port conflict: {rendered}"
+        );
+    }
+
+    /// The suggested alternatives must be usable and must differ from the port
+    /// that already failed.
+    #[test]
+    fn suggested_ports_differ_from_the_failed_one() {
+        let message = editor_port_in_use_message(DEFAULT_DAP_PORT, "DAP socket transport");
+        assert!(message.contains(&format!("perl-dap --port {}", DEFAULT_DAP_PORT + 1)));
+        assert!(message.contains(&format!("perl-dap --port {}", DEFAULT_DAP_PORT + 10)));
+    }
 
     /// The shipped `perl-dap` CLI must not advertise legacy bridge mode or
     /// Perl::LanguageServer on its product surface. Bridge is a library-only
