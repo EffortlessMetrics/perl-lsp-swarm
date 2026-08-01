@@ -206,6 +206,21 @@ fn overflowing_literal_returns_none() {
 }
 
 #[test]
+fn leading_underscore_is_not_a_numeric_literal() {
+    // A leading `_` is categorically different from the interior placements
+    // above: it is not a misplaced separator, it is not a number at all.
+    //
+    //     $ perl -w -e 'print _1000'
+    //     print() on unopened filehandle _1000 at -e line 1.
+    //
+    // Perl lexes `_1000` as a bareword, so there is no value to report and
+    // stripping the underscore would invent one. Verified on perl v5.38.2.
+    assert_eq!(parse_perl_integer("_1000"), None, "_1000 is an identifier, not a number");
+    assert_eq!(parse_perl_integer("_"), None);
+    assert_eq!(parse_perl_integer("_0x1F"), None, "a prefix does not rescue a leading underscore");
+}
+
+#[test]
 fn signed_token_text_returns_none() {
     // `from_str_radix` and `str::parse` both accept a leading sign, but the
     // lexer emits `-` as a separate unary operator — a signed number token is

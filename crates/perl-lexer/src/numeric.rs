@@ -13,7 +13,9 @@
 //! Underscores (`_`) are visual separators and are ignored in all forms.
 //! Perl places no constraint on where they appear inside a literal: `1__000`,
 //! `1000_`, and `0x_1F` are all accepted and equal to `1000`, `1000`, and `31`
-//! respectively. Verified against perl v5.38.2.
+//! respectively. A *leading* underscore is not a separator at all — `_1000`
+//! lexes as a bareword, not a number — so it yields `None`. Verified against
+//! perl v5.38.2.
 //!
 //! # Literals are not strings
 //!
@@ -88,13 +90,18 @@ pub enum NumericBase {
 /// assert_eq!(parse_perl_integer(""),      None);
 /// ```
 pub fn parse_perl_integer(s: &str) -> Option<(u64, NumericBase)> {
-    if s.is_empty() {
+    // Checked on the raw text, before separators are stripped: a *leading*
+    // underscore is not a misplaced separator, it is a different token. Perl
+    // lexes `_1000` as a bareword, so stripping the `_` would invent a value
+    // for something that is not a number at all.
+    if s.is_empty() || s.starts_with('_') {
         return None;
     }
 
     // Strip visual-separator underscores before interpreting digits. Perl
-    // imposes no placement rule on them, so no validation is needed here — but
-    // avoid the allocation for the overwhelmingly common underscore-free case.
+    // imposes no placement rule on them *within* the literal, so no further
+    // validation is needed here — but avoid the allocation for the
+    // overwhelmingly common underscore-free case.
     let stripped;
     let s: &str = if s.contains('_') {
         stripped = s.chars().filter(|&c| c != '_').collect::<String>();
