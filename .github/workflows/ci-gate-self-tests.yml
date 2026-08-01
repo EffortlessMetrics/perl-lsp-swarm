@@ -19,6 +19,14 @@ on:
       - 'scripts/install.sh'
       - 'scripts/publish-topo.py'
       - 'scripts/tests/test-install-target-selection.sh'
+      # Install-surface honesty gates (issue #5448): the zero-argument
+      # bootstrap path and the public package manifests.
+      - 'install.ps1'
+      - 'distribution/**'
+      - 'Formula/**'
+      - 'scripts/render-linux-packages.py'
+      - 'scripts/tests/test-installer-zero-args.sh'
+      - 'scripts/tests/test-distribution-manifest-consistency.sh'
       - 'scripts/tests/test-publish-dry-run-gate.sh'
       - 'scripts/ci/check-pr-review-convergence'
       - 'scripts/ci/fixtures/convergence/**'
@@ -104,6 +112,56 @@ jobs:
             echo "## Installer target-selection self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The installer target-selection contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  installer-zero-args-self-test:
+    name: Installer zero-argument bootstrap self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run installer zero-argument self-test
+        run: bash scripts/tests/test-installer-zero-args.sh
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "## Installer zero-argument self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The documented \`curl -fsSL ... | bash\` bootstrap (issue #5448) survives \`set -u\`: \`\${BASH_SOURCE[0]}\` is guarded for stdin invocation, empty array expansions use \`\${arr[@]+\"\${arr[@]}\"}\` so bash 3.2 (macOS system bash) does not abort, and positional/flag argument forwarding is unchanged. The bash 3.2 container case runs when Docker is available and SKIPs otherwise." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Installer zero-argument self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The zero-argument installer bootstrap regressed — the documented curl-pipe command may abort before installing anything. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  distribution-manifest-consistency-self-test:
+    name: Distribution manifest consistency self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run distribution manifest consistency self-test
+        run: bash scripts/tests/test-distribution-manifest-consistency.sh
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "## Distribution manifest consistency self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Scoop, winget, Chocolatey, Linux, and Homebrew manifests (issue #5448) agree with the repository's own authorities: license expression from \`Cargo.toml [workspace.package]\`, release posture from \`README.md\`, and release asset prefix from \`release.yml\`. Every channel installs \`perl-dap\`, every manifest parses in its own format, and exactly one Homebrew formula exists." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Distribution manifest consistency self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "A public package manifest disagrees with the repository's license, posture, asset-name, or binary-set truth. These strings are what users read in \`winget show\` / \`scoop info\` / the Chocolatey listing. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   check-pr-review-convergence-self-test:
