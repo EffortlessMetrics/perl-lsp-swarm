@@ -631,11 +631,27 @@ fn classify_live_ci_state(
         // both ran against the same commit. Without this, the loop returns
         // `Failure` on the superseded entry and pins a corrected PR red.
         //
-        // Only collapse when every entry carries a timestamp; otherwise the
+        // Collapse only among entries that are not stale. A stale run can finish
+        // *after* a current-head run, so selecting purely by timestamp would let
+        // an old failure evict the current-head success and re-introduce the red
+        // pin from the other direction. Entries with no reported head SHA are
+        // kept as candidates because the staleness rule below cannot judge them
+        // either.
+        //
+        // Only collapse when every candidate carries a timestamp; otherwise the
         // ordering would be arbitrary and dropping entries could hide a real
         // failure.
-        if matching.len() > 1 && matching.iter().all(|c| check_reported_at(c).is_some()) {
-            if let Some(latest) = matching
+        let current_head: Vec<_> = matching
+            .iter()
+            .copied()
+            .filter(|check| match (check_head_sha(check), pr_head_sha) {
+                (Some(check_sha), Some(pr_sha)) => check_sha == pr_sha,
+                _ => true,
+            })
+            .collect();
+
+        if current_head.len() > 1 && current_head.iter().all(|c| check_reported_at(c).is_some()) {
+            if let Some(latest) = current_head
                 .iter()
                 .filter_map(|check| check_reported_at(check).map(|at| (at, *check)))
                 .max_by_key(|(at, _)| *at)
@@ -1121,13 +1137,14 @@ required = false
     /// protection and ruleset `main` — and a merge is blocked by the union.
     ///
     /// `load_required_ci_checks` reads this file to decide whether a PR's live
-    /// CI is green, so a context that is required by the ruleset but missing
-    /// here is classified as passing — the PR can be labelled `merge-ready`
-    /// while a genuinely required check is failing, pending, or absent.
+    /// CI is green, so a context required by *either* surface but missing here
+    /// is classified as passing — the PR can be labelled `merge-ready` while a
+    /// genuinely required check is failing, pending, or absent.
     ///
-    /// This cannot detect a context added to the ruleset (nothing here queries
-    /// GitHub); it does catch one being dropped from the policy. When the
-    /// ruleset changes, update the policy and this list together.
+    /// This cannot detect a context added to either surface (nothing here
+    /// queries GitHub); it does catch one being dropped from the policy. When
+    /// branch protection or the ruleset changes, update the policy and this
+    /// list together.
     #[test]
     fn repository_policy_lists_every_live_required_context() -> Result<()> {
         let checks = load_required_ci_checks(&project_root()?)?;
@@ -1240,6 +1257,48 @@ required = false
             outcome,
             CiOutcome::Success,
             "superseded validate-title failure must not outrank the later success on the same SHA"
+        );
+    }
+
+    /// Latest-run selection must not resurrect a stale failure.
+    ///
+    /// A run against a superseded commit can finish *after* the current-head run
+    /// (slow queue, re-run of an old SHA). Selecting purely by timestamp would
+    /// evict the current-head success and pin the PR red from the other
+    /// direction, so stale entries are excluded before the timestamp compare.
+    #[test]
+    fn merge_ready_live_ci_classifier_ignores_a_stale_failure_that_finished_last() {
+        let checks = vec![
+            successful_check("Perl LSP Rust Small Result"),
+            successful_check("ripr+ New Gap Gate"),
+            serde_json::json!({
+                "name": "validate-title",
+                "conclusion": "SUCCESS",
+                "status": "COMPLETED",
+                "headSha": "current-head",
+                "startedAt": "2026-08-01T10:00:00Z",
+                "completedAt": "2026-08-01T10:00:06Z"
+            }),
+            serde_json::json!({
+                "name": "validate-title",
+                "conclusion": "FAILURE",
+                "status": "COMPLETED",
+                "headSha": "superseded-head",
+                "startedAt": "2026-08-01T10:20:00Z",
+                "completedAt": "2026-08-01T10:20:09Z"
+            }),
+        ];
+        let required = required_checks(&[
+            "Perl LSP Rust Small Result",
+            "ripr+ New Gap Gate",
+            "validate-title",
+        ]);
+
+        let outcome = classify_live_ci_state(&checks, &required, Some("current-head"));
+        assert_eq!(
+            outcome,
+            CiOutcome::Success,
+            "a stale failure finishing later must not evict the current-head success"
         );
     }
 
