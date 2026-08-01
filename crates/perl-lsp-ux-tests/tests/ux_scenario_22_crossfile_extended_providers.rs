@@ -1123,13 +1123,13 @@ fn scenario_22_document_highlight_on_shared_hard_assert() -> anyhow::Result<()> 
     let highlights = match resp["result"].as_array() {
         Some(v) => v,
         None if resp["result"].is_null() => {
-            panic!(
+            anyhow::bail!(
                 "documentHighlight for `shared` in App.pm returned null; \
                  expected at least one highlight (lines 14/15)"
             );
         }
         None => {
-            panic!("documentHighlight result must be an array, got: {:?}", resp["result"]);
+            anyhow::bail!("documentHighlight result must be an array, got: {:?}", resp["result"]);
         }
     };
 
