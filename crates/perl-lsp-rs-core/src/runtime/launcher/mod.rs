@@ -695,13 +695,24 @@ where
                 });
             }
 
-            // Only an unknown argument gets the narrowed one-line treatment.
-            // Every other clap failure — a conflict, a bad value, a missing
-            // value — already renders a complete, accurate explanation, and
-            // its `InvalidArg` context names a *valid* flag. Reporting those
-            // as "Unknown option" would be wrong on the facts.
-            if err.kind() == ErrorKind::UnknownArgument {
-                return Err(unknown_option_error(&err));
+            // Only an unknown argument gets the narrowed one-line treatment,
+            // and only when the parser actually names the offending token.
+            //
+            // Every other failure — a conflict, a bad value, a missing value —
+            // already renders a complete, accurate explanation, and its
+            // `InvalidArg` context names a *valid* flag, so reporting those as
+            // "Unknown option" would be wrong on the facts. The same applies if
+            // the token is ever unavailable: without it there is nothing
+            // truthful to put after "Unknown option:", so the parser's own
+            // rendering is the honest answer rather than a guess reconstructed
+            // from its message text.
+            if err.kind() == ErrorKind::UnknownArgument
+                && let Some(option) = context_string(&err, ContextKind::InvalidArg)
+            {
+                return Err(LaunchParseError::UnknownOption {
+                    option,
+                    suggestion: context_string(&err, ContextKind::SuggestedArg),
+                });
             }
 
             Err(LaunchParseError::ParserDiagnostic { rendered: err.to_string().trim().to_string() })
@@ -709,37 +720,19 @@ where
     }
 }
 
-/// Build an `UnknownOption` error from a clap unknown-argument failure.
+/// Read a single-valued parser error context entry as an owned string.
 ///
-/// Clap's rendered error is a multi-line block carrying its own usage banner
-/// and `--help` pointer. Embedding that whole block in a one-line message
-/// duplicates the usage output the CLI prints itself, so take the structured
-/// context instead and fall back to the leading line only.
-fn unknown_option_error(err: &clap::Error) -> LaunchParseError {
-    let option = match context_string(err, ContextKind::InvalidArg) {
-        Some(invalid_arg) => invalid_arg,
-        None => err
-            .to_string()
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .trim_start_matches("error:")
-            .trim()
-            .to_string(),
+/// Blank values are treated as absent: a caller that gets `Some` may render it
+/// directly, so an empty context entry must not reach a message as
+/// `Unknown option: ` or `Did you mean ?`.
+fn context_string(err: &clap::Error, kind: ContextKind) -> Option<String> {
+    let value = match err.get(kind)? {
+        ContextValue::String(value) => value.clone(),
+        ContextValue::Strings(values) => values.first()?.clone(),
+        _ => return None,
     };
 
-    let suggestion = context_string(err, ContextKind::SuggestedArg);
-
-    LaunchParseError::UnknownOption { option, suggestion }
-}
-
-/// Read a single-valued clap error context entry as an owned string.
-fn context_string(err: &clap::Error, kind: ContextKind) -> Option<String> {
-    match err.get(kind)? {
-        ContextValue::String(value) => Some(value.clone()),
-        ContextValue::Strings(values) => values.first().cloned(),
-        _ => None,
-    }
+    (!value.trim().is_empty()).then_some(value)
 }
 
 fn prevalidate_cli_values(args: &[std::ffi::OsString]) -> Result<(), LaunchParseError> {
