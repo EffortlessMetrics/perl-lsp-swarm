@@ -92,6 +92,13 @@ pub fn run(root: Option<PathBuf>) -> Result<()> {
 /// The optional catalogue may be absent or empty. This gate does not require a
 /// named actor when the main thread or a provider-native built-in performs the
 /// operation.
+///
+/// Discovery is by explicit name from [`OPTIONAL_NON_MUTATING_PROFILES`], not
+/// by globbing `operation-*.md`. A glob would flag legitimate writer profiles
+/// (lane workers, feedback responders, merge reconcilers), whose mutation tools
+/// are correct. The trade-off is that a *new* non-mutating profile is skipped
+/// until its name is added to that list — see
+/// `audit_dir_skips_unlisted_operation_profile`.
 pub fn audit_dir(agents_dir: &Path) -> Result<Vec<Violation>> {
     if !agents_dir.exists() {
         return Ok(Vec::new());
@@ -307,6 +314,30 @@ mod tests {
             Some("Read, Grep, Glob, Edit, Write, Agent"),
         )?;
         assert!(audit_dir(&agents_dir)?.is_empty());
+        Ok(())
+    }
+
+    /// Documents the known boundary of explicit-name discovery: a profile
+    /// matching `operation-*.md` that is not in `OPTIONAL_NON_MUTATING_PROFILES`
+    /// is not governed, even if it reads as a review/audit operation. This is
+    /// the cost of not globbing (which would flag legitimate writer profiles).
+    /// Adding a new non-mutating profile requires adding its name to that list
+    /// in the same change.
+    #[test]
+    fn audit_dir_skips_unlisted_operation_profile() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let agents_dir = tmp.path().join(".claude/agents");
+        let name = "operation-new-reviewer";
+        assert!(
+            !OPTIONAL_NON_MUTATING_PROFILES.contains(&name),
+            "{name} must stay unlisted for this test to describe the skip"
+        );
+        write_agent(&agents_dir, name, Some("Read, Grep, Edit, Write"))?;
+        assert!(
+            audit_dir(&agents_dir)?.is_empty(),
+            "unlisted operation-* profiles are not governed; add the name to \
+             OPTIONAL_NON_MUTATING_PROFILES to govern one"
+        );
         Ok(())
     }
 
