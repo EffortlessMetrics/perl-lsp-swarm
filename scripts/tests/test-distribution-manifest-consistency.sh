@@ -34,6 +34,8 @@ LINUX_META="$ROOT/distribution/linux/package-metadata.toml"
 FORMULA="$ROOT/Formula/perllsp.rb"
 INSTALL_PS1="$ROOT/install.ps1"
 CANONICAL_INSTALLER="$ROOT/scripts/install.sh"
+CHOCO_INSTALL="$ROOT/distribution/chocolatey/tools/chocolateyinstall.ps1"
+BUILD_PACKAGES="$ROOT/distribution/build-packages.sh"
 
 PASS=0
 FAIL=0
@@ -233,6 +235,27 @@ PY
     pass "$label"
 }
 
+test_build_packages_license() {
+    local label="build-packages.sh RPM spec names both licenses"
+    local value
+
+    # This script emits an RPM spec inline; its `License:` line is a distinct
+    # authority from package-metadata.toml and would otherwise be ungated.
+    value="$(grep -m1 '^License:' "$BUILD_PACKAGES" | sed 's/^License:[[:space:]]*//')"
+
+    if [[ -z "$value" ]]; then
+        fail "$label" "distribution/build-packages.sh has no 'License:' line in its generated spec"
+        return
+    fi
+
+    if [[ "$value" != *MIT* || "$value" != *Apache-2.0* ]]; then
+        fail "$label" "distribution/build-packages.sh License: is '$value', expected both MIT and Apache-2.0 (authority: $LICENSE_EXPR)"
+        return
+    fi
+
+    pass "$label"
+}
+
 test_formula_license() {
     local label="homebrew formula license names both licenses"
 
@@ -269,6 +292,12 @@ test_every_channel_ships_dap() {
     # install.ps1 must both locate and copy the DAP binary, not merely mention it.
     if ! grep -q 'DapSourcePath' "$INSTALL_PS1" || ! grep -q 'Copy-Item -Path \$DapSourcePath' "$INSTALL_PS1"; then
         missing+="  install.ps1 (Windows PowerShell installer)
+"
+    fi
+    # Chocolatey is a public channel too: it must locate the binary AND shim it.
+    if ! grep -q 'perl-dap\.exe' "$CHOCO_INSTALL" ||
+        ! grep -q 'Install-BinFile -Name "perl-dap"' "$CHOCO_INSTALL"; then
+        missing+="  distribution/chocolatey/tools/chocolateyinstall.ps1
 "
     fi
 
@@ -343,7 +372,24 @@ test_release_placeholders_intact() {
     local label="version placeholders are still tokens, not a frozen version"
     local missing=""
     local file
-    for file in "$SCOOP" "$WINGET" "$NUSPEC" "$LINUX_META" "$FORMULA"; do
+
+    # Only files that are NEVER rendered inside this repository belong here.
+    #
+    # The three Windows manifests are deliberately rendered in-place by their
+    # bump workflows, which then open a PR against this repository:
+    #
+    #   .github/workflows/winget-bump.yml:98      distribution/winget/perl-lsp.yaml
+    #   .github/workflows/scoop-bump.yml:97       distribution/scoop/perl-lsp.json
+    #   .github/workflows/chocolatey-bump.yml:97  distribution/chocolatey/perl-lsp.nuspec
+    #
+    # Each also *fails* if a placeholder survives. Requiring the placeholder here
+    # would make every legitimate release-refresh PR red, because `distribution/**`
+    # triggers this workflow. They are checked by
+    # `test_rendered_manifests_are_placeholder_or_concrete` instead.
+    #
+    # `Formula/perllsp.rb` stays: brew-bump.yml:269 writes the rendered formula to
+    # the separate homebrew-tap repository, never to this path.
+    for file in "$LINUX_META" "$FORMULA"; do
         if ! grep -q '__RELEASE_VERSION__' "$file"; then
             missing+="  ${file#"$ROOT"/}
 "
@@ -351,8 +397,40 @@ test_release_placeholders_intact() {
     done
 
     if [[ -n "$missing" ]]; then
-        fail "$label" "release automation replaces __RELEASE_VERSION__; these no longer carry it:
+        fail "$label" "these are source templates and must keep __RELEASE_VERSION__:
 $missing"
+        return
+    fi
+
+    pass "$label"
+}
+
+test_rendered_manifests_are_placeholder_or_concrete() {
+    local label="in-repo rendered manifests carry a placeholder or a real version"
+    local offenders=""
+    local file
+
+    # A rendered manifest is valid in either state: the source template with
+    # `__RELEASE_VERSION__`, or a bump-workflow output carrying a concrete
+    # version. What must never appear is a half-rendered or malformed value.
+    for file in "$SCOOP" "$WINGET" "$NUSPEC"; do
+        if grep -q '__RELEASE_VERSION__' "$file"; then
+            continue
+        fi
+        # Rendered: require at least one plain semver somewhere in the file.
+        if ! grep -qE '[0-9]+\.[0-9]+\.[0-9]+' "$file"; then
+            offenders+="  ${file#"$ROOT"/} — no __RELEASE_VERSION__ and no concrete version
+"
+        fi
+        # And no partially-substituted token left behind.
+        if grep -qE '__RELEASE_(URL|SHA256|HASH)__' "$file"; then
+            offenders+="  ${file#"$ROOT"/} — version rendered but other placeholders remain
+"
+        fi
+    done
+
+    if [[ -n "$offenders" ]]; then
+        fail "$label" "$offenders"
         return
     fi
 
@@ -389,6 +467,16 @@ PY
 "
     fi
 
+    if ! python3 - "$WINGET" <<'PY' 2>/dev/null
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as fh:
+    yaml.safe_load(fh)
+PY
+    then
+        errors+="  distribution/winget/perl-lsp.yaml is not valid YAML (winget validation would fail)
+"
+    fi
+
     if [[ -n "$errors" ]]; then
         fail "$label" "$errors"
         return
@@ -409,11 +497,13 @@ if [[ "$FAIL" -eq 0 ]]; then
     test_winget_license
     test_nuspec_license_url
     test_linux_metadata_license
+    test_build_packages_license
     test_formula_license
     test_every_channel_ships_dap
     test_asset_names_match_release_workflow
     test_single_homebrew_formula
     test_release_placeholders_intact
+    test_rendered_manifests_are_placeholder_or_concrete
 fi
 
 echo
