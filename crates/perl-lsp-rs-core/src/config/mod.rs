@@ -1576,7 +1576,11 @@ pub fn load_project_config(
         ));
     }
 
-    toml::from_str::<ProjectConfig>(&content)
+    // Strip BOM if present — some Windows editors save .perl-lsp.toml with a
+    // UTF-8 BOM, which causes toml::from_str to report a syntax error at byte 0.
+    let content = content.strip_prefix('\u{FEFF}').unwrap_or(&content);
+
+    toml::from_str::<ProjectConfig>(content)
         .map(Some)
         .map_err(|e| format!(".perl-lsp.toml has a syntax error: {}", e))
 }
