@@ -27,6 +27,16 @@ on:
       - 'scripts/render-linux-packages.py'
       - 'scripts/tests/test-installer-zero-args.sh'
       - 'scripts/tests/test-distribution-manifest-consistency.sh'
+      # The manifest-consistency gate derives its expected values from these
+      # three authorities, so a change to any of them can make every
+      # distribution manifest stale. Without them here, the only gate that
+      # detects that mismatch would not run on the PR that caused it.
+      #   license      -> Cargo.toml [workspace.package] license
+      #   posture      -> README.md release-posture sentence
+      #   asset prefix -> .github/workflows/release.yml NAME=
+      - 'Cargo.toml'
+      - 'README.md'
+      - '.github/workflows/release.yml'
       - 'scripts/tests/test-publish-dry-run-gate.sh'
       - 'scripts/ci/check-pr-review-convergence'
       - 'scripts/ci/fixtures/convergence/**'
