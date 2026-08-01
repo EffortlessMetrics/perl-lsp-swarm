@@ -918,7 +918,18 @@ export class BinaryDownloader {
       this.outputChannel.appendLine(`Linux binary target libc: ${libc}`);
       return `${archPrefix}-unknown-linux-${libc}`;
     } else if (platform === 'win32') {
-      return arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';
+      // Windows ships x86_64 only: the release matrix in
+      // .github/workflows/release.yml has no aarch64-pc-windows-msvc entry, so
+      // asking for one produced a 404 that surfaced as a generic download
+      // failure (#5007). ARM64 Windows runs x64 binaries under emulation, so
+      // the x64 asset is the working answer rather than merely a better error.
+      if (arch === 'arm64') {
+        this.outputChannel.appendLine(
+          'Windows on ARM64 detected: installing the x86_64 build, which runs under ' +
+            'Windows 11 ARM64 x64 emulation. No native ARM64 Windows binary is published.',
+        );
+      }
+      return 'x86_64-pc-windows-msvc';
     }
 
     // Fallback to the old logic
