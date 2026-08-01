@@ -225,4 +225,48 @@ mod tests {
             "a lower-precedence nested region must not fragment its enclosing region"
         );
     }
+
+    // ---- collect_lexer_literal_regions token mapping -------------------------
+
+    /// Names the token-mapping seam directly. `PerlLexer` emits
+    /// `InterpolatedString` for *every* double-quoted string — interpolating or
+    /// not — and `StringLiteral` only for the single-quoted form, so mapping
+    /// only the latter left every `"…"` span uncovered.
+    #[test]
+    fn both_quote_forms_map_to_string_literal() {
+        for source in
+            ["my $x = 'plain';\n", "my $x = \"plain\";\n", "my $x = \"interp $y here\";\n"]
+        {
+            let regions = collect_lexer_literal_regions(source);
+            assert!(
+                regions.iter().any(|region| region.kind == SourceRegionKind::StringLiteral),
+                "expected a StringLiteral region for {source:?}, got: {regions:?}"
+            );
+        }
+    }
+
+    /// Lexer recovery spans must stay ambiguous. An unterminated literal lexes
+    /// as `Error`; discarding it let partial input read as executable `Code`,
+    /// contradicting the contract on `SourceRegionKind::RecoveryAmbiguous`.
+    #[test]
+    fn lexer_error_span_maps_to_recovery_ambiguous() {
+        let source = "my $x = \"open\n";
+        let regions = collect_lexer_literal_regions(source);
+        assert!(
+            regions.iter().any(|region| region.kind == SourceRegionKind::RecoveryAmbiguous),
+            "an unterminated literal must produce a recovery region, got: {regions:?}"
+        );
+        assert!(
+            regions.iter().all(|region| region.kind != SourceRegionKind::StringLiteral),
+            "an unterminated literal is not a proven string, got: {regions:?}"
+        );
+    }
+
+    /// The negative half: ordinary code produces no literal region at all, so
+    /// the two arms above are not classifying everything they see.
+    #[test]
+    fn plain_code_produces_no_literal_region() {
+        let regions = collect_lexer_literal_regions("my $x = 1 + 2;\n");
+        assert!(regions.is_empty(), "plain code must produce no literal region, got: {regions:?}");
+    }
 }

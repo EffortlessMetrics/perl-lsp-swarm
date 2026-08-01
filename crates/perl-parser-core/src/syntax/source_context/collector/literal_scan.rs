@@ -876,6 +876,42 @@ mod tests {
         );
     }
 
+    /// Names the `trim_end_matches` closer seam directly rather than reaching it
+    /// through `SourceRegionIndex::build`. `PerlLexer` closes a heredoc on a
+    /// delimiter line padded with spaces or tabs; comparing the untrimmed line
+    /// left the body open to EOF, so every following statement was reclassified
+    /// as `Heredoc` (which outranks `Code` in `region_precedence`).
+    #[test]
+    fn terminator_closes_despite_trailing_spaces_or_tabs() {
+        for source in [
+            "my $x = <<EOF;\nbody\nEOF  \ntail();\n",
+            "my $x = <<EOF;\nbody\nEOF\t\ntail();\n",
+            "my $x = <<~EOF;\nbody\n    EOF \ntail();\n",
+        ] {
+            let regions = scan_heredoc_regions(source);
+            assert_eq!(regions.len(), 1, "one heredoc body expected in {source:?}: {regions:?}");
+            assert!(
+                regions[0].end < source.len(),
+                "a whitespace-padded terminator must close the body before EOF in {source:?}: \
+                 {regions:?}"
+            );
+        }
+    }
+
+    /// The negative half: trailing *non*-whitespace still does not close, so the
+    /// trim is not a blanket relaxation of delimiter matching.
+    #[test]
+    fn terminator_does_not_close_on_trailing_non_whitespace() {
+        let source = "my $x = <<EOF;\nbody\nEOF;\ntail();\n";
+        let regions = scan_heredoc_regions(source);
+        assert_eq!(regions.len(), 1, "one heredoc body expected: {regions:?}");
+        assert_eq!(
+            regions[0].end,
+            source.len(),
+            "`EOF;` is not the delimiter and must not close the body: {regions:?}"
+        );
+    }
+
     #[test]
     fn left_shift_expression_is_not_a_heredoc_opener() {
         for source in ["my $y = $x << 2;\n", "my $y = $x <<< 2;\n"] {
