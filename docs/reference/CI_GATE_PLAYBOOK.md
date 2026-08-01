@@ -153,11 +153,19 @@ named-seam failure (#5459). The `new_ripr_gap` action carries:
 `gap_list_proven: false` means the count is trustworthy but the list is not.
 The job summary spells out which of the two routes you are on:
 
-- **Guidance never completed** — `guidance_status` is `error`, `missing`,
-  `stale`, or `incomplete`, and the summary reads *"NOT_PROVEN: the new-seam
-  list could not be produced …"*. `guidance_unavailable_reason` carries the
-  producer's own message. Re-run guidance for the same HEAD with a larger
-  budget:
+- **Guidance never completed** — `guidance_status` is any value other than
+  `present`, currently `error`, `incomplete`, `stale`, `missing`, or
+  `invalid`, and the summary reads *"NOT_PROVEN: the new-seam list could not
+  be produced …"*. The gate branches on `!= "present"` rather than on this
+  list, so a status added later lands here too.
+
+  `guidance_unavailable_reason` carries the producer's own message when there
+  was a receipt to read it from — `error`, `incomplete`, and `stale` parse a
+  receipt and recover its warning. `missing` and `invalid` mean there was no
+  readable receipt at all, so the reason is `null` and the status is the whole
+  explanation.
+
+  Re-run guidance for the same HEAD with a larger budget:
 
   ```bash
   cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD \
