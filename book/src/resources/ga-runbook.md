@@ -4,14 +4,20 @@
 > The tree is at v0.17.0 (public beta) and the GA milestone has not been reached.
 > Content below is retained as planning documentation.
 >
-> The worked examples still use v0.8.3 and have not been re-verified against the
-> current release process. Steps 5, 8, and 9 have been corrected against the
-> shipping asset names; treat the rest as a template to check, not a script to
+> The worked examples have not been re-verified against the current release
+> process. Steps 5, 8, and 9 have been corrected against the shipping asset
+> names; treat the rest as a template to check, not a script to
 > run. [`docs/RELEASE_PROCESS.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/RELEASE_PROCESS.md)
 > and [`RELEASE.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/RELEASE.md)
 > are the current authority.
 
 This document provides a template for a future general availability release.
+
+Every version reference below is `$VERSION`, set once in step 0. It previously
+hardcoded a different version in three places — the tag, the Homebrew formula,
+and the extension bump — so following the steps in order produced three
+different releases in one pass, none of them the one being shipped (#5464). Do
+not reintroduce a literal version anywhere in this document.
 
 ## Pre-flight Checklist
 
@@ -19,45 +25,69 @@ This document provides a template for a future general availability release.
 - [ ] Property tests passing (`PROPTEST_CASES=64 cargo test -p perl-parser --tests 'prop_'`)
 - [ ] No clippy warnings (`cargo clippy --all --all-targets`)
 - [ ] Benchmarks show no regression (`cargo bench`)
-- [ ] CHANGELOG.md updated with v0.8.3 entries
+- [ ] CHANGELOG.md updated with `v$VERSION` entries
 - [ ] README.md installation instructions current
 
 ## Day-of Release Process
 
+### 0. Set the release version once (1 min)
+
+Every later step reads `$VERSION`, so run this in the shell you will use for
+the whole release and do not edit versions inline anywhere below.
+
+```bash
+# The version being shipped. Everything else derives from it.
+VERSION="0.0.0"          # ← set this, once
+TAG="v$VERSION"
+
+# It must already match the workspace, which `cargo xtask bump-version` owns.
+test "$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" = "$VERSION" \
+  || { echo "workspace version != $VERSION — run: cargo xtask bump-version $VERSION"; }
+```
+
 ### 1. Final Version Bump (5 min)
 
 ```bash
-# Update version in all Cargo.toml files
-VERSION="0.8.3"
-sed -i "s/^version = \".*\"/version = \"$VERSION\"/" crates/perl-parser/Cargo.toml
-sed -i "s/^version = \".*\"/version = \"$VERSION\"/" crates/perl-lexer/Cargo.toml
-sed -i "s/^version = \".*\"/version = \"$VERSION\"/" crates/tree-sitter-perl-rs/Cargo.toml
+# One command updates every workspace-version site (~190 references: root and
+# member Cargo.toml, the extension manifest and lockfile, features.toml, docs).
+# Hand-editing individual manifests is what let these drift apart.
+cargo xtask bump-version "$VERSION"
 
 # Update lock file
 cargo update
 
-# Verify builds
+# Verify nothing is out of sync, then that it builds
+cargo xtask check-version-sync
 cargo build -p perllsp --bin perllsp --release
 ```
 
 ### 2. Create & Push Tag (2 min)
 
+The canonical path is the `release-orchestration.yml` workflow, which validates
+that the workspace version matches the requested one, checks CI state, and
+creates the tag server-side with the correct changelog annotation. Prefer it;
+it prevents the "tag points at the wrong commit" class of error that manual
+tagging invites. See
+[`RELEASE.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/RELEASE.md).
+
+The manual equivalent, for a release where the workflow is unavailable:
+
 ```bash
 # Commit version changes
 git add -A
-git commit -m "chore: release v0.8.3
+git commit -m "chore: release v$VERSION
 
-- Perl::Critic integration
-- Enhanced UTF-16 position handling
-- Property-based testing infrastructure
-- 141/141 edge cases passing
-- 35+ IDE features"
+$(sed -n "/^## \[$VERSION\]/,/^## \[/p" CHANGELOG.md | sed '$d')"
 
-# Create and push tag
-git tag -a "v0.8.3" -m "Release v0.8.3"
-git push origin master
-git push origin v0.8.3
+# Create and push tag. The default branch is `main`; pushing to `master` either
+# fails or lands the release commit on a branch nothing releases from.
+git tag -a "$TAG" -m "Release $TAG"
+git push origin main
+git push origin "$TAG"
 ```
+
+The commit body is taken from the changelog entry rather than retyped, so the
+release commit cannot claim capabilities the changelog does not.
 
 ### 3. Monitor CI Release (10-15 min)
 
@@ -70,7 +100,7 @@ git push origin v0.8.3
 
 Once the GitHub release is created:
 
-1. Go to: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.8.3
+1. Go to: `https://github.com/EffortlessMetrics/perl-lsp/releases/tag/$TAG`
 2. Download `SHA256SUMS` file
 3. Extract checksums for each platform:
 
@@ -146,7 +176,7 @@ Create `Formula/perllsp.rb`:
 class Perllsp < Formula
   desc "Native Rust language server and debug adapter for Perl"
   homepage "https://github.com/EffortlessMetrics/perl-lsp"
-  version "0.13.1"
+  version "$VERSION"   # substitute the value from step 0; do not hardcode
   license any_of: ["MIT", "Apache-2.0"]
 
   on_macos do
@@ -188,7 +218,7 @@ Push the tap:
 
 ```bash
 git add Formula/perllsp.rb
-git commit -m "Add perllsp v0.13.1"
+git commit -m "Add perllsp v$VERSION"
 git remote add origin https://github.com/EffortlessMetrics/homebrew-tap.git
 git push -u origin main
 ```
@@ -204,7 +234,7 @@ perllsp --version
 
 If the VS Code extension is ready:
 
-1. Update version in `package.json` to `0.6.0`
+1. Confirm `vscode-extension/package.json` is at `$VERSION` — `cargo xtask bump-version` in step 1 already wrote it; if it disagrees, stop and re-run that step rather than editing by hand
 2. Update binary download URLs and checksums
 3. Build: `npm run compile`
 4. Package: `vsce package`
@@ -240,18 +270,24 @@ release archive, never the piped `install.ps1` one-liner, until the
 publication repo is synced (step 5). The one-liner 404s.
 
 ````markdown
-# perl-lsp v0.8.3
+# perl-lsp v$VERSION
 
 ## 🎉 Major Release
 
-This release marks perl-lsp with comprehensive edge case coverage and broad feature support.
-
 ### ✨ Highlights
 
-- **100% Edge Case Coverage**: All 141 edge cases passing
-- **35+ IDE Features**: Complete LSP implementation
-- **World-Class Performance**: 1-150µs parsing times
-- **Property-Based Testing**: Comprehensive test infrastructure
+<!--
+Quote current, verified numbers from docs/project/CURRENT_STATUS.md — the
+document that carries the receipts — and re-check each one against this
+release's own run. This section previously templated a total-coverage headline
+and a "World-Class Performance" claim unconditionally, so every release
+republished figures nobody re-verified (#5464). A headline with no receipt
+behind it is a support claim we cannot answer for.
+-->
+
+- **Coverage**: <current figure from docs/project/CURRENT_STATUS.md>
+- **Features**: <current LSP/DAP feature count from features.toml>
+- **Performance**: <current measured figure, with the workload it was measured on>
 - **Multi-Platform**: Linux and macOS (x86_64 & ARM64), Windows (x86_64)
 
 ### 🚀 Quick Install
@@ -269,9 +305,13 @@ release assets, extract it, and add the extracted directory to `PATH`.
 
 ### 📊 Performance
 
-- Parser: Fast native Rust implementation (1-150us parsing)
-- LSP: <50ms response time for all operations
+- Parser: <current measured figure, with the workload it was measured on>
+- LSP: <current measured latency, with the operations it covers>
 - Memory: Efficient caching with LRU eviction
+
+Same rule as Highlights: a number here is a support claim. Take it from
+docs/project/CURRENT_STATUS.md and re-verify it for this release, or drop the
+line. "for all operations" in particular was a claim nothing measured.
 
 ### 🔧 What's New
 
@@ -296,12 +336,13 @@ Thank you to everyone who contributed to this release!
 
 Twitter/X:
 ```
-🚀 perl-lsp v0.8.3 is here!
+🚀 perl-lsp v$VERSION is here!
 
-✅ 100% Perl edge case coverage
 ⚡ Fast native Rust parser
-🛠️ 35+ IDE features
+🛠️ <current LSP/DAP feature count>
 🧪 Property-based testing
+(any coverage or performance number here must come from
+docs/project/CURRENT_STATUS.md, verified for this release)
 
 Install: curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
 
@@ -310,13 +351,13 @@ Install: curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp
 
 Reddit (r/perl):
 ```
-Title: perl-lsp v0.8.3 Released - Perl Language Server
+Title: perl-lsp v$VERSION Released - Perl Language Server
 
-We're excited to announce perl-lsp v0.8.3, a Perl language server with comprehensive edge case coverage!
+We're excited to announce perl-lsp v$VERSION.
 
 Features:
-- 35+ IDE features (completion, hover, refactoring, etc.)
-- Fast native Rust parser (1-150us parsing)
+- <current LSP/DAP feature count> (completion, hover, refactoring, etc.)
+- Fast native Rust parser
 - Works with VSCode, Neovim, Emacs, and any LSP editor
 - Zero C dependencies
 
@@ -340,13 +381,13 @@ If critical issues are found:
 
 ```bash
 # Delete the tag locally and remotely
-git tag -d v0.8.3
-git push --delete origin v0.8.3
+git tag -d "$TAG"
+git push --delete origin "$TAG"
 
 # Revert the commit
 git revert HEAD
 
-# Fix the issue and re-release as v0.8.4
+# Fix the issue and re-release as the next patch version
 ```
 
 ## Success Metrics (First Week)

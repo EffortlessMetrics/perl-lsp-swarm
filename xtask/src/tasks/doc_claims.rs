@@ -39,6 +39,26 @@ const CRATE_NAME_GUARD_FILES: &[&str] = &[
 ];
 const CRATE_NAME_EXCEPTIONS: &[&str] = &["docs/MIGRATION_v0.13.md"];
 
+/// The release runbook and its published mirror. Every step in them is a
+/// template an operator copies verbatim into a tag, a Homebrew formula, release
+/// notes, or social copy, so a literal in either file becomes a literal in a
+/// shipped artifact.
+const RELEASE_RUNBOOK_FILES: &[&str] =
+    &["docs/project/GA_RUNBOOK.md", "book/src/resources/ga-runbook.md"];
+
+/// Literals the runbook must not contain, and why.
+///
+/// Three different hardcoded versions and a push to the wrong default branch
+/// coexisted here, so following the runbook end to end tagged one release,
+/// published a formula for a second, and bumped the extension to a third
+/// (#5464). The coverage headlines were templated unconditionally, which
+/// republished unverified numbers every release.
+const RELEASE_RUNBOOK_FORBIDDEN: &[(&str, &str)] = &[
+    ("git push origin master", "the default branch is `main`; use `git push origin main`"),
+    ("100% Edge Case Coverage", "quote a verified figure from docs/project/CURRENT_STATUS.md"),
+    ("141 edge cases", "quote a verified figure from docs/project/CURRENT_STATUS.md"),
+];
+
 pub fn run() -> Result<()> {
     let root = project_root()?;
     let articles_dir = root.join(ARTICLES_DIR);
@@ -72,6 +92,7 @@ pub fn run() -> Result<()> {
 
     if hits.is_empty() {
         check_forbidden_workspace_crate_name(&root)?;
+        check_release_runbook_is_parameterised(&root)?;
         // #4649: this validator only checks a fixed list of hardcoded stale
         // literals. It cannot detect new staleness patterns (e.g. a crate count
         // drifting past the last hand-edited value); it only catches
@@ -98,6 +119,50 @@ pub fn run() -> Result<()> {
     eprintln!("{} stale claim(s) found in docs/articles.", hits.len());
     eprintln!("\nTo fix: update the article to match docs/project/PUBLICATION_FACTS_LEDGER.md");
     bail!("doc claim check failed");
+}
+
+/// Versions the runbook used to hardcode. Scope is deliberately the same as
+/// `STALE_PATTERNS`: named literals, not a general version regex. A regex would
+/// have to accept the factual `v0.17.0` in the header note and the asset names
+/// in the step-5 evidence block, which are statements about the tree rather
+/// than templates an operator copies.
+const RELEASE_RUNBOOK_FORBIDDEN_VERSIONS: &[&str] = &["0.8.3", "0.13.1", "0.6.0"];
+
+/// The runbook must keep defining its version once and deriving the tag from
+/// it. Without this, the forbidden-literal list above could be satisfied by
+/// deleting the parameterization rather than keeping it.
+const RELEASE_RUNBOOK_REQUIRED: &[(&str, &str)] = &[
+    ("VERSION=", "the runbook must set `VERSION` once in step 0"),
+    ("TAG=\"v$VERSION\"", "the tag must derive from `$VERSION`, not be typed again"),
+];
+
+fn check_release_runbook_is_parameterised(root: &std::path::Path) -> Result<()> {
+    for rel in RELEASE_RUNBOOK_FILES {
+        let path = root.join(rel);
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read release runbook {}", path.display()))?;
+
+        for &(forbidden, why) in RELEASE_RUNBOOK_FORBIDDEN {
+            if text.contains(forbidden) {
+                bail!("{rel}: contains {forbidden:?} — {why} (#5464)");
+            }
+        }
+        for &version in RELEASE_RUNBOOK_FORBIDDEN_VERSIONS {
+            if text.contains(version) {
+                bail!(
+                    "{rel}: contains the hardcoded version {version:?}. Every step reads \
+                     `$VERSION`, set once in step 0 — a literal here ships in a tag, a formula, \
+                     or release notes for a different release than the one being cut (#5464)"
+                );
+            }
+        }
+        for &(required, why) in RELEASE_RUNBOOK_REQUIRED {
+            if !text.contains(required) {
+                bail!("{rel}: missing {required:?} — {why} (#5464)");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn check_forbidden_workspace_crate_name(root: &std::path::Path) -> Result<()> {
@@ -140,6 +205,45 @@ mod tests {
         assert!(msg.contains("new staleness patterns are NOT caught"), "msg: {msg}");
         assert!(msg.contains("0 regressions found"), "msg: {msg}");
         assert!(msg.contains("7 articles scanned"), "msg: {msg}");
+    }
+
+    #[test]
+    fn release_runbook_guard_passes_on_the_current_tree() -> Result<()> {
+        // The guard is only worth having if it is live against the real files;
+        // a table checked against nothing would pass forever.
+        check_release_runbook_is_parameterised(&project_root()?)
+    }
+
+    #[test]
+    fn release_runbook_guard_covers_both_the_source_and_its_published_mirror() {
+        // `scripts/populate-book.sh` copies the runbook into the book. Guarding
+        // only the source would let the copy users actually read go stale —
+        // which is exactly how the broken Windows command reached the published
+        // book (#5461).
+        assert!(RELEASE_RUNBOOK_FILES.contains(&"docs/project/GA_RUNBOOK.md"));
+        assert!(RELEASE_RUNBOOK_FILES.contains(&"book/src/resources/ga-runbook.md"));
+    }
+
+    #[test]
+    fn release_runbook_guard_names_every_defect_the_issue_found() {
+        // #5464 found four: three hardcoded versions, a push to `master`, and
+        // unconditional coverage headlines. Dropping any entry silently narrows
+        // the guard to less than the issue it closes.
+        assert!(
+            RELEASE_RUNBOOK_FORBIDDEN
+                .iter()
+                .any(|(literal, _)| *literal == "git push origin master")
+        );
+        assert!(
+            RELEASE_RUNBOOK_FORBIDDEN.iter().any(|(literal, _)| literal.contains("Edge Case")),
+            "the templated coverage headline must stay forbidden"
+        );
+        assert_eq!(
+            RELEASE_RUNBOOK_FORBIDDEN_VERSIONS,
+            ["0.8.3", "0.13.1", "0.6.0"],
+            "the tag, formula, and extension versions that disagreed"
+        );
+        assert!(!RELEASE_RUNBOOK_REQUIRED.is_empty(), "the parameterization must stay asserted");
     }
 
     #[test]
