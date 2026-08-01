@@ -1278,7 +1278,7 @@ mod tests {
             checked += 1;
 
             let rel = manifest.strip_prefix(&root).unwrap_or(&manifest).display();
-            let bins = parsed
+            let mut bins = parsed
                 .get("bin")
                 .and_then(|b| b.as_array())
                 .map(|a| {
@@ -1288,10 +1288,23 @@ mod tests {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+
+            // Cargo infers a binary from src/main.rs when no [[bin]] is
+            // declared, named after the package. Reading only explicit [[bin]]
+            // arrays would skip such a crate entirely — it could advertise a
+            // nonexistent asset and this guard would still pass.
+            if bins.is_empty()
+                && manifest.with_file_name("src").join("main.rs").is_file()
+                && let Some(name) =
+                    parsed.get("package").and_then(|p| p.get("name")).and_then(|n| n.as_str())
+            {
+                bins.push(name.to_string());
+            }
+
             assert!(
                 !bins.is_empty(),
-                "{rel} declares binstall metadata but no [[bin]], so binstall has \
-                 nothing to install"
+                "{rel} declares binstall metadata but has no binary target, so \
+                 binstall has nothing to install"
             );
             for bin in bins {
                 assert!(
