@@ -1396,13 +1396,17 @@ mod tests {
         let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
         assert!(!bridge.is_live());
         let out = bridge.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
-        let (cmd, ok, body) = as_response(&out[0])?;
+        let first = out.first().ok_or_else(|| "initialize produced no messages".to_string())?;
+        let (cmd, ok, body) = as_response(first)?;
         assert_eq!(cmd, "initialize");
         assert!(ok);
         let caps = body.ok_or_else(|| "initialize response missing capabilities".to_string())?;
         assert_eq!(caps["supportsConditionalBreakpoints"], true);
         assert_eq!(caps["supportsLogPoints"], false);
-        assert_eq!(event_name(&out[1])?, "initialized");
+        let initialized = out
+            .get(1)
+            .ok_or_else(|| "initialize response missing initialized event".to_string())?;
+        assert_eq!(event_name(initialized)?, "initialized");
         Ok(())
     }
 
@@ -1411,7 +1415,8 @@ mod tests {
         let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
         for cmd in ["continue", "next", "stepIn", "stepOut", "pause"] {
             let out = bridge.dispatch(2, cmd, Some(json!({ "threadId": 1 })));
-            let (rcmd, ok, _) = as_response(&out[0])?;
+            let first = out.first().ok_or_else(|| format!("{cmd} produced no response"))?;
+            let (rcmd, ok, _) = as_response(first)?;
             assert_eq!(rcmd, cmd);
             assert!(!ok, "{cmd} must be rejected in mirror mode");
             if let DapMessage::Response { message, .. } = &out[0] {
@@ -1433,7 +1438,8 @@ mod tests {
             })),
         );
         assert_eq!(bridge.pending_source_count(), 1);
-        let (_, ok, body) = as_response(&out[0])?;
+        let first = out.first().ok_or_else(|| "setBreakpoints produced no response".to_string())?;
+        let (_, ok, body) = as_response(first)?;
         assert!(ok, "queued setBreakpoints still returns a success response");
         let bps =
             body.ok_or_else(|| "setBreakpoints response missing body".to_string())?["breakpoints"]
