@@ -199,6 +199,35 @@ fn check_reports_recovered_parse_errors() -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+/// A file can carry BOTH a fatal error and earlier recovered ones:
+/// `parse_program` records recoverable diagnostics as it goes, then propagates
+/// immediately on `RecursionLimit` / `NestingTooDeep` / `Cancelled` without
+/// recording those. Both must be reported, and the file must count once.
+///
+/// This is a deliberate broadening — the pre-fix code discarded `errors()`
+/// entirely in the `Err` branch and printed only the fatal message.
+#[test]
+fn check_reports_fatal_and_earlier_recovered_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("mixed_fatal.pl");
+    // A recoverable error first, then nesting past the parser's depth limit.
+    let source = format!("my $x = ;\nmy $y = {}1{};\n", "(".repeat(300), ")".repeat(300));
+    std::fs::write(&file, source)?;
+    let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.arg("--check")
+        .arg(file_str)
+        .assert()
+        .failure()
+        // the fatal condition
+        .stdout(predicates::str::contains("Nesting depth limit exceeded"))
+        // and the earlier recoverable one, which the old code dropped
+        .stdout(predicates::str::contains("Missing operand"));
+
+    Ok(())
+}
+
 /// Advisory diagnostics must not fail `--check`. `ParseError::Advisory` reports
 /// `blocks_clean_parse() == false`, and real `perl -c` accepts this file
 /// (`advisory.pl syntax OK`), so treating it as an error would reject valid
