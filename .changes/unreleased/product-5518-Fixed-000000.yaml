@@ -1,0 +1,9 @@
+project: product
+component: CI
+kind: Fixed
+body: "Removed `xtask/tests/agent_config_validation_tests.rs`, which validated the `.claude/agents/` directory retired in #5329. All 12 of its tests failed on main because the directory they assert about no longer exists, contributing to `cargo test --tests -p xtask` — and so the `unit_routed_full` gate behind PR Smoke — being red."
+time: 2026-08-01T00:00:00Z
+custom:
+  PR: "5518"
+  Slug: retire-agent-config-validation-tests-5517
+  Breaking: "no"
