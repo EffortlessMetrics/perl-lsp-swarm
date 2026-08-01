@@ -55,7 +55,7 @@ perl-parser.workspace = true
 rustc-hash = "2.1.2"
 thiserror.workspace = true
 toml = "1.1.2"
-ureq = { version = "3", features = ["json"] }
+ureq = { version = "3", features = ["json"], optional = true }
 # Wave G3 step 5: perl-lsp-performance absorbed
 moka = { version = "0.12", features = ["sync"] }
 
@@ -73,8 +73,13 @@ serde = { workspace = true, features = ["derive"] }
 toml = "1.1.2"
 
 [features]
+default = ["ai-provider"]
 lsp-ga-lock = []
 lsp-compat = []
+# AI completion backend (OpenAI-compatible). Pulls in ureq/rustls/ring.
+# Enabled by default; library consumers can disable with --no-default-features
+# to drop the TLS stack entirely.
+ai-provider = ["dep:ureq"]
 
 [dev-dependencies]
 perl-tdd-support.workspace = true

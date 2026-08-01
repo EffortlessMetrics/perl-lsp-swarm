@@ -1,125 +1,84 @@
 # ADR-0032: Skill Scoping and Hook Enforcement for Swarm Orchestration
 
-**Status**: Accepted
+**Status**: Superseded
 **Date**: 2026-03-16
+**Superseded**: 2026-07-29 by the provider-native GitHub-first skill architecture (#5199, #5204, #4203)
 **Related**: PR #1707, [SKILL_AND_AGENT_DESIGN.md](../reference/SKILL_AND_AGENT_DESIGN.md)
 
 ---
 
-## Context
+## Historical context
 
-In swarm cycle 2, the orchestration model had three recurring failure modes:
+This ADR responded to three real swarm-cycle failures:
 
-1. **Context window pollution**: The orchestrator loaded agent-scoped skills (`/swarm-protocol`, `/coding-standards`, `/swarm-priorities`) into its own context. These skills contain behavioral rules for coding agents — irrelevant to the orchestrator — and consumed context window budget that should be reserved for routing and state tracking.
+1. long-lived orchestrator context was polluted with worker-specific procedure;
+2. prompt requests for private swarm metrics were routinely skipped;
+3. repeated command boilerplate increased prompt cost and still failed to load the intended standards reliably.
 
-2. **Metrics compliance failure**: Agents were instructed via prompts to write entries to `.ops-perl-lsp/swarm-metrics.jsonl` after completing tasks. Zero of 30 merged PRs contained a metrics entry. Prompt instructions are advisory; agents skip them under time or context pressure.
+It therefore separated orchestrator and worker skills, proposed `TaskCompleted`, `SubagentStart`, and `TeammateIdle` hooks, and used skill frontmatter as role-oriented access control.
 
-3. **Prompt bloat and skip rate**: Every agent prompt included "Invoke /coding-standards" as boilerplate. This added prompt size overhead and was frequently skipped, meaning agents produced code without coding standards loaded.
+## Why it is superseded
 
-The underlying pattern: **prompt instructions are unreliable for behavioral enforcement**. Anything that must happen needs structural enforcement, not textual requests.
+The historical diagnosis was useful, but the chosen enforcement boundary was not durable.
 
----
+- Task, subagent, teammate, model, and executor state are private provider runtime state, not repository authority.
+- The original hook promises were only partially implemented; later divergence notes already recorded that metrics enforcement never matched the decision and `TeammateIdle` was unsafe.
+- Hook failures can block useful work after the economically valuable decision point and encourage compliance with recorded choreography rather than improving the artifact.
+- Fixed orchestrator/worker identities and slash-command catalogues have been replaced by one warm accountable root, provider-native JIT skills, and optional differentiated help.
+- Formatting, proof, formal review currentness, required checks, merge protection, and reconciliation belong at coherent candidate and GitHub boundaries.
+- Personal permission posture and command authorization belong to user/provider configuration, not shared repository settings.
 
-## Decision
+## Current decision
 
-### Decision 1: Skill Scope Separation
+The repository uses this control model:
 
-Skills are explicitly categorized by who may invoke them:
-
-**Orchestrator-scoped skills** (the orchestrator invokes these; agents do not):
-- `/swarm-status`
-- `/green-merge`
-- `/health-check`
-- `/swarm-report`
-- `/rebase-open`
-- `/corpus-ratchet`
-
-**Agent-scoped skills** (agents invoke these; the orchestrator does not):
-- `/swarm-protocol`
-- `/coding-standards`
-- `/swarm-priorities`
-
-The orchestrator **never** invokes agent-scoped skills. Loading behavioral rules meant for subagents into the orchestrator's context is waste — that context budget belongs to routing, state, and coordination.
-
-### Decision 2: Hook Enforcement Over Prompt Instructions
-
-Three hooks replace prompt-based behavioral requests:
-
-| Hook | Trigger | Enforcement |
-|------|---------|-------------|
-| `TaskCompleted` | Agent marks a task done | Blocks completion unless a metrics entry exists in `swarm-metrics.jsonl` |
-| `SubagentStart` | Any subagent initializes | Auto-injects condensed coding standards and known pitfalls into the subagent's context |
-| `TeammateIdle` | A teammate goes idle | Blocks idle state if the teammate has in-progress tasks not yet completed |
-
-Hooks execute unconditionally. Unlike prompt instructions, they cannot be skipped under pressure.
-
-### Decision 3: Skill Frontmatter for Access Control
-
-Skills use frontmatter fields to encode their intended audience:
-
-```yaml
-# Orchestrator-only: user types the command; model cannot invoke it autonomously
-disable-model-invocation: true
-
-# Agent-only: Claude auto-loads when relevant; not a user-facing command
-user-invocable: false
-
-# Dual-use: both the user and agents can invoke (default)
-# (no frontmatter needed)
+```text
+current repository and GitHub state
+→ narrowest public flow
+→ focused JIT transformation or review lens
+→ evidence-backed local route
+→ one integrating writer for contested mutation
+→ protected merge and reconciliation
 ```
 
-This makes access control explicit in the skill definition rather than enforced only by convention.
+### Skills
 
-### Decision 4: Layered Context Injection
+Skills remain the procedure surface, but their scope is semantic rather than persona-based. Public flows and atomic skills declare their trigger, authoritative inputs, result, evidence boundary, and normal/backward routes. The same warm root may perform several transformations; another agent is useful when it changes the evidence or detection surface.
 
-Instead of every agent prompt repeating "Invoke /coding-standards", context is injected in layers:
+### Hooks
 
-- **Layer 0 (automatic)**: `SubagentStart` hook injects a condensed version of coding standards — banned constructs, key patterns — into every subagent at startup. Zero prompt overhead required.
-- **Layer 1 (on demand)**: Full `/coding-standards` skill remains available for agents that need the complete reference during a task.
-- **Layer 2 (persistent)**: Known pitfalls from `.claude/swarm-state/known-pitfalls.md` are auto-injected alongside standards by the `SubagentStart` hook.
+No project-level Claude or Codex lifecycle or command-policy hook is authoritative. The repository does not use hooks to:
 
----
+- authorize task completion;
+- enforce issue labels or stage markers;
+- inject a fixed role catalogue;
+- require private metrics;
+- decide whether an agent may continue;
+- replace candidate proof, GitHub reviews, required checks, or branch protection.
+
+Concrete hazards remain controlled at their native boundary: Git/GitHub protection, expected-head merge, writer-admission/collision checks, secret/release controls, current required checks, unresolved substantive review findings, and durable-contract validation.
+
+### Runtime configuration
+
+Shared project settings remain minimal and portable. Personal permissions, bypass modes, broad command allowlists, experimental provider features, model routing, and local conveniences belong in user or local settings.
 
 ## Consequences
 
-**Positive:**
+**Positive**
 
-- Orchestrator context stays clean. Agent behavioral docs no longer pollute it.
-- Metrics compliance is structural. The `TaskCompleted` hook enforces entries; prompt requests were 0% reliable.
-- Every subagent gets coding standards automatically. No prompt overhead, no skip risk.
-- Skill audience is self-documenting via frontmatter, reducing the chance of orchestrators accidentally loading agent skills.
+- useful research, proof, hardening, simplification, and review happen immediately before the decisions they improve;
+- missed historical ceremony can be repaired forward without rejecting coherent work;
+- GitHub preserves asynchronous state across providers and sessions;
+- no task/subagent hook can deadlock ordinary progress;
+- provider-native skills can evolve without preserving a fixed organization chart.
 
-**Negative / Trade-offs:**
+**Trade-offs**
 
-- Hook failures block agent progress. A misconfigured `TaskCompleted` hook can prevent task completion. Hooks must be tested before deployment.
-- Condensed standards injected by `SubagentStart` may diverge from the full `/coding-standards` skill if one is updated without the other. Both need to be kept in sync.
-- Agents that need the full standards must still invoke `/coding-standards` explicitly — the auto-injected layer is a summary, not a replacement.
+- the repository no longer claims mechanical command authorization through project settings;
+- provider/user permissions differ by runtime and must be discovered honestly;
+- review and proof discipline depend on candidate-bound helpers, GitHub protection, and substantive skill execution rather than lifecycle hooks;
+- historical command/persona donors remain useful only until their semantics are absorbed and active discovery is retired.
 
----
+## Historical record
 
-## Divergence from Original Design
-
-As of 2026-03-21, the following items described in this ADR were not implemented.
-Future agents should treat this section as the ground truth, not the decision tables above.
-
-| Hook | ADR Promise | Actual State |
-|------|------------|--------------|
-| `SubagentStart` | Auto-injects condensed coding standards and known pitfalls from `.claude/swarm-state/known-pitfalls.md` | Implemented as a bare `echo` command in `settings.json`; `.claude/swarm-state/` directory and `subagent-start.sh` do not exist |
-| `TaskCompleted` | Blocks completion unless a metrics entry exists in `swarm-metrics.jsonl` | Only checks `cargo fmt` and `CURRENT_STATUS.md`; no metrics gate implemented |
-| `TeammateIdle` | Registered in `settings.json` to block idle state if in-progress tasks exist | Hook script exists in `docs/handoff/swarm-pack/hooks/` but is **not registered** in live `settings.json`. **Formally retracted 2026-03-22** — see retraction note below |
-| `PreToolUse` | (not in original ADR) | Inline in `settings.json` as of ADR write date; extracted to `.claude/hooks/pre-tool-use.sh` in PR #2297 |
-
-**Consequence for builders:** The metrics compliance guarantee (Decision 2) was never enforced. The original motivation — zero of 30 PRs contained a metrics entry — was not resolved by this ADR's implementation. As of 2026-03-22, `TaskCompleted` now writes a passive metrics entry (observability, not blocking gate) — lifecycle ordering makes a blocking gate unimplementable at that hook point.
-
-**TeammateIdle — formally retracted (2026-03-22):** The `teammate-idle.sh` hook in `docs/handoff/swarm-pack/hooks/` unconditionally exits 2, which would create an infinite busy-loop when a teammate's task list is genuinely empty. The hook was not registered across 6 sessions of 50-100 agents and its absence caused no observed failures. This hook is formally withdrawn from the design. The swarm relies on task-list discipline and orchestrator routing rather than idle-state blocking.
-
-## Files Changed
-
-| File | Change |
-|------|--------|
-| `.claude/commands/swarm.md` | Added Skill Scope section; removed orchestrator-level agent skill invocations |
-| `.claude/agents-compat/swarm-*.md` (13 files) | Added `TaskList`/`TaskUpdate`/`TaskCreate` references; added metrics mandate |
-| `.claude/hooks/task-completed.sh` | Enhanced with metrics gate |
-| `.claude/hooks/subagent-start.sh` | New hook; auto-injects coding standards and known pitfalls |
-| `.claude/hooks/teammate-idle.sh` | Enhanced with in-progress task check |
-| `.claude/settings.json` | Registered `SubagentStart` hook |
+The original accepted text and implementation divergence remain available through Git history and PR #1707. They are not current operating authority.

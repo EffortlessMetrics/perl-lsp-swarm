@@ -2,7 +2,9 @@
 //!
 //! Provides context-aware method completion including DBI methods.
 
-use super::{auto_import, context::CompletionContext, items::CompletionItem};
+use super::{
+    auto_import, context::CompletionContext, items::CompletionItem, items::InsertTextFormat,
+};
 use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
 use std::collections::HashSet;
 
@@ -424,6 +426,7 @@ pub fn add_method_completions(
                 additional_edits: vec![],
                 text_edit_range: Some((context.method_text_edit_start(source), context.position)),
                 commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
             });
         }
@@ -484,6 +487,7 @@ pub fn add_method_completions(
                 additional_edits,
                 text_edit_range: Some((context.method_text_edit_start(source), context.position)),
                 commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
             });
         }
@@ -512,6 +516,7 @@ pub fn add_method_completions(
                         context.position,
                     )),
                     commit_characters: None,
+                    insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
                 });
             }

@@ -242,7 +242,7 @@ impl ExecuteCommandProvider {
                 let file_path = self.resolve_path_from_args(&arguments)?;
                 self.run_tests(&file_path)
             }
-            "perl.runFile" => {
+            "perl.runFile" | "perl.runScript" => {
                 let file_path = self.resolve_path_from_args(&arguments)?;
                 self.run_file(&file_path)
             }
@@ -1683,6 +1683,7 @@ pub fn get_supported_commands() -> Vec<String> {
     vec![
         "perl.runTests".to_string(),
         "perl.runFile".to_string(),
+        "perl.runScript".to_string(),
         "perl.runTestSub".to_string(),
         "perl.runCritic".to_string(),
         "perl.runTest".to_string(),

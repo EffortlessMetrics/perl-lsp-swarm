@@ -26,7 +26,15 @@ impl DapServer {
     ///
     /// Currently always succeeds. Phase 2 will add validation and initialization errors.
     pub fn new(config: DapConfig) -> anyhow::Result<Self> {
-        Ok(Self { config, adapter: DebugAdapter::new() })
+        let adapter = DebugAdapter::new();
+        // Wire the configured workspace boundary (if any) into the adapter so
+        // launch requests are validated against it. See
+        // `DebugAdapter::set_workspace_root` and `handle_launch` for the
+        // narrowing-only override rule applied to launch-args `workspaceRoot`.
+        if let Some(root) = config.workspace_root.clone() {
+            adapter.set_workspace_root(root);
+        }
+        Ok(Self { config, adapter })
     }
 
     /// Run the DAP server

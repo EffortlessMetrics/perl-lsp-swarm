@@ -25,6 +25,11 @@ pub const SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION: &str =
 pub const FAILURE_CLUSTER_SCHEMA_VERSION: &str = "perl_core_harness.failure_cluster.v1";
 pub const FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION: &str =
     "perl_core_harness.failure_cluster_history.v1";
+pub const LANDED_LINEAGE_SCHEMA_VERSION: &str = "perl_core_harness.landed_lineage.v1";
+pub const CURRENT_AUTHORITY_INDEX_SCHEMA_VERSION: &str =
+    "perl_core_harness.current_authority_index.v1";
+pub const COMPILER_COMPATIBILITY_SCHEMA_VERSION: &str =
+    "perl_core_harness.compiler_compatibility.v1";
 
 /// Upstream Perl test scheduler to query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
@@ -806,6 +811,243 @@ pub struct FailureClusterHistory {
     pub entries: Vec<FailureClusterHistoryEntry>,
 }
 
+/// Transition observed by a published bundle relative to the accepted state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompatibilityTransition {
+    /// The observation does not change the accepted state.
+    NoChange,
+    /// The observation is a candidate improvement that still needs acceptance.
+    ImprovementCandidate,
+    /// The observation regresses from the accepted state.
+    Regression,
+    /// The declared contract may need a reviewed correction.
+    ContractCorrectionCandidate,
+    /// The evidence is insufficient to establish a transition.
+    NotProven,
+    /// The record is retained only for history.
+    Historical,
+}
+
+/// Lifecycle of a comparison-series authority record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CurrentAuthorityStatus {
+    /// The record is the current authority for its series.
+    Current,
+    /// The record is retained for historical inspection.
+    Historical,
+    /// The record was replaced by a later authority record.
+    Superseded,
+}
+
+/// Post-merge identity binding for one published evidence bundle.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LandedLineage {
+    pub schema_version: String,
+    pub series_id: String,
+    pub profile: HarnessProfile,
+    pub manifest_hash: String,
+    pub evidence_bundle_id: String,
+    pub evidence_bundle_digest: String,
+    pub measurement_sha: String,
+    pub publication_sha: String,
+    pub landed_sha: String,
+    pub publication_base_sha: String,
+    pub authoritative_artifacts: BTreeMap<String, String>,
+    pub publication_paths: Vec<String>,
+    pub accepted_transition_id: Option<String>,
+    pub accepted_baseline_digest: Option<String>,
+    pub accepted_baseline_evidence_bundle: Option<String>,
+    pub observation_transition: CompatibilityTransition,
+    pub recorder_schema_version: String,
+    pub created_reason: String,
+    pub supersedes: Option<String>,
+}
+
+/// One series entry in the deterministic current-authority index.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CurrentAuthorityEntry {
+    pub series_id: String,
+    pub profile: HarnessProfile,
+    pub manifest_hash: String,
+    pub observation_bundle_path: String,
+    pub observation_bundle_id: String,
+    pub observation_bundle_digest: String,
+    pub observation_transition: CompatibilityTransition,
+    pub accepted_baseline_path: Option<String>,
+    pub accepted_baseline_digest: Option<String>,
+    pub accepted_baseline_evidence_bundle: Option<String>,
+    pub accepted_transition_id: Option<String>,
+    pub landed_lineage_path: String,
+    pub status: CurrentAuthorityStatus,
+    pub claim_boundary: String,
+    pub unavailable_rails: Vec<String>,
+}
+
+/// Deterministic index of current and historical series authorities.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CurrentAuthorityIndex {
+    pub schema_version: String,
+    pub entries: Vec<CurrentAuthorityEntry>,
+}
+
+/// Availability of an optional correctness or execution rail.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompatibilityRailAvailability {
+    Available,
+    /// The rail has evidence, but only for a declared subset of its contract.
+    Partial,
+    NotAvailable,
+    /// Evidence exists, but its freshness contract prevents current use.
+    Stale,
+}
+
+/// Explicit state for a rail that may be absent without becoming zero/pass.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilityRailState {
+    pub availability: CompatibilityRailAvailability,
+    pub reason: String,
+    pub schema_version: Option<String>,
+    pub evidence_refs: Vec<String>,
+}
+
+/// Parse or compile acceptance counts for one immutable series.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilityRunState {
+    pub schema_version: String,
+    pub mode: HarnessMode,
+    pub files_total: usize,
+    pub files_passed: usize,
+    pub files_failed: usize,
+    pub tap_assertions_total: usize,
+    pub tap_assertions_passed: usize,
+    pub baseline_schema_version: String,
+    pub report_schema_version: String,
+    pub evidence_bundle_id: String,
+    pub cluster_count: usize,
+}
+
+/// The measured state of one current evidence bundle.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilityObservation {
+    pub observation_bundle_id: String,
+    pub measurement_sha: String,
+    pub parse: CompatibilityRunState,
+    pub compile: CompatibilityRunState,
+    pub debt: CompatibilityDebtState,
+    pub clusters: CompatibilityClusterState,
+    pub execution: CompatibilityRailState,
+    pub curated_gold: CompatibilityRailState,
+    pub differential_oracle: CompatibilityRailState,
+    pub eir: CompatibilityRailState,
+    pub claim_boundary: String,
+}
+
+/// A proposed transition from the accepted ratchet to the current observation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilityTransitionCandidate {
+    pub transition: CompatibilityTransition,
+    pub reason: String,
+    pub requires_acceptance: bool,
+}
+
+/// The accepted ratchet retained separately from current measured evidence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilityAcceptedRatchet {
+    pub baseline_schema_version: String,
+    pub baseline_digest: String,
+    pub baseline_evidence_bundle_id: Option<String>,
+    pub accepted_transition_id: Option<String>,
+    pub files_total: usize,
+    pub files_passed: usize,
+}
+
+/// Boundary and accepted-debt counts kept separate from acceptance.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilityDebtState {
+    pub boundary_count: usize,
+    pub source_locked_count: usize,
+    pub downstream_blocking_count: usize,
+    pub by_disposition: BTreeMap<String, usize>,
+    pub by_lock_scope: BTreeMap<String, usize>,
+    pub registry: CompatibilityRailState,
+    pub history: CompatibilityRailState,
+}
+
+/// Active cluster and owner counts for one series.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilityClusterState {
+    pub active_count: usize,
+    pub unassigned_count: usize,
+    pub by_status: BTreeMap<String, usize>,
+    pub history_bundle_id: Option<String>,
+}
+
+/// Identity and evidence lineage for one independently compared series.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilitySeriesIdentity {
+    pub series_id: String,
+    pub profile: HarnessProfile,
+    pub profile_roots: Vec<String>,
+    pub manifest_hash: String,
+    pub denominator: usize,
+    pub repository_commit: String,
+    pub perl_requested_ref: String,
+    pub perl_resolved_ref: String,
+    pub runner: HarnessRunner,
+    pub compiler_subject_identity: String,
+    pub invocation_identity: String,
+    pub capability_identity: String,
+    pub environment_identity: String,
+    pub preparation_receipt_id: String,
+    pub preparation_receipt_digest: String,
+    pub measurement_sha: String,
+    pub publication_sha: Option<String>,
+    pub landed_sha: Option<String>,
+    pub evidence_bundle_id: String,
+}
+
+/// Complete typed compatibility state consumed by generated ledgers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompilerCompatibilitySeries {
+    pub identity: CompatibilitySeriesIdentity,
+    pub current_observation: CompatibilityObservation,
+    pub transition_candidate: CompatibilityTransitionCandidate,
+    pub accepted_ratchet: CompatibilityAcceptedRatchet,
+    pub parse: CompatibilityRunState,
+    pub compile: CompatibilityRunState,
+    pub debt: CompatibilityDebtState,
+    pub clusters: CompatibilityClusterState,
+    pub execution: CompatibilityRailState,
+    pub curated_gold: CompatibilityRailState,
+    pub differential_oracle: CompatibilityRailState,
+    pub eir: CompatibilityRailState,
+    pub claim_boundary: String,
+}
+
+/// Versioned, series-separated compiler compatibility input state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompilerCompatibilityState {
+    pub schema_version: String,
+    pub repository_commit: String,
+    pub series: Vec<CompilerCompatibilitySeries>,
+}
+
 pub fn workstream_for_bucket(bucket: &str) -> &'static str {
     match bucket {
         "parse_recovery" => "parser_recovery",
@@ -878,11 +1120,19 @@ mod tests {
                 FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
                 "perl_core_harness.failure_cluster_history.v1",
             ),
+            (LANDED_LINEAGE_SCHEMA_VERSION, "perl_core_harness.landed_lineage.v1"),
+            (
+                CURRENT_AUTHORITY_INDEX_SCHEMA_VERSION,
+                "perl_core_harness.current_authority_index.v1",
+            ),
         ];
         for (actual, expected) in expected {
             if actual != expected {
                 return Err(format!("schema constant {actual:?} did not equal {expected:?}"));
             }
+        }
+        if COMPILER_COMPATIBILITY_SCHEMA_VERSION != "perl_core_harness.compiler_compatibility.v1" {
+            return Err("compiler compatibility schema constant changed".to_string());
         }
         Ok(())
     }

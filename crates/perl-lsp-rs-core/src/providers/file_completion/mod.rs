@@ -5,7 +5,7 @@
 //! for completion providers that want to offer file suggestions without owning
 //! the security policy themselves.
 
-use crate::providers::completion_item::{CompletionItem, CompletionItemKind};
+use crate::providers::completion_item::{CompletionItem, CompletionItemKind, InsertTextFormat};
 
 #[cfg(test)]
 pub(crate) static CWD_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
@@ -124,6 +124,7 @@ pub fn complete_file_paths(
             additional_edits: Vec::new(),
             text_edit_range: Some((context.prefix_start, context.position)),
             commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
         });
     }

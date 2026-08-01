@@ -904,6 +904,26 @@ enum Commands {
         summary: PathBuf,
     },
 
+    /// Run exact-head Taplo and typos checks for changed repository files.
+    ///
+    /// The command composes the shared change-set resolver and invokes both
+    /// tools through the pinned Aqua inventory. Missing tooling is reported as
+    /// NOT_PROVEN and exits non-zero; it never becomes a silent pass.
+    RepoHygiene {
+        /// Base git ref or full SHA for the evaluated range.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+        /// Head git ref or full SHA for the evaluated range.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+        /// JSON receipt output path.
+        #[arg(long, default_value = "target/receipts/repo-hygiene.json")]
+        receipt: PathBuf,
+        /// Markdown summary output path.
+        #[arg(long, default_value = "target/receipts/repo-hygiene.md")]
+        summary: PathBuf,
+    },
+
     /// Resolve a change set (base/head SHAs + changed paths) via the single
     /// #3985 `change_set::resolve_change_set` base-resolver + diff — the
     /// runtime-neutral interface `hooks/pre-push` consumes (#3985 Slice 3A)
@@ -2575,6 +2595,25 @@ enum PerlCoreHarnessCommand {
         check_history: bool,
     },
 
+    /// Validate landed evidence lineage and the deterministic current-authority index.
+    CurrentAuthority {
+        /// Current-authority index JSON.
+        #[arg(long)]
+        index: PathBuf,
+
+        /// Landed-lineage JSON; may be supplied more than once.
+        #[arg(long = "lineage")]
+        lineages: Vec<PathBuf>,
+
+        /// Repository root containing the published evidence artifacts.
+        #[arg(long)]
+        repository_root: PathBuf,
+
+        /// Exact Git commit containing the current-authority records.
+        #[arg(long)]
+        landed_sha: String,
+    },
+
     /// Run discovered tests in parse, compile, or execute mode (future slice).
     Run {
         /// Harness mode to run.
@@ -4094,6 +4133,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CiContract { base, head, receipt, summary } => {
             ci_contract::run(ci_contract::CiContractConfig { base, head, receipt, summary })
         }
+        Commands::RepoHygiene { base, head, receipt, summary } => {
+            repo_hygiene::run(repo_hygiene::RepoHygieneConfig { base, head, receipt, summary })
+        }
         Commands::ChangeSet { base, head, format, root } => {
             change_set::run(change_set::ChangeSetConfig { base, head, format, root })
         }
@@ -4385,6 +4427,20 @@ fn run_cli(cli: Cli) -> Result<()> {
                 write_history,
                 check_history,
             }),
+            PerlCoreHarnessCommand::CurrentAuthority {
+                index,
+                lineages,
+                repository_root,
+                landed_sha,
+            } => perl_core_harness::validate_current_authority(
+                perl_core_harness::CurrentAuthorityConfig {
+                    index,
+                    lineages,
+                    repository_root,
+                    landed_sha,
+                },
+            )
+            .map(|_| ()),
             PerlCoreHarnessCommand::Run {
                 mode,
                 perl_tree,

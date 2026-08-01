@@ -24,8 +24,9 @@ pub mod completion_shadow;
 /// Short-TTL cache for module prefix directory scans (issue #8514).
 pub mod module_scan_cache;
 
+pub use crate::providers::completion_item::{render_snippet_plaintext, snippet_body_defects};
 pub use completion::{
-    CompletionContext, CompletionItem, CompletionItemKind, CompletionProvider,
+    CompletionContext, CompletionItem, CompletionItemKind, CompletionProvider, InsertTextFormat,
     add_xs_api_completions_for_prefix, collect_module_names_from_roots_with_cache,
     get_dbi_method_documentation, get_test_more_documentation, get_xs_api_documentation,
     is_xs_source,

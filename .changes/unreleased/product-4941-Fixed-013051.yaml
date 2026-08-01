@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Go-to-definition/hover on a module reference no longer crashes the server with a char-boundary panic when the line contains multi-byte characters (emoji, accented letters, CJK) before the cursor."
+time: 2026-07-25T01:30:51Z
+custom:
+  PR: "4941"
+  Slug: module-reference-char-boundary-panic
+  Breaking: "no"

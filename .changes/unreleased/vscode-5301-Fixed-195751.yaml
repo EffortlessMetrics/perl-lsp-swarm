@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Fixed
+body: "The Test Explorer's TAP result parser now honors '# TODO' and '# SKIP' directives, reporting them as skipped instead of counting an expected-to-fail TODO test as a failure or a SKIP test as a pass."
+time: 2026-07-29T19:57:51Z
+custom:
+  PR: "5301"
+  Slug: tap-todo-skip-directives
+  Breaking: "no"

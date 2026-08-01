@@ -292,17 +292,31 @@ impl DiagnosticsProvider {
 
         // Convert parse errors to diagnostics
         for error in parse_errors {
-            let (location, message) = match error {
-                ParseError::UnexpectedToken { location, expected, found } => {
+            let message = match error {
+                ParseError::UnexpectedToken { expected, found, .. } => {
                     let found_display = format_found_token(found);
-                    let msg = build_enhanced_message(expected, found, &found_display);
-                    (*location, msg)
+                    build_enhanced_message(expected, found, &found_display)
                 }
-                ParseError::SyntaxError { location, message } => (*location, message.clone()),
-                ParseError::Advisory { location, message } => (*location, message.clone()),
-                ParseError::UnexpectedEof => (source.len(), "Unexpected end of input".to_string()),
-                ParseError::LexerError { message } => (0, message.clone()),
-                _ => (0, error.to_string()),
+                ParseError::SyntaxError { message, .. } => message.clone(),
+                ParseError::Advisory { message, .. } => message.clone(),
+                ParseError::UnexpectedEof => "Unexpected end of input".to_string(),
+                ParseError::LexerError { message } => message.clone(),
+                other => other.to_string(),
+            };
+
+            // The parser owns error positions: `ParseError::location` is the single
+            // authority for which variants carry a byte offset. Deriving the position
+            // here from a second per-variant match is what previously pinned
+            // `Recovered` (and every other unlisted variant) to offset 0 — i.e.
+            // line 1, column 1 — regardless of where the error actually was.
+            //
+            // `UnexpectedEof` stores no offset and is anchored at end-of-input.
+            // Variants that genuinely carry no position (`LexerError`,
+            // `RecursionLimit`, `NestingTooDeep`, `Cancelled`, ...) still fall back
+            // to the start of the file.
+            let location = match error {
+                ParseError::UnexpectedEof => source.len(),
+                other => other.location().unwrap_or(0),
             };
 
             let range_start = location.min(source_len);
@@ -335,10 +349,11 @@ impl DiagnosticsProvider {
         }
 
         // Skip lint/scope analysis when there are blocking parse errors —
-        // the recovered AST is unreliable and produces cascading false
+        // the salvaged AST is unreliable and produces cascading false
         // positives. Only parse-error diagnostics are shown in this case.
-        // (#5089)
-        let has_blocking_parse_error = parse_errors.iter().any(|e| e.blocks_clean_parse());
+        // (#5089). Structured recovery is excluded from that rule: see
+        // `suppresses_semantic_analysis`.
+        let has_blocking_parse_error = parse_errors.iter().any(suppresses_semantic_analysis);
 
         if !has_blocking_parse_error {
             // Run scope analysis to detect undeclared/unused/shadowing issues.
@@ -429,6 +444,19 @@ impl DiagnosticsProvider {
 
         diagnostics
     }
+}
+
+/// Whether a parse error is severe enough to suppress the scope/lint/semantic stack.
+///
+/// `ParseError::blocks_clean_parse` answers a different question — whether the parse
+/// earns a *clean compiler receipt* — and every non-`Advisory` variant answers "no"
+/// to that, including `Recovered`. But `Recovered` is exactly the signal that the
+/// parser repaired the construct and continued with a usable tree, so treating it as
+/// a hard blocker silently deleted every lint and scope warning in the file for a
+/// single missing paren. Structured recovery keeps the tree; the unrecoverable
+/// variants do not.
+fn suppresses_semantic_analysis(error: &ParseError) -> bool {
+    error.blocks_clean_parse() && !matches!(error, ParseError::Recovered { .. })
 }
 
 fn suppress_unused_imports_for_missing_modules(diagnostics: &mut Vec<Diagnostic>) {

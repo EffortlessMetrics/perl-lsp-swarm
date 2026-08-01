@@ -12,20 +12,26 @@
 //! are warned but not hard-rejected — temp files and explicit user paths are
 //! legitimate pre-launch use cases).
 
+use anyhow::Result;
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use serde_json::json;
 
+type TestResult = Result<()>;
+
 /// Helper: send a gotoTargets request with the given source path and return
 /// whether the response indicates success or failure.
-fn goto_targets_path_result(adapter: &mut DebugAdapter, path: &str) -> (bool, Option<String>) {
+fn goto_targets_path_result(
+    adapter: &mut DebugAdapter,
+    path: &str,
+) -> Result<(bool, Option<String>)> {
     let args = json!({
         "source": { "path": path },
         "line": 1
     });
     let response = adapter.handle_request(1, "gotoTargets", Some(args));
     match response {
-        DapMessage::Response { success, message, .. } => (success, message),
-        other => panic!("expected Response, got {other:?}"),
+        DapMessage::Response { success, message, .. } => Ok((success, message)),
+        other => anyhow::bail!("expected Response, got {other:?}"),
     }
 }
 
@@ -34,15 +40,15 @@ fn goto_targets_path_result(adapter: &mut DebugAdapter, path: &str) -> (bool, Op
 fn breakpoint_locations_path_result(
     adapter: &mut DebugAdapter,
     path: &str,
-) -> (bool, Option<String>) {
+) -> Result<(bool, Option<String>)> {
     let args = json!({
         "source": { "path": path },
         "line": 1
     });
     let response = adapter.handle_request(1, "breakpointLocations", Some(args));
     match response {
-        DapMessage::Response { success, message, .. } => (success, message),
-        other => panic!("expected Response, got {other:?}"),
+        DapMessage::Response { success, message, .. } => Ok((success, message)),
+        other => anyhow::bail!("expected Response, got {other:?}"),
     }
 }
 
@@ -51,35 +57,39 @@ fn breakpoint_locations_path_result(
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_parent_traversal_rejected_without_workspace_goto_targets() {
+fn test_parent_traversal_rejected_without_workspace_goto_targets() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (success, _msg) = goto_targets_path_result(&mut adapter, "../../../etc/passwd");
+    let (success, _msg) = goto_targets_path_result(&mut adapter, "../../../etc/passwd")?;
     assert!(!success, "parent-directory traversal must be rejected without workspace root");
+    Ok(())
 }
 
 #[test]
-fn test_parent_traversal_rejected_without_workspace_breakpoint_locations() {
+fn test_parent_traversal_rejected_without_workspace_breakpoint_locations() -> TestResult {
     let mut adapter = DebugAdapter::new();
     let (success, _msg) =
-        breakpoint_locations_path_result(&mut adapter, "../../../../../../tmp/sensitive");
+        breakpoint_locations_path_result(&mut adapter, "../../../../../../tmp/sensitive")?;
     assert!(!success, "parent-directory traversal must be rejected without workspace root");
+    Ok(())
 }
 
 #[test]
-fn test_mixed_traversal_rejected_without_workspace() {
+fn test_mixed_traversal_rejected_without_workspace() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (success, _) = goto_targets_path_result(&mut adapter, "src/../../etc/shadow");
+    let (success, _) = goto_targets_path_result(&mut adapter, "src/../../etc/shadow")?;
     assert!(
         !success,
         "paths with ParentDir components must be rejected even if they start with a normal component"
     );
+    Ok(())
 }
 
 #[test]
-fn test_rooted_traversal_rejected_without_workspace() {
+fn test_rooted_traversal_rejected_without_workspace() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (success, _) = goto_targets_path_result(&mut adapter, "/../../../etc/passwd");
+    let (success, _) = goto_targets_path_result(&mut adapter, "/../../../etc/passwd")?;
     assert!(!success, "rooted paths with ParentDir components must be rejected");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +101,7 @@ fn test_rooted_traversal_rejected_without_workspace() {
 // fix; absolute paths get an elevated warning.
 
 #[test]
-fn test_absolute_path_outside_cwd_allowed_without_workspace() {
+fn test_absolute_path_outside_cwd_allowed_without_workspace() -> TestResult {
     // Absolute paths outside CWD should be allowed (with a warning) when no
     // workspace root is set — they are not traversal attacks.
     let mut adapter = DebugAdapter::new();
@@ -101,11 +111,11 @@ fn test_absolute_path_outside_cwd_allowed_without_workspace() {
     #[cfg(not(windows))]
     let outside_path = "/etc/shadow";
 
-    let (success, _) = goto_targets_path_result(&mut adapter, outside_path);
+    let (success, _) = goto_targets_path_result(&mut adapter, outside_path)?;
     // May succeed or fail for other reasons, but must NOT be rejected by the
     // path-validation layer for being absolute.
     if !success {
-        let (_, msg) = goto_targets_path_result(&mut adapter, outside_path);
+        let (_, msg) = goto_targets_path_result(&mut adapter, outside_path)?;
         if let Some(m) = msg {
             let lower = m.to_lowercase();
             assert!(
@@ -114,6 +124,7 @@ fn test_absolute_path_outside_cwd_allowed_without_workspace() {
             );
         }
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -121,15 +132,15 @@ fn test_absolute_path_outside_cwd_allowed_without_workspace() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_simple_relative_path_accepted_without_workspace() {
+fn test_simple_relative_path_accepted_without_workspace() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (success, _) = goto_targets_path_result(&mut adapter, "src/main.pl");
+    let (success, _) = goto_targets_path_result(&mut adapter, "src/main.pl")?;
     // May succeed or fail depending on breakpoint validation, but must NOT be
     // rejected by the path-validation layer itself.  If it fails, the failure
     // message should not mention "path validation" or "traversal".
     if !success {
         // If it fails, it should not be due to path validation
-        let (_, msg) = goto_targets_path_result(&mut adapter, "src/main.pl");
+        let (_, msg) = goto_targets_path_result(&mut adapter, "src/main.pl")?;
         if let Some(m) = msg {
             let lower = m.to_lowercase();
             assert!(
@@ -138,15 +149,16 @@ fn test_simple_relative_path_accepted_without_workspace() {
             );
         }
     }
+    Ok(())
 }
 
 #[test]
-fn test_dot_relative_path_accepted_without_workspace() {
+fn test_dot_relative_path_accepted_without_workspace() -> TestResult {
     let mut adapter = DebugAdapter::new();
     // A path with a CurDir component (".") but no ParentDir should be accepted.
-    let (success, _) = goto_targets_path_result(&mut adapter, "./lib/utils.pl");
+    let (success, _) = goto_targets_path_result(&mut adapter, "./lib/utils.pl")?;
     if !success {
-        let (_, msg) = goto_targets_path_result(&mut adapter, "./lib/utils.pl");
+        let (_, msg) = goto_targets_path_result(&mut adapter, "./lib/utils.pl")?;
         if let Some(m) = msg {
             let lower = m.to_lowercase();
             assert!(
@@ -155,6 +167,7 @@ fn test_dot_relative_path_accepted_without_workspace() {
             );
         }
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -162,9 +175,9 @@ fn test_dot_relative_path_accepted_without_workspace() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_traversal_error_message_mentions_path_validation() {
+fn test_traversal_error_message_mentions_path_validation() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (success, msg) = goto_targets_path_result(&mut adapter, "../../../etc/passwd");
+    let (success, msg) = goto_targets_path_result(&mut adapter, "../../../etc/passwd")?;
     assert!(!success, "traversal path must be rejected");
     let msg = msg.unwrap_or_default();
     assert!(
@@ -173,4 +186,5 @@ fn test_traversal_error_message_mentions_path_validation() {
             || msg.to_lowercase().contains("parent-directory"),
         "error message should explain the path validation failure: {msg}"
     );
+    Ok(())
 }

@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "A leading UTF-8 BOM (U+FEFF) in editor-provided document text is now stripped on both didOpen and full-document didChange, instead of shifting every column-0 offset by one character and producing stray glyphs in rename previews on Windows/BOM-encoded files."
+time: 2026-07-29T04:50:22Z
+custom:
+  PR: "5219"
+  Slug: strip-bom-on-open-and-change
+  Breaking: "no"

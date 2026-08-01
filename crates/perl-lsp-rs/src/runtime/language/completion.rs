@@ -11,7 +11,7 @@ use crate::cancellation::{
     GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken, RequestCleanupGuard,
 };
 use crate::completion::{
-    CompletionItemKind, CompletionProvider, add_xs_api_completions_for_prefix,
+    CompletionItemKind, CompletionProvider, InsertTextFormat, add_xs_api_completions_for_prefix,
 };
 use crate::runtime::lifecycle::inc_context::RequestIncContext;
 #[cfg(feature = "workspace")]
@@ -27,11 +27,10 @@ use perl_lexer::LSP_RUNTIME_COMPLETION_KEYWORDS;
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::completion::completion_shadow::completion_visibility_shadow;
 use perl_module::resolution::{IncRoot, IncRootKind};
-use regex::Regex;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Instant;
 
 use super::super::LspServer;
@@ -97,8 +96,61 @@ fn notify_completion_analysis_started(uri: &str) {
 #[cfg(not(any(test, feature = "expose_lsp_test_api")))]
 fn notify_completion_analysis_started(_uri: &str) {}
 
-static SNIPPET_PLACEHOLDER_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
-static SNIPPET_SIMPLE_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+/// Test-only rendezvous gate: when armed for a URI, blocks
+/// `handle_completion_cancellable` immediately after it has computed the
+/// comment-guard predicate and *before* the guard's own cancellation check
+/// runs, until the test releases it. Lets a regression test land a
+/// cancellation deterministically in the narrow window between the initial
+/// `token.is_cancelled_relaxed()` check (early in the handler) and the
+/// comment guard's cancellation check, without guessing at timing the way a
+/// genuinely concurrent race would (mirrors the determinism goal of
+/// `COMPLETION_ANALYSIS_STARTED_OBSERVER` above, but as a blocking barrier
+/// rather than a fire-and-forget notification, since the window being
+/// tested here is too narrow -- a couple of cheap byte-string scans -- for
+/// any real thread-scheduling race to reliably land in it).
+#[cfg(test)]
+static COMPLETION_COMMENT_GUARD_GATE: std::sync::Mutex<
+    Option<(String, std::sync::mpsc::Receiver<()>)>,
+> = std::sync::Mutex::new(None);
+
+/// Arms the gate for `uri` and returns the sender the test uses to release
+/// it once the cancellation it wants observed has already landed.
+#[cfg(test)]
+pub(crate) fn arm_completion_comment_guard_gate(uri: &str) -> std::sync::mpsc::Sender<()> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    if let Ok(mut gate) = COMPLETION_COMMENT_GUARD_GATE.lock() {
+        *gate = Some((uri.to_string(), rx));
+    }
+    tx
+}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+fn wait_for_completion_comment_guard_gate(uri: &str) {
+    #[cfg(test)]
+    {
+        let rx = COMPLETION_COMMENT_GUARD_GATE.lock().ok().and_then(|mut gate| {
+            // Only consume the slot for the URI it was armed with, matching
+            // `notify_completion_analysis_started`'s per-URI ownership so an
+            // unrelated concurrent test's request can't be blocked by (or
+            // consume) this test's gate.
+            if gate.as_ref().is_some_and(|(armed_uri, _)| armed_uri == uri) {
+                gate.take().map(|(_, rx)| rx)
+            } else {
+                None
+            }
+        });
+        if let Some(rx) = rx {
+            // Bounded: fail open (proceed) rather than hang forever if the
+            // test never releases the gate for some other reason.
+            let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+        }
+    }
+    #[cfg(not(test))]
+    let _ = uri;
+}
+
+#[cfg(not(any(test, feature = "expose_lsp_test_api")))]
+fn wait_for_completion_comment_guard_gate(_uri: &str) {}
 
 #[derive(Debug)]
 struct CompletionDecisionSummary {
@@ -123,14 +175,6 @@ struct CompletionDecisionContext<'a> {
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 struct CompletionShadowBudget<'a> {
     should_continue: &'a dyn Fn() -> bool,
-}
-
-fn get_snippet_placeholder_regex() -> Option<&'static Regex> {
-    SNIPPET_PLACEHOLDER_RE.get_or_init(|| Regex::new(r"\$\{(\d+):([^}]+)\}")).as_ref().ok()
-}
-
-fn get_snippet_simple_regex() -> Option<&'static Regex> {
-    SNIPPET_SIMPLE_RE.get_or_init(|| Regex::new(r"\$\d+")).as_ref().ok()
 }
 
 /// Returns commit characters for a completion item based on its kind.
@@ -758,6 +802,7 @@ impl LspServer {
                 additional_edits: Vec::new(),
                 text_edit_range: None,
                 commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
             });
         }
@@ -920,6 +965,7 @@ impl LspServer {
                         additional_edits: Vec::new(),
                         text_edit_range,
                         commit_characters: None,
+                        insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
                     });
                 }
@@ -1026,23 +1072,6 @@ impl LspServer {
         }
     }
 
-    /// Degrade snippet syntax to plaintext for clients that don't support snippets
-    pub(crate) fn degrade_snippet_to_plaintext(snippet: &str) -> String {
-        // Remove snippet placeholders: ${1:placeholder} -> placeholder
-        let result = if let Some(placeholder_re) = get_snippet_placeholder_regex() {
-            placeholder_re.replace_all(snippet, "$2")
-        } else {
-            std::borrow::Cow::Borrowed(snippet)
-        };
-
-        // Remove simple placeholders: $1, $0, etc.
-        if let Some(simple_re) = get_snippet_simple_regex() {
-            simple_re.replace_all(&result, "").to_string()
-        } else {
-            result.to_string()
-        }
-    }
-
     fn completion_item_to_lsp_value(
         &self,
         doc: &DocumentState,
@@ -1051,11 +1080,21 @@ impl LspServer {
         commit_chars_support: bool,
         label_details_support: bool,
     ) -> Value {
-        let is_snippet = c.kind == CompletionItemKind::Snippet;
-        let insert_text_format = if is_snippet && snippet_support {
-            2 // Snippet format
-        } else {
-            1 // PlainText format
+        // LSP 3.17 §3.17.1: `kind` and `insertTextFormat` are independent. The
+        // item declares its own insertion grammar; deriving it from `kind`
+        // means a Function that inserts a snippet (`open`) ships literal
+        // `${1:<}` to the editor. Degrading to the item's own plain-text
+        // fallback is the only correct answer for a client without
+        // `snippetSupport` — there is nothing to reconstruct at this layer.
+        let (insert_text_format, degraded_insert_text) = match &c.insert_text_format {
+            InsertTextFormat::PlainText => (1, None),
+            InsertTextFormat::Snippet { plain_fallback } => {
+                if snippet_support {
+                    (2, None)
+                } else {
+                    (1, Some(plain_fallback.clone()))
+                }
+            }
         };
 
         let mut item = json!({
@@ -1077,11 +1116,8 @@ impl LspServer {
             item["detail"] = json!(detail);
         }
 
-        if let Some(mut insert_text) = c.insert_text {
-            if is_snippet && !snippet_support {
-                insert_text = Self::degrade_snippet_to_plaintext(&insert_text);
-            }
-            item["insertText"] = json!(insert_text);
+        if let Some(insert_text) = c.insert_text {
+            item["insertText"] = json!(degraded_insert_text.unwrap_or(insert_text));
         }
 
         if let Some(documentation) = c.documentation {
@@ -1223,8 +1259,28 @@ impl LspServer {
             }
 
             let t_analyze_start = std::time::Instant::now();
-            let response = if let Some(doc) = doc_owned.as_ref() {
+            let response = 'completion_response: {
+                let Some(doc) = doc_owned.as_ref() else {
+                    break 'completion_response None;
+                };
                 let offset = self.pos16_to_offset(doc, line, character);
+
+                // Skip completions inside comments -- the cursor is not on a
+                // real symbol and no completion path below (AST-based
+                // provider, lexical/keyword fallback, declared-dependency,
+                // or workspace-wide completions) should suggest anything.
+                // Mirrors the goto-definition comment guard (#5066/#5408) at
+                // navigation.rs. String-aware guarding is intentionally
+                // omitted: text-based quote scanners produce false positives
+                // on real Perl code (regexes, heredocs, qw(), POD), and
+                // `is_in_comment && !is_in_string` is the inverted pattern
+                // #5411 fixed for goto-definition -- a position the naive
+                // quote-counter classifies as both comment and string would
+                // wrongly skip this guard.
+                if perl_lsp_rs_core::providers::rename::is_in_comment(offset, &doc.text) {
+                    break 'completion_response None;
+                }
+
                 let ast_available = doc.current_parsed().is_some_and(|p| p.ast().is_some());
 
                 // One `@INC` context per request, shared by the module roots
@@ -1419,8 +1475,6 @@ impl LspServer {
                     item_defaults_data_support,
                     apply_kind_support,
                 ))
-            } else {
-                None
             };
             if timing_on {
                 crate::runtime::timing::emit(crate::runtime::timing::TimingSpan::labeled(
@@ -1552,10 +1606,53 @@ impl LspServer {
             // whether `doc_owned` resolved.
             let _analyze_span =
                 crate::runtime::timing::ScopedSpan::start("provider.completion.analyze", uri);
-            let response = if let Some(doc) = doc_owned.as_ref() {
+            let response = 'completion_response: {
+                let Some(doc) = doc_owned.as_ref() else {
+                    break 'completion_response None;
+                };
                 notify_completion_analysis_started(uri);
 
                 let offset = self.pos16_to_offset(doc, line, character);
+
+                // Skip completions inside comments -- the cursor is not on a
+                // real symbol and no completion path below (AST-based
+                // provider, lexical/keyword fallback, declared-dependency,
+                // or workspace-wide completions) should suggest anything.
+                // Mirrors the goto-definition comment guard (#5066/#5408) at
+                // navigation.rs. String-aware guarding is intentionally
+                // omitted: text-based quote scanners produce false positives
+                // on real Perl code (regexes, heredocs, qw(), POD), and
+                // `is_in_comment && !is_in_string` is the inverted pattern
+                // #5411 fixed for goto-definition -- a position the naive
+                // quote-counter classifies as both comment and string would
+                // wrongly skip this guard.
+                let in_comment =
+                    perl_lsp_rs_core::providers::rename::is_in_comment(offset, &doc.text);
+
+                // Test-only rendezvous: gives a regression test a
+                // deterministic window to land a cancellation here instead
+                // of racing thread scheduling. No-op in production builds.
+                wait_for_completion_comment_guard_gate(uri);
+
+                // Check for cancellation before honoring the comment guard: a
+                // cancelled request must always surface REQUEST_CANCELLED to
+                // the client, even when the cursor happens to be inside a
+                // comment (found in review of this change -- the comment
+                // break below previously exited before the only other
+                // mid-flight cancellation check, further down after the
+                // provider call, ever ran).
+                if token.is_cancelled_relaxed() {
+                    return Err(JsonRpcError {
+                        code: REQUEST_CANCELLED,
+                        message: "Request cancelled during completion generation".to_string(),
+                        data: None,
+                    });
+                }
+
+                if in_comment {
+                    break 'completion_response None;
+                }
+
                 let ast_available = doc.current_parsed().is_some_and(|p| p.ast().is_some());
 
                 // Create optimized cancellation callback with reduced frequency
@@ -1725,8 +1822,6 @@ impl LspServer {
                     item_defaults_data_support,
                     apply_kind_support,
                 ))
-            } else {
-                None
             };
             if let Some(response) = response {
                 return Ok(Some(response));
@@ -1805,6 +1900,7 @@ impl LspServer {
                         filter_text: None,
                         text_edit_range: None,
                         commit_characters: None,
+                        insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
                     });
                 }
@@ -1827,6 +1923,7 @@ impl LspServer {
                         filter_text: None,
                         text_edit_range: None,
                         commit_characters: None,
+                        insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
                     });
                 }
@@ -1845,6 +1942,7 @@ impl LspServer {
                         filter_text: None,
                         text_edit_range: None,
                         commit_characters: None,
+                        insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
                     });
                 }
@@ -1860,6 +1958,7 @@ impl LspServer {
                         filter_text: None,
                         text_edit_range: None,
                         commit_characters: None,
+                        insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
                     });
                 }
@@ -1878,6 +1977,7 @@ impl LspServer {
                         filter_text: None,
                         text_edit_range: None,
                         commit_characters: None,
+                        insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
                     });
                 }
@@ -1906,6 +2006,7 @@ impl LspServer {
                             filter_text: None,
                             text_edit_range: None,
                             commit_characters: None,
+                            insert_text_format: InsertTextFormat::PlainText,
                             label_details: None,
                         });
                     }
@@ -2308,6 +2409,99 @@ mod tests {
     }
 
     #[test]
+    fn cancellable_completion_at_comment_position_surfaces_cancellation_not_empty_list()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Review finding on this PR: the comment guard in
+        // `handle_completion_cancellable` breaks to an empty completion list
+        // as soon as it observes the cursor is inside a comment, without
+        // checking whether the request was cancelled in between the
+        // handler's initial `token.is_cancelled_relaxed()` check and the
+        // comment guard's own check. A cancellation landing in that window
+        // must still surface `REQUEST_CANCELLED` to the client, not a
+        // silent empty `isIncomplete: false` completion list -- the client
+        // would otherwise treat a cancelled request as "no completions
+        // here" instead of retrying.
+        //
+        // Deterministic sequencing (no fixed sleep, no relying on a real
+        // thread-scheduling race to land in a window too narrow for one --
+        // see `wait_for_completion_comment_guard_gate`'s doc comment).
+        // Mirrors `cancellable_completion_emits_analyze_span_when_cancelled_mid_flight`
+        // above: the request itself runs (blocking) on this thread, and a
+        // background canceller thread reacts to the analysis-started signal
+        // fired synchronously from inside the call.
+        //   1. Arm both the existing analysis-started observer and the new
+        //      comment-guard gate before making the request.
+        //   2. Spawn a canceller thread that waits for the analysis-started
+        //      signal (proves the handler has passed its *first*
+        //      cancellation check), then cancels the token and releases the
+        //      gate (proves the cancellation happens-before the comment
+        //      guard's check can observe it, since the handler is blocked
+        //      on the gate exactly at that point until released).
+        //   3. Call the handler (blocking) and assert its result is
+        //      `Err(REQUEST_CANCELLED)`, not an empty completion list.
+        let uri = "file:///workspace/comment_position_cancel.pl";
+        let source = "# a comment with some prefix pri";
+        let server = LspServer::default();
+        server.test_apply_did_open(uri, source, 1)?;
+
+        let request_id = JsonRpcId::Integer(554_433_221);
+        let token = PerlLspCancellationToken::new(
+            request_id.clone(),
+            "textDocument/completion".to_string(),
+        );
+        GLOBAL_CANCELLATION_REGISTRY
+            .register_token(token.clone())
+            .map_err(|e| format!("failed to register cancellation token: {e:?}"))?;
+
+        let (analysis_started_tx, analysis_started_rx) = std::sync::mpsc::channel();
+        set_completion_analysis_started_observer(uri, analysis_started_tx);
+        let release_gate = arm_completion_comment_guard_gate(uri);
+
+        let canceller = {
+            let token = token.clone();
+            std::thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                analysis_started_rx.recv_timeout(std::time::Duration::from_secs(5)).map_err(
+                    |_| "timed out waiting for completion analysis to start".to_string(),
+                )?;
+                token.cancel();
+                release_gate
+                    .send(())
+                    .map_err(|_| "handler thread dropped the comment-guard gate receiver")?;
+                Ok(())
+            })
+        };
+
+        let request_id_value = json!(554_433_221_i64);
+        let result = server.handle_completion_cancellable(
+            Some(json!({
+                "textDocument": { "uri": uri },
+                // Past "pri", inside the comment -- matches the
+                // no-completion-in-comments fixture shape.
+                "position": { "line": 0, "character": source.len() as u32 }
+            })),
+            Some(&request_id_value),
+        );
+
+        canceller
+            .join()
+            .map_err(|_| "canceller thread panicked")?
+            .map_err(|e| format!("canceller thread failed: {e}"))?;
+
+        assert!(
+            matches!(result, Err(ref e) if e.code == REQUEST_CANCELLED),
+            "a request cancelled between the handler's initial cancellation check and the \
+             comment guard's check must surface REQUEST_CANCELLED, not an empty completion \
+             list; got: {result:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Well-formed `foreach` body used by the serializer tests: the literal
+    /// Perl `$item` is escaped so it survives as text on both client kinds.
+    const FOREACH_SNIPPET: &str = "foreach my ${1:\\$item} (@${2:list}) {\n\t$0\n}";
+
+    #[test]
     fn completion_item_serializer_serializes_filter_text() -> Result<(), Box<dyn std::error::Error>>
     {
         let server = LspServer::default();
@@ -2329,12 +2523,13 @@ mod tests {
             kind: CompletionItemKind::Snippet,
             detail: None,
             documentation: None,
-            insert_text: Some("foreach my ${1:$item} (@${2:list}) {\n\t$0\n}".to_string()),
+            insert_text: Some(FOREACH_SNIPPET.to_string()),
             additional_edits: Vec::new(),
             sort_text: Some("1_foreach".to_string()),
             filter_text: Some("foreach".to_string()),
             text_edit_range: None,
             commit_characters: None,
+            insert_text_format: InsertTextFormat::snippet(FOREACH_SNIPPET),
             label_details: None,
         };
 
@@ -2373,6 +2568,7 @@ mod tests {
             filter_text: None,
             text_edit_range: None,
             commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
         };
 
@@ -2423,6 +2619,7 @@ mod tests {
                 filter_text: None,
                 text_edit_range: None,
                 commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
             };
 
@@ -2471,6 +2668,7 @@ mod tests {
             filter_text: Some("render".to_string()),
             text_edit_range: None,
             commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
             label_details: Some(
                 perl_lsp_rs_core::providers::completion_item::CompletionItemLabelDetails {
                     detail: Some("($ctx)".to_string()),
@@ -2522,12 +2720,13 @@ mod tests {
             kind: CompletionItemKind::Snippet,
             detail: None,
             documentation: None,
-            insert_text: Some("foreach my ${1:$item} (@${2:list}) {\n\t$0\n}".to_string()),
+            insert_text: Some(FOREACH_SNIPPET.to_string()),
             additional_edits: Vec::new(),
             sort_text: None,
             filter_text: Some("foreach".to_string()),
             text_edit_range: None,
             commit_characters: None,
+            insert_text_format: InsertTextFormat::snippet(FOREACH_SNIPPET),
             label_details: None,
         };
 
@@ -2830,6 +3029,7 @@ mod tests {
                 additional_edits: Vec::new(),
                 text_edit_range: None,
                 commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
             }
         };
@@ -3533,37 +3733,192 @@ mod tests {
         Ok(())
     }
 
+    /// Serialize the named completion for a client with the given snippet
+    /// support, going through the real builtin/snippet producers rather than a
+    /// hand-built item — #4956 was a defect in what the producers emit.
+    fn serialized_completion(
+        source: &str,
+        prefix_len: usize,
+        label: &str,
+        snippet_support: bool,
+    ) -> Result<Value, Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = format!("file:///workspace/insertion_contract_{label}_{snippet_support}.pl");
+
+        server.test_handle_did_open(Some(json!({
+            "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": source }
+        })))?;
+
+        let documents = server.documents_guard();
+        let doc = server.get_document(&documents, &uri).ok_or("missing test document")?;
+
+        let mut parser = perl_parser::Parser::new(source);
+        let ast = parser.parse().map_err(|e| format!("parse failed: {e:?}"))?;
+        let provider = perl_lsp_rs_core::providers::completion::CompletionProvider::new(&ast);
+        let item = provider
+            .get_completions(source, prefix_len)
+            .into_iter()
+            .find(|item| item.label == label)
+            .ok_or_else(|| format!("no `{label}` completion at offset {prefix_len}"))?;
+
+        Ok(server.completion_item_to_lsp_value(doc, item, snippet_support, false, false))
+    }
+
+    /// #4956: `open`'s insert text is a snippet, but its *kind* is Function.
+    /// Deriving `insertTextFormat` from the kind sent format 1, so clients
+    /// pasted the literal `${1:<}` into the buffer.
+    #[test]
+    fn open_builtin_is_a_function_that_inserts_a_snippet() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let value = serialized_completion("op", 2, "open", true)?;
+
+        assert_eq!(
+            value.get("kind").and_then(Value::as_i64),
+            Some(3),
+            "open must stay CompletionItemKind::Function; snippet insertion is not a kind"
+        );
+        assert_eq!(
+            value.get("insertTextFormat").and_then(Value::as_i64),
+            Some(2),
+            "open inserts a snippet, so the format must be Snippet"
+        );
+
+        let insert_text = value.get("insertText").and_then(Value::as_str).ok_or("no insertText")?;
+        assert!(
+            insert_text.contains("${1:") && insert_text.contains("${2:"),
+            "snippet-capable clients keep the tab stops, got: {insert_text}"
+        );
+        assert!(
+            insert_text.contains("\\$fh") && insert_text.contains("\\$!"),
+            "literal Perl variables must be escaped so the client does not treat them as \
+             snippet variables, got: {insert_text}"
+        );
+
+        Ok(())
+    }
+
+    /// The other half of the contract: a client without `snippetSupport`
+    /// receives literal, valid Perl — no tab stops and no snippet escapes.
+    #[test]
+    fn open_builtin_degrades_to_valid_perl_for_plaintext_clients()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let value = serialized_completion("op", 2, "open", false)?;
+
+        assert_eq!(value.get("insertTextFormat").and_then(Value::as_i64), Some(1));
+        assert_eq!(
+            value.get("insertText").and_then(Value::as_str),
+            Some("open(my $fh, '<', $file) or die \"Cannot open $file: $!\";")
+        );
+
+        Ok(())
+    }
+
+    /// #4956: `submethod`'s body spelled literal Perl `$self` as a snippet
+    /// variable, so VS Code inserted an editable `self` placeholder and other
+    /// clients could insert nothing.
+    #[test]
+    fn submethod_snippet_preserves_literal_self() -> Result<(), Box<dyn std::error::Error>> {
+        let snippet = serialized_completion("submethod", 9, "submethod", true)?;
+        let snippet_text =
+            snippet.get("insertText").and_then(Value::as_str).ok_or("no insertText")?;
+
+        assert_eq!(snippet.get("insertTextFormat").and_then(Value::as_i64), Some(2));
+        assert!(
+            snippet_text.contains("my (\\$self"),
+            "`$self` must be escaped to survive as literal Perl, got: {snippet_text}"
+        );
+
+        let plain = serialized_completion("submethod", 9, "submethod", false)?;
+        assert_eq!(plain.get("insertTextFormat").and_then(Value::as_i64), Some(1));
+        assert_eq!(
+            plain.get("insertText").and_then(Value::as_str),
+            Some("sub method_name {\n    my ($self, @args) = @_;\n    \n}")
+        );
+
+        Ok(())
+    }
+
+    /// No item may claim PlainText while carrying snippet syntax — that is the
+    /// exact shape of the `open` defect. Guards every producer at once, so a
+    /// new snippet-bearing entry cannot reintroduce it.
+    #[test]
+    fn no_completion_ships_unrendered_snippet_syntax() -> Result<(), Box<dyn std::error::Error>> {
+        use perl_lsp_rs_core::providers::completion::snippet_body_defects;
+
+        let source = "";
+        let mut parser = perl_parser::Parser::new(source);
+        let ast = parser.parse().map_err(|e| format!("parse failed: {e:?}"))?;
+        let provider = perl_lsp_rs_core::providers::completion::CompletionProvider::new(&ast);
+        let items = provider.get_completions(source, 0);
+        assert!(!items.is_empty(), "expected completions for an empty document");
+
+        for item in items {
+            let Some(insert_text) = item.insert_text.as_deref() else { continue };
+            match &item.insert_text_format {
+                InsertTextFormat::PlainText => {
+                    // Inserted verbatim: any tab stop would reach the buffer as text.
+                    assert!(
+                        !insert_text.contains("${") && !insert_text.contains("$0"),
+                        "`{}` is PlainText but carries snippet syntax: {insert_text}",
+                        item.label
+                    );
+                }
+                InsertTextFormat::Snippet { plain_fallback } => {
+                    let defects = snippet_body_defects(insert_text);
+                    assert!(
+                        defects.is_empty(),
+                        "`{}` has a defective snippet body: {defects:?}",
+                        item.label
+                    );
+                    assert!(
+                        !plain_fallback.contains("${")
+                            && !plain_fallback.contains("$0")
+                            && !plain_fallback.contains('\\'),
+                        "`{}` has a fallback that is not literal text: {plain_fallback}",
+                        item.label
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    // Degradation is no longer a serializer concern: a snippet item carries the
+    // plain-text fallback it was built with. These cover the shared renderer
+    // that produces it.
+    use perl_lsp_rs_core::providers::completion::render_snippet_plaintext;
     #[test]
     fn test_degrade_snippet_removes_placeholders_with_defaults() {
         // ${1:placeholder} should become "placeholder"
-        let result = LspServer::degrade_snippet_to_plaintext("function(${1:arg1}, ${2:arg2})");
+        let result = render_snippet_plaintext("function(${1:arg1}, ${2:arg2})");
         assert_eq!(result, "function(arg1, arg2)");
     }
 
     #[test]
     fn test_degrade_snippet_removes_simple_placeholders() {
         // $1, $0 should be removed entirely
-        let result = LspServer::degrade_snippet_to_plaintext("print $1;$0");
+        let result = render_snippet_plaintext("print $1;$0");
         assert_eq!(result, "print ;");
     }
 
     #[test]
     fn test_degrade_snippet_mixed_placeholders() {
         // Mix of both types
-        let result = LspServer::degrade_snippet_to_plaintext("sub ${1:name} { $0 }");
+        let result = render_snippet_plaintext("sub ${1:name} { $0 }");
         assert_eq!(result, "sub name {  }");
     }
 
     #[test]
     fn test_degrade_snippet_no_placeholders() {
         // Plain text should pass through unchanged
-        let result = LspServer::degrade_snippet_to_plaintext("just plain text");
+        let result = render_snippet_plaintext("just plain text");
         assert_eq!(result, "just plain text");
     }
 
     #[test]
     fn test_degrade_snippet_empty_string() {
-        let result = LspServer::degrade_snippet_to_plaintext("");
+        let result = render_snippet_plaintext("");
         assert_eq!(result, "");
     }
 

@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Added
+body: "New perl.workspace.discoveryExtensions and discoverySkippedDirs settings (via .perl-lsp.toml or LSP client config) let users extend which file extensions are indexed and which directory names are skipped during workspace discovery."
+time: 2026-07-23T02:28:37Z
+custom:
+  PR: "4715"
+  Slug: discovery-extra-extensions-and-skipped-dirs
+  Breaking: "no"

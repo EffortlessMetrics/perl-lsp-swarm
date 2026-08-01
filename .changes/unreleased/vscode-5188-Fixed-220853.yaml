@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Fixed
+body: "Show Output, Reinstall, Restart, and Status Menu commands are now available even without a Perl file open, all 35 commands are now grouped under a single \"Perl\" category in the command palette instead of \"Perl LSP\", and format-on-save now logs a debug message explaining why formatting was skipped while the server is still indexing."
+time: 2026-07-28T22:08:53Z
+custom:
+  PR: "5188"
+  Slug: command-visibility-and-categories
+  Breaking: "no"

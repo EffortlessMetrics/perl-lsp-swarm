@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Typing a partial hash-reference key such as $ref->{ke now offers completion of keys seen in $ref->{key} = ... assignments (previously bailed out with no suggestions), and an unterminated string literal now only breaks lexing to the end of that line instead of losing diagnostics/completion for the rest of the file."
+time: 2026-07-28T11:31:46Z
+custom:
+  PR: "5157"
+  Slug: hashref-completion-and-string-recovery
+  Breaking: "no"

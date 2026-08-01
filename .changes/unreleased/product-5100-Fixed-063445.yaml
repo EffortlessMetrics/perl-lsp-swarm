@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Hover's inherited-method lookup and document-links' use/require ranges now correctly index by UTF-16 column instead of raw byte offset, fixing both features for source lines containing multi-byte characters (emoji, CJK, accented letters)."
+time: 2026-07-28T06:34:45Z
+custom:
+  PR: "5100"
+  Slug: hover-doclinks-utf16-columns
+  Breaking: "no"

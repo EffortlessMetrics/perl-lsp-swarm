@@ -177,5 +177,5 @@ fn parse_substitution_operator(&mut self, delim: char) -> Result<Node, ParseErro
 
 - [Issue #147: Substitution operator parsing incomplete](https://github.com/EffortlessMetrics/perl-lsp/issues/147)
 - [PR #158: Complete substitution operator parsing implementation](https://github.com/EffortlessMetrics/perl-lsp/pull/158)
-- [perl-lexer enhanced delimiter recognition](https://github.com/EffortlessMetrics/perl-lsp/tree/main/crates/perl-lexer)
+- [perl-lexer enhanced delimiter recognition](https://github.com/EffortlessMetrics/perl-lsp/tree/master/crates/perl-lexer)
 - [Perl 5 Substitution Operator Documentation](https://perldoc.perl.org/perlop#s/PATTERN/REPLACEMENT/msixpodualngcer)

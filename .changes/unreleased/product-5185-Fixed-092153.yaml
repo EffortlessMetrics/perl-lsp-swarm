@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Hash-slice dereferences (@$href{k}, @{$href}{k}, %$href{k}, %{$href}{k}) are now classified as HashSlice/KeyValueSlice AST nodes instead of falling through to a generic binary-expression shape that discarded their slice semantics."
+time: 2026-07-29T09:21:53Z
+custom:
+  PR: "5185"
+  Slug: hash-slice-deref-node-kinds
+  Breaking: "no"

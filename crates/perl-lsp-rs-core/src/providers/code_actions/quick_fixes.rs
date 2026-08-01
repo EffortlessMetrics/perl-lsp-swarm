@@ -22,6 +22,7 @@ pub fn fix_undefined_variable(source: &str, diagnostic: &QuickFixDiagnostic) -> 
     if let Some(var_name) = diagnostic.message.split('\'').nth(1) {
         // Find the best place to insert declaration
         let insert_pos = find_declaration_position(source, diagnostic.range.0);
+        let indent = get_indent_at(source, insert_pos);
 
         // Add 'my' declaration
         actions.push(CodeAction {
@@ -31,7 +32,7 @@ pub fn fix_undefined_variable(source: &str, diagnostic: &QuickFixDiagnostic) -> 
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
                     location: SourceLocation { start: insert_pos, end: insert_pos },
-                    new_text: format!("my {};\n", var_name),
+                    new_text: format!("{}my {};\n", indent, var_name),
                 }],
             },
             is_preferred: true,
@@ -45,7 +46,7 @@ pub fn fix_undefined_variable(source: &str, diagnostic: &QuickFixDiagnostic) -> 
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
                     location: SourceLocation { start: insert_pos, end: insert_pos },
-                    new_text: format!("our {};\n", var_name),
+                    new_text: format!("{}our {};\n", indent, var_name),
                 }],
             },
             is_preferred: false,

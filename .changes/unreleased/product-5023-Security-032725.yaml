@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Security
+body: "Legacy Perl::Critic/perltidy subprocess profile settings (and critic.engine=legacy) can no longer be armed via workspace editor settings or the LSP settings channel — only machine-scoped settings can enable them, closing a trust-boundary gap where a cloned repository's settings could re-enable a legacy code-execution path."
+time: 2026-07-29T03:27:25Z
+custom:
+  PR: "5023"
+  Slug: legacy-critic-perltidy-machine-scope
+  Breaking: "no"

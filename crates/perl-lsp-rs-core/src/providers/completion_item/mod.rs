@@ -4,6 +4,10 @@
 //! This microcrate isolates completion payload representation and deterministic
 //! ordering/deduplication policy from provider logic.
 
+mod snippet;
+
+pub use snippet::{InsertTextFormat, render_snippet_plaintext, snippet_body_defects};
+
 use perl_parser_core::SourceLocation;
 
 /// Type of completion item.
@@ -53,6 +57,13 @@ pub struct CompletionItem {
     pub documentation: Option<String>,
     /// Text to insert (if different from label).
     pub insert_text: Option<String>,
+    /// How the client must interpret `insert_text`.
+    ///
+    /// Independent of `kind`: LSP's `insertTextFormat` describes insertion
+    /// grammar, while `kind` drives icon, ranking, and commit characters. A
+    /// builtin function that inserts a snippet stays `Function` and sets this
+    /// to `Snippet`.
+    pub insert_text_format: InsertTextFormat,
     /// Sort priority (lower is better).
     pub sort_text: Option<String>,
     /// Filter text for matching.
@@ -140,7 +151,7 @@ pub fn deduplicate_and_sort(mut completions: Vec<CompletionItem>) -> Vec<Complet
 
 #[cfg(test)]
 mod tests {
-    use super::{CompletionItem, CompletionItemKind, deduplicate_and_sort};
+    use super::{CompletionItem, CompletionItemKind, InsertTextFormat, deduplicate_and_sort};
     use proptest::prelude::*;
     use std::collections::{BTreeMap, HashSet};
 
@@ -156,6 +167,7 @@ mod tests {
             additional_edits: Vec::new(),
             text_edit_range: None,
             commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
         }
     }
@@ -190,6 +202,7 @@ mod tests {
                 additional_edits: Vec::new(),
                 text_edit_range: None,
                 commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
             })
     }

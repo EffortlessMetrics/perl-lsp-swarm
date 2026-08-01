@@ -8,11 +8,14 @@
 //! in-repo **fake ptkdb peer** (same pattern as `external_peer_conformance`);
 //! end-to-end editor↔real-`Devel::ptkdb` sessions remain deferred.
 
+use std::error::Error;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+type TestResult = Result<(), Box<dyn Error>>;
 
 use perl_dap::backend::capabilities::ControlMode;
 use perl_dap::backend::external_peer::ExternalDebuggerPeerBackend;
@@ -311,7 +314,7 @@ fn dap_external_peer_launch_flushes_breakpoints_after_hello() {
 }
 
 #[test]
-fn dap_external_peer_stopped_event_reaches_dap_client() {
+fn dap_external_peer_stopped_event_reaches_dap_client() -> TestResult {
     let stopped = PeerEvent {
         seq: 0,
         event: event::STOPPED.to_string(),
@@ -352,15 +355,16 @@ fn dap_external_peer_stopped_event_reaches_dap_client() {
         assert_eq!(b["threadId"], 1);
         assert_eq!(b["allThreadsStopped"], true);
     } else {
-        panic!("stopped event had no body");
+        return Err("stopped event had no body".into());
     }
 
     drop(bridge);
     let _ = peer.handle.join();
+    Ok(())
 }
 
 #[test]
-fn dap_external_peer_output_event_reaches_dap_client() {
+fn dap_external_peer_output_event_reaches_dap_client() -> TestResult {
     let output = PeerEvent {
         seq: 0,
         event: event::OUTPUT.to_string(),
@@ -393,11 +397,12 @@ fn dap_external_peer_output_event_reaches_dap_client() {
         assert_eq!(b["category"], "stderr");
         assert_eq!(b["output"], "boom\n");
     } else {
-        panic!("output event had no body");
+        return Err("output event had no body".into());
     }
 
     drop(bridge);
     let _ = peer.handle.join();
+    Ok(())
 }
 
 #[test]

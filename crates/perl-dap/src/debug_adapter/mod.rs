@@ -13,6 +13,8 @@ mod patterns;
 mod process;
 mod variables;
 
+#[cfg(test)]
+mod dap_outbound_backpressure_tests;
 mod dispatch;
 mod parsing;
 mod regexes;
@@ -57,7 +59,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -73,7 +75,7 @@ use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 use patterns::*;
 use safe_eval::validate_safe_expression;
-use sync_utils::{emit_event_safe, lock_or_recover};
+use sync_utils::{dispatch_event, emit_event_safe, lock_or_recover};
 
 #[derive(Debug, Default)]
 struct TerminationState {
@@ -103,8 +105,8 @@ pub struct DebugAdapter {
     breakpoints: BreakpointStore,
     /// Thread ID counter
     thread_counter: Arc<Mutex<i32>>,
-    /// Output channel for sending events to client
-    event_sender: Option<Sender<DapMessage>>,
+    /// Bounded output channel for sending events to client
+    event_sender: Option<SyncSender<DapMessage>>,
     /// Ensures competing session shutdown paths emit one terminal event per session.
     termination_state: Arc<Mutex<TerminationState>>,
     /// Bounded history of debugger output for stack/variable/evaluate parsing
@@ -227,9 +229,27 @@ impl DebugAdapter {
         }
     }
 
-    /// Set the event sender (primarily for testing)
-    pub fn set_event_sender(&mut self, sender: Sender<DapMessage>) {
+    /// Set the event sender (primarily for testing).
+    ///
+    /// The sender must come from a `sync_channel` — an unbounded `channel`
+    /// sender will fail to compile since `SyncSender` and `Sender` are distinct
+    /// types.  Use `sync_channel(EVENT_QUEUE_CAPACITY)` or any capacity large
+    /// enough for the test's event volume.
+    pub fn set_event_sender(&mut self, sender: SyncSender<DapMessage>) {
         self.event_sender = Some(sender);
+    }
+
+    /// Configure the workspace boundary used to validate launch/attach paths.
+    ///
+    /// This is the server-configured root — normally wired from
+    /// `DapConfig.workspace_root` when the adapter is constructed
+    /// (see `DapServer::new`). It is the authoritative boundary: a
+    /// launch-args `workspaceRoot` may narrow it for a single launch, but
+    /// can never widen it (see `handle_launch`). Takes `&self` because the
+    /// underlying field is an `Arc<Mutex<_>>`, so this is safe to call
+    /// without exclusive access to the adapter.
+    pub fn set_workspace_root(&self, root: PathBuf) {
+        *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
     }
 
     /// Start a new session generation and reset its terminal-event gate.
@@ -317,12 +337,13 @@ impl DebugAdapter {
         *seq
     }
 
-    /// Send an event to the client
+    /// Send an event to the client.
+    ///
+    /// Routes through `dispatch_event`: `output` events are non-blocking (dropped
+    /// when the queue is full); all other events apply backpressure.
     fn send_event(&self, event: &str, body: Option<Value>) {
         if let Some(ref sender) = self.event_sender {
-            let seq = self.next_seq();
-            let msg = DapMessage::Event { seq, event: event.to_string(), body };
-            let _ = sender.send(msg);
+            dispatch_event(sender, &self.seq, event, body);
         }
     }
 
