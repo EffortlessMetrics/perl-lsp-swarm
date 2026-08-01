@@ -32,6 +32,13 @@ enforcement = "github-branch-protection"
 reason = "Proof lane blocks new RIPR gaps and stale/missing RIPR receipts."
 
 [[checks]]
+name = "Compile All Targets (bit-rot guard)"
+workflow = ".github/workflows/ci.yml"
+required = true
+enforcement = "github-branch-protection"
+reason = "Live main protection requires all targets to compile before merge, catching integration-test and bench bit-rot."
+
+[[checks]]
 name = "Codecov / Patch 95"
 workflow = ".github/workflows/ci-nightly.yml"
 required = false

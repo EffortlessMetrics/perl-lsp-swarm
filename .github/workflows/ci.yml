@@ -549,9 +549,13 @@ jobs:
           SHARD_NAME: ${{ matrix.name }}
 
   # ── CI Gate aggregate: roll up the deterministic shard + guard lanes ──
-  # NOTE ON NAME: this check is NOT a branch-protection required context. The only
-  # two required contexts are "Perl LSP Rust Small Result" and "ripr+ New Gap Gate"
-  # (see .ci/policies/required-checks.toml). The previous name "CI Gate
+  # NOTE ON NAME: this check is NOT a branch-protection required context. The
+  # required contexts are "Perl LSP Rust Small Result", "ripr+ New Gap Gate", and
+  # "Compile All Targets (bit-rot guard)" — the last of which is defined in this
+  # same workflow, below. `.ci/policies/required-checks.toml` is the inventory of
+  # record; keep it and this comment in step with the live ruleset.
+  #
+  # The previous name "CI Gate
   # (Merge-Blocking)" was a misnomer — it never blocked merge — and it read as a
   # scary hard-red on green PRs. Renamed to "CI Gate (Advisory Aggregate)" to stop
   # misleading readers. `pr-smoke` is intentionally NOT in `needs` below: it is an
