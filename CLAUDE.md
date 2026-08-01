@@ -69,10 +69,47 @@ The main Claude thread is the warm accountable owner unless it was explicitly sp
 with a bounded brief. Naming one issue or PR does not convert the main thread into a
 disposable worker.
 
-Direct execution is normal. Use ordinary subagents, context forks, whole-flow agents,
-or Agent Teams only when another context, oracle, tool surface, or review method
-materially changes the evidence or reduces elapsed work. Teams are useful when agents
-must genuinely communicate; they are not the default lifecycle.
+Route each piece of work to the cheapest context that can produce trustworthy
+evidence. Accountability stays with the root; execution does not have to.
+
+Delegate by default:
+
+- **passes that need different premises, sources, or method** — an external oracle
+  lookup, a threat model the lane has not applied, a reachability trace from the live
+  caller inward. Delegate these for the change in approach, not to obtain a second
+  opinion: an agent handed the same premises and the same evidence returns the same
+  conclusion, and that is not corroboration;
+- **high-volume evidence gathering** — CI and log triage, corpus sweeps, dependency
+  audits, failure bisection, broad code search: anything whose raw output vastly
+  exceeds the answer it yields. Root context is the scarce resource across a
+  campaign, and spending it on tool output degrades every later judgment;
+- **independent lanes** that can genuinely proceed in parallel, and concurrent
+  writers that need worktree isolation.
+
+Execute directly when the work is judgment rather than evidence — synthesis, claim
+selection, goal interpretation, deciding what a finding means — where quality depends
+on holding the whole picture, and when a brief would cost more than the edit.
+
+Delegation is not free, and it is not proof of rigor. A delegate starts cold: it
+re-reads the sources the root already holds, so fanning the same question across
+several agents re-derives one context repeatedly and costs more than doing the work
+directly. Worse, a delegate pointed at the wrong question returns a confident,
+well-formatted answer to it — evidence that looks like proof and is not. No answer is
+recoverable; a plausible wrong answer usually is not.
+
+So the brief is the control, not the agent count:
+
+- name the exact question, the authoritative inputs, the read/write boundary, and
+  what a sufficient answer contains;
+- if that cannot be stated precisely, the question is not yet understood well enough
+  to delegate — establish it directly first;
+- prefer one well-aimed delegate over several vague ones, and read what comes back as
+  a claim to be checked rather than a result to be adopted;
+- delegates return compact evidence-backed findings with their gaps named, not
+  transcripts and not summaries of process.
+
+Do not spawn an identity per lifecycle pass. Agent Teams are for agents that must
+genuinely communicate; they are not the default lifecycle.
 
 One coherent claim normally has one current candidate, and one writer mutates that
 candidate at a time. Before creating another candidate, check only for an equivalent
@@ -121,7 +158,65 @@ Publish locally complete candidates ready by default. Draft is an explicit excep
 for remote-only proof, real collaboration, early visible ownership, or a protected
 integration experiment.
 
+## Review
+
+Review is not reading a diff. Reading shows what changed; review establishes whether
+the change is correct, reachable, and honestly claimed. Every substantive candidate
+must answer:
+
+- **discrimination** — would a realistic wrong implementation fail this proof? A test
+  that also passes against the defect proves nothing. Name the wrong implementation
+  the proof excludes;
+- **production reachability** — is the changed path reached from a real request or
+  live caller, not merely compiled and unit-tested? Component-proved is not
+  system-proved;
+- **external truth** — for user-visible semantics (diagnostics, hover and completion
+  text, builtin signatures, protocol behavior, version gating), does the claim hold
+  against the external oracle: perldoc, the LSP/DAP specification, the real crate
+  API? Green checks prove internal consistency, never external truth;
+- **claim honesty** — does the PR claim exceed its evidence? What did it not prove?
+- **authority and complexity** — correct semantic owner, no duplicate authority, no
+  scaffolding or compatibility shim that outlives its use.
+
+What makes a review real is that it is **directed, falsifying, and verified** — not
+who performs it:
+
+- **directed** — work the questions above explicitly and in order. An overall
+  impression of a diff is not a review, and reading one is not evidence;
+- **falsifying** — try to break the claim. A pass that sets out to confirm the change
+  will succeed whether or not the change is correct;
+- **verified** — settle each answer by running something or reading an authoritative
+  source. Inspection reliably confirms whatever the reader already expects, so
+  plausibility is never the oracle.
+
+A review performed by the same context that wrote the candidate can be a good review
+when it meets that bar. Independence is genuinely valuable and worth reaching for —
+a separate context does not carry the intent behind the change, will not re-confirm
+a reading it already made, and attends where a saturated context skims. It is simply
+neither necessary nor sufficient: an agent handed the same premises and the same
+narrow evidence reproduces the same blind spot, and a fresh context is not a fresh
+judgment.
+
+So prefer a separate reviewer where it is cheap, and require one where the stakes or
+the blast radius justify it — but buy it for what it changes: different premises,
+different sources, a different method. Independence that changes only the identity
+performing the pass adds cost, not evidence.
+
+A subagent's verdict is evidence, not review. `mergeable: true` is a GitHub fact and
+green checks are machine evidence; neither is a semantic judgment. The accountable
+owner judges whether the challenge was real or performative, and that judgment does
+not delegate.
+
 A clean review is valid. Never manufacture a finding or edit to prove review effort.
+
+Review is mutable before publication — `review-tests`, `review-candidate`,
+`simplify-candidate`, `final-challenge` — and fixed after it, where `review-pr` binds
+to an exact candidate and material claim.
+
+Merge requires all three: a directed, falsifying, verified pass actually happened
+against this candidate; its substantive findings are resolved with evidence; and the
+accountable owner judged that challenge sufficient rather than performative. Never
+merge on green checks plus a relayed verdict.
 
 ## Proof and currentness
 
