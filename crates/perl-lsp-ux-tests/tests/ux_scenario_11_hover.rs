@@ -60,10 +60,10 @@ fn scenario_11_hover_on_variable_does_not_error() {
 }
 
 #[test]
-fn scenario_11_hover_result_has_valid_shape_when_non_null() {
+fn scenario_11_hover_result_has_valid_shape_when_non_null() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_11: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let harness = UxHarness::new(
@@ -100,11 +100,12 @@ fn scenario_11_hover_result_has_valid_shape_when_non_null() {
             eprintln!("INFO scenario_11: hover returned null (degraded mode acceptable)");
         }
         Err(e) => {
-            panic!("Hover returned a JSON-RPC error — feature grid regression: {}", e);
+            return Err(format!("Hover returned a JSON-RPC error — feature grid regression: {e}"));
         }
     }
 
     harness.assert_no_crash();
+    Ok(())
 }
 
 #[test]
@@ -132,10 +133,10 @@ fn scenario_11_hover_on_sub_name_does_not_crash() {
 }
 
 #[test]
-fn scenario_11_hover_range_contains_cursor_when_present() {
+fn scenario_11_hover_range_contains_cursor_when_present() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_11: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let harness = UxHarness::new(
@@ -201,12 +202,12 @@ fn scenario_11_hover_range_contains_cursor_when_present() {
             eprintln!("INFO scenario_11: hover returned null (degraded mode acceptable)");
         }
         Err(e) => {
-            panic!(
-                "Hover returned a JSON-RPC error at function call site — feature grid regression: {}",
-                e
-            );
+            return Err(format!(
+                "Hover returned a JSON-RPC error at function call site — feature grid regression: {e}"
+            ));
         }
     }
 
     harness.assert_no_crash();
+    Ok(())
 }
