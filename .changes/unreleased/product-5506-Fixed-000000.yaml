@@ -1,0 +1,9 @@
+project: product
+component: CI
+kind: Fixed
+body: "The RIPR workflow contract test no longer fails because the preflight it checks was documented in a comment. `ripr_self_hosted_preflight_falls_back_when_required_image_is_missing` counted raw `docker image inspect em-ci-rust:1.95` substrings across the whole file and required exactly two; a comment added a third, taking `cargo test --tests -p xtask` — and so the `unit_routed_full` gate behind PR Smoke — red on main. It now counts the executable `if !` guard on non-comment lines, so a deleted lane is still caught while documentation is not."
+time: 2026-08-01T00:00:00Z
+custom:
+  PR: "5506"
+  Slug: ripr-preflight-oracle-counts-lanes-5488
+  Breaking: "no"

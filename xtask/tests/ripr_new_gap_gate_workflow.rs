@@ -98,6 +98,57 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
     Ok(())
 }
 
+/// The executable Docker-image preflight guard, as written in both self-hosted lanes.
+const IMAGE_PREFLIGHT_GUARD: &str = "if ! docker image inspect em-ci-rust:1.95";
+
+/// Count the lanes that actually *run* the required-image preflight.
+///
+/// The previous oracle counted raw `docker image inspect em-ci-rust:1.95`
+/// substrings across the whole file and required exactly 2. That is not the
+/// contract it claims to enforce, and its failure mode is inverted: documenting
+/// the mechanism in a comment broke the test (`ripr.yml:159`), while deleting a
+/// lane's preflight and leaving a comment that mentions it would have kept the
+/// test green. It failed 2 runs in 3 on `main`, taking `unit_routed_full` — and
+/// so `PR Smoke` — down with it (#5488).
+///
+/// Matching the `if !` guard restricts the count to the executable form, and
+/// skipping comment lines keeps a future comment that happens to quote the guard
+/// from counting as a lane.
+fn executable_image_preflights(workflow: &str) -> usize {
+    workflow
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter(|line| line.contains(IMAGE_PREFLIGHT_GUARD))
+        .count()
+}
+
+/// The oracle must reject the mutation it exists to catch, and accept the
+/// documentation change that broke it.
+///
+/// Without this, `executable_image_preflights` is only ever called on a file
+/// that satisfies it, so nothing shows it can still fail.
+#[test]
+fn image_preflight_oracle_counts_lanes_not_mentions() {
+    let cx53 = "        run: |\n          if ! docker image inspect em-ci-rust:1.95 >/dev/null 2>&1; then\n            echo \"::error::Required Docker image em-ci-rust:1.95 is missing on CX53.\"\n";
+    let cx43 = "        run: |\n          if ! docker image inspect em-ci-rust:1.95 >/dev/null 2>&1; then\n            echo \"::error::Required Docker image em-ci-rust:1.95 is missing on CX43.\"\n";
+    let comment =
+        "          # below) once `docker image inspect em-ci-rust:1.95` passes on CX43.\n";
+
+    assert_eq!(
+        executable_image_preflights(&format!("{comment}{cx53}{cx43}")),
+        2,
+        "a comment documenting the guard must not change the lane count — this is the \
+         regression that took unit_routed_full red on main"
+    );
+    assert_eq!(
+        executable_image_preflights(&format!("{comment}{cx53}")),
+        1,
+        "deleting a lane's preflight must be visible even when a comment still names it — \
+         the mutation the previous substring count could not distinguish"
+    );
+    assert_eq!(executable_image_preflights(comment), 0, "a comment alone is not a preflight");
+}
+
 #[test]
 fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -105,7 +156,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing()
     let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
 
     assert_eq!(
-        workflow.matches("docker image inspect em-ci-rust:1.95").count(),
+        executable_image_preflights(&workflow),
         2,
         "CX53 and CX43 preflight must both check the required Docker image before running ripr"
     );
