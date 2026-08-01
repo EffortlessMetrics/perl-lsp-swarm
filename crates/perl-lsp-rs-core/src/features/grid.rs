@@ -55,15 +55,29 @@ pub fn to_json_for_all_profiles() -> String {
     to_json_for_profiles(FeatureProfile::all())
 }
 
+/// The two counts behind a profile's compliance percent: the number of
+/// advertised features that participate in coverage accounting, and the total
+/// trackable feature count for the grid.
+///
+/// Exposed so display surfaces can render the same numerator the percent is
+/// computed from. Rendering the raw advertised count against
+/// [`trackable_feature_count_for_grid`] produces a fraction that disagrees
+/// with its own percentage, because advertised features carrying
+/// `counts_in_coverage = false` are excluded from the percent but not from the
+/// raw count.
+pub fn compliance_counts_for_profile(profile: FeatureProfile) -> (usize, usize) {
+    let advertised = catalog_advertised_feature_ids(profile);
+    (advertised_trackable_feature_count(&advertised), trackable_feature_count_for_grid())
+}
+
 /// Compliance percent for a specific runtime profile, using the same grid semantics.
 pub fn compliance_percent_for_profile(profile: FeatureProfile) -> f32 {
-    let trackable_feature_count = trackable_feature_count_for_grid();
+    let (advertised_trackable_feature_count, trackable_feature_count) =
+        compliance_counts_for_profile(profile);
     if trackable_feature_count == 0 {
         return 0.0;
     }
 
-    let advertised = catalog_advertised_feature_ids(profile);
-    let advertised_trackable_feature_count = advertised_trackable_feature_count(&advertised);
     (advertised_trackable_feature_count as f64 / trackable_feature_count as f64 * 100.0).round()
         as f32
 }

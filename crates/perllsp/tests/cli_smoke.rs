@@ -46,7 +46,20 @@ fn help_examples_use_facade_name() -> Result<(), Box<dyn std::error::Error>> {
 fn version_mentions_facade_name_and_git_tag() -> Result<(), Box<dyn std::error::Error>> {
     let stdout = successful_stdout(run_perllsp(&["--version"])?)?;
     assert!(stdout.contains("perllsp "), "version should print the facade name");
-    assert!(stdout.contains("Git tag:"), "version should include the git tag line");
+
+    // Asserting only that the label is present passes when the value behind it
+    // is empty, which is exactly what a build without a `.git` directory used
+    // to emit (`git describe` exits 128 with empty stdout, and that empty
+    // string was threaded into GIT_TAG). Pin the value, not just the label.
+    let tag = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("Git tag:"))
+        .ok_or("version should include the git tag line")?;
+    assert!(
+        !tag.trim().is_empty(),
+        "git tag must carry a value (\"unknown\" for non-git builds), got a bare label; \
+         stdout: {stdout}"
+    );
     Ok(())
 }
 

@@ -8,13 +8,28 @@ fn health_prints_ok() {
 }
 
 #[test]
-fn version_shows_git_tag() {
+fn version_shows_git_tag() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = cargo_bin_cmd!("perl-lsp");
-    cmd.arg("--version")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("perl-lsp"))
-        .stdout(predicates::str::contains("Git tag:"));
+    let output = cmd.arg("--version").assert().success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone())?;
+
+    assert!(stdout.contains("perl-lsp"), "version should print the binary name; stdout: {stdout}");
+
+    // A bare `Git tag:` label with nothing after it is the failure this
+    // guards. Builds without a `.git` directory (source tarball,
+    // `cargo install perllsp`) emitted an empty value rather than "unknown",
+    // because `git describe` exits 128 with empty stdout and the old build
+    // script only fell back when the `git` binary was missing entirely.
+    let tag = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("Git tag:"))
+        .ok_or("version should include the git tag line")?;
+    assert!(
+        !tag.trim().is_empty(),
+        "git tag must carry a value (\"unknown\" for non-git builds), got a bare label; \
+         stdout: {stdout}"
+    );
+    Ok(())
 }
 
 #[test]

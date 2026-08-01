@@ -16,7 +16,9 @@ use std::sync::{Once, OnceLock};
 use clap::{Args, Parser};
 pub mod timing;
 pub use crate::features::contracts::trackable_feature_count_for_grid;
-pub use crate::features::grid::{compliance_percent_for_profile, to_json_for_profile};
+pub use crate::features::grid::{
+    compliance_counts_for_profile, compliance_percent_for_profile, to_json_for_profile,
+};
 pub use crate::features::policy::{FeatureProfile, catalog_advertised_feature_ids};
 use crate::features::profile_cli::{feature_profile_supported_tokens, parse_feature_profile_arg};
 use crate::runtime::tuning::{DiagnosticMode, RuntimeMode, RuntimeTuning};
@@ -1120,7 +1122,11 @@ pub fn format_info_output(
     use_color: bool,
 ) -> String {
     let feature_count = catalog_advertised_feature_ids(profile).len();
-    let spec_total = trackable_feature_count_for_grid();
+    // Numerator and denominator come from the same helper the percent is
+    // computed from, so the printed fraction cannot disagree with the printed
+    // percentage. `feature_count` above is the raw advertised count and is
+    // deliberately a different, separately-labelled number.
+    let (covered, spec_total) = compliance_counts_for_profile(profile);
     let coverage = compliance_percent_for_profile(profile);
 
     let mut out = String::with_capacity(256);
@@ -1133,8 +1139,8 @@ pub fn format_info_output(
     out.push_str(&format!("Git tag:          {git_tag}\n"));
     out.push_str("Parser:           perl-parser v3 (recursive descent)\n");
     out.push_str(&format!("Profile:          {}\n", profile.as_str()));
-    out.push_str(&format!("Features:         {feature_count}/{feature_count} active (100%)\n"));
-    out.push_str(&format!("LSP spec coverage: {feature_count}/{spec_total} ({coverage:.0}%)\n"));
+    out.push_str(&format!("Features:         {feature_count} advertised\n"));
+    out.push_str(&format!("LSP spec coverage: {covered}/{spec_total} ({coverage:.0}%)\n"));
     out.push_str(&format!("Executable:       {exe_path}\n"));
     out.push_str("\nTip: run with --log or set PERL_LSP_LOG=1 for diagnostics\n");
 
@@ -1453,9 +1459,55 @@ mod tests {
         );
         assert!(out.contains("0.10.0"));
         assert!(out.contains("perl-parser v3"));
-        assert!(out.contains("active (100%)"));
+        assert!(out.contains("advertised"));
         assert!(out.contains("LSP spec coverage:"));
         assert!(out.contains("/usr/bin/perl-lsp"));
+    }
+
+    /// The printed `LSP spec coverage` fraction must actually evaluate to the
+    /// printed percentage.
+    ///
+    /// This previously rendered the raw advertised count over the trackable
+    /// total while computing the percent from the advertised *trackable*
+    /// count, so `--info` reported `33/60 (53%)` — a fraction that works out
+    /// to 55%. Advertised features carrying `counts_in_coverage = false` are
+    /// excluded from the percent but were included in the numerator.
+    #[test]
+    fn info_coverage_fraction_agrees_with_its_percentage() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let out = super::format_info_output(
+            "0.10.0",
+            "v0.10.0",
+            "/usr/bin/perl-lsp",
+            super::FeatureProfile::current(),
+            false,
+        );
+
+        let line = out
+            .lines()
+            .find(|l| l.starts_with("LSP spec coverage:"))
+            .ok_or("info output must carry an LSP spec coverage line")?;
+
+        // "LSP spec coverage: covered/total (pct%)"
+        let (fraction, percent) =
+            line.split_once('(').ok_or("coverage line must carry a percentage in parentheses")?;
+        let fraction = fraction.trim_start_matches("LSP spec coverage:").trim();
+        let (covered, total) =
+            fraction.split_once('/').ok_or("coverage line must carry a covered/total fraction")?;
+
+        let covered: f64 = covered.trim().parse()?;
+        let total: f64 = total.trim().parse()?;
+        let percent: f64 = percent.trim_end_matches(['%', ')']).trim().parse()?;
+
+        assert!(total > 0.0, "trackable total must be positive; line: {line}");
+
+        let recomputed = (covered / total * 100.0).round();
+        assert!(
+            (recomputed - percent).abs() < f64::EPSILON,
+            "coverage fraction {covered}/{total} evaluates to {recomputed}%, but the line \
+             reports {percent}%; line: {line}"
+        );
+        Ok(())
     }
 
     // ── port_in_use_message ───────────────────────────────────────
