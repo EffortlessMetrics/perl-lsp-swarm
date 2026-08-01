@@ -54,23 +54,48 @@ fn octal_0_alone_is_decimal_zero() -> R {
     Ok(())
 }
 
-// ── Perl decimal fall-through (8 or 9 after leading 0) ───────────────────────
+// ── Illegal octal digits (8 or 9 after a leading 0) ──────────────────────────
+//
+// Perl does NOT fall back to decimal here. Both of these abort compilation:
+//
+//     $ perl -e 'my $x = 08;'
+//     Illegal octal digit '8' at -e line 1, at end of line
+//     $ perl -e 'my $x = 018;'
+//     Illegal octal digit '8' at -e line 1, at end of line
+//
+// Verified against perl v5.38.2. Returning `Some((8, Decimal))` here would
+// manufacture a value for a program that cannot compile, which is precisely
+// what a canonical helper must not do — every consumer (native critic
+// `octal_literal_to_decimal`, hover constant-folding) would then report a
+// confident, wrong number for source Perl rejects outright.
 
 #[test]
-fn zero_eight_is_decimal_eight() -> R {
-    // Perl rule: once 8 or 9 appears, the whole literal is decimal.
-    let (value, base) = parse_perl_integer("08").ok_or("expected Some")?;
-    assert_eq!(base, NumericBase::Decimal, "08 must be Decimal");
-    assert_eq!(value, 8);
-    Ok(())
+fn zero_eight_is_not_a_legal_literal() {
+    assert_eq!(
+        parse_perl_integer("08"),
+        None,
+        "08 is `Illegal octal digit` in Perl, not decimal 8"
+    );
 }
 
 #[test]
-fn zero_one_eight_is_decimal_eighteen() -> R {
-    let (value, base) = parse_perl_integer("018").ok_or("expected Some")?;
-    assert_eq!(base, NumericBase::Decimal, "018 must be Decimal");
-    assert_eq!(value, 18);
-    Ok(())
+fn zero_one_eight_is_not_a_legal_literal() {
+    assert_eq!(
+        parse_perl_integer("018"),
+        None,
+        "018 is `Illegal octal digit` in Perl, not decimal 18"
+    );
+}
+
+#[test]
+fn illegal_octal_digit_rejected_regardless_of_position() {
+    // The offending digit may sit anywhere in the literal, and `9` is as
+    // illegal as `8`. A wrong implementation that only checked the first digit
+    // after the zero would pass the two tests above and fail these.
+    assert_eq!(parse_perl_integer("0189"), None, "trailing 9 is still illegal");
+    assert_eq!(parse_perl_integer("0781"), None, "8 in the middle is still illegal");
+    assert_eq!(parse_perl_integer("09"), None, "9 is illegal too");
+    assert_eq!(parse_perl_integer("0_18"), None, "underscores do not launder an illegal digit");
 }
 
 // ── Plain decimal ─────────────────────────────────────────────────────────────
@@ -164,4 +189,50 @@ fn non_numeric_string_returns_none() {
     assert_eq!(parse_perl_integer("0x"), None, "0x with no digits must return None");
     assert_eq!(parse_perl_integer("0b"), None, "0b with no digits must return None");
     assert_eq!(parse_perl_integer("0o"), None, "0o with no digits must return None");
+}
+
+#[test]
+fn overflowing_literal_returns_none() {
+    // The helper returns u64; anything wider has no representable value, and a
+    // silent wrap would be worse than declining to answer.
+    assert_eq!(
+        parse_perl_integer("18446744073709551616"),
+        None,
+        "u64::MAX + 1 must return None, not wrap"
+    );
+    assert_eq!(parse_perl_integer("0x1_0000_0000_0000_0000"), None, "65-bit hex must return None");
+    assert_eq!(parse_perl_integer("02000000000000000000000"), None, "65-bit octal must be None");
+}
+
+#[test]
+fn signed_token_text_returns_none() {
+    // `from_str_radix` and `str::parse` both accept a leading sign, but the
+    // lexer emits `-` as a separate unary operator — a signed number token is
+    // never legitimate input, so accepting it would mask a caller bug.
+    assert_eq!(parse_perl_integer("-42"), None);
+    assert_eq!(parse_perl_integer("+42"), None);
+    assert_eq!(parse_perl_integer("0x+1F"), None);
+}
+
+// ── Underscore placement is unconstrained in Perl ────────────────────────────
+//
+// Review on this PR proposed rejecting "malformed" separator placement
+// (`1__000`, `1000_`, `0x_1F`). Perl accepts all three:
+//
+//     $ perl -e 'print 1__000, " ", 1000_, " ", 0x_1F'
+//     1000 1000 31
+//
+// Verified against perl v5.38.2. Stripping every underscore is therefore the
+// behaviour that matches the language, and these cases pin it so a later
+// "validation" change cannot quietly diverge from Perl.
+
+#[test]
+fn underscores_may_appear_anywhere_inside_a_literal() -> R {
+    assert_eq!(parse_perl_integer("1__000"), Some((1000, NumericBase::Decimal)));
+    assert_eq!(parse_perl_integer("1000_"), Some((1000, NumericBase::Decimal)));
+    assert_eq!(parse_perl_integer("0x_1F"), Some((31, NumericBase::Hexadecimal)));
+    assert_eq!(parse_perl_integer("0x1_F"), Some((31, NumericBase::Hexadecimal)));
+    assert_eq!(parse_perl_integer("0b1_01"), Some((5, NumericBase::Binary)));
+    assert_eq!(parse_perl_integer("0o1_7"), Some((15, NumericBase::ExplicitOctal)));
+    Ok(())
 }
