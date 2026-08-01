@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "total_files": 28,
-  "total_bytes": 1501383,
+  "total_bytes": 1501396,
   "files": {
-    "package.json": 54578,
+    "package.json": 54579,
     "language-configuration.json": 1010,
     "icon.png": 8358,
     "gherkin-language-configuration.json": 510,
-    "README.md": 24618,
+    "README.md": 24630,
     "LICENSE": 1069,
     "CHANGELOG.md": 16614,
     ".oxlintrc.json": 559,
