@@ -83,16 +83,17 @@ pub(super) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
 
         if let Some((body_start, label, allow_indented)) = active.take() {
             // Trailing spaces/tabs after the delimiter still close the region.
-            // `PerlLexer` ends the heredoc body on such a line; comparing the
-            // untrimmed line left the collector scanning to EOF and
+            // `PerlLexer` ends the heredoc body on such a line; comparing only
+            // the untrimmed line left the collector scanning to EOF and
             // reclassifying every following statement as `Heredoc`, because
             // `Heredoc` outranks `Code` in `region_precedence`.
-            let closer = line.trim_end_matches([' ', '\t']);
-            let closes = if allow_indented {
-                closer.trim_start_matches([' ', '\t']) == label
-            } else {
-                closer == label
-            };
+            //
+            // The trimmed comparison is an *additional* way to close, never a
+            // replacement: a quoted label may itself end in whitespace
+            // (`<<"EOF "`), and trimming alone would stop that line matching.
+            let candidate =
+                if allow_indented { line.trim_start_matches([' ', '\t']) } else { line };
+            let closes = candidate == label || candidate.trim_end_matches([' ', '\t']) == label;
             if closes {
                 push_region(&mut regions, body_start, line_start, SourceRegionKind::Heredoc);
             } else {
@@ -896,6 +897,19 @@ mod tests {
                  {regions:?}"
             );
         }
+    }
+
+    /// The trimmed comparison must be additive, not a replacement: a quoted
+    /// label that itself ends in whitespace still closes on its exact line.
+    #[test]
+    fn quoted_label_ending_in_whitespace_still_closes_exactly() {
+        let source = "my $x = <<\"EOF \";\nbody\nEOF \ntail();\n";
+        let regions = scan_heredoc_regions(source);
+        assert_eq!(regions.len(), 1, "one heredoc body expected: {regions:?}");
+        assert!(
+            regions[0].end < source.len(),
+            "a label ending in whitespace must still close on its exact line: {regions:?}"
+        );
     }
 
     /// The negative half: trailing *non*-whitespace still does not close, so the
