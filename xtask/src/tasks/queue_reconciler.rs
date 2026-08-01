@@ -615,13 +615,34 @@ fn classify_live_ci_state(
     }
 
     for required in required_checks {
-        let matching = checks
+        let mut matching = checks
             .iter()
             .filter(|check| check_context_name(check).as_deref() == Some(required.as_str()))
             .collect::<Vec<_>>();
 
         if matching.is_empty() {
             return CiOutcome::Pending;
+        }
+
+        // One context can appear more than once in the rollup. `validate-title`
+        // re-runs on a title edit without moving the head SHA, so a PR whose
+        // title was corrected keeps both the failed and the succeeding entry —
+        // and the head-SHA staleness guard below cannot tell them apart because
+        // both ran against the same commit. Without this, the loop returns
+        // `Failure` on the superseded entry and pins a corrected PR red.
+        //
+        // Only collapse when every entry carries a timestamp; otherwise the
+        // ordering would be arbitrary and dropping entries could hide a real
+        // failure.
+        if matching.len() > 1 && matching.iter().all(|c| check_reported_at(c).is_some()) {
+            if let Some(latest) = matching
+                .iter()
+                .filter_map(|check| check_reported_at(check).map(|at| (at, *check)))
+                .max_by_key(|(at, _)| *at)
+                .map(|(_, check)| check)
+            {
+                matching = vec![latest];
+            }
         }
 
         let mut passed = false;
@@ -660,6 +681,18 @@ fn classify_live_ci_state(
     }
 
     CiOutcome::Success
+}
+
+/// Timestamp used to order repeated runs of the same rollup context.
+///
+/// Check runs report `completedAt` once finished and `startedAt` while still in
+/// flight; external status contexts report `createdAt`. Values are ISO-8601 UTC,
+/// so lexicographic ordering matches chronological ordering. Returns `None` when
+/// none is present, which callers read as "these entries cannot be ordered".
+fn check_reported_at(check: &serde_json::Value) -> Option<&str> {
+    ["completedAt", "startedAt", "createdAt"].iter().find_map(|key| {
+        check.get(key).and_then(serde_json::Value::as_str).filter(|value| !value.is_empty())
+    })
 }
 
 fn check_context_name(check: &serde_json::Value) -> Option<String> {
@@ -1082,7 +1115,10 @@ required = false
         Ok(())
     }
 
-    /// Pin the *real* policy file against the live branch-protection contexts.
+    /// Pin the *real* policy file against every live merge-blocking context.
+    ///
+    /// `main` is gated by two separate GitHub surfaces — classic branch
+    /// protection and ruleset `main` — and a merge is blocked by the union.
     ///
     /// `load_required_ci_checks` reads this file to decide whether a PR's live
     /// CI is green, so a context that is required by the ruleset but missing
@@ -1105,7 +1141,8 @@ required = false
         ] {
             assert!(
                 checks.contains(expected),
-                "required branch-protection context `{expected}` is missing from \
+                "required merge-blocking context `{expected}` (classic branch protection or \
+                 ruleset `main`) is missing from \
                  .ci/policies/required-checks.toml; live CI classification would \
                  treat it as passing. Present: {checks:?}"
             );
@@ -1161,6 +1198,83 @@ required = false
 
         let outcome = classify_live_ci_state(&checks, &required, Some("current-head"));
         assert_eq!(outcome, CiOutcome::Pending);
+    }
+
+    /// A corrected PR title must not stay classified red.
+    ///
+    /// `validate-title` runs on `pull_request_target: [edited]`, so fixing a bad
+    /// title produces a second run against the *same* head SHA. Both entries
+    /// survive the staleness guard, and classifying the superseded failure would
+    /// pin the PR red forever — stripping `merge-ready` from a PR whose title is
+    /// now valid. Only the latest run per context may be classified.
+    #[test]
+    fn merge_ready_live_ci_classifier_uses_latest_run_when_a_context_reran_on_one_sha() {
+        let checks = vec![
+            successful_check("Perl LSP Rust Small Result"),
+            successful_check("ripr+ New Gap Gate"),
+            serde_json::json!({
+                "name": "validate-title",
+                "conclusion": "FAILURE",
+                "status": "COMPLETED",
+                "headSha": "current-head",
+                "startedAt": "2026-08-01T10:00:00Z",
+                "completedAt": "2026-08-01T10:00:07Z"
+            }),
+            serde_json::json!({
+                "name": "validate-title",
+                "conclusion": "SUCCESS",
+                "status": "COMPLETED",
+                "headSha": "current-head",
+                "startedAt": "2026-08-01T10:05:00Z",
+                "completedAt": "2026-08-01T10:05:06Z"
+            }),
+        ];
+        let required = required_checks(&[
+            "Perl LSP Rust Small Result",
+            "ripr+ New Gap Gate",
+            "validate-title",
+        ]);
+
+        let outcome = classify_live_ci_state(&checks, &required, Some("current-head"));
+        assert_eq!(
+            outcome,
+            CiOutcome::Success,
+            "superseded validate-title failure must not outrank the later success on the same SHA"
+        );
+    }
+
+    /// The inverse: a later failure must still be classified as failure, so the
+    /// latest-run selection cannot be used to launder a real red into green.
+    #[test]
+    fn merge_ready_live_ci_classifier_reports_failure_when_the_latest_rerun_failed() {
+        let checks = vec![
+            successful_check("Perl LSP Rust Small Result"),
+            successful_check("ripr+ New Gap Gate"),
+            serde_json::json!({
+                "name": "validate-title",
+                "conclusion": "SUCCESS",
+                "status": "COMPLETED",
+                "headSha": "current-head",
+                "startedAt": "2026-08-01T10:00:00Z",
+                "completedAt": "2026-08-01T10:00:06Z"
+            }),
+            serde_json::json!({
+                "name": "validate-title",
+                "conclusion": "FAILURE",
+                "status": "COMPLETED",
+                "headSha": "current-head",
+                "startedAt": "2026-08-01T10:05:00Z",
+                "completedAt": "2026-08-01T10:05:07Z"
+            }),
+        ];
+        let required = required_checks(&[
+            "Perl LSP Rust Small Result",
+            "ripr+ New Gap Gate",
+            "validate-title",
+        ]);
+
+        let outcome = classify_live_ci_state(&checks, &required, Some("current-head"));
+        assert_eq!(outcome, CiOutcome::Failure);
     }
 
     #[test]

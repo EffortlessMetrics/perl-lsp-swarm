@@ -45,9 +45,9 @@ to either surface without a corresponding `required = true` entry here
 silently understates the gate set in every emitted receipt's `required_checks`
 inventory and in `gate_graph_version`, which is hashed over this file. When a
 required context is added or removed on either surface, update this file in
-the same change. See issue #5418 (this gap's discovery) and #5371 (proposed
-follow-up: read the live ruleset instead of trusting this checked-in list) for
-the recurrence risk this leaves open.
+the same change. See issue #5418 for this gap's discovery. Reading the live
+surfaces instead of trusting this checked-in list remains unbuilt, and is the
+recurrence risk this leaves open.
 
 `Codecov / Patch 95` is the repo-owned advisory coverage job. `codecov/patch`
 is the external Codecov status context posted after Codecov processes an
