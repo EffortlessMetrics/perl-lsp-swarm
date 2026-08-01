@@ -6,6 +6,15 @@ struct FileError {
     errors: Vec<String>,
 }
 
+/// Advisories recovered from a file that still parsed cleanly.
+///
+/// Kept apart from [`FileError`] because advisories are raised on source real
+/// `perl` accepts, so they must never count against the parsability verdict.
+struct FileAdvisory {
+    path: String,
+    advisories: Vec<String>,
+}
+
 pub(super) fn run_check_project(dir: &str) -> i32 {
     let root = Path::new(dir);
     let metadata = match root.metadata() {
@@ -27,7 +36,18 @@ pub(super) fn run_check_project(dir: &str) -> i32 {
     let mut results = ProjectCheckResults::default();
     let walker = walkdir::WalkDir::new(root).follow_links(true).into_iter();
 
-    for entry in walker.filter_map(|e| e.ok()) {
+    for entry in walker {
+        // A dropped walk error is a file the scan never saw. Silently skipping
+        // it shortens `Files scanned` while the report still prints a confident
+        // percentage over whatever subset happened to be readable.
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                results.unreadable_paths.push(describe_walk_error(&error));
+                continue;
+            }
+        };
+
         let path = entry.path();
         if !is_supported_perl_file(path) {
             continue;
@@ -41,11 +61,21 @@ pub(super) fn run_check_project(dir: &str) -> i32 {
     emit_report(dir, &results)
 }
 
+/// Render a `walkdir` error as a reportable `path: reason` line.
+fn describe_walk_error(error: &walkdir::Error) -> String {
+    match error.path() {
+        Some(path) => format!("{}: {error}", path.display()),
+        None => error.to_string(),
+    }
+}
+
 #[derive(Default)]
 struct ProjectCheckResults {
     total: usize,
     clean: usize,
     file_errors: Vec<FileError>,
+    file_advisories: Vec<FileAdvisory>,
+    unreadable_paths: Vec<String>,
     category_counts: HashMap<String, usize>,
 }
 
@@ -72,9 +102,16 @@ fn process_file(path: &Path, path_str: String, results: &mut ProjectCheckResults
     let parse_result = parser.parse();
     let recovered_errors = parser.errors();
 
+    // Only blocking diagnostics decide whether the file parsed, matching
+    // `--check`. Advisories (e.g. a nested-quantifier regex warning) are raised
+    // on files real `perl` accepts, so counting them as parse failures would
+    // report valid Perl as unparsable.
+    let (blocking, advisory): (Vec<_>, Vec<_>) =
+        recovered_errors.iter().partition(|err| err.blocks_clean_parse());
+
     let mut errors_for_file: Vec<String> = Vec::new();
 
-    for err in recovered_errors {
+    for err in blocking {
         record_category(&format!("{err}"), results);
         errors_for_file.push(format!("{err}"));
     }
@@ -82,6 +119,13 @@ fn process_file(path: &Path, path_str: String, results: &mut ProjectCheckResults
     if let Err(ref e) = parse_result {
         record_category(&format!("{e}"), results);
         errors_for_file.push(format!("{e}"));
+    }
+
+    let advisories_for_file: Vec<String> = advisory.iter().map(|err| format!("{err}")).collect();
+    if !advisories_for_file.is_empty() {
+        results
+            .file_advisories
+            .push(FileAdvisory { path: path_str.clone(), advisories: advisories_for_file });
     }
 
     if errors_for_file.is_empty() {
@@ -107,6 +151,7 @@ fn emit_report(dir: &str, results: &ProjectCheckResults) -> i32 {
     println!();
     println!("Directory: {dir}");
     println!("Files scanned: {}", results.total);
+    emit_unreadable_section(&results.unreadable_paths);
 
     if results.total == 0 {
         println!();
@@ -128,6 +173,16 @@ fn emit_report(dir: &str, results: &ProjectCheckResults) -> i32 {
         println!();
     }
 
+    if !results.file_advisories.is_empty() {
+        println!("Advisories (not counted against parsability):");
+        for fa in &results.file_advisories {
+            for advisory in &fa.advisories {
+                println!("  {}: {advisory}", fa.path);
+            }
+        }
+        println!();
+    }
+
     emit_category_section(&results.category_counts);
 
     if pct >= 80.0 {
@@ -136,6 +191,21 @@ fn emit_report(dir: &str, results: &ProjectCheckResults) -> i32 {
     } else {
         println!("Assessment: FAIL ({pct:.1}% parsable, threshold 80%)");
         1
+    }
+}
+
+/// Report paths the walk could not read, immediately under the scanned count
+/// they qualify — an undercounted scan must not render as a clean receipt.
+fn emit_unreadable_section(unreadable_paths: &[String]) {
+    if unreadable_paths.is_empty() {
+        return;
+    }
+
+    let count = unreadable_paths.len();
+    let noun = if count == 1 { "path" } else { "paths" };
+    println!("Unreadable {noun}: {count} (not scanned, excluded from the percentage below)");
+    for path in unreadable_paths {
+        println!("  {path}");
     }
 }
 

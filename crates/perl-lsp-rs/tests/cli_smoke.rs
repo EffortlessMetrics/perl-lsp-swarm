@@ -373,6 +373,121 @@ fn check_project_file_path_errors() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// ── `--check` / `--check-project` verdict agreement (#5465) ─────────────────
+//
+// Both subcommands answer "does this file parse?" from the same binary. A file
+// that one calls `ok` and the other counts as a parse failure is a false
+// parsability claim from a release binary, so these tests drive the real
+// executable over one fixture tree and assert the two agree.
+
+/// A regex advisory: real `perl` compiles this, the parser recovers cleanly and
+/// records a nested-quantifier advisory.
+const ADVISORY_SOURCE: &str = "my $s = \"abab\";\n$s =~ /(?:[^b]*(?=(b)|(a))ab)*/;\n1;\n";
+const CLEAN_SOURCE: &str = "my $ok = 1;\n1;\n";
+/// Genuinely blocking — `perl -c` rejects this.
+const BLOCKING_SOURCE: &str = "my $value = ;\n";
+
+#[test]
+fn check_project_passes_a_project_whose_only_finding_is_advisory()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("advisory.pl"), ADVISORY_SOURCE)?;
+    std::fs::write(dir.path().join("clean.pl"), CLEAN_SOURCE)?;
+    let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
+
+    // Every file here is valid Perl, so the parsability report must say so.
+    // Before #5465 the advisory counted as a parse error and this read
+    // "Clean parses: 1/2 (50.0%)" with an exit code of 1.
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.args(["--check-project", dir_str])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Clean parses: 2/2 (100.0%)"))
+        .stdout(predicates::str::contains("Assessment: PASS"));
+
+    Ok(())
+}
+
+#[test]
+fn check_project_reports_advisories_without_counting_them_as_errors()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("advisory.pl"), ADVISORY_SOURCE)?;
+    let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
+
+    // Excluding advisories from the verdict must not mean hiding them: they
+    // stay visible, under a heading that says what they do not affect.
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.args(["--check-project", dir_str])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Advisories (not counted against parsability):"))
+        .stdout(predicates::str::contains("Nested quantifiers detected"))
+        .stdout(predicates::str::contains("Parse errors:").not());
+
+    Ok(())
+}
+
+#[test]
+fn check_project_and_check_agree_on_the_same_tree() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let advisory = dir.path().join("advisory.pl");
+    let clean = dir.path().join("clean.pl");
+    let broken = dir.path().join("broken.pl");
+    std::fs::write(&advisory, ADVISORY_SOURCE)?;
+    std::fs::write(&clean, CLEAN_SOURCE)?;
+    std::fs::write(&broken, BLOCKING_SOURCE)?;
+    let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
+
+    // `--check`: exactly one of the three files fails.
+    let mut check = cargo_bin_cmd!("perl-lsp");
+    check
+        .args([
+            "--check",
+            advisory.to_str().ok_or("non-UTF-8 temp path")?,
+            clean.to_str().ok_or("non-UTF-8 temp path")?,
+            broken.to_str().ok_or("non-UTF-8 temp path")?,
+        ])
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("3 files checked, 1 with errors"));
+
+    // `--check-project` over the same tree must reach the same count: two of
+    // three clean, and the blocking file the only one named as a parse error.
+    let mut check_project = cargo_bin_cmd!("perl-lsp");
+    check_project
+        .args(["--check-project", dir_str])
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("Clean parses: 2/3 (66.7%)"))
+        .stdout(predicates::str::contains("broken.pl: Missing operand"));
+
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn check_project_reports_paths_the_walk_could_not_read() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("clean.pl"), CLEAN_SOURCE)?;
+    let sub = dir.path().join("sub");
+    std::fs::create_dir(&sub)?;
+    // The walk follows links, so this loop is a path it cannot descend. It must
+    // be named rather than dropped — a short scan otherwise renders as a clean
+    // receipt over whatever subset happened to be readable.
+    std::os::unix::fs::symlink("..", sub.join("up"))?;
+    let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.args(["--check-project", dir_str])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Unreadable path"))
+        .stdout(predicates::str::contains("loop"));
+
+    Ok(())
+}
+
 #[test]
 fn completion_fish_produces_output() {
     let mut cmd = cargo_bin_cmd!("perl-lsp");
