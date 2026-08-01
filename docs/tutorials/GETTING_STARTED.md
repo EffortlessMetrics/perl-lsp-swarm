@@ -35,19 +35,36 @@ code --install-extension EffortlessMetrics.perl-lsp-rs
 
 The extension downloads the matching server binary for your platform.
 
-### Option 2: GitHub release binary (Recommended for other editors)
-
-Download the latest archive from [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) and place `perllsp` on your `PATH`.
-
-### Option 3: Install Script (Linux/macOS)
-
-Use the installer script (best-effort / non-canonical):
+### Option 2: Installer script, macOS and Linux (Recommended for other editors)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
 ```
 
-### Option 4: Build from Source
+This is the project's own installer ([`scripts/install.sh`](../../scripts/install.sh)).
+It downloads the matching GitHub release archive, verifies it against the
+release `SHA256SUMS` when that file is available, and installs `perllsp` and
+`perl-dap`. GitHub Releases remains the authority for what was actually
+published; the script is a convenience over that same archive, not a separate
+channel.
+
+### Option 3: Windows
+
+Use the release archive. Download
+`perllsp-<version>-x86_64-pc-windows-msvc.zip` from
+[Releases](https://github.com/EffortlessMetrics/perl-lsp/releases), extract it,
+and add the folder containing `perllsp.exe` to your `PATH`.
+
+The PowerShell installer script does not work yet — the published copy resolves
+a `perl-lsp-…zip` asset that releases do not produce, so it fails with a 404.
+Windows support is also narrower generally: `x86_64` only. See
+[INSTALLATION.md](../how-to/INSTALLATION.md#windows) for the current limits.
+
+### Option 4: GitHub release archive
+
+Download the latest archive from [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) and place `perllsp` on your `PATH`.
+
+### Option 5: Build from Source
 
 ```bash
 git clone https://github.com/EffortlessMetrics/perl-lsp.git

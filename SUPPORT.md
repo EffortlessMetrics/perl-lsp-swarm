@@ -55,8 +55,10 @@ We only provide active support for the current major version and the immediate p
 Join our community to stay updated and connect with other users:
 
 - **GitHub Discussions**: [https://github.com/EffortlessMetrics/perl-lsp/discussions](https://github.com/EffortlessMetrics/perl-lsp/discussions)
-- **Discord**: [Link provided in GitHub Discussions/README]
+
+GitHub Discussions and GitHub Issues are the only community channels this
+project runs. There is no Discord, Slack, or IRC channel.
 
 ---
 
-**Last Updated**: 2026-07-30
+**Last Updated**: 2026-08-01
