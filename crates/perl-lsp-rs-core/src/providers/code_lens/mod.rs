@@ -154,6 +154,15 @@ impl CodeLensProvider {
                 self.visit_node(body, lenses);
             }
 
+            // Perl 5.38+ methods — mirror Subroutine lens generation (#5413)
+            NodeKind::Method { name, body, .. } => {
+                if self.is_test_subroutine(name) {
+                    self.add_run_test_lens(node, name, lenses);
+                }
+                self.add_references_lens(node, name, lenses);
+                self.visit_node(body, lenses);
+            }
+
             NodeKind::Package { name, block, name_span: _ } => {
                 self.add_references_lens(node, name, lenses);
                 if let Some(block) = block {

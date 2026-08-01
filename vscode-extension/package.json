@@ -531,7 +531,7 @@
             "scope": "machine",
             "order": 43,
             "deprecationMessage": "This setting has no effect and will be removed. Use perl-lsp.critic.profile instead.",
-            "markdownDeprecationMessage": "**No effect.** This setting does nothing — it is a legacy placeholder from an earlier UI design and will be removed. Use `perl-lsp.critic.profile` for Perl::Critic profile selection.",
+            "markdownDeprecationMessage": "**No effect.** This setting does nothing — it is a legacy placeholder from an earlier UI design and will be removed. Use `perl-lsp.critic.profile` to select the native rule profile.",
             "description": "[No effect] Legacy placeholder — will be removed.",
             "markdownDescription": "**[No effect]** Legacy placeholder — will be removed. Use `perl-lsp.critic.profile` instead."
           },
@@ -1297,7 +1297,7 @@
           {
             "id": "debug-first-script",
             "title": "Debug Your First Script (Optional)",
-            "description": "Create a debug configuration with the Create Debug Configuration command. Debugging requires `perl-dap`; see the [debugging guide](https://github.com/EffortlessMetrics/perl-lsp/blob/main/docs/tutorials/DAP_USER_GUIDE.md) for setup steps.",
+            "description": "Create a debug configuration with the Create Debug Configuration command. Debugging requires `perl-dap`; see the [debugging guide](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/tutorials/DAP_USER_GUIDE.md) for setup steps.",
             "media": {
               "image": "media/walkthrough/debug-first-script.svg",
               "altText": "Debug Script"

@@ -170,8 +170,8 @@ use unicode::{is_perl_identifier_continue, is_perl_identifier_start};
 
 use crate::heredoc::HeredocSpec;
 use crate::lexer::helpers::{
-    empty_arc, is_builtin_function, is_compound_operator, is_keyword_fast, is_quote_op_word_prefix,
-    truncate_preview,
+    empty_arc, is_builtin_function, is_compound_operator, is_keyword_fast,
+    is_perl_punctuation_variable, is_quote_op_word_prefix, truncate_preview,
 };
 use crate::limits::{
     HEREDOC_TIMEOUT_MS, MAX_DELIM_NEST, MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES,
@@ -2544,6 +2544,83 @@ impl<'a> PerlLexer<'a> {
                         self.advance();
                     }
                 }
+                // Array interpolation: @arr, @{expr}, @_. Ported from PR #5355
+                // (branch claude/inspiring-babbage-83z94q) -- issue #5042's
+                // headline claim is the `@` sigil, so this arm closes the gap
+                // left by the `$`-only fix above. `@` followed by neither an
+                // identifier nor `{` is not a valid interpolation opener and
+                // stays literal text (verified against real perl 5.38.2:
+                // `print "@!"` prints a literal `@!`, it does not interpolate
+                // `$!` under the `@` sigil).
+                '@' if self.config.parse_interpolation => {
+                    if !current_literal.is_empty() {
+                        parts.push(StringPart::Literal(Arc::from(current_literal)));
+                        current_literal = String::new();
+                    }
+                    let part_start = self.position;
+                    self.advance(); // consume '@'
+                    match self.current_char() {
+                        Some('{') => {
+                            let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Expression(Arc::from(part_text)));
+                        }
+                        // Package-qualified array names interpolate as one
+                        // variable -- verified against real perl 5.38.2:
+                        // `our @arr=("x","y"); print "@main::arr"` prints
+                        // "x y", so `::` segments belong to the variable, not
+                        // to the following literal text. A leading `::` names
+                        // the same array in package `main`: `@a=(1,2); print
+                        // "@::a"` prints "1 2". Both share
+                        // `consume_qualified_identifier_in_string` with the
+                        // `$#`, `@$` and `$$` deref arms, so every arm folds
+                        // `::` (and the old-style `'`) segments identically.
+                        Some(ch)
+                            if is_perl_identifier_start(ch)
+                                || (ch == ':' && self.peek_char(1) == Some(':')) =>
+                        {
+                            self.consume_qualified_identifier_in_string();
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        // Array dereference: `@$ref`, `@$$ref`, `@$main::ref`.
+                        // Perl interpolates the whole deref chain as one array
+                        // (verified against real perl 5.38.2:
+                        // `our @a=(1,2); our $r=\@a; print "@$r"` prints "1 2",
+                        // and `my $rr=\$r; print "@$$rr"` prints "1 2" too).
+                        // Mirrors the `$#$ref` arm below, which already consumes
+                        // a `$` sigil run before the qualified identifier, so the
+                        // two arms agree on the same shape. A degenerate `@$`
+                        // with no identifier is still consumed as one unit, which
+                        // is what perl does: `print "@$ x"` prints " x", not
+                        // "@$ x".
+                        Some('$') => {
+                            while self.current_char() == Some('$') {
+                                self.advance();
+                            }
+                            self.consume_qualified_identifier_in_string();
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        // Regex match-offset special arrays `@+` and `@-`. These
+                        // are real Perl array variables and DO interpolate
+                        // (verified against real perl 5.38.2:
+                        // `"foobar"=~/(o+)(b)/; print "@-"` prints "1 1 3" and
+                        // `print "@+"` prints "4 3 4"), so they must not fall
+                        // into the literal fallback below. `try_variable` already
+                        // recognizes the same two forms at token level, so this
+                        // keeps the string scanner consistent with it.
+                        Some('+' | '-') => {
+                            self.advance(); // consume the '+' or '-'
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        _ => {
+                            // '@' not followed by identifier or '{' — treat as literal
+                            current_literal.push('@');
+                        }
+                    }
+                }
                 '$' if self.config.parse_interpolation => {
                     // Handle variable interpolation - avoid unnecessary clone
                     if !current_literal.is_empty() {
@@ -2664,7 +2741,218 @@ impl<'a> PerlLexer<'a> {
                                 }
                             }
                         }
-                        _ => {}
+                        // Digit variables: $0 (program name), $1..$9, $10, $11, ...
+                        // (capture groups). Perl consumes *all* consecutive digits
+                        // into one numeric variable -- `"$10"` is capture group 10,
+                        // not `$1` followed by literal `"0"` (verified against real
+                        // perl 5.38.2 with an 11-group match: `$10` prints the 10th
+                        // group, not `$1` + "0"). `$0` (the program name) is simply
+                        // the one-digit case of this same rule.
+                        Some(ch) if ch.is_ascii_digit() => {
+                            self.advance();
+                            while self.current_char().is_some_and(|c| c.is_ascii_digit()) {
+                                self.advance();
+                            }
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        // Control variables: $^W, $^O, $^X, etc.
+                        Some('^') => {
+                            self.advance(); // consume '^'
+                            if self.current_char().is_some_and(|c| c.is_ascii_uppercase()) {
+                                self.advance(); // consume the uppercase letter
+                            }
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        // Array-length operator: $#array, $#{expr}, $#$ref. All
+                        // three interpolate to the last index of the referenced
+                        // array (verified against real perl 5.38.2: `$#{$ref}` and
+                        // `$#$ref` both print the same value as `$#array` for an
+                        // array ref `$ref`). Each is emitted as a single Variable
+                        // part -- `$#{$ref}`/`$#$ref` must not fragment into
+                        // separate Variable/Literal parts the way plain `${expr}`
+                        // subscripting would. The bare and `$ref`-tail identifier
+                        // scans also fold `::`-qualified package segments (e.g.
+                        // `$#main::array`), mirroring `try_variable`'s `$#` loop
+                        // (verified against real perl 5.38.2: `our @array=(1,2,3);
+                        // print "$#main::array"` prints "2").
+                        Some('#') => {
+                            self.advance(); // consume '#'
+                            if self.current_char() == Some('{') {
+                                let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                            } else {
+                                // `$#$ref` (and chained `$#$$ref`) first consume a
+                                // deref sigil run; bare `$#array` simply runs that
+                                // loop zero times. Both then take the same
+                                // package-qualified identifier scan, so they share
+                                // one path rather than duplicating it.
+                                while self.current_char() == Some('$') {
+                                    self.advance();
+                                }
+                                self.consume_qualified_identifier_in_string();
+                            }
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        // $$ (PID) when not followed by an identifier or brace
+                        // group; otherwise `$$foo`, `$$$foo`, `$${foo}`, etc. are
+                        // scalar-dereference chains and interpolate as a single
+                        // unit (verified against real perl 5.38.2: `my $foo =
+                        // \$x; print "$$foo"` prints the dereferenced value of
+                        // $x, `"$$$foo"` double-derefs, and `my $r = \$x; my
+                        // $foo = \$r; print "$$${foo}"` also derefs through the
+                        // brace form). Bare `$$` (no trailing identifier/brace)
+                        // remains the PID.
+                        Some('$') => {
+                            // Count consecutive '$' sigils starting at the current
+                            // position (at least 1, since we matched on '$' here).
+                            let mut dollar_run = 0usize;
+                            while self.peek_char(dollar_run) == Some('$') {
+                                dollar_run += 1;
+                            }
+                            let after_run = self.peek_char(dollar_run);
+                            if after_run == Some('{') {
+                                // Deref chain terminated by a brace group, e.g.
+                                // `$${foo}` / `$$${foo}` -- consume the sigil run
+                                // then the balanced `{...}` as one Expression
+                                // unit, mirroring the plain `${expr}` arm. No
+                                // postfix subscript follows: verified against
+                                // real perl 5.38.2, `"$${foo}[0]"` interpolates
+                                // `$${foo}` and leaves the literal text "[0]"
+                                // afterward rather than subscripting.
+                                for _ in 0..dollar_run {
+                                    self.advance();
+                                }
+                                let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                                let part_text = &self.input[part_start..self.position];
+                                parts.push(StringPart::Expression(Arc::from(part_text)));
+                            } else if after_run.is_some_and(is_perl_identifier_start) {
+                                // Deref chain: consume the remaining '$' sigils,
+                                // then the identifier they dereference, then any
+                                // postfix subscript -- verified against real perl
+                                // 5.38.2: `my @a=(1,2,3); my $foo=\@a; print
+                                // "$$foo[1]"` prints "2" and `my %h=(a=>1); my
+                                // $foo=\%h; print "$$foo{a}"` prints "1", so a
+                                // trailing `[` / `{` subscript belongs to the
+                                // deref chain, not the following literal text.
+                                //
+                                // The dereferenced name is package-qualified via
+                                // the shared scan, matching the `$#$ref` and
+                                // `@$ref` arms: perl reads `$$main::foo` as one
+                                // deref of `$main::foo`, not as `$$main` plus
+                                // the literal "::foo" (verified against real
+                                // perl 5.38.2: `$v="deep"; $main::foo=\$v;
+                                // print "$$main::foo"` prints "deep").
+                                for _ in 0..dollar_run {
+                                    self.advance();
+                                }
+                                self.consume_qualified_identifier_in_string();
+                                let part_text = &self.input[part_start..self.position];
+                                parts.push(StringPart::Variable(Arc::from(part_text)));
+
+                                // Arrow *subscripts* chain onto the deref and do
+                                // interpolate -- verified against real perl
+                                // 5.38.2: `my $ar=\@a; my $rr=\$ar; print
+                                // "$$rr->[1]"` prints the element. A bare
+                                // arrow *method* call does NOT interpolate
+                                // (`print "$$ro->bar"` prints the deref'd value
+                                // followed by a literal "->bar"), so `->name`
+                                // is deliberately left in the literal bucket.
+                                if self.matches_bytes(b"->")
+                                    && matches!(self.peek_byte(2), Some(b'[') | Some(b'{'))
+                                {
+                                    let tail_start = self.position;
+                                    self.advance();
+                                    self.advance();
+                                    if self.current_char() == Some('[') {
+                                        let _ =
+                                            self.consume_balanced_segment_in_string('[', ']', '"');
+                                    } else {
+                                        let _ =
+                                            self.consume_balanced_segment_in_string('{', '}', '"');
+                                    }
+                                    let tail_text = &self.input[tail_start..self.position];
+                                    parts.push(StringPart::MethodCall(Arc::from(tail_text)));
+                                } else if self.current_char() == Some('[') {
+                                    let tail_start = self.position;
+                                    let _ = self.consume_balanced_segment_in_string('[', ']', '"');
+                                    let tail_text = &self.input[tail_start..self.position];
+                                    parts.push(StringPart::ArraySlice(Arc::from(tail_text)));
+                                } else if self.current_char() == Some('{') {
+                                    let tail_start = self.position;
+                                    let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                                    let tail_text = &self.input[tail_start..self.position];
+                                    parts.push(StringPart::Expression(Arc::from(tail_text)));
+                                }
+                            } else if after_run.is_some_and(|c| c.is_ascii_digit()) {
+                                // Digits do not start an identifier, but they do
+                                // name capture variables, and a `$` run in front
+                                // of one is a scalar deref of that capture --
+                                // not a PID followed by literal text (verified
+                                // against real perl 5.38.2:
+                                // `perl -W -e '"abc"=~/(a)/; print "$$1X"'`
+                                // prints just "X" with one "uninitialized value"
+                                // warning, i.e. `$$1` is one deref unit that
+                                // interpolates empty, leaving "X" literal). The
+                                // whole digit run belongs to the variable for
+                                // the same reason `"$10"` is capture group 10.
+                                for _ in 0..dollar_run {
+                                    self.advance();
+                                }
+                                while self.current_char().is_some_and(|c| c.is_ascii_digit()) {
+                                    self.advance();
+                                }
+                                let part_text = &self.input[part_start..self.position];
+                                parts.push(StringPart::Variable(Arc::from(part_text)));
+                            } else {
+                                // Bare `$$` is the PID. A longer pure sigil run
+                                // (`$$$`, `$$$$`) is still one interpolation
+                                // unit, so consume the whole run rather than a
+                                // single '$' -- verified against real perl
+                                // 5.38.2: `print "[$$]"` prints the PID, while
+                                // `print "[$$$]"` and `print "[$$$$]"` both
+                                // print "[]" (one deref unit that interpolates
+                                // empty), never the PID followed by a literal
+                                // '$'. A trailing punctuation variable is NOT
+                                // part of the run: `print "[$$!]"` prints the
+                                // PID followed by a literal '!', which is what
+                                // consuming only the run leaves behind.
+                                for _ in 0..dollar_run {
+                                    self.advance();
+                                }
+                                let part_text = &self.input[part_start..self.position];
+                                parts.push(StringPart::Variable(Arc::from(part_text)));
+                            }
+                        }
+                        // Package-qualified scalars written with a leading `::`
+                        // name the variable in package `main`, and they must be
+                        // matched before the punctuation set below, which also
+                        // owns the single-`:` variable `$:`. Verified against
+                        // real perl 5.38.2: `$foo="P"; print "$::foo"` prints
+                        // "P", `print "$::"` interpolates `$main::` (empty),
+                        // and `print "$:::foo"` interpolates `$main::` followed
+                        // by the literal ":foo" -- which is exactly what the
+                        // shared `::`-folding scan produces here.
+                        Some(':') if self.peek_char(1) == Some(':') => {
+                            self.consume_qualified_identifier_in_string();
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        // Punctuation special variables: $!, $@, $?, $&, $:, etc.
+                        // `is_perl_punctuation_variable` owns the exact set and
+                        // documents why '"' is excluded and why ':' must be
+                        // tried against the `::` arm above first; a trailing '$'
+                        // falls through to the literal arm below.
+                        Some(ch) if is_perl_punctuation_variable(ch) => {
+                            self.advance(); // consume the special character
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        // Unrecognized '$' — treat as literal character
+                        _ => {
+                            current_literal.push('$');
+                        }
                     }
                 }
                 _ => {

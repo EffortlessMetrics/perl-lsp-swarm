@@ -1082,6 +1082,35 @@ required = false
         Ok(())
     }
 
+    /// Pin the *real* policy file against the live branch-protection contexts.
+    ///
+    /// `load_required_ci_checks` reads this file to decide whether a PR's live
+    /// CI is green, so a context that is required by the ruleset but missing
+    /// here is classified as passing — the PR can be labelled `merge-ready`
+    /// while a genuinely required check is failing, pending, or absent.
+    ///
+    /// This cannot detect a context added to the ruleset (nothing here queries
+    /// GitHub); it does catch one being dropped from the policy. When the
+    /// ruleset changes, update the policy and this list together.
+    #[test]
+    fn repository_policy_lists_every_live_required_context() -> Result<()> {
+        let checks = load_required_ci_checks(&project_root()?)?;
+
+        for expected in [
+            "Perl LSP Rust Small Result",
+            "ripr+ New Gap Gate",
+            "Compile All Targets (bit-rot guard)",
+        ] {
+            assert!(
+                checks.contains(expected),
+                "required branch-protection context `{expected}` is missing from \
+                 .ci/policies/required-checks.toml; live CI classification would \
+                 treat it as passing. Present: {checks:?}"
+            );
+        }
+        Ok(())
+    }
+
     fn unique_policy_root(name: &str) -> PathBuf {
         let suffix = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
             Ok(duration) => duration.as_nanos(),

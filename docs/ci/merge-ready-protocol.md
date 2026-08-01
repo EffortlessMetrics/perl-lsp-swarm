@@ -28,6 +28,14 @@ current proof-floor branch-protection contexts are:
 
 - `Perl LSP Rust Small Result`
 - `ripr+ New Gap Gate`
+- `Compile All Targets (bit-rot guard)`
+
+This list must match the live ruleset exactly. It is not self-verifying: nothing
+compares it against GitHub, so a context added to branch protection without a
+corresponding `required = true` entry here silently understates the gate set in
+every emitted receipt's `required_checks` inventory and in `gate_graph_version`,
+which is hashed over this file. When a required context is added or removed in
+the ruleset, update this file in the same change.
 
 `Codecov / Patch 95` is the repo-owned advisory coverage job. `codecov/patch`
 is the external Codecov status context posted after Codecov processes an

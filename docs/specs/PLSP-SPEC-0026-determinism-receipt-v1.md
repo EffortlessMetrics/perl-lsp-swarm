@@ -33,9 +33,10 @@ Current evidence remains in:
 - [module resolution status](../project/status/module_resolution.md)
 - [provider confidence matrix](../project/status/provider_confidence_matrix.md)
 - [support tiers](../project/status/SUPPORT_TIERS.md)
-- [active goal manifest](../../.perl-lsp/goals/active.toml)
+- current GitHub issues, PRs, checks, and exact-candidate receipts
 
-Current next work is not stored here; see the routing dashboard and active goal.
+Current next work is not stored here or in a tracked selector. Read the current
+GitHub graph and exact evidence for the selected concern.
 
 ## Contract
 
@@ -186,7 +187,6 @@ A PR satisfies this spec when:
 Docs-only PRs for this spec may use:
 
 ```bash
-cargo xtask check-active-goal-manifest
 cargo xtask ci-hygiene check-doc-paths docs/specs
 cargo xtask ci-hygiene check-doc-paths docs/project/status
 cargo xtask check-support-claims

@@ -1,72 +1,173 @@
-# AGENTS.md - Agent Role Router
+# Repository operating contract
 
-This file is a small, stable boundary between the root Codex thread and bounded
-workers. It does not contain the worker implementation manual, current portfolio
-state, private reasoning, or runtime-specific configuration.
+## Product direction
 
-## Select the role from the request
+perl-lsp is becoming a compiler-backed Perl toolchain whose parser, compiler facts,
+workspace model, LSP, DAP, packaging, and editor behavior remain honest about source,
+freshness, confidence, fallback, and dynamic boundaries.
 
-### Parent orchestrator
+Optimize for real user-visible closure, semantic ownership, deterministic proof, and
+maintainable current-main behavior—not local component completion or workflow
+compliance.
 
-Use this role when the request asks Codex to coordinate, triage, plan, review, or
-advance multiple work items. The root thread owns:
+## Sources of truth
 
-- reconstruction of current repository and GitHub state;
-- product and architecture decisions;
-- contradiction handling and next-transition selection;
-- bounded dispatch and result synthesis;
-- publication, merge judgment, and post-merge reconciliation.
+Use the highest applicable current authority:
 
-The parent keeps one decision register and synthesizes concise evidence. It does not
-absorb raw logs or permit concurrent uncoordinated writes.
+1. current `origin/main`, live GitHub issues, PRs, reviews, checks, rulesets, and
+   actual repository behavior;
+2. accepted specifications, ADRs, policies, generated contracts, and independent
+   proof;
+3. this file and the nearest package-local `AGENTS.md` guidance;
+4. runtime plans, subagents, worktrees, memory, and conversation.
 
-### Bounded worker
+GitHub owns live transaction state. The repository owns durable product,
+architecture, method, and proof contracts. Runtime agent topology, task lists,
+liveness, and temporary plans are not repository authority.
 
-Use this role when the request supplies one issue, PR, spec, action packet, worktree,
-or proof objective. The worker executes only that declared scope, returns concise
-evidence, and stops or returns when the packet's boundary is reached.
+Do not use labels, dashboards, tracked active-goal pointers, task completion, agent
+identity, or conversational self-report as proof that work is ready.
 
-Load the [implementation worker manual](docs/agents/IMPLEMENTATION_WORKER.md) and
-any applicable package-local instructions. The worker does not select unrelated work,
-rewrite portfolio priority, or recursively delegate.
+## Select the public flow
 
-## Stable authorities and invariants
+Use the narrowest applicable Codex skill under `.agents/skills/`:
 
-| Surface | Authority |
-| --- | --- |
-| GitHub issues and PRs | live portfolio and transaction state |
-| Issue discussion | research, alternatives, and corrected assumptions |
-| Linked spec and `.spec/` view | settled builder contract |
-| Root Codex thread | decision register and synthesizer |
-| Branch and worktree | mechanical writer ownership |
-| Checks, reviews, rulesets | live branch-protection and required-check authority |
+- `$deliver-goal` — advance a durable multi-PR outcome or umbrella;
+- `$deliver-pr` — carry one issue, PR, branch, candidate, or coherent claim;
+- `$prepare-issue` — settle the problem, owner, scope, proof seam, or plan;
+- `$prepare-proof` — turn settled intent into discriminating proof;
+- `$build-candidate` — implement, harden tests, simplify, or challenge a candidate;
+- `$finish-pr` — publish or resume, repair feedback, review, integrate, merge, and
+  reconcile.
 
-Use current `origin/main`, live GitHub state, accepted specs, receipts, worktrees,
-and rulesets as evidence. Conversation and remembered state are handoff aids only.
+Enter at the earliest absent or stale useful judgment. Existing coherent work enters
+midstream. Do not replay completed stages merely to manufacture process evidence, and
+do not run a lifecycle locator between skills.
 
-Preserve these repository-wide invariants:
+Follow each skill's named normal route. Route backward only when material evidence
+changes behavior, ownership, scope, architecture, proof, risk, rollback, or support
+meaning.
 
-- issue-first work with explicit scope, non-goals, proof, and return conditions;
-- one accountable writer per branch and worktree;
-- read-only investigation and review unless a packet grants one bounded write;
-- fresh proof and review for the PR revision before merge;
-- GitHub's branch rules decide whether the PR may squash-merge;
-- no weakened or removed tests to obtain green status;
-- `NOT_PROVEN` when evidence is missing, stale, contradictory, or instrument-failed;
-- narrow work may remain single-agent; delegation is optional and bounded;
-- durable context lives in issues, specs, branches, PRs, checks, reviews, receipts,
-  and reconciliation artifacts.
+## Operating posture
 
-## Context boundary
+**Default-complete, recovery-forward.** Normally perform every applicable research,
+vision, planning, proof, hardening, simplification, review, and reconciliation pass
+before creating the next more expensive artifact.
 
-The repository has no repository-global active goal, current-session pointer, hidden
-queue, recursive thread manager, or second work/claim/status database. Do not turn
-labels, dashboards, manifests, reports, private conversation, or agent counts into
-authority. Optional views and tooling must earn promotion through real dogfood.
+When an earlier pass was missed, perform the cheapest version that can still improve
+the current artifact and continue. Missing historical ceremony, labels, or receipts
+is not a reason to discard coherent work.
 
-Parent orchestration guidance lives in [`CLAUDE.md`](CLAUDE.md) and its linked
-reference documents. Worker procedure lives in the linked manual above. Package-local
-instruction files remain domain context and ownership guidance. Keep this router
-small; add durable procedure to the appropriate linked artifact instead of expanding
-this file into a second operating-model document. Stable routing examples live in
-[`docs/agents/ROLE_ROUTER_FIXTURES.md`](docs/agents/ROLE_ROUTER_FIXTURES.md).
+Make reasonable documented engineering decisions and proceed. Return only for a
+genuine product or semantic decision, a concrete safety hazard, or honest
+`NOT_PROVEN` evidence.
+
+## Execution and delegation
+
+The root session is the warm accountable owner unless it was explicitly spawned with
+a bounded brief. Naming one issue or PR does not convert the root into a disposable
+worker.
+
+Direct execution is normal. Use focused subagents, context forks, external oracles,
+or whole-flow workers when another context, tool surface, or review method materially
+changes the evidence or reduces elapsed work.
+
+One coherent claim normally has one current candidate, and one writer mutates that
+candidate at a time. Before creating another candidate, check only for an equivalent
+current PR and explicit prerequisites. Otherwise focus on the selected claim. If Git
+or required integration evidence later presents a real conflict, the affected lane
+repairs it and refreshes only the affected proof and review.
+
+Use a direct issue or PR comment when another lane genuinely needs a material fact:
+a prerequisite changed, a governing ruling changed, one claim superseded another, or
+an actual integration interaction was found. No additional coordination state is
+needed.
+
+Detailed method and contracts:
+[`docs/agents/DEVELOPMENT_METHOD.md`](docs/agents/DEVELOPMENT_METHOD.md),
+[`docs/agents/GITHUB_SURFACES.md`](docs/agents/GITHUB_SURFACES.md),
+[`docs/agents/REVIEW_CURRENTNESS.md`](docs/agents/REVIEW_CURRENTNESS.md), and
+[`docs/agents/SKILL_CONTRACT.md`](docs/agents/SKILL_CONTRACT.md).
+
+## GitHub-native work
+
+- issues hold research, corrections, current synthesis, plans, dependencies, and next
+  coherent actions;
+- pull requests hold one acceptance-and-rollback candidate;
+- submitted reviews and inline threads hold formal findings and evidence-backed
+  dispositions;
+- checks and rulesets hold current machine and integration evidence;
+- merge closeout records what landed, what remains, and what becomes actionable next.
+
+Use labels only for stable area, kind, risk, release, blocker, or requested-attention
+classification.
+
+Publish locally complete candidates ready by default. Draft is an explicit exception
+for remote-only proof, real collaboration, early visible ownership, or a protected
+integration experiment.
+
+A clean review is valid. Never manufacture a finding or edit to prove review effort.
+
+## Proof and currentness
+
+Formal review binds to:
+
+```text
+full candidate head SHA
++ normalized material PR claim and review-index digest
+```
+
+- candidate or material claim change → rerun affected proof and review;
+- actual merge conflict → resolve it, rerun conflict-affected proof, and review the
+  resulting candidate;
+- explicit prerequisite change or actual merge-group or combined-tree failure →
+  perform targeted analysis and lane-local repair;
+- unrelated `main` movement with an unchanged conflict-free candidate and material
+  claim → no rebase, update-branch, empty commit, full CI replay, or review churn.
+
+This repository squash-merges. GitHub creates the landed squash commit;
+reconciliation verifies its effect on current `main`.
+
+Never weaken a test, ratchet, support claim, or required proof merely to obtain green
+status. Use `NOT_PROVEN` for missing, partial, stale, contradictory, or
+instrument-failed evidence.
+
+## Hard stops
+
+Stop only for concrete preventable hazards:
+
+- two writers would mutate the same candidate branch or worktree concurrently;
+- destructive cleanup would lose unsalvaged work;
+- repository, branch, candidate, or material claim identity cannot be established;
+- a secret or unsafe release would be published;
+- a durable contract is structurally invalid;
+- substantive review findings remain unresolved;
+- current GitHub branch protection, rulesets, merge queue, or required checks block
+  merge.
+
+Otherwise detect, explain, repair, and continue.
+
+## Repository hygiene and local proof
+
+- read the nearest package-local owner guidance before modifying an owning crate;
+- production code must not use `unwrap`, `expect`, `panic!`, `todo!`,
+  `unimplemented!`, `abort`, or `dbg!` outside documented narrow exceptions;
+- never use `git stash` in worktrees; use scoped restore or a WIP commit;
+- stage intended paths explicitly;
+- use one worktree per genuine concurrent write claim, not per lifecycle pass;
+- run focused proof first, then affected package proof, then broader proof only when
+  the candidate's risk or merge gate selects it;
+- do not run repository-wide Clippy or tests after every edit.
+
+Useful current commands:
+
+```bash
+just doctor
+cargo fmt -p <package> -- --check
+cargo clippy -p <package> --all-targets --locked -- -D warnings
+cargo test -p <package> --all-targets --locked
+just pr-fast
+```
+
+Choose the smallest command that can falsify the claim. Current GitHub protection
+remains authoritative at merge.

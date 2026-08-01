@@ -95,7 +95,8 @@ enum Commands {
     /// Validate Real Perl Editor Trust support claim map.
     CheckSupportClaims,
 
-    /// Validate the active swarm goal manifest and linked docs.
+    /// RETIRED: performs no validation and emits a retirement receipt.
+    /// The active goal manifest it validated no longer exists. Always exits 0.
     CheckActiveGoalManifest,
 
     /// Validate machine-readable Real Perl Editor Trust provider promotion ledger.
@@ -133,9 +134,10 @@ enum Commands {
     /// Validate workspace-symbol class promotion registry.
     CheckWorkspaceSymbolClasses,
 
-    /// Deterministic, program-aware work selector (#3624, M3 of the
-    /// enablement train #3612). READ-ONLY: selects the next eligible
-    /// slice of work from live evidence, never creates branches/worktrees/PRs.
+    /// RETIRED: receipt-only compatibility surface for the former tracked
+    /// work selector. Every subcommand selects no work, mutates nothing, and
+    /// exits 0 with a retirement receipt. Current GitHub issues, PRs,
+    /// reviews, and checks own live work selection.
     Goals {
         #[command(subcommand)]
         command: GoalsCommand,
@@ -3607,18 +3609,17 @@ enum DevexCommand {
 
 #[derive(Subcommand)]
 enum GoalsCommand {
-    /// Select the next eligible slice of work from live evidence
-    /// (main, live open GitHub PRs, the M2 manifest chain, and — for
-    /// milestone-ledger programs — the `[[milestone]]` ledger).
-    /// READ-ONLY: never creates a branch, worktree, or PR.
+    /// RETIRED: selects no work and emits a retirement receipt.
+    /// The tracked goal portfolio is gone; live GitHub issues, PRs, reviews,
+    /// and checks are the authority. Always exits 0 with `selected_work = none`.
     Next {
-        /// Explicitly select a program by id (`.perl-lsp/goals/programs/<id>.toml`).
-        /// No implicit repository-global program is selected; pass `--program`
-        /// to inspect one program explicitly.
+        /// Accepted for compatibility and ignored. The tracked program files
+        /// this once referenced no longer exist.
         #[arg(long)]
         program: Option<String>,
 
-        /// Optional fixture JSON to parse instead of live `gh pr list` data.
+        /// Accepted for compatibility and ignored. The retirement receipt is
+        /// generated from no input; no fixture or live `gh` data is read.
         #[arg(long)]
         fixture: Option<PathBuf>,
 
@@ -3627,19 +3628,17 @@ enum GoalsCommand {
         json: bool,
     },
 
-    /// Diagnose milestones whose self-reported ledger status may have
-    /// drifted from live GitHub reality (e.g. `in_progress` with a merged,
-    /// not open, PR) or that lack the identity `next`'s selector needs.
-    /// READ-ONLY, advisory (#3696 item B): never mutates a ledger or PR.
-    /// Exits non-zero when findings exist.
+    /// RETIRED: reports no findings and emits a retirement receipt.
+    /// The tracked milestone ledgers this diagnosed no longer exist; live
+    /// GitHub is the authority. Always exits 0 with `finding_count = 0`.
     Reconcile {
-        /// Explicitly select a program by id (`.perl-lsp/goals/programs/<id>.toml`).
-        /// No implicit repository-global program is selected; pass `--program`
-        /// to reconcile one program explicitly.
+        /// Accepted for compatibility and ignored. The tracked program files
+        /// this once referenced no longer exist.
         #[arg(long)]
         program: Option<String>,
 
-        /// Optional fixture JSON to parse instead of live `gh pr list` data.
+        /// Accepted for compatibility and ignored. The retirement receipt is
+        /// generated from no input; no fixture or live `gh` data is read.
         #[arg(long)]
         fixture: Option<PathBuf>,
 
@@ -3811,16 +3810,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::Goals { command } => match command {
             GoalsCommand::Next { program, fixture, json } => goals::next(program, fixture, json),
             GoalsCommand::Reconcile { program, fixture, json } => {
-                let finding_count = goals::reconcile(program, fixture, json)?;
-                if finding_count > 0 {
-                    // Exit 1: findings exist. Distinct from a hard parse/gh
-                    // error (which already propagates via `?` above) --
-                    // mirrors the `pr-close-proof` non-zero-exit-lives-in-
-                    // main.rs pattern (#3696 item B); the `goals` module
-                    // itself never calls `process::exit`.
-                    std::process::exit(1);
-                }
-                Ok(())
+                goals::reconcile(program, fixture, json)
             }
         },
         Commands::SessionReceipt { json, program, lane, out, warn_threshold } => {

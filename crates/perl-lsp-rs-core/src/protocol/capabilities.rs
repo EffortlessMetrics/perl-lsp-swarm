@@ -117,6 +117,7 @@ pub fn capabilities_json(build: BuildFlags) -> Value {
 pub const SUPPORTED_COMMANDS: &[&str] = &[
     "perl.runTests",
     "perl.runFile",
+    "perl.runScript",
     "perl.runTestSub",
     "perl.runCritic",
     "perl.runTest",

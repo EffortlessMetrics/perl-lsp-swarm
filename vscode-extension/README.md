@@ -12,15 +12,15 @@
 [![Open VSX downloads](https://img.shields.io/open-vsx/dt/EffortlessMetrics/perl-lsp-rs?label=Open%20VSX%20downloads)](https://open-vsx.org/extension/EffortlessMetrics/perl-lsp-rs)
 [![Codecov parser branch coverage](https://codecov.io/gh/EffortlessMetrics/perl-lsp/branch/master/graph/badge.svg)](https://codecov.io/gh/EffortlessMetrics/perl-lsp)
 [![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org/)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/EffortlessMetrics/perl-lsp/blob/main/LICENSE-MIT)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/EffortlessMetrics/perl-lsp/blob/master/LICENSE-MIT)
 
 A fast, native Perl 5 language server extension. Written in Rust for speed and reliability. No runtime dependencies -- just install and code.
 
-> **Public Beta** -- This extension is under active development. Every feature listed below is wired up and exercised by tests, but as a beta you will find edge cases where behavior is incomplete or wrong. Please [report issues](https://github.com/EffortlessMetrics/perl-lsp/issues/new/choose) if you encounter problems. For what the project's headline numbers mean (and do not mean), see the [status overview](https://github.com/EffortlessMetrics/perl-lsp/blob/main/docs/project/status/index.md).
+> **Public Beta** -- This extension is under active development. Every feature listed below is wired up and exercised by tests, but as a beta you will find edge cases where behavior is incomplete or wrong. Please [report issues](https://github.com/EffortlessMetrics/perl-lsp/issues/new/choose) if you encounter problems. For what the project's headline numbers mean (and do not mean), see the [status overview](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/project/status/index.md).
 
 `perl-lsp` uses proof-backed answers where it has fresh, source-backed facts and
 keeps fallback or no-edit behavior where Perl is dynamic, generated, stale,
-ambiguous, or low confidence. See the [editor trust guide](https://github.com/EffortlessMetrics/perl-lsp/blob/main/docs/how-to/EDITOR_TRUST.md)
+ambiguous, or low confidence. See the [editor trust guide](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/how-to/EDITOR_TRUST.md)
 for support-tier boundaries, explanations, previews, and copyable receipts.
 
 ## Features
@@ -93,7 +93,7 @@ alongside the `perl-lsp` release artifacts -- the extension downloads it for you
 there is nothing extra to install. Native debug sessions require a local Perl
 interpreter. The native path does **not** require `Perl::LanguageServer`; that
 module is only needed for legacy bridge-mode workflows. See the
-[debugging guide](https://github.com/EffortlessMetrics/perl-lsp/blob/main/docs/tutorials/DAP_USER_GUIDE.md) for setup steps and
+[debugging guide](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/tutorials/DAP_USER_GUIDE.md) for setup steps and
 the required launch configuration.
 
 ### Test Explorer
@@ -150,7 +150,7 @@ that detection.
 
 ### Enterprise / offline / air-gapped deployments
 
-The extension downloads the Perl LSP server binary on first activation. If your environment blocks internet access during extension install or uses a strict proxy, see [`INTERNAL_DEPLOYMENT.md`](https://github.com/EffortlessMetrics/perl-lsp/blob/main/vscode-extension/INTERNAL_DEPLOYMENT.md) for:
+The extension downloads the Perl LSP server binary on first activation. If your environment blocks internet access during extension install or uses a strict proxy, see [`INTERNAL_DEPLOYMENT.md`](https://github.com/EffortlessMetrics/perl-lsp/blob/master/vscode-extension/INTERNAL_DEPLOYMENT.md) for:
 
 - Pre-downloading the binary and bundling it with your VSIX
 - Using `perl-lsp.serverPath` to point at a shared binary
@@ -197,7 +197,7 @@ All settings are under the `perl-lsp.*` namespace. Open settings with `Ctrl+,` a
 
 ### Internal / Air-Gapped Deployment
 
-For environments without internet access, set `perl-lsp.downloadBaseUrl` to an internal server hosting the release archives and `SHA256SUMS` file. See [INTERNAL_DEPLOYMENT.md](https://github.com/EffortlessMetrics/perl-lsp/blob/main/vscode-extension/INTERNAL_DEPLOYMENT.md) for details.
+For environments without internet access, set `perl-lsp.downloadBaseUrl` to an internal server hosting the release archives and `SHA256SUMS` file. See [INTERNAL_DEPLOYMENT.md](https://github.com/EffortlessMetrics/perl-lsp/blob/master/vscode-extension/INTERNAL_DEPLOYMENT.md) for details.
 
 ## Keyboard Shortcuts
 
@@ -274,11 +274,11 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 
 ### Diagnostics and quality
 
-| Command                       | Description                                                                                                              |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| **Perl: Check Syntax**        | Run a `perl -c` syntax check on the active file                                                                          |
-| **Perl: Run Critic**          | Run Perl::Critic over the active file                                                                                    |
-| **Perl: Set Critic Severity** | Choose the minimum Perl::Critic severity to report — `5` reports only the most severe violations, `1` reports everything |
+| Command                       | Description                                                                                                        |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **Perl: Check Syntax**        | Run a `perl -c` syntax check on the active file                                                                    |
+| **Perl: Run Critic**          | Run the critic over the active file — native by default                                                            |
+| **Perl: Set Critic Severity** | Choose the minimum critic severity to report — `5` reports only the most severe violations, `1` reports everything |
 
 ### Navigation and inspection
 
@@ -338,7 +338,7 @@ The `perllsp` binary works with any editor that supports the Language Server Pro
 - Run **Perl: Show Workspace Trust Report** if module paths, Perl binary,
   or setup policy may be involved.
 - For Perl binary, `@INC`, `PERL5LIB`, perldoc, or DAP module-path mismatches,
-  see the [Perl setup troubleshooting guide](https://github.com/EffortlessMetrics/perl-lsp/blob/main/docs/how-to/PERL_SETUP_TROUBLESHOOTING.md).
+  see the [Perl setup troubleshooting guide](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/how-to/PERL_SETUP_TROUBLESHOOTING.md).
 - To suppress false-positive diagnostics, use **Perl: Copy Provider Decision Receipt** and file an issue with the copied receipt so the specific provider can be addressed.
 - File an issue with the copied provider receipt if you see false positives.
 
@@ -372,7 +372,7 @@ code from triggering binary downloads or spawning server processes. (#4631)
 
 - [Source Code](https://github.com/EffortlessMetrics/perl-lsp)
 - [Issue Tracker](https://github.com/EffortlessMetrics/perl-lsp/issues/new/choose)
-- [Changelog](https://github.com/EffortlessMetrics/perl-lsp/blob/main/vscode-extension/CHANGELOG.md)
+- [Changelog](https://github.com/EffortlessMetrics/perl-lsp/blob/master/vscode-extension/CHANGELOG.md)
 - [Open VSX Registry](https://open-vsx.org/extension/EffortlessMetrics/perl-lsp-rs) — alternative marketplace for VSCodium and other open-source VS Code derivatives
 - [Sponsor this project](https://github.com/EffortlessMetrics/perl-lsp) — support continued development
 

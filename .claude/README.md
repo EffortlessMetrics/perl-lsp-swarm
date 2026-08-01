@@ -1,27 +1,44 @@
-# Claude repository adapter
+# Claude provider adapter
 
-Claude uses the repository's durable development method through provider-native surfaces:
+Claude enters through the root [`CLAUDE.md`](../CLAUDE.md) and loads focused procedures from [`.claude/skills/`](./skills/).
 
-- `CLAUDE.md` — complete Claude repository operating contract;
-- `.claude/skills/` — public flows, atomic transformations, and focused operations loaded just in time;
-- package-local `CLAUDE.md` files — domain ownership, commands, and constraints;
-- GitHub issues, PRs, reviews, threads, checks, and merges — live transaction state.
+## Active surfaces
 
-Project `.claude/settings.json` is intentionally minimal. Personal permission posture, command allowlists, model routing, experimental features, and provider-specific convenience settings belong in user or local configuration. The repository does not promise that `gh`, Cargo, or other shell commands are pre-authorized.
+- `CLAUDE.md` — complete Claude-native repository router and operating contract;
+- `.claude/skills/` — six public flows, focused atomic transformations, reusable lenses, and optional mechanical operations;
+- `.claude/settings.json` — minimal portable shared settings only.
 
-The repository no longer uses project hooks, task-completion gates, subagent lifecycle gates, private swarm metrics, fixed pipeline leads, or a tracked current-stage/active-goal surface as development authority. Formatting, proof, review currentness, required checks, merge protection, and reconciliation run at coherent candidate and GitHub boundaries.
+The main Claude thread is normally the warm accountable orchestrator. It may use focused subagents or Agent Teams when a different oracle, context, review direction, or genuinely distinct claim lane materially improves the result. Agent identity is not a lifecycle state, and no fixed lead/worker relay defines the development method.
 
-## Operating model
+## Public flows
 
 ```text
-current repository and GitHub state
-→ narrowest public flow
-→ focused JIT skill
-→ evidence-backed result and local route
-→ one integrating writer for contested mutation
-→ protected merge and reconciliation
+deliver-goal
+deliver-pr
+prepare-issue
+prepare-proof
+build-candidate
+finish-pr
 ```
 
-The main Claude thread is normally the warm accountable orchestrator. Focused subagents, context forks, Agent Teams, and worktrees are runtime choices used when they improve evidence or permit genuinely disjoint work; they are not lifecycle nodes.
+Each flow enters from live GitHub and repository state, follows locally named skill routes, and continues until the requested outcome is reconciled, left explicitly in flight under GitHub authority, or bounded by a real blocker or `NOT_PROVEN` evidence.
 
-Legacy command and persona catalogues remain temporary migration donors until the provider-native skill and router cutover removes them from active discovery. Historical versions remain available through Git history and repository archives.
+## State boundaries
+
+- GitHub issues, PRs, reviews, threads, checks, rulesets, and merges own live transaction state.
+- Repository specs, ADRs, policies, tests, and method documents own durable contracts.
+- Claude plans, task lists, teammate liveness, worktrees, model choices, retries, and local helper state remain runtime-local.
+
+Do not recreate stage state through labels, command catalogues, persona rosters, hook telemetry, tracked current-goal pointers, or worktree-slot ownership records.
+
+## Worktrees
+
+Ordinary Git worktrees are candidate isolation, not claim or semantic-surface reservations. One writer mutates each current candidate branch/worktree at a time; distinct claim lanes use optimistic Git concurrency and own their actual merge or combined-tree repair.
+
+The retained `worktree-manager` skill is an optional local reuse/cleanup helper. Its cache is disposable and never outranks Git or GitHub.
+
+## Historical material
+
+The removed `.claude/commands/` and `.claude/agents/` catalogues remain recoverable through Git history and archived research. They are donor history, not active runtime authority.
+
+The current shared method lives under [`docs/agents/`](../docs/agents/).

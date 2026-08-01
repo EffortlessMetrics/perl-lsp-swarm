@@ -1680,6 +1680,7 @@ impl LspServer {
                 // Commands handled by ExecuteCommandProvider
                 "perl.runTests"
                 | "perl.runFile"
+                | "perl.runScript"
                 | "perl.runTestSub"
                 | "perl.runCritic"
                 | "perl.goToTest"

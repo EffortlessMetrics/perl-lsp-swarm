@@ -444,3 +444,118 @@ fn pl701_respects_use_lib_paths_from_document() -> Result<(), Box<dyn std::error
     let _ = fs::remove_dir_all(&project_root);
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Parse-error position regressions.
+//
+// The pull path is the live VS Code path (VS Code advertises pull diagnostics,
+// so `runtime::diagnostics` returns early from the push path). These tests pin
+// the user-visible claim: a parse error is reported at the line/character where
+// it actually occurred, not at line 1 column 1.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn recovered_parse_error_is_reported_at_its_real_line() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = PullDiagnosticsProvider::new();
+    let uri = "file:///recovered_position_paren.pl".parse()?;
+    // The unclosed `(` is on line 5 (zero-based line 4). The parser recovers by
+    // inserting the closer and emits `ParseError::Recovered`, which used to be
+    // pinned to byte offset 0 by the diagnostic mapper's catch-all arm.
+    let content =
+        "use strict;\nuse warnings;\n\nmy $unused_one = 1;\nmy $x = (1 + 2;\nprint \"hi\\n\";\n";
+
+    let items = items_from_report(provider.get_document_diagnostics(&uri, content, None, None))?;
+
+    let parse_error = items
+        .iter()
+        .find(|d| has_code(d, "PL001"))
+        .ok_or_else(|| format!("expected a PL001 parse diagnostic, got: {items:#?}"))?;
+
+    if parse_error.range.start.line != 4 {
+        return Err(format!(
+            "recovered parse error must be reported on line 4 (0-based) where the `(` is unclosed, \
+             got line {} character {}: {parse_error:#?}",
+            parse_error.range.start.line, parse_error.range.start.character
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn recovered_parse_error_from_missing_operand_is_reported_at_its_real_line()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = PullDiagnosticsProvider::new();
+    let uri = "file:///recovered_position_operand.pl".parse()?;
+    // Trailing `+` with no right-hand operand on line 5 (zero-based line 4).
+    let content = "use strict;\nuse warnings;\n\nmy $unused_two = 7;\nmy $g = 1 +\n";
+
+    let items = items_from_report(provider.get_document_diagnostics(&uri, content, None, None))?;
+
+    let parse_error = items
+        .iter()
+        .find(|d| has_code(d, "PL001"))
+        .ok_or_else(|| format!("expected a PL001 parse diagnostic, got: {items:#?}"))?;
+
+    if parse_error.range.start.line != 4 {
+        return Err(format!(
+            "recovered parse error must be reported on line 4 (0-based) where the trailing `+` is, \
+             got line {} character {}: {parse_error:#?}",
+            parse_error.range.start.line, parse_error.range.start.character
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn recovered_parse_error_does_not_suppress_lints() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = PullDiagnosticsProvider::new();
+    let uri = "file:///recovered_lints_survive.pl".parse()?;
+    // One recovery point (unclosed `(` on line 5) plus an unused variable on
+    // line 4. The parser produced a usable tree, so the scope/lint stack must
+    // still run — a single missing paren must not delete every other warning.
+    let content =
+        "use strict;\nuse warnings;\n\nmy $unused_one = 1;\nmy $x = (1 + 2;\nprint \"hi\\n\";\n";
+
+    let items = items_from_report(provider.get_document_diagnostics(&uri, content, None, None))?;
+
+    let has_unused =
+        items.iter().any(|d| has_code(d, "PL102") && d.message.contains("$unused_one"));
+    if !has_unused {
+        return Err(format!(
+            "a recovered parse error must not suppress the unused-variable lint, got: {items:#?}"
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn unexpected_token_parse_error_keeps_its_real_line() -> Result<(), Box<dyn std::error::Error>> {
+    // Guard the other direction: variants that already reported a correct
+    // position must keep doing so.
+    let provider = PullDiagnosticsProvider::new();
+    let uri = "file:///unexpected_token_position.pl".parse()?;
+    let content = "use strict;\nuse warnings;\nmy $x = 1;\nmy = 2;\n";
+
+    let items = items_from_report(provider.get_document_diagnostics(&uri, content, None, None))?;
+
+    let parse_error = items
+        .iter()
+        .find(|d| has_code(d, "PL002"))
+        .ok_or_else(|| format!("expected a PL002 syntax diagnostic, got: {items:#?}"))?;
+
+    if parse_error.range.start.line != 3 {
+        return Err(format!(
+            "parse error for `my = 2;` must stay on line 3 (0-based), got line {}: {parse_error:#?}",
+            parse_error.range.start.line
+        )
+        .into());
+    }
+
+    Ok(())
+}

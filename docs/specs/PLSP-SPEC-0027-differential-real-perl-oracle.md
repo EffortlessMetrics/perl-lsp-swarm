@@ -42,9 +42,10 @@ Current evidence remains in:
 - [oracle fixture manifest schema](../../schemas/oracle_fixture_manifest.v1.schema.json)
 - [oracle fixture manifest](../../crates/perl-corpus/fixtures/differential_oracle/manifest.json)
 - [oracle receipt schema](../../schemas/oracle_receipt.v1.schema.json)
-- [active goal manifest](../../.perl-lsp/goals/active.toml)
+- current GitHub issues, PRs, checks, and exact-candidate oracle evidence
 
-Current next work is not stored here; see the routing dashboard and active goal.
+Current next work is not stored here or in a tracked selector. Read the current
+GitHub graph and exact evidence for the selected concern.
 
 ## Contract
 
@@ -239,7 +240,6 @@ A PR satisfies this spec when:
 Docs-only PRs for this spec may use:
 
 ```bash
-cargo xtask check-active-goal-manifest
 cargo xtask ci-hygiene check-doc-paths docs/specs
 cargo xtask ci-hygiene check-doc-paths docs/project/status
 cargo xtask check-support-claims

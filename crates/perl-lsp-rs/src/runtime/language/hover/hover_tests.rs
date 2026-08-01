@@ -1019,7 +1019,6 @@ fn extract_arrow_receiver_unicode_before_cursor_emoji() {
     // Three emoji = 12 byte shift vs. 3 char shift — amplifies the original bug.
     let text = "my $x = \"😀😀😀\";\n$obj->m";
     // hover on the trailing 'm' of '->m'
-    let offset = text.len(); // past the final char but take_while handles this
     let offset = offset_of(text, "->m") + 2; // byte offset of 'm'
     assert_eq!(
         LspServer::extract_arrow_receiver(text, offset).as_deref(),
