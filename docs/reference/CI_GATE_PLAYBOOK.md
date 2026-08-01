@@ -159,14 +159,25 @@ The job summary spells out which of the two routes you are on:
   be produced …"*. The gate branches on `!= "present"` rather than on this
   list, so a status added later lands here too.
 
-  `guidance_unavailable_reason` carries the producer's own message when there
-  was a receipt to read it from — `error`, `incomplete`, and `stale` parse a
-  receipt and recover its warning. `missing` and `invalid` mean there was no
-  readable receipt at all, so the reason is `null` and the status is the whole
-  explanation.
+  `guidance_unavailable_reason` is the producer's own message, recovered from
+  the receipt's first `tool_error` warning, or failing that its first warning
+  carrying any message. It is `null` whenever there is no such warning — which
+  is not the same as "something went wrong with the receipt":
 
-  Re-run guidance for the same HEAD with a larger budget, against your PR's
-  base branch — `origin/main` unless you targeted something else:
+  - `missing` and `invalid` never read a payload at all, so the reason is
+    always `null` and `guidance_status` is the whole explanation.
+  - `error`, `incomplete`, and `stale` parse a payload and recover a warning
+    *if one is there*. A `stale` receipt frequently has none — it is often a
+    perfectly good run against an older HEAD, whose `warnings` array is empty
+    because nothing failed.
+
+  So a blocking action with `guidance_status: "stale"` and a `null` reason is
+  well-formed, not corrupt — don't hunt for a message that was never produced.
+
+  Either way the fix is to re-run guidance for the current HEAD, against your
+  PR's base branch — `origin/main` unless you targeted something else. Raise
+  `--timeout-seconds` only if the reason says it timed out; a `stale` receipt
+  just needs a re-run at the current SHA:
 
   ```bash
   cargo xtask ripr-review-comments --base origin/main --head HEAD \
