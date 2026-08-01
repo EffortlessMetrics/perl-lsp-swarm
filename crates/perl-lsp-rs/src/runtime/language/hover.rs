@@ -1593,9 +1593,7 @@ impl LspServer {
         // give the user a next step instead of a bare "not found" card.
         let config =
             self.config_for_doc(doc_uri).unwrap_or_else(|| self.workspace_config.lock().clone());
-        let perl5lib_paths = std::env::var("PERL5LIB")
-            .map(|value| perl_lsp_rs_core::config::WorkspaceConfig::parse_perl5lib(&value))
-            .unwrap_or_default();
+        let perl5lib_paths = perl_lsp_rs_core::config::WorkspaceConfig::env_perl_lib_paths();
         let include_paths = config.effective_include_paths(&perl5lib_paths);
         let searched_paths = Self::format_missing_module_search_paths(&include_paths);
         let system_inc_status = if config.use_system_inc { "enabled" } else { "disabled" };

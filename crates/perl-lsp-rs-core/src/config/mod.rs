@@ -999,6 +999,21 @@ impl WorkspaceConfig {
         dedupe_preserve_order(value.split(SEP))
     }
 
+    /// Read Perl library paths from the environment.
+    ///
+    /// Checks `PERL5LIB` first, falling back to `PERLLIB` (which Perl itself
+    /// treats as the fallback when `PERL5LIB` is unset). Returns an empty vec
+    /// if neither is set. Uses the platform-appropriate path separator.
+    pub fn env_perl_lib_paths() -> Vec<String> {
+        #[cfg(windows)]
+        const SEP: char = ';';
+        #[cfg(not(windows))]
+        const SEP: char = ':';
+        let value =
+            std::env::var("PERL5LIB").or_else(|_| std::env::var("PERLLIB")).unwrap_or_default();
+        if value.is_empty() { Vec::new() } else { dedupe_preserve_order(value.split(SEP)) }
+    }
+
     /// Return the effective module-search-path, merging `PERL5LIB` paths with
     /// `self.include_paths` according to `self.perl5lib_precedence`.
     ///
@@ -3437,10 +3452,14 @@ profile = "recommended"
     /// and return the captured message strings.
     fn capture_warnings(body: impl FnOnce()) -> Vec<String> {
         let messages: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let subscriber =
-            tracing_subscriber::registry().with(CapturingLayer { messages: Arc::clone(&messages) });
-        tracing::dispatcher::with_default(&subscriber.into(), body);
-        Arc::try_unwrap(messages).map(|m| m.into_inner().unwrap_or_default()).unwrap_or_default()
+        let dispatch = tracing_subscriber::registry()
+            .with(CapturingLayer { messages: Arc::clone(&messages) })
+            .into();
+        tracing::dispatcher::with_default(&dispatch, body);
+        drop(dispatch);
+        // Lock-and-clone instead of Arc::try_unwrap to avoid the race where
+        // the subscriber's Arc clone is still alive (thread-local retention).
+        messages.lock().map(|m| m.clone()).unwrap_or_default()
     }
 
     /// Assert that at least one captured warning mentions every `needle`.
