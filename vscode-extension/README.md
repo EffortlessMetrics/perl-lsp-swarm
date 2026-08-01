@@ -368,6 +368,28 @@ When you grant trust to the workspace (VS Code's built-in trust prompt),
 perl-lsp automatically starts the language server. This prevents untrusted
 code from triggering binary downloads or spawning server processes. (#4631)
 
+## Virtual Workspaces
+
+perl-lsp declares **limited** virtual-workspace support. The language server is
+a native binary that reads files from the operating-system file system, and the
+language client attaches to the `file` and `untitled` URI schemes only.
+
+In a virtual workspace — vscode.dev, github.dev, GitHub Repositories, or any
+folder served by a virtual file-system provider — the extension:
+
+- Keeps syntax highlighting, snippets, and editor configuration working.
+- Does **not** auto-download the `perllsp` binary or start the language server,
+  so no code intelligence, diagnostics, refactoring, test discovery, or
+  debugging is available.
+- Shows `perl-lsp: unavailable` in the status bar with the reason in the
+  tooltip, rather than a "stopped" state that a restart cannot fix.
+
+Open the folder locally, or through a remote host (Codespaces, Dev Containers,
+SSH, WSL), to get the full feature set. Adding a file-backed folder to the
+window starts the server without a reload. A workspace that mixes file-backed
+and virtual folders starts normally — the file-backed folders are fully served
+and the virtual ones are reported as a limitation.
+
 ## Resources
 
 - [Source Code](https://github.com/EffortlessMetrics/perl-lsp)

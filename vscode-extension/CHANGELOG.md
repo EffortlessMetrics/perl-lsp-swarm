@@ -46,6 +46,25 @@ All notable changes to the Perl Language Server extension will be documented in 
 
 ### Fixed
 
+- **Virtual-workspace support is no longer overclaimed, and the extension
+  behaves honestly there.** The manifest declared
+  `capabilities.virtualWorkspaces: true`, which tells VS Code the extension is
+  fully functional and suppresses the limitation banner — but the language
+  server is a native binary and the language client's document selector covers
+  the `file` and `untitled` schemes only, so no virtual document was ever
+  attached to it. On vscode.dev, github.dev, or a GitHub Repositories folder,
+  the extension downloaded a binary, spawned a server process, and showed a
+  running status bar over zero served documents. The manifest now declares
+  `supported: "limited"` with the reason, and a startup gate defers download
+  and spawn when every open folder is virtual, reports
+  `perl-lsp: unavailable` with an explanatory tooltip instead of a "stopped"
+  state a restart cannot fix, returns the same explanation from every
+  "server not running" command surface, and starts the server without a reload
+  once a file-backed folder is added. Workspaces that mix file-backed and
+  virtual folders start normally. `describeWorkspaceTopology` now reports
+  `file_backed_folder_count` / `virtual_folder_count` and classifies
+  `language_server_documents` in virtual mode as `degraded`, or `unsupported`
+  when no file-backed folder is open, instead of `supported`.
 - **Extension activation no longer blocks on language-server startup.** UI and
   commands now register and activation returns immediately while the language
   client's startup tail completes in the background, instead of blocking

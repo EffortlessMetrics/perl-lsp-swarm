@@ -30,7 +30,10 @@
     "workspace"
   ],
   "capabilities": {
-    "virtualWorkspaces": true,
+    "virtualWorkspaces": {
+      "supported": "limited",
+      "description": "Syntax highlighting, snippets, and editor configuration work in virtual workspaces. The language server is a native binary that reads files from disk, so code intelligence, diagnostics, refactoring, tests, and debugging need a file-backed folder — clone the repository locally or open it through a remote host."
+    },
     "untrustedWorkspaces": {
       "supported": false
     }

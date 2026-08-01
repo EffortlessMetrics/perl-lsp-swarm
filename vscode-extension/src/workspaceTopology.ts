@@ -27,6 +27,10 @@ export interface WorkspaceTopology {
   remote_name: string | null;
   folder_count: number;
   folder_uri_schemes: string[];
+  /** Folders the native server can open directly (`file:` scheme). */
+  file_backed_folder_count: number;
+  /** Folders served by a virtual file-system provider (`vscode-vfs:`, `git:`, …). */
+  virtual_folder_count: number;
   untitled_document_count: number;
   virtual_document_count: number;
   capabilities: {
@@ -56,10 +60,16 @@ export const WORKSPACE_CAPABILITY_MATRIX: Readonly<
     file_backed_operations: 'supported',
     language_server_documents: 'supported',
   },
+  // `language_server_documents` is 'degraded', not 'supported': the language
+  // client's document selector covers the `file` and `untitled` schemes only,
+  // so documents served by a virtual file-system provider are never attached
+  // to the server. A mixed workspace still has its file-backed folders served,
+  // which is what 'degraded' records; `describeWorkspaceTopology` narrows this
+  // to 'unsupported' when no file-backed folder is open at all.
   virtual: {
     workspace_root: 'degraded',
     file_backed_operations: 'unsupported',
-    language_server_documents: 'supported',
+    language_server_documents: 'degraded',
   },
 };
 
@@ -99,7 +109,10 @@ export function describeWorkspaceTopology(input: WorkspaceTopologyInput): Worksp
     (scheme) => scheme !== 'file' && scheme !== 'untitled',
   ).length;
   const mode = workspaceMode(folderUriSchemes);
+  const fileBackedFolderCount = folderUriSchemes.filter((scheme) => scheme === 'file').length;
+  const virtualFolderCount = folderUriSchemes.length - fileBackedFolderCount;
   const remoteName = input.remoteName?.trim() || null;
+  const capabilities = { ...WORKSPACE_CAPABILITY_MATRIX[mode] };
   const limitations: string[] = [];
 
   if (mode === 'empty') {
@@ -107,6 +120,17 @@ export function describeWorkspaceTopology(input: WorkspaceTopologyInput): Worksp
   }
   if (mode === 'virtual') {
     limitations.push('file-backed operations require a file URI and may be unavailable');
+    limitations.push(
+      'the language client document selector covers file and untitled schemes only, so ' +
+        'virtual documents are not attached to the language server',
+    );
+    if (fileBackedFolderCount === 0) {
+      capabilities.language_server_documents = 'unsupported';
+      limitations.push(
+        'no file-backed folder is open, so language server startup is deferred and no ' +
+          'workspace document is served',
+      );
+    }
   }
   if (untitledDocumentCount > 0) {
     limitations.push('untitled documents do not provide a file-backed path');
@@ -123,9 +147,11 @@ export function describeWorkspaceTopology(input: WorkspaceTopologyInput): Worksp
     remote_name: remoteName,
     folder_count: input.folders.length,
     folder_uri_schemes: folderUriSchemes,
+    file_backed_folder_count: fileBackedFolderCount,
+    virtual_folder_count: virtualFolderCount,
     untitled_document_count: untitledDocumentCount,
     virtual_document_count: virtualDocumentCount,
-    capabilities: { ...WORKSPACE_CAPABILITY_MATRIX[mode] },
+    capabilities,
     limitations,
     claim_boundary:
       'Topology describes VS Code host state and capability classification. It does not prove server initialization, provider behavior, remote execution, or file-system access for unsupported URI schemes.',

@@ -59,10 +59,11 @@ export interface ProgressEndPayload {
 export type ProgressPayload = ProgressBeginPayload | ProgressReportPayload | ProgressEndPayload;
 
 /** Internal display state of the widget. */
-export type WidgetMode = 'starting' | 'indexing' | 'running' | 'stopped';
+export type WidgetMode = 'starting' | 'indexing' | 'running' | 'stopped' | 'unavailable';
 
 export class HealthWidget {
   private _mode: WidgetMode = 'starting';
+  private _unavailableReason: string | undefined = undefined;
   private _fileCount: number | undefined = undefined;
   private _errorCount = 0;
   private _indexingMessage: string | undefined = undefined;
@@ -78,8 +79,27 @@ export class HealthWidget {
   // External API
   // -----------------------------------------------------------------------
 
+  /**
+   * Mark the server as deliberately not started, with the reason shown in the
+   * tooltip.
+   *
+   * This is distinct from `stopped`: nothing failed and restarting will not
+   * help, so the widget must not offer "click to restart" or wear the error
+   * background. Used by the virtual-workspace startup gate. A later
+   * `onStateChange` clears it, so startup after the blocking condition lifts
+   * renders normally.
+   */
+  setUnavailable(reason: string): void {
+    this._unavailableReason = reason;
+    this._activeTokens.clear();
+    this._indexingMessage = undefined;
+    this._indexingPercentage = undefined;
+    this._setMode('unavailable');
+  }
+
   /** Called when the LSP client state changes. */
   onStateChange(state: ClientState): void {
+    this._unavailableReason = undefined;
     switch (state) {
       case ClientState.Starting:
         this._setMode('starting');
@@ -233,6 +253,13 @@ export class HealthWidget {
         this.item.text = '$(error) perl-lsp: stopped';
         this.item.tooltip = 'Perl Language Server has stopped (click to restart)';
         this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+        break;
+
+      case 'unavailable':
+        this.item.text = '$(circle-slash) perl-lsp: unavailable';
+        this.item.tooltip =
+          this._unavailableReason ?? 'Perl Language Server is unavailable in this workspace';
+        this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
         break;
     }
   }

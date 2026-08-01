@@ -365,6 +365,31 @@ describe('HealthWidget — version display', () => {
     expect(item.text).not.toContain('v0.12.0');
   });
 
+  test('unavailable shows the reason and does not claim the server stopped', () => {
+    const { item, widget } = makeWidget();
+    widget.setUnavailable('Perl Language Server is unavailable in this virtual workspace.');
+
+    expect(widget.mode).toBe('unavailable');
+    expect(item.text).toBe('$(circle-slash) perl-lsp: unavailable');
+    expect(item.tooltip).toBe('Perl Language Server is unavailable in this virtual workspace.');
+    // Nothing failed and restarting cannot help, so the widget must not offer
+    // the stopped-state restart affordance or wear the error background.
+    expect(item.tooltip).not.toMatch(/restart/i);
+    expect(item.backgroundColor).toEqual(new ThemeColor('statusBarItem.warningBackground'));
+  });
+
+  test('unavailable clears indexing progress and yields to a later state change', () => {
+    const { item, widget } = makeWidget();
+    widget.onProgress('t', { kind: 'begin', title: 'Indexing' });
+    widget.setUnavailable('no file-backed folder');
+    expect(widget.mode).toBe('unavailable');
+
+    widget.onStateChange(ClientState.Running);
+    expect(widget.mode).toBe('running');
+    expect(item.text).toBe('$(check) perl-lsp');
+    expect(item.tooltip).not.toMatch(/no file-backed folder/);
+  });
+
   test('after progress ends, running shows version again', () => {
     const { item, widget } = makeWidget();
     widget.setVersion('0.12.0');

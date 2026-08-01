@@ -12,8 +12,22 @@ function document(scheme: string, fsPath?: string) {
 describe('workspace topology capability contract', () => {
   test('keeps manifest capability claims tied to the tested contract', () => {
     expect(packageJson.extensionKind).toEqual(['workspace']);
-    expect(packageJson.capabilities?.virtualWorkspaces).toBe(true);
     expect(packageJson.capabilities?.untrustedWorkspaces).toEqual({ supported: false });
+  });
+
+  test('claims limited virtual-workspace support, matching the capability matrix', () => {
+    // The matrix classifies file-backed operations as unsupported and language
+    // server documents as no better than degraded in virtual mode, so a bare
+    // `true` here would overclaim: VS Code reads `true` as full support and
+    // suppresses the limitation banner users need.
+    const virtualWorkspaces = packageJson.capabilities?.virtualWorkspaces;
+    expect(virtualWorkspaces).not.toBe(true);
+    expect(virtualWorkspaces).toMatchObject({ supported: 'limited' });
+    expect((virtualWorkspaces as { description?: string } | undefined)?.description ?? '').toMatch(
+      /file-backed folder/,
+    );
+    expect(WORKSPACE_CAPABILITY_MATRIX.virtual.file_backed_operations).toBe('unsupported');
+    expect(WORKSPACE_CAPABILITY_MATRIX.virtual.language_server_documents).not.toBe('supported');
   });
 
   test('classifies trusted single-root and multi-root file workspaces', () => {
@@ -63,10 +77,33 @@ describe('workspace topology capability contract', () => {
     expect(virtual.virtual_document_count).toBe(1);
     expect(virtual.capabilities.file_backed_operations).toBe('unsupported');
     expect(virtual.limitations.join(' ')).toMatch(/file-backed operations/);
+    // No file-backed folder is open, so nothing reaches the language server.
+    expect(virtual.file_backed_folder_count).toBe(0);
+    expect(virtual.virtual_folder_count).toBe(1);
+    expect(virtual.capabilities.language_server_documents).toBe('unsupported');
+    expect(virtual.limitations.join(' ')).toMatch(/language server startup is deferred/);
     expect(untitled.mode).toBe('empty');
     expect(untitled.untitled_document_count).toBe(1);
     expect(untitled.trust).toBe('unknown');
     expect(untitled.limitations.join(' ')).toMatch(/untitled documents/);
+  });
+
+  test('keeps mixed file-and-virtual workspaces served but degraded', () => {
+    const mixed = describeWorkspaceTopology({
+      folders: [folder('file', '/workspace'), folder('vscode-vfs', '')],
+      documents: [document('file', '/workspace/main.pl'), document('vscode-vfs', '')],
+      isTrusted: true,
+    });
+
+    expect(mixed.mode).toBe('virtual');
+    expect(mixed.file_backed_folder_count).toBe(1);
+    expect(mixed.virtual_folder_count).toBe(1);
+    // The file-backed folder is genuinely served, so this must not be
+    // 'unsupported' — but the virtual documents are not attached, so it must
+    // not be 'supported' either.
+    expect(mixed.capabilities.language_server_documents).toBe('degraded');
+    expect(mixed.limitations.join(' ')).toMatch(/file and untitled schemes only/);
+    expect(mixed.limitations.join(' ')).not.toMatch(/startup is deferred/);
   });
 
   test('identifies remote hosts without claiming local-host proof', () => {

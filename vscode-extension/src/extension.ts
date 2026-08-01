@@ -100,6 +100,8 @@ import {
   type FeatureActivationMetricsSnapshot,
 } from './featureActivationMetrics';
 import { registerWorkspaceConfigurationEvents } from './extensionWorkspaceEvents';
+import { decideVirtualWorkspaceGate } from './virtualWorkspaceGate';
+export { decideVirtualWorkspaceGate } from './virtualWorkspaceGate';
 import { workspaceTrustClientRuntimeState } from './workspaceTrustRuntimeState';
 export { workspaceTrustClientRuntimeState } from './workspaceTrustRuntimeState';
 import {
@@ -168,6 +170,13 @@ export function markLanguageClientStartupMilestone(
 let lastStartupDiagnosis: StartupErrorDiagnosis | undefined;
 
 /**
+ * User-facing reason the language server was deliberately not started, set by
+ * the virtual-workspace gate in `activate()`. Cleared once startup proceeds so
+ * a stale boundary is never reported after the workspace changes.
+ */
+let deferredStartupReason: string | undefined;
+
+/**
  * Cached extension context so the mid-session crash handler (which is wired
  * through a lifecycle callback and has no parameter of its own) can drive an
  * auto-restart via `restartServer(context)`. Set in `activate()`.
@@ -213,6 +222,11 @@ let userInitiatedStopPending = false;
  * Exported so unit tests can verify the message without a full extension host.
  */
 export function serverNotRunningMessage(): string {
+  // A deliberate deferral outranks a diagnosis: nothing failed, so naming the
+  // real boundary is more useful than a restart or health-check prompt.
+  if (deferredStartupReason) {
+    return deferredStartupReason;
+  }
   if (lastStartupDiagnosis) {
     return formatStartupFailureDialog(lastStartupDiagnosis, undefined);
   }
@@ -805,17 +819,37 @@ export async function activate(context: vscode.ExtensionContext) {
     };
   }
 
-  // Workspace Trust gate: do not download binaries or spawn the language
-  // server in an untrusted workspace. Defer startup until trust is granted.
-  if (!vscode.workspace.isTrusted) {
-    outputChannel.info(
-      '[startup] Workspace is not trusted — deferring language server startup until trust is granted.',
-    );
-    const trustDisposable = vscode.workspace.onDidGrantWorkspaceTrust(() => {
-      outputChannel.info('[startup] Workspace trust granted — starting language server.');
-      startLanguageClientAfterActivation(context, whatsNewManager);
+  // Virtual-workspace gate: the server is a native binary and the client's
+  // document selector only covers `file:`/`untitled:`, so a workspace whose
+  // folders are all virtual has nothing for it to serve. Downloading and
+  // spawning it there burns bandwidth and shows a "running" status bar over
+  // zero attached documents. Defer instead, and re-check when folders change.
+  //
+  // Checked before the trust gate: trust can be granted mid-session, but a
+  // virtual folder stays virtual, so this is the more fundamental boundary and
+  // the one worth reporting.
+  const virtualGate = decideVirtualWorkspaceGate({
+    folders: vscode.workspace.workspaceFolders ?? [],
+  });
+  if (virtualGate.kind === 'defer') {
+    outputChannel.info(virtualGate.logMessage);
+    deferredStartupReason = virtualGate.userMessage;
+    healthWidget?.setUnavailable(virtualGate.userMessage);
+    const folderDisposable = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      if (
+        decideVirtualWorkspaceGate({ folders: vscode.workspace.workspaceFolders ?? [] }).kind !==
+        'start'
+      ) {
+        return;
+      }
+      outputChannel.info(
+        '[startup] A file-backed folder was opened — re-evaluating language server startup.',
+      );
+      deferredStartupReason = undefined;
+      folderDisposable.dispose();
+      startLanguageClientWhenTrusted(context, whatsNewManager);
     });
-    context.subscriptions.push(trustDisposable);
+    context.subscriptions.push(folderDisposable);
     languageClientStartupMetrics.markMilestone('activate_returned');
     return {
       getLanguageClientStartupMetrics,
@@ -825,7 +859,7 @@ export async function activate(context: vscode.ExtensionContext) {
     };
   }
 
-  startLanguageClientAfterActivation(context, whatsNewManager);
+  startLanguageClientWhenTrusted(context, whatsNewManager);
   languageClientStartupMetrics.markMilestone('activate_returned');
   return {
     getLanguageClientStartupMetrics,
@@ -837,10 +871,41 @@ export async function activate(context: vscode.ExtensionContext) {
 
 export async function deactivate() {
   try {
+    deferredStartupReason = undefined;
     await disposeLanguageClient();
   } finally {
     languageClientStartupMetrics.markMilestone('shutdown');
   }
+}
+
+/**
+ * Workspace Trust gate: do not download binaries or spawn the language server
+ * in an untrusted workspace.
+ *
+ * Starts the client when the workspace is trusted. Otherwise logs the
+ * deferral and registers a listener that starts it as soon as trust is
+ * granted. Shared by the activation path and the virtual-workspace gate's
+ * folder-change resume so both apply the same trust rule.
+ */
+function startLanguageClientWhenTrusted(
+  context: vscode.ExtensionContext,
+  whatsNewManager: WhatsNewManager,
+): void {
+  if (!vscode.workspace.isTrusted) {
+    outputChannel.info(
+      '[startup] Workspace is not trusted — deferring language server startup until trust is granted.',
+    );
+    const trustDisposable = vscode.workspace.onDidGrantWorkspaceTrust(() => {
+      outputChannel.info('[startup] Workspace trust granted — starting language server.');
+      healthWidget?.onStateChange(ClientState.Starting);
+      startLanguageClientAfterActivation(context, whatsNewManager);
+    });
+    context.subscriptions.push(trustDisposable);
+    return;
+  }
+
+  healthWidget?.onStateChange(ClientState.Starting);
+  startLanguageClientAfterActivation(context, whatsNewManager);
 }
 
 function startLanguageClientAfterActivation(
