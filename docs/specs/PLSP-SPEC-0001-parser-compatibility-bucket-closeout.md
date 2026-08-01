@@ -9,7 +9,7 @@ Implemented by:
 - [parser accuracy next](../project/status/parser_accuracy_next.md)
 - [parser status](../project/status/parser.md)
 - [Real Perl Editor Trust implementation plan](../../plans/real-perl-editor-trust/implementation-plan.md)
-- [completed active goal manifest](../../.perl-lsp/goals/active.toml)
+- GitHub issue/PR history and current generated evidence; the retired goal manifests remain available through Git history
 Status impact: parser accuracy next, parser status, parser receipts
 
 ## Current implementation status
@@ -18,16 +18,19 @@ This spec is implemented as a control-plane rule. Current evidence lives in:
 
 - [parser accuracy next](../project/status/parser_accuracy_next.md)
 - [parser raw failure buckets](../project/status/parser.md#raw-failure-buckets)
-- [Real Perl Editor Trust routing dashboard](../project/status/real_perl_editor_trust_v1.md)
+- [Real Perl Editor Trust evidence index](../project/status/real_perl_editor_trust_v1.md)
 - [Real Perl Editor Trust implementation plan](../../plans/real-perl-editor-trust/implementation-plan.md)
-- [completed active goal manifest](../../.perl-lsp/goals/active.toml)
+- current GitHub issues, PRs, checks, and exact generated receipts
 
-Current next work is not stored here; see the routing dashboard and generated
-parser status.
+Current next work is not stored here or in a tracked selector. The selected parser
+concern comes from current GitHub and user selection. Once selected, generated
+parser evidence routes the next PR-sized claim inside that concern.
 
 ## Contract
 
-Generated parser status routes parser work.
+Generated parser status routes parser work within an already selected parser
+concern. It does not select repository-global work, assign ownership, or
+outrank current GitHub and user selection.
 
 When [parser accuracy next](../project/status/parser_accuracy_next.md) has active
 failure packets, agents must address those measurement failures before starting
@@ -41,8 +44,9 @@ bucket. The next parser capability lane is the largest raw bucket inside the
 largest nonzero parser failure cluster unless the implementation plan
 explicitly parks it with a reason. If generated status lists `none`, agents
 must not start bucket work from stale context; they must refresh the corpus
-receipt, identify a current failing source-backed fixture, or move to the next
-provider or real-workspace trust lane.
+receipt, identify a current failing source-backed fixture, or return to
+`deliver-goal` and current GitHub selection. Generated parser status does not
+choose the next non-parser concern.
 
 Generated sections are not hand-edited. Status changes must come from xtask
 generators and be covered by the relevant parser status checks.
