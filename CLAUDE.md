@@ -69,8 +69,10 @@ The main Claude thread is the warm accountable owner unless it was explicitly sp
 with a bounded brief. Naming one issue or PR does not convert the main thread into a
 disposable worker.
 
-Route each piece of work to the cheapest context that can produce trustworthy
-evidence. Accountability stays with the root; execution does not have to.
+Orchestrating subagents is a primary working pattern here, not a fallback. The root's
+usual job is to route, brief, and judge — not to perform every pass personally.
+Accountability stays with the root; execution does not have to. Route each piece of
+work to the cheapest context that can produce trustworthy evidence.
 
 Delegate by default:
 
@@ -94,23 +96,34 @@ Execute directly when the work is judgment rather than evidence — synthesis, c
 selection, goal interpretation, deciding what a finding means — where quality depends
 on holding the whole picture, and when a brief would cost more than the edit.
 
-Delegation is not free, and it is not proof of rigor. A delegate starts cold: it
-re-reads the sources the root already holds, so fanning the same question across
-several agents re-derives one context repeatedly and costs more than doing the work
-directly. Worse, a delegate pointed at the wrong question returns a confident,
-well-formatted answer to it — evidence that looks like proof and is not. No answer is
-recoverable; a plausible wrong answer usually is not.
+Delegation pays or wastes according to the brief, not the agent count. Both ways it
+fails are brief defects, and both are avoidable:
 
-So the brief is the control, not the agent count:
+- a delegate starts cold and will re-derive whatever it is not given. That cost is
+  mostly controllable — hand over the facts already established, the exact files and
+  identifiers, and the current state, instead of making it rediscover them. Fanning
+  one under-specified question across several agents pays that rediscovery cost
+  repeatedly and returns the same answer each time;
+- a delegate aimed at the wrong question answers *that* question, confidently and in
+  good format. A plausible wrong answer is harder to recover from than no answer,
+  because it reads as evidence.
+
+So brief well:
 
 - name the exact question, the authoritative inputs, the read/write boundary, and
   what a sufficient answer contains;
-- if that cannot be stated precisely, the question is not yet understood well enough
-  to delegate — establish it directly first;
-- prefer one well-aimed delegate over several vague ones, and read what comes back as
-  a claim to be checked rather than a result to be adopted;
-- delegates return compact evidence-backed findings with their gaps named, not
-  transcripts and not summaries of process.
+- state what is already known and settled, so the delegate spends its context on the
+  open part;
+- say what would falsify the expected answer, and require gaps and `NOT_PROVEN`
+  evidence to come back named rather than smoothed over;
+- if the question cannot be stated that precisely, it is not understood well enough
+  to delegate yet — establish it directly, then delegate the bounded remainder;
+- read what returns as a claim to be checked, not a result to adopt.
+
+Claim a lane by commenting on its controlling issue, and read that issue before
+dispatching a writer for it. The claim lives on the issue — that single read is the
+whole check. Do not survey open PRs, branches, or sibling worktrees to infer who is
+working on what: that is expensive, unreliable, and not the coordination mechanism.
 
 Do not spawn an identity per lifecycle pass. Agent Teams are for agents that must
 genuinely communicate; they are not the default lifecycle.
