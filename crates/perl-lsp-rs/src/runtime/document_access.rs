@@ -150,47 +150,49 @@ impl LspServer {
         };
 
         for _attempt in 0..=1 {
-            let document_generations = {
-                let documents = self.documents.lock();
-                documents
-                    .iter()
-                    .filter_map(|(uri, document)| {
-                        let generation = document.current_generation();
-                        let expected_to_index = document
-                            .latest_parsed()
-                            .is_some_and(|snapshot| snapshot.ast().is_some());
-                        (generation > 0).then(|| (uri.clone(), generation, expected_to_index))
-                    })
-                    .collect::<Vec<_>>()
-            };
+            let sampled = self.edited_open_document_snapshot();
 
-            let stale = document_generations.iter().any(|(uri, generation, expected_to_index)| {
+            let stale = sampled.iter().any(|(uri, (generation, expected_to_index))| {
                 match coordinator.index().indexed_generation(uri) {
                     Some(indexed_generation) => indexed_generation < *generation,
                     None => *expected_to_index,
                 }
             });
 
-            let documents = self.documents.lock();
-            let snapshot_is_current =
-                document_generations.iter().all(|(uri, generation, expected_to_index)| {
-                    documents.get(uri).is_some_and(|document| {
-                        document.current_generation() == *generation
-                            && document
-                                .latest_parsed()
-                                .is_some_and(|snapshot| snapshot.ast().is_some())
-                                == *expected_to_index
-                    })
-                });
-            if snapshot_is_current {
+            // Re-validating the *whole* snapshot, not each sampled entry, is what
+            // makes this sound. Checking only the sampled URIs would miss a
+            // document that was opened and edited between the two passes: it is
+            // absent from the sample, so no per-entry check covers it, and its
+            // stale index entry would be reported as a fresh workspace.
+            if self.edited_open_document_snapshot() == sampled {
                 return stale;
             }
         }
 
-        // A document changed while both validation passes were running. Fail
-        // closed so navigation cannot consume an index snapshot from a
-        // generation that was never proven stable.
+        // The open-document set or one of its snapshots changed while both
+        // validation passes were running. Fail closed so navigation cannot
+        // consume an index snapshot from a state that was never proven stable.
         true
+    }
+
+    /// Every edited open document with the two facts the freshness comparison
+    /// needs, keyed by URI.
+    ///
+    /// Keyed and ordered so that two snapshots compare by *membership* as well
+    /// as by value: an opened, closed, or newly edited document changes the map
+    /// even when every URI common to both passes is unchanged.
+    #[cfg(feature = "workspace")]
+    fn edited_open_document_snapshot(&self) -> std::collections::BTreeMap<String, (u32, bool)> {
+        let documents = self.documents.lock();
+        documents
+            .iter()
+            .filter_map(|(uri, document)| {
+                let generation = document.current_generation();
+                let expected_to_index =
+                    document.latest_parsed().is_some_and(|snapshot| snapshot.ast().is_some());
+                (generation > 0).then(|| (uri.clone(), (generation, expected_to_index)))
+            })
+            .collect()
     }
 
     /// Offset to position conversion using cached line starts for O(log n) performance
@@ -628,6 +630,71 @@ mod tests {
         assert!(
             server.workspace_index_stale_for_any_open_document(),
             "an indexed document edited into an unindexable state must remain stale"
+        );
+
+        Ok(())
+    }
+
+    /// Regression: the freshness re-validation must compare the whole
+    /// open-document snapshot, not just the entries it sampled first.
+    ///
+    /// A document opened and edited between the two passes is absent from the
+    /// sample, so a per-entry re-check reports "all sampled documents still
+    /// current" and the predicate returns a staleness verdict computed without
+    /// it. This pins both halves of that claim on the same fixture: every
+    /// originally sampled entry is still current (the weaker per-entry check
+    /// passes), while the full snapshot differs (the membership check catches
+    /// it), so the second document's stale index entry cannot slip through.
+    #[test]
+    fn edited_open_document_snapshot_detects_membership_added_between_passes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let first_uri = "file:///workspace/membership-first.pl";
+        let first_text = "package MembershipFirst;\nsub target {}\n";
+        let late_uri = "file:///workspace/membership-late.pl";
+        let late_text = "package MembershipLate;\nsub target {}\n";
+
+        server.test_apply_did_open(first_uri, first_text, 1)?;
+        server
+            .test_replace_document_without_index(first_uri, first_text, 2)
+            .map_err(std::io::Error::other)?;
+
+        // Pass one samples only `first_uri`.
+        let sampled = server.edited_open_document_snapshot();
+        assert!(
+            sampled.contains_key(first_uri),
+            "the edited first document must be in the sampled snapshot"
+        );
+        assert!(
+            !sampled.contains_key(late_uri),
+            "the late document must not exist yet when the first pass samples"
+        );
+
+        // A document is opened and edited while the predicate is between passes.
+        server.test_apply_did_open(late_uri, late_text, 1)?;
+        server
+            .test_replace_document_without_index(late_uri, late_text, 2)
+            .map_err(std::io::Error::other)?;
+
+        let revalidated = server.edited_open_document_snapshot();
+
+        // The weaker per-entry re-check every sampled URI is unchanged would
+        // pass here, which is exactly why it was not sufficient.
+        assert!(
+            sampled.iter().all(|(uri, facts)| revalidated.get(uri) == Some(facts)),
+            "every originally sampled entry is still current, so a per-entry \
+             re-check cannot see the late document"
+        );
+
+        // Whole-snapshot comparison is what actually catches it.
+        assert_ne!(
+            revalidated, sampled,
+            "a document opened and edited between passes must change the snapshot \
+             so the predicate retries instead of answering without it"
+        );
+        assert!(
+            revalidated.contains_key(late_uri),
+            "the late document must be present in the re-validation snapshot"
         );
 
         Ok(())

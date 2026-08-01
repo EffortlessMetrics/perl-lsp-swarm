@@ -1520,37 +1520,52 @@ impl LspServer {
                             }
                         }
                     }
+                }
 
-                    // Attempt to resolve fully-qualified symbols like Package::sub
-                    //
-                    // When cursor is on a package-prefix component (e.g. `Foo` in
-                    // `Foo::bar`), we must NOT fall through to the AST-based workspace
-                    // lookup below — `symbol_at_cursor_with_source` and
-                    // `DeclarationProvider` always extract the LAST component of a
-                    // qualified name regardless of cursor position and would navigate
-                    // to the wrong symbol.  Track whether the cursor is on a prefix
-                    // and return early if so.
+                // Attempt to resolve fully-qualified symbols like Package::sub
+                //
+                // When cursor is on a package-prefix component (e.g. `Foo` in
+                // `Foo::bar`), we must NOT fall through to the AST-based workspace
+                // lookup below — `symbol_at_cursor_with_source` and
+                // `DeclarationProvider` always extract the LAST component of a
+                // qualified name regardless of cursor position and would navigate
+                // to the wrong symbol.  Track whether the cursor is on a prefix
+                // and return early if so.
+                //
+                // This classification is deliberately OUTSIDE the workspace-index
+                // freshness gate. It is a cursor-position fact about the buffer's
+                // own text, not an index lookup, and the `Prefix` arm exists to
+                // *suppress* a wrong target rather than to offer one. Gating it on
+                // freshness would let a stale index re-enable the very wrong jump
+                // this arm was written to prevent. Only the `Final` arm — which
+                // consults the workspace index — stays gated.
+                #[cfg(feature = "workspace")]
+                {
                     let fqn_regex = get_fqn_regex()?;
                     if let Some(component) =
                         fqn_component_at_cursor(fqn_regex, &text_around, cursor_in_text)
                     {
                         match component {
                             FqnCursorComponent::Final { package, name } => {
-                                if let Some(result) = lookup_workspace_definition(
-                                    self.coordinator(),
-                                    &package,
-                                    &name,
-                                    Some(uri),
-                                ) {
-                                    if workspace_index_is_fresh() {
-                                        return Ok(Some(result));
-                                    }
+                                if workspace_index_is_fresh()
+                                    && let Some(result) = lookup_workspace_definition(
+                                        self.coordinator(),
+                                        &package,
+                                        &name,
+                                        Some(uri),
+                                    )
+                                    && workspace_index_is_fresh()
+                                {
+                                    return Ok(Some(result));
                                 }
                             }
                             FqnCursorComponent::Prefix => return Ok(None),
                         }
                     }
+                }
 
+                #[cfg(feature = "workspace")]
+                if workspace_index_is_fresh() {
                     // Attempt to resolve Package->method calls
                     let arrow_re = get_arrow_method_regex()?;
                     for cap in arrow_re.captures_iter(&text_around) {
@@ -2529,6 +2544,89 @@ mod tests {
             Some(FqnCursorComponent::Final { package: "Foo".to_string(), name: "bar".to_string() })
         );
         assert_eq!(fqn_component_at_cursor(regex, "Foo::bar", 9), None);
+        Ok(())
+    }
+
+    /// Regression: a stale workspace index must not re-enable the wrong jump the
+    /// package-prefix guard exists to prevent.
+    ///
+    /// With the cursor on `Foo` in `Foo::bar`, `DeclarationProvider` and
+    /// `symbol_at_cursor_with_source` both extract the LAST component (`bar`)
+    /// regardless of cursor position, so falling through to them navigates to
+    /// `sub bar` — a confidently wrong target. `handle_definition_inner`
+    /// therefore returns `Ok(None)` for a prefix cursor.
+    ///
+    /// That guard used to live inside the workspace-index freshness gate, so an
+    /// unrelated edited buffer with a stale index entry skipped the whole block
+    /// and let the prefix cursor reach `DeclarationProvider`. This asserts the
+    /// guard is evaluated on the stale path too: the answer must be empty, never
+    /// a location on the `bar` line.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn definition_on_package_prefix_stays_empty_while_workspace_index_is_stale()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let main_uri = "file:///workspace/prefix-main.pl";
+        let main_text = "package Foo;\nsub bar { return 1; }\npackage main;\nFoo::bar();\n";
+        let unrelated_uri = "file:///workspace/prefix-unrelated.pl";
+        let unrelated_text = "package Unrelated;\nsub helper {}\n";
+
+        server.test_apply_did_open(main_uri, main_text, 1)?;
+        server.test_apply_did_open(unrelated_uri, unrelated_text, 1)?;
+
+        // Make an *unrelated* open buffer stale: indexed at generation 0, then
+        // edited to generation 1 without re-indexing. The caller document is
+        // untouched, so only the any-open-document gate can see this.
+        let coordinator = server
+            .index_coordinator
+            .as_ref()
+            .ok_or("test server must have an index coordinator")?;
+        coordinator
+            .index()
+            .index_file_with_generation(
+                url::Url::parse(unrelated_uri)?,
+                unrelated_text.to_string(),
+                0,
+            )
+            .map_err(std::io::Error::other)?;
+        server
+            .test_replace_document_without_index(
+                unrelated_uri,
+                "package Unrelated;\nsub renamed {}\n",
+                2,
+            )
+            .map_err(std::io::Error::other)?;
+
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "the edited unrelated buffer must put the workspace index in the stale state \
+             this regression is about"
+        );
+
+        // Cursor on the `Foo` prefix of `Foo::bar` (line 3, character 1).
+        let result = server.test_handle_definition(Some(json!({
+            "textDocument": { "uri": main_uri },
+            "position": { "line": 3, "character": 1 }
+        })))?;
+
+        let locations = result
+            .as_ref()
+            .and_then(|value| value.as_array())
+            .map_or_else(Vec::new, |array| array.to_vec());
+        let bar_line = 1;
+        assert!(
+            !locations.iter().any(|location| {
+                location.pointer("/range/start/line").and_then(Value::as_u64) == Some(bar_line)
+            }),
+            "a prefix cursor must never resolve to the final component `bar` \
+             (line {bar_line}); got {result:?}"
+        );
+        assert!(
+            locations.is_empty(),
+            "a package-prefix cursor must yield an empty answer, not a guessed target; \
+             got {result:?}"
+        );
+
         Ok(())
     }
 
