@@ -190,13 +190,7 @@ impl<'a> Parser<'a> {
             if matches!(self.peek_kind(), Some(k) if Self::is_stmt_modifier_kind(k)) {
                 stmt = self.parse_statement_modifier(stmt)?;
             }
-            // Check for optional semicolon
-            if self.peek_kind() == Some(TokenKind::Semicolon) {
-                let semi_token = self.consume_token()?;
-                if self.pending_heredocs.is_empty() {
-                    self.byte_cursor = semi_token.end;
-                }
-            }
+            self.finish_statement_terminator(&stmt)?;
             self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt);
             return Ok(stmt);
         }
@@ -512,20 +506,84 @@ impl<'a> Parser<'a> {
             stmt = self.parse_statement_modifier(stmt)?;
         }
 
-        // Check for optional semicolon
-        // Don't use peek_fresh_kind() here as it can cause issues with nested blocks
+        self.finish_statement_terminator(&stmt)?;
+
+        // Drain pending heredocs after statement completion (attach content to AST)
+        self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt);
+
+        Ok(stmt)
+    }
+
+    /// Consume the statement's terminating `;`, or record that it was missing.
+    ///
+    /// Perl requires `;` between statements. It is omissible in exactly two
+    /// places: before the closing `}` of a block, and at end of file. A
+    /// compound statement (`if`, `while`, `sub`, a bare block, …) is terminated
+    /// by its own closing brace and never needs one.
+    ///
+    /// Treating the `;` as unconditionally optional — as this did — made the
+    /// parser accept `my $x = 1` followed by `print "hi";` and report a clean
+    /// parse, so `--check` answered `ok` for source real `perl` rejects with a
+    /// syntax error. A missing statement terminator is the most common Perl
+    /// syntax error, so that false pass was the likeliest first-contact
+    /// failure (#5474).
+    ///
+    /// The missing `;` is *inferred* rather than fatal: the statement already
+    /// parsed, and the next one parses on its own, so recording a recovery and
+    /// continuing produces a usable tree plus an honest diagnostic. Consuming
+    /// nothing here leaves the next token for the statement loop.
+    ///
+    /// Deliberately does not use `peek_fresh_kind()`, which misbehaves with
+    /// nested blocks.
+    fn finish_statement_terminator(&mut self, stmt: &Node) -> ParseResult<()> {
         if self.peek_kind() == Some(TokenKind::Semicolon) {
             let semi_token = self.consume_token()?;
             // Track cursor after semicolon for heredoc content collection
             if self.pending_heredocs.is_empty() {
                 self.byte_cursor = semi_token.end;
             }
+            return Ok(());
         }
 
-        // Drain pending heredocs after statement completion (attach content to AST)
-        self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt);
+        if Self::is_compound_statement(stmt) {
+            return Ok(());
+        }
 
-        Ok(stmt)
+        // `None` is end of token stream; `RightBrace` closes the enclosing
+        // block. Both are the legitimate omissions.
+        if matches!(self.peek_kind(), None | Some(TokenKind::Eof) | Some(TokenKind::RightBrace)) {
+            return Ok(());
+        }
+
+        let statement_end = self.previous_position();
+        let location = self.current_position();
+
+        // Only report when the leftover token begins a later line.
+        //
+        // Reaching here mid-line means the statement stopped short of its own
+        // end — the parser did not consume a construct it should have. Three
+        // such gaps exist in this repository's own corpus today (`no warnings
+        // qw(...)`, the `x=` repetition-assignment operator, and `method NAME
+        // {...}` in a class body), and reporting a missing `;` for them would
+        // reject valid Perl to describe a defect that is not the user's.
+        //
+        // A statement terminator the *user* omitted separates two statements
+        // written on different lines, which is also the only shape `perl`
+        // itself reports this way. Staying inside that shape trades some
+        // false negatives — `my $x = 1 print "hi";` on one line is missed —
+        // for no false positives, which is the correct direction for a check
+        // that gates a release.
+        let gap = self.src_bytes.get(statement_end..location).unwrap_or_default();
+        if !gap.contains(&b'\n') {
+            return Ok(());
+        }
+
+        self.errors.push(ParseError::Recovered {
+            site: RecoverySite::Statement,
+            kind: RecoveryKind::InferredSemicolon,
+            location,
+        });
+        Ok(())
     }
 
     /// Mark that we're no longer at statement start (called after consuming statement head)
@@ -559,6 +617,11 @@ impl<'a> Parser<'a> {
                 | NodeKind::Try { .. }
                 | NodeKind::Defer { .. }
                 | NodeKind::Subroutine { .. }
+                // `class NAME { … }` and `method NAME { … }` (Perl 5.38) are
+                // brace-terminated declarations exactly like `sub`. Their
+                // absence here was invisible while the terminator was optional.
+                | NodeKind::Class { .. }
+                | NodeKind::Method { .. }
                 | NodeKind::Package { .. }
                 | NodeKind::Format { .. }
                 | NodeKind::Block { .. }
