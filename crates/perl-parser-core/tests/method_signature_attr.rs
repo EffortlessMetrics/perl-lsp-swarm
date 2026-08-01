@@ -8,7 +8,7 @@
 mod cpan_test_helpers;
 use cpan_test_helpers::*;
 use perl_parser_core::{NodeKind, Parser};
-use perl_tdd_support::{must, must_some};
+use perl_tdd_support::must;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -30,27 +30,6 @@ fn find_method_attributes(node: &perl_parser_core::Node) -> Vec<String> {
                 }
             }
             vec![]
-        }
-    }
-}
-
-/// Parse `source` and return whether the first Method node has a signature.
-fn method_has_signature(source: &str) -> bool {
-    let mut parser = Parser::new(source);
-    let ast = must(parser.parse());
-    find_method_has_signature(&ast)
-}
-
-fn find_method_has_signature(node: &perl_parser_core::Node) -> bool {
-    match &node.kind {
-        NodeKind::Method { signature, .. } => signature.is_some(),
-        _ => {
-            for child in node.children() {
-                if find_method_has_signature(child) {
-                    return true;
-                }
-            }
-            false
         }
     }
 }
@@ -97,7 +76,7 @@ class Foo {
 // ── Attribute capture: trailing attrs are stored on the Method node ──────────
 
 #[test]
-fn test_method_signature_attr_captured() {
+fn test_method_signature_attr_captured() -> Result<(), String> {
     // Verify the attribute is stored, not silently dropped
     let source = r#"
 class Foo {
@@ -105,20 +84,20 @@ class Foo {
 }
 "#;
     let mut parser = Parser::new(source);
-    let ast = must(parser.parse());
+    let ast = parser.parse().map_err(|e| format!("parse failed: {e:?}"))?;
     let NodeKind::Program { statements } = &ast.kind else {
-        panic!("expected Program, got: {:?}", ast.kind);
+        return Err(format!("expected Program, got: {:?}", ast.kind));
     };
-    let class_stmt = must_some(statements.first());
+    let class_stmt = statements.first().ok_or("expected Class statement")?;
     let NodeKind::Class { body, .. } = &class_stmt.kind else {
-        panic!("expected Class, got: {:?}", class_stmt.kind);
+        return Err(format!("expected Class, got: {:?}", class_stmt.kind));
     };
     let NodeKind::Block { statements: body_stmts } = &body.kind else {
-        panic!("expected Block inside Class, got: {:?}", body.kind);
+        return Err(format!("expected Block inside Class, got: {:?}", body.kind));
     };
-    let method_node = must_some(body_stmts.first());
+    let method_node = body_stmts.first().ok_or("expected Method statement")?;
     let NodeKind::Method { attributes, signature, .. } = &method_node.kind else {
-        panic!("expected Method, got: {:?}", method_node.kind);
+        return Err(format!("expected Method, got: {:?}", method_node.kind));
     };
     assert!(signature.is_some(), "method foo() should have a signature");
     assert!(
@@ -126,10 +105,11 @@ class Foo {
         "expected 'public' attribute, got: {:?}",
         attributes,
     );
+    Ok(())
 }
 
 #[test]
-fn test_method_param_and_attr_both_captured() {
+fn test_method_param_and_attr_both_captured() -> Result<(), String> {
     // Verify signature has parameters AND attribute is stored
     let source = r#"
 class Foo {
@@ -137,20 +117,20 @@ class Foo {
 }
 "#;
     let mut parser = Parser::new(source);
-    let ast = must(parser.parse());
+    let ast = parser.parse().map_err(|e| format!("parse failed: {e:?}"))?;
     let NodeKind::Program { statements } = &ast.kind else {
-        panic!("expected Program, got: {:?}", ast.kind);
+        return Err(format!("expected Program, got: {:?}", ast.kind));
     };
-    let class_stmt = must_some(statements.first());
+    let class_stmt = statements.first().ok_or("expected Class statement")?;
     let NodeKind::Class { body, .. } = &class_stmt.kind else {
-        panic!("expected Class, got: {:?}", class_stmt.kind);
+        return Err(format!("expected Class, got: {:?}", class_stmt.kind));
     };
     let NodeKind::Block { statements: body_stmts } = &body.kind else {
-        panic!("expected Block inside Class, got: {:?}", body.kind);
+        return Err(format!("expected Block inside Class, got: {:?}", body.kind));
     };
-    let method_node = must_some(body_stmts.first());
+    let method_node = body_stmts.first().ok_or("expected Method statement")?;
     let NodeKind::Method { attributes, signature, .. } = &method_node.kind else {
-        panic!("expected Method, got: {:?}", method_node.kind);
+        return Err(format!("expected Method, got: {:?}", method_node.kind));
     };
     assert!(signature.is_some(), "method bar($x) should have a signature");
     assert!(
@@ -158,6 +138,7 @@ class Foo {
         "expected 'private' attribute, got: {:?}",
         attributes,
     );
+    Ok(())
 }
 
 // ── Regression: previously-working variants must remain clean ────────────────
