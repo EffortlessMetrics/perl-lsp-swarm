@@ -13,6 +13,7 @@ use std::io;
 use std::io::IsTerminal;
 use std::sync::{Once, OnceLock};
 
+use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{Args, Parser};
 pub mod timing;
 pub use crate::features::contracts::trackable_feature_count_for_grid;
@@ -509,6 +510,19 @@ pub enum LaunchParseError {
     UnknownOption {
         /// Unknown token passed on CLI.
         option: String,
+        /// Closest known option, when the parser can name one.
+        suggestion: Option<String>,
+    },
+    /// A parse failure other than an unknown option — an argument conflict, an
+    /// invalid value, or a missing value.
+    ///
+    /// The argument parser's own rendering is already accurate and complete
+    /// for these, including its usage line and `--help` pointer, so it is
+    /// carried through verbatim rather than reduced to a summary that would
+    /// drop the conflicting flag or the rejected value.
+    ParserDiagnostic {
+        /// Complete diagnostic as the argument parser rendered it.
+        rendered: String,
     },
     /// A flag was missing its required value.
     MissingValue {
@@ -547,9 +561,13 @@ pub enum LaunchParseError {
 impl fmt::Display for LaunchParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnknownOption { option } => {
-                write!(f, "Unknown option: {option}")
-            }
+            Self::UnknownOption { option, suggestion } => match suggestion {
+                Some(candidate) => {
+                    write!(f, "Unknown option: {option}. Did you mean {candidate}?")
+                }
+                None => write!(f, "Unknown option: {option}"),
+            },
+            Self::ParserDiagnostic { rendered } => write!(f, "{rendered}"),
             Self::MissingValue { option } => {
                 write!(f, "Missing value for {option}")
             }
@@ -679,9 +697,44 @@ where
                 });
             }
 
-            Err(LaunchParseError::UnknownOption { option: err.to_string() })
+            // Only an unknown argument gets the narrowed one-line treatment,
+            // and only when the parser actually names the offending token.
+            //
+            // Every other failure — a conflict, a bad value, a missing value —
+            // already renders a complete, accurate explanation, and its
+            // `InvalidArg` context names a *valid* flag, so reporting those as
+            // "Unknown option" would be wrong on the facts. The same applies if
+            // the token is ever unavailable: without it there is nothing
+            // truthful to put after "Unknown option:", so the parser's own
+            // rendering is the honest answer rather than a guess reconstructed
+            // from its message text.
+            if err.kind() == ErrorKind::UnknownArgument
+                && let Some(option) = context_string(&err, ContextKind::InvalidArg)
+            {
+                return Err(LaunchParseError::UnknownOption {
+                    option,
+                    suggestion: context_string(&err, ContextKind::SuggestedArg),
+                });
+            }
+
+            Err(LaunchParseError::ParserDiagnostic { rendered: err.to_string().trim().to_string() })
         }
     }
+}
+
+/// Read a single-valued parser error context entry as an owned string.
+///
+/// Blank values are treated as absent: a caller that gets `Some` may render it
+/// directly, so an empty context entry must not reach a message as
+/// `Unknown option: ` or `Did you mean ?`.
+fn context_string(err: &clap::Error, kind: ContextKind) -> Option<String> {
+    let value = match err.get(kind)? {
+        ContextValue::String(value) => value.clone(),
+        ContextValue::Strings(values) => values.first()?.clone(),
+        _ => return None,
+    };
+
+    (!value.trim().is_empty()).then_some(value)
 }
 
 fn prevalidate_cli_values(args: &[std::ffi::OsString]) -> Result<(), LaunchParseError> {
