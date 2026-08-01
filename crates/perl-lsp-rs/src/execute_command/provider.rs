@@ -4,6 +4,7 @@ use crate::perl_critic::{
     BuiltInAnalyzer, CriticAnalyzer, CriticConfig, CriticContext, NativeCriticProfile,
     NativeCriticRegistry,
 };
+use crate::perl_remediation::PERL_REMEDIATION;
 #[cfg(not(target_arch = "wasm32"))]
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_lsp_rs_core::config::{CriticEngine, WorkspaceConfig};
@@ -169,9 +170,15 @@ impl ExecuteCommandProvider {
         Err(Self::unresolved_execute_command_perl_error(file_path))
     }
 
+    /// Message for "this command needs a Perl interpreter and none was usable".
+    ///
+    /// The remediation is the shared [`PERL_REMEDIATION`] sentence. This message
+    /// used to name an interpreter-path setting that no user-facing channel can
+    /// write; see that constant's documentation for why (#5376).
     fn unresolved_execute_command_perl_error(file_path: &Path) -> String {
         format!(
-            "Cannot run Perl command for '{}': Perl binary could not be resolved from `perl.path` or PATH. Configure `perl.path` to an explicit Perl executable; refusing ambient fallback.",
+            "Cannot run Perl command for '{}': no usable Perl interpreter was found on PATH; \
+             refusing ambient fallback. {PERL_REMEDIATION}",
             file_path.display()
         )
     }
@@ -1707,3 +1714,5 @@ pub fn get_supported_commands() -> Vec<String> {
 
 #[cfg(test)]
 mod normalize_path_tests;
+#[cfg(test)]
+mod perl_remediation_tests;

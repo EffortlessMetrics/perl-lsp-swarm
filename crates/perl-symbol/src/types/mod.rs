@@ -202,6 +202,33 @@ impl SymbolKind {
         matches!(self, SymbolKind::Subroutine | SymbolKind::Method)
     }
 
+    /// Returns true if two kinds are compatible for rename/reference matching.
+    ///
+    /// This bridges gaps where declarations and references use different kinds:
+    /// - `Method` declarations ↔ `Subroutine` references (method calls recorded as Subroutine)
+    /// - `Constant` declarations ↔ `Subroutine` references (constants called as `FOO()`)
+    ///
+    /// Variables remain strict (cross-sigil handled separately via element-access logic).
+    #[inline]
+    pub fn kind_compatible(self, other: SymbolKind) -> bool {
+        if self == other {
+            return true;
+        }
+        // Method and Subroutine are interchangeable for rename purposes
+        if self.is_callable() && other.is_callable() {
+            return true;
+        }
+        // Constants invoked as FOO() are recorded as Subroutine references
+        if matches!(
+            (self, other),
+            (SymbolKind::Constant, SymbolKind::Subroutine)
+                | (SymbolKind::Subroutine, SymbolKind::Constant)
+        ) {
+            return true;
+        }
+        false
+    }
+
     /// Returns true if this is a namespace type (package, class, or role).
     #[inline]
     pub const fn is_namespace(self) -> bool {

@@ -1122,16 +1122,22 @@ impl SymbolExtractor {
                 }
             },
 
-            // Regex related nodes - we recurse into expression
-            NodeKind::Regex { .. } => {}
-            NodeKind::Match { expr, .. } => {
-                self.visit_node(expr);
+            // Regex related nodes — interpolate variables from patterns
+            NodeKind::Regex { pattern, .. } => {
+                self.extract_vars_from_string(pattern, node.location);
             }
-            NodeKind::Substitution { expr, .. } => {
+            NodeKind::Match { expr, pattern, .. } => {
                 self.visit_node(expr);
+                self.extract_vars_from_string(pattern, node.location);
+            }
+            NodeKind::Substitution { expr, pattern, replacement, .. } => {
+                self.visit_node(expr);
+                self.extract_vars_from_string(pattern, node.location);
+                self.extract_vars_from_string(replacement, node.location);
             }
             NodeKind::Transliteration { expr, .. } => {
                 self.visit_node(expr);
+                // tr/// does not interpolate variables — leave as-is
             }
 
             NodeKind::IndirectCall { method, object, args } => {

@@ -170,7 +170,7 @@ impl RenameProvider {
 
         if let Some(symbols) = self.symbol_table.symbols.get(&old_name) {
             for symbol in symbols {
-                if symbol.kind == kind {
+                if symbol.kind.kind_compatible(kind) {
                     edits.push(TextEdit {
                         location: adjust_location_for_sigil(symbol.location, kind),
                         new_text: new_name.to_string(),
@@ -181,7 +181,7 @@ impl RenameProvider {
 
         if let Some(references) = self.symbol_table.references.get(&old_name) {
             for reference in references {
-                if reference.kind == kind {
+                if reference.kind.kind_compatible(kind) {
                     edits.push(TextEdit {
                         location: adjust_location_for_sigil(reference.location, kind),
                         new_text: new_name.to_string(),
@@ -272,7 +272,7 @@ impl RenameProvider {
                 // @arr (Array decl). We use AST context to distinguish
                 // element-access scalars from bare scalars — matching the
                 // documentHighlight provider's find_subscript_parent approach.
-                if reference.kind != kind {
+                if !reference.kind.kind_compatible(kind) {
                     let is_cross_sigil_eligible = match kind {
                         SymbolKind::Variable(VarKind::Array) => {
                             reference.kind == SymbolKind::Variable(VarKind::Scalar)
