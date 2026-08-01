@@ -448,6 +448,72 @@ fn non_text_sync_params_keep_the_flat_one_megabyte_bound() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Every LSP method whose params are *items* must skip the content scan.
+//
+// These round-trip content the server authored from the user's own source
+// (diagnostic messages, POD documentation, hint labels and tooltips, command
+// titles). The catch-all `<script`/`javascript:` scan rejects such payloads
+// with -32600 — the same false-positive class that made the server refuse
+// every Mason buffer on didOpen.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn item_bearing_methods_accept_source_derived_content() {
+    // One payload shape per method, each carrying the substrings the catch-all
+    // arm scans for, placed in the field that method actually uses.
+    let cases: &[(&str, serde_json::Value)] = &[
+        (
+            "textDocument/codeAction",
+            serde_json::json!({
+                "context": {"diagnostics": [{"message": "near print '<script>x</script>'"}]}
+            }),
+        ),
+        (
+            "codeAction/resolve",
+            serde_json::json!({
+                "title": "Fix",
+                "command": {"title": "run <script>", "arguments": ["javascript:void 0"]}
+            }),
+        ),
+        (
+            "completionItem/resolve",
+            serde_json::json!({"label": "f", "documentation": "POD quoting <script>"}),
+        ),
+        (
+            "inlayHint/resolve",
+            serde_json::json!({"label": "<script", "tooltip": "javascript: in POD"}),
+        ),
+        ("documentLink/resolve", serde_json::json!({"tooltip": "see <script> tag docs"})),
+        (
+            "codeLens/resolve",
+            serde_json::json!({"command": {"title": "<script>", "arguments": ["javascript:"]}}),
+        ),
+    ];
+
+    let mut rejected = Vec::new();
+    for (method, params) in cases {
+        if validate_lsp_request(method, params).is_err() {
+            rejected.push(*method);
+        }
+    }
+    assert!(
+        rejected.is_empty(),
+        "these item-bearing methods carry server-authored source text and must not be \
+         content-scanned, but were rejected: {rejected:?}"
+    );
+}
+
+#[test]
+fn arbitrary_method_still_gets_the_content_scan() {
+    // Negative control: the exemption is a named list, not a hole in the scan.
+    let params = serde_json::json!({"expression": "<script>alert(1)</script>"});
+    assert!(
+        validate_lsp_request("custom/eval", &params).is_err(),
+        "the catch-all content scan must still fire for non-exempt methods"
+    );
+}
+
 #[test]
 fn unknown_command_is_still_rejected() {
     // Negative control: the union must not have become an accept-everything gate.

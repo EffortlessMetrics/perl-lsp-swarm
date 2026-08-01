@@ -61,17 +61,31 @@ pub fn validate_lsp_request(method: &str, params: &serde_json::Value) -> Result<
         "workspace/executeCommand" => {
             validate_execute_command_params(params)?;
         }
-        // These methods legitimately carry content derived from the user's own
-        // source: `codeAction`'s `context.diagnostics[].message` can quote
-        // source text verbatim, and `completionItem/resolve`'s `documentation`
-        // can carry POD. A blanket content-pattern scan here would false-positive
-        // on ordinary Perl/POD source the same way it did for Mason buffers on
-        // `didOpen` (issue #5256 follow-up) — so these are exempted from the
-        // catch-all scan below rather than silently rejected.
-        // `codeAction/resolve` carries the same server-authored diagnostics back
-        // for resolution, so it needs the exemption for the same reason
-        // `textDocument/codeAction` does.
-        "textDocument/codeAction" | "codeAction/resolve" | "completionItem/resolve" => {}
+        // Methods whose params are LSP *items* rather than plain scalars. Every
+        // one of them round-trips content this server authored from the user's
+        // own source, so the catch-all scan below would reject legitimate
+        // traffic — the same false-positive class that made the server refuse
+        // every Mason buffer on `didOpen` (issue #5256 follow-up):
+        //
+        // - `textDocument/codeAction` — `context.diagnostics[].message` quotes
+        //   source text verbatim;
+        // - `codeAction/resolve` — the same diagnostics, plus `command.title`
+        //   and `command.arguments`;
+        // - `completionItem/resolve` — `documentation` carries POD;
+        // - `inlayHint/resolve` — `label` and `tooltip`;
+        // - `documentLink/resolve` — `tooltip`;
+        // - `codeLens/resolve` — `command.title` and `command.arguments`.
+        //
+        // The exemption is per-method rather than structural. A structural rule
+        // — scan only primitive params and skip nested item objects — would
+        // cover future `*/resolve` additions automatically, but it is a design
+        // change to the scan itself and is deliberately not attempted here.
+        "textDocument/codeAction"
+        | "codeAction/resolve"
+        | "completionItem/resolve"
+        | "inlayHint/resolve"
+        | "documentLink/resolve"
+        | "codeLens/resolve" => {}
         _ => {
             if params_str.contains("javascript:") || params_str.contains("<script") {
                 return Err(anyhow!("Suspicious content in parameters for method: {}", method));
