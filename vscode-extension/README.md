@@ -277,8 +277,8 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 | Command                       | Description                                                                                                              |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | **Perl: Check Syntax**        | Run a `perl -c` syntax check on the active file                                                                          |
-| **Perl: Run Critic**          | Run Perl::Critic over the active file                                                                                    |
-| **Perl: Set Critic Severity** | Choose the minimum Perl::Critic severity to report — `5` reports only the most severe violations, `1` reports everything |
+| **Perl: Run Critic**          | Run the critic over the active file using the configured engine — native by default                                      |
+| **Perl: Set Critic Severity** | Choose the minimum critic severity to report — `5` reports only the most severe violations, `1` reports everything       |
 
 ### Navigation and inspection
 
