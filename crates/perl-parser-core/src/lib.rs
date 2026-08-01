@@ -127,6 +127,10 @@ pub use syntax::percentile;
 pub use syntax::qualified_name;
 /// Canonical qw/q/qq operator content extractor shared across the workspace.
 pub use syntax::quote::{parse_quote_operator_content, parse_qw_words};
+/// Generation-bound lexical source region index.
+pub use syntax::source_context::{
+    RangeClassification, SourceRegion, SourceRegionIndex, SourceRegionKind,
+};
 /// Perl source-file classification helpers (previously `perl-source-file`).
 pub use syntax::source_file;
 /// Text-line cursor and boundary helpers (previously `perl-text-line`).

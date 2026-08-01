@@ -115,11 +115,11 @@ Two further limits apply to the script even after that sync:
   debug adapter, unlike the POSIX installer. Take `perl-dap.exe` from the
   release zip if you need the debugger
   ([#5036](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5036)).
-- Only `x86_64-pc-windows-msvc` is built by the release workflow. The script
-  detects ARM64 and will construct a download URL for it, but that asset does
-  not exist and the download fails
+- Only `x86_64-pc-windows-msvc` is built by the release workflow, so there is
+  no native ARM64 Windows binary. The script installs the x64 build on ARM64,
+  which runs under the x64 emulation in Windows 11 on ARM. Windows 10 on ARM
+  emulates x86 but not x64, so build from source there
   ([#5007](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5007)).
-  ARM64 Windows users should build from source.
 
 Once the sync lands and the script works, pinning a version or changing the
 install directory means downloading it and passing parameters rather than
