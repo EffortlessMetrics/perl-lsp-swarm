@@ -79,10 +79,14 @@ Delegate by default:
   caller inward. Delegate these for the change in approach, not to obtain a second
   opinion: an agent handed the same premises and the same evidence returns the same
   conclusion, and that is not corroboration;
-- **high-volume evidence gathering** — CI and log triage, corpus sweeps, dependency
-  audits, failure bisection, broad code search: anything whose raw output vastly
-  exceeds the answer it yields. Root context is the scarce resource across a
-  campaign, and spending it on tool output degrades every later judgment;
+- **single-use bulk evidence** — CI and log triage, corpus sweeps, dependency audits,
+  failure bisection, broad code search: work whose raw output is read once, yields a
+  small answer, and is never referenced again. Doing it in the root is the costlier
+  choice, not the cheaper one: the answer is consumed immediately but the output
+  occupies root context for the rest of the campaign and degrades every judgment
+  after it. A delegate pays the cold-start cost once; the root pays the pollution
+  cost permanently. The larger the task and the more disposable its output, the more
+  clearly it belongs elsewhere;
 - **independent lanes** that can genuinely proceed in parallel, and concurrent
   writers that need worktree isolation.
 
