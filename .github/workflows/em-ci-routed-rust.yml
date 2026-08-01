@@ -682,6 +682,22 @@ jobs:
             exit 1
           fi
 
+          # A cancelled lane is the ABSENCE of evidence, not negative evidence.
+          # It normally means a newer push superseded this run via the
+          # concurrency group's cancel-in-progress. The check stays blocking —
+          # a superseded head genuinely has no proof for its SHA — but it must
+          # not read as a test failure. Without this branch, `cancelled` falls
+          # through to the bare `test "$X_RESULT" = "success"` below, which
+          # exits 1 printing nothing but "Process completed with exit code 1",
+          # indistinguishable from a real failure without opening the log (#5460).
+          for lane_result in "$CX53_RESULT" "$CX43_RESULT" "$GITHUB_RESULT" "$FALLBACK_RESULT"; do
+            if [ "$lane_result" = "cancelled" ]; then
+              echo "::error::Rust Small lane cancelled — head superseded, no proof produced for this SHA. This is NOT a test failure. The run for the newer head is authoritative; if there is no newer run, re-run this one."
+              echo "Perl LSP Rust Small Result: cancelled (head superseded — no proof for this SHA)"
+              exit 1
+            fi
+          done
+
           case "${ROUTER_TARGET:-}" in
             cx53)
               if [ "$CX53_RESULT" = "success" ]; then
