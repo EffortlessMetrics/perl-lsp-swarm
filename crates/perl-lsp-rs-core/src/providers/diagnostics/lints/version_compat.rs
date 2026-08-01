@@ -181,6 +181,63 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                 }
             }
 
+            // `__CLASS__` — introduced in Perl v5.40 as part of the `class` feature.
+            //
+            // `__CLASS__` yields the run-time class of the current instance inside a
+            // method, ADJUST block, or field initializer. The parser accepts it
+            // unconditionally (PR #5280), so this lint carries the version contract.
+            //
+            // Compiling `__CLASS__` needs BOTH conditions, and they are independent:
+            //
+            //   1. declared version >= v5.40 — the `class` feature shipped in v5.38 but
+            //      the `__CLASS__` keyword did not arrive until v5.40, so
+            //      `use feature 'class'` does not backport it to v5.38/v5.39.
+            //   2. the `class` feature lexically enabled — `class` is still experimental,
+            //      so it is absent from every version bundle including `:5.40`
+            //      (see `BUNDLE_5_40_FEATURES`). `use v5.40;` alone leaves `__CLASS__`
+            //      a bareword, rejected under `strict subs`.
+            //
+            // Gating on either condition alone is a false negative: version-only misses
+            // `use v5.40;` without the pragma, feature-only misses
+            // `use v5.38; use feature 'class';`. The remediation names whichever half
+            // is actually missing, so following it always produces compiling code.
+            NodeKind::FunctionCall { name, .. } | NodeKind::Identifier { name }
+                if name == "__CLASS__" =>
+            {
+                let min_version = PerlVersion::new(5, 40);
+                let version_ok = declared_version >= min_version;
+                let feature_ok = pragma_state.has_feature("class");
+                if !version_ok || !feature_ok {
+                    let declared =
+                        format!("v{}.{}", declared_version.major, declared_version.minor);
+                    let suggestion = match (version_ok, feature_ok) {
+                        // Version is new enough; only the experimental pragma is missing.
+                        (true, false) => format!(
+                            "Add 'use feature \"class\";' — 'use {declared}' does not enable \
+                             the experimental 'class' feature that provides __CLASS__"
+                        ),
+                        // Pragma is present but the keyword predates the declared version.
+                        (false, true) => format!(
+                            "Update 'use {declared}' to 'use v5.40' — 'use feature \"class\";' \
+                             does not provide __CLASS__ before v5.40"
+                        ),
+                        // Both halves missing.
+                        _ => format!(
+                            "Update 'use {declared}' to 'use v5.40' and add \
+                             'use feature \"class\";' — __CLASS__ requires both"
+                        ),
+                    };
+                    diagnostics.push(make_diagnostic_with_details(
+                        n,
+                        "__CLASS__",
+                        declared_version,
+                        (5, 40),
+                        DiagnosticSeverity::Warning,
+                        Some(suggestion),
+                    ));
+                }
+            }
+
             // `given` / `when` / `default` need the `switch` feature (v5.10+),
             // are deprecated in v5.38, and became feature-gated (not removed) in v5.42.
             NodeKind::Given { .. } | NodeKind::When { .. } | NodeKind::Default { .. } => {
@@ -810,5 +867,177 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // `__CLASS__` PL900 version-compat tests (issue #5279)
+    //
+    // `__CLASS__` was introduced in Perl v5.40 as part of the `class` object
+    // system. Compiling it needs BOTH a declared version >= v5.40 (the keyword
+    // did not exist in v5.38/v5.39, where the `class` feature already did) and
+    // the `class` feature lexically enabled (it is experimental, so no version
+    // bundle — `:5.40` included — turns it on). The lint emits PL900 unless both
+    // hold, and the remediation names whichever half is missing.
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn class_token_without_class_feature_emits_pl900() {
+        let diags = version_compat_diags("use v5.36;\nmy $name = __CLASS__;\n");
+        let class_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__"))
+            .collect();
+
+        // One occurrence of the token must produce exactly one diagnostic. A
+        // duplicate would surface as two identical squiggles on the same span.
+        assert_eq!(
+            class_diags.len(),
+            1,
+            "one `__CLASS__` occurrence should emit exactly one PL900: {diags:#?}"
+        );
+        let d = class_diags[0];
+
+        assert_eq!(
+            d.severity,
+            DiagnosticSeverity::Warning,
+            "__CLASS__ PL900 must be Warning, not Error"
+        );
+
+        // The message is the whole UX contract: it must name the construct, the
+        // minimum version that supports it, and the declared version that does not.
+        assert!(
+            d.message.contains("__CLASS__"),
+            "__CLASS__ PL900 message should name the construct: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("v5.40"),
+            "__CLASS__ PL900 message should name v5.40 as the minimum: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("v5.36"),
+            "__CLASS__ PL900 message should name the declared version that lacks it: {}",
+            d.message
+        );
+
+        // The remediation text is asserted by
+        // `class_token_suggestion_does_not_offer_the_feature_pragma`, which owns
+        // the `suggestion` field; this test owns severity, count, and `message`.
+    }
+
+    #[test]
+    fn class_token_with_explicit_class_feature_still_emits_pl900_below_v5_40() {
+        // The `class` feature shipped in v5.38; `__CLASS__` did not arrive until
+        // v5.40. So `use feature 'class'` on v5.36 does NOT make __CLASS__ work,
+        // and the lint must keep warning. Suppressing here would be a false
+        // negative on code that genuinely fails to compile on the declared perl.
+        let diags =
+            version_compat_diags("use v5.36;\nuse feature 'class';\nmy $name = __CLASS__;\n");
+        let class_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__"))
+            .collect();
+        assert!(
+            !class_diags.is_empty(),
+            "'use feature class' must not suppress PL900 for __CLASS__ below v5.40: {diags:#?}"
+        );
+        for d in class_diags {
+            assert!(
+                d.message.contains("v5.40"),
+                "__CLASS__ PL900 must name v5.40 as the fix: {}",
+                d.message
+            );
+        }
+    }
+
+    /// The `suggestion` field for a given source, or `""` when no `__CLASS__`
+    /// PL900 was emitted.
+    fn class_token_suggestion(source: &str) -> String {
+        version_compat_diags(source)
+            .iter()
+            .find(|d| d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__"))
+            .and_then(|d| d.suggestion.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn class_token_suggestion_never_offers_the_pragma_as_an_alternative() {
+        // Asserted on `suggestion`, not `message`: `message` is built by
+        // `make_diagnostic_with_details` and always reads "'__CLASS__' requires
+        // Perl v5.40+; declared version is vX.Y", so a `message.contains("v5.40")`
+        // check passes no matter what the remediation says. The suggestion is the
+        // field the author acts on, and it is the field that used to steer them
+        // into `use feature 'class'` as a substitute for the version bump.
+        //
+        // Below v5.40 with no pragma, BOTH halves are missing, so the remediation
+        // must ask for both — never "v5.40 *or* the pragma", which would send the
+        // author to a pragma that does not make the code compile.
+        let suggestion = class_token_suggestion("use v5.36;\nmy $name = __CLASS__;\n");
+        assert!(suggestion.contains("v5.40"), "suggestion must name the v5.40 bump: {suggestion}");
+        assert!(
+            suggestion.contains("use feature \"class\""),
+            "suggestion must name the class pragma too: {suggestion}"
+        );
+        assert!(
+            !suggestion.contains(" or "),
+            "the pragma must not be offered as an alternative to the version bump: {suggestion}"
+        );
+    }
+
+    #[test]
+    fn class_token_on_v5_40_without_class_feature_emits_pl900() {
+        // `class` is experimental, so it is in NO version bundle — `:5.40`
+        // included (see `BUNDLE_5_40_FEATURES`). `use v5.40;` alone therefore
+        // leaves `__CLASS__` a bareword, which perl rejects under `strict subs`.
+        // Suppressing here would approve code that cannot compile.
+        let diags = version_compat_diags("use v5.40;\nmy $name = __CLASS__;\n");
+        let class_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__"))
+            .collect();
+        assert_eq!(
+            class_diags.len(),
+            1,
+            "'use v5.40' without the class feature should still emit PL900: {diags:#?}"
+        );
+        // The version half is already satisfied, so the remediation must ask only
+        // for the pragma — telling the author to "update to v5.40" here would be
+        // the same no-op advice the v5.38 `class` arm still gives.
+        let suggestion = class_diags[0].suggestion.clone().unwrap_or_default();
+        assert!(
+            suggestion.contains("use feature \"class\""),
+            "suggestion must ask for the pragma: {suggestion}"
+        );
+        assert!(
+            !suggestion.contains("Update 'use v5.40' to 'use v5.40'"),
+            "suggestion must not tell the author to update v5.40 to itself: {suggestion}"
+        );
+    }
+
+    #[test]
+    fn class_token_on_v5_40_with_class_feature_suppresses_pl900() {
+        // Both halves satisfied: declared version >= v5.40 and the experimental
+        // `class` feature explicitly enabled. This is the only source shape that
+        // actually compiles, so it is the only one that must be silent.
+        let diags =
+            version_compat_diags("use v5.40;\nuse feature 'class';\nmy $name = __CLASS__;\n");
+        assert!(
+            diags
+                .iter()
+                .all(|d| !(d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__"))),
+            "v5.40 + 'use feature class' compiles and must not emit PL900: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn class_token_without_declared_version_no_pl900() {
+        let diags = version_compat_diags("my $name = __CLASS__;\n");
+        assert!(
+            diags
+                .iter()
+                .all(|d| !(d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__"))),
+            "no declared version should suppress all PL900 checks including __CLASS__"
+        );
     }
 }

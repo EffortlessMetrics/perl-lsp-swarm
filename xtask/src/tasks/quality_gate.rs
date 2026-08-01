@@ -241,6 +241,7 @@ fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> 
             "base_sha": review.base_sha,
             "production_files_considered": review.production_files_considered,
             "top_gaps": review.top_gaps,
+            "unavailable_reason": review.unavailable_reason,
         },
         "temporary_exceptions": exceptions.receipt,
         "next_actions": next_actions,
@@ -429,6 +430,7 @@ fn evaluate_new_ripr(head: &str, args: &QualityGateArgs) -> Result<GateEvaluatio
             "base_sha": review.base_sha,
             "production_files_considered": review.production_files_considered,
             "top_gaps": review.top_gaps,
+            "unavailable_reason": review.unavailable_reason,
         },
         "temporary_exceptions": exceptions.receipt,
         "next_actions": next_actions,
@@ -476,6 +478,12 @@ struct ReviewGuidanceReceipt {
     base_sha: Option<String>,
     production_files_considered: Option<u64>,
     top_gaps: Vec<Value>,
+    /// Producer-reported reason the guidance run did not finish, when the
+    /// producer stamped one (`warnings[].message` for a `tool_error`).
+    ///
+    /// This is what separates "the analysis ran and found nothing to name"
+    /// from "the analysis never completed" — see [`Self::gap_list_is_unproven`].
+    unavailable_reason: Option<String>,
 }
 
 impl ReviewGuidanceReceipt {
@@ -483,6 +491,33 @@ impl ReviewGuidanceReceipt {
         self.status == "present"
             && self.top_gaps.is_empty()
             && self.production_files_considered == Some(0)
+    }
+
+    /// True when the gate is about to report new seams it cannot name.
+    ///
+    /// This is evaluated only where a positive `new_unresolved` count is being
+    /// reported, so an empty `top_gaps` always means the count and the list
+    /// disagree — the seams exist but none were named.
+    ///
+    /// Deliberately keyed on the list being empty rather than on the guidance
+    /// status, because there are two ways to arrive here and both are
+    /// unproven:
+    ///
+    /// - guidance did not complete (missing, stale, invalid, or a producer
+    ///   timeout), so the seams could not be named; or
+    /// - guidance completed over production files and named nothing anyway,
+    ///   which contradicts the count and is what
+    ///   `ripr_review_guidance_not_actionable` already reports separately.
+    ///
+    /// Keying on status alone would call the second case proven while the
+    /// gate simultaneously declared the guidance unactionable — reintroducing
+    /// exactly the contradiction this reporting exists to remove.
+    ///
+    /// The genuinely empty case — guidance completed and no production file
+    /// was in scope — never reaches here: `is_nonproduction_only_scope`
+    /// excludes it from the blocking branch entirely.
+    fn gap_list_is_unproven(&self) -> bool {
+        self.top_gaps.is_empty()
     }
 }
 
@@ -932,6 +967,7 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
             base_sha: None,
             production_files_considered: None,
             top_gaps: Vec::new(),
+            unavailable_reason: None,
         },
         JsonReceipt::Invalid => ReviewGuidanceReceipt {
             status: "invalid".to_string(),
@@ -940,6 +976,7 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
             base_sha: None,
             production_files_considered: None,
             top_gaps: Vec::new(),
+            unavailable_reason: None,
         },
         JsonReceipt::Present(payload) => {
             let receipt_head_sha =
@@ -965,6 +1002,9 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
                 status = "incomplete".to_string();
             }
 
+            let unavailable_reason =
+                if status == "present" { None } else { review_guidance_error(&payload) };
+
             ReviewGuidanceReceipt {
                 status,
                 receipt_head_sha,
@@ -972,6 +1012,7 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
                 base_sha: payload.get("base_sha").and_then(Value::as_str).map(ToOwned::to_owned),
                 production_files_considered,
                 top_gaps,
+                unavailable_reason,
             }
         }
     }
@@ -994,6 +1035,27 @@ fn review_guidance_items(value: &Value, limit: usize) -> Vec<Value> {
         }
     }
     gaps
+}
+
+/// Extract the producer's own explanation for an unfinished guidance run.
+///
+/// `write_error_review_comments` stamps `warnings[] = { kind: "tool_error",
+/// message: <first line of the failure> }`, which is where a message like
+/// `ripr timed out after 600s` lands. Any warning kind is accepted so that a
+/// future producer failure class still reaches the author instead of being
+/// silently dropped; `tool_error` is preferred when several are present.
+fn review_guidance_error(value: &Value) -> Option<String> {
+    fn message(warning: &Value) -> Option<&str> {
+        warning.get("message").and_then(Value::as_str).map(str::trim).filter(|m| !m.is_empty())
+    }
+
+    let warnings = value.get("warnings").and_then(Value::as_array)?;
+    warnings
+        .iter()
+        .find(|warning| warning.get("kind").and_then(Value::as_str) == Some("tool_error"))
+        .and_then(message)
+        .or_else(|| warnings.iter().find_map(message))
+        .map(ToOwned::to_owned)
 }
 
 fn review_guidance_declares_items(value: &Value) -> bool {
@@ -1531,6 +1593,22 @@ fn new_ripr_gap_action(
             args.ripr_pr_receipt.to_str().unwrap_or("target/ripr/pr/repo-exposure.json")
         });
 
+    // An empty `top_gaps` has two very different meanings, and conflating them
+    // is what makes this gate unactionable (#5459). When guidance completed,
+    // an empty list is a real result. When guidance did not complete, the gate
+    // knows *how many* new seams exist but not *which* — that is NOT_PROVEN,
+    // and the repair is to finish the analysis, not to guess at unnamed seams.
+    let gap_list_is_unproven = review.gap_list_is_unproven();
+    let repair = if gap_list_is_unproven {
+        "Re-run RIPR review guidance for this HEAD so the gate can name the new seams, then add focused tests for the seams it reports. Do not guess at unnamed seams and do not add suppressions."
+    } else {
+        "Add focused tests that expose the new RIPR seam before merging, then refresh RIPR receipts."
+    };
+    debug_assert!(
+        count > 0,
+        "new_ripr_gap is only emitted for a positive count; gap_list_is_unproven assumes it"
+    );
+
     json!({
         "kind": "new_ripr_gap",
         "blocking": true,
@@ -1538,8 +1616,13 @@ fn new_ripr_gap_action(
         "new_unresolved": count,
         "receipt_head_sha": ripr_pr.receipt_head_sha,
         "top_gaps": review.top_gaps,
+        // Present on every new_ripr_gap action so a consumer never has to infer
+        // the difference between "no gaps to name" and "could not name them".
+        "gap_list_proven": !gap_list_is_unproven,
+        "guidance_status": review.status,
+        "guidance_unavailable_reason": review.unavailable_reason,
         "suggested_test": NEW_RIPR_GAP_SUGGESTED_TEST,
-        "repair": "Add focused tests that expose the new RIPR seam before merging, then refresh RIPR receipts.",
+        "repair": repair,
         "verify": quality_gate_command(args, true, None),
         "receipt": quality_gate_command(args, false, None),
     })
@@ -1693,6 +1776,31 @@ fn render_markdown(receipt: &Value, args: &QualityGateArgs) -> Result<String> {
         if let Some(clusters) = action.get("recommended_project_clusters").and_then(Value::as_array)
         {
             render_recommended_clusters(&mut markdown, "coverage cluster", clusters);
+        }
+        // Say plainly when the gap list could not be produced. Without this the
+        // reader sees a blocking "N new seams" heading followed by nothing and
+        // has no way to tell that the analysis itself failed (#5459).
+        if action.get("gap_list_proven").and_then(Value::as_bool) == Some(false) {
+            let guidance_status =
+                action.get("guidance_status").and_then(Value::as_str).unwrap_or("unknown");
+            // Two different failures reach here and the author acts on them
+            // differently: a run that never finished gets re-run, while a run
+            // that finished and named nothing is a producer disagreeing with
+            // the count. Reporting the second as "could not be produced"
+            // would be its own inaccuracy.
+            if guidance_status == "present" {
+                markdown.push_str(
+                    "- NOT_PROVEN: review guidance completed but named no seam, which contradicts the count above. The count and the list disagree, so the seams are not identified.\n",
+                );
+            } else {
+                markdown.push_str(&format!(
+                    "- NOT_PROVEN: the new-seam list could not be produced (review guidance `{guidance_status}`), so the count above is not accompanied by the seams it counts.\n"
+                ));
+            }
+            if let Some(reason) = action.get("guidance_unavailable_reason").and_then(Value::as_str)
+            {
+                markdown.push_str(&format!("- guidance failure: `{reason}`\n"));
+            }
         }
         if let Some(gaps) = action.get("top_gaps").and_then(Value::as_array) {
             for gap in gaps {

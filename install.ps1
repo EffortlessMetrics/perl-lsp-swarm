@@ -47,17 +47,46 @@ function Write-Success {
     Write-Host $Message
 }
 
-# Detect architecture
-$Arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") {
-    "aarch64"
-} elseif ($env:PROCESSOR_ARCHITECTURE -eq "AMD64") {
-    "x86_64"
+# Detect architecture.
+#
+# Only x86_64-pc-windows-msvc is published: the release matrix in
+# .github/workflows/release.yml has no aarch64-pc-windows-msvc entry. Asking
+# for one built a URL that always 404s, and the failure surfaced as a bare
+# "Failed to download" with nothing actionable in it (#5007).
+#
+# ARM64 Windows runs x64 binaries under emulation, so the x64 asset is the
+# working answer rather than merely a clearer error.
+#
+# A 32-bit PowerShell host on 64-bit Windows reports "x86" in
+# PROCESSOR_ARCHITECTURE and the real architecture in PROCESSOR_ARCHITEW6432,
+# so consult the latter first.
+$HostArch = if ($env:PROCESSOR_ARCHITEW6432) {
+    $env:PROCESSOR_ARCHITEW6432
 } else {
-    Write-Error "Unsupported architecture: $env:PROCESSOR_ARCHITECTURE"
+    $env:PROCESSOR_ARCHITECTURE
 }
 
-$Target = "$Arch-pc-windows-msvc"
-Write-Info "Detected system: Windows ($Arch) - $Target"
+$IsArm64Host = $HostArch -eq "ARM64"
+
+# Name the target as a whole literal rather than assembling it from an arch
+# variable and a "-pc-windows-msvc" suffix. PowerShell cannot be executed on
+# the Linux CI host, so the contract test in
+# scripts/tests/test-install-target-selection.sh checks which targets this
+# script can request by reading them out of the source. Assembling the triple
+# from a variable hides it from that check, which is how the original defect
+# ($Arch = "aarch64") stayed invisible.
+$Target = if ($IsArm64Host -or $HostArch -eq "AMD64") {
+    "x86_64-pc-windows-msvc"
+} else {
+    Write-Error "Unsupported architecture: $HostArch. Only x86_64 Windows binaries are published. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
+}
+
+if ($IsArm64Host) {
+    Write-Info "Detected system: Windows (ARM64) - installing $Target"
+    Write-Warn "No native ARM64 Windows build is published. The x64 build runs under the x64 emulation in Windows 11 on ARM. On Windows 10 on ARM, which has no x64 emulation, build from source instead."
+} else {
+    Write-Info "Detected system: Windows ($HostArch) - $Target"
+}
 
 # Get version
 if ($Version -eq "latest") {

@@ -13,10 +13,10 @@
 
 use crate::LspServer;
 use perl_lsp_rs_core::runtime::launcher::{
-    LaunchAction, LaunchConfig, StartupTimer, TransportMode, format_health_output,
-    format_info_output, format_startup_banner, help_text, init_logging, log_server_startup,
-    logging_filter, parse_args, port_in_use_message, shell_completion, should_enable_logging,
-    should_use_ansi_stdout,
+    LaunchAction, LaunchConfig, LaunchParseError, StartupTimer, TransportMode,
+    format_health_output, format_info_output, format_startup_banner, help_text, init_logging,
+    log_server_startup, logging_filter, parse_args, port_in_use_message, shell_completion,
+    should_enable_logging, should_use_ansi_stdout,
 };
 use perl_lsp_rs_core::tooling::native_compat::{
     classify_perlcritic_profile, classify_perltidy_profile, render_perlcritic_compat_markdown,
@@ -46,7 +46,11 @@ where
         Ok(plan) => plan,
         Err(error) => {
             eprintln!("{error}");
-            eprintln!("{}", render_help_text(&command_name));
+            // A parser diagnostic already carries its own usage line and
+            // `--help` pointer; adding ours would repeat it.
+            if !matches!(error, LaunchParseError::ParserDiagnostic { .. }) {
+                eprintln!("Run '{command_name} --help' for available options.");
+            }
             return 1;
         }
     };

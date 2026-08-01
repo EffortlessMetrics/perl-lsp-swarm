@@ -13,6 +13,7 @@ use std::io;
 use std::io::IsTerminal;
 use std::sync::{Once, OnceLock};
 
+use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{Args, Parser};
 pub mod timing;
 pub use crate::features::contracts::trackable_feature_count_for_grid;
@@ -509,6 +510,19 @@ pub enum LaunchParseError {
     UnknownOption {
         /// Unknown token passed on CLI.
         option: String,
+        /// Closest known option, when the parser can name one.
+        suggestion: Option<String>,
+    },
+    /// A parse failure other than an unknown option — an argument conflict, an
+    /// invalid value, or a missing value.
+    ///
+    /// The argument parser's own rendering is already accurate and complete
+    /// for these, including its usage line and `--help` pointer, so it is
+    /// carried through verbatim rather than reduced to a summary that would
+    /// drop the conflicting flag or the rejected value.
+    ParserDiagnostic {
+        /// Complete diagnostic as the argument parser rendered it.
+        rendered: String,
     },
     /// A flag was missing its required value.
     MissingValue {
@@ -547,9 +561,13 @@ pub enum LaunchParseError {
 impl fmt::Display for LaunchParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnknownOption { option } => {
-                write!(f, "Unknown option: {option}")
-            }
+            Self::UnknownOption { option, suggestion } => match suggestion {
+                Some(candidate) => {
+                    write!(f, "Unknown option: {option}. Did you mean {candidate}?")
+                }
+                None => write!(f, "Unknown option: {option}"),
+            },
+            Self::ParserDiagnostic { rendered } => write!(f, "{rendered}"),
             Self::MissingValue { option } => {
                 write!(f, "Missing value for {option}")
             }
@@ -679,9 +697,44 @@ where
                 });
             }
 
-            Err(LaunchParseError::UnknownOption { option: err.to_string() })
+            // Only an unknown argument gets the narrowed one-line treatment,
+            // and only when the parser actually names the offending token.
+            //
+            // Every other failure — a conflict, a bad value, a missing value —
+            // already renders a complete, accurate explanation, and its
+            // `InvalidArg` context names a *valid* flag, so reporting those as
+            // "Unknown option" would be wrong on the facts. The same applies if
+            // the token is ever unavailable: without it there is nothing
+            // truthful to put after "Unknown option:", so the parser's own
+            // rendering is the honest answer rather than a guess reconstructed
+            // from its message text.
+            if err.kind() == ErrorKind::UnknownArgument
+                && let Some(option) = context_string(&err, ContextKind::InvalidArg)
+            {
+                return Err(LaunchParseError::UnknownOption {
+                    option,
+                    suggestion: context_string(&err, ContextKind::SuggestedArg),
+                });
+            }
+
+            Err(LaunchParseError::ParserDiagnostic { rendered: err.to_string().trim().to_string() })
         }
     }
+}
+
+/// Read a single-valued parser error context entry as an owned string.
+///
+/// Blank values are treated as absent: a caller that gets `Some` may render it
+/// directly, so an empty context entry must not reach a message as
+/// `Unknown option: ` or `Did you mean ?`.
+fn context_string(err: &clap::Error, kind: ContextKind) -> Option<String> {
+    let value = match err.get(kind)? {
+        ContextValue::String(value) => value.clone(),
+        ContextValue::Strings(values) => values.first()?.clone(),
+        _ => return None,
+    };
+
+    (!value.trim().is_empty()).then_some(value)
 }
 
 fn prevalidate_cli_values(args: &[std::ffi::OsString]) -> Result<(), LaunchParseError> {
@@ -1490,7 +1543,7 @@ mod tests {
     }
 
     #[test]
-    fn info_coverage_fraction_evaluates_to_its_printed_percentage() {
+    fn info_coverage_fraction_evaluates_to_its_printed_percentage() -> Result<(), String> {
         // The line read `33/60 (53%)` — 33/60 is 55%. The numerator was the raw
         // advertised count while the percent came from the trackable count.
         // Recompute the printed percentage from the printed fraction and
@@ -1508,19 +1561,26 @@ mod tests {
         let line = out
             .lines()
             .find(|line| line.starts_with("LSP spec coverage:"))
-            .unwrap_or_else(|| panic!("no coverage line in:\n{out}"));
+            .ok_or_else(|| format!("no coverage line in:\n{out}"))?;
         let rendered = line.trim_start_matches("LSP spec coverage:").trim();
         let (fraction, percent) = rendered
             .split_once(" (")
-            .unwrap_or_else(|| panic!("unexpected coverage format: {line:?}"));
+            .ok_or_else(|| format!("unexpected coverage format: {line:?}"))?;
         let (covered, total) = fraction
             .split_once('/')
-            .unwrap_or_else(|| panic!("unexpected fraction format: {fraction:?}"));
+            .ok_or_else(|| format!("unexpected fraction format: {fraction:?}"))?;
 
-        let covered: f64 = covered.trim().parse().unwrap_or_else(|_| panic!("{covered:?}"));
-        let total: f64 = total.trim().parse().unwrap_or_else(|_| panic!("{total:?}"));
-        let printed: f64 =
-            percent.trim_end_matches("%)").trim().parse().unwrap_or_else(|_| panic!("{percent:?}"));
+        let covered: f64 = covered
+            .trim()
+            .parse()
+            .map_err(|err| format!("invalid covered value {covered:?}: {err}"))?;
+        let total: f64 =
+            total.trim().parse().map_err(|err| format!("invalid total value {total:?}: {err}"))?;
+        let printed: f64 = percent
+            .trim_end_matches("%)")
+            .trim()
+            .parse()
+            .map_err(|err| format!("invalid printed percentage {percent:?}: {err}"))?;
 
         assert!(total > 0.0, "coverage denominator must be positive: {line:?}");
         let recomputed = (covered / total * 100.0).round();
@@ -1529,10 +1589,11 @@ mod tests {
             "coverage fraction and percentage disagree: {line:?} \
              — {covered}/{total} is {recomputed}%, printed {printed}%"
         );
+        Ok(())
     }
 
     #[test]
-    fn info_does_not_compare_a_quantity_against_itself() {
+    fn info_does_not_compare_a_quantity_against_itself() -> Result<(), String> {
         // `Features: N/N active (100%)` compared one binding to itself, so it
         // could only ever print 100% regardless of what was advertised.
         let out = super::format_info_output(
@@ -1546,12 +1607,13 @@ mod tests {
         let line = out
             .lines()
             .find(|line| line.starts_with("Features:"))
-            .unwrap_or_else(|| panic!("no features line in:\n{out}"));
+            .ok_or_else(|| format!("no features line in:\n{out}"))?;
         assert!(
             !line.contains("100%"),
             "the features line must report a real quantity, not a tautology: {line:?}"
         );
         assert!(line.contains("advertised"), "features line should say what it counts: {line:?}");
+        Ok(())
     }
 
     // ── port_in_use_message ───────────────────────────────────────
