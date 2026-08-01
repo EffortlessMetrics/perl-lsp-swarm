@@ -747,6 +747,12 @@ impl<'a> Parser<'a> {
 
     /// Record a parse error for later retrieval
     fn record_error(&mut self, error: ParseError) {
+        // Respect max_errors to prevent diagnostic flooding on pathological input.
+        // The default limit matches ParseBudget::default().max_errors.
+        const MAX_ERRORS: usize = 100;
+        if self.errors.len() >= MAX_ERRORS {
+            return;
+        }
         self.errors.push(error);
     }
 

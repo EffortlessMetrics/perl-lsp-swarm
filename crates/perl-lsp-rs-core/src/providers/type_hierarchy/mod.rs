@@ -209,6 +209,20 @@ impl TypeHierarchyProvider {
                     self.index_hierarchy_recursive(stmt, index, current_package);
                 }
             }
+
+            // Perl 5.38+ class with :isa() parents — the parser stores parent
+            // names in the Class node's `parents` field. Without this arm, the
+            // type hierarchy loses the inheritance relationship for corinna OOP.
+            NodeKind::Class { name, parents, body, .. } => {
+                let saved_package = current_package.clone();
+                *current_package = name.clone();
+                for parent in parents {
+                    index.add_inheritance(name, parent);
+                }
+                self.index_hierarchy_recursive(body, index, current_package);
+                *current_package = saved_package;
+            }
+
             _ => {
                 // Recurse into other nodes
                 if let Some(children) = self.get_children(node) {

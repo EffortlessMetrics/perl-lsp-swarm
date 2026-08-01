@@ -393,11 +393,11 @@ export async function setPerlCriticSeverity(
   const resourceUri = vscode.window.activeTextEditor?.document.uri;
   const selection = await vscode.window.showQuickPick(
     [
-      { label: '1', description: 'Very permissive' },
-      { label: '2', description: 'Permissive' },
+      { label: '1', description: 'Brutal — report everything (Error→Hint)' },
+      { label: '2', description: 'Strict — report most issues' },
       { label: '3', description: 'Balanced default' },
-      { label: '4', description: 'Strict' },
-      { label: '5', description: 'Very strict' },
+      { label: '4', description: 'Permissive — fewer issues' },
+      { label: '5', description: 'Gentle — only severe (Error only)' },
     ],
     {
       placeHolder: 'Choose a Critic severity level',
