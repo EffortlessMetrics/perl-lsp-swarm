@@ -244,8 +244,7 @@ memory recalibration after a merge batch.
 
 **Model tier:** haiku for label hygiene and worktree pruning; sonnet for wisdom
 consolidation (see [PIPELINE_GATES.md](../reference/PIPELINE_GATES.md) Gate 7
-and [.claude/agents/wisdom.md](../../.claude/agents/wisdom.md) `model: sonnet`
-for the authoritative per-agent tier).
+for the authoritative tier).
 
 **Constraints:**
 - Read-only for label decisions; may prune stale worktrees and stash entries
