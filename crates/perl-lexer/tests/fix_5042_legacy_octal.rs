@@ -1,10 +1,11 @@
 // Regression tests for issue #5042 Slice 2 — legacy octal semantics.
 //
 // Perl's `perlnumber` rules treat `0755` as octal (493 decimal), not decimal
-// 755. Any digit 8 or 9 after a leading `0` falls back to decimal. This file
-// proves that `parse_perl_integer` correctly classifies each literal form so
-// value-aware consumers (critic, hover, constant folding) do not need to
-// re-derive the rules ad-hoc.
+// 755. A leading-zero literal containing `8` or `9` is illegal in Perl — it
+// fails compilation with `Illegal octal digit`, and is not a decimal fallback.
+// This file proves that `parse_perl_integer` correctly classifies each literal
+// form so value-aware consumers (critic, hover, constant folding) do not need
+// to re-derive the rules ad-hoc.
 
 use perl_lexer::numeric::{NumericBase, parse_perl_integer};
 
