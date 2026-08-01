@@ -677,9 +677,32 @@ where
                 });
             }
 
-            Err(LaunchParseError::UnknownOption { option: err.to_string() })
+            Err(LaunchParseError::UnknownOption { option: rejected_token(&err) })
         }
     }
+}
+
+/// Name the single CLI token clap rejected.
+///
+/// `LaunchParseError::UnknownOption` carries a bare token, and the CLI renders
+/// its own usage and help around it. Clap's `Display` is a whole report — an
+/// `error:` prefix, a tip, a usage block, and a `try '--help'` footer — so
+/// passing it through produced a doubled prefix, two disagreeing usage blocks,
+/// and a help pointer immediately ahead of the help text.
+fn rejected_token(err: &clap::Error) -> String {
+    if let Some(clap::error::ContextValue::String(token)) =
+        err.get(clap::error::ContextKind::InvalidArg)
+    {
+        return token.clone();
+    }
+
+    // Kinds that carry no `InvalidArg` context still get one honest line.
+    err.to_string()
+        .lines()
+        .next()
+        .map(|line| line.trim_start_matches("error:").trim().to_string())
+        .filter(|line| !line.is_empty())
+        .unwrap_or_else(|| "unrecognized argument".to_string())
 }
 
 fn prevalidate_cli_values(args: &[std::ffi::OsString]) -> Result<(), LaunchParseError> {

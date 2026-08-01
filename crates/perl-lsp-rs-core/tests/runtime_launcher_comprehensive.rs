@@ -10,7 +10,7 @@ use perl_lsp_rs_core::runtime::launcher::{
     catalog_advertised_feature_ids, help_text, logging_filter, parse_args, should_enable_logging,
     to_json_for_profile,
 };
-use perl_tdd_support::must;
+use perl_tdd_support::{must, must_err};
 use std::cell::Cell;
 use std::sync::{Mutex, OnceLock};
 
@@ -497,6 +497,31 @@ fn error_display_unknown_option() {
     let err = LaunchParseError::UnknownOption { option: "--bad".to_string() };
     let msg = format!("{err}");
     assert!(msg.contains("--bad"), "display should contain the option");
+}
+
+#[test]
+fn unknown_option_error_names_only_the_offending_token() {
+    let err = must_err(parse_args(["perl-lsp", "--nonsense"]));
+    let msg = format!("{err}");
+
+    assert!(msg.contains("--nonsense"), "message must name the rejected token, got: {msg}");
+    assert_eq!(
+        msg.lines().count(),
+        1,
+        "the parse error is one line; the CLI renders help separately, got: {msg}"
+    );
+    assert!(
+        !msg.contains("Usage:"),
+        "clap's usage block must not ride along — the CLI's own help follows this line, got: {msg}"
+    );
+    assert!(
+        !msg.contains("error:"),
+        "clap's `error:` prefix must not double up with `Unknown option:`, got: {msg}"
+    );
+    assert!(
+        !msg.contains("--help"),
+        "the `try --help` footer must not precede the help text itself, got: {msg}"
+    );
 }
 
 #[test]
