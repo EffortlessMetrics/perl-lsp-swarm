@@ -153,6 +153,9 @@ impl<'a> Parser<'a> {
     fn parse_statement_inner(&mut self) -> ParseResult<Node> {
         // Every new statement begins here
         self.at_stmt_start = true;
+        // Baseline for the missing-semicolon check below: a statement that
+        // recorded its own error should not also be blamed for the terminator.
+        let errors_before_statement = self.errors.len();
         // A surrounding compound statement can queue a heredoc while it parses
         // its condition, then recursively parse this statement as a block body.
         // Remember its queue length so this statement drains only declarations it adds.
@@ -512,7 +515,7 @@ impl<'a> Parser<'a> {
             stmt = self.parse_statement_modifier(stmt)?;
         }
 
-        // Check for optional semicolon
+        // Check for the statement-terminating semicolon.
         // Don't use peek_fresh_kind() here as it can cause issues with nested blocks
         if self.peek_kind() == Some(TokenKind::Semicolon) {
             let semi_token = self.consume_token()?;
@@ -520,6 +523,17 @@ impl<'a> Parser<'a> {
             if self.pending_heredocs.is_empty() {
                 self.byte_cursor = semi_token.end;
             }
+        } else if self.statement_requires_semicolon(&stmt, errors_before_statement) {
+            // Perl permits omitting the semicolon only before `}` or at end of
+            // input. Anything else starts a new statement, which real Perl
+            // rejects with a syntax error. Recording it here rather than
+            // returning Err keeps the recovered AST intact for the editor while
+            // still failing `--check`.
+            let location = self.current_position();
+            self.errors.push(ParseError::SyntaxError {
+                message: "Missing semicolon after statement. Add ; here.".to_string(),
+                location,
+            });
         }
 
         // Drain pending heredocs after statement completion (attach content to AST)
@@ -563,7 +577,68 @@ impl<'a> Parser<'a> {
                 | NodeKind::Format { .. }
                 | NodeKind::Block { .. }
                 | NodeKind::PhaseBlock { .. }
+                // `class NAME { ... }` and `method NAME { ... }` (Perl 5.38) are
+                // block-terminated exactly like `sub`, so they neither take a
+                // postfix modifier nor need a trailing semicolon.
+                | NodeKind::Class { .. }
+                | NodeKind::Method { .. }
         )
+    }
+
+    /// Decide whether an unterminated statement is a real syntax error.
+    ///
+    /// Perl requires `;` between statements, but permits omitting it in exactly
+    /// two positions: before the `}` that closes the enclosing block, and at end
+    /// of input. Compound statements are terminated by their own closing brace
+    /// and never need one — see [`Self::is_compound_statement`].
+    ///
+    /// `errors_before_statement` suppresses the diagnostic when this statement
+    /// already recorded an error. A statement that failed to parse has an
+    /// unreliable idea of where it ends, so a missing-semicolon complaint on top
+    /// of it would point at a position the user did not write.
+    ///
+    /// The remaining risk is a construct this parser does not yet understand: it
+    /// ends the statement early at the token it could not absorb, which looks
+    /// exactly like a missing separator. Requiring a line break between the two
+    /// separates the cases — a human who forgets a `;` starts the next statement
+    /// on a new line, while an unabsorbed operator or import list sits on the
+    /// same line as the statement it belongs to. Measured against the 1140 files
+    /// in this repository that `perl -c` accepts, that rule is what keeps two
+    /// known parser gaps (the `x=` repetition-assignment operator, and
+    /// `no MODULE qw(...)` import lists) from being reported as missing
+    /// semicolons. It costs the same-line `my $x = 1 print "hi";` shape, which is
+    /// a documented non-goal rather than a silent omission.
+    fn statement_requires_semicolon(&mut self, stmt: &Node, errors_before_statement: usize) -> bool {
+        if Self::is_compound_statement(stmt) || self.errors.len() != errors_before_statement {
+            return false;
+        }
+
+        match self.peek_kind() {
+            // End of input, or the closing brace of the enclosing block.
+            None | Some(TokenKind::Eof) | Some(TokenKind::RightBrace) => return false,
+            // The lexer gave up (budget exceeded) or the file switched to its
+            // data section; neither means the user omitted a semicolon.
+            Some(TokenKind::UnknownRest) | Some(TokenKind::DataMarker) => return false,
+            Some(_) => {}
+        }
+
+        let statement_end = self.previous_position();
+        let next_token_start = self.current_position();
+        self.starts_a_later_line(statement_end, next_token_start)
+    }
+
+    /// Whether the source between two byte offsets contains a line break.
+    ///
+    /// Used to require that the token blamed for a missing semicolon actually
+    /// begins a later line than the statement it would terminate.
+    fn starts_a_later_line(&self, statement_end: usize, next_token_start: usize) -> bool {
+        if next_token_start <= statement_end {
+            return false;
+        }
+
+        self.src_bytes
+            .get(statement_end..next_token_start)
+            .is_some_and(|gap| gap.contains(&b'\n'))
     }
 
     /// Parse expression statement

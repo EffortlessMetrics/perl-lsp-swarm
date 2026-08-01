@@ -1,0 +1,9 @@
+project: product
+component: CLI
+kind: Fixed
+body: "`perllsp --check` no longer reports `ok` with exit 0 for a file real Perl rejects. A statement followed by another statement with no intervening `;` — the most common Perl syntax error — is now recorded as a parse error, so `--check` and the LSP diagnostics path both report it. The two positions Perl genuinely permits (before a closing `}`, and at end of input) still parse clean, as do block-terminated `class` and `method` declarations."
+time: 2026-08-01T00:00:00Z
+custom:
+  PR: "5497"
+  Slug: check-missing-statement-separator-5474
+  Breaking: "no"

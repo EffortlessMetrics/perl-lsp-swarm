@@ -199,6 +199,40 @@ fn check_reports_recovered_parse_errors() -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+/// #5474: `--check` reported `ok` with exit 0 for a file real Perl rejects.
+///
+/// The end-to-end claim is the exit code, not the message: `--check` gates
+/// release readiness, so a false pass on the most common Perl syntax error is a
+/// false-exact result. The valid counterpart is asserted in the same test — a
+/// fix that rejected everything would satisfy the failure assertion alone.
+#[test]
+fn check_reports_a_missing_statement_separator() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+
+    let bad = dir.path().join("missing_semi.pl");
+    std::fs::write(&bad, "my $x = 1\nprint \"hi\";\n")?;
+    let bad_str = bad.to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.arg("--check")
+        .arg(bad_str)
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("FAIL"))
+        .stdout(predicates::str::contains("Missing semicolon"));
+
+    // Perl permits omitting the final semicolon of a block or of the file; those
+    // must still pass, or the fix has traded a false pass for a false failure.
+    let good = dir.path().join("valid.pl");
+    std::fs::write(&good, "sub f {\n    my $y = 2\n}\nmy $x = 1;\nprint \"hi\";\n")?;
+    let good_str = good.to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.arg("--check").arg(good_str).assert().success().stdout(predicates::str::contains("ok"));
+
+    Ok(())
+}
+
 /// A file can carry BOTH a fatal error and earlier recovered ones:
 /// `parse_program` records recoverable diagnostics as it goes, then propagates
 /// immediately on `RecursionLimit` / `NestingTooDeep` / `Cancelled` without
