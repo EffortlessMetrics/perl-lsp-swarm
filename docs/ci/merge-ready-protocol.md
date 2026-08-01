@@ -21,21 +21,33 @@ Receipt JSON uses `.ci/receipts/schemas/merge-readiness.schema.json` and include
 
 ## Required checks source
 
-This repository uses rulesets. Conventional required checks are read from `.ci/policies/required-checks.toml` first.
+This repository's `main` branch is gated by **two separate GitHub mechanisms**,
+and a merge is blocked by the union of both. Conventional required checks are
+read from `.ci/policies/required-checks.toml` first.
 
 Only entries explicitly marked `required = true` are treated as required. The
-current proof-floor branch-protection contexts are:
+current proof-floor contexts, by source mechanism, are:
+
+Classic branch protection (`GET /repos/{owner}/{repo}/branches/main/protection`):
 
 - `Perl LSP Rust Small Result`
 - `ripr+ New Gap Gate`
-- `Compile All Targets (bit-rot guard)`
 
-This list must match the live ruleset exactly. It is not self-verifying: nothing
-compares it against GitHub, so a context added to branch protection without a
-corresponding `required = true` entry here silently understates the gate set in
-every emitted receipt's `required_checks` inventory and in `gate_graph_version`,
-which is hashed over this file. When a required context is added or removed in
-the ruleset, update this file in the same change.
+Ruleset `main` (id `16664791`, `GET /repos/{owner}/{repo}/rules/branches/main`):
+
+- `Compile All Targets (bit-rot guard)`
+- `Conflict marker check`
+- `validate-title`
+
+This list must match the live branch protection and ruleset state exactly. It
+is not self-verifying: nothing compares it against GitHub, so a context added
+to either surface without a corresponding `required = true` entry here
+silently understates the gate set in every emitted receipt's `required_checks`
+inventory and in `gate_graph_version`, which is hashed over this file. When a
+required context is added or removed on either surface, update this file in
+the same change. See issue #5418 (this gap's discovery) and #5371 (proposed
+follow-up: read the live ruleset instead of trusting this checked-in list) for
+the recurrence risk this leaves open.
 
 `Codecov / Patch 95` is the repo-owned advisory coverage job. `codecov/patch`
 is the external Codecov status context posted after Codecov processes an

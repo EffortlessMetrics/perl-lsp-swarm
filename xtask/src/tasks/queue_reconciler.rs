@@ -1100,6 +1100,8 @@ required = false
             "Perl LSP Rust Small Result",
             "ripr+ New Gap Gate",
             "Compile All Targets (bit-rot guard)",
+            "Conflict marker check",
+            "validate-title",
         ] {
             assert!(
                 checks.contains(expected),
