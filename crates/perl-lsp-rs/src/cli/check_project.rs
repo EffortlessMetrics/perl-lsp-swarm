@@ -123,13 +123,15 @@ fn process_file(path: &Path, path_str: String, results: &mut ProjectCheckResults
     let advisory: Vec<String> = advisory_errors.iter().map(|err| format!("{err}")).collect();
 
     if let Err(ref e) = parse_result {
-        record_category(&format!("{e}"), results);
-        blocking.push(format!("{e}"));
+        let message = format!("{e}");
+        record_category(&message, results);
+        blocking.push(message);
     }
 
     for err in &blocking_errors {
-        record_category(&format!("{err}"), results);
-        blocking.push(format!("{err}"));
+        let message = format!("{err}");
+        record_category(&message, results);
+        blocking.push(message);
     }
 
     if blocking.is_empty() {
@@ -142,12 +144,12 @@ fn process_file(path: &Path, path_str: String, results: &mut ProjectCheckResults
 }
 
 fn record_file_error(path: String, message: String, results: &mut ProjectCheckResults) {
+    record_category(&message, results);
     results.file_findings.push(FileFindings {
         path,
-        blocking: vec![message.clone()],
+        blocking: vec![message],
         advisory: Vec::new(),
     });
-    record_category(&message, results);
 }
 
 fn record_category(message: &str, results: &mut ProjectCheckResults) {
