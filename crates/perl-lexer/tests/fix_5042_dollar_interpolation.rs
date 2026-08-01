@@ -645,7 +645,7 @@ fn deref_chain_arrow_paren_call_stays_literal() -> R {
 // ---------------------------------------------------------------------------
 // The punctuation special-variable set, exhaustively
 //
-// The `Some('?' | '!' | '@' | ...)` arm accepts 23 characters but only four
+// The `Some('?' | '!' | '@' | ...)` arm accepts 24 characters but only four
 // of them (`!`, `@`, `?`, `|`) had a discriminator above. An implementation
 // that shipped a shorter set — or that silently dropped the sigil for the
 // untested members, which is exactly the #5042 bug — would still pass. Each
@@ -656,9 +656,16 @@ fn deref_chain_arrow_paren_call_stays_literal() -> R {
 
 #[test]
 fn every_punctuation_special_variable_in_the_match_arm_emits_one_variable_part() -> R {
-    // '"' is deliberately excluded from the arm (the closing delimiter wins),
-    // so it is the only member of the documented set missing here. '\\' is
-    // covered separately below because writing it inline needs escaping.
+    // The loop below covers 22 of the arm's 24 members. Two are deliberately
+    // handled elsewhere rather than inline:
+    //   - '\\' needs escaping to write inline, so it has its own test
+    //     (`dollar_backslash_is_the_output_record_separator_...`) below;
+    //   - ':' is context-dependent — `$:` is the variable but `$::` starts a
+    //     package-qualified name — so it is covered by the `$:` vs `$::`
+    //     section further down (`dollar_colon_in_string_emits_variable` and
+    //     `dollar_double_colon_is_a_package_qualified_variable`).
+    // '"' is not in the set at all: the closing delimiter wins, which
+    // `is_perl_punctuation_variable_rejects_the_string_delimiter` pins.
     for punct in [
         '?', '!', '@', '&', '`', '\'', '.', '/', '|', '+', '-', '[', ']', '~', '=', '%', ',', ';',
         '>', '<', ')', '(',
