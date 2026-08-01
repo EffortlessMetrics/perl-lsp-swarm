@@ -82,10 +82,16 @@ pub(super) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
         let line = strip_line_ending(raw_line);
 
         if let Some((body_start, label, allow_indented)) = active.take() {
+            // Trailing spaces/tabs after the delimiter still close the region.
+            // `PerlLexer` ends the heredoc body on such a line; comparing the
+            // untrimmed line left the collector scanning to EOF and
+            // reclassifying every following statement as `Heredoc`, because
+            // `Heredoc` outranks `Code` in `region_precedence`.
+            let closer = line.trim_end_matches([' ', '\t']);
             let closes = if allow_indented {
-                line.trim_start_matches([' ', '\t']) == label
+                closer.trim_start_matches([' ', '\t']) == label
             } else {
-                line == label
+                closer == label
             };
             if closes {
                 push_region(&mut regions, body_start, line_start, SourceRegionKind::Heredoc);

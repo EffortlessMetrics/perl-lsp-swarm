@@ -47,8 +47,14 @@ impl SourceRegion {
     }
 
     /// Whether this region fully covers `[start, end)`.
+    ///
+    /// A reversed range (`start > end`) is never contained: it is not a valid
+    /// span, and reporting it as covered would let a caller treat a malformed
+    /// query as proven. This matches [`Self::new`], which rejects the same
+    /// ordering, and `SourceRegionIndex::classify_range`, which reports
+    /// `OutOfBounds`.
     #[must_use]
     pub fn contains_range(self, start: usize, end: usize) -> bool {
-        self.start <= start && end <= self.end
+        start <= end && self.start <= start && end <= self.end
     }
 }

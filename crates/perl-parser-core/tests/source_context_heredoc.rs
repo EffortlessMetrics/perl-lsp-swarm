@@ -51,3 +51,31 @@ fn numeric_label_does_not_open_heredoc() -> Result<(), Box<dyn std::error::Error
     assert_eq!(index.kind_at_offset(tail_offset), SourceRegionKind::Code);
     Ok(())
 }
+
+/// `PerlLexer` closes a heredoc on a delimiter line carrying trailing spaces or
+/// tabs. The collector compared the untrimmed line, so it never closed, scanned
+/// to EOF, and reclassified every following statement as `Heredoc` — the same
+/// "silently swallow real code" class as the left-shift defect above.
+#[test]
+fn terminator_with_trailing_whitespace_closes_region() -> Result<(), Box<dyn std::error::Error>> {
+    for source in [
+        "my $t = <<EOF;\nbody\nEOF  \nmy $after = 1;\n",
+        "my $t = <<EOF;\nbody\nEOF\t\nmy $after = 1;\n",
+    ] {
+        let index = SourceRegionIndex::build(source);
+        let body_offset = source.find("body").ok_or("missing body")?;
+        assert_eq!(
+            index.kind_at_offset(body_offset),
+            SourceRegionKind::Heredoc,
+            "body must stay heredoc in {source:?}"
+        );
+        let after_offset = source.find("my $after").ok_or("missing trailing code")?;
+        assert_eq!(
+            index.kind_at_offset(after_offset),
+            SourceRegionKind::Code,
+            "code after a whitespace-padded terminator must stay code, regions: {:?}",
+            index.regions()
+        );
+    }
+    Ok(())
+}

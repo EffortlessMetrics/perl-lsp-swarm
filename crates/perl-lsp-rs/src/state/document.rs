@@ -1164,6 +1164,55 @@ mod tests {
         );
     }
 
+    /// The honesty invariant: a superseded generation's index must never be
+    /// served as the current one. `source_region_index` is a `OnceLock` field on
+    /// `ParsedSnapshot` built from *that snapshot's own* source and
+    /// `content_hash`, so there is no shared cache a stale entry could survive
+    /// in. This asserts the observable consequence — after a real edit through
+    /// `DocumentState`, the newly published snapshot classifies the NEW text and
+    /// carries the NEW content hash — rather than only that two indexes are
+    /// distinct allocations.
+    #[test]
+    fn edit_supersedes_index_content_not_just_allocation() {
+        // gen0: the `#` opens a real line comment.
+        let mut doc = DocumentState::new("my $x = 1; # c\n", 1);
+        let gen0 = doc.current_generation();
+        let snapshot0 = Arc::new(snapshot_for("my $x = 1; # c\n", gen0));
+        assert!(doc.publish_parsed_if_current(gen0, Arc::clone(&snapshot0)));
+        let idx0 = snapshot0.source_region_index();
+        let hash_at = 11;
+        assert_eq!(
+            idx0.kind_at_offset(hash_at),
+            perl_parser_core::SourceRegionKind::LineComment,
+            "gen0 `#` must classify as a line comment"
+        );
+
+        // gen1: the same offset is now inside a string literal, not a comment.
+        let updated = "my $y = \"# c\";\n";
+        doc.apply_change(0, 0, 0, 14, "my $y = \"# c\";", 2);
+        let gen1 = doc.current_generation();
+        let snapshot1 = Arc::new(snapshot_for(updated, gen1));
+        assert!(doc.publish_parsed_if_current(gen1, Arc::clone(&snapshot1)));
+
+        let idx1 = snapshot1.source_region_index();
+        let new_hash_at = updated.find('#').unwrap_or_default();
+        assert_eq!(
+            idx1.kind_at_offset(new_hash_at),
+            perl_parser_core::SourceRegionKind::StringLiteral,
+            "gen1 `#` sits inside a double-quoted string, not a comment"
+        );
+        assert_ne!(
+            idx0.content_hash(),
+            idx1.content_hash(),
+            "a superseded generation's index must not carry the current content hash"
+        );
+        assert_eq!(
+            idx1.content_hash(),
+            snapshot1.content_hash(),
+            "the current index must be bound to the current snapshot's content hash"
+        );
+    }
+
     #[test]
     fn superseded_snapshot_without_region_request_stays_lazy() {
         let mut doc = DocumentState::new("my $x = 1;", 1);

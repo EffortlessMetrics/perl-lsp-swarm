@@ -32,7 +32,20 @@ fn collect_lexer_literal_regions(source: &str) -> Vec<SourceRegion> {
     let mut lexer = PerlLexer::with_body_tokens(source);
     while let Some(token) = lexer.next_token() {
         let kind = match token.token_type {
-            TokenType::StringLiteral => SourceRegionKind::StringLiteral,
+            // `PerlLexer` emits `InterpolatedString` for *every* double-quoted
+            // string, interpolating or not — `StringLiteral` only covers the
+            // single-quoted form. Dropping the interpolated variant left every
+            // `"…"` span uncovered, so `kind_at_offset` reported `Code` for the
+            // most common Perl string literal while `'…'` reported
+            // `StringLiteral`.
+            TokenType::StringLiteral | TokenType::InterpolatedString(_) => {
+                SourceRegionKind::StringLiteral
+            }
+            // Lexer recovery spans must stay ambiguous rather than decay to
+            // `Code`: an unterminated literal lexes as `Error`, and dropping it
+            // here contradicted the fail-closed contract documented on
+            // `SourceRegionKind::RecoveryAmbiguous`.
+            TokenType::Error(_) | TokenType::UnknownRest => SourceRegionKind::RecoveryAmbiguous,
             TokenType::QuoteSingle
             | TokenType::QuoteDouble
             | TokenType::QuoteWords
