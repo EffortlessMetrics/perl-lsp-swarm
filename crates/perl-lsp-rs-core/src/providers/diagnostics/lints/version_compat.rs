@@ -851,7 +851,9 @@ mod tests {
     //
     // `__CLASS__` was introduced in Perl v5.40 as part of the `class` object
     // system. The lint emits PL900 whenever `__CLASS__` appears in a file that
-    // declares a version below v5.40 without an explicit `use feature 'class'`.
+    // declares a version below v5.40 — the `class` feature pragma does not
+    // affect the gate, because the feature shipped in v5.38 but the keyword did
+    // not arrive until v5.40.
     // ---------------------------------------------------------------------------
 
     #[test]
