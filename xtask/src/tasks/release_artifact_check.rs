@@ -1169,4 +1169,119 @@ mod tests {
         assert_eq!(platform_for_triple(&contract, "x86_64-pc-windows-msvc"), Some("windows"));
         Ok(())
     }
+
+    // ── cargo-binstall metadata vs. what the release workflow actually ships ──
+    //
+    // `[package.metadata.binstall]` is published to crates.io and is what
+    // `cargo binstall <crate>` obeys. Nothing else in CI reads it, so it can
+    // drift from .github/workflows/release.yml silently and the only signal is
+    // a user getting a 404 or "could not find binary in package". These tests
+    // pin it against the workflow text.
+
+    fn release_workflow() -> Result<String> {
+        Ok(fs::read_to_string(project_root()?.join(".github/workflows/release.yml"))?)
+    }
+
+    fn binstall_table(manifest_rel: &str) -> Result<Option<toml::Value>> {
+        let text = fs::read_to_string(project_root()?.join(manifest_rel))?;
+        let manifest: toml::Value = toml::from_str(&text)?;
+        Ok(manifest
+            .get("package")
+            .and_then(|p| p.get("metadata"))
+            .and_then(|m| m.get("binstall"))
+            .cloned())
+    }
+
+    #[test]
+    fn release_workflow_still_packages_the_layout_binstall_assumes() -> Result<()> {
+        let workflow = release_workflow()?;
+
+        // The three facts the perllsp binstall metadata is written against. If
+        // any of them changes, the metadata below must change with it.
+        assert!(
+            workflow.contains(r#"PKG_NAME="${NAME}-${VERSION}-${TARGET}""#),
+            "release.yml no longer names archives NAME-VERSION-TARGET; \
+             update pkg-url in crates/perllsp/Cargo.toml"
+        );
+        assert!(
+            workflow.contains(r#"tar czf "${PKG_NAME}${EXT}" "${PKG_NAME}""#),
+            "release.yml no longer nests the tarball under PKG_NAME; \
+             update bin-dir in crates/perllsp/Cargo.toml"
+        );
+        assert!(
+            workflow.contains(r#"7z a "${PKG_NAME}${EXT}" "${PKG_NAME}"/*"#),
+            "release.yml no longer flattens the zip; update the \
+             x86_64-pc-windows-msvc bin-dir override in crates/perllsp/Cargo.toml"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn perllsp_binstall_matches_the_published_archive_layout() -> Result<()> {
+        let binstall =
+            binstall_table("crates/perllsp/Cargo.toml")?.expect("perllsp must declare binstall");
+
+        let pkg_url = binstall.get("pkg-url").and_then(|v| v.as_str()).unwrap_or_default();
+        assert!(
+            pkg_url.contains("perllsp-{ version }-{ target }{ archive-suffix }"),
+            "pkg-url must name the asset release.yml uploads: {pkg_url}"
+        );
+
+        // The tar entries are PKG_NAME/perllsp, so a root-relative bin-dir
+        // resolves to nothing and binstall reports "could not find binary".
+        let bin_dir = binstall.get("bin-dir").and_then(|v| v.as_str()).unwrap_or_default();
+        assert_eq!(
+            bin_dir, "perllsp-{ version }-{ target }/{ bin }{ binary-ext }",
+            "default bin-dir must point inside the tarball's top-level directory"
+        );
+
+        // Windows is the one target shipping a .zip, and its archive is flat.
+        let win = binstall
+            .get("overrides")
+            .and_then(|o| o.get("x86_64-pc-windows-msvc"))
+            .expect("windows ships .zip, so it needs a pkg-fmt/bin-dir override");
+        assert_eq!(win.get("pkg-fmt").and_then(|v| v.as_str()), Some("zip"));
+        assert_eq!(
+            win.get("bin-dir").and_then(|v| v.as_str()),
+            Some("{ bin }{ binary-ext }"),
+            "the windows zip has no top-level directory"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn no_crate_advertises_binstall_for_an_unpublished_binary() -> Result<()> {
+        let workflow = release_workflow()?;
+
+        // Every crate that declares binstall metadata is promising a prebuilt
+        // binary. `perl-lsp-rs` used to promise `perl-lsp`, which the release
+        // workflow has never built — binstall 404'd instead of falling back to
+        // a source build.
+        for manifest_rel in ["crates/perllsp/Cargo.toml", "crates/perl-lsp-rs/Cargo.toml"] {
+            let Some(_) = binstall_table(manifest_rel)? else {
+                continue;
+            };
+            let text = fs::read_to_string(project_root()?.join(manifest_rel))?;
+            let manifest: toml::Value = toml::from_str(&text)?;
+            let bins = manifest
+                .get("bin")
+                .and_then(|b| b.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|b| b.get("name").and_then(|n| n.as_str()))
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for bin in bins {
+                assert!(
+                    workflow.contains(&format!("--bin {bin}")),
+                    "{manifest_rel} advertises binstall for `{bin}`, but release.yml \
+                     never builds it — binstall would 404. Either build it in the \
+                     release matrix or drop the binstall metadata."
+                );
+            }
+        }
+        Ok(())
+    }
 }
