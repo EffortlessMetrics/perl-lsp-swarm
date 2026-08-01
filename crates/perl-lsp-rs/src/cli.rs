@@ -235,27 +235,41 @@ fn run_check(command_name: &str, files: &[String]) -> i32 {
         let parse_result = parser.parse();
         let recovered = parser.errors();
 
+        // Only blocking diagnostics decide the verdict. Advisories (e.g. a
+        // nested-quantifier regex warning) are reported on a file real `perl`
+        // accepts, so failing on them would reject valid Perl.
+        let (blocking, advisory): (Vec<_>, Vec<_>) =
+            recovered.iter().partition(|err| err.blocks_clean_parse());
+
         let fatal = parse_result.as_ref().err();
-        if fatal.is_none() && recovered.is_empty() {
-            println!("{path}: ok");
-            continue;
-        }
+        let failed = fatal.is_some() || !blocking.is_empty();
 
-        errors += 1;
+        if failed {
+            errors += 1;
 
-        if let Some(e) = fatal {
-            println!("{path}: FAIL - {e}");
-            for detail in format_parse_error_context(&source, e) {
-                println!("{detail}");
+            if let Some(e) = fatal {
+                println!("{path}: FAIL - {e}");
+                for detail in format_parse_error_context(&source, e) {
+                    println!("{detail}");
+                }
+            } else {
+                let count = blocking.len();
+                let noun = if count == 1 { "error" } else { "errors" };
+                println!("{path}: FAIL - {count} parse {noun}");
+            }
+
+            for err in &blocking {
+                println!("  {err}");
+                for detail in format_parse_error_context(&source, err) {
+                    println!("{detail}");
+                }
             }
         } else {
-            let count = recovered.len();
-            let noun = if count == 1 { "error" } else { "errors" };
-            println!("{path}: FAIL - {count} parse {noun}");
+            println!("{path}: ok");
         }
 
-        for err in recovered {
-            println!("  {err}");
+        for err in &advisory {
+            println!("  advisory: {err}");
             for detail in format_parse_error_context(&source, err) {
                 println!("{detail}");
             }

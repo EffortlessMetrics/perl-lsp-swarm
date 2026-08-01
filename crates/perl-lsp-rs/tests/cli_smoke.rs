@@ -1,4 +1,5 @@
 use assert_cmd::cargo::cargo_bin_cmd;
+use predicates::prelude::PredicateBooleanExt;
 
 #[test]
 fn health_prints_ok() {
@@ -194,6 +195,30 @@ fn check_reports_recovered_parse_errors() -> Result<(), Box<dyn std::error::Erro
             .stdout(predicates::str::contains("FAIL"))
             .stdout(predicates::str::contains(*expected));
     }
+
+    Ok(())
+}
+
+/// Advisory diagnostics must not fail `--check`. `ParseError::Advisory` reports
+/// `blocks_clean_parse() == false`, and real `perl -c` accepts this file
+/// (`advisory.pl syntax OK`), so treating it as an error would reject valid
+/// Perl. The advisory is still surfaced, just not as a failure.
+#[test]
+fn check_advisory_diagnostics_do_not_fail() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("advisory.pl");
+    // Nested quantifiers: a backtracking-risk advisory, not a syntax error.
+    std::fs::write(&file, "my $r = qr/^(a+)+b$/;\nprint \"ok\\n\";\n")?;
+    let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.arg("--check")
+        .arg(file_str)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("ok"))
+        .stdout(predicates::str::contains("advisory:"))
+        .stdout(predicates::str::contains("FAIL").not());
 
     Ok(())
 }
