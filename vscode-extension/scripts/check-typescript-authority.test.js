@@ -1,0 +1,296 @@
+'use strict';
+
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const {
+  TYPESCRIPT_AUTHORITY_MAJOR,
+  TSCONFIG_FILES,
+  evaluateTypeScriptAuthority,
+  checkTypeScriptAuthority,
+  stripJsonComments,
+} = require('./check-typescript-authority');
+
+const EXTENSION_ROOT = path.resolve(__dirname, '..');
+
+/**
+ * A tree that satisfies every invariant, so each negative case below differs
+ * from a green run by exactly one drifted fact.
+ *
+ * @param {Record<string, unknown>} [overrides]
+ */
+function healthyInput(overrides = {}) {
+  return {
+    expectedMajor: 7,
+    declaredRange: '^7.0.2',
+    lockEntry: {
+      version: '7.0.2',
+      resolved: 'https://registry.npmjs.org/typescript/-/typescript-7.0.2.tgz',
+    },
+    installedVersion: '7.0.2',
+    binaryVersionOutput: 'Version 7.0.2\n',
+    binShimPresent: true,
+    tsconfigs: [{ file: 'tsconfig.json', ignoreDeprecations: undefined }],
+    ...overrides,
+  };
+}
+
+/**
+ * @param {ReturnType<typeof evaluateTypeScriptAuthority>} result
+ * @param {RegExp} pattern
+ */
+function assertFailedWith(result, pattern) {
+  assert.equal(result.ok, false, `expected a red result, got: ${JSON.stringify(result)}`);
+  assert.ok(
+    result.failures.some((failure) => pattern.test(failure)),
+    `no failure matched ${String(pattern)}; failures were ${JSON.stringify(result.failures)}`,
+  );
+}
+
+void test('a healthy TS7 tree passes and reports its evidence', () => {
+  const result = evaluateTypeScriptAuthority(healthyInput());
+  assert.equal(result.ok, true, JSON.stringify(result.failures));
+  assert.deepEqual(result.failures, []);
+  assert.ok(result.facts.length > 0);
+});
+
+void test('a TS6 declared range is red even though TS6 compiles this tree clean', () => {
+  assertFailedWith(
+    evaluateTypeScriptAuthority(healthyInput({ declaredRange: '^6.0.3' })),
+    /floors at major 6/,
+  );
+});
+
+void test('an npm: alias specifier is rejected rather than parsed', () => {
+  assertFailedWith(
+    evaluateTypeScriptAuthority(healthyInput({ declaredRange: 'npm:typescript@^6.0.3' })),
+    /non-registry specifier/,
+  );
+});
+
+void test('a file: or git specifier is rejected', () => {
+  assertFailedWith(
+    evaluateTypeScriptAuthority(healthyInput({ declaredRange: 'file:../local-tsc' })),
+    /non-registry specifier/,
+  );
+  assertFailedWith(
+    evaluateTypeScriptAuthority(healthyInput({ declaredRange: 'git+https://example.invalid/ts' })),
+    /non-registry specifier/,
+  );
+});
+
+void test('an unpinned range such as * or latest is rejected', () => {
+  assertFailedWith(evaluateTypeScriptAuthority(healthyInput({ declaredRange: '*' })), /semver/);
+  assertFailedWith(
+    evaluateTypeScriptAuthority(healthyInput({ declaredRange: 'latest' })),
+    /semver/,
+  );
+});
+
+void test('a missing typescript devDependency is red', () => {
+  assertFailedWith(
+    evaluateTypeScriptAuthority(healthyInput({ declaredRange: undefined })),
+    /declares no `typescript` devDependency/,
+  );
+});
+
+void test('a lockfile that resolves a pre-authority major is red', () => {
+  assertFailedWith(
+    evaluateTypeScriptAuthority(
+      healthyInput({
+        lockEntry: {
+          version: '6.0.3',
+          resolved: 'https://registry.npmjs.org/typescript/-/typescript-6.0.3.tgz',
+        },
+      }),
+    ),
+    /package-lock\.json resolves typescript 6\.0\.3/,
+  );
+});
+
+void test('a lockfile alias redirect is named as an alias, not just a version mismatch', () => {
+  const result = evaluateTypeScriptAuthority(
+    healthyInput({
+      lockEntry: {
+        name: 'typescript6',
+        version: '7.0.2',
+        resolved: 'https://registry.npmjs.org/typescript6/-/typescript6-7.0.2.tgz',
+      },
+    }),
+  );
+  assertFailedWith(result, /aliases node_modules\/typescript to "typescript6"/);
+});
+
+void test('a lockfile resolving a non-registry tarball is red', () => {
+  assertFailedWith(
+    evaluateTypeScriptAuthority(
+      healthyInput({
+        lockEntry: { version: '7.0.2', resolved: 'file:../vendor/typescript-7.0.2.tgz' },
+      }),
+    ),
+    /not a registry `typescript` tarball/,
+  );
+});
+
+void test('a missing lockfile entry is red', () => {
+  assertFailedWith(
+    evaluateTypeScriptAuthority(healthyInput({ lockEntry: undefined })),
+    /no `node_modules\/typescript` entry/,
+  );
+});
+
+void test('an uninstalled compiler is red rather than silently skipped', () => {
+  assertFailedWith(
+    evaluateTypeScriptAuthority(
+      healthyInput({ installedVersion: undefined, binaryVersionOutput: undefined }),
+    ),
+    /is it installed/,
+  );
+});
+
+void test('an installed major below the authority major is red', () => {
+  assertFailedWith(
+    evaluateTypeScriptAuthority(
+      healthyInput({ installedVersion: '6.0.3', binaryVersionOutput: 'Version 6.0.3\n' }),
+    ),
+    /installed typescript is 6\.0\.3/,
+  );
+});
+
+void test('a binary whose version disagrees with its package metadata is red', () => {
+  assertFailedWith(
+    evaluateTypeScriptAuthority(healthyInput({ binaryVersionOutput: 'Version 6.0.3\n' })),
+    /the compiler that runs is not the package that is pinned/,
+  );
+});
+
+void test('an unreadable tsc --version is red, never assumed green', () => {
+  assertFailedWith(
+    evaluateTypeScriptAuthority(healthyInput({ binaryVersionOutput: '' })),
+    /no readable version/,
+  );
+  assertFailedWith(
+    evaluateTypeScriptAuthority(healthyInput({ binaryVersionOutput: undefined })),
+    /could not run the installed/,
+  );
+});
+
+void test('a missing .bin/tsc shim is red', () => {
+  assertFailedWith(
+    evaluateTypeScriptAuthority(healthyInput({ binShimPresent: false })),
+    /node_modules\/\.bin\/tsc is missing/,
+  );
+});
+
+void test('a reintroduced ignoreDeprecations escape hatch is red and names the file', () => {
+  assertFailedWith(
+    evaluateTypeScriptAuthority(
+      healthyInput({
+        tsconfigs: [
+          { file: 'tsconfig.json', ignoreDeprecations: undefined },
+          { file: 'tsconfig.test.json', ignoreDeprecations: '6.0' },
+        ],
+      }),
+    ),
+    /tsconfig\.test\.json sets "ignoreDeprecations"/,
+  );
+});
+
+void test('every drifted fact is reported, not just the first', () => {
+  const result = evaluateTypeScriptAuthority(
+    healthyInput({
+      declaredRange: '^6.0.3',
+      lockEntry: {
+        version: '6.0.3',
+        resolved: 'https://registry.npmjs.org/typescript/-/typescript-6.0.3.tgz',
+      },
+      installedVersion: '6.0.3',
+      binaryVersionOutput: 'Version 6.0.3\n',
+    }),
+  );
+  assert.equal(result.ok, false);
+  // A wholesale slide back to TS6 is internally consistent — the binary
+  // agrees with its package, so check 4 stays quiet. The declared range,
+  // the lockfile, and the installed package must each still name it.
+  for (const pattern of [
+    /declared typescript range/,
+    /package-lock\.json resolves typescript/,
+    /installed typescript is/,
+  ]) {
+    assertFailedWith(result, pattern);
+  }
+});
+
+void test('stripJsonComments keeps string contents while removing real comments', () => {
+  const source = `{
+    // leading comment
+    /* block
+       comment */
+    "url": "https://example.invalid/a//b",
+    "escaped": "a \\" // not a comment",
+    "value": 1
+  }`;
+  assert.deepEqual(JSON.parse(stripJsonComments(source)), {
+    url: 'https://example.invalid/a//b',
+    escaped: 'a " // not a comment',
+    value: 1,
+  });
+});
+
+void test('the real extension tree satisfies the compiler-authority invariants', () => {
+  const result = checkTypeScriptAuthority(EXTENSION_ROOT);
+  assert.equal(result.ok, true, JSON.stringify(result.failures, null, 2));
+});
+
+void test('a drifted tree on disk goes red through the real file-reading path', () => {
+  // The pure-evaluator cases above prove the invariants; this one proves the
+  // gathering path actually reaches them — that a TS6 range in a real
+  // package.json, an aliased lockfile entry, and an ignoreDeprecations in a
+  // real (commented) tsconfig are read off disk rather than assumed clean.
+  const drifted = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-ts-authority-'));
+  try {
+    fs.writeFileSync(
+      path.join(drifted, 'package.json'),
+      JSON.stringify({ devDependencies: { typescript: '^6.0.3' } }),
+    );
+    fs.writeFileSync(
+      path.join(drifted, 'package-lock.json'),
+      JSON.stringify({
+        packages: {
+          'node_modules/typescript': {
+            name: 'typescript6',
+            version: '6.0.3',
+            resolved: 'https://registry.npmjs.org/typescript6/-/typescript6-6.0.3.tgz',
+          },
+        },
+      }),
+    );
+    for (const [index, file] of TSCONFIG_FILES.entries()) {
+      fs.writeFileSync(
+        path.join(drifted, file),
+        `{\n  // a commented tsconfig, as this repository actually writes them\n  "compilerOptions": {${index === 0 ? ' "ignoreDeprecations": "6.0" ' : ''}}\n}\n`,
+      );
+    }
+
+    const result = checkTypeScriptAuthority(drifted);
+    assertFailedWith(result, /floors at major 6/);
+    assertFailedWith(result, /aliases node_modules\/typescript to "typescript6"/);
+    assertFailedWith(result, /tsconfig\.json sets "ignoreDeprecations"/);
+    // No node_modules under the scratch root: an absent compiler is red, and
+    // is never mistaken for a clean one.
+    assertFailedWith(result, /is it installed/);
+    assertFailedWith(result, /node_modules\/\.bin\/tsc is missing/);
+  } finally {
+    fs.rmSync(drifted, { recursive: true, force: true });
+  }
+});
+
+void test('every declared tsconfig authority file exists and is readable as JSONC', () => {
+  for (const file of TSCONFIG_FILES) {
+    const source = fs.readFileSync(path.join(EXTENSION_ROOT, file), 'utf8');
+    assert.ok(JSON.parse(stripJsonComments(source)), `${file} did not parse`);
+  }
+  assert.equal(TYPESCRIPT_AUTHORITY_MAJOR, 7);
+});

@@ -424,9 +424,19 @@ jobs:
 
       # TypeScript 7 is the sole type-check authority — Rolldown (the build
       # step below) does not type-check, it only bundles already-valid TS.
-      - name: Typecheck (tsc --noEmit, TS7)
+      #
+      # `typecheck:all`, not `typecheck`: this gate used to check only
+      # tsconfig.json, leaving the published-smoke and scripts configurations
+      # unchecked until `vscode:prepublish` — so a TS7 diagnostic in
+      # scripts/** or the published-smoke suite could merge green and only
+      # surface at publish time. It also runs `typecheck:authority` first,
+      # which proves the compiler that runs really is TypeScript 7; TS6 and
+      # TS7 compile and emit identically for this tree, so a slide back to
+      # the old compiler is otherwise silent. See
+      # vscode-extension/scripts/check-typescript-authority.js.
+      - name: Typecheck (tsc --noEmit, all five TS7 authority configs)
         working-directory: vscode-extension
-        run: npm run typecheck
+        run: npm run typecheck:all
 
       # Rolldown (#3662, final step of the TS7 migration train) replaces TS
       # emission as the production artifact builder: src/extension.ts ->
