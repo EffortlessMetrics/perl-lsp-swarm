@@ -497,6 +497,75 @@ fn parse_unrelated_option_offers_no_suggestion() {
     assert_eq!(rendered, "Unknown option: --zzzzzzzzzz");
 }
 
+/// A conflict between two *valid* flags must never be reported as an unknown
+/// option. `--stdio` and `--socket` both exist; the defect is that they cannot
+/// be combined, and naming `--stdio` as unknown states a falsehood while
+/// hiding the actual cause.
+#[test]
+fn conflicting_valid_flags_are_not_reported_as_unknown() {
+    let result = parse_args(["perl-lsp", "--stdio", "--socket"]);
+
+    let Err(err) = result else {
+        panic!("--stdio --socket must not parse");
+    };
+
+    assert!(
+        matches!(err, LaunchParseError::ParserDiagnostic { .. }),
+        "an argument conflict is not an unknown option: {err:?}"
+    );
+
+    let rendered = format!("{err}");
+    assert!(
+        !rendered.contains("Unknown option"),
+        "a valid flag must never be called unknown: {rendered}"
+    );
+    assert!(
+        rendered.contains("--stdio") && rendered.contains("--socket"),
+        "the diagnostic must name both sides of the conflict: {rendered}"
+    );
+}
+
+/// An invalid value keeps the parser's explanation of what was rejected.
+#[test]
+fn invalid_value_keeps_the_parser_diagnostic() {
+    let result = parse_args(["perl-lsp", "--eager-workspace-indexing", "notabool"]);
+
+    let Err(err) = result else {
+        panic!("a non-boolean value must not parse");
+    };
+
+    let rendered = format!("{err}");
+    assert!(
+        !rendered.contains("Unknown option"),
+        "a known flag with a bad value is not an unknown option: {rendered}"
+    );
+    assert!(
+        rendered.contains("notabool"),
+        "the diagnostic must name the rejected value: {rendered}"
+    );
+}
+
+/// A missing value keeps the parser's explanation rather than being flattened
+/// into an "unknown option" claim about a flag that exists.
+#[test]
+fn missing_value_keeps_the_parser_diagnostic() {
+    let result = parse_args(["perl-lsp", "--diagnostic-debounce-ms"]);
+
+    let Err(err) = result else {
+        panic!("a flag missing its value must not parse");
+    };
+
+    let rendered = format!("{err}");
+    assert!(
+        !rendered.contains("Unknown option"),
+        "a known flag missing its value is not an unknown option: {rendered}"
+    );
+    assert!(
+        rendered.contains("--diagnostic-debounce-ms"),
+        "the diagnostic must name the flag: {rendered}"
+    );
+}
+
 /// Whatever the token, the message never carries clap's usage banner or its
 /// `--help` pointer — the CLI owns that output.
 #[test]
