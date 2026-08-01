@@ -7,8 +7,9 @@
 > The worked examples still use v0.8.3 and have not been re-verified against the
 > current release process. Steps 5, 8, and 9 have been corrected against the
 > shipping asset names; treat the rest as a template to check, not a script to
-> run. [`docs/RELEASE_PROCESS.md`](../RELEASE_PROCESS.md) and
-> [`RELEASE.md`](../../RELEASE.md) are the current authority.
+> run. [`docs/RELEASE_PROCESS.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/RELEASE_PROCESS.md)
+> and [`RELEASE.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/RELEASE.md)
+> are the current authority.
 
 This document provides a template for a future general availability release.
 
@@ -36,7 +37,7 @@ sed -i "s/^version = \".*\"/version = \"$VERSION\"/" crates/tree-sitter-perl-rs/
 cargo update
 
 # Verify builds
-cargo build -p perl-parser --bin perl-lsp --release
+cargo build -p perllsp --bin perllsp --release
 ```
 
 ### 2. Create & Push Tag (2 min)
@@ -217,9 +218,9 @@ documents against the release that just shipped:
 
 | Surface | What to confirm |
 | --- | --- |
-| [`README.md`](../../README.md) Install | Commands still run on the new version |
-| [`docs/how-to/INSTALLATION.md`](../how-to/INSTALLATION.md) | Per-platform detail, including the Windows caveats |
-| [`docs/tutorials/GETTING_STARTED.md`](../tutorials/GETTING_STARTED.md) | First-run path still matches shipped behavior |
+| [`README.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/README.md) Install | Commands still run on the new version |
+| [`docs/how-to/INSTALLATION.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md) | Per-platform detail, including the Windows caveats |
+| [`docs/tutorials/GETTING_STARTED.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/tutorials/GETTING_STARTED.md) | First-run path still matches shipped behavior |
 
 Only change these when the release actually changed installation behavior.
 Restating install commands in a fourth place is what produced the drift this
@@ -282,9 +283,9 @@ release assets, extract it, and add the extracted directory to `PATH`.
 
 ### 📚 Documentation
 
-- [Getting Started](../tutorials/GETTING_STARTED.md)
-- [LSP Features](../explanation/LSP_DOCUMENTATION.md)
-- [Troubleshooting](../how-to/TROUBLESHOOTING.md)
+- [Getting Started](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/tutorials/GETTING_STARTED.md)
+- [LSP Features](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/explanation/LSP_DOCUMENTATION.md)
+- [Troubleshooting](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/how-to/TROUBLESHOOTING.md)
 
 ### 🙏 Contributors
 
