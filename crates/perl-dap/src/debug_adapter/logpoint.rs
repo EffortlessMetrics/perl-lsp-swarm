@@ -92,10 +92,13 @@ pub(super) struct PendingLogpoint {
 }
 
 impl PendingLogpoint {
-    /// Build a capture for `templates`, or `None` when none of them reference a
-    /// scalar the adapter can resolve (in which case the templates are already their
-    /// own final text).
-    pub(super) fn new(marker_id: u64, templates: Vec<String>) -> Option<Self> {
+    /// Build a capture for `templates`.
+    ///
+    /// Returns `Err(templates)` — never a bare `None` — when none of them reference a
+    /// scalar the adapter can resolve. Handing the templates back is what keeps a
+    /// caller from moving them in and losing them: in that case they are already
+    /// their own final text and must still be emitted.
+    pub(super) fn new(marker_id: u64, templates: Vec<String>) -> Result<Self, Vec<String>> {
         let mut names: Vec<String> = Vec::new();
         for template in &templates {
             for name in referenced_scalars(template) {
@@ -105,10 +108,10 @@ impl PendingLogpoint {
             }
         }
         if names.is_empty() {
-            return None;
+            return Err(templates);
         }
 
-        Some(Self {
+        Ok(Self {
             begin_marker: format!("DAP_LOGPOINT_BEGIN_{marker_id}"),
             end_marker: format!("DAP_LOGPOINT_END_{marker_id}"),
             names,
@@ -191,15 +194,23 @@ mod tests {
         assert!(referenced_scalars("{@list} {%h} {$x + 1} {$Pkg::x} {$x[0]} {}").is_empty());
     }
 
+    /// A template with nothing to resolve must hand its text back rather than be
+    /// swallowed: the caller moves the messages in, so a discarding `None` would
+    /// silently drop a plain logpoint like `"reached here"`.
     #[test]
-    fn no_capture_when_template_has_nothing_to_resolve() {
-        assert!(PendingLogpoint::new(1, vec!["plain message".to_string()]).is_none());
+    fn templates_with_nothing_to_resolve_are_returned_not_dropped() -> Result<(), String> {
+        let templates = vec!["plain message".to_string(), "{@list} stays put".to_string()];
+        let returned = PendingLogpoint::new(1, templates.clone())
+            .err()
+            .ok_or("a template with no resolvable scalar must not build a capture")?;
+        assert_eq!(returned, templates, "templates must come back intact");
+        Ok(())
     }
 
     #[test]
     fn query_commands_are_framed_and_quote_free() -> Result<(), String> {
         let pending = PendingLogpoint::new(7, vec!["x={$x}".to_string()])
-            .ok_or("template references $x, so a capture is expected")?;
+            .map_err(|_| "template references $x, so a capture is expected")?;
         let commands = pending.query_commands();
         assert_eq!(commands.len(), 3, "begin marker, one value query, end marker");
         assert!(commands[0].contains("DAP_LOGPOINT_BEGIN_7"));
@@ -211,7 +222,7 @@ mod tests {
     #[test]
     fn capture_folds_framed_values_into_the_template() -> Result<(), String> {
         let mut pending = PendingLogpoint::new(3, vec!["x={$x} y={$y}".to_string()])
-            .ok_or("template references scalars, so a capture is expected")?;
+            .map_err(|_| "template references scalars, so a capture is expected")?;
 
         assert_eq!(pending.observe_line("unrelated debuggee output"), LogpointStep::Passthrough);
         assert_eq!(pending.observe_line("DAP_LOGPOINT_BEGIN_3"), LogpointStep::Consumed);
@@ -227,7 +238,7 @@ mod tests {
     #[test]
     fn missing_value_keeps_the_original_expression() -> Result<(), String> {
         let mut pending = PendingLogpoint::new(4, vec!["x={$x}".to_string()])
-            .ok_or("template references $x, so a capture is expected")?;
+            .map_err(|_| "template references $x, so a capture is expected")?;
         assert_eq!(pending.observe_line("DAP_LOGPOINT_BEGIN_4"), LogpointStep::Consumed);
         assert_eq!(pending.observe_line("DAP_LOGPOINT_END_4"), LogpointStep::Finished);
         assert_eq!(pending.into_messages(), vec!["x={$x}".to_string()]);
@@ -237,7 +248,7 @@ mod tests {
     #[test]
     fn capture_gives_up_instead_of_swallowing_the_message() -> Result<(), String> {
         let mut pending = PendingLogpoint::new(5, vec!["x={$x}".to_string()])
-            .ok_or("template references $x, so a capture is expected")?;
+            .map_err(|_| "template references $x, so a capture is expected")?;
         for _ in 0..MAX_CAPTURE_LINES {
             assert_eq!(pending.observe_line("noise"), LogpointStep::Passthrough);
         }

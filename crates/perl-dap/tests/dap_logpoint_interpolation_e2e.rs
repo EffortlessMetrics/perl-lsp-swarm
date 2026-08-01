@@ -122,6 +122,38 @@ fn test_logpoint_interpolates_live_scalar_values() -> TestResult {
     Ok(())
 }
 
+/// A logpoint with nothing to interpolate must still be emitted.
+///
+/// Wiring interpolation in must not cost the plain case: the templates are handed
+/// to the capture builder, and an implementation that drops them when no capture is
+/// needed would silently swallow `"reached checkpoint"` entirely.
+#[test]
+fn test_logpoint_without_interpolation_is_still_emitted() -> TestResult {
+    if !perl_available() {
+        eprintln!("Skipping test_logpoint_without_interpolation_is_still_emitted - perl missing");
+        return Ok(());
+    }
+
+    let workspace = tempdir()?;
+    let script = workspace.path().join("logpoint_plain_e2e.pl");
+    write(&script, logpoint_script())?;
+    let script_str = script.to_str().ok_or("script path is not valid UTF-8")?.to_string();
+
+    let mut session = DapWorkflowSession::new(workflow_timeout())?;
+    session.launch(&script_str)?;
+    set_logpoint(&mut session, &script_str, LOGPOINT_LINE, "reached checkpoint")?;
+    session.configuration_done()?;
+
+    let console = collect_console_output(&session);
+
+    assert!(
+        console.iter().any(|line| line.contains("reached checkpoint")),
+        "a logpoint with no expressions must still reach the client; console was {console:?}"
+    );
+
+    Ok(())
+}
+
 /// An expression the interpolator cannot resolve is left verbatim rather than
 /// silently dropped or smuggled into the debugger command stream.
 #[test]

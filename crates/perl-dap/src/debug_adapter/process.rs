@@ -944,24 +944,37 @@ impl DebugAdapter {
                                             // replies are folded in at the top of this
                                             // loop and the message is emitted then
                                             // instead of below (#5045).
-                                            if let Some(pending) = PendingLogpoint::new(
+                                            // Every branch below either hands the messages
+                                            // back to `logpoint_messages` for immediate
+                                            // emission or moves them into the capture that
+                                            // will emit them; none may drop them.
+                                            logpoint_messages = match PendingLogpoint::new(
                                                 logpoint_marker_id,
                                                 std::mem::take(&mut logpoint_messages),
                                             ) {
-                                                logpoint_marker_id =
-                                                    logpoint_marker_id.saturating_add(1);
-                                                if let Some(stdin) = s.process.stdin.as_mut() {
-                                                    for command in pending.query_commands() {
-                                                        let _ = stdin.write_all(command.as_bytes());
+                                                // Nothing to resolve: the templates are
+                                                // already their own final text.
+                                                Err(templates) => templates,
+                                                Ok(pending) => {
+                                                    logpoint_marker_id =
+                                                        logpoint_marker_id.saturating_add(1);
+                                                    match s.process.stdin.as_mut() {
+                                                        Some(stdin) => {
+                                                            for command in pending.query_commands()
+                                                            {
+                                                                let _ = stdin
+                                                                    .write_all(command.as_bytes());
+                                                            }
+                                                            let _ = stdin.flush();
+                                                            pending_logpoint = Some(pending);
+                                                            Vec::new()
+                                                        }
+                                                        // No stdin to ask on: emit the raw
+                                                        // templates rather than nothing.
+                                                        None => pending.into_messages(),
                                                     }
-                                                    let _ = stdin.flush();
-                                                    pending_logpoint = Some(pending);
-                                                } else {
-                                                    // No stdin to ask on: emit the raw
-                                                    // templates rather than nothing.
-                                                    logpoint_messages = pending.into_messages();
                                                 }
-                                            }
+                                            };
 
                                             if breakpoint_outcome.should_stop {
                                                 stop_reason = "breakpoint".to_string();
