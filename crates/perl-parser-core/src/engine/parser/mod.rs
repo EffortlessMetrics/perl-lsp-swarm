@@ -511,6 +511,8 @@ mod slash_ambiguity_tests;
 #[cfg(test)]
 mod statement_modifier_tests;
 #[cfg(test)]
+mod statement_terminator_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tie_tests;
