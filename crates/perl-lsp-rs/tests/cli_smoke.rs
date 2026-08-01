@@ -1,4 +1,5 @@
 use assert_cmd::cargo::cargo_bin_cmd;
+use predicates::prelude::PredicateBooleanExt;
 
 #[test]
 fn health_prints_ok() {
@@ -161,6 +162,120 @@ fn check_valid_perl_file() -> Result<(), Box<dyn std::error::Error>> {
     let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
     let mut cmd = cargo_bin_cmd!("perl-lsp");
     cmd.arg("--check").arg(file_str).assert().success().stdout(predicates::str::contains("ok"));
+    Ok(())
+}
+
+/// Regression: `--check` reported `ok` and exited 0 on Perl that `perl -c`
+/// rejects, because it read only the `Result` from `parse()` and ignored the
+/// diagnostics in `errors()`. The parser recovers from each of these, so
+/// `parse()` returns `Ok` for every one of them.
+///
+/// Each input below was confirmed rejected by real `perl -c`.
+#[test]
+fn check_reports_recovered_parse_errors() -> Result<(), Box<dyn std::error::Error>> {
+    // (file name, source, a fragment of the expected diagnostic)
+    let cases: &[(&str, &str, &str)] = &[
+        ("missing_operand.pl", "my $x = ;\n", "Missing operand"),
+        ("unclosed_block.pl", "sub foo {\n    my $x = 1;\n", "Unclosed block"),
+        ("unclosed_paren.pl", "if ($x { print \"hi\"; }\n", "expected"),
+        ("unterminated_string.pl", "print \"unterminated\n", "unknown token"),
+    ];
+
+    for (name, source, expected) in cases {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join(name);
+        std::fs::write(&file, source)?;
+        let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
+
+        let mut cmd = cargo_bin_cmd!("perl-lsp");
+        cmd.arg("--check")
+            .arg(file_str)
+            .assert()
+            .failure()
+            .stdout(predicates::str::contains("FAIL"))
+            .stdout(predicates::str::contains(*expected));
+    }
+
+    Ok(())
+}
+
+/// A file can carry BOTH a fatal error and earlier recovered ones:
+/// `parse_program` records recoverable diagnostics as it goes, then propagates
+/// immediately on `RecursionLimit` / `NestingTooDeep` / `Cancelled` without
+/// recording those. Both must be reported, and the file must count once.
+///
+/// This is a deliberate broadening — the pre-fix code discarded `errors()`
+/// entirely in the `Err` branch and printed only the fatal message.
+#[test]
+fn check_reports_fatal_and_earlier_recovered_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("mixed_fatal.pl");
+    // A recoverable error first, then nesting past the parser's depth limit.
+    let source = format!("my $x = ;\nmy $y = {}1{};\n", "(".repeat(300), ")".repeat(300));
+    std::fs::write(&file, source)?;
+    let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.arg("--check")
+        .arg(file_str)
+        .assert()
+        .failure()
+        // the fatal condition
+        .stdout(predicates::str::contains("Nesting depth limit exceeded"))
+        // and the earlier recoverable one, which the old code dropped
+        .stdout(predicates::str::contains("Missing operand"));
+
+    Ok(())
+}
+
+/// Advisory diagnostics must not fail `--check`. `ParseError::Advisory` reports
+/// `blocks_clean_parse() == false`, and real `perl -c` accepts this file
+/// (`advisory.pl syntax OK`), so treating it as an error would reject valid
+/// Perl. The advisory is still surfaced, just not as a failure.
+#[test]
+fn check_advisory_diagnostics_do_not_fail() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("advisory.pl");
+    // Nested quantifiers: a backtracking-risk advisory, not a syntax error.
+    std::fs::write(&file, "my $r = qr/^(a+)+b$/;\nprint \"ok\\n\";\n")?;
+    let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.arg("--check")
+        .arg(file_str)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("ok"))
+        .stdout(predicates::str::contains("advisory:"))
+        .stdout(predicates::str::contains("FAIL").not());
+
+    Ok(())
+}
+
+/// A file whose errors are all recovered must still count toward the multi-file
+/// summary and drive a non-zero exit, alongside a clean file.
+#[test]
+fn check_mixed_files_fails_and_counts_recovered_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+
+    let good = dir.path().join("good.pl");
+    std::fs::write(&good, "use strict;\nprint \"hello\\n\";\n")?;
+    let bad = dir.path().join("bad.pl");
+    std::fs::write(&bad, "my $x = ;\n")?;
+
+    let good_str = good.to_str().ok_or("non-UTF-8 temp path")?;
+    let bad_str = bad.to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.arg("--check")
+        .arg(good_str)
+        .arg(bad_str)
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("ok"))
+        .stdout(predicates::str::contains("FAIL"))
+        .stdout(predicates::str::contains("2 files checked, 1 with errors"));
+
     Ok(())
 }
 

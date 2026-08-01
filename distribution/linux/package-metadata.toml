@@ -1,14 +1,21 @@
 package = "perl-lsp"
 display_name = "Perl Language Server"
-summary = "Public-alpha Perl language server and debug adapter"
+summary = "Public-beta Perl language server and debug adapter"
 homepage = "https://github.com/EffortlessMetrics/perl-lsp"
-license = "MIT"
+# The project is dual-licensed: LICENSE-MIT and LICENSE-APACHE are both in the
+# repository root and Formula/perllsp.rb declares `any_of: ["MIT", "Apache-2.0"]`.
+# Rendered verbatim into the dnf `License:` field and the pacman `license=()`
+# array, both of which accept an SPDX expression.
+license = "MIT OR Apache-2.0"
 maintainer = "EffortlessMetrics <git@effortlesssteven.com>"
 upstream_issue = "https://github.com/EffortlessMetrics/perl-lsp/issues/2095"
 
-# Release artifacts used as package inputs.
-linux_gnu_x86_64_asset = "perl-lsp-__RELEASE_VERSION__-x86_64-unknown-linux-gnu.tar.gz"
-linux_gnu_aarch64_asset = "perl-lsp-__RELEASE_VERSION__-aarch64-unknown-linux-gnu.tar.gz"
+# Release artifacts used as package inputs. The release workflow packages every
+# archive as `perllsp-<version>-<target>` (.github/workflows/release.yml:151,165),
+# not `perl-lsp-...`, so these names must use the `perllsp` prefix or the
+# rendered packages point at download URLs that 404.
+linux_gnu_x86_64_asset = "perllsp-__RELEASE_VERSION__-x86_64-unknown-linux-gnu.tar.gz"
+linux_gnu_aarch64_asset = "perllsp-__RELEASE_VERSION__-aarch64-unknown-linux-gnu.tar.gz"
 
 # Package manager targets covered by this scaffold.
 targets = ["apt", "dnf", "pacman"]

@@ -304,8 +304,8 @@ a synonym for "process" in general:
 - **gate** — a coarse pipeline stage with a real entry/exit condition (see
   [PIPELINE_GATES.md](PIPELINE_GATES.md)) — not any arbitrary checkpoint.
 - **receipt** — an actual structured, persistent result bound to a SHA — not
-  every log line or narrative status update (see *Receipts + PR cockpit* in
-  [modern-claude-operating-model.md](../swarm/modern-claude-operating-model.md#receipts--pr-cockpit)).
+  every log line or narrative status update (see *Proof and formal review* in
+  [modern-claude-operating-model.md](../swarm/modern-claude-operating-model.md#proof-and-formal-review)).
 - **builder-ready** — the specific label/live-signal state this repo already
   treats as authoritative (see
   [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md)) — not "seems done."

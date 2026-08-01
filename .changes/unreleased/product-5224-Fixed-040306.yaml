@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Fixed
+body: "The document lock is now released before save reconciliation runs, instead of being held across it, removing a lock-contention/hang risk on save in larger workspaces."
+time: 2026-07-29T04:03:06Z
+custom:
+  PR: "5224"
+  Slug: release-document-lock-before-save
+  Breaking: "no"

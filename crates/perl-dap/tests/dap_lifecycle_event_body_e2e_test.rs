@@ -17,13 +17,13 @@
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use perl_tdd_support::must_some;
 use serde_json::{Value, json};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::Duration;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessage>) {
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     let mut adapter = DebugAdapter::new();
     adapter.set_event_sender(tx);
     (adapter, rx)

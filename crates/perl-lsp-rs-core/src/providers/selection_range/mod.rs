@@ -32,6 +32,9 @@ fn make_range(text: &str, start: usize, end: usize) -> Range {
 // ---------------------------------------------------------------------------
 
 /// Find the word (identifier/variable) span around `off`.
+///
+/// Includes `::` in the span so that qualified names like `Foo::Bar::baz`
+/// are treated as a single word for selection expansion.
 fn word_span(bytes: &[u8], off: usize) -> (usize, usize) {
     let safe_off = off.min(bytes.len().saturating_sub(1));
     let start = (0..=safe_off)
@@ -42,11 +45,12 @@ fn word_span(bytes: &[u8], off: usize) -> (usize, usize) {
                     && bytes[i - 1] != b'_'
                     && bytes[i - 1] != b'$'
                     && bytes[i - 1] != b'@'
-                    && bytes[i - 1] != b'%')
+                    && bytes[i - 1] != b'%'
+                    && bytes[i - 1] != b':')
         })
         .unwrap_or(off);
     let end = (off..bytes.len())
-        .find(|&i| !bytes[i].is_ascii_alphanumeric() && bytes[i] != b'_')
+        .find(|&i| !bytes[i].is_ascii_alphanumeric() && bytes[i] != b'_' && bytes[i] != b':')
         .unwrap_or(bytes.len());
     (start, end)
 }

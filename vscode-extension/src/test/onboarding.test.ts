@@ -572,6 +572,59 @@ describe('classifyStartupFailure', () => {
 });
 
 // ---------------------------------------------------------------------------
+// showWelcomeNotification
+// ---------------------------------------------------------------------------
+
+describe('OnboardingManager.showWelcomeNotification', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('markWelcomed is NOT called before the notification resolves', async () => {
+    const ctx = makeContext();
+    const mgr = new OnboardingManager(ctx, makeOutputChannel());
+    const updateSpy = ctx.globalState.update as jest.Mock;
+
+    let welcomedDuringNotification = false;
+    (vscode.window.showInformationMessage as jest.Mock).mockImplementation(async () => {
+      welcomedDuringNotification = updateSpy.mock.calls.some(
+        (call) => call[0] === 'perl-lsp.welcomed',
+      );
+      return undefined;
+    });
+
+    await mgr.showWelcomeNotification(null);
+
+    expect(welcomedDuringNotification).toBe(false);
+    expect(updateSpy).toHaveBeenCalledWith('perl-lsp.welcomed', true);
+  });
+
+  test('markWelcomed is called even when the user dismisses the notification', async () => {
+    const ctx = makeContext();
+    const mgr = new OnboardingManager(ctx, makeOutputChannel());
+    const updateSpy = ctx.globalState.update as jest.Mock;
+
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue(undefined);
+
+    await mgr.showWelcomeNotification(null);
+
+    expect(updateSpy).toHaveBeenCalledWith('perl-lsp.welcomed', true);
+  });
+
+  test('executes health check command when user clicks "Run Health Check"', async () => {
+    const ctx = makeContext();
+    const mgr = new OnboardingManager(ctx, makeOutputChannel());
+
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Run Health Check');
+    const executeCommandSpy = jest.spyOn(vscode.commands, 'executeCommand');
+
+    await mgr.showWelcomeNotification('/path/to/perllsp');
+
+    expect(executeCommandSpy).toHaveBeenCalledWith('perl-lsp.runHealthCheck', '/path/to/perllsp');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // OnboardingManager.runStartupDiagnostics
 // ---------------------------------------------------------------------------
 

@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Workspace/symbol fuzzy search no longer matches nearly every symbol for a 1-character query; subsequence matching now requires at least 2 characters, with exact/substring matching still available for shorter queries."
+time: 2026-07-30T00:32:51Z
+custom:
+  PR: "5337"
+  Slug: fuzzy-subsequence-min-length
+  Breaking: "no"

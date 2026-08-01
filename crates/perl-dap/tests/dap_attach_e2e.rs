@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::error::Error;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -96,45 +96,39 @@ fn dap_attach_e2e_tcp_loopback() -> TestResult {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
 
-    let server_handle = thread::spawn(move || {
-        let result = (|| -> Result<(), Box<dyn Error + Send + Sync>> {
-            let (mut socket, _) = listener.accept()?;
+    let server_handle = thread::spawn(move || -> Result<(), Box<dyn Error + Send + Sync>> {
+        let (mut socket, _) = listener.accept()?;
 
-            let stopped_event = json!({
-                "type": "event",
-                "seq": 1,
-                "event": "stopped",
-                "body": {
-                    "reason": "breakpoint",
-                    "threadId": 7,
-                    "allThreadsStopped": true
-                }
-            })
-            .to_string();
-            socket.write_all(&frame(stopped_event.as_bytes()))?;
-            socket.flush()?;
-
-            let mut buf = [0u8; 512];
-            loop {
-                match socket.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(_) => continue,
-                    Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(err) => return Err(Box::new(err)),
-                }
+        let stopped_event = json!({
+            "type": "event",
+            "seq": 1,
+            "event": "stopped",
+            "body": {
+                "reason": "breakpoint",
+                "threadId": 7,
+                "allThreadsStopped": true
             }
+        })
+        .to_string();
+        socket.write_all(&frame(stopped_event.as_bytes()))?;
+        socket.flush()?;
 
-            Ok(())
-        })();
-
-        if let Err(err) = result {
-            panic!("fake TCP debugger server failed: {err}");
+        let mut buf = [0u8; 512];
+        loop {
+            match socket.read(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => continue,
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(err) => return Err(Box::new(err)),
+            }
         }
+
+        Ok(())
     });
 
     let timeout = smoke_timeout();
     let mut adapter = DebugAdapter::new();
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let init_body = response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
@@ -173,7 +167,10 @@ fn dap_attach_e2e_tcp_loopback() -> TestResult {
     response_success(adapter.handle_request(4, "disconnect", Some(json!({}))), "disconnect")?;
     let _terminated = wait_for_event(&rx, "terminated", timeout)?;
 
-    server_handle.join().map_err(|_| std::io::Error::other("fake TCP debugger server panicked"))?;
+    server_handle
+        .join()
+        .map_err(|_| std::io::Error::other("fake TCP debugger server panicked"))?
+        .map_err(|err| std::io::Error::other(err.to_string()))?;
     Ok(())
 }
 
@@ -182,45 +179,39 @@ fn dap_attach_e2e_tcp_loopback_stop_on_entry_and_server_stopped() -> TestResult 
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
 
-    let server_handle = thread::spawn(move || {
-        let result = (|| -> Result<(), Box<dyn Error + Send + Sync>> {
-            let (mut socket, _) = listener.accept()?;
+    let server_handle = thread::spawn(move || -> Result<(), Box<dyn Error + Send + Sync>> {
+        let (mut socket, _) = listener.accept()?;
 
-            let stopped_event = json!({
-                "type": "event",
-                "seq": 1,
-                "event": "stopped",
-                "body": {
-                    "reason": "pause",
-                    "threadId": 19,
-                    "allThreadsStopped": true
-                }
-            })
-            .to_string();
-            socket.write_all(&frame(stopped_event.as_bytes()))?;
-            socket.flush()?;
-
-            let mut buf = [0u8; 512];
-            loop {
-                match socket.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(_) => continue,
-                    Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(err) => return Err(Box::new(err)),
-                }
+        let stopped_event = json!({
+            "type": "event",
+            "seq": 1,
+            "event": "stopped",
+            "body": {
+                "reason": "pause",
+                "threadId": 19,
+                "allThreadsStopped": true
             }
+        })
+        .to_string();
+        socket.write_all(&frame(stopped_event.as_bytes()))?;
+        socket.flush()?;
 
-            Ok(())
-        })();
-
-        if let Err(err) = result {
-            panic!("fake TCP debugger server failed: {err}");
+        let mut buf = [0u8; 512];
+        loop {
+            match socket.read(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => continue,
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(err) => return Err(Box::new(err)),
+            }
         }
+
+        Ok(())
     });
 
     let timeout = smoke_timeout();
     let mut adapter = DebugAdapter::new();
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
@@ -253,7 +244,10 @@ fn dap_attach_e2e_tcp_loopback_stop_on_entry_and_server_stopped() -> TestResult 
     response_success(adapter.handle_request(3, "disconnect", Some(json!({}))), "disconnect")?;
     let _terminated = wait_for_event(&rx, "terminated", timeout)?;
 
-    server_handle.join().map_err(|_| std::io::Error::other("fake TCP debugger server panicked"))?;
+    server_handle
+        .join()
+        .map_err(|_| std::io::Error::other("fake TCP debugger server panicked"))?
+        .map_err(|err| std::io::Error::other(err.to_string()))?;
     Ok(())
 }
 

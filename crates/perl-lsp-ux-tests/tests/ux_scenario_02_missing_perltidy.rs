@@ -1,5 +1,5 @@
 // Test infrastructure — allow test-friendly patterns.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 //! Scenario 02 — Missing perltidy.
 //!
@@ -69,10 +69,10 @@ fn scenario_02_formatting_without_perltidy_does_not_crash() {
 }
 
 #[test]
-fn scenario_02_server_remains_alive_after_failed_format() {
+fn scenario_02_server_remains_alive_after_failed_format() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_02: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let source = "my $x = 1;\n";
@@ -86,7 +86,10 @@ fn scenario_02_server_remains_alive_after_failed_format() {
     match hover {
         Ok(_) => {}
         Err(e) => {
-            panic!("Server unresponsive after failed formatting — UX regression: {}", e);
+            return Err(format!(
+                "Server unresponsive after failed formatting — UX regression: {e}"
+            ));
         }
     }
+    Ok(())
 }

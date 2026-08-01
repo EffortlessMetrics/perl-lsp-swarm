@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Fixed
+body: "Settings placed under initializationOptions.perl.* (perl.workspace.*, perl.inlayHints.*, perl.limits.*, as documented) are now actually applied as a base config layer, instead of being silently dropped because only workspaceFolders/rootUri/rootPath/disabledFeatures were read from initialize params."
+time: 2026-07-23T02:18:19Z
+custom:
+  PR: "4722"
+  Slug: initialization-options-perl-base-layer
+  Breaking: "no"

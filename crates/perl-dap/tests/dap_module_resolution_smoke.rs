@@ -14,7 +14,7 @@ use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
@@ -197,7 +197,7 @@ fn test_module_breakpoint_hit_status_receipt() -> TestResult {
     let timeout = smoke_timeout();
 
     let mut adapter = DebugAdapter::new();
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     // Initialize

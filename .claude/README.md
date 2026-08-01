@@ -1,51 +1,44 @@
-# Claude Control Plane
+# Claude provider adapter
 
-This repo runs one swarm, not multiple parallel pack stories.
+Claude enters through the root [`CLAUDE.md`](../CLAUDE.md) and loads focused procedures from [`.claude/skills/`](./skills/).
 
-The canonical runtime surfaces are:
+## Active surfaces
 
-- `.claude/agents/` — agent definitions and role-specific swarm instructions
-- `.claude/commands/` — slash entrypoints (step skills, shared ops, domain ops)
-- `.claude/settings.json` — shared permissions and hook enforcement
+- `CLAUDE.md` — complete Claude-native repository router and operating contract;
+- `.claude/skills/` — six public flows, focused atomic transformations, reusable lenses, and optional mechanical operations;
+- `.claude/settings.json` — minimal portable shared settings only.
 
-Legacy directories archived to `docs/reference/archive/` during architecture transition.
+The main Claude thread is normally the warm accountable orchestrator. It may use focused subagents or Agent Teams when a different oracle, context, review direction, or genuinely distinct claim lane materially improves the result. Agent identity is not a lifecycle state, and no fixed lead/worker relay defines the development method.
 
-## Agent Roster
+## Public flows
 
-See [agents/AGENT_CATALOG.md](./agents/AGENT_CATALOG.md) for the full inventory.
+```text
+deliver-goal
+deliver-pr
+prepare-issue
+prepare-proof
+build-candidate
+finish-pr
+```
 
-### Pipeline Leads (TeamCreate — long-running coordinators)
-- `lead-discovery` (sonnet) — find work: spawns scouts, plan-reviewers
-- `lead-build` (sonnet) — build from specs: spawns builders
-- `lead-review` (sonnet) — review and merge: spawns reviewers, ops, wisdom
+Each flow enters from live GitHub and repository state, follows locally named skill routes, and continues until the requested outcome is reconciled, left explicitly in flight under GitHub authority, or bounded by a real blocker or `NOT_PROVEN` evidence.
 
-### Worker Agents (Agent() — worktree-isolated, one task, exit)
-- `scout` (haiku), `scout-parser` (haiku), `scout-lsp` (haiku), `scout-dap` (sonnet)
-- `plan-reviewer` (sonnet), `builder` (sonnet)
-- `reviewer` (haiku), `reviewer-deep` (sonnet)
-- `ops` (haiku), `research-web` (sonnet), `wisdom` (sonnet)
+## State boundaries
 
-## Operating Doctrine
+- GitHub issues, PRs, reviews, threads, checks, rulesets, and merges own live transaction state.
+- Repository specs, ADRs, policies, tests, and method documents own durable contracts.
+- Claude plans, task lists, teammate liveness, worktrees, model choices, retries, and local helper state remain runtime-local.
 
-- worktree = write boundary
-- worker = context boundary
-- commands = slash entrypoints for all agent procedures
-- hooks and settings = deterministic enforcement
-- GitHub issues and PRs = persistent work state
+Do not recreate stage state through labels, command catalogues, persona rosters, hook telemetry, tracked current-goal pointers, or worktree-slot ownership records.
 
-Two interfaces for two scales: Agent() spawns worktree-isolated workers
-for individual tasks. TeamCreate with pipeline leads coordinates workers at
-scale (10+ tasks). Step skills provide mechanical instructions for each
-todo step. Domain ops (`/parser-fix`, `/verify`, `/corpus-ratchet`, etc.)
-handle specialized procedures.
+## Worktrees
 
-The roster mapping lives in
-[agents/AGENT_CATALOG.md](./agents/AGENT_CATALOG.md). It records agent models,
-step counts, and roles.
+Ordinary Git worktrees are candidate isolation, not claim or semantic-surface reservations. One writer mutates each current candidate branch/worktree at a time; distinct claim lanes use optimistic Git concurrency and own their actual merge or combined-tree repair.
 
-## State
+The retained `worktree-manager` skill is an optional local reuse/cleanup helper. Its cache is disposable and never outranks Git or GitHub.
 
-Swarm state lives in GitHub (issues, PRs, labels) and `.ops-perl-lsp/swarm-metrics.jsonl`.
-Use `gh issue list`, `gh pr list`, and `/swarm-status` to query current state.
-Reusable worktree slots live in `.ops-perl-lsp/worktree-manager/state.json` and
-are managed through `/worktree-manager`.
+## Historical material
+
+The removed `.claude/commands/` and `.claude/agents/` catalogues remain recoverable through Git history and archived research. They are donor history, not active runtime authority.
+
+The current shared method lives under [`docs/agents/`](../docs/agents/).

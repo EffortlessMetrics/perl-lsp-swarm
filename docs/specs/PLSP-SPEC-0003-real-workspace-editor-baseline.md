@@ -13,7 +13,7 @@ Implemented by:
 - [Dancer2 baseline receipt](../forensics/2026-05-14-real-workspace-baseline-dancer2.md)
 - [Catalyst baseline receipt](../forensics/2026-05-19-real-workspace-baseline-catalyst.md)
 - [provider confidence matrix](../project/status/provider_confidence_matrix.md)
-- [completed active goal manifest](../../.perl-lsp/goals/active.toml)
+- GitHub issue/PR history and current exact baseline receipts; retired goal manifests remain available through Git history
 Status impact: provider cutover, semantic dashboards, real-workspace receipts
 
 ## Current implementation status
@@ -28,8 +28,8 @@ This spec is implemented as a control-plane rule. Current evidence lives in:
 - [support tiers](../project/status/SUPPORT_TIERS.md)
 - [Real Perl Editor Trust implementation plan](../../plans/real-perl-editor-trust/implementation-plan.md)
 
-Current next work is not stored here; see the routing dashboard and real
-workspace receipt/status surfaces.
+Current next work is not stored here or in a tracked selector. Read the current
+GitHub graph and real-workspace receipt/status surfaces for the selected concern.
 
 ## Contract
 

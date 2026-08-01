@@ -1,24 +1,24 @@
-//! Enforce the M4b capability boundary: review/audit agents are mechanically
-//! read-only.
+//! Enforce the retained Claude operation-profile capability boundary.
 //!
-//! Issue #3763 (ledger milestone M4 exit criterion — "review workflows
-//! mechanically cannot write") requires that every review/audit agent profile
-//! *excludes* write/mutating tools from its allowlist, rather than merely
-//! prompting the model against writing. Workflow subagents run in
-//! `acceptEdits` and inherit the parent's tools, so a prompt-level "REVIEW
-//! ONLY" instruction is not a control — the tool allowlist is.
+//! Issue #3763 established an important control: a profile used for a
+//! non-mutating review, audit, external-oracle, or CI-triage operation must not
+//! receive direct mutation tools merely because its prose says not to write.
 //!
-//! This check parses `.claude/agents/*.md` frontmatter and fails if any agent
-//! in the review/audit cohort:
-//!   * has no explicit `tools:` allowlist (fail-closed: no allowlist means it
-//!     inherits every tool, including Edit/Write), or
-//!   * lists any forbidden write/mutating tool (Edit, Write, NotebookEdit,
-//!     MultiEdit, Agent/Task sub-agent spawn, Artifact).
+//! The original gate encoded the historical lifecycle/persona catalogue as a
+//! mandatory list. That made deleting the retired catalogue fail CI even when
+//! the provider-native skill graph intentionally used no custom profiles.
 //!
-//! Writer agents (builder, pr-responder, green-*, red-tdd, ops, lead-*,
-//! spec-planner, ...) are intentionally NOT in the cohort — they legitimately
-//! write. The reference read-only shape is the built-in `Explore` agent, whose
-//! tools exclude Edit/Write/NotebookEdit/Agent.
+//! This check now governs only the small optional operation profiles whose
+//! normal assignment is non-mutating. Their absence is valid: the warm root may
+//! execute the same skill directly or use a provider-native built-in. When one
+//! of these profiles is present, it must carry an explicit `tools:` allowlist
+//! and exclude direct mutation or proxy-spawn tools.
+//!
+//! `Bash` remains available because these profiles inspect Git, tests, logs,
+//! and repository-owned read-only instruments. This gate therefore proves a
+//! bounded direct-tool surface; it does not claim shell-level sandbox isolation
+//! or epistemic independence. Runtime permission inheritance and override
+//! behavior remain capability-audit concerns.
 
 use color_eyre::eyre::{Result, bail, eyre};
 use serde_yaml_ng::Value as YamlValue;
@@ -27,51 +27,39 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Agents that inspect someone else's work and render a verdict (or file a
-/// read-derived report). They must be mechanically read-only: no source edit,
-/// no sub-agent spawn (which would proxy a write).
+/// Optional Claude operation profiles whose normal assignment is
+/// non-mutating. Missing profiles are valid; present profiles are governed.
 ///
-/// Keep this list in sync with `.claude/agents/AGENT_CATALOG.md`. Adding a new
-/// review/audit agent means adding its name here so the boundary is enforced.
-pub const REVIEW_AUDIT_AGENTS: &[&str] = &[
-    "reviewer",
-    "reviewer-deep",
-    "diff-auditor",
-    "maintainer-pr",
-    "maintainer-issue",
-    "architecture-reviewer",
-    "advocatus-diaboli",
-    "accuracy-scout",
-    "research-verifier",
-    "oppositional-planner",
-    "plan-reviewer",
-    "spec-test-code-match",
-    "scout-find-ci-ops-gaps",
-    "scout-find-dap-gaps",
-    "scout-find-docs-receipt-drift",
-    "scout-find-lsp-gaps",
-    "scout-find-parser-gaps",
-    "scout-find-robustness-gaps",
+/// Keep this list aligned with any retained `.claude/agents/operation-*.md`
+/// profiles that claim a fixed-candidate/read-only evidence boundary. Writer
+/// profiles such as lane workers, feedback responders, and merge reconcilers
+/// are intentionally excluded.
+pub const OPTIONAL_NON_MUTATING_PROFILES: &[&str] = &[
+    "operation-ci-triager",
+    "operation-external-oracle",
+    "operation-formal-reviewer",
+    "operation-test-adversary",
 ];
 
-/// Tool names that grant write / mutation / proxy-spawn capability. A
-/// read-only reviewer allowlist must contain none of these.
+/// Tool names that grant direct write, mutation, publication, or proxy-spawn
+/// capability. A governed non-mutating profile allowlist must contain none of
+/// these.
 ///
-/// `Agent`/`Task` are excluded because a reviewer that can spawn a sub-agent
-/// can proxy an arbitrary write through it. `Artifact` publishes a hosted
-/// page (a side effect a pure reviewer does not need).
-pub const FORBIDDEN_WRITE_TOOLS: &[&str] =
+/// `Agent`/`Task` are excluded because a profile could proxy mutation through a
+/// child. `Artifact` publishes a hosted artifact and is unnecessary for these
+/// bounded evidence operations.
+pub const FORBIDDEN_DIRECT_MUTATION_TOOLS: &[&str] =
     &["Edit", "Write", "MultiEdit", "NotebookEdit", "Agent", "Task", "Artifact"];
 
-/// A single policy violation for one review/audit agent.
+/// A single policy violation for one governed operation profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Violation {
     pub agent: String,
     pub reason: String,
 }
 
-/// Validate that every review/audit agent under `root` is mechanically
-/// read-only. `root` defaults to the repository root.
+/// Validate every present optional non-mutating Claude operation profile under
+/// `root`. `root` defaults to the repository root.
 pub fn run(root: Option<PathBuf>) -> Result<()> {
     let root = match root {
         Some(root) => root,
@@ -82,17 +70,16 @@ pub fn run(root: Option<PathBuf>) -> Result<()> {
 
     if violations.is_empty() {
         println!(
-            "M4b capability boundary OK: {} review/audit agents are mechanically read-only ({})",
-            REVIEW_AUDIT_AGENTS.len(),
+            "M4b capability boundary OK: {} optional non-mutating Claude operation profile(s) present; all exclude direct mutation/proxy tools ({})",
+            present_profile_count(&agents_dir),
             agents_dir.display()
         );
         return Ok(());
     }
 
     let mut message = String::from(
-        "M4b capability boundary FAILED: review/audit agents must exclude write/mutating tools \
-         (Edit/Write/NotebookEdit/MultiEdit/Agent/Task/Artifact) and carry an explicit read-only \
-         tools: allowlist. Offenders:\n",
+        "M4b capability boundary FAILED: present non-mutating Claude operation profiles must exclude direct mutation/proxy tools \
+         (Edit/Write/NotebookEdit/MultiEdit/Agent/Task/Artifact) and carry an explicit tools: allowlist. Offenders:\n",
     );
     for violation in &violations {
         message.push_str(&format!("  - {}: {}\n", violation.agent, violation.reason));
@@ -100,18 +87,36 @@ pub fn run(root: Option<PathBuf>) -> Result<()> {
     bail!(message);
 }
 
-/// Audit every review/audit cohort agent that lives in `agents_dir`.
+/// Audit each governed profile that is actually present in `agents_dir`.
 ///
-/// Returns the full list of violations (missing files + non-read-only
-/// allowlists) so callers can report all problems at once.
+/// The optional catalogue may be absent or empty. This gate does not require a
+/// named actor when the main thread or a provider-native built-in performs the
+/// operation.
+///
+/// Discovery is by explicit name from [`OPTIONAL_NON_MUTATING_PROFILES`], not
+/// by globbing `operation-*.md`. A glob would flag legitimate writer profiles
+/// (lane workers, feedback responders, merge reconcilers), whose mutation tools
+/// are correct. The trade-off is that a *new* non-mutating profile is skipped
+/// until its name is added to that list — see
+/// `audit_dir_skips_unlisted_operation_profile`.
 pub fn audit_dir(agents_dir: &Path) -> Result<Vec<Violation>> {
+    if !agents_dir.exists() {
+        return Ok(Vec::new());
+    }
+    if !agents_dir.is_dir() {
+        bail!("{} exists but is not a directory", agents_dir.display());
+    }
+
     let mut violations = Vec::new();
-    for agent in REVIEW_AUDIT_AGENTS {
+    for agent in OPTIONAL_NON_MUTATING_PROFILES {
         let path = agents_dir.join(format!("{agent}.md"));
         if !path.exists() {
+            continue;
+        }
+        if !path.is_file() {
             violations.push(Violation {
                 agent: (*agent).to_string(),
-                reason: format!("expected agent definition {} does not exist", path.display()),
+                reason: format!("expected {} to be a file", path.display()),
             });
             continue;
         }
@@ -122,9 +127,16 @@ pub fn audit_dir(agents_dir: &Path) -> Result<Vec<Violation>> {
     Ok(violations)
 }
 
-/// Check one agent definition file for the read-only invariant.
+fn present_profile_count(agents_dir: &Path) -> usize {
+    OPTIONAL_NON_MUTATING_PROFILES
+        .iter()
+        .filter(|agent| agents_dir.join(format!("{agent}.md")).is_file())
+        .count()
+}
+
+/// Check one governed profile definition for the direct-tool invariant.
 ///
-/// The outer `Result` carries hard I/O / parse errors; the inner
+/// The outer `Result` carries hard I/O or parse errors; the inner
 /// `Result<(), String>` carries a policy violation reason (`Err`) or
 /// compliance (`Ok`).
 pub fn enforce_read_only(path: &Path) -> Result<std::result::Result<(), String>> {
@@ -132,7 +144,7 @@ pub fn enforce_read_only(path: &Path) -> Result<std::result::Result<(), String>>
 
     let Some(tools_value) = frontmatter.get("tools") else {
         return Ok(Err(
-            "no explicit tools: allowlist — inherits all tools, including Edit/Write (fail-open)"
+            "no explicit tools: allowlist — inherits the parent tool surface (fail-open)"
                 .to_string(),
         ));
     };
@@ -147,7 +159,9 @@ pub fn enforce_read_only(path: &Path) -> Result<std::result::Result<(), String>>
     let forbidden: Vec<String> = tools
         .iter()
         .filter(|tool| {
-            FORBIDDEN_WRITE_TOOLS.iter().any(|forbidden| forbidden.eq_ignore_ascii_case(tool))
+            FORBIDDEN_DIRECT_MUTATION_TOOLS
+                .iter()
+                .any(|forbidden| forbidden.eq_ignore_ascii_case(tool))
         })
         .cloned()
         .collect();
@@ -155,7 +169,7 @@ pub fn enforce_read_only(path: &Path) -> Result<std::result::Result<(), String>>
     if forbidden.is_empty() {
         Ok(Ok(()))
     } else {
-        Ok(Err(format!("allowlist grants write/mutating tool(s): {}", forbidden.join(", "))))
+        Ok(Err(format!("allowlist grants direct mutation/proxy tool(s): {}", forbidden.join(", "))))
     }
 }
 
@@ -218,27 +232,33 @@ mod tests {
         fs::create_dir_all(dir)
             .map_err(|error| eyre!("failed to create {}: {error}", dir.display()))?;
         let path = dir.join(format!("{name}.md"));
-        let mut frontmatter = format!("---\nname: {name}\ndescription: test agent\nmodel: haiku\n");
+        let mut frontmatter = format!("---\nname: {name}\ndescription: test operation profile\n");
         if let Some(tools) = tools_line {
             frontmatter.push_str(&format!("tools: {tools}\n"));
         }
-        frontmatter.push_str("---\n\nagent body\n");
+        frontmatter.push_str("---\n\nprofile body\n");
         fs::write(&path, frontmatter)
             .map_err(|error| eyre!("failed to write {}: {error}", path.display()))?;
         Ok(path)
     }
 
     #[test]
-    fn real_repository_review_agents_are_read_only() -> Result<()> {
-        // The live regression guard: the committed .claude/agents surface must
-        // satisfy the M4b boundary. This runs under `cargo test --workspace`.
+    fn real_repository_optional_profiles_satisfy_boundary() -> Result<()> {
         run(None)
+    }
+
+    #[test]
+    fn accepts_absent_optional_catalogue() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let agents_dir = tmp.path().join(".claude/agents");
+        assert!(audit_dir(&agents_dir)?.is_empty());
+        Ok(())
     }
 
     #[test]
     fn accepts_read_only_allowlist() -> Result<()> {
         let tmp = tempfile::tempdir()?;
-        let path = write_agent(tmp.path(), "reviewer", Some(READ_ONLY_TOOLS))?;
+        let path = write_agent(tmp.path(), "operation-formal-reviewer", Some(READ_ONLY_TOOLS))?;
         assert_eq!(enforce_read_only(&path)?, Ok(()));
         Ok(())
     }
@@ -246,9 +266,13 @@ mod tests {
     #[test]
     fn rejects_write_tool_in_allowlist() -> Result<()> {
         let tmp = tempfile::tempdir()?;
-        let path = write_agent(tmp.path(), "reviewer", Some("Read, Grep, Glob, Edit, Write"))?;
+        let path = write_agent(
+            tmp.path(),
+            "operation-formal-reviewer",
+            Some("Read, Grep, Glob, Edit, Write"),
+        )?;
         match enforce_read_only(&path)? {
-            Ok(()) => bail!("a reviewer with Edit/Write must be rejected"),
+            Ok(()) => bail!("a non-mutating profile with Edit/Write must be rejected"),
             Err(reason) => {
                 assert!(reason.contains("Edit"), "reason should name Edit: {reason}");
                 assert!(reason.contains("Write"), "reason should name Write: {reason}");
@@ -260,9 +284,10 @@ mod tests {
     #[test]
     fn rejects_agent_sub_spawn_tool() -> Result<()> {
         let tmp = tempfile::tempdir()?;
-        let path = write_agent(tmp.path(), "reviewer", Some("Read, Grep, Glob, Agent"))?;
+        let path =
+            write_agent(tmp.path(), "operation-test-adversary", Some("Read, Grep, Glob, Agent"))?;
         match enforce_read_only(&path)? {
-            Ok(()) => bail!("a reviewer that can spawn sub-agents must be rejected"),
+            Ok(()) => bail!("a non-mutating profile that can spawn agents must be rejected"),
             Err(reason) => assert!(reason.contains("Agent"), "reason should name Agent: {reason}"),
         }
         Ok(())
@@ -271,40 +296,70 @@ mod tests {
     #[test]
     fn rejects_missing_tools_allowlist_fail_closed() -> Result<()> {
         let tmp = tempfile::tempdir()?;
-        let path = write_agent(tmp.path(), "reviewer", None)?;
+        let path = write_agent(tmp.path(), "operation-external-oracle", None)?;
         match enforce_read_only(&path)? {
-            Ok(()) => bail!("a reviewer with no tools: allowlist inherits all tools and must fail"),
+            Ok(()) => bail!("a governed profile with no tools: allowlist must fail"),
             Err(reason) => assert!(reason.contains("no explicit"), "reason: {reason}"),
         }
         Ok(())
     }
 
     #[test]
-    fn audit_dir_flags_broken_fixture_and_missing_files() -> Result<()> {
+    fn audit_dir_ignores_absent_profiles_and_unrelated_writers() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let agents_dir = tmp.path().join(".claude/agents");
-        // One cohort agent present but broken (has Write), the rest missing.
-        write_agent(&agents_dir, "reviewer", Some("Read, Grep, Write"))?;
-        let violations = audit_dir(&agents_dir)?;
+        write_agent(
+            &agents_dir,
+            "operation-lane-worker",
+            Some("Read, Grep, Glob, Edit, Write, Agent"),
+        )?;
+        assert!(audit_dir(&agents_dir)?.is_empty());
+        Ok(())
+    }
 
-        let reviewer = violations
-            .iter()
-            .find(|violation| violation.agent == "reviewer")
-            .ok_or_else(|| eyre!("expected a reviewer violation"))?;
-        assert!(reviewer.reason.contains("Write"), "reviewer reason: {}", reviewer.reason);
-
-        // Every other cohort agent is missing => also a violation.
-        assert_eq!(violations.len(), REVIEW_AUDIT_AGENTS.len());
+    /// Documents the known boundary of explicit-name discovery: a profile
+    /// matching `operation-*.md` that is not in `OPTIONAL_NON_MUTATING_PROFILES`
+    /// is not governed, even if it reads as a review/audit operation. This is
+    /// the cost of not globbing (which would flag legitimate writer profiles).
+    /// Adding a new non-mutating profile requires adding its name to that list
+    /// in the same change.
+    #[test]
+    fn audit_dir_skips_unlisted_operation_profile() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let agents_dir = tmp.path().join(".claude/agents");
+        let name = "operation-new-reviewer";
+        assert!(
+            !OPTIONAL_NON_MUTATING_PROFILES.contains(&name),
+            "{name} must stay unlisted for this test to describe the skip"
+        );
+        write_agent(&agents_dir, name, Some("Read, Grep, Edit, Write"))?;
+        assert!(
+            audit_dir(&agents_dir)?.is_empty(),
+            "unlisted operation-* profiles are not governed; add the name to \
+             OPTIONAL_NON_MUTATING_PROFILES to govern one"
+        );
         Ok(())
     }
 
     #[test]
-    fn run_rejects_broken_agents_dir() -> Result<()> {
+    fn audit_dir_flags_present_broken_governed_profile() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let agents_dir = tmp.path().join(".claude/agents");
-        write_agent(&agents_dir, "reviewer", Some("Read, Grep, Edit"))?;
+        write_agent(&agents_dir, "operation-formal-reviewer", Some("Read, Grep, Write"))?;
+        let violations = audit_dir(&agents_dir)?;
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].agent, "operation-formal-reviewer");
+        assert!(violations[0].reason.contains("Write"));
+        Ok(())
+    }
+
+    #[test]
+    fn run_rejects_broken_governed_profile() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let agents_dir = tmp.path().join(".claude/agents");
+        write_agent(&agents_dir, "operation-ci-triager", Some("Read, Grep, Edit"))?;
         match run(Some(tmp.path().to_path_buf())) {
-            Ok(()) => bail!("run() must fail on a review agent with a write tool"),
+            Ok(()) => bail!("run() must fail on a governed profile with a mutation tool"),
             Err(error) => assert!(
                 error.to_string().contains("M4b capability boundary FAILED"),
                 "error: {error}"

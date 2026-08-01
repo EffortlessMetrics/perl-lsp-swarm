@@ -40,11 +40,12 @@ Many gates roll up under a single lane (e.g. all `pr_fast` gates contribute to t
 `pr_smoke` lane's LEM). The mapping is therefore many-to-one for most lanes, but a small
 number of gates (e.g. `lsp_tier_a`) span two lanes.
 
-Current state (as of PR 09):
+Current state — regenerate with `python3 scripts/ci/validate_gate_lane_mapping.py --strict`,
+which is the authority for these counts. Last refreshed 2026-07-31 (#5425):
 
-- 48 gates in `.ci/gate-policy.yaml`
-- 23 lanes in `policy/ci-lanes.toml`
-- 48 / 48 gates have at least one lane mapping
+- 65 gates in `.ci/gate-policy.yaml`
+- 24 lanes in `policy/ci-lanes.toml`
+- 65 / 65 gates have at least one lane mapping
 - 0 gates point at a non-existent lane
 
 ---
@@ -53,25 +54,31 @@ Current state (as of PR 09):
 
 | Lane | Gates |
 |---|---|
-| `pr_smoke` | `fmt`, `release_history`, `readme_heading_check`, `publish_closure`, `publish_manifest_check`, `layer_check`, `published_crate_count_pr_fast`, `release_history_check`, `clippy_scoped`, `unit_scoped`, `check_tests_scoped`, `policy_checks`, `workflow_audit`, `nested_lock_check` |
-| `merge_gate_shards` | `clippy_core`, `unit_core`, `perl_token_leaf_contract`, `clippy_full`, `unit_foundation_full`, `unit_parser_stack_full`, `unit_analysis_full`, `unit_lsp_full`, `unit_dap_support_full`, `common_corpus_clean`, `parser_corpus_ratchet`, `cpan_corpus_ratchet`, `parser_audit_closeout`, `v2_parity`, `v2_bundle_sync` |
+| `pr_smoke` | `fmt`, `release_history`, `readme_heading_check`, `publish_closure`, `publish_manifest_check`, `layer_check`, `published_crate_count_pr_fast`, `release_history_check`, `clippy_scoped`, `unit_scoped`, `check_tests_scoped`, `policy_checks`, `workflow_audit`, `nested_lock_check`, `unit_routed_full`, `inline_completion_contract`, `inline_completion_quality_receipt`, `ignored_tests_check_refs` |
+| `merge_gate_shards` | `clippy_core`, `unit_core`, `perl_token_leaf_contract`, `clippy_full`, `unit_foundation_full`, `unit_parser_stack_full`, `unit_analysis_full`, `unit_lsp_core_full`, `unit_lsp_full`, `unit_dap_support_full`, `common_corpus_clean`, `parser_corpus_ratchet`, `cpan_corpus_ratchet`, `parser_audit_closeout`, `v2_parity`, `v2_bundle_sync`, `agent_context_coverage` |
 | `check_all_targets` | `compile_all_targets` |
 | `conflict_markers` | `check_conflict_markers` |
 | `ux_tests` | `lsp_smoke`, `lsp_tier_a` |
 | `docs_gate` | `docs_build` |
-| `release_check` | `published_crate_count`, `release_build`, `version_sync`, `sbom_verify`, `determinism_check` |
+| `release_check` | `published_crate_count`, `release_build`, `version_sync`, `sbom_verify`, `determinism_check`, `inline_completion_binary_smoke` |
 | `security_audit` | `security_audit` |
 | `mutation` | `mutation`, `corpus_validation`, `corpus_sweep` |
 | `fuzz` | `fuzz` |
 | `coverage` | `coverage` |
 | `real_repo_latency` | `benchmarks`, `lsp_tier_a`, `lsp_tier_b` |
 | `perl_version_matrix` | `full_matrix` |
+| `commit_checks` | `staged_tree_identity`, `whitespace_check`, `conflict_markers_staged`, `staged_exec_mode_policy`, `staged_config_syntax`, `forbidden_machine_paths`, `staged_oversized_or_binary`, `changie_fragment_staged`, `rustfmt_staged`, `from_raw_staged` |
 
 Lanes without any gate mapping today: `pr_plan`, `draft_guard`, `preflight_latest`,
 `merge_gate_aggregate`, `lsp_memory_smoke`, `windows_guardrails`, `ripr_advisory`,
-`memory_plateau`, `vscode_smoke_matrix`, `droid_auto_review`, `methodology_gate`,
-`pr_title_check`. These either have no `.ci/gate-policy.yaml` entry (workflow-level
-controls, not gates) or run under standalone workflows.
+`memory_plateau`, `vscode_smoke_matrix`, `droid_auto_review`. These either have no
+`.ci/gate-policy.yaml` entry (workflow-level controls, not gates) or run under
+standalone workflows.
+
+The two lists above partition the lane set: 14 mapped + 10 unmapped = 24 lanes,
+matching the count block. Both are checkable against
+`scripts/ci/validate_gate_lane_mapping.py` and `policy/ci-lanes.toml`; if the
+arithmetic stops reconciling, this page has drifted from its stated authority.
 
 ---
 

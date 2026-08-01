@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Performance
+body: "Completion no longer assembles the @INC module-resolution context twice per keystroke (once for module completions, once for workspace-symbol filtering); the two paths now share one memoized computation, reducing redundant workspace-folder locking and PERL5LIB parsing on every request."
+time: 2026-07-24T20:27:30Z
+custom:
+  PR: "4936"
+  Slug: completion-inc-context-dedup
+  Breaking: "no"

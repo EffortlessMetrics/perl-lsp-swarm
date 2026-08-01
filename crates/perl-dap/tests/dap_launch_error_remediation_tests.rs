@@ -3,9 +3,6 @@
 //! Issue #4192: Launch failure should provide actionable guidance including
 //! detected Perl location and the documented `launch.json` `perlPath` setting.
 
-// Tests use panic! as structured test failure reporters.
-#![allow(clippy::panic)]
-
 use perl_dap::{DapMessage, DebugAdapter};
 use serde_json::json;
 
@@ -20,7 +17,7 @@ fn initialize_adapter(adapter: &mut DebugAdapter) {
 /// Launch with a nonexistent program path should yield an error message
 /// that mentions the documented `launch.json` `perlPath` field.
 #[test]
-fn launch_error_names_launch_json_perlpath_setting() {
+fn launch_error_names_launch_json_perlpath_setting() -> anyhow::Result<()> {
     let mut adapter = DebugAdapter::new();
     initialize_adapter(&mut adapter);
 
@@ -50,15 +47,16 @@ fn launch_error_names_launch_json_perlpath_setting() {
             // This branch should not happen for a nonexistent path, but be defensive.
         }
         other => {
-            panic!("expected a Response, got: {:?}", other);
+            anyhow::bail!("expected a Response, got: {:?}", other);
         }
     }
+    Ok(())
 }
 
 /// Launch failure error message must include information about the Perl
 /// interpreter that was found (or indicate none was found).
 #[test]
-fn launch_error_includes_perl_detection_info() {
+fn launch_error_includes_perl_detection_info() -> anyhow::Result<()> {
     let mut adapter = DebugAdapter::new();
     initialize_adapter(&mut adapter);
 
@@ -88,14 +86,15 @@ fn launch_error_includes_perl_detection_info() {
             // Defensive: skip if somehow succeeded (shouldn't happen for nonexistent path).
         }
         other => {
-            panic!("expected a Response, got: {:?}", other);
+            anyhow::bail!("expected a Response, got: {:?}", other);
         }
     }
+    Ok(())
 }
 
 /// Repeated launch failures should preserve the same actionable remediation text.
 #[test]
-fn repeated_launch_failures_keep_actionable_guidance() {
+fn repeated_launch_failures_keep_actionable_guidance() -> anyhow::Result<()> {
     let mut adapter = DebugAdapter::new();
     initialize_adapter(&mut adapter);
     let arguments = Some(json!({
@@ -140,9 +139,10 @@ fn repeated_launch_failures_keep_actionable_guidance() {
             );
         }
         other => {
-            panic!("expected two launch error responses, got: {other:?}");
+            anyhow::bail!("expected two launch error responses, got: {other:?}");
         }
     }
+    Ok(())
 }
 
 /// On Windows with no Perl available, the launch error should link to strawberryperl.com.
@@ -151,7 +151,7 @@ fn repeated_launch_failures_keep_actionable_guidance() {
 /// the "found at" branch fires instead and the link is not needed.
 #[test]
 #[cfg(windows)]
-fn launch_error_on_windows_links_strawberry_perl_when_perl_absent() {
+fn launch_error_on_windows_links_strawberry_perl_when_perl_absent() -> anyhow::Result<()> {
     use perl_dap::platform::resolve_perl_path_with_toolchain;
 
     // Only run this assertion when Perl is genuinely not available.
@@ -177,10 +177,11 @@ fn launch_error_on_windows_links_strawberry_perl_when_perl_absent() {
             }
             DapMessage::Response { success: true, .. } => {}
             other => {
-                panic!("expected a Response, got: {:?}", other);
+                anyhow::bail!("expected a Response, got: {:?}", other);
             }
         }
     }
     // If Perl is found, the test passes vacuously — the "found" branch is tested by
     // the other tests above.
+    Ok(())
 }

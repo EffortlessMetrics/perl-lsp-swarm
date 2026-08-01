@@ -130,7 +130,7 @@ fn strips_link_simple() {
     let doc = extract_pod("=head1 NAME\n\nL<Module::Name>\n\n=cut\n");
     let name = doc.name.as_deref().unwrap_or("");
     assert!(name.contains("[Module::Name]"), "got: {name}");
-    assert!(name.contains("perl-module://Module::Name"), "got: {name}");
+    assert!(name.contains("perldoc://Module::Name"), "got: {name}");
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn strips_link_with_display_text() {
     let doc = extract_pod("=head1 NAME\n\nL<click here|Module::Name>\n\n=cut\n");
     let name = doc.name.as_deref().unwrap_or("");
     assert!(name.contains("[click here]"), "got: {name}");
-    assert!(name.contains("perl-module://Module::Name"), "got: {name}");
+    assert!(name.contains("perldoc://Module::Name"), "got: {name}");
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn strips_link_with_section() {
     let doc = extract_pod("=head1 NAME\n\nL<Module::Name/method>\n\n=cut\n");
     let name = doc.name.as_deref().unwrap_or("");
     assert!(name.contains("[Module::Name]"), "got: {name}");
-    assert!(name.contains("perl-module://Module::Name/method"), "got: {name}");
+    assert!(name.contains("perldoc://Module::Name/method"), "got: {name}");
 }
 
 #[test]
@@ -372,7 +372,7 @@ fn e_format_code_decodes_common_entities() {
 
 // ── POD L<> link → markdown link tests (Option B) ───────────────────────
 
-/// `L<Module::Name>` should produce a markdown link with target `perl-module://Module::Name`.
+/// `L<Module::Name>` should produce a markdown link with target `perldoc://Module::Name`.
 #[test]
 fn link_simple_module_renders_markdown() {
     let doc = extract_pod("=head1 NAME\n\nL<File::Path>\n\n=cut\n");
@@ -382,8 +382,8 @@ fn link_simple_module_renders_markdown() {
         "expected markdown display '[File::Path]' but got: {name}"
     );
     assert!(
-        name.contains("perl-module://File::Path"),
-        "expected markdown target 'perl-module://File::Path' but got: {name}"
+        name.contains("perldoc://File::Path"),
+        "expected markdown target 'perldoc://File::Path' but got: {name}"
     );
 }
 
@@ -397,8 +397,8 @@ fn link_with_display_text_renders_markdown() {
         "expected markdown display '[detailed guide]' but got: {name}"
     );
     assert!(
-        name.contains("perl-module://File::Path"),
-        "expected markdown target 'perl-module://File::Path' but got: {name}"
+        name.contains("perldoc://File::Path"),
+        "expected markdown target 'perldoc://File::Path' but got: {name}"
     );
 }
 
@@ -412,8 +412,8 @@ fn link_with_section_renders_markdown() {
         "expected markdown display '[File::Path]' but got: {name}"
     );
     assert!(
-        name.contains("perl-module://File::Path/DESCRIPTION"),
-        "expected markdown target 'perl-module://File::Path/DESCRIPTION' but got: {name}"
+        name.contains("perldoc://File::Path/DESCRIPTION"),
+        "expected markdown target 'perldoc://File::Path/DESCRIPTION' but got: {name}"
     );
 }
 
@@ -426,10 +426,7 @@ fn nested_bold_around_link_preserves_markdown() {
         name.contains("[File::Path]"),
         "expected markdown display '[File::Path]' in nested B<L<>> but got: {name}"
     );
-    assert!(
-        name.contains("perl-module://"),
-        "expected 'perl-module://' in nested B<L<>> but got: {name}"
-    );
+    assert!(name.contains("perldoc://"), "expected 'perldoc://' in nested B<L<>> but got: {name}");
 }
 
 /// Inline link inside a sentence: "See L<File::Path> for details."
@@ -443,8 +440,8 @@ fn inline_link_in_description_renders_markdown() {
         "expected '[File::Path]' in description but got: {desc}"
     );
     assert!(
-        desc.contains("perl-module://File::Path"),
-        "expected 'perl-module://File::Path' in description but got: {desc}"
+        desc.contains("perldoc://File::Path"),
+        "expected 'perldoc://File::Path' in description but got: {desc}"
     );
     // The surrounding text should also be preserved
     assert!(
@@ -460,8 +457,8 @@ fn link_display_text_with_section_target_renders_markdown() {
     let name = doc.name.as_deref().unwrap_or("");
     assert!(name.contains("[the docs]"), "expected '[the docs]' but got: {name}");
     assert!(
-        name.contains("perl-module://File::Path/DESCRIPTION"),
-        "expected 'perl-module://File::Path/DESCRIPTION' but got: {name}"
+        name.contains("perldoc://File::Path/DESCRIPTION"),
+        "expected 'perldoc://File::Path/DESCRIPTION' but got: {name}"
     );
 }
 
@@ -475,7 +472,7 @@ fn link_section_with_spaces_encodes_url() {
     assert!(name.contains("[File::Find]"), "expected '[File::Find]' but got: {name}");
     // Spaces must be encoded — a raw space makes the markdown URL malformed
     assert!(
-        name.contains("perl-module://File::Find/The%20wanted%20function"),
+        name.contains("perldoc://File::Find/The%20wanted%20function"),
         "expected percent-encoded URL but got: {name}"
     );
     assert!(!name.contains("The wanted function"), "raw space in URL — should be encoded: {name}");
@@ -488,7 +485,7 @@ fn link_pipe_with_spaced_section_encodes_url() {
     let name = doc.name.as_deref().unwrap_or("");
     assert!(name.contains("[click here]"), "expected '[click here]' but got: {name}");
     assert!(
-        name.contains("perl-module://File::Find/The%20wanted%20function"),
+        name.contains("perldoc://File::Find/The%20wanted%20function"),
         "expected percent-encoded URL but got: {name}"
     );
 }
@@ -500,7 +497,7 @@ fn link_target_reserved_chars_are_percent_encoded() {
     let name = doc.name.as_deref().unwrap_or("");
     assert!(name.contains("[click here]"), "expected '[click here]' but got: {name}");
     assert!(
-        name.contains("perl-module://File::Path%29%20%5Bevil%5D%28http://x.test%29"),
+        name.contains("perldoc://File::Path%29%20%5Bevil%5D%28http://x.test%29"),
         "expected markdown-breaking characters in target to be percent-encoded; got: {name}"
     );
     assert!(
@@ -514,7 +511,7 @@ fn link_display_text_markdown_delimiters_are_escaped() {
     let doc = extract_pod("=head1 NAME\n\nL<click ] here|File::Path>\n\n=cut\n");
     let name = doc.name.as_deref().unwrap_or("");
     assert!(
-        name.contains("[click \\] here](perl-module://File::Path)"),
+        name.contains("[click \\] here](perldoc://File::Path)"),
         "expected closing bracket in display text to be escaped; got: {name}"
     );
 }
@@ -526,7 +523,7 @@ fn link_display_text_open_bracket_is_escaped() {
     // Both '[' and ']' in display text must be escaped so the markdown renderer
     // does not mistake them for a nested link boundary.
     assert!(
-        name.contains("[\\[optional\\]](perl-module://Module::Name)"),
+        name.contains("[\\[optional\\]](perldoc://Module::Name)"),
         "expected open and close brackets in display to be escaped; got: {name}"
     );
 }
@@ -540,7 +537,7 @@ fn link_target_with_unicode_module_name_is_percent_encoded() {
     let name = doc.name.as_deref().unwrap_or("");
     // Both UTF-8 bytes must appear as %C3%9C in the URL.
     assert!(
-        name.contains("perl-module://%C3%9Cber::Module"),
+        name.contains("perldoc://%C3%9Cber::Module"),
         "expected non-ASCII bytes in target to be percent-encoded; got: {name}"
     );
 }
@@ -575,7 +572,7 @@ fn double_angle_links_render_markdown() -> Result<(), Box<dyn std::error::Error>
     );
     assert_eq!(
         doc.description.as_deref(),
-        Some("See [the wanted callback](perl-module://File::Find/The%20wanted%20function).")
+        Some("See [the wanted callback](perldoc://File::Find/The%20wanted%20function).")
     );
     Ok(())
 }
@@ -939,7 +936,7 @@ fn link_display_text_backslash_is_escaped() {
     let name = doc.name.as_deref().unwrap_or("");
 
     assert!(
-        name.contains("[C:\\\\Temp](perl-module://File::Spec)"),
+        name.contains("[C:\\\\Temp](perldoc://File::Spec)"),
         "expected backslash in display text to be escaped; got: {name}"
     );
 }
@@ -950,7 +947,7 @@ fn link_display_text_strips_nested_formatting_before_escaping() {
     let name = doc.name.as_deref().unwrap_or("");
 
     assert!(
-        name.contains("[\\[docs\\]](perl-module://File::Path)"),
+        name.contains("[\\[docs\\]](perldoc://File::Path)"),
         "expected nested formatting to be stripped and markdown brackets escaped; got: {name}"
     );
 }

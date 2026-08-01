@@ -120,7 +120,8 @@ jobs:
           esac
 
           if [ -z "${GH_TOKEN:-}" ]; then
-            emit "none" "runner_token_missing" "true" "false"
+            echo "::warning::runner inventory token is unavailable; routing the full Rust Small contract to GitHub-hosted"
+            emit "github" "runner_token_missing_github_hosted" "false" "true"
             exit 0
           fi
 
@@ -132,8 +133,8 @@ jobs:
             "https://api.github.com/orgs/$ORG/actions/runners?per_page=100" || true)"
 
           if [ "$status" != "200" ]; then
-            echo "::error::runner API returned HTTP $status; refusing implicit GitHub-hosted fallback"
-            emit "none" "runner_api_failed" "true" "false"
+            echo "::warning::runner inventory API returned HTTP $status; routing the full Rust Small contract to GitHub-hosted"
+            emit "github" "runner_api_unavailable_github_hosted" "false" "true"
             exit 0
           fi
 
@@ -538,6 +539,8 @@ jobs:
           set -euo pipefail
           cargo fetch --locked
           cargo check --workspace --locked
+          cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+          cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
           scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | grep -c -F ": test" || true)
           test "$scorecard_tests" -gt 0
           INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
@@ -547,11 +550,8 @@ jobs:
   # Defense-in-depth: if the primary self-hosted runner's preflight disk-guard
   # still fails AFTER aggressive cleanup (orphan reap + sccache cap + docker
   # prune), fall back to GitHub-hosted so the PR is not blocked by a disk-full
-  # runner. This job remains intentionally narrow: it runs cargo check plus
-  # the references scorecard guard, not the full Docker-based test suite,
-  # because the failing runner needs ops attention (the ::warning annotation
-  # in this job's summary is the signal).
-  # The aggregate Result job below accepts this narrow success the same as the primary.
+  # runner. The hosted failover runs the same cargo check, parser smoke, LSP
+  # smoke, and references scorecard contract as every other accepted route.
   rust-small-fallback:
     name: Perl LSP Rust Small (Disk-Full Fallback)
     needs:
@@ -560,7 +560,7 @@ jobs:
       - rust-small-cx43
     # Trigger ONLY when the primary self-hosted job failed AND the preflight step
     # explicitly recorded preflight_ok=false (written to GITHUB_OUTPUT before exit 1).
-    # This prevents a real test failure from masking under a GH-hosted narrow run.
+    # This prevents a real test failure from masking under a GH-hosted run.
     # If preflight_ok is empty (job OOM-killed before the step could write output), we
     # do NOT trigger the fallback — that case needs ops investigation, not a workaround.
     if: >-
@@ -584,8 +584,8 @@ jobs:
             echo "### Self-Hosted Preflight Failover"
             echo ""
             echo "Primary runner \`${{ needs.route-rust-small.outputs.target }}\` failed"
-            echo "preflight before the Rust lane started. This job ran the Rust Small lane"
-            echo "on GitHub-hosted as defense-in-depth. Ops: check disk and the"
+            echo "preflight before the Rust lane started. This job ran the full Rust Small"
+            echo "contract on GitHub-hosted. Ops: check disk and the"
             echo "\`em-ci-rust:1.95\` image on the failing runner."
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -610,6 +610,8 @@ jobs:
           set -euo pipefail
           cargo fetch --locked
           cargo check --workspace --locked
+          cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+          cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
           scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | grep -c -F ": test" || true)
           test "$scorecard_tests" -gt 0
           INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1

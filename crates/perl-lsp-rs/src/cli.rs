@@ -227,16 +227,51 @@ fn run_check(command_name: &str, files: &[String]) -> i32 {
         };
 
         let mut parser = perl_parser::Parser::new(&source);
-        match parser.parse() {
-            Ok(_) => {
-                println!("{path}: ok");
-            }
-            Err(e) => {
+        // `parse()` returns `Ok` whenever the parser recovered, so a successful
+        // result alone does not mean the file is clean — the diagnostics it
+        // recovered from are reported separately by `errors()`. Reading only the
+        // `Result` silently passed files that `perl -c` rejects. `--check-project`
+        // already reads both; see `cli/check_project.rs::process_file`.
+        let parse_result = parser.parse();
+        let recovered = parser.errors();
+
+        // Only blocking diagnostics decide the verdict. Advisories (e.g. a
+        // nested-quantifier regex warning) are reported on a file real `perl`
+        // accepts, so failing on them would reject valid Perl.
+        let (blocking, advisory): (Vec<_>, Vec<_>) =
+            recovered.iter().partition(|err| err.blocks_clean_parse());
+
+        let fatal = parse_result.as_ref().err();
+        let failed = fatal.is_some() || !blocking.is_empty();
+
+        if failed {
+            errors += 1;
+
+            if let Some(e) = fatal {
                 println!("{path}: FAIL - {e}");
-                for detail in format_parse_error_context(&source, &e) {
+                for detail in format_parse_error_context(&source, e) {
                     println!("{detail}");
                 }
-                errors += 1;
+            } else {
+                let count = blocking.len();
+                let noun = if count == 1 { "error" } else { "errors" };
+                println!("{path}: FAIL - {count} parse {noun}");
+            }
+
+            for err in &blocking {
+                println!("  {err}");
+                for detail in format_parse_error_context(&source, err) {
+                    println!("{detail}");
+                }
+            }
+        } else {
+            println!("{path}: ok");
+        }
+
+        for err in &advisory {
+            println!("  advisory: {err}");
+            for detail in format_parse_error_context(&source, err) {
+                println!("{detail}");
             }
         }
     }

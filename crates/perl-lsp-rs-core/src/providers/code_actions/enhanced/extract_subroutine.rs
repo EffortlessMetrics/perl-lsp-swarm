@@ -14,6 +14,10 @@ pub fn create_extract_subroutine_action(
     helpers: &Helpers<'_>,
 ) -> CodeAction {
     let body_text = &source[node.location.start..node.location.end];
+    // Strip surrounding block braces to avoid double-brace corruption.
+    // A Block node's location spans `{ ... }` inclusive; the generated sub
+    // already adds its own `sub NAME {`, so the inner braces must be removed.
+    let body_text = body_text.trim_start_matches('{').trim_end_matches('}');
     let sub_name = suggest_subroutine_name(node);
     let params = detect_parameters(node);
     let returns = detect_return_values(node);

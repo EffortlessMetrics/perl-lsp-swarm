@@ -105,26 +105,82 @@ echo_it("hello");
 }
 
 // ---------------------------------------------------------------------------
-// Test: sub with no signature gets no hints (graceful degradation)
+// Test: @_-unpacking sub now gets hints (fix(inlay-hints) #5380/#5378)
+// ---------------------------------------------------------------------------
+// `my ($x, $y) = @_` is recognised by extract_params_from_at_underscore and
+// produces the same hints as a formal signature.  The previous test name and
+// assertion encoded the pre-#5380 contract; both are updated here to pin the
+// new, correct behaviour so main stays green.
 // ---------------------------------------------------------------------------
 #[test]
-fn test_user_sub_no_signature_no_hints() -> Result<(), Box<dyn std::error::Error>> {
+fn test_user_sub_at_underscore_unpacking_gets_hints() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_server();
-    let uri = "file:///tmp/no_sig.pl";
+    let uri = "file:///tmp/at_underscore.pl";
     let text = r#"use strict;
 sub legacy_sub { my ($x, $y) = @_; return $x + $y; }
 legacy_sub(1, 2);
 "#;
     let hints = get_hints(&server, uri, text)?;
 
-    // No parameter hints from a sub with no formal signature
+    // #5380: @_ unpacking now produces parameter hints even without a formal signature
+    assert!(has_label(&hints, "x:"), "Should produce x: hint for @_ unpacking; hints: {hints:#?}");
+    assert!(has_label(&hints, "y:"), "Should produce y: hint for @_ unpacking; hints: {hints:#?}");
+    Ok(())
+}
+
+#[test]
+fn test_user_sub_no_inferable_params_no_hints() -> Result<(), Box<dyn std::error::Error>> {
+    // A sub with no formal signature and no @_ unpacking pattern that
+    // can be inferred — should produce no parameter-name hints.
+    let server = start_server();
+    let uri = "file:///tmp/no_infer.pl";
+    let text = r#"use strict;
+sub do_stuff { return; }
+do_stuff();
+"#;
+    let hints = get_hints(&server, uri, text)?;
+
+    // Filter to parameter-name hints only (kind == 2)
+    let param_hints: Vec<_> =
+        hints.iter().filter(|h| h.get("kind").and_then(|k| k.as_i64()) == Some(2)).collect();
     assert!(
-        no_label(&hints, "x:"),
-        "Should not produce hints for sub without signature; hints: {hints:#?}"
+        param_hints.is_empty(),
+        "Should not produce parameter hints for sub with no inferable params; hints: {hints:#?}"
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Test: graceful degradation — positional $_[N] access produces no hints
+// ---------------------------------------------------------------------------
+// Distinct from `test_user_sub_no_inferable_params_no_hints`, which takes an
+// empty body: here the sub genuinely *uses* its arguments, but only through
+// positional `$_[0]` / `$_[1]` indexing, so no names exist to infer.  This is
+// the case that would regress into false-positive hints if the @_ unpacking
+// detector ever widened from list-assignment to any `@_` mention.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_user_sub_positional_access_no_hints() -> Result<(), Box<dyn std::error::Error>> {
+    let server = start_server();
+    let uri = "file:///tmp/positional.pl";
+    let text = r#"use strict;
+sub add_two { return $_[0] + $_[1]; }
+add_two(3, 7);
+"#;
+    let hints = get_hints(&server, uri, text)?;
+
+    // Positional $_[N] access is not inferable: no parameter-name hints expected.
+    let param_hints: Vec<_> = hints
+        .iter()
+        .filter(|h| h.get("kind").and_then(|k| k.as_u64()) == Some(2))
+        .filter(|h| {
+            h.get("data").and_then(|d| d.get("functionName")).and_then(|f| f.as_str())
+                == Some("add_two")
+        })
+        .collect();
     assert!(
-        no_label(&hints, "y:"),
-        "Should not produce hints for sub without signature; hints: {hints:#?}"
+        param_hints.is_empty(),
+        "Positional $_[N] sub should produce no parameter hints; hints: {hints:#?}"
     );
     Ok(())
 }

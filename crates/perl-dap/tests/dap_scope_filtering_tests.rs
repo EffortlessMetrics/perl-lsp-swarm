@@ -47,14 +47,14 @@ use perl_dap::{DapMessage, DebugAdapter};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::fs::write;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::sync_channel;
 use tempfile::tempdir;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
 fn wait_stopped_reports_termination_and_bounded_output_metadata() -> TestResult {
-    let (sender, receiver) = channel();
+    let (sender, receiver) = sync_channel(64);
     for seq in 1..=10 {
         sender.send(DapMessage::Event {
             seq,
@@ -138,7 +138,7 @@ fn request_variables(adapter: &mut DebugAdapter, variables_reference: i64) -> Op
 #[test]
 fn test_scopes_response_contains_three_named_buckets() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let resp = adapter.handle_request(1, "scopes", Some(json!({ "frameId": 1 })));
@@ -163,7 +163,7 @@ fn test_scopes_response_contains_three_named_buckets() -> TestResult {
 #[test]
 fn test_locals_scope_has_correct_presentation_hint() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let resp = adapter.handle_request(1, "scopes", Some(json!({ "frameId": 1 })));
@@ -193,7 +193,7 @@ fn test_scope_reference_arithmetic_locals() -> TestResult {
     let expected_locals_ref = frame_id * 10 + 1;
 
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let resp = adapter.handle_request(1, "scopes", Some(json!({ "frameId": frame_id })));
@@ -218,7 +218,7 @@ fn test_scope_reference_arithmetic_package() -> TestResult {
     let expected_package_ref = frame_id * 10 + 2;
 
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let resp = adapter.handle_request(1, "scopes", Some(json!({ "frameId": frame_id })));
@@ -243,7 +243,7 @@ fn test_scope_reference_arithmetic_globals() -> TestResult {
     let expected_globals_ref = frame_id * 10 + 3;
 
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let resp = adapter.handle_request(1, "scopes", Some(json!({ "frameId": frame_id })));
@@ -265,7 +265,7 @@ fn test_scope_reference_arithmetic_globals() -> TestResult {
 #[test]
 fn test_scope_references_are_distinct() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let resp = adapter.handle_request(1, "scopes", Some(json!({ "frameId": 2 })));
@@ -289,7 +289,7 @@ fn test_scope_references_are_distinct() -> TestResult {
 #[test]
 fn test_scope_references_are_positive() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let resp = adapter.handle_request(1, "scopes", Some(json!({ "frameId": 1 })));
@@ -321,7 +321,7 @@ fn test_scope_references_are_positive() -> TestResult {
 #[test]
 fn test_fallback_locals_scope_contains_no_package_or_global_names() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     // frame_id=1 → locals_ref = 11
@@ -346,7 +346,7 @@ fn test_fallback_locals_scope_contains_no_package_or_global_names() -> TestResul
 #[test]
 fn test_fallback_globals_scope_contains_only_global_builtins() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     // frame_id=1 → globals_ref = 13
@@ -386,7 +386,7 @@ fn test_fallback_globals_scope_contains_only_global_builtins() -> TestResult {
 #[test]
 fn test_fallback_scopes_have_no_overlapping_variable_names() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     // frame_id=1: locals=11, package=12, globals=13
@@ -443,7 +443,7 @@ fn test_fallback_scopes_have_no_overlapping_variable_names() -> TestResult {
 #[test]
 fn test_locals_scope_reference_routes_to_scope_type_1() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     // frame_id=5 → locals_ref = 51 (ends in 1 → scope_type=1)
@@ -474,7 +474,7 @@ fn test_locals_scope_reference_routes_to_scope_type_1() -> TestResult {
 #[test]
 fn test_package_scope_reference_routes_to_scope_type_2() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let frame_id: i64 = 5;
@@ -499,7 +499,7 @@ fn test_package_scope_reference_routes_to_scope_type_2() -> TestResult {
 #[test]
 fn test_globals_scope_reference_routes_to_scope_type_3() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let frame_id: i64 = 5;
