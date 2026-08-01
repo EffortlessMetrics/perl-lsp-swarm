@@ -493,16 +493,31 @@ impl ReviewGuidanceReceipt {
             && self.production_files_considered == Some(0)
     }
 
-    /// True when an empty `top_gaps` means the gap list could not be
-    /// determined, rather than that there was nothing to list.
+    /// True when the gate is about to report new seams it cannot name.
     ///
-    /// A non-`present` guidance status is an instrument failure: the receipt
-    /// is missing, stale, invalid, or the producer stopped early (timeout).
-    /// In every one of those cases the gate still knows the *count* of new
-    /// seams from the PR receipt but cannot name them, so reporting an empty
-    /// list without saying so would read as "no further detail exists".
+    /// This is evaluated only where a positive `new_unresolved` count is being
+    /// reported, so an empty `top_gaps` always means the count and the list
+    /// disagree — the seams exist but none were named.
+    ///
+    /// Deliberately keyed on the list being empty rather than on the guidance
+    /// status, because there are two ways to arrive here and both are
+    /// unproven:
+    ///
+    /// - guidance did not complete (missing, stale, invalid, or a producer
+    ///   timeout), so the seams could not be named; or
+    /// - guidance completed over production files and named nothing anyway,
+    ///   which contradicts the count and is what
+    ///   `ripr_review_guidance_not_actionable` already reports separately.
+    ///
+    /// Keying on status alone would call the second case proven while the
+    /// gate simultaneously declared the guidance unactionable — reintroducing
+    /// exactly the contradiction this reporting exists to remove.
+    ///
+    /// The genuinely empty case — guidance completed and no production file
+    /// was in scope — never reaches here: `is_nonproduction_only_scope`
+    /// excludes it from the blocking branch entirely.
     fn gap_list_is_unproven(&self) -> bool {
-        self.status != "present" && self.top_gaps.is_empty()
+        self.top_gaps.is_empty()
     }
 }
 
@@ -1589,6 +1604,10 @@ fn new_ripr_gap_action(
     } else {
         "Add focused tests that expose the new RIPR seam before merging, then refresh RIPR receipts."
     };
+    debug_assert!(
+        count > 0,
+        "new_ripr_gap is only emitted for a positive count; gap_list_is_unproven assumes it"
+    );
 
     json!({
         "kind": "new_ripr_gap",
@@ -1764,9 +1783,20 @@ fn render_markdown(receipt: &Value, args: &QualityGateArgs) -> Result<String> {
         if action.get("gap_list_proven").and_then(Value::as_bool) == Some(false) {
             let guidance_status =
                 action.get("guidance_status").and_then(Value::as_str).unwrap_or("unknown");
-            markdown.push_str(&format!(
-                "- NOT_PROVEN: the new-seam list could not be produced (review guidance `{guidance_status}`), so the count above is not accompanied by the seams it counts.\n"
-            ));
+            // Two different failures reach here and the author acts on them
+            // differently: a run that never finished gets re-run, while a run
+            // that finished and named nothing is a producer disagreeing with
+            // the count. Reporting the second as "could not be produced"
+            // would be its own inaccuracy.
+            if guidance_status == "present" {
+                markdown.push_str(
+                    "- NOT_PROVEN: review guidance completed but named no seam, which contradicts the count above. The count and the list disagree, so the seams are not identified.\n",
+                );
+            } else {
+                markdown.push_str(&format!(
+                    "- NOT_PROVEN: the new-seam list could not be produced (review guidance `{guidance_status}`), so the count above is not accompanied by the seams it counts.\n"
+                ));
+            }
             if let Some(reason) = action.get("guidance_unavailable_reason").and_then(Value::as_str)
             {
                 markdown.push_str(&format!("- guidance failure: `{reason}`\n"));

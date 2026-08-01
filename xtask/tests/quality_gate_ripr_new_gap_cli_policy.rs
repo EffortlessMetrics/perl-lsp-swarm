@@ -843,6 +843,75 @@ fn quality_gate_cli_marks_gap_list_unproven_when_guidance_times_out() -> TestRes
 }
 
 #[test]
+fn quality_gate_cli_marks_gap_list_unproven_when_current_guidance_named_nothing() -> TestResult {
+    // Raised in review on #5471. The timeout path is not the only route to an
+    // empty list: guidance can complete, be current, be in production scope,
+    // and still name no seam while the PR receipt reports a positive count.
+    //
+    // Keying "unproven" on the guidance *status* called that case proven,
+    // while the same evaluation pushed ripr_review_guidance_not_actionable —
+    // the gate asserting both "here is the proven list" (empty) and "the
+    // guidance is not actionable" at once. That is the contradiction this
+    // change exists to remove, so the predicate keys on the empty list.
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let ripr = dir.path().join("ripr-plus.json");
+    let ripr_pr = dir.path().join("repo-exposure.json");
+    let review = dir.path().join("comments.json");
+    let receipt = dir.path().join("quality-gate.json");
+    let summary = dir.path().join("quality-gate.md");
+    let head = current_head(&root)?;
+
+    write_ripr_plus_receipt(&ripr, &head)?;
+    write_ripr_pr_receipt(&ripr_pr, &head, 3)?;
+    // Current, production-scope, zero declared items -> status stays "present".
+    write_empty_review_guidance_receipt(&review, &head)?;
+
+    let output =
+        new_ripr_quality_gate_command(&root, &ripr, &ripr_pr, &review, &receipt, &summary)?
+            .output()?;
+    assert!(!output.status.success(), "a positive new-gap count must still block");
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+    let action = next_action(&payload, "new_ripr_gap")?;
+
+    assert_eq!(payload.pointer("/review_guidance/status").and_then(Value::as_str), Some("present"));
+    assert_eq!(action.get("new_unresolved").and_then(Value::as_u64), Some(3));
+    assert_eq!(
+        action.get("gap_list_proven").and_then(Value::as_bool),
+        Some(false),
+        "a current guidance run that named nothing does not prove an empty list against a positive count: {action}"
+    );
+
+    // The gate must not contradict itself: if it is telling the author the
+    // guidance is not actionable, it cannot also present the list as proven.
+    let not_actionable = next_action(&payload, "ripr_review_guidance_not_actionable")?;
+    assert_eq!(
+        not_actionable.get("reason").and_then(Value::as_str),
+        Some("no_actionable_top_gaps")
+    );
+
+    let markdown = fs::read_to_string(&summary)?;
+    assert!(
+        markdown.contains("NOT_PROVEN"),
+        "an unnamed-seam block must be labelled NOT_PROVEN: {markdown}"
+    );
+    // Wording must not claim the run failed — it completed and named nothing.
+    assert!(
+        markdown.contains("completed but named no seam"),
+        "a completed run must not be described as one that could not be produced: {markdown}"
+    );
+    assert!(
+        !markdown.contains("could not be produced"),
+        "that phrasing belongs to the instrument-failure route only: {markdown}"
+    );
+
+    assert_blocking_actions_have_repair_contract(&payload)?;
+
+    Ok(())
+}
+
+#[test]
 fn quality_gate_cli_marks_gap_list_proven_when_guidance_named_the_seams() -> TestResult {
     // Negative control for the test above: when guidance completed and named
     // seams, the unproven markers must be absent. Without this, marking every
