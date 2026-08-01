@@ -19,7 +19,8 @@ verify the binary before wiring it into shared automation.
 Use one of the public install paths that matches how you work:
 
 - VS Code: install the `EffortlessMetrics.perl-lsp-rs` extension and let it download the matching `perllsp` binary.
-- macOS or Linux: install via the EffortlessMetrics Homebrew tap (see below).
+- macOS or Linux: run the [installer script](#installer-script-macos-and-linux), or install via the [EffortlessMetrics Homebrew tap](#homebrew-via-the-effortlessmetrics-tap).
+- Windows: run the [PowerShell installer script](#windows).
 - Other editors: download a prebuilt binary from [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) and put it on your `PATH`.
 - Local testing or pre-release validation: install from this repo with `cargo install --path crates/perllsp`.
 
@@ -33,6 +34,115 @@ perllsp --version
 perllsp --health
 perllsp --info
 ```
+
+## Installer Script (macOS and Linux)
+
+The repository maintains the installer at
+[`scripts/install.sh`](../../scripts/install.sh); the root
+[`install.sh`](../../install.sh) is a thin wrapper that forwards to it. The
+script detects your platform, downloads the matching GitHub release archive,
+verifies it against the release `SHA256SUMS` when that file is available, and
+installs both `perllsp` and `perl-dap`.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
+```
+
+Supported platforms are Linux x86_64 and aarch64 (gnu or musl), macOS x86_64,
+and macOS aarch64.
+
+Options are environment variables, so they work with the piped form too:
+
+```bash
+# Pin a release instead of taking the latest.
+curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | VERSION=v0.17.0 bash
+
+# Choose the install directory (default: /usr/local/bin if writable, else ~/.local/bin).
+curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | INSTALL_DIR="$HOME/.local/bin" bash
+
+# Force the gnu or musl Linux archive instead of autodetecting.
+curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | PERL_LSP_LINUX_LIBC=musl bash
+
+# Build from source instead of downloading a release archive.
+curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | BUILD_FROM_SOURCE=1 bash
+```
+
+From a clone, run `bash scripts/install.sh --help` for the current option list.
+
+If the script warns that no checksum entry was found, or that neither
+`sha256sum` nor `shasum` is available, it installs without verifying the
+archive. Prefer a manual archive download and checksum check in that case.
+
+## Windows
+
+### Installer script
+
+```powershell
+irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
+```
+
+[`install.ps1`](../../install.ps1) downloads the matching release zip, verifies
+it against the release `SHA256SUMS` when that file downloads successfully
+(it warns and continues if it does not), installs `perllsp.exe` into
+`%USERPROFILE%\.local\bin`, and tells you how to add that directory to your
+`PATH` if it is not already there.
+
+Two limits apply today, and neither is fixed by this page:
+
+- The script installs `perllsp.exe` only. It does not install the `perl-dap.exe`
+  debug adapter, unlike the POSIX installer. Take `perl-dap.exe` from the
+  release zip if you need the debugger
+  ([#5036](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5036)).
+- Only `x86_64-pc-windows-msvc` is built by the release workflow. The script
+  detects ARM64 and will construct a download URL for it, but that asset does
+  not exist and the download fails
+  ([#5007](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5007)).
+  ARM64 Windows users should build from source.
+
+To pin a version or change the install directory, download the script and pass
+parameters rather than piping it:
+
+```powershell
+irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 -OutFile install.ps1
+.\install.ps1 -Version 0.17.0 -InstallDir C:\tools\bin
+```
+
+If PowerShell refuses to run the downloaded script, either unblock it
+(`Unblock-File .\install.ps1`) or run it in a session that allows local scripts.
+
+### Manual archive
+
+Download `perllsp-<version>-x86_64-pc-windows-msvc.zip` from
+[GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases),
+extract it, and put the directory containing `perllsp.exe` and `perl-dap.exe`
+on your `PATH`. This is the path with the fewest moving parts and the one the
+release assets are proven against.
+
+### Windows package managers
+
+The repository owns manifest sources for three Windows package managers, and
+release automation refreshes them on every release:
+
+| Manager | Manifest source | Package identifier | Automation target |
+| --- | --- | --- | --- |
+| Scoop | `distribution/scoop/perl-lsp.json` | `perl-lsp` | bump PR to `ScoopInstaller/Main` |
+| Chocolatey | `distribution/chocolatey/perl-lsp.nuspec` | `perl-lsp` | bump PR to `chocolatey-community/chocolatey-coreteampackages` |
+| winget | `distribution/winget/perl-lsp.yaml` | `EffortlessMetrics.perl-lsp` | repo-local manifest only |
+
+These are **not** proven-current install paths. The Scoop and Chocolatey
+workflows open pull requests against community repositories that this project
+does not control, and submission of the winget manifest to `winget-pkgs` is
+still a manual follow-up (see `distribution/windows/README.md`). Before relying
+on one, confirm the package is actually published and at the version you expect:
+
+```powershell
+scoop search perl-lsp
+choco search perl-lsp
+winget search EffortlessMetrics.perl-lsp
+```
+
+If it is missing or behind, use the installer script or the manual archive
+instead.
 
 ## Homebrew via the EffortlessMetrics tap
 

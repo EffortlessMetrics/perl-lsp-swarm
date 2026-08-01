@@ -66,18 +66,46 @@ The README is a front door, not the metric source of truth. Current release post
 
 ## Install
 
-- Install: [docs/how-to/INSTALLATION.md](docs/how-to/INSTALLATION.md)
-- Editor setup: [docs/how-to/EDITOR_SETUP.md](docs/how-to/EDITOR_SETUP.md)
+**VS Code** — installs the extension, which downloads the matching `perllsp` binary for you:
 
-| Metric | Value |
-|---|---|
-| Published crate surface | 32 crates in `[workspace.metadata.publish.allow]` |
+```bash
+code --install-extension EffortlessMetrics.perl-lsp-rs
+```
+
+**macOS and Linux** — installer script; checksum-verifies the release archive and installs `perllsp` and `perl-dap`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
+```
+
+**Homebrew** (macOS, Linux via Linuxbrew) — from the owned EffortlessMetrics tap, not Homebrew/core:
+
+```bash
+brew install effortlessmetrics/tap/perllsp
+```
+
+**Windows** (x86_64) — installer script; installs `perllsp.exe` only:
+
+```powershell
+irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
+```
+
+Then confirm the install before wiring it into an editor or CI:
+
+```bash
+perllsp --version
+perllsp --health
+```
+
+Full options, prebuilt-archive downloads, Windows package managers, and
+build-from-source: [docs/how-to/INSTALLATION.md](docs/how-to/INSTALLATION.md).
+Editor configuration: [docs/how-to/EDITOR_SETUP.md](docs/how-to/EDITOR_SETUP.md).
 
 The verified GitHub `v0.17.0` release assets are public beta. Other distribution
 channels are independently versioned and are not proven current by that receipt;
 verify `perllsp --version` and `perllsp --health` before editor or CI use.
 
-The VS Code extension downloads the matching `perllsp` binary automatically. Other editors use the `perllsp --stdio` server command after installing a release binary.
+Other editors use the `perllsp --stdio` server command after installing a release binary.
 
 Native formatting and native critic diagnostics do not require `perltidy` or
 `perlcritic`. Install those tools only when a project explicitly opts into
@@ -87,7 +115,7 @@ Do not install `perl-lsp` from crates.io; that is a different project.
 
 ## Crate surface
 
-The current architecture collapsed the old microcrate graph into a smaller published surface. Most implementation detail now lives in modules behind focused public crates.
+The current architecture collapsed the old microcrate graph into a smaller published surface. Most implementation detail now lives in modules behind focused public crates. The published surface is 32 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).
 
 | Need | Crate |
 |---|---|
