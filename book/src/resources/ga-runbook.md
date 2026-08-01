@@ -1,8 +1,14 @@
 # GA Release Runbook (Forward-Looking)
 
-> **Note**: This is a forward-looking planning document for a future GA release (v0.15.0+).
-> The project is currently at v0.9.x (Initial Public Alpha). The GA milestone has not been reached.
-> Content below is retained as planning documentation and will be updated when GA readiness is assessed.
+> **Note**: This is a forward-looking planning document for a future GA release.
+> The tree is at v0.17.0 (public beta) and the GA milestone has not been reached.
+> Content below is retained as planning documentation.
+>
+> The worked examples still use v0.8.3 and have not been re-verified against the
+> current release process. Steps 5, 8, and 9 have been corrected against the
+> shipping asset names; treat the rest as a template to check, not a script to
+> run. [`docs/RELEASE_PROCESS.md`](../RELEASE_PROCESS.md) and
+> [`RELEASE.md`](../../RELEASE.md) are the current authority.
 
 This document provides a template for a future general availability release.
 
@@ -30,7 +36,7 @@ sed -i "s/^version = \".*\"/version = \"$VERSION\"/" crates/tree-sitter-perl-rs/
 cargo update
 
 # Verify builds
-cargo build -p perl-parser --bin perllsp --release
+cargo build -p perl-parser --bin perl-lsp --release
 ```
 
 ### 2. Create & Push Tag (2 min)
@@ -92,6 +98,35 @@ WINDOWS_X64_SHA256="mno345..."
 # Checksums are fetched from GitHub
 ```
 
+#### Sync both installers to the publication repo — required
+
+Users fetch `install.sh` and `install.ps1` from the publication repo
+(`EffortlessMetrics/perl-lsp`, branch `master`), not from this one. Neither
+script is version-pinned, so no per-release edit is needed — but the
+publication copy must actually match this repository.
+
+It currently does not. The published `install.ps1` still carries the
+pre-rename `$Name = "perl-lsp"` and therefore builds an asset name that does
+not exist:
+
+```text
+perllsp-0.17.0-x86_64-pc-windows-msvc.zip   -> 200
+perl-lsp-0.17.0-x86_64-pc-windows-msvc.zip  -> 404
+```
+
+Verify the publication copy before announcing a release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 \
+  | grep '^\$Name'   # must print: $Name = "perllsp"
+```
+
+If it does not match, sync the publication repo
+([#4348](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4348))
+before publishing any Windows install instruction. Until then, document the
+manual archive for Windows
+([#5461](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5461)).
+
 ### 6. Create Homebrew Formula (10 min)
 
 Create a new repository `homebrew-tap` if it doesn't exist:
@@ -110,37 +145,40 @@ Create `Formula/perllsp.rb`:
 class Perllsp < Formula
   desc "Native Rust language server and debug adapter for Perl"
   homepage "https://github.com/EffortlessMetrics/perl-lsp"
-  version "0.8.3"
-  license "MIT"
+  version "0.13.1"
+  license any_of: ["MIT", "Apache-2.0"]
 
   on_macos do
-    on_arm do
-      url "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.8.3/perllsp-0.8.3-aarch64-apple-darwin.tar.gz"
+    if Hardware::CPU.arm?
+      url "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v#{version}/perllsp-#{version}-aarch64-apple-darwin.tar.gz"
       sha256 "ACTUAL_SHA256_FROM_RELEASE"
-    end
-    on_intel do
-      url "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.8.3/perllsp-0.8.3-x86_64-apple-darwin.tar.gz"
+    else
+      url "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v#{version}/perllsp-#{version}-x86_64-apple-darwin.tar.gz"
       sha256 "ACTUAL_SHA256_FROM_RELEASE"
     end
   end
 
   on_linux do
-    on_arm do
-      url "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.8.3/perllsp-0.8.3-aarch64-unknown-linux-musl.tar.gz"
+    if Hardware::CPU.arm?
+      url "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v#{version}/perllsp-#{version}-aarch64-unknown-linux-gnu.tar.gz"
       sha256 "ACTUAL_SHA256_FROM_RELEASE"
-    end
-    on_intel do
-      url "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.8.3/perllsp-0.8.3-x86_64-unknown-linux-musl.tar.gz"
+    else
+      url "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v#{version}/perllsp-#{version}-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "ACTUAL_SHA256_FROM_RELEASE"
     end
   end
 
   def install
-    bin.install "perllsp"
+    extracted_dir = Dir.glob("perllsp-#{version}-*").find { |path| File.directory?(path) }
+    raise "expected release archive directory perllsp-#{version}-<target>" unless extracted_dir
+
+    bin.install "#{extracted_dir}/perllsp"
+    bin.install "#{extracted_dir}/perl-dap"
   end
 
   test do
-    assert_match "perllsp", shell_output("#{bin}/perllsp --version")
+    assert_match version.to_s, shell_output("#{bin}/perllsp --version")
+    assert_match version.to_s, shell_output("#{bin}/perl-dap --version")
   end
 end
 ```
@@ -149,7 +187,7 @@ Push the tap:
 
 ```bash
 git add Formula/perllsp.rb
-git commit -m "Add perllsp v0.8.3"
+git commit -m "Add perllsp v0.13.1"
 git remote add origin https://github.com/EffortlessMetrics/homebrew-tap.git
 git push -u origin main
 ```
@@ -173,40 +211,34 @@ If the VS Code extension is ready:
 
 ### 8. Update Documentation (5 min)
 
-Update README.md installation section:
+The install surfaces are owned by the documents themselves, not by this
+runbook. Do not paste an install section from here — check the owning
+documents against the release that just shipped:
 
-```markdown
-## Installation
+| Surface | What to confirm |
+| --- | --- |
+| [`README.md`](../../README.md) Install | Commands still run on the new version |
+| [`docs/how-to/INSTALLATION.md`](../how-to/INSTALLATION.md) | Per-platform detail, including the Windows caveats |
+| [`docs/tutorials/GETTING_STARTED.md`](../tutorials/GETTING_STARTED.md) | First-run path still matches shipped behavior |
 
-### Quick Install
+Only change these when the release actually changed installation behavior.
+Restating install commands in a fourth place is what produced the drift this
+step now guards against.
 
-#### Unix (Linux/macOS)
-```bash
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
-```
-
-#### Windows PowerShell
-```powershell
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
-```
-
-#### Homebrew
-```bash
-brew install effortlessmetrics/tap/perllsp
-```
-
-### Manual Download
-
-Download the appropriate binary for your platform from the [releases page](https://github.com/EffortlessMetrics/perl-lsp/releases/latest).
-```
+Windows specifically: publish the manual archive, not the piped
+`install.ps1` one-liner, until the publication repo is synced (step 5).
 
 ### 9. Announce Release (10 min)
 
 #### GitHub Release Notes
 
-Update the auto-generated release notes with:
+Update the auto-generated release notes with the template below.
 
-```markdown
+Windows note for the operator, not for the notes themselves: announce the
+release archive, never the piped `install.ps1` one-liner, until the
+publication repo is synced (step 5). The one-liner 404s.
+
+````markdown
 # perl-lsp v0.8.3
 
 ## 🎉 Major Release
@@ -219,7 +251,7 @@ This release marks perl-lsp with comprehensive edge case coverage and broad feat
 - **35+ IDE Features**: Complete LSP implementation
 - **World-Class Performance**: 1-150µs parsing times
 - **Property-Based Testing**: Comprehensive test infrastructure
-- **Multi-Platform**: Linux, macOS, Windows (x86_64 & ARM64)
+- **Multi-Platform**: Linux and macOS (x86_64 & ARM64), Windows (x86_64)
 
 ### 🚀 Quick Install
 
@@ -227,12 +259,12 @@ This release marks perl-lsp with comprehensive edge case coverage and broad feat
 # Unix
 curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
 
-# Windows
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
-
 # Homebrew
 brew install effortlessmetrics/tap/perllsp
 ```
+
+Windows: download `perllsp-<version>-x86_64-pc-windows-msvc.zip` from the
+release assets, extract it, and add the extracted directory to `PATH`.
 
 ### 📊 Performance
 
@@ -257,7 +289,7 @@ brew install effortlessmetrics/tap/perllsp
 ### 🙏 Contributors
 
 Thank you to everyone who contributed to this release!
-```
+````
 
 #### Social Media
 
