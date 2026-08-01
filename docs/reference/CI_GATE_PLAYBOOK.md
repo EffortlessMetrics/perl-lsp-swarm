@@ -165,12 +165,16 @@ The job summary spells out which of the two routes you are on:
   readable receipt at all, so the reason is `null` and the status is the whole
   explanation.
 
-  Re-run guidance for the same HEAD with a larger budget:
+  Re-run guidance for the same HEAD with a larger budget, against your PR's
+  base branch — `origin/main` unless you targeted something else:
 
   ```bash
-  cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD \
+  cargo xtask ripr-review-comments --base origin/main --head HEAD \
     --timeout-seconds 1200
   ```
+
+  (The workflow spells this `--base "origin/$BASE_REF"`, but `BASE_REF` is a
+  CI-only variable; locally it expands to `origin/`, which is not a revision.)
 
   The budget is not uniform today: `.github/workflows/ripr.yml` passes `600`
   at lines 724 and 883, but `210` at lines 327 and 575. If a lane times out
