@@ -231,10 +231,7 @@ describe('BinaryDownloader.getPlatformTarget', () => {
 
   test('ARM64 Windows explains the emulation fallback in the output channel', () => {
     const channel = makeOutputChannel();
-    const dl = new BinaryDownloader(
-      makeContext(),
-      channel,
-    ) as unknown as TestDownloader;
+    const dl = new BinaryDownloader(makeContext(), channel) as unknown as TestDownloader;
 
     withProcess('win32', 'arm64', () => dl.getPlatformTarget());
 
