@@ -11,7 +11,6 @@
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::error::ParseError;
 
-use super::internal_types::Diagnostic;
 use perl_diagnostics::codes::DiagnosticSeverity;
 
 /// Derive the canonical diagnostic code for a parser error.
@@ -28,83 +27,14 @@ pub fn parse_error_code(error: &ParseError) -> DiagnosticCode {
     }
 }
 
-/// Convert a parse error to a diagnostic with actionable suggestions.
-///
-/// Every diagnostic includes:
-/// - A clear human-readable message describing what went wrong
-/// - An appropriate severity level
-/// - A diagnostic code (`syntax-error`) for IDE quick-fix integration
-/// - An optional suggestion describing how to fix the issue
-#[allow(dead_code)]
-pub fn parse_error_to_diagnostic(error: &ParseError) -> Diagnostic {
-    let message = error.to_string();
-    let location = match error {
-        ParseError::UnexpectedToken { location, .. } => *location,
-        ParseError::SyntaxError { location, .. } => *location,
-        ParseError::Advisory { location, .. } => *location,
-        _ => 0,
-    };
-
-    let suggestion = match error {
-        ParseError::UnexpectedToken { expected, found, .. } => {
-            if expected.contains(';') || expected.contains("semicolon") {
-                Some("Add a ';' at the end of the statement".to_string())
-            } else if found == ";" {
-                Some(format!("A {} is required here -- the statement appears incomplete", expected))
-            } else if found == "}" || found == ")" || found == "]" {
-                Some(format!("Check for a missing {} before '{}'", expected, found))
-            } else {
-                None
-            }
-        }
-        ParseError::UnexpectedEof => {
-            Some("Check for unclosed delimiters or missing semicolons".to_string())
-        }
-        ParseError::UnclosedDelimiter { delimiter } => {
-            Some(format!("Add a matching closing '{}'", delimiter))
-        }
-        ParseError::InvalidString => {
-            Some("Check for a missing closing quote or an invalid escape sequence".to_string())
-        }
-        ParseError::InvalidRegex { .. } => {
-            Some("Check the regex pattern for unmatched delimiters or invalid syntax".to_string())
-        }
-        ParseError::InvalidNumber { literal } => Some(format!(
-            "'{}' is not a valid number -- check for misplaced underscores or invalid digits",
-            literal
-        )),
-        ParseError::RecursionLimit | ParseError::NestingTooDeep { .. } => Some(
-            "The code is too deeply nested -- consider refactoring into smaller subroutines"
-                .to_string(),
-        ),
-        ParseError::LexerError { message: msg } => {
-            let lower = msg.to_lowercase();
-            if lower.contains("unterminated") || lower.contains("unclosed") {
-                Some(
-                    "Check for an unclosed string, regex, or heredoc near this position"
-                        .to_string(),
-                )
-            } else {
-                None
-            }
-        }
-        ParseError::SyntaxError { .. } | ParseError::Advisory { .. } => None,
-        ParseError::Cancelled => None,
-        // Recovered errors: the parser continued with a synthetic node.
-        // No user-facing suggestion is needed — the partial AST is still usable.
-        ParseError::Recovered { .. } => None,
-    };
-
-    Diagnostic {
-        range: (location, location + 1),
-        severity: parse_error_severity(error),
-        code: Some(parse_error_code(error).as_str().to_string()),
-        message,
-        related_information: Vec::new(),
-        tags: Vec::new(),
-        suggestion,
-    }
-}
+// A dead `parse_error_to_diagnostic` used to live here: a never-called second
+// `ParseError` → `Diagnostic` mapping with its own location match, its own
+// suggestion table, and the same `_ => 0` catch-all that pinned `Recovered`
+// errors to line 1 column 1. It was removed rather than wired up — it carried
+// the defect it looked like a fix for, and the live mapping in `diagnostics.rs`
+// (positions from `ParseError::location`, hints from `build_parse_error_hint`)
+// is the single authority. Recover it from git history if a second entry point
+// is ever genuinely needed.
 
 /// Derive the user-facing severity for a parser error.
 pub fn parse_error_severity(error: &ParseError) -> DiagnosticSeverity {
