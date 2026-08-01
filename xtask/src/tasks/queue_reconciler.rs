@@ -1094,7 +1094,7 @@ required = false
     /// ruleset changes, update the policy and this list together.
     #[test]
     fn repository_policy_lists_every_live_required_context() -> Result<()> {
-        let checks = load_required_ci_checks(&crate::utils::project_root()?)?;
+        let checks = load_required_ci_checks(&project_root()?)?;
 
         for expected in [
             "Perl LSP Rust Small Result",
