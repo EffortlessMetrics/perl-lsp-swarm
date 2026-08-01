@@ -1027,6 +1027,27 @@ jobs:
             exit 1
           fi
 
+          # A cancelled lane is the ABSENCE of evidence, not negative evidence.
+          # The gate stays blocking — no proof was produced for this SHA — but it
+          # must not read as a ripr failure. The `github)` branch below reported
+          # this as "did not succeed: cancelled", which names the outcome but
+          # still reads as a gate failure rather than an unevaluated head (#5460).
+          #
+          # The cause is deliberately not asserted. The usual one is a newer push
+          # superseding this run via the concurrency group's cancel-in-progress,
+          # but a manual or API cancellation produces an identical `cancelled`
+          # result and no newer run exists in that case. Nothing available here
+          # distinguishes them, so the message names the outcome and offers
+          # supersession as the likely cause rather than directing the reader to
+          # a run that may not exist.
+          for lane_result in "$CX53_RESULT" "$CX43_RESULT" "$GITHUB_RESULT" "$FALLBACK_RESULT"; do
+            if [ "$lane_result" = "cancelled" ]; then
+              echo "::error::ripr lane cancelled — no proof produced for this SHA. This is NOT a new RIPR gap. Most often a newer push superseded this run; a manual or API cancellation looks the same here. If a newer run exists for this PR, that run is authoritative; otherwise re-run this one."
+              echo "ripr+ New Gap Gate: cancelled (no proof for this SHA)"
+              exit 1
+            fi
+          done
+
           case "${ROUTER_TARGET:-}" in
             cx53)
               if [ "$CX53_RESULT" = "success" ]; then

@@ -112,10 +112,20 @@ The recommended way to install is to use the pre-built binaries or a package man
 curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
 ```
 
-### Quick Install (Windows PowerShell)
-```powershell
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
-```
+### Windows
+
+Use the release archive. Download
+`perllsp-<version>-x86_64-pc-windows-msvc.zip` from
+[GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases),
+extract it, and put the directory holding `perllsp.exe` and `perl-dap.exe` on
+your `PATH`.
+
+The piped PowerShell one-liner is not usable yet: the published `install.ps1`
+still derives the pre-rename `perl-lsp-<version>-...zip` asset name, while
+releases ship `perllsp-<version>-...zip`, so the download 404s. See
+[Windows installation](../how-to/INSTALLATION.md#windows) for the detail and
+[#5461](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5461) for
+the fix.
 
 ### Homebrew (macOS/Linux)
 ```bash

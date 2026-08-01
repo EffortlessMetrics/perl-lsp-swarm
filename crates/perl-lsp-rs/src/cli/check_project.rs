@@ -1,9 +1,22 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-struct FileError {
+/// Blocking parse errors and advisory diagnostics recorded for one scanned file.
+///
+/// The two lists are kept apart because only `blocking` decides whether the file
+/// parsed cleanly. Advisories are raised on source real `perl` accepts, so
+/// counting them as failures would report valid Perl as unparsable. `--check`
+/// draws the same line in `cli.rs::run_check`.
+struct FileFindings {
     path: String,
-    errors: Vec<String>,
+    blocking: Vec<String>,
+    advisory: Vec<String>,
+}
+
+/// A path the directory walk could not read.
+struct UnreadablePath {
+    path: String,
+    reason: String,
 }
 
 pub(super) fn run_check_project(dir: &str) -> i32 {
@@ -27,7 +40,24 @@ pub(super) fn run_check_project(dir: &str) -> i32 {
     let mut results = ProjectCheckResults::default();
     let walker = walkdir::WalkDir::new(root).follow_links(true).into_iter();
 
-    for entry in walker.filter_map(|e| e.ok()) {
+    for entry in walker {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                // Dropping walk errors here would shorten `Files scanned` with no
+                // trace, leaving the report to state a confident percentage over
+                // whatever subset happened to be readable.
+                results.unreadable.push(UnreadablePath {
+                    path: error
+                        .path()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| dir.to_string()),
+                    reason: walk_error_reason(&error),
+                });
+                continue;
+            }
+        };
+
         let path = entry.path();
         if !is_supported_perl_file(path) {
             continue;
@@ -41,11 +71,23 @@ pub(super) fn run_check_project(dir: &str) -> i32 {
     emit_report(dir, &results)
 }
 
+/// Render a `walkdir` error without the redundant path prefix it already carries.
+fn walk_error_reason(error: &walkdir::Error) -> String {
+    if error.loop_ancestor().is_some() {
+        return "symbolic link loop".to_string();
+    }
+    match error.io_error() {
+        Some(io_error) => io_error.to_string(),
+        None => error.to_string(),
+    }
+}
+
 #[derive(Default)]
 struct ProjectCheckResults {
     total: usize,
     clean: usize,
-    file_errors: Vec<FileError>,
+    file_findings: Vec<FileFindings>,
+    unreadable: Vec<UnreadablePath>,
     category_counts: HashMap<String, usize>,
 }
 
@@ -69,31 +111,45 @@ fn process_file(path: &Path, path_str: String, results: &mut ProjectCheckResults
     };
 
     let mut parser = perl_parser::Parser::new(&source);
+    // `parse()` returns `Ok` whenever the parser recovered, so the recovered
+    // diagnostics are read separately. Only the blocking ones decide the
+    // verdict — advisories appear on files real `perl` accepts. `--check`
+    // partitions the same way in `cli.rs::run_check`.
     let parse_result = parser.parse();
-    let recovered_errors = parser.errors();
+    let (blocking_errors, advisory_errors): (Vec<_>, Vec<_>) =
+        parser.errors().iter().partition(|err| err.blocks_clean_parse());
 
-    let mut errors_for_file: Vec<String> = Vec::new();
-
-    for err in recovered_errors {
-        record_category(&format!("{err}"), results);
-        errors_for_file.push(format!("{err}"));
-    }
+    let mut blocking: Vec<String> = Vec::new();
+    let advisory: Vec<String> = advisory_errors.iter().map(|err| format!("{err}")).collect();
 
     if let Err(ref e) = parse_result {
-        record_category(&format!("{e}"), results);
-        errors_for_file.push(format!("{e}"));
+        let message = format!("{e}");
+        record_category(&message, results);
+        blocking.push(message);
     }
 
-    if errors_for_file.is_empty() {
+    for err in &blocking_errors {
+        let message = format!("{err}");
+        record_category(&message, results);
+        blocking.push(message);
+    }
+
+    if blocking.is_empty() {
         results.clean += 1;
-    } else {
-        results.file_errors.push(FileError { path: path_str, errors: errors_for_file });
+    }
+
+    if !blocking.is_empty() || !advisory.is_empty() {
+        results.file_findings.push(FileFindings { path: path_str, blocking, advisory });
     }
 }
 
 fn record_file_error(path: String, message: String, results: &mut ProjectCheckResults) {
-    results.file_errors.push(FileError { path, errors: vec![message.clone()] });
     record_category(&message, results);
+    results.file_findings.push(FileFindings {
+        path,
+        blocking: vec![message],
+        advisory: Vec::new(),
+    });
 }
 
 fn record_category(message: &str, results: &mut ProjectCheckResults) {
@@ -110,6 +166,7 @@ fn emit_report(dir: &str, results: &ProjectCheckResults) -> i32 {
 
     if results.total == 0 {
         println!();
+        emit_unreadable_section(&results.unreadable);
         println!("No Perl files (.pm, .pl, .t) found.");
         return 0;
     }
@@ -118,25 +175,56 @@ fn emit_report(dir: &str, results: &ProjectCheckResults) -> i32 {
     println!("Clean parses: {}/{} ({pct:.1}%)", results.clean, results.total);
     println!();
 
-    if !results.file_errors.is_empty() {
+    let blocking_files: Vec<_> =
+        results.file_findings.iter().filter(|file| !file.blocking.is_empty()).collect();
+    if !blocking_files.is_empty() {
         println!("Parse errors:");
-        for fe in &results.file_errors {
-            for err in &fe.errors {
-                println!("  {}: {err}", fe.path);
+        for file in blocking_files {
+            for err in &file.blocking {
+                println!("  {}: {err}", file.path);
             }
         }
         println!();
     }
 
+    let advisory_files: Vec<_> =
+        results.file_findings.iter().filter(|file| !file.advisory.is_empty()).collect();
+    if !advisory_files.is_empty() {
+        println!("Advisories (do not affect the parsability verdict):");
+        for file in advisory_files {
+            for err in &file.advisory {
+                println!("  {}: {err}", file.path);
+            }
+        }
+        println!();
+    }
+
+    emit_unreadable_section(&results.unreadable);
     emit_category_section(&results.category_counts);
 
+    let scope = if results.unreadable.is_empty() { "" } else { ", scanned files only" };
     if pct >= 80.0 {
-        println!("Assessment: PASS ({pct:.1}% parsable)");
+        println!("Assessment: PASS ({pct:.1}% parsable{scope})");
         0
     } else {
-        println!("Assessment: FAIL ({pct:.1}% parsable, threshold 80%)");
+        println!("Assessment: FAIL ({pct:.1}% parsable, threshold 80%{scope})");
         1
     }
+}
+
+/// Report paths the walk could not read so a short scan is never silent.
+fn emit_unreadable_section(unreadable: &[UnreadablePath]) {
+    if unreadable.is_empty() {
+        return;
+    }
+
+    println!("Paths not scanned: {}", unreadable.len());
+    for entry in unreadable {
+        println!("  {}: {}", entry.path, entry.reason);
+    }
+    println!();
+    println!("The parsability figures above cover scanned files only.");
+    println!();
 }
 
 fn emit_category_section(category_counts: &HashMap<String, usize>) {
