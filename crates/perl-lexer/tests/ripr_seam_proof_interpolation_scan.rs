@@ -3,7 +3,8 @@
 //!
 //! `consume_qualified_identifier_in_string` is `pub(crate)`, so its unit tests
 //! live beside it. This file proves the same seam through the crate's *public*
-//! surface: every production call site is reachable from `PerlLexer::new` plus
+//! surface: every one of its five production call sites is reachable from
+//! `PerlLexer::new` plus
 //! `collect_tokens`, and each of the scan's four branches (the conditional `'`
 //! package separator, identifier-continue, the `::` package pair, and the
 //! terminating break) is observable in the resulting `StringPart` boundaries.
@@ -41,10 +42,11 @@ fn assert_single_variable(input: &str, expected: &str) -> R {
 
 /// The `::`-folding branch, exercised once per production call site.
 ///
-/// The four call sites are the `$#array`, `@array`, `@$ref` and `$$ref` arms.
-/// Every row here reaches the scan loop through a different arm, so a call site
-/// that stopped folding `::` — or stopped calling the helper at all — fails
-/// here even though the other three still pass.
+/// The five call sites are the `$#array`, `@array`, `@$ref`, `$$ref` and
+/// leading-`::` (`$::name`) arms. Every row here reaches the scan loop through
+/// a different arm, so a call site that stopped folding `::` — or stopped
+/// calling the helper at all — fails here even though the other four still
+/// pass.
 #[test]
 fn every_call_site_folds_package_separators_through_the_shared_scan() -> R {
     let cases = [
@@ -53,6 +55,7 @@ fn every_call_site_folds_package_separators_through_the_shared_scan() -> R {
         (r#""@main::arr""#, "@main::arr", "@array arm"),
         (r#""@$main::ref""#, "@$main::ref", "@$ref deref arm"),
         (r#""$$main::rt""#, "$$main::rt", "$$ref deref arm"),
+        (r#""$::main::sc""#, "$::main::sc", "$::name leading-:: arm"),
     ];
 
     for (input, expected, arm) in cases {
@@ -73,6 +76,7 @@ fn every_call_site_stops_the_shared_scan_at_a_lone_colon() -> R {
         (r#""@arr:tail""#, "@arr", "@array arm"),
         (r#""@$ref:tail""#, "@$ref", "@$ref deref arm"),
         (r#""$$ref:tail""#, "$$ref", "$$ref deref arm"),
+        (r#""$::sc:tail""#, "$::sc", "$::name leading-:: arm"),
     ];
 
     for (input, head, arm) in cases {
