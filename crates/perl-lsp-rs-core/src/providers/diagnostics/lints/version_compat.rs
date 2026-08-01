@@ -859,26 +859,47 @@ mod tests {
     #[test]
     fn class_token_without_class_feature_emits_pl900() {
         let diags = version_compat_diags("use v5.36;\nmy $name = __CLASS__;\n");
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__")),
-            "v5.36 without class feature should emit PL900 for __CLASS__"
+        let class_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__"))
+            .collect();
+
+        // One occurrence of the token must produce exactly one diagnostic. A
+        // duplicate would surface as two identical squiggles on the same span.
+        assert_eq!(
+            class_diags.len(),
+            1,
+            "one `__CLASS__` occurrence should emit exactly one PL900: {diags:#?}"
         );
-        for d in &diags {
-            if d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__") {
-                assert_eq!(
-                    d.severity,
-                    DiagnosticSeverity::Warning,
-                    "__CLASS__ PL900 must be Warning, not Error"
-                );
-                assert!(
-                    d.message.contains("v5.40"),
-                    "__CLASS__ PL900 message should name v5.40 as the minimum: {}",
-                    d.message
-                );
-            }
-        }
+        let d = class_diags[0];
+
+        assert_eq!(
+            d.severity,
+            DiagnosticSeverity::Warning,
+            "__CLASS__ PL900 must be Warning, not Error"
+        );
+
+        // The message is the whole UX contract: it must name the construct, the
+        // minimum version that supports it, and the declared version that does not.
+        assert!(
+            d.message.contains("__CLASS__"),
+            "__CLASS__ PL900 message should name the construct: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("v5.40"),
+            "__CLASS__ PL900 message should name v5.40 as the minimum: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("v5.36"),
+            "__CLASS__ PL900 message should name the declared version that lacks it: {}",
+            d.message
+        );
+
+        // The remediation text is asserted by
+        // `class_token_suggestion_does_not_offer_the_feature_pragma`, which owns
+        // the `suggestion` field; this test owns severity, count, and `message`.
     }
 
     #[test]
