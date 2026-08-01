@@ -8,6 +8,7 @@ mod data_breakpoints;
 mod evaluation;
 mod execution;
 mod frames;
+mod logpoint;
 mod output;
 mod patterns;
 mod process;
@@ -924,6 +925,11 @@ print "result: $final\n";
             (
                 "supportsStepInTargetsRequest",
                 crate::feature_catalog::has_feature("dap.step_in_targets"),
+            ),
+            ("supportsRestartRequest", crate::feature_catalog::has_feature("dap.restart")),
+            (
+                "supportsLoadedSourcesRequest",
+                crate::feature_catalog::has_feature("dap.loaded_sources"),
             ),
         ];
 

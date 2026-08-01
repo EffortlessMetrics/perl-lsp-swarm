@@ -14,6 +14,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 cargo build -p perl-dap               # Build
 cargo build -p perl-dap --release     # Build optimized
 cargo test -p perl-dap                # Run tests
+cargo test -p perl-dap --features test-helpers   # Include seed-helper test targets
 cargo clippy -p perl-dap              # Lint
 cargo doc -p perl-dap --open          # View docs
 ./target/release/perl-dap --stdio     # Run native adapter (stdio)
@@ -26,31 +27,58 @@ RUST_LOG=debug ./target/release/perl-dap  # Run with debug logging
 
 ### Dependencies
 
-**Internal crates**:
-- `perl-parser` -- AST for breakpoint validation
-- `perl-dap-breakpoint` -- `AstBreakpointValidator`, `BreakpointValidator` trait
-- `perl-dap-eval` -- `SafeEvaluator` for expression evaluation
-- `perl-dap-stack` -- `PerlStackParser` for stack trace extraction
-- `perl-dap-variables` -- `PerlVariableRenderer`, `VariableParser`, `VariableRenderer`
+**Internal crates**: `perl-parser` / `perl-parser-core` / `perl-ast` (AST for breakpoint
+validation), `perl-lexer` (completion keywords), `perl-lsp-rs-core` (transport framing,
+platform helpers, feature catalog), `perl-module` (module path resolution).
 
-**External crates**: `tokio` (async runtime), `lsp-types` (shared types with LSP), `serde`/`serde_json` (protocol serialization), `anyhow`/`thiserror` (errors), `clap` (CLI), `tracing` (logging), `regex` (debugger output parsing), `ropey` (position mapping), `nix` (Unix signals), `winapi` (Windows process control)
+The former `perl-dap-breakpoint`, `perl-dap-eval`, `perl-dap-stack`, and
+`perl-dap-variables` satellites were absorbed into this crate (Wave H); they are now the
+`breakpoint`, `eval`, `stack`, and `variables` modules and are re-exported from `lib.rs`.
 
-### Key Types and Modules
+**External crates**: `tokio` (async runtime), `serde`/`serde_json` (protocol
+serialization), `anyhow`/`thiserror` (errors), `clap` (CLI), `tracing` (logging), `regex`
+(debugger output parsing), `ropey` (position mapping), `nix` (Unix signals), `winapi`
+(Windows process checks).
+
+### Key Modules
+
+Several of these are directories with a `mod.rs`, not single files — check `src/` before
+assuming a path.
 
 | Module | Key types | Purpose |
 |--------|-----------|---------|
-| `lib.rs` | `DapServer`, `DapConfig`, `DapMode` | Server entry point; dispatches to Native or Bridge mode |
+| `lib.rs` | re-exports | Public surface; see `pub use` block at the bottom |
+| `server/` | `DapServer`, `DapConfig`, `DapMode` | Server entry point; dispatches to Native or Bridge mode |
 | `main.rs` | `Args` (clap) | CLI binary; parses `--stdio`, `--socket`, `--bridge`, `--port`, `--log-level` |
-| `debug_adapter.rs` | `DebugAdapter`, `DapMessage` | Native adapter: manages `perl -d` process, handles all DAP requests |
+| `debug_adapter/` | `DebugAdapter`, `DapMessage` | Native adapter, split by concern: `process` (lifecycle + output reader), `execution` (stepping), `breakpoints`, `variables`, `evaluation`, `frames`, `logpoint`, `transport`, `dispatch` |
+| `backend/` | `DebugBackend`, `NativePerlDbBackend`, peer bridge/launch | Backend abstraction and the external-peer (ptkdb) path |
+| `peer_protocol/` | framing, message, payload types | Wire protocol for external debugger peers |
 | `bridge_adapter.rs` | `BridgeAdapter` | Spawns Perl::LanguageServer in DAP mode, proxies messages via stdio |
-| `protocol.rs` | `Request`, `Response`, `Event`, `Capabilities`, `SourceBreakpoint`, `Breakpoint`, ... | Full DAP protocol type definitions (serde-annotated) |
-| `breakpoints.rs` | `BreakpointStore`, `BreakpointRecord`, `BreakpointHitOutcome` | Breakpoint storage with REPLACE semantics, AST validation |
-| `configuration.rs` | `LaunchConfiguration`, `AttachConfiguration`, `create_launch_json_snippet()`, `create_attach_json_snippet()` | Launch/attach config structs with validation |
-| `platform.rs` | `resolve_perl_path()`, `normalize_path()`, `setup_environment()` | Cross-platform path resolution and env setup |
-| `security.rs` | `SecurityError`, `validate_path()`, `validate_expression()` | Path traversal prevention, expression sanitization, timeout caps |
-| `tcp_attach.rs` | `TcpAttachConfig`, `TcpAttachSession`, `DapEvent` | TCP socket attachment to running Perl debuggers |
-| `inline_values.rs` | `collect_inline_values()` | Regex-based inline value extraction for scalar variables |
-| `feature_catalog.rs` | `has_feature()`, `advertised_features()` | Auto-generated from `features.toml` at build time |
+| `protocol.rs` | `Request`, `Response`, `Event`, `Capabilities`, `SourceBreakpoint`, ... | DAP protocol type definitions (serde-annotated) |
+| `breakpoints.rs` | `BreakpointStore`, `BreakpointRecord`, `BreakpointHitOutcome`, `interpolate_logpoint_message` | Breakpoint storage with REPLACE semantics, hit counting, logpoint templating |
+| `breakpoint/` | `AstBreakpointValidator`, `BreakpointValidator` | AST-based breakpoint line validation and suggestions |
+| `eval/` | `SafeEvaluator` | Expression admission control for `evaluate`/`setExpression` |
+| `stack/` | `PerlStackParser` | Stack trace extraction and frame classification |
+| `variables/` | `VariableParser`, `PerlVariableRenderer` | Debugger variable parsing and DAP rendering |
+| `configuration.rs` | `LaunchConfiguration`, `AttachConfiguration`, `create_launch_json_snippet()` | Launch/attach config structs with validation |
+| `platform/` | `resolve_perl_path()`, `normalize_path()`, `setup_environment()` | Cross-platform path resolution and env setup |
+| `security/` | `SecurityError`, path/expression validation | Path traversal prevention, expression sanitization, timeout caps |
+| `tcp_attach/` | `TcpAttachConfig`, `TcpAttachSession`, `DapEvent` | TCP socket attachment to running Perl debuggers |
+| `inline_values/` | `collect_inline_values()` | Inline value extraction for scalar variables |
+| `feature_catalog.rs` | `has_feature()`, `advertised_features()` | Generated from `features.toml` at build time by `build.rs` |
+
+### Capability advertising
+
+`initialize` capabilities are **gated on the feature catalog**, not hardcoded. A
+`supportsX` flag is a promise that the request can succeed, so:
+
+- adding a capability means adding/advertising its `features.toml` entry, and
+- a request whose handler always returns `success: false` (currently `restartFrame` and
+  `terminateThreads` — perl5db has no primitive for either) stays `advertised = false`
+  with `maturity = "planned"`.
+
+`test_initialize_capabilities_mirror_feature_catalog` (in `debug_adapter/mod.rs`) and
+`tests/dap_capability_advertising_tests.rs` enforce both directions.
 
 ### Feature Flags
 
@@ -59,6 +87,7 @@ RUST_LOG=debug ./target/release/perl-dap  # Run with debug logging
 | `dap-phase1` | Phase 1: bridge to Perl::LanguageServer (AC1-AC4) |
 | `dap-phase2` | Phase 2: native adapter features (AC5-AC16) |
 | `dap-phase3` | Phase 3: production hardening (AC17-AC19) |
+| `test-helpers` | Exposes `*_for_test` seeding helpers to integration tests; excluded from production builds |
 
 ## Usage Examples
 
@@ -84,8 +113,16 @@ println!("{}", create_launch_json_snippet());
 ## Important Notes
 
 - Use `DebugAdapter` directly to route DAP requests and manage protocol state
+- The output reader thread in `debug_adapter/process.rs` is the **sole** consumer of the
+  debugger control stream. It must never block on a request/response round trip through
+  `recent_output` — it is that buffer's producer. Work that needs debugger values from
+  inside the reader (e.g. logpoint interpolation) queues framed commands and folds the
+  replies in as they stream past; see `debug_adapter/logpoint.rs`
+- Request handlers running on other threads use `send_framed_debugger_commands` +
+  `capture_framed_debugger_output` for synchronous queries
 - Platform-specific code gated with `cfg(unix)` / `cfg(windows)` for signal handling
 - Security module enforces workspace-boundary path checks and expression sanitization
 - All regex patterns use `OnceLock<Result<Regex, regex::Error>>` or `Lazy<Option<Regex>>` for graceful degradation
-- Build script generates `dap_feature_catalog.rs` from `features.toml`
-- Test suites cover acceptance criteria AC1-AC19 across 10 test targets
+- A handful of tests fail in sandboxed/local environments for environment reasons (fake
+  PID attach, path canonicalization, renderer drift) — see issue #1435 before assuming a
+  regression
