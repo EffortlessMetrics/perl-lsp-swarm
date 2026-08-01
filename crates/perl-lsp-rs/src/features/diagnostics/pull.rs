@@ -1846,7 +1846,7 @@ mod tests {
             })
             .ok_or("expected native duplicate parameter finding")?;
         assert_eq!(duplicate_parameter.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(duplicate_parameter.severity, Some(LspDiagnosticSeverity::ERROR));
+        assert_eq!(duplicate_parameter.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(
             duplicate_parameter.message,
             "Parameter '$dup_param' appears more than once in this signature"
@@ -1890,7 +1890,7 @@ mod tests {
             })
             .ok_or("expected native duplicate lexical finding")?;
         assert_eq!(duplicate.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(duplicate.severity, Some(LspDiagnosticSeverity::ERROR));
+        assert_eq!(duplicate.severity, Some(LspDiagnosticSeverity::WARNING));
         assert_eq!(
             duplicate.message,
             "Lexical variable '$x' is declared more than once in the same scope"

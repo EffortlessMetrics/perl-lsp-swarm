@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::error::Error;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -128,7 +128,7 @@ fn dap_attach_e2e_tcp_loopback() -> TestResult {
 
     let timeout = smoke_timeout();
     let mut adapter = DebugAdapter::new();
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let init_body = response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
@@ -211,7 +211,7 @@ fn dap_attach_e2e_tcp_loopback_stop_on_entry_and_server_stopped() -> TestResult 
 
     let timeout = smoke_timeout();
     let mut adapter = DebugAdapter::new();
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     response_success(adapter.handle_request(1, "initialize", None), "initialize")?;

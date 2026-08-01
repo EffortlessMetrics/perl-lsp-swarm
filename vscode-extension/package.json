@@ -1297,7 +1297,7 @@
           {
             "id": "debug-first-script",
             "title": "Debug Your First Script (Optional)",
-            "description": "Create a debug configuration with the Create Debug Configuration command. Debugging requires `perl-dap`; see the [debugging guide](https://github.com/EffortlessMetrics/perl-lsp/blob/main/docs/tutorials/DAP_USER_GUIDE.md) for setup steps.",
+            "description": "Create a debug configuration with the Create Debug Configuration command. Debugging requires `perl-dap`; see the [debugging guide](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/tutorials/DAP_USER_GUIDE.md) for setup steps.",
             "media": {
               "image": "media/walkthrough/debug-first-script.svg",
               "altText": "Debug Script"
@@ -1370,8 +1370,8 @@
     "jest": "^30.4.2",
     "mocha": "^11.7.6",
     "ovsx": "1.0.2",
-    "oxfmt": "0.59.0",
-    "oxlint": "1.74.0",
+    "oxfmt": "0.61.0",
+    "oxlint": "1.76.0",
     "oxlint-tsgolint": "7.0.2001",
     "rolldown": "1.2.0",
     "source-map": "0.8.0",

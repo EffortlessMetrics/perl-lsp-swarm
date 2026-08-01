@@ -108,7 +108,7 @@ echo_it("hello");
 // Test: sub with no signature gets no hints (graceful degradation)
 // ---------------------------------------------------------------------------
 #[test]
-fn test_user_sub_no_signature_no_hints() -> Result<(), Box<dyn std::error::Error>> {
+fn test_user_sub_at_underscore_unpacking_gets_hints() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_server();
     let uri = "file:///tmp/no_sig.pl";
     let text = r#"use strict;
@@ -117,14 +117,30 @@ legacy_sub(1, 2);
 "#;
     let hints = get_hints(&server, uri, text)?;
 
-    // No parameter hints from a sub with no formal signature
+    // #5380: @_ unpacking now produces parameter hints even without a formal signature
+    assert!(has_label(&hints, "x:"), "Should produce x: hint for @_ unpacking; hints: {hints:#?}");
+    assert!(has_label(&hints, "y:"), "Should produce y: hint for @_ unpacking; hints: {hints:#?}");
+    Ok(())
+}
+
+#[test]
+fn test_user_sub_no_inferable_params_no_hints() -> Result<(), Box<dyn std::error::Error>> {
+    // A sub with no formal signature and no @_ unpacking pattern that
+    // can be inferred — should produce no parameter-name hints.
+    let server = start_server();
+    let uri = "file:///tmp/no_infer.pl";
+    let text = r#"use strict;
+sub do_stuff { return; }
+do_stuff();
+"#;
+    let hints = get_hints(&server, uri, text)?;
+
+    // Filter to parameter-name hints only (kind == 2)
+    let param_hints: Vec<_> =
+        hints.iter().filter(|h| h.get("kind").and_then(|k| k.as_i64()) == Some(2)).collect();
     assert!(
-        no_label(&hints, "x:"),
-        "Should not produce hints for sub without signature; hints: {hints:#?}"
-    );
-    assert!(
-        no_label(&hints, "y:"),
-        "Should not produce hints for sub without signature; hints: {hints:#?}"
+        param_hints.is_empty(),
+        "Should not produce parameter hints for sub with no inferable params; hints: {hints:#?}"
     );
     Ok(())
 }

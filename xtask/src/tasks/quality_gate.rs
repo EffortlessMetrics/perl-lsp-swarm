@@ -1017,10 +1017,33 @@ fn string_field_is_filled(item: &Value, field: &str) -> bool {
     item.get(field).and_then(Value::as_str).is_some_and(|value| !value.trim().is_empty())
 }
 
+/// Map one producer guidance item onto the gate's normalized shape.
+///
+/// The `gap_id` pointer list spans two producer generations. Pre-0.9 ripr
+/// emitted `canonical_gap_id`/`gap_id`/`identity.canonical_gap_id`; ripr 0.9.0
+/// emits none of those and instead identifies an item by `seam_id` (the seam
+/// hash), `dedupe_key` (`ripr:<seam_id>:<path>:<line>`), or `id`
+/// (`ripr-review-<seam_id>`). Without the 0.9.0 pointers every real item
+/// resolves `gap_id` to `None`, `review_guidance_item_is_actionable` rejects
+/// it, `top_gaps` comes back empty, and an otherwise `present` receipt is
+/// downgraded to `incomplete` — which becomes a blocking
+/// `ripr_review_receipt_not_current` finding on every PR whose ripr run
+/// produced guidance at all. Keep the legacy pointers first so older receipts
+/// and the synthetic fixtures keep resolving to the same identifier.
 fn review_guidance_item(source: &str, item: &Value) -> Value {
     json!({
         "source": source,
-        "gap_id": first_string(item, &["/canonical_gap_id", "/gap_id", "/identity/canonical_gap_id"]),
+        "gap_id": first_string(
+            item,
+            &[
+                "/canonical_gap_id",
+                "/gap_id",
+                "/identity/canonical_gap_id",
+                "/seam_id",
+                "/dedupe_key",
+                "/id",
+            ],
+        ),
         "path": first_string(item, &["/placement/path", "/path", "/file"]),
         "line": first_u64(item, &["/placement/line", "/line"]),
         "seam": first_string(item, &["/seam", "/placement/mode", "/owner", "/evidence_record/seam"]),
@@ -2154,5 +2177,88 @@ mod tests {
         // Verify the values
         assert_eq!(receipt["failure_class"], "pass");
         assert!(receipt["test_failure_class"].is_null());
+    }
+
+    /// Regression guard for the ripr 0.9.0 schema migration.
+    ///
+    /// This item is a verbatim key-set copy of a real `ripr/review/comments.json`
+    /// entry produced by ripr 0.9.0 (captured from the `ripr-pr-evidence`
+    /// artifact of a live `ripr+ on GitHub Hosted` run). It carries no
+    /// `canonical_gap_id`, `gap_id`, or `identity` — the identifiers are
+    /// `seam_id`, `dedupe_key`, and `id`. Before those pointers were added to
+    /// `review_guidance_item`, every such item resolved `gap_id` to `None` and
+    /// was therefore judged non-actionable, silently downgrading a `present`
+    /// review receipt to `incomplete` and blocking the PR.
+    ///
+    /// The pre-existing fixtures all used `canonical_gap_id`, so they could not
+    /// catch this. Keep this test keyed to the real producer shape.
+    #[test]
+    fn ripr_090_guidance_item_resolves_gap_id_and_is_actionable() {
+        let raw = json!({
+            "dedupe_key": "ripr:9ac64531a5a9689c:crates/perl-lexer/src/lib.rs:2676",
+            "grip_class": "weakly_gripped",
+            "id": "ripr-review-9ac64531a5a9689c",
+            "kind": "focused_test",
+            "owner": "perl_lexer::PerlLexer::parse_double_quoted_string",
+            "placement": {
+                "path": "crates/perl-lexer/src/lib.rs",
+                "line": 2676,
+                "mode": "exact_seam_line"
+            },
+            "reason": "changed match arm has no discriminating proof",
+            "seam": "match_arm",
+            "seam_id": "9ac64531a5a9689c",
+            "severity": "severe",
+            "suggested_test": { "intent": "discriminate the new interpolation arm" }
+        });
+
+        let mapped = review_guidance_item("comments", &raw);
+
+        assert_eq!(
+            mapped.get("gap_id").and_then(Value::as_str),
+            Some("9ac64531a5a9689c"),
+            "ripr 0.9.0 identifies items by seam_id; gap_id must resolve from it"
+        );
+        assert!(
+            review_guidance_item_is_actionable(&mapped),
+            "a fully-populated ripr 0.9.0 item must be actionable: {mapped}"
+        );
+    }
+
+    /// Legacy pre-0.9 receipts must keep resolving to the same identifier, and
+    /// the legacy pointers must win when both generations are present.
+    #[test]
+    fn legacy_canonical_gap_id_still_wins_over_ripr_090_identifiers() {
+        let raw = json!({
+            "canonical_gap_id": "RIPR-SPEC-LEGACY",
+            "seam_id": "9ac64531a5a9689c",
+            "kind": "focused_test",
+            "reason": "legacy receipt",
+            "placement": { "path": "crates/perl-parser/src/lib.rs", "line": 42, "mode": "exact_seam_line" },
+            "suggested_test": { "intent": "prove parser branch recovery" }
+        });
+
+        let mapped = review_guidance_item("comments", &raw);
+
+        assert_eq!(mapped.get("gap_id").and_then(Value::as_str), Some("RIPR-SPEC-LEGACY"));
+        assert!(review_guidance_item_is_actionable(&mapped));
+    }
+
+    /// An item still missing every identifier must remain non-actionable, so the
+    /// widened pointer list does not turn genuinely unusable guidance into a
+    /// repair packet.
+    #[test]
+    fn guidance_item_without_any_identifier_stays_non_actionable() {
+        let raw = json!({
+            "kind": "focused_test",
+            "reason": "no identifier at all",
+            "placement": { "path": "crates/perl-parser/src/lib.rs", "line": 42, "mode": "exact_seam_line" },
+            "suggested_test": { "intent": "prove parser branch recovery" }
+        });
+
+        let mapped = review_guidance_item("comments", &raw);
+
+        assert!(mapped.get("gap_id").and_then(Value::as_str).is_none());
+        assert!(!review_guidance_item_is_actionable(&mapped));
     }
 }

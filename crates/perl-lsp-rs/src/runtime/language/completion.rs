@@ -96,6 +96,62 @@ fn notify_completion_analysis_started(uri: &str) {
 #[cfg(not(any(test, feature = "expose_lsp_test_api")))]
 fn notify_completion_analysis_started(_uri: &str) {}
 
+/// Test-only rendezvous gate: when armed for a URI, blocks
+/// `handle_completion_cancellable` immediately after it has computed the
+/// comment-guard predicate and *before* the guard's own cancellation check
+/// runs, until the test releases it. Lets a regression test land a
+/// cancellation deterministically in the narrow window between the initial
+/// `token.is_cancelled_relaxed()` check (early in the handler) and the
+/// comment guard's cancellation check, without guessing at timing the way a
+/// genuinely concurrent race would (mirrors the determinism goal of
+/// `COMPLETION_ANALYSIS_STARTED_OBSERVER` above, but as a blocking barrier
+/// rather than a fire-and-forget notification, since the window being
+/// tested here is too narrow -- a couple of cheap byte-string scans -- for
+/// any real thread-scheduling race to reliably land in it).
+#[cfg(test)]
+static COMPLETION_COMMENT_GUARD_GATE: std::sync::Mutex<
+    Option<(String, std::sync::mpsc::Receiver<()>)>,
+> = std::sync::Mutex::new(None);
+
+/// Arms the gate for `uri` and returns the sender the test uses to release
+/// it once the cancellation it wants observed has already landed.
+#[cfg(test)]
+pub(crate) fn arm_completion_comment_guard_gate(uri: &str) -> std::sync::mpsc::Sender<()> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    if let Ok(mut gate) = COMPLETION_COMMENT_GUARD_GATE.lock() {
+        *gate = Some((uri.to_string(), rx));
+    }
+    tx
+}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+fn wait_for_completion_comment_guard_gate(uri: &str) {
+    #[cfg(test)]
+    {
+        let rx = COMPLETION_COMMENT_GUARD_GATE.lock().ok().and_then(|mut gate| {
+            // Only consume the slot for the URI it was armed with, matching
+            // `notify_completion_analysis_started`'s per-URI ownership so an
+            // unrelated concurrent test's request can't be blocked by (or
+            // consume) this test's gate.
+            if gate.as_ref().is_some_and(|(armed_uri, _)| armed_uri == uri) {
+                gate.take().map(|(_, rx)| rx)
+            } else {
+                None
+            }
+        });
+        if let Some(rx) = rx {
+            // Bounded: fail open (proceed) rather than hang forever if the
+            // test never releases the gate for some other reason.
+            let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+        }
+    }
+    #[cfg(not(test))]
+    let _ = uri;
+}
+
+#[cfg(not(any(test, feature = "expose_lsp_test_api")))]
+fn wait_for_completion_comment_guard_gate(_uri: &str) {}
+
 #[derive(Debug)]
 struct CompletionDecisionSummary {
     compiler_fact_items: usize,
@@ -1203,8 +1259,28 @@ impl LspServer {
             }
 
             let t_analyze_start = std::time::Instant::now();
-            let response = if let Some(doc) = doc_owned.as_ref() {
+            let response = 'completion_response: {
+                let Some(doc) = doc_owned.as_ref() else {
+                    break 'completion_response None;
+                };
                 let offset = self.pos16_to_offset(doc, line, character);
+
+                // Skip completions inside comments -- the cursor is not on a
+                // real symbol and no completion path below (AST-based
+                // provider, lexical/keyword fallback, declared-dependency,
+                // or workspace-wide completions) should suggest anything.
+                // Mirrors the goto-definition comment guard (#5066/#5408) at
+                // navigation.rs. String-aware guarding is intentionally
+                // omitted: text-based quote scanners produce false positives
+                // on real Perl code (regexes, heredocs, qw(), POD), and
+                // `is_in_comment && !is_in_string` is the inverted pattern
+                // #5411 fixed for goto-definition -- a position the naive
+                // quote-counter classifies as both comment and string would
+                // wrongly skip this guard.
+                if perl_lsp_rs_core::providers::rename::is_in_comment(offset, &doc.text) {
+                    break 'completion_response None;
+                }
+
                 let ast_available = doc.current_parsed().is_some_and(|p| p.ast().is_some());
 
                 // One `@INC` context per request, shared by the module roots
@@ -1399,8 +1475,6 @@ impl LspServer {
                     item_defaults_data_support,
                     apply_kind_support,
                 ))
-            } else {
-                None
             };
             if timing_on {
                 crate::runtime::timing::emit(crate::runtime::timing::TimingSpan::labeled(
@@ -1532,10 +1606,53 @@ impl LspServer {
             // whether `doc_owned` resolved.
             let _analyze_span =
                 crate::runtime::timing::ScopedSpan::start("provider.completion.analyze", uri);
-            let response = if let Some(doc) = doc_owned.as_ref() {
+            let response = 'completion_response: {
+                let Some(doc) = doc_owned.as_ref() else {
+                    break 'completion_response None;
+                };
                 notify_completion_analysis_started(uri);
 
                 let offset = self.pos16_to_offset(doc, line, character);
+
+                // Skip completions inside comments -- the cursor is not on a
+                // real symbol and no completion path below (AST-based
+                // provider, lexical/keyword fallback, declared-dependency,
+                // or workspace-wide completions) should suggest anything.
+                // Mirrors the goto-definition comment guard (#5066/#5408) at
+                // navigation.rs. String-aware guarding is intentionally
+                // omitted: text-based quote scanners produce false positives
+                // on real Perl code (regexes, heredocs, qw(), POD), and
+                // `is_in_comment && !is_in_string` is the inverted pattern
+                // #5411 fixed for goto-definition -- a position the naive
+                // quote-counter classifies as both comment and string would
+                // wrongly skip this guard.
+                let in_comment =
+                    perl_lsp_rs_core::providers::rename::is_in_comment(offset, &doc.text);
+
+                // Test-only rendezvous: gives a regression test a
+                // deterministic window to land a cancellation here instead
+                // of racing thread scheduling. No-op in production builds.
+                wait_for_completion_comment_guard_gate(uri);
+
+                // Check for cancellation before honoring the comment guard: a
+                // cancelled request must always surface REQUEST_CANCELLED to
+                // the client, even when the cursor happens to be inside a
+                // comment (found in review of this change -- the comment
+                // break below previously exited before the only other
+                // mid-flight cancellation check, further down after the
+                // provider call, ever ran).
+                if token.is_cancelled_relaxed() {
+                    return Err(JsonRpcError {
+                        code: REQUEST_CANCELLED,
+                        message: "Request cancelled during completion generation".to_string(),
+                        data: None,
+                    });
+                }
+
+                if in_comment {
+                    break 'completion_response None;
+                }
+
                 let ast_available = doc.current_parsed().is_some_and(|p| p.ast().is_some());
 
                 // Create optimized cancellation callback with reduced frequency
@@ -1705,8 +1822,6 @@ impl LspServer {
                     item_defaults_data_support,
                     apply_kind_support,
                 ))
-            } else {
-                None
             };
             if let Some(response) = response {
                 return Ok(Some(response));
@@ -2288,6 +2403,95 @@ mod tests {
             spans.iter().any(|s| s.span == "provider.completion.analyze"),
             "provider.completion.analyze span must be emitted even when the request is \
              cancelled mid-analysis (#3619 regression), got spans: {spans:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cancellable_completion_at_comment_position_surfaces_cancellation_not_empty_list()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Review finding on this PR: the comment guard in
+        // `handle_completion_cancellable` breaks to an empty completion list
+        // as soon as it observes the cursor is inside a comment, without
+        // checking whether the request was cancelled in between the
+        // handler's initial `token.is_cancelled_relaxed()` check and the
+        // comment guard's own check. A cancellation landing in that window
+        // must still surface `REQUEST_CANCELLED` to the client, not a
+        // silent empty `isIncomplete: false` completion list -- the client
+        // would otherwise treat a cancelled request as "no completions
+        // here" instead of retrying.
+        //
+        // Deterministic sequencing (no fixed sleep, no relying on a real
+        // thread-scheduling race to land in a window too narrow for one --
+        // see `wait_for_completion_comment_guard_gate`'s doc comment).
+        // Mirrors `cancellable_completion_emits_analyze_span_when_cancelled_mid_flight`
+        // above: the request itself runs (blocking) on this thread, and a
+        // background canceller thread reacts to the analysis-started signal
+        // fired synchronously from inside the call.
+        //   1. Arm both the existing analysis-started observer and the new
+        //      comment-guard gate before making the request.
+        //   2. Spawn a canceller thread that waits for the analysis-started
+        //      signal (proves the handler has passed its *first*
+        //      cancellation check), then cancels the token and releases the
+        //      gate (proves the cancellation happens-before the comment
+        //      guard's check can observe it, since the handler is blocked
+        //      on the gate exactly at that point until released).
+        //   3. Call the handler (blocking) and assert its result is
+        //      `Err(REQUEST_CANCELLED)`, not an empty completion list.
+        let uri = "file:///workspace/comment_position_cancel.pl";
+        let source = "# a comment with some prefix pri";
+        let server = LspServer::default();
+        server.test_apply_did_open(uri, source, 1)?;
+
+        let request_id = JsonRpcId::Integer(554_433_221);
+        let token = PerlLspCancellationToken::new(
+            request_id.clone(),
+            "textDocument/completion".to_string(),
+        );
+        GLOBAL_CANCELLATION_REGISTRY
+            .register_token(token.clone())
+            .map_err(|e| format!("failed to register cancellation token: {e:?}"))?;
+
+        let (analysis_started_tx, analysis_started_rx) = std::sync::mpsc::channel();
+        set_completion_analysis_started_observer(uri, analysis_started_tx);
+        let release_gate = arm_completion_comment_guard_gate(uri);
+
+        let canceller = {
+            let token = token.clone();
+            std::thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                analysis_started_rx.recv_timeout(std::time::Duration::from_secs(5)).map_err(
+                    |_| "timed out waiting for completion analysis to start".to_string(),
+                )?;
+                token.cancel();
+                release_gate
+                    .send(())
+                    .map_err(|_| "handler thread dropped the comment-guard gate receiver")?;
+                Ok(())
+            })
+        };
+
+        let request_id_value = json!(554_433_221_i64);
+        let result = server.handle_completion_cancellable(
+            Some(json!({
+                "textDocument": { "uri": uri },
+                // Past "pri", inside the comment -- matches the
+                // no-completion-in-comments fixture shape.
+                "position": { "line": 0, "character": source.len() as u32 }
+            })),
+            Some(&request_id_value),
+        );
+
+        canceller
+            .join()
+            .map_err(|_| "canceller thread panicked")?
+            .map_err(|e| format!("canceller thread failed: {e}"))?;
+
+        assert!(
+            matches!(result, Err(ref e) if e.code == REQUEST_CANCELLED),
+            "a request cancelled between the handler's initial cancellation check and the \
+             comment guard's check must surface REQUEST_CANCELLED, not an empty completion \
+             list; got: {result:?}"
         );
 
         Ok(())

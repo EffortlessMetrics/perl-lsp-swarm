@@ -92,8 +92,8 @@ impl DebugAdapter {
         let shared_writer: Arc<Mutex<W>> = Arc::new(Mutex::new(output));
         let event_writer = Arc::clone(&shared_writer);
 
-        // Create channel for asynchronous events.
-        let (tx, rx) = channel::<DapMessage>();
+        // Create bounded channel for asynchronous events.
+        let (tx, rx) = sync_channel::<DapMessage>(EVENT_QUEUE_CAPACITY);
         self.event_sender = Some(tx.clone());
 
         // Clone transport_broken flag to pass to the event handler thread.
@@ -241,20 +241,51 @@ impl DebugAdapter {
 
                 let response = self.dispatch_request(seq, &command, arguments);
                 let payload = serde_json::to_vec(&response).map_err(io::Error::other)?;
+                let notify_initialized = command == "initialize"
+                    && Self::response_succeeded_for_command(&response, "initialize");
 
-                let mut writer = lock_or_recover(&shared_writer, "response_writer");
-                write_framed_payload(&mut *writer, &payload)?;
-                writer.flush()?;
-
-                // DAP requires this event only after initialize response is sent.
-                if command == "initialize"
-                    && Self::response_succeeded_for_command(&response, "initialize")
-                {
-                    self.send_event("initialized", None);
-                }
+                write_response_then_notify_initialized(
+                    &shared_writer,
+                    &payload,
+                    notify_initialized,
+                    self.event_sender.as_ref(),
+                    &self.seq,
+                )?;
             }
         }
     }
+}
+
+/// Write a framed response payload, then — if `notify_initialized` is set — dispatch the
+/// `initialized` event. DAP requires `initialized` only after a successful `initialize`
+/// response is sent.
+///
+/// **Lock-ordering contract (issue #5149 / PR #5318 defect 1):** the response-writer
+/// guard MUST be dropped before dispatching `initialized`. `initialized` is not an
+/// `output` event, so `dispatch_event` takes the *blocking* `send` path, which can block
+/// whenever the outbound queue is full. The event-consumer thread needs this very same
+/// writer mutex to drain a batch and free a slot — holding both at once (writer guard +
+/// blocking send) is a lock-ordering deadlock: the producer blocked on the channel send
+/// while holding the writer mutex, and the consumer blocked on the writer mutex while
+/// trying to drain the channel that would unblock the producer. The inner block below
+/// scopes the guard so it is released before `dispatch_event` runs.
+fn write_response_then_notify_initialized<W: Write>(
+    shared_writer: &Mutex<W>,
+    payload: &[u8],
+    notify_initialized: bool,
+    event_sender: Option<&std::sync::mpsc::SyncSender<DapMessage>>,
+    seq: &Mutex<i64>,
+) -> io::Result<()> {
+    {
+        let mut writer = lock_or_recover(shared_writer, "response_writer");
+        write_framed_payload(&mut *writer, payload)?;
+        writer.flush()?;
+    }
+
+    if notify_initialized && let Some(sender) = event_sender {
+        let _ = dispatch_event(sender, seq, "initialized", None);
+    }
+    Ok(())
 }
 
 /// Transport supervision tests — placed inside this module to access the
@@ -370,6 +401,97 @@ mod tests {
         let writer = FailingWriter::always_failing();
         let result = adapter.run_with_io(input, writer);
         assert!(result.is_err(), "run_with_io must return Err when writer is broken immediately");
+    }
+
+    /// Regression for issue #5149 / PR #5318 defect 1, exercised against the actual
+    /// production function `write_response_then_notify_initialized` that `run_with_io`
+    /// calls for every request.
+    ///
+    /// Before the fix, the response-writer guard was held (unscoped) across the
+    /// `initialized` event dispatch that follows a successful `initialize` response.
+    /// `initialized` is not an `output` event, so `dispatch_event` takes the *blocking*
+    /// `send` path — which blocks whenever the outbound queue is full. The event-consumer
+    /// thread needs that very same writer mutex to drain a batch and free a slot, so
+    /// holding both at once is a lock-ordering deadlock: the producer blocked on the
+    /// channel send while holding the writer mutex, and the consumer blocked on the
+    /// writer mutex while trying to drain the channel that would unblock the producer.
+    ///
+    /// This test pre-fills a capacity-1 channel, spawns a real consumer thread shaped
+    /// exactly like `run_with_io`'s event-handler thread (receive, then lock the writer
+    /// to drain), and calls the real `write_response_then_notify_initialized` with
+    /// `notify_initialized: true` on the main thread. If that function's internal writer
+    /// guard is not scoped to end before the `initialized` dispatch, this call blocks
+    /// forever holding the writer mutex, and the consumer — which needs that mutex to
+    /// drain the pre-filled slot and free room for `initialized` — blocks too: deadlock.
+    ///
+    /// It never blocks the test suite: the call runs on its own thread and is joined
+    /// with a bounded timeout, so a regression fails the assertion instead of hanging.
+    #[test]
+    fn write_response_then_notify_initialized_does_not_deadlock_on_full_queue() -> Result<(), String>
+    {
+        let shared_writer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = sync_channel::<DapMessage>(1);
+        let seq = Arc::new(Mutex::new(0i64));
+
+        // Fill the single slot so the `initialized` dispatch below must wait for a drain.
+        let fill = dispatch_event(&tx, &seq, "output", Some(serde_json::json!({"output": "x\n"})));
+        if fill != sync_utils::EventDispatchResult::Sent {
+            return Err(format!("expected the fill send to succeed, got {fill:?}"));
+        }
+
+        // Consumer thread: the same shape as `run_with_io`'s event-handler thread —
+        // receive from the channel (no lock needed), then acquire the writer mutex to
+        // "write" the drained message, freeing the slot `initialized` is waiting for.
+        let consumer_writer = Arc::clone(&shared_writer);
+        let consumer = thread::spawn(move || {
+            if let Ok(DapMessage::Event { .. }) = rx.recv() {
+                let mut writer = lock_or_recover(&consumer_writer, "test.event_writer");
+                writer.push(1);
+            }
+        });
+
+        // Drive the real production function on its own thread so the test can bound
+        // how long it waits for it, rather than being at the mercy of a real deadlock.
+        let producer_writer = Arc::clone(&shared_writer);
+        let producer_seq = Arc::clone(&seq);
+        let producer = thread::spawn(move || {
+            write_response_then_notify_initialized(
+                &producer_writer,
+                b"response-payload",
+                true,
+                Some(&tx),
+                &producer_seq,
+            )
+        });
+
+        let deadline = Duration::from_secs(5);
+        let start = Instant::now();
+        while start.elapsed() < deadline {
+            if producer.is_finished() && consumer.is_finished() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        if !(producer.is_finished() && consumer.is_finished()) {
+            return Err(format!(
+                "write_response_then_notify_initialized failed to complete within \
+                 {deadline:?} against a full outbound queue with a real consumer thread \
+                 waiting on the same writer mutex — this is the #5149/PR #5318 defect 1 \
+                 deadlock: the writer guard is being held across the blocking \
+                 `initialized` dispatch instead of being dropped first. \
+                 producer_finished={}, consumer_finished={}",
+                producer.is_finished(),
+                consumer.is_finished()
+            ));
+        }
+
+        producer
+            .join()
+            .map_err(|_| "producer thread panicked".to_string())?
+            .map_err(|e| format!("write_response_then_notify_initialized returned Err: {e}"))?;
+        consumer.join().map_err(|_| "consumer thread panicked".to_string())?;
+        Ok(())
     }
 
     #[test]

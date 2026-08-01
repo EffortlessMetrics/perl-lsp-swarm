@@ -22,7 +22,7 @@ EOF
 fi
 
 echo "aqua binary: $(command -v aqua)"
-aqua -v
+aqua version
 
 echo "installing tools from ${AQUA_CONFIG_PATH}"
 AQUA_CONFIG="${AQUA_CONFIG_PATH}" aqua install
@@ -42,5 +42,7 @@ run_and_require() {
 run_and_require "1.25.0" changie --version
 run_and_require "1.7.12" actionlint -version
 run_and_require "1.26.1" zizmor --version
+run_and_require "0.10.0" taplo --version
+run_and_require "1.48.0" typos --version
 
-echo "portable toolchain: OK — Changie, actionlint, and Zizmor match aqua.yaml"
+echo "portable toolchain: OK — Changie, actionlint, Zizmor, Taplo, and typos match aqua.yaml"

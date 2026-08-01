@@ -3,6 +3,8 @@
 use super::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+// The internal TCP-attach DapEvent fan-in channel is still unbounded (non-goal of #5149).
+use std::sync::mpsc::channel;
 
 mod perl_info;
 mod perl_spawn;
@@ -1088,9 +1090,11 @@ impl DebugAdapter {
     /// session is still alive.  If the process has already exited (normal
     /// termination, client disconnect, or reader-thread EOF cleanup), the
     /// watchdog exits silently.  If the process is still running, the watchdog
-    /// emits a `terminated` event with `reason: "debuggee_timeout"` and kills
-    /// the process.  The output reader thread will observe EOF and handle
-    /// session-state cleanup; the `TerminationState.emitted` flag ensures only
+    /// emits a `terminated` event with `reason: "debuggee_timeout"` after killing
+    /// the process.  Termination is reserved (emitted-flag set) before the kill so
+    /// the output reader's EOF path cannot race in with `debugger_eof`.  The kill
+    /// still runs before the blocking event send so a stalled DAP client cannot
+    /// leave the debuggee alive.  The `TerminationState.emitted` flag ensures only
     /// one `terminated` event reaches the client.
     ///
     /// The watchdog is generation-aware: if the session was replaced (e.g. via
@@ -1154,17 +1158,15 @@ impl DebugAdapter {
                 "Debuggee watchdog: killing hung perl -d process after wall-clock timeout"
             );
 
-            // Emit the terminated event BEFORE killing so the client receives
-            // the timeout reason.  The output reader's subsequent EOF-driven
-            // terminated event will be suppressed by the emitted flag.
-            if let Some(ref sender) = sender {
-                emit_terminated_event(
-                    sender,
-                    &seq,
-                    &termination_state,
-                    Some(session_generation),
-                    Some(json!({"reason": "debuggee_timeout"})),
+            // Reserve the timeout termination *before* kill so the output reader's
+            // EOF path cannot race in and emit `debugger_eof` first (#5149 review).
+            // Kill still runs before the blocking event send so a stalled client
+            // cannot leave the debuggee alive.
+            if !reserve_terminated_event(&termination_state, Some(session_generation)) {
+                tracing::debug!(
+                    "Debuggee watchdog: termination already reserved/emitted, skipping kill"
                 );
+                return;
             }
 
             // Kill the debuggee process.  The output reader will see EOF and
@@ -1182,6 +1184,17 @@ impl DebugAdapter {
 
             if !killed {
                 tracing::error!("Debuggee watchdog: failed to kill hung debuggee process");
+            }
+
+            // Deliver the reserved timeout reason after kill. Blocking send is OK:
+            // the debuggee is already dead; the emitted flag was set at reserve time.
+            if let Some(ref sender) = sender {
+                let _ = emit_event_safe(
+                    sender,
+                    &seq,
+                    "terminated",
+                    Some(json!({"reason": "debuggee_timeout"})),
+                );
             }
         });
     }
@@ -1483,51 +1496,42 @@ impl DebugAdapter {
                                 match event {
                                     DapEvent::Output { category, output } => {
                                         if let Some(ref sender) = event_sender {
-                                            let mut seq_lock = seq_counter
-                                                .lock()
-                                                .unwrap_or_else(|e| e.into_inner());
-                                            *seq_lock += 1;
-                                            let _ = sender.send(DapMessage::Event {
-                                                seq: *seq_lock,
-                                                event: "output".to_string(),
-                                                body: Some(json!({
+                                            dispatch_event(
+                                                sender,
+                                                &seq_counter,
+                                                "output",
+                                                Some(json!({
                                                     "category": category,
                                                     "output": output
                                                 })),
-                                            });
+                                            );
                                         }
                                     }
                                     DapEvent::Stopped { reason, thread_id } => {
                                         if let Some(ref sender) = event_sender {
-                                            let mut seq_lock = seq_counter
-                                                .lock()
-                                                .unwrap_or_else(|e| e.into_inner());
-                                            *seq_lock += 1;
-                                            let _ = sender.send(DapMessage::Event {
-                                                seq: *seq_lock,
-                                                event: "stopped".to_string(),
-                                                body: Some(json!({
+                                            dispatch_event(
+                                                sender,
+                                                &seq_counter,
+                                                "stopped",
+                                                Some(json!({
                                                     "reason": reason,
                                                     "threadId": thread_id,
                                                     "allThreadsStopped": true
                                                 })),
-                                            });
+                                            );
                                         }
                                     }
                                     DapEvent::Continued { thread_id } => {
                                         if let Some(ref sender) = event_sender {
-                                            let mut seq_lock = seq_counter
-                                                .lock()
-                                                .unwrap_or_else(|e| e.into_inner());
-                                            *seq_lock += 1;
-                                            let _ = sender.send(DapMessage::Event {
-                                                seq: *seq_lock,
-                                                event: "continued".to_string(),
-                                                body: Some(json!({
+                                            dispatch_event(
+                                                sender,
+                                                &seq_counter,
+                                                "continued",
+                                                Some(json!({
                                                     "threadId": thread_id,
                                                     "allThreadsContinued": true
                                                 })),
-                                            });
+                                            );
                                         }
                                     }
                                     DapEvent::Terminated { reason } => {
@@ -2066,12 +2070,13 @@ impl DebugAdapter {
     }
 }
 
-fn emit_terminated_event(
-    sender: &Sender<DapMessage>,
-    seq: &Mutex<i64>,
+/// Atomically claim the single `terminated` emission for this session generation.
+///
+/// Returns `true` if this caller now owns emission (and must deliver the event),
+/// `false` if another path already reserved or emitted termination.
+fn reserve_terminated_event(
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
-    body: Option<Value>,
 ) -> bool {
     let mut state = lock_or_recover(termination_state, "debug_adapter.termination_state");
     if expected_generation.is_some_and(|generation| generation != state.generation) || state.emitted
@@ -2079,6 +2084,19 @@ fn emit_terminated_event(
         return false;
     }
     state.emitted = true;
+    true
+}
+
+fn emit_terminated_event(
+    sender: &SyncSender<DapMessage>,
+    seq: &Mutex<i64>,
+    termination_state: &Mutex<TerminationState>,
+    expected_generation: Option<u64>,
+    body: Option<Value>,
+) -> bool {
+    if !reserve_terminated_event(termination_state, expected_generation) {
+        return false;
+    }
     emit_event_safe(sender, seq, "terminated", body)
 }
 
@@ -2088,12 +2106,12 @@ mod tests {
         DebugAdapter, detect_perl_info, emit_terminated_event, format_perl_spawn_error,
         is_valid_perl_interpreter,
     };
-    use std::sync::mpsc::{TryRecvError, channel};
+    use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
 
     #[test]
     fn competing_termination_sources_emit_one_structured_event() -> Result<(), String> {
-        let (sender, receiver) = channel();
+        let (sender, receiver) = sync_channel(64);
         let seq = Arc::new(Mutex::new(0));
         let termination_state =
             Arc::new(Mutex::new(super::TerminationState { generation: 1, emitted: false }));
@@ -2140,7 +2158,7 @@ mod tests {
 
     #[test]
     fn stale_session_generation_cannot_emit_termination() -> Result<(), String> {
-        let (sender, receiver) = channel();
+        let (sender, receiver) = sync_channel(64);
         let seq = Arc::new(Mutex::new(0));
         let termination_state =
             Mutex::new(super::TerminationState { generation: 2, emitted: false });
@@ -2637,7 +2655,7 @@ mod tests {
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let child = cmd.spawn().map_err(|e| format!("failed to spawn test process: {e}"))?;
 
-        let (sender, receiver) = channel();
+        let (sender, receiver) = sync_channel(64);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(sender);
         adapter.initialized.store(true, std::sync::atomic::Ordering::Release);
@@ -2694,6 +2712,95 @@ mod tests {
         if !process_exited {
             return Err(
                 "debuggee process is still alive after watchdog should have killed it".to_string()
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Regression for issue #5149 / PR #5318 defect 2: the watchdog used to emit the
+    /// `terminated` event (a blocking `send`) BEFORE killing the hung debuggee. If the
+    /// outbound queue is permanently full and nobody drains it, that blocking send never
+    /// returns, so the kill never runs and the debuggee is never terminated — defeating
+    /// the watchdog's entire purpose. The fix reserves termination and kills the process
+    /// first; the (possibly still-blocking) event send happens afterward and does not
+    /// gate the kill.
+    ///
+    /// This test never joins the watchdog thread (which may legitimately block forever
+    /// on the terminated-event send against the undrained queue), so a regression fails
+    /// the bounded-timeout assertion below rather than hanging the test suite.
+    #[test]
+    fn debuggee_watchdog_kills_process_even_when_event_queue_full() -> Result<(), String> {
+        use std::process::{Command, Stdio};
+        use std::sync::mpsc::sync_channel;
+        use std::time::Duration;
+
+        use super::{DebugSession, DebugState, ResumeMode, VariableCache, lock_or_recover};
+
+        let mut cmd = if cfg!(windows) {
+            let mut c = Command::new("ping");
+            c.args(["-n", "30", "127.0.0.1"]);
+            c
+        } else {
+            let mut c = Command::new("sleep");
+            c.arg("30");
+            c
+        };
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let child = cmd.spawn().map_err(|e| format!("failed to spawn test process: {e}"))?;
+
+        // Capacity-1 outbound queue, pre-filled and never drained: any blocking `send`
+        // (e.g. the old pre-kill `terminated` emission) would hang forever here.
+        let (sender, _receiver) = sync_channel(1);
+        sender
+            .send(super::DapMessage::Event {
+                seq: 0,
+                event: "output".to_string(),
+                body: Some(serde_json::json!({"category": "stdout", "output": "filler\n"})),
+            })
+            .map_err(|_| "failed to prefill the outbound queue".to_string())?;
+
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.initialized.store(true, std::sync::atomic::Ordering::Release);
+
+        let session = DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            last_resume_mode: ResumeMode::Unknown,
+        };
+        *lock_or_recover(&adapter.session, "test.session") = Some(session);
+
+        adapter.start_debuggee_watchdog(1);
+
+        // Bounded-timeout poll: with the fix, the kill runs before the (permanently
+        // blocked) event send, so the process dies well within this deadline.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut process_exited = false;
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+            let exited = adapter
+                .session
+                .lock()
+                .map_err(|_| "session lock poisoned".to_string())?
+                .as_mut()
+                .and_then(|s| s.process.try_wait().ok().flatten())
+                .is_some();
+            if exited {
+                process_exited = true;
+                break;
+            }
+        }
+
+        if !process_exited {
+            return Err(
+                "debuggee process was not killed within 10s while the outbound event queue \
+                 was full and undrained — the watchdog is blocking on the terminated-event \
+                 send before killing the process (regression of #5149/PR #5318 defect 2)"
+                    .to_string(),
             );
         }
 

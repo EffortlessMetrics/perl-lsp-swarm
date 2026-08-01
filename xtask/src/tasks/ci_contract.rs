@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::tasks::change_set::{self, ArtifactIdentity};
 use crate::tasks::ci_scope::{self, ScopeOutput};
+use crate::tasks::repo_hygiene;
 use crate::utils::project_root;
 
 const SCHEMA_VERSION: &str = "ci-contract.v1";
@@ -227,15 +228,52 @@ fn select_checks(
         });
     }
 
+    if changed_files
+        .iter()
+        .any(|file| repo_hygiene::is_toml_path(file) || repo_hygiene::is_typos_path(file))
+    {
+        checks.push(CheckSpec {
+            id: "repo_hygiene",
+            reason: "changed TOML or text/config/source surface changed".to_string(),
+            program: "cargo",
+            args: vec![
+                "xtask".to_string(),
+                "repo-hygiene".to_string(),
+                "--base".to_string(),
+                base.to_string(),
+                "--head".to_string(),
+                head.to_string(),
+                "--receipt".to_string(),
+                "target/receipts/repo-hygiene.json".to_string(),
+                "--summary".to_string(),
+                "target/receipts/repo-hygiene.md".to_string(),
+            ],
+        });
+    }
+
     checks
 }
 
 fn run_check(root: &Path, spec: &CheckSpec) -> ContractCheck {
     let command = format_command(spec.program, &spec.args);
+    if spec.id == "repo_hygiene" {
+        if let Err(error) = clear_repo_hygiene_receipt(root, &spec.args) {
+            return ContractCheck {
+                id: spec.id.to_string(),
+                reason: spec.reason.clone(),
+                command,
+                result: ContractResultClass::NotProven,
+                detail: format!("could not prepare repo-hygiene receipt: {error}"),
+            };
+        }
+    }
     match execute_check(root, spec) {
         Ok(output) => {
-            let (result, detail) =
-                classify_check_output(output.status.code(), &output.stdout, &output.stderr);
+            let (result, detail) = if spec.id == "repo_hygiene" {
+                classify_repo_hygiene_output(root, &spec.args, &output.stdout, &output.stderr)
+            } else {
+                classify_check_output(spec.id, output.status.code(), &output.stdout, &output.stderr)
+            };
             ContractCheck {
                 id: spec.id.to_string(),
                 reason: spec.reason.clone(),
@@ -252,6 +290,72 @@ fn run_check(root: &Path, spec: &CheckSpec) -> ContractCheck {
             detail: format!("failed to start check: {error}"),
         },
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct RepoHygieneStatusReceipt {
+    status: repo_hygiene::ResultClass,
+}
+
+fn clear_repo_hygiene_receipt(root: &Path, args: &[String]) -> Result<()> {
+    for flag in ["--receipt", "--summary"] {
+        let path = repo_hygiene_output_path(root, args, flag)?;
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("removing {}", path.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn repo_hygiene_receipt_path(root: &Path, args: &[String]) -> Result<PathBuf> {
+    repo_hygiene_output_path(root, args, "--receipt")
+}
+
+fn repo_hygiene_output_path(root: &Path, args: &[String], flag: &str) -> Result<PathBuf> {
+    let path = args
+        .windows(2)
+        .find(|pair| pair[0] == flag)
+        .map(|pair| root.join(&pair[1]))
+        .ok_or_else(|| eyre!("repo-hygiene check did not declare a {flag} path"))?;
+    Ok(path)
+}
+
+fn classify_repo_hygiene_output(
+    root: &Path,
+    args: &[String],
+    stdout: &[u8],
+    stderr: &[u8],
+) -> (ContractResultClass, String) {
+    let detail = bounded_output(&command_output(stdout, stderr));
+    let path = match repo_hygiene_receipt_path(root, args) {
+        Ok(path) => path,
+        Err(error) => return (ContractResultClass::NotProven, format!("{detail}; {error}")),
+    };
+    let status = match fs::read(&path)
+        .with_context(|| format!("reading {}", path.display()))
+        .and_then(|bytes| {
+            serde_json::from_slice::<RepoHygieneStatusReceipt>(&bytes)
+                .with_context(|| format!("parsing {}", path.display()))
+        }) {
+        Ok(receipt) => receipt.status,
+        Err(error) => {
+            return (
+                ContractResultClass::NotProven,
+                format!("{detail}; repo-hygiene receipt is invalid: {error}"),
+            );
+        }
+    };
+    let result = match status {
+        repo_hygiene::ResultClass::Pass => ContractResultClass::Success,
+        repo_hygiene::ResultClass::PolicyFinding => ContractResultClass::PolicyFinding,
+        repo_hygiene::ResultClass::NotProven => ContractResultClass::NotProven,
+        repo_hygiene::ResultClass::NotApplicable => ContractResultClass::NotApplicable,
+    };
+    (result, detail)
 }
 
 fn execute_check(root: &Path, spec: &CheckSpec) -> std::io::Result<Output> {
@@ -352,7 +456,7 @@ fn join_output(
     handle.join().map_err(|_| io::Error::other(format!("{stream} reader panicked")))?
 }
 
-fn result_for_exit(code: Option<i32>, detail: &str) -> ContractResultClass {
+fn result_for_exit(_check_id: &str, code: Option<i32>, detail: &str) -> ContractResultClass {
     match code {
         Some(0) if has_policy_finding(detail) => ContractResultClass::PolicyFinding,
         Some(0) => ContractResultClass::Success,
@@ -369,6 +473,7 @@ fn has_policy_finding(detail: &str) -> bool {
 }
 
 fn classify_check_output(
+    check_id: &str,
     code: Option<i32>,
     stdout: &[u8],
     stderr: &[u8],
@@ -379,7 +484,7 @@ fn classify_check_output(
     } else {
         bounded_output(&raw_detail)
     };
-    (result_for_exit(code, &raw_detail), detail)
+    (result_for_exit(check_id, code, &raw_detail), detail)
 }
 
 fn head_identity_check(expected: &str, current: &str) -> ContractCheck {
@@ -608,7 +713,7 @@ mod tests {
         let checks =
             select_checks(&["docs/guide.md".to_string()], "base", "head", Path::new("files.txt"));
         let ids = checks.iter().map(|check| check.id).collect::<Vec<_>>();
-        ensure!(ids == vec!["diff_check"], "docs-only selection was {ids:?}");
+        ensure!(ids == vec!["diff_check", "repo_hygiene"], "docs-only selection was {ids:?}");
         let diff_check = checks.first().ok_or_else(|| eyre!("docs-only selection was empty"))?;
         ensure!(
             diff_check.args == vec!["diff", "--check", "base..head"],
@@ -643,7 +748,8 @@ mod tests {
                 "diff_check",
                 "workflow_contract",
                 "workflow_trigger_policy",
-                "gate_policy"
+                "gate_policy",
+                "repo_hygiene"
             ],
             "workflow/policy selection was {ids:?}"
         );
@@ -659,42 +765,92 @@ mod tests {
             Path::new("files.txt"),
         );
         let ids = checks.iter().map(|check| check.id).collect::<Vec<_>>();
-        ensure!(ids == vec!["diff_check", "workflow_contract"], "shell selection was {ids:?}");
+        ensure!(
+            ids == vec!["diff_check", "workflow_contract", "repo_hygiene"],
+            "shell selection was {ids:?}"
+        );
         Ok(())
     }
 
     #[test]
     fn command_results_map_to_documented_classes() -> Result<()> {
         ensure!(
-            result_for_exit(Some(0), "ok") == ContractResultClass::Success,
+            result_for_exit("generic", Some(0), "ok") == ContractResultClass::Success,
             "zero exit must be success"
         );
         ensure!(
-            result_for_exit(Some(0), "WARN existing advisory baseline")
+            result_for_exit("generic", Some(0), "WARN existing advisory baseline")
                 == ContractResultClass::PolicyFinding,
             "explicit advisory findings must remain visible"
         );
         ensure!(
-            result_for_exit(Some(1), "policy finding") == ContractResultClass::PolicyFinding,
+            result_for_exit("generic", Some(1), "policy finding")
+                == ContractResultClass::PolicyFinding,
             "one exit must be a policy finding"
         );
         ensure!(
-            result_for_exit(Some(2), "tool failed") == ContractResultClass::NotProven,
+            result_for_exit("generic", Some(2), "tool failed") == ContractResultClass::NotProven,
             "other exits must be not-proven"
         );
         ensure!(
-            result_for_exit(None, "process terminated") == ContractResultClass::NotProven,
+            result_for_exit("generic", None, "process terminated")
+                == ContractResultClass::NotProven,
             "missing exit code must be not-proven"
         );
         ensure!(
-            result_for_exit(Some(2), "instrument failure") == ContractResultClass::NotProven,
+            result_for_exit("generic", Some(2), "instrument failure")
+                == ContractResultClass::NotProven,
             "instrument exit status must be not-proven"
         );
         ensure!(
-            result_for_exit(Some(1), "policy finding: failed to read expected file")
+            result_for_exit("generic", Some(1), "policy finding: failed to read expected file")
                 == ContractResultClass::PolicyFinding,
             "policy output must not be downgraded by incidental wording"
         );
+        let directory = tempfile::tempdir()?;
+        let receipt_path = directory.path().join("repo-hygiene.json");
+        let args = vec!["--receipt".to_string(), "repo-hygiene.json".to_string()];
+        fs::write(&receipt_path, br#"{"status":"NOT_APPLICABLE"}"#)?;
+        let (result, _) = classify_repo_hygiene_output(
+            directory.path(),
+            &args,
+            b"repo hygiene: PolicyFinding",
+            &[],
+        );
+        ensure!(
+            result == ContractResultClass::NotApplicable,
+            "repo-hygiene receipt status must outrank diagnostic output"
+        );
+        fs::write(&receipt_path, b"not json")?;
+        let (result, _) = classify_repo_hygiene_output(
+            directory.path(),
+            &args,
+            b"repo hygiene: PolicyFinding",
+            &[],
+        );
+        ensure!(
+            result == ContractResultClass::NotProven,
+            "invalid repo-hygiene receipts must be not-proven"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn clearing_repo_hygiene_outputs_removes_receipt_and_summary() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let receipt = directory.path().join("repo-hygiene.json");
+        let summary = directory.path().join("repo-hygiene.md");
+        fs::write(&receipt, b"stale")?;
+        fs::write(&summary, b"stale")?;
+        let args = vec![
+            "--receipt".to_string(),
+            "repo-hygiene.json".to_string(),
+            "--summary".to_string(),
+            "repo-hygiene.md".to_string(),
+        ];
+        clear_repo_hygiene_receipt(directory.path(), &args)?;
+        ensure!(!receipt.exists(), "stale receipt must be removed");
+        ensure!(!summary.exists(), "stale summary must be removed");
         Ok(())
     }
 
@@ -745,7 +901,7 @@ mod tests {
 
     #[test]
     fn shell_output_is_bounded_and_preserves_streams() -> Result<()> {
-        let (result, detail) = classify_check_output(Some(0), b"out", b"err");
+        let (result, detail) = classify_check_output("generic", Some(0), b"out", b"err");
         ensure!(result == ContractResultClass::Success, "ordinary output was not successful");
         ensure!(detail == "stdout: out; stderr: err", "combined output was {detail:?}");
         ensure!(
@@ -754,13 +910,13 @@ mod tests {
         );
         let late_warning = format!("{}\nWARN late advisory", "x".repeat(2000));
         let (late_result, late_detail) =
-            classify_check_output(Some(0), late_warning.as_bytes(), &[]);
+            classify_check_output("generic", Some(0), late_warning.as_bytes(), &[]);
         ensure!(
             late_result == ContractResultClass::PolicyFinding,
             "late advisory output must be classified before receipt truncation"
         );
         ensure!(late_detail.len() == 2000, "late advisory detail was not bounded");
-        let (_, terminated_detail) = classify_check_output(None, &vec![b'x'; 2000], &[]);
+        let (_, terminated_detail) = classify_check_output("generic", None, &vec![b'x'; 2000], &[]);
         ensure!(
             terminated_detail.len() == 2000,
             "termination detail was not bounded after adding its prefix"
