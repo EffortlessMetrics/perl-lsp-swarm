@@ -710,9 +710,13 @@ and a warning is logged.
 | Type | `string[]` |
 | Default | `[]` |
 
-Native critic rule IDs to include. When non-empty, only listed native rule IDs
-run inside the selected profile. Use native IDs such as
-`native.testing.require_use_strict`, not Perl::Critic policy names.
+Native critic rule IDs to include. When non-empty, exactly the listed rule IDs
+run. IDs are resolved against the full native rule catalog, not just the
+selected profile, so a strict-only rule such as
+`native.variables.unused_lexical` can be enabled without switching
+`perl.critic.profile` to `strict`. Use native IDs such as
+`native.testing.require_use_strict`, not Perl::Critic policy names; unknown IDs
+match nothing and are logged as a warning.
 
 #### `perl.critic.exclude`
 

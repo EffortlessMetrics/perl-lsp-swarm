@@ -1880,7 +1880,10 @@ impl LspServer {
             crate::perl_critic::CriticContext::new(doc_text, ast.as_ref(), &critic_config);
         let profile = crate::perl_critic::NativeCriticProfile::parse(&native_profile)
             .unwrap_or(crate::perl_critic::NativeCriticProfile::Strict);
-        let registry = crate::perl_critic::NativeCriticRegistry::for_profile(profile);
+        let registry = crate::perl_critic::NativeCriticRegistry::for_profile_with_config(
+            profile,
+            &critic_config,
+        );
 
         diagnostics
             .extend(registry.check(&critic_context).into_iter().map(native_finding_to_diagnostic));

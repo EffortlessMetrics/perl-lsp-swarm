@@ -820,7 +820,7 @@ impl ExecuteCommandProvider {
         let critic_context = CriticContext::new(code_text, &ast, &critic_config);
         let profile =
             NativeCriticProfile::parse(&cfg.profile).unwrap_or(NativeCriticProfile::Strict);
-        let registry = NativeCriticRegistry::for_profile(profile);
+        let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
 
         let file = file_path.to_string_lossy();
         let mut formatted_violations: Vec<_> = registry
