@@ -373,6 +373,121 @@ fn check_project_file_path_errors() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Source that parses into a clean AST but raises a nested-quantifier advisory.
+/// The parser severity contract for this input is pinned by
+/// `perl-parser-core/tests/regex_advisory_diagnostics.rs`.
+const ADVISORY_ONLY_SOURCE: &str = "my $s = \"abab\";\n$s =~ /(?:[^b]*(?=(b)|(a))ab)*/;\n1;\n";
+
+/// `--check` and `--check-project` must return the same verdict for the same
+/// file. `--check` treats an advisory-only file as `ok`; `--check-project` used
+/// to count every recovered diagnostic as a parse error, so the same valid Perl
+/// was reported as unparsable and failed the 80% threshold.
+#[test]
+fn check_project_agrees_with_check_on_advisory_only_files() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = tempfile::tempdir()?;
+    let advisory = dir.path().join("advisory.pl");
+    std::fs::write(&advisory, ADVISORY_ONLY_SOURCE)?;
+    std::fs::write(dir.path().join("clean.pl"), "my $ok = 1;\n1;\n")?;
+    let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut check = cargo_bin_cmd!("perl-lsp");
+    let check_stdout = String::from_utf8(
+        check.args(["--check", advisory.to_str().ok_or("non-UTF-8 temp path")?]).output()?.stdout,
+    )?;
+    assert!(
+        check_stdout.contains("advisory.pl: ok"),
+        "--check should accept an advisory-only file, got:\n{check_stdout}"
+    );
+
+    let mut project = cargo_bin_cmd!("perl-lsp");
+    let output = project.args(["--check-project", dir_str]).output()?;
+    let stdout = String::from_utf8(output.stdout)?;
+
+    assert!(
+        stdout.contains("Clean parses: 2/2"),
+        "--check-project should agree that both files parse, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Assessment: PASS"),
+        "--check-project should pass on valid Perl, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Advisories") && stdout.contains("Nested quantifiers"),
+        "the advisory should still be reported, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("Parse errors:"),
+        "an advisory must not be listed as a parse error, got:\n{stdout}"
+    );
+    assert!(output.status.success(), "advisory-only project should exit 0");
+
+    Ok(())
+}
+
+/// Opposite-direction control: excluding advisories from the verdict must not
+/// stop `--check-project` from failing on genuinely blocking parse errors.
+#[test]
+fn check_project_still_fails_on_blocking_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("broken.pl"), "my $value = ;\n")?;
+    std::fs::write(dir.path().join("advisory.pl"), ADVISORY_ONLY_SOURCE)?;
+    let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let output = cmd.args(["--check-project", dir_str]).output()?;
+    let stdout = String::from_utf8(output.stdout)?;
+
+    assert!(
+        stdout.contains("Clean parses: 1/2"),
+        "the blocking file must still count as unclean, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Parse errors:") && stdout.contains("broken.pl"),
+        "the blocking error must still be reported, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Assessment: FAIL"),
+        "50% parsable is below the 80% threshold, got:\n{stdout}"
+    );
+    assert!(!output.status.success(), "a blocking parse error should exit non-zero");
+
+    Ok(())
+}
+
+/// A walk that cannot read part of the tree must say so. Silently dropping the
+/// error left the report claiming a confident percentage over whatever subset
+/// happened to be readable.
+#[cfg(unix)]
+#[test]
+fn check_project_reports_paths_it_could_not_scan() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let nested = dir.path().join("sub");
+    std::fs::create_dir_all(&nested)?;
+    std::fs::write(dir.path().join("ok.pl"), "my $x = 1;\n1;\n")?;
+    std::os::unix::fs::symlink(dir.path(), nested.join("loop"))?;
+    let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let output = cmd.args(["--check-project", dir_str]).output()?;
+    let stdout = String::from_utf8(output.stdout)?;
+
+    assert!(
+        stdout.contains("Paths not scanned: 1"),
+        "the unreadable path should be counted, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("symbolic link loop"),
+        "the reason should name the symlink loop, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("scanned files only"),
+        "the assessment should be scoped to what was scanned, got:\n{stdout}"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn completion_fish_produces_output() {
     let mut cmd = cargo_bin_cmd!("perl-lsp");
