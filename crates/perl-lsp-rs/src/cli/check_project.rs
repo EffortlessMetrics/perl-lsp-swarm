@@ -6,6 +6,18 @@ struct FileError {
     errors: Vec<String>,
 }
 
+struct FileAdvisory {
+    path: String,
+    advisories: Vec<String>,
+}
+
+/// A path the walk could not read. Dropping these silently made the report
+/// print a confident percentage over whatever subset it happened to reach.
+struct SkippedPath {
+    path: String,
+    reason: String,
+}
+
 pub(super) fn run_check_project(dir: &str) -> i32 {
     let root = Path::new(dir);
     let metadata = match root.metadata() {
@@ -27,7 +39,14 @@ pub(super) fn run_check_project(dir: &str) -> i32 {
     let mut results = ProjectCheckResults::default();
     let walker = walkdir::WalkDir::new(root).follow_links(true).into_iter();
 
-    for entry in walker.filter_map(|e| e.ok()) {
+    for entry in walker {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                results.skipped_paths.push(skipped_path(&error));
+                continue;
+            }
+        };
         let path = entry.path();
         if !is_supported_perl_file(path) {
             continue;
@@ -46,7 +65,18 @@ struct ProjectCheckResults {
     total: usize,
     clean: usize,
     file_errors: Vec<FileError>,
+    file_advisories: Vec<FileAdvisory>,
+    skipped_paths: Vec<SkippedPath>,
     category_counts: HashMap<String, usize>,
+}
+
+/// `walkdir` reports the offending path when it knows it (permission denied on a
+/// directory, symlink loop); for a root-level failure it only carries the error.
+fn skipped_path(error: &walkdir::Error) -> SkippedPath {
+    let path = error
+        .path()
+        .map_or_else(|| "<unknown path>".to_string(), |path| path.display().to_string());
+    SkippedPath { path, reason: error.to_string() }
 }
 
 fn is_supported_perl_file(path: &Path) -> bool {
@@ -70,11 +100,17 @@ fn process_file(path: &Path, path_str: String, results: &mut ProjectCheckResults
 
     let mut parser = perl_parser::Parser::new(&source);
     let parse_result = parser.parse();
-    let recovered_errors = parser.errors();
+
+    // Only blocking diagnostics decide whether this file parsed. Advisories are
+    // raised on files real `perl` accepts, so counting them as parse failures
+    // reports valid Perl as unparsable and can fail the whole assessment.
+    // `--check` partitions the same way; see `cli.rs::run_check`.
+    let (blocking, advisory): (Vec<_>, Vec<_>) =
+        parser.errors().iter().partition(|err| err.blocks_clean_parse());
 
     let mut errors_for_file: Vec<String> = Vec::new();
 
-    for err in recovered_errors {
+    for err in blocking {
         record_category(&format!("{err}"), results);
         errors_for_file.push(format!("{err}"));
     }
@@ -87,7 +123,14 @@ fn process_file(path: &Path, path_str: String, results: &mut ProjectCheckResults
     if errors_for_file.is_empty() {
         results.clean += 1;
     } else {
-        results.file_errors.push(FileError { path: path_str, errors: errors_for_file });
+        results.file_errors.push(FileError { path: path_str.clone(), errors: errors_for_file });
+    }
+
+    if !advisory.is_empty() {
+        results.file_advisories.push(FileAdvisory {
+            path: path_str,
+            advisories: advisory.iter().map(|err| format!("{err}")).collect(),
+        });
     }
 }
 
@@ -107,10 +150,14 @@ fn emit_report(dir: &str, results: &ProjectCheckResults) -> i32 {
     println!();
     println!("Directory: {dir}");
     println!("Files scanned: {}", results.total);
+    if !results.skipped_paths.is_empty() {
+        println!("Paths not scanned: {}", results.skipped_paths.len());
+    }
 
     if results.total == 0 {
         println!();
         println!("No Perl files (.pm, .pl, .t) found.");
+        emit_skipped_section(&results.skipped_paths);
         return 0;
     }
 
@@ -128,7 +175,18 @@ fn emit_report(dir: &str, results: &ProjectCheckResults) -> i32 {
         println!();
     }
 
+    if !results.file_advisories.is_empty() {
+        println!("Advisories (not parse failures):");
+        for fa in &results.file_advisories {
+            for advisory in &fa.advisories {
+                println!("  {}: {advisory}", fa.path);
+            }
+        }
+        println!();
+    }
+
     emit_category_section(&results.category_counts);
+    emit_skipped_section(&results.skipped_paths);
 
     if pct >= 80.0 {
         println!("Assessment: PASS ({pct:.1}% parsable)");
@@ -137,6 +195,21 @@ fn emit_report(dir: &str, results: &ProjectCheckResults) -> i32 {
         println!("Assessment: FAIL ({pct:.1}% parsable, threshold 80%)");
         1
     }
+}
+
+/// The parsable percentage covers only the files the walk reached. Naming the
+/// paths it could not read keeps that percentage from reading as a claim over
+/// the whole tree.
+fn emit_skipped_section(skipped: &[SkippedPath]) {
+    if skipped.is_empty() {
+        return;
+    }
+
+    println!("Paths not scanned (excluded from the percentage above):");
+    for entry in skipped {
+        println!("  {}: {}", entry.path, entry.reason);
+    }
+    println!();
 }
 
 fn emit_category_section(category_counts: &HashMap<String, usize>) {

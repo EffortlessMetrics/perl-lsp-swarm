@@ -373,6 +373,103 @@ fn check_project_file_path_errors() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// The same binary must not give two verdicts for the same file. `--check`
+/// partitions recovered diagnostics into blocking and advisory (#5453); a file
+/// carrying only an advisory is valid Perl (`perl -c` accepts it), so
+/// `--check-project` counting it as a failed parse understates parsability and
+/// can fail a pipeline over valid source.
+///
+/// Discriminating: before the fix `--check-project` reported `1/2 (50.0%)` and
+/// exited 1 on this fixture while `--check` reported both files `ok`.
+#[test]
+fn check_project_advisories_do_not_count_as_parse_failures()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    // Nested quantifiers: a backtracking-risk advisory, not a syntax error.
+    let advisory = dir.path().join("advisory.pl");
+    std::fs::write(&advisory, "my $r = qr/^(a+)+b$/;\nprint \"ok\\n\";\n")?;
+    let clean = dir.path().join("clean.pl");
+    std::fs::write(&clean, "use strict;\nmy $ok = 1;\n")?;
+
+    let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
+    let advisory_str = advisory.to_str().ok_or("non-UTF-8 temp path")?;
+    let clean_str = clean.to_str().ok_or("non-UTF-8 temp path")?;
+
+    // `--check`: both files ok, advisory surfaced separately.
+    let mut check = cargo_bin_cmd!("perl-lsp");
+    check
+        .arg("--check")
+        .arg(advisory_str)
+        .arg(clean_str)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("advisory:"));
+
+    // `--check-project` over the same files must agree.
+    let mut project = cargo_bin_cmd!("perl-lsp");
+    project
+        .args(["--check-project", dir_str])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Clean parses: 2/2 (100.0%)"))
+        .stdout(predicates::str::contains("Advisories (not parse failures):"))
+        .stdout(predicates::str::contains("Assessment: PASS"))
+        .stdout(predicates::str::contains("Parse errors:").not());
+
+    Ok(())
+}
+
+/// Blocking diagnostics must still fail, and the advisory in the same tree must
+/// still be reported — separately from the failure, so the percentage counts
+/// only genuinely unparsable files.
+#[test]
+fn check_project_still_fails_on_blocking_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("advisory.pl"), "my $r = qr/^(a+)+b$/;\nprint \"ok\\n\";\n")?;
+    std::fs::write(dir.path().join("broken.pl"), "my $value = ;\n")?;
+
+    let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.args(["--check-project", dir_str])
+        .assert()
+        .failure()
+        // one blocking file of two — not two of two
+        .stdout(predicates::str::contains("Clean parses: 1/2 (50.0%)"))
+        .stdout(predicates::str::contains("Parse errors:"))
+        .stdout(predicates::str::contains("Advisories (not parse failures):"))
+        .stdout(predicates::str::contains("Assessment: FAIL"));
+
+    Ok(())
+}
+
+/// A path the walk cannot read must be reported, not dropped. Before the fix
+/// `.filter_map(|e| e.ok())` discarded walk errors, so an unreadable directory
+/// left the scanned count quietly short under a confident percentage.
+#[cfg(unix)]
+#[test]
+fn check_project_reports_paths_it_could_not_scan() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("clean.pl"), "use strict;\nmy $ok = 1;\n")?;
+    // A dangling symlink: the walk follows links, so this surfaces as a walk
+    // error rather than an entry.
+    std::os::unix::fs::symlink(dir.path().join("gone.pl"), dir.path().join("dangling.pl"))?;
+
+    let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.args(["--check-project", dir_str])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Paths not scanned: 1"))
+        .stdout(predicates::str::contains(
+            "Paths not scanned (excluded from the percentage above):",
+        ))
+        .stdout(predicates::str::contains("dangling.pl"));
+
+    Ok(())
+}
+
 #[test]
 fn completion_fish_produces_output() {
     let mut cmd = cargo_bin_cmd!("perl-lsp");
