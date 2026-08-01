@@ -107,17 +107,6 @@ mkdir -p "$CHECKOUT/scripts"
 cp "$ROOT_INSTALLER" "$CHECKOUT/install.sh"
 cp "$STUB" "$CHECKOUT/scripts/install.sh"
 
-run_capture() {
-    # Usage: run_capture <outvar-file> -- <command...>
-    local out_file="$1"
-    shift
-    set +e
-    "$@" >"$out_file" 2>&1
-    local status=$?
-    set -e
-    return $status
-}
-
 # ── 1. curl-pipe, zero arguments (the exact documented command) ────────────────
 
 test_curl_pipe_zero_args() {
