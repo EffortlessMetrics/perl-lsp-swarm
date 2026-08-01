@@ -169,7 +169,7 @@ pub(crate) fn measure_variant(
 
     VariantEvidence {
         directory: display_path(root, &directory),
-        source_sha: normalize_git_sha(source_sha),
+        source_sha: declared_source_sha(source_sha),
         binaries,
         archive,
         lsp_smoke,
@@ -302,6 +302,13 @@ pub(crate) fn source_identity_bound(
     }
     let subject = normalize_git_sha(subject_sha);
     subject == normalize_git_sha(baseline_sha) && subject == normalize_git_sha(candidate_sha)
+}
+
+/// Record a declared source SHA for the receipt, falling back to the same
+/// `unknown` sentinel the subject identity fields use rather than an empty
+/// string, so every recorded identity field stays non-empty.
+fn declared_source_sha(value: &str) -> String {
+    if is_full_git_sha(value) { normalize_git_sha(value) } else { "unknown".to_string() }
 }
 
 fn is_full_git_sha(value: &str) -> bool {
@@ -678,7 +685,8 @@ fn hex_lower(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        GOVERNED_TARGETS, hex_lower, source_identity_bound, target_matches_file_description,
+        GOVERNED_TARGETS, declared_source_sha, hex_lower, source_identity_bound,
+        target_matches_file_description,
     };
     use sha2::{Digest, Sha256};
 
@@ -707,6 +715,24 @@ mod tests {
         assert!(!source_identity_bound(SHA_A, "0123456", SHA_A));
         assert!(!source_identity_bound("unknown", SHA_A, SHA_A));
         assert!(!source_identity_bound(SHA_A, "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", SHA_A));
+    }
+
+    #[test]
+    fn a_declared_source_sha_is_never_recorded_as_an_empty_string() {
+        assert_eq!(declared_source_sha(SHA_A), SHA_A);
+        assert_eq!(declared_source_sha(&SHA_A.to_ascii_uppercase()), SHA_A);
+        for malformed in ["", "   ", "0123456", "unknown"] {
+            assert_eq!(
+                declared_source_sha(malformed),
+                "unknown",
+                "`{malformed}` must be recorded as the unknown sentinel"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_source_sha_never_binds_identity() {
+        assert!(!source_identity_bound(SHA_A, &declared_source_sha(""), SHA_A));
     }
 
     #[test]

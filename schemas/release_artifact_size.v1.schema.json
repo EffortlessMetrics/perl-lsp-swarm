@@ -217,7 +217,8 @@
           "minLength": 1
         },
         "source_sha": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "binaries": {
           "type": "object",
