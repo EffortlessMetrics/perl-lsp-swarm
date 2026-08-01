@@ -121,8 +121,9 @@ Two further limits apply to the script even after that sync:
   ([#5007](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5007)).
   ARM64 Windows users should build from source.
 
-To pin a version or change the install directory, download the script and pass
-parameters rather than piping it:
+Once the sync lands and the script works, pinning a version or changing the
+install directory means downloading it and passing parameters rather than
+piping it. These commands 404 until then:
 
 ```powershell
 irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 -OutFile install.ps1
@@ -163,8 +164,8 @@ choco search perl-lsp
 winget search EffortlessMetrics.perl-lsp
 ```
 
-If it is missing or behind, use the installer script or the manual archive
-instead.
+If it is missing or behind, use the [manual archive](#manual-archive) — it is
+the only Windows path proven against the published assets today.
 
 ## Homebrew via the EffortlessMetrics tap
 
