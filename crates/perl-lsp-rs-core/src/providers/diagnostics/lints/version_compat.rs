@@ -284,7 +284,15 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                     diagnostics.push(make_given_when_default_diagnostic(n, declared_version));
                 } else if !pragma_state.has_feature("switch") {
                     let min = feature_min_version("switch");
-                    diagnostics.push(make_diagnostic(n, construct, declared_version, min));
+                    // The pragma is `switch`, not the construct name: perl
+                    // rejects `use feature "given";`.
+                    diagnostics.push(make_diagnostic(
+                        n,
+                        construct,
+                        Some("switch"),
+                        declared_version,
+                        min,
+                    ));
                 }
             }
 
@@ -314,7 +322,7 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             NodeKind::FunctionCall { name, .. } if name == "say" => {
                 if !pragma_state.has_feature("say") {
                     let min = feature_min_version("say");
-                    diagnostics.push(make_diagnostic(n, "say", declared_version, min));
+                    diagnostics.push(make_diagnostic(n, "say", Some("say"), declared_version, min));
                 }
             }
 
@@ -344,9 +352,13 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                 let imported = builtin_imports.iter().any(|import| import == builtin_name);
 
                 if declared_version < min && !builtin_bundle_declared && !imported {
+                    // No `use feature` pragma enables a `builtin::` function:
+                    // on v5.38 `use builtin 'inf';` fails with
+                    // `'inf' is not recognised as a builtin function`.
                     diagnostics.push(make_diagnostic(
                         n,
                         name,
+                        None,
                         declared_version,
                         (min.major, min.minor),
                     ));
@@ -359,6 +371,7 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                         diagnostics.push(make_diagnostic(
                             n,
                             "use builtin",
+                            None,
                             declared_version,
                             (BUILTIN_BUNDLE_MIN_VERSION.major, BUILTIN_BUNDLE_MIN_VERSION.minor),
                         ));
@@ -374,6 +387,7 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                             diagnostics.push(make_diagnostic(
                                 n,
                                 &display,
+                                None,
                                 declared_version,
                                 (min.major, min.minor),
                             ));
@@ -386,7 +400,13 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             NodeKind::VariableDeclaration { declarator, .. } if declarator == "state" => {
                 if !pragma_state.has_feature("state") {
                     let min = feature_min_version("state");
-                    diagnostics.push(make_diagnostic(n, "state", declared_version, min));
+                    diagnostics.push(make_diagnostic(
+                        n,
+                        "state",
+                        Some("state"),
+                        declared_version,
+                        min,
+                    ));
                 }
             }
 
@@ -396,7 +416,17 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             {
                 if !pragma_state.has_feature("postfix_deref") {
                     let min = feature_min_version("postfix_deref");
-                    diagnostics.push(make_diagnostic(n, "postfix deref", declared_version, min));
+                    // `postderef_qq` is the pragma perl accepts *and* the name
+                    // `has_feature("postfix_deref")` canonicalizes to, so the
+                    // advice both compiles and silences this lint.
+                    // `use feature "postfix_deref";` is rejected by perl.
+                    diagnostics.push(make_diagnostic(
+                        n,
+                        "postfix deref",
+                        Some("postderef_qq"),
+                        declared_version,
+                        min,
+                    ));
                 }
             }
 
@@ -407,6 +437,7 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                     diagnostics.push(make_diagnostic(
                         n,
                         "subroutine signatures",
+                        Some("signatures"),
                         declared_version,
                         min,
                     ));
@@ -417,7 +448,7 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             NodeKind::Binary { op, .. } if op == "isa" => {
                 if !pragma_state.has_feature("isa") {
                     let min = feature_min_version("isa");
-                    diagnostics.push(make_diagnostic(n, "isa", declared_version, min));
+                    diagnostics.push(make_diagnostic(n, "isa", Some("isa"), declared_version, min));
                 }
             }
 
@@ -484,36 +515,96 @@ fn builtin_import_names(arg: &str) -> Vec<String> {
     vec![trimmed.trim_matches(|c| c == '\'' || c == '"').to_string()]
 }
 
-/// Build a PL900 diagnostic for a version-incompatible feature use.
+/// Build a PL900 diagnostic for a version-incompatible use of a *bundled*
+/// feature — one a `use vX.Y` bundle really does turn on, so unlike the
+/// pragma-gated constructs the version bump is a genuine remediation.
 ///
-/// Serves the *bundled* arms, where a `use vX.Y` bundle really does turn the
-/// feature on so the version bump is a genuine remediation.
+/// `feature` is the pragma name perl accepts, which is **not** the construct's
+/// display name. This helper used to interpolate `display` into the
+/// `use feature "..."` slot, so it emitted pragmas perl rejects outright and an
+/// author who followed the advice traded the original diagnostic for a failed
+/// `BEGIN` block. Verified on perl v5.38.2:
 ///
-/// KNOWN DEFECT, tracked in #5554 and deliberately out of this candidate's
-/// claim: this helper interpolates `display` into the `use feature "..."` slot,
-/// so arms whose display name is not the pragma name emit advice perl rejects
-/// (`use feature "subroutine signatures";` →
-/// `Feature "subroutine signatures" is not supported by Perl 5.38.2`). It also
-/// still emits the self-referential `Update 'use v5.36' to 'use v5.36'` when
-/// `no feature` disables a bundled feature at or above its minimum. The
-/// pragma-gated arms this PR owns (`class`, `defer`, `try`) route through
-/// [`make_experimental_feature_diagnostic`] instead and are free of both.
+/// ```text
+/// use feature "subroutine signatures";  Feature "..." is not supported
+/// use feature "given";                  Feature "..." is not supported
+/// use feature "postfix deref";          Feature "..." is not supported
+/// use feature "builtin::inf";           Feature "..." is not supported
+/// ```
+///
+/// Pass `None` when no `use feature` pragma can enable the construct at all.
+/// That is the `builtin` namespace: on v5.38 even the correct-looking
+/// `use builtin 'inf';` fails with `'inf' is not recognised as a builtin
+/// function`, because `inf` arrived in v5.40 — the version bump is the only
+/// remediation, so the pragma clause is dropped entirely.
+///
+/// The version clause is likewise dropped when the declared version already
+/// meets the minimum. That is reachable through `no feature`, and it used to
+/// produce the self-referential `Update 'use v5.36' to 'use v5.36'` and, for
+/// `say`, the outright downgrade `Update 'use v5.36' to 'use v5.10'`.
 fn make_diagnostic(
     node: &Node,
     display: &str,
+    feature: Option<&str>,
     declared_version: PerlVersion,
     min_version: (u32, u32),
 ) -> Diagnostic {
-    make_diagnostic_with_details(
-        node,
-        display,
-        declared_version,
-        min_version,
-        DiagnosticSeverity::Warning,
-        Some(format!(
-            "Update 'use v{}.{}' to 'use v{}.{}' or add 'use feature \"{}\";'",
-            declared_version.major, declared_version.minor, min_version.0, min_version.1, display,
-        )),
+    let declared = format!("v{}.{}", declared_version.major, declared_version.minor);
+    let target = format!("v{}.{}", min_version.0, min_version.1);
+    let version_ok = declared_version >= PerlVersion::new(min_version.0, min_version.1);
+
+    // Message and suggestion are built from the same `(feature, version_ok)`
+    // match so they cannot contradict each other: a message cites a minimum
+    // version only when the declared version actually falls short of it.
+    let (message, suggestion) = match (feature, version_ok) {
+        // Bundle bump and pragma both work; either is a real fix.
+        (Some(feature), false) => (
+            default_version_message(display, declared_version, min_version),
+            format!(
+                "Update 'use {declared}' to 'use {target}' or add 'use feature \"{feature}\";'"
+            ),
+        ),
+        // Version already satisfies the minimum, so only the pragma is left.
+        // Citing the minimum here would state a satisfied condition as the
+        // reason for the warning.
+        (Some(feature), true) => (
+            format!(
+                "'{display}' requires the '{feature}' feature, which 'use {declared}' does not \
+                 enable"
+            ),
+            format!(
+                "Add 'use feature \"{feature}\";' — 'use {declared}' does not enable the \
+                 '{feature}' feature"
+            ),
+        ),
+        // No pragma can enable it; the version bump is the only remediation.
+        (None, _) => (
+            default_version_message(display, declared_version, min_version),
+            format!("Update 'use {declared}' to 'use {target}'"),
+        ),
+    };
+
+    Diagnostic {
+        range: (node.location.start, node.location.end),
+        severity: DiagnosticSeverity::Warning,
+        code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
+        message,
+        related_information: vec![],
+        tags: vec![],
+        suggestion: Some(suggestion),
+    }
+}
+
+/// The standard `'X' requires Perl vN.M+; declared version is vA.B` message,
+/// used when the declared version genuinely falls short of the minimum.
+fn default_version_message(
+    display: &str,
+    declared_version: PerlVersion,
+    min_version: (u32, u32),
+) -> String {
+    format!(
+        "'{}' requires Perl v{}.{}+; declared version is v{}.{}",
+        display, min_version.0, min_version.1, declared_version.major, declared_version.minor,
     )
 }
 
@@ -713,17 +804,10 @@ fn make_smartmatch_feature_gate_diagnostic(
 }
 
 fn make_smartmatch_feature_diagnostic(node: &Node, declared_version: PerlVersion) -> Diagnostic {
-    make_diagnostic_with_details(
-        node,
-        "smartmatch operator `~~`",
-        declared_version,
-        (5, 10),
-        DiagnosticSeverity::Warning,
-        Some(format!(
-            "Update 'use v{}.{}' to 'use v5.10' or add 'use feature \"switch\";'",
-            declared_version.major, declared_version.minor
-        )),
-    )
+    // Routed through the shared helper so a declared version that already meets
+    // v5.10 (reachable via `no feature 'switch'`) drops the version clause
+    // instead of advising the downgrade `Update 'use v5.36' to 'use v5.10'`.
+    make_diagnostic(node, "smartmatch operator `~~`", Some("switch"), declared_version, (5, 10))
 }
 
 fn make_diagnostic_with_details(
@@ -1474,16 +1558,18 @@ mod tests {
     /// Sources driving the three pragma-gated arms this claim owns, across the
     /// declared-version range.
     ///
-    /// SCOPE, stated so this list is not mistaken for full coverage of PL900:
-    /// the bundled arms served by [`make_diagnostic`] (`say`, `state`, `isa`,
-    /// `signatures`, `switch`/given/when, smartmatch, `builtin::*`) are
-    /// deliberately absent. They carry the same two defects — a display name
-    /// used as the pragma name, and a self-referential bump reachable through
-    /// `no feature` — and both are reproduced and tracked in #5554 rather than
-    /// fixed here, because fixing them widens this candidate past its claim.
-    /// Adding those rows to this list is the first step of that follow-up: the
-    /// invariants below already fail against them.
+    /// Covers every PL900 arm that carries a remediation, through both the
+    /// pragma-gated helper ([`make_experimental_feature_diagnostic`]) and the
+    /// shared bundled-feature helper ([`make_diagnostic`]).
+    ///
+    /// The `no feature` rows are load-bearing: they are how a *bundled* feature
+    /// reaches the shared helper with a declared version that already meets the
+    /// minimum, which is what produced `Update 'use v5.36' to 'use v5.36'`
+    /// there, and `Update 'use v5.36' to 'use v5.10'` — an outright downgrade —
+    /// for `say`.
     const PL900_REMEDIATION_SOURCES: &[&str] = &[
+        // Pragma-gated: never bundled (`class`, `defer`), or bundled only later
+        // (`try`, at v5.40).
         "use v5.10;\nclass Foo { }\n",
         "use v5.36;\nclass Foo { }\n",
         "use v5.38;\nclass Foo { }\n",
@@ -1497,6 +1583,27 @@ mod tests {
         "use v5.10;\ntry { 1 } catch ($e) { 2 }\n",
         "use v5.34;\ntry { 1 } catch ($e) { 2 }\n",
         "use v5.38;\ntry { 1 } catch ($e) { 2 }\n",
+        // Bundled features below their minimum: the version bump is a genuine
+        // remediation here, so both halves of the advice must be usable.
+        "use v5.8;\nsub f ($x) { $x }\n",
+        "use v5.20;\nsub f ($x) { $x }\n",
+        "use v5.8;\nsay 'hi';\n",
+        "use v5.8;\nstate $x = 1;\n",
+        "use v5.8;\nmy $r = [];\nmy @a = $r->@*;\n",
+        "use v5.8;\nmy $o = bless {}, 'X';\nmy $b = $o isa 'X';\n",
+        "use v5.8;\ngiven ($x) { when (1) { 1 } }\n",
+        "use v5.8;\nmy $x = 1;\nmy $y = 2;\n$x ~~ $y;\n",
+        // Bundled features switched off by `no feature` at or above the
+        // minimum — the shared helper's self-referential / downgrading path.
+        "use v5.36;\nno feature 'signatures';\nsub f ($x) { $x }\n",
+        "use v5.36;\nno feature 'say';\nsay 'hi';\n",
+        "use v5.36;\nno feature 'state';\nstate $x = 1;\n",
+        "use v5.36;\nno feature 'isa';\nmy $o = bless {}, 'X';\nmy $b = $o isa 'X';\n",
+        "use v5.36;\nno feature 'postderef_qq';\nmy $r = [];\nmy @a = $r->@*;\n",
+        // `builtin`: no `use feature` pragma enables these at all.
+        "use v5.36;\nmy $x = builtin::inf();\n",
+        "use v5.36;\nuse builtin;\n",
+        "use v5.36;\nuse builtin 'inf';\n",
         "use v5.10;\nuse feature 'try';\ntry { 1 } catch ($e) { 2 }\n",
     ];
 
