@@ -164,6 +164,67 @@ fn check_valid_perl_file() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Regression: `--check` reported `ok` and exited 0 on Perl that `perl -c`
+/// rejects, because it read only the `Result` from `parse()` and ignored the
+/// diagnostics in `errors()`. The parser recovers from each of these, so
+/// `parse()` returns `Ok` for every one of them.
+///
+/// Each input below was confirmed rejected by real `perl -c`.
+#[test]
+fn check_reports_recovered_parse_errors() -> Result<(), Box<dyn std::error::Error>> {
+    // (file name, source, a fragment of the expected diagnostic)
+    let cases: &[(&str, &str, &str)] = &[
+        ("missing_operand.pl", "my $x = ;\n", "Missing operand"),
+        ("unclosed_block.pl", "sub foo {\n    my $x = 1;\n", "Unclosed block"),
+        ("unclosed_paren.pl", "if ($x { print \"hi\"; }\n", "expected"),
+        ("unterminated_string.pl", "print \"unterminated\n", "unknown token"),
+    ];
+
+    for (name, source, expected) in cases {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join(name);
+        std::fs::write(&file, source)?;
+        let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
+
+        let mut cmd = cargo_bin_cmd!("perl-lsp");
+        cmd.arg("--check")
+            .arg(file_str)
+            .assert()
+            .failure()
+            .stdout(predicates::str::contains("FAIL"))
+            .stdout(predicates::str::contains(*expected));
+    }
+
+    Ok(())
+}
+
+/// A file whose errors are all recovered must still count toward the multi-file
+/// summary and drive a non-zero exit, alongside a clean file.
+#[test]
+fn check_mixed_files_fails_and_counts_recovered_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+
+    let good = dir.path().join("good.pl");
+    std::fs::write(&good, "use strict;\nprint \"hello\\n\";\n")?;
+    let bad = dir.path().join("bad.pl");
+    std::fs::write(&bad, "my $x = ;\n")?;
+
+    let good_str = good.to_str().ok_or("non-UTF-8 temp path")?;
+    let bad_str = bad.to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.arg("--check")
+        .arg(good_str)
+        .arg(bad_str)
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("ok"))
+        .stdout(predicates::str::contains("FAIL"))
+        .stdout(predicates::str::contains("2 files checked, 1 with errors"));
+
+    Ok(())
+}
+
 #[test]
 fn check_nonexistent_file() {
     let mut cmd = cargo_bin_cmd!("perl-lsp");

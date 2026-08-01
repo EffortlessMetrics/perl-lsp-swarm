@@ -227,16 +227,37 @@ fn run_check(command_name: &str, files: &[String]) -> i32 {
         };
 
         let mut parser = perl_parser::Parser::new(&source);
-        match parser.parse() {
-            Ok(_) => {
-                println!("{path}: ok");
+        // `parse()` returns `Ok` whenever the parser recovered, so a successful
+        // result alone does not mean the file is clean — the diagnostics it
+        // recovered from are reported separately by `errors()`. Reading only the
+        // `Result` silently passed files that `perl -c` rejects. `--check-project`
+        // already reads both; see `cli/check_project.rs::process_file`.
+        let parse_result = parser.parse();
+        let recovered = parser.errors();
+
+        let fatal = parse_result.as_ref().err();
+        if fatal.is_none() && recovered.is_empty() {
+            println!("{path}: ok");
+            continue;
+        }
+
+        errors += 1;
+
+        if let Some(e) = fatal {
+            println!("{path}: FAIL - {e}");
+            for detail in format_parse_error_context(&source, e) {
+                println!("{detail}");
             }
-            Err(e) => {
-                println!("{path}: FAIL - {e}");
-                for detail in format_parse_error_context(&source, &e) {
-                    println!("{detail}");
-                }
-                errors += 1;
+        } else {
+            let count = recovered.len();
+            let noun = if count == 1 { "error" } else { "errors" };
+            println!("{path}: FAIL - {count} parse {noun}");
+        }
+
+        for err in recovered {
+            println!("  {err}");
+            for detail in format_parse_error_context(&source, err) {
+                println!("{detail}");
             }
         }
     }
