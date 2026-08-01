@@ -2,6 +2,9 @@
 
 mod literal_scan;
 
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+
 use perl_lexer::tokenizer::util::find_data_marker_byte_lexed;
 use perl_lexer::{PerlLexer, TokenType};
 
@@ -52,29 +55,94 @@ fn collect_lexer_literal_regions(source: &str) -> Vec<SourceRegion> {
     regions
 }
 
-fn coalesce_regions(mut regions: Vec<SourceRegion>, source_len: usize) -> Vec<SourceRegion> {
+/// Resolve overlapping regions into one sorted, non-overlapping cover.
+///
+/// Overlaps are **split**, not replaced: every byte takes the kind of the
+/// highest-precedence region covering it, so an enclosing region keeps both the
+/// prefix before and the suffix after a nested higher-precedence region. The
+/// previous replace-or-skip rule silently reclassified those parts as `Code`,
+/// so heredoc, POD, and `__DATA__` payload became apparent executable source
+/// whenever a higher-precedence span nested inside them.
+///
+/// Adjacent runs of the same kind are merged, so a same-kind split is invisible
+/// to callers.
+pub(super) fn coalesce_regions(
+    mut regions: Vec<SourceRegion>,
+    source_len: usize,
+) -> Vec<SourceRegion> {
     regions.retain(|region| region.start < region.end && region.end <= source_len);
-    regions.sort_by_key(|region| {
-        (region.start, region_precedence(region.kind), usize::MAX - region.end)
-    });
-    let mut merged: Vec<SourceRegion> = Vec::new();
-    for region in regions {
-        if let Some(last) = merged.last_mut() {
-            if last.kind == region.kind && region.start <= last.end {
-                last.end = last.end.max(region.end);
-                continue;
-            }
-            if region.start < last.end {
-                if region_precedence(region.kind) > region_precedence(last.kind) {
-                    *last = region;
-                }
-                continue;
-            }
-        }
-        merged.push(region);
+    if regions.is_empty() {
+        return regions;
     }
-    merged.sort_by_key(|region| region.start);
+    regions.sort_by_key(|region| region.start);
+
+    let mut boundaries: Vec<usize> = Vec::with_capacity(regions.len() * 2);
+    for region in &regions {
+        boundaries.push(region.start);
+        boundaries.push(region.end);
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    // Sweep the boundary points. `active` is a max-heap keyed on precedence, so
+    // its top is the winning kind for the current slice. Expired entries are
+    // dropped lazily from the top, which is sound because equal precedences are
+    // ordered by furthest `end`: if the top has expired, so has every peer.
+    let mut active: BinaryHeap<ActiveRegion> = BinaryHeap::new();
+    let mut next_region = 0usize;
+    let mut merged: Vec<SourceRegion> = Vec::new();
+
+    for window in boundaries.windows(2) {
+        let (start, end) = (window[0], window[1]);
+        while let Some(region) =
+            regions.get(next_region).copied().filter(|region| region.start <= start)
+        {
+            active.push(ActiveRegion {
+                precedence: region_precedence(region.kind),
+                end: region.end,
+                kind: region.kind,
+            });
+            next_region += 1;
+        }
+        while active.peek().is_some_and(|top| top.end <= start) {
+            active.pop();
+        }
+        let Some(kind) = active.peek().map(|top| top.kind) else {
+            continue;
+        };
+        if let Some(last) = merged.last_mut()
+            && last.kind == kind
+            && last.end == start
+        {
+            last.end = end;
+            continue;
+        }
+        if let Some(region) = SourceRegion::new(start, end, kind) {
+            merged.push(region);
+        }
+    }
     merged
+}
+
+/// A region covering the current sweep position, ordered so that the highest
+/// precedence — and, for ties, the furthest `end` — sorts to the heap top.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ActiveRegion {
+    precedence: u8,
+    end: usize,
+    kind: SourceRegionKind,
+}
+
+impl Ord for ActiveRegion {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.precedence, self.end).cmp(&(other.precedence, other.end))
+    }
+}
+
+impl PartialOrd for ActiveRegion {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 fn region_precedence(kind: SourceRegionKind) -> u8 {
@@ -96,15 +164,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn heredoc_body_region_present() {
+    fn heredoc_body_region_present() -> Result<(), Box<dyn std::error::Error>> {
         let source = "my $x = <<EOF;\nbody line\nEOF\n";
         let regions = collect_regions(source);
-        let body_offset = source.find("body").expect("body");
+        let body_offset = source.find("body").ok_or("missing heredoc body")?;
         assert!(
             regions
                 .iter()
                 .any(|r| r.kind == SourceRegionKind::Heredoc && r.contains_offset(body_offset)),
             "expected heredoc region covering body, got: {regions:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn nested_higher_precedence_region_splits_instead_of_replacing() {
+        let regions = coalesce_regions(
+            vec![
+                SourceRegion { start: 0, end: 20, kind: SourceRegionKind::Pod },
+                SourceRegion { start: 5, end: 10, kind: SourceRegionKind::Heredoc },
+            ],
+            20,
+        );
+        assert_eq!(
+            regions,
+            vec![
+                SourceRegion { start: 0, end: 5, kind: SourceRegionKind::Pod },
+                SourceRegion { start: 5, end: 10, kind: SourceRegionKind::Heredoc },
+                SourceRegion { start: 10, end: 20, kind: SourceRegionKind::Pod },
+            ],
+            "the enclosing region must keep its prefix and suffix"
+        );
+    }
+
+    #[test]
+    fn nested_lower_precedence_region_leaves_enclosing_region_intact() {
+        let regions = coalesce_regions(
+            vec![
+                SourceRegion { start: 0, end: 20, kind: SourceRegionKind::DataSection },
+                SourceRegion { start: 5, end: 10, kind: SourceRegionKind::LineComment },
+            ],
+            20,
+        );
+        assert_eq!(
+            regions,
+            vec![SourceRegion { start: 0, end: 20, kind: SourceRegionKind::DataSection }],
+            "a lower-precedence nested region must not fragment its enclosing region"
         );
     }
 }

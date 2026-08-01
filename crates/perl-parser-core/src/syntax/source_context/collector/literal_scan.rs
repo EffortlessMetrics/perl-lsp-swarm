@@ -8,7 +8,7 @@ use std::cmp::Ordering;
 use crate::syntax::text_line::is_identifier_byte;
 
 use super::super::kind::SourceRegionKind;
-use super::super::region::SourceRegion;
+use super::super::region::{SourceRegion, last_char_start};
 
 pub(super) fn scan_line_comments_and_open_literals(source: &str) -> Vec<SourceRegion> {
     let mut regions = Vec::new();
@@ -54,9 +54,13 @@ pub(super) fn scan_line_comments_and_open_literals(source: &str) -> Vec<SourceRe
     }
 
     if literal_state.is_active() {
+        // Anchor the recovery span to the start of the final character: using
+        // `len - 1` lands mid-codepoint when the unterminated literal ends in
+        // multibyte text, violating the char-boundary invariant callers rely on
+        // when slicing the source.
         push_region(
             &mut regions,
-            source.len().saturating_sub(1),
+            last_char_start(source, source.len()),
             source.len(),
             SourceRegionKind::RecoveryAmbiguous,
         );
@@ -125,11 +129,18 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
         }
         '\\' => {
             let after = &rest[1..];
+            if !starts_heredoc_label(after) {
+                return None;
+            }
             let end =
                 after.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(after.len());
             after[..end].to_string()
         }
-        _ if first.is_ascii_alphanumeric() || first == '_' => {
+        // An *unquoted* heredoc label is an identifier, so it must start with an
+        // ASCII letter or `_`. Accepting a leading digit made `my $y = $x << 2;`
+        // parse as a heredoc opener whose body then swallowed the rest of the
+        // file.
+        _ if starts_heredoc_label(rest) => {
             let end =
                 rest.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(rest.len());
             rest[..end].to_string()
@@ -137,6 +148,11 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
         _ => return None,
     };
     if label.is_empty() { None } else { Some((label, allow_indented)) }
+}
+
+/// Whether `rest` starts an unquoted heredoc label, i.e. a Perl identifier.
+fn starts_heredoc_label(rest: &str) -> bool {
+    rest.starts_with(|character: char| character.is_ascii_alphabetic() || character == '_')
 }
 
 fn push_region(regions: &mut Vec<SourceRegion>, start: usize, end: usize, kind: SourceRegionKind) {

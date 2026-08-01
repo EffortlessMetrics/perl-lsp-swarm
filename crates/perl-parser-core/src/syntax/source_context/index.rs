@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::collector;
 use super::kind::SourceRegionKind;
-use super::region::SourceRegion;
+use super::region::{SourceRegion, last_char_start};
 
 /// Result of classifying a byte range against stored regions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,8 +111,12 @@ impl SourceRegionIndex {
             return RangeClassification::Proven { kind: self.kind_at_offset(start) };
         }
 
+        // Probe the start of the last *character* in the range: `end - 1` lands
+        // on a UTF-8 continuation byte when the range ends with multibyte text,
+        // making `kind_at_offset` fall back to `Code` and downgrading a
+        // genuinely proven range to `Ambiguous`.
         let start_kind = self.kind_at_offset(start);
-        let last_inclusive = end.saturating_sub(1);
+        let last_inclusive = last_char_start(&self.source, end);
         let end_kind = self.kind_at_offset(last_inclusive);
         if start_kind != end_kind {
             return RangeClassification::Ambiguous;
@@ -152,30 +156,20 @@ fn is_valid_char_offset(source: &str, offset: usize) -> bool {
     offset <= source.len() && source.is_char_boundary(offset)
 }
 
+/// Enforce the stored-region invariant: sorted, non-overlapping, in bounds, and
+/// never `Code`.
+///
+/// Overlap resolution is delegated to [`collector::coalesce_regions`] so that
+/// caller-supplied overrides obey exactly the same precedence-and-split rule as
+/// build-time regions. `Code` is dropped *before* the sweep: it holds the top
+/// precedence slot and would otherwise mask every real region it overlaps.
 fn normalize_regions(mut regions: Vec<SourceRegion>, source_len: usize) -> Vec<SourceRegion> {
     regions.retain(|region| {
         region.kind != SourceRegionKind::Code
             && region.start < region.end
             && region.end <= source_len
     });
-    regions.sort_by_key(|region| (region.start, region.end));
-    merge_adjacent_same_kind(&mut regions);
-    regions
-}
-
-fn merge_adjacent_same_kind(regions: &mut Vec<SourceRegion>) {
-    let mut merged: Vec<SourceRegion> = Vec::with_capacity(regions.len());
-    for region in regions.drain(..) {
-        if let Some(last) = merged.last_mut()
-            && last.kind == region.kind
-            && last.end == region.start
-        {
-            last.end = region.end;
-            continue;
-        }
-        merged.push(region);
-    }
-    *regions = merged;
+    collector::coalesce_regions(regions, source_len)
 }
 
 #[cfg(test)]
