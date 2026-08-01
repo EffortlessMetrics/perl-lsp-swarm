@@ -7,14 +7,27 @@ fn health_prints_ok() {
     cmd.arg("--health").assert().success().stdout(predicates::str::contains("ok"));
 }
 
+/// The git tag line must carry a value, not just a label.
+///
+/// A bare `Git tag:` is what non-git builds (`cargo install`, source tarballs)
+/// printed while the build script treated a spawned-but-failed `git describe` as
+/// success. Asserting only on the label passes against that empty field.
 #[test]
-fn version_shows_git_tag() {
+fn version_shows_a_non_empty_git_tag() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = cargo_bin_cmd!("perl-lsp");
-    cmd.arg("--version")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("perl-lsp"))
-        .stdout(predicates::str::contains("Git tag:"));
+    let output = cmd.arg("--version").output()?;
+    assert!(output.status.success(), "--version should exit successfully");
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("perl-lsp"), "version should print the binary name: {stdout}");
+
+    let tag = git_tag_value(&stdout).ok_or_else(|| format!("no Git tag line in: {stdout}"))?;
+    assert!(!tag.is_empty(), "the git tag line must carry a value, got a bare label: {stdout}");
+    Ok(())
+}
+
+/// Extract the value printed after the `Git tag:` label, trimmed.
+fn git_tag_value(stdout: &str) -> Option<&str> {
+    stdout.lines().find_map(|line| line.strip_prefix("Git tag:")).map(str::trim)
 }
 
 #[test]

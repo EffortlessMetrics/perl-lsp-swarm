@@ -46,7 +46,15 @@ fn help_examples_use_facade_name() -> Result<(), Box<dyn std::error::Error>> {
 fn version_mentions_facade_name_and_git_tag() -> Result<(), Box<dyn std::error::Error>> {
     let stdout = successful_stdout(run_perllsp(&["--version"])?)?;
     assert!(stdout.contains("perllsp "), "version should print the facade name");
-    assert!(stdout.contains("Git tag:"), "version should include the git tag line");
+
+    // Pin the value, not just the label: a build with no reachable checkout used to
+    // print a bare `Git tag:` because a failed `git describe` was read as success.
+    let tag = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("Git tag:"))
+        .map(str::trim)
+        .ok_or_else(|| format!("version should include the git tag line, got: {stdout}"))?;
+    assert!(!tag.is_empty(), "the git tag line must carry a value, got a bare label: {stdout}");
     Ok(())
 }
 

@@ -55,15 +55,26 @@ pub fn to_json_for_all_profiles() -> String {
     to_json_for_profiles(FeatureProfile::all())
 }
 
+/// Coverage numerator and denominator for a runtime profile.
+///
+/// Returns `(advertised_trackable, trackable_total)`. Both the displayed coverage
+/// fraction and [`compliance_percent_for_profile`] derive from this one helper, so a
+/// rendered `N/M` can never disagree with the percentage computed beside it.
+/// Advertised features carrying `counts_in_coverage = false` are excluded from
+/// *both* sides, which is what makes the fraction reduce to the percent.
+pub fn coverage_counts_for_profile(profile: FeatureProfile) -> (usize, usize) {
+    let advertised = catalog_advertised_feature_ids(profile);
+    (advertised_trackable_feature_count(&advertised), trackable_feature_count_for_grid())
+}
+
 /// Compliance percent for a specific runtime profile, using the same grid semantics.
 pub fn compliance_percent_for_profile(profile: FeatureProfile) -> f32 {
-    let trackable_feature_count = trackable_feature_count_for_grid();
+    let (advertised_trackable_feature_count, trackable_feature_count) =
+        coverage_counts_for_profile(profile);
     if trackable_feature_count == 0 {
         return 0.0;
     }
 
-    let advertised = catalog_advertised_feature_ids(profile);
-    let advertised_trackable_feature_count = advertised_trackable_feature_count(&advertised);
     (advertised_trackable_feature_count as f64 / trackable_feature_count as f64 * 100.0).round()
         as f32
 }
