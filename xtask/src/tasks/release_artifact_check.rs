@@ -1252,18 +1252,33 @@ mod tests {
     #[test]
     fn no_crate_advertises_binstall_for_an_unpublished_binary() -> Result<()> {
         let workflow = release_workflow()?;
+        let root = project_root()?;
 
-        // Every crate that declares binstall metadata is promising a prebuilt
-        // binary. `perl-lsp-rs` used to promise `perl-lsp`, which the release
-        // workflow has never built — binstall 404'd instead of falling back to
-        // a source build.
-        for manifest_rel in ["crates/perllsp/Cargo.toml", "crates/perl-lsp-rs/Cargo.toml"] {
-            let Some(_) = binstall_table(manifest_rel)? else {
+        // Scans every workspace crate, not a fixed list: the failure mode is a
+        // crate promising a prebuilt binary the release matrix does not build,
+        // and a hardcoded list would not catch the *next* crate to do it.
+        // `perl-lsp-rs` used to promise `perl-lsp`, which has never been built,
+        // so binstall 404'd instead of falling back to a source build.
+        let mut checked = 0usize;
+        for entry in fs::read_dir(root.join("crates"))? {
+            let manifest = entry?.path().join("Cargo.toml");
+            if !manifest.is_file() {
                 continue;
-            };
-            let text = fs::read_to_string(project_root()?.join(manifest_rel))?;
-            let manifest: toml::Value = toml::from_str(&text)?;
-            let bins = manifest
+            }
+            let text = fs::read_to_string(&manifest)?;
+            let parsed: toml::Value = toml::from_str(&text)?;
+            let declares_binstall = parsed
+                .get("package")
+                .and_then(|p| p.get("metadata"))
+                .and_then(|m| m.get("binstall"))
+                .is_some();
+            if !declares_binstall {
+                continue;
+            }
+            checked += 1;
+
+            let rel = manifest.strip_prefix(&root).unwrap_or(&manifest).display();
+            let bins = parsed
                 .get("bin")
                 .and_then(|b| b.as_array())
                 .map(|a| {
@@ -1273,15 +1288,28 @@ mod tests {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            assert!(
+                !bins.is_empty(),
+                "{rel} declares binstall metadata but no [[bin]], so binstall has \
+                 nothing to install"
+            );
             for bin in bins {
                 assert!(
                     workflow.contains(&format!("--bin {bin}")),
-                    "{manifest_rel} advertises binstall for `{bin}`, but release.yml \
-                     never builds it — binstall would 404. Either build it in the \
-                     release matrix or drop the binstall metadata."
+                    "{rel} advertises binstall for `{bin}`, but release.yml never \
+                     builds it — binstall would 404. Either build it in the release \
+                     matrix or drop the binstall metadata."
                 );
             }
         }
+
+        // A scan that silently matched nothing would pass forever. `perllsp` is
+        // the published install path and must always be covered.
+        assert!(
+            checked > 0,
+            "no crate declares binstall metadata; expected at least perllsp — \
+             this test would otherwise pass vacuously"
+        );
         Ok(())
     }
 }
