@@ -134,6 +134,39 @@ cat ripr/review/comments.json
 
 Each entry names the exact `file:line` seam that needs a mutation-killing test.
 
+### When the gate reports gaps it could not name
+
+On a large diff the review-guidance producer can exceed its `--timeout-seconds`
+budget. The gap *count* is still real, but the seam list is empty, so there is
+nothing to act on. The gate says so explicitly rather than presenting an empty
+list as a finished answer — the `new_ripr_gap` action carries:
+
+```json
+{
+  "gaps_named": false,
+  "evidence": "NOT_PROVEN",
+  "guidance_status": "error",
+  "guidance_error": "ripr timed out after 600s"
+}
+```
+
+and the job summary reads `ripr gaps: **not named**`.
+
+This is an instrument failure, not a verdict about your diff. Re-run review
+guidance for the same HEAD with a larger budget:
+
+```bash
+cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD \
+  --timeout-seconds 1200
+```
+
+Do **not** guess at the 25-odd seams from the count alone, and do **not** add
+suppressions to clear it — a `NOT_PROVEN` gate is missing evidence, and this
+repository's contract forbids treating either guesswork or suppression as
+proof. If the guidance step cannot be made to finish, the honest outcome is to
+record `NOT_PROVEN` on the PR and route the seams to the `ripr-total-burndown`
+lane (#3121) rather than to weaken the gate. Tracking: #5459.
+
 ### Fix options
 
 **Option 1 (preferred): production call-observation test.** Add a test that

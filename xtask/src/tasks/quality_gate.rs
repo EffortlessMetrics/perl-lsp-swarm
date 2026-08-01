@@ -241,6 +241,7 @@ fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> 
             "base_sha": review.base_sha,
             "production_files_considered": review.production_files_considered,
             "top_gaps": review.top_gaps,
+            "producer_error": review.producer_error,
         },
         "temporary_exceptions": exceptions.receipt,
         "next_actions": next_actions,
@@ -429,6 +430,7 @@ fn evaluate_new_ripr(head: &str, args: &QualityGateArgs) -> Result<GateEvaluatio
             "base_sha": review.base_sha,
             "production_files_considered": review.production_files_considered,
             "top_gaps": review.top_gaps,
+            "producer_error": review.producer_error,
         },
         "temporary_exceptions": exceptions.receipt,
         "next_actions": next_actions,
@@ -476,6 +478,14 @@ struct ReviewGuidanceReceipt {
     base_sha: Option<String>,
     production_files_considered: Option<u64>,
     top_gaps: Vec<Value>,
+    /// First `tool_error` warning the producer recorded, when it failed to
+    /// complete (for example `ripr timed out after 600s`).
+    ///
+    /// Without this the gate knows only that guidance is absent, not that the
+    /// instrument failed, so it cannot tell the author whether the gap list is
+    /// empty because there is nothing to name or because nothing could be
+    /// measured.
+    producer_error: Option<String>,
 }
 
 impl ReviewGuidanceReceipt {
@@ -932,6 +942,7 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
             base_sha: None,
             production_files_considered: None,
             top_gaps: Vec::new(),
+            producer_error: None,
         },
         JsonReceipt::Invalid => ReviewGuidanceReceipt {
             status: "invalid".to_string(),
@@ -940,6 +951,7 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
             base_sha: None,
             production_files_considered: None,
             top_gaps: Vec::new(),
+            producer_error: None,
         },
         JsonReceipt::Present(payload) => {
             let receipt_head_sha =
@@ -972,6 +984,7 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
                 base_sha: payload.get("base_sha").and_then(Value::as_str).map(ToOwned::to_owned),
                 production_files_considered,
                 top_gaps,
+                producer_error: review_guidance_producer_error(&payload),
             }
         }
     }
@@ -994,6 +1007,25 @@ fn review_guidance_items(value: &Value, limit: usize) -> Vec<Value> {
         }
     }
     gaps
+}
+
+/// Recover the producer's own failure message from a review-guidance receipt.
+///
+/// `write_error_review_comments` records why the producer stopped as a
+/// `tool_error` warning (`ripr timed out after 600s`). The gate previously read
+/// only `status`, so that message never reached the author and a timeout was
+/// indistinguishable from "guidance ran and found nothing worth naming".
+fn review_guidance_producer_error(value: &Value) -> Option<String> {
+    value
+        .get("warnings")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|warning| warning.get("kind").and_then(Value::as_str) == Some("tool_error"))
+        .and_then(|warning| warning.get("message"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn review_guidance_declares_items(value: &Value) -> bool {
@@ -1531,6 +1563,20 @@ fn new_ripr_gap_action(
             args.ripr_pr_receipt.to_str().unwrap_or("target/ripr/pr/repo-exposure.json")
         });
 
+    // A new-gap failure is only actionable when the guidance half named the
+    // seams. When it did not, the count is real but the list is absence of
+    // evidence, not evidence of absence — say so instead of emitting a
+    // blocking failure with an empty `top_gaps` the author cannot act on.
+    let gaps_named = !review.top_gaps.is_empty();
+    let evidence = if gaps_named { "CONFIRMED" } else { "NOT_PROVEN" };
+    let repair = if gaps_named {
+        "Add focused tests that expose the new RIPR seam before merging, then refresh RIPR receipts."
+    } else if review.producer_error.is_some() {
+        "RIPR counted new seams but the review-guidance producer did not complete, so the gate cannot name them. Re-run review guidance for this HEAD (raising --timeout-seconds if it timed out); do not guess at the seams and do not suppress them."
+    } else {
+        "RIPR counted new seams but review guidance produced no actionable items, so the gate cannot name them. Regenerate review guidance for this HEAD; do not guess at the seams and do not suppress them."
+    };
+
     json!({
         "kind": "new_ripr_gap",
         "blocking": true,
@@ -1538,8 +1584,12 @@ fn new_ripr_gap_action(
         "new_unresolved": count,
         "receipt_head_sha": ripr_pr.receipt_head_sha,
         "top_gaps": review.top_gaps,
+        "gaps_named": gaps_named,
+        "evidence": evidence,
+        "guidance_status": review.status,
+        "guidance_error": review.producer_error,
         "suggested_test": NEW_RIPR_GAP_SUGGESTED_TEST,
-        "repair": "Add focused tests that expose the new RIPR seam before merging, then refresh RIPR receipts.",
+        "repair": repair,
         "verify": quality_gate_command(args, true, None),
         "receipt": quality_gate_command(args, false, None),
     })
@@ -1693,6 +1743,16 @@ fn render_markdown(receipt: &Value, args: &QualityGateArgs) -> Result<String> {
         if let Some(clusters) = action.get("recommended_project_clusters").and_then(Value::as_array)
         {
             render_recommended_clusters(&mut markdown, "coverage cluster", clusters);
+        }
+        // An unnamed new-gap failure must not read like a named one. Say
+        // plainly that the seams could not be enumerated, and why.
+        if action.get("gaps_named").and_then(Value::as_bool) == Some(false) {
+            markdown.push_str(
+                "- ripr gaps: **not named** — the count is real but the gate could not enumerate the seams (`NOT_PROVEN`)\n",
+            );
+            if let Some(error) = action.get("guidance_error").and_then(Value::as_str) {
+                markdown.push_str(&format!("- ripr guidance producer failed: `{error}`\n"));
+            }
         }
         if let Some(gaps) = action.get("top_gaps").and_then(Value::as_array) {
             for gap in gaps {

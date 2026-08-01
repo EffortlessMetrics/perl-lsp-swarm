@@ -770,6 +770,126 @@ fn quality_gate_cli_blocks_new_ripr_when_review_guidance_generation_failed_with_
     Ok(())
 }
 
+/// Reproduces the #5026 shape reported in #5459: RIPR counts new seams, the
+/// guidance producer times out, and the required gate blocks with an empty
+/// `top_gaps`. The gate must still fail — the seams are real — but it must say
+/// the list could not be enumerated and why, rather than presenting an empty
+/// list as if the author could act on it.
+#[test]
+fn quality_gate_cli_names_the_instrument_failure_when_new_gaps_cannot_be_enumerated() -> TestResult
+{
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let ripr = dir.path().join("ripr-plus.json");
+    let ripr_pr = dir.path().join("repo-exposure.json");
+    let review = dir.path().join("comments.json");
+    let receipt = dir.path().join("quality-gate.json");
+    let summary = dir.path().join("quality-gate.md");
+    let head = current_head(&root)?;
+
+    write_ripr_plus_receipt(&ripr, &head)?;
+    // 25 is the count #5026 actually reported.
+    write_ripr_pr_receipt(&ripr_pr, &head, 25)?;
+    write_timed_out_review_guidance_receipt(&review, &head, "ripr timed out after 600s")?;
+
+    let output =
+        new_ripr_quality_gate_command(&root, &ripr, &ripr_pr, &review, &receipt, &summary)?
+            .output()?;
+    assert!(
+        !output.status.success(),
+        "the gate must still block — an unnamed gap list is not permission to merge"
+    );
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+    let action = next_action(&payload, "new_ripr_gap")?;
+
+    assert_eq!(action.get("new_unresolved").and_then(Value::as_u64), Some(25));
+    assert_eq!(
+        action.get("gaps_named").and_then(Value::as_bool),
+        Some(false),
+        "an empty top_gaps must be declared unnamed, not left ambiguous: {action}"
+    );
+    assert_eq!(
+        action.get("evidence").and_then(Value::as_str),
+        Some("NOT_PROVEN"),
+        "gaps the gate could not enumerate are absence of evidence: {action}"
+    );
+    assert_eq!(
+        action.get("guidance_error").and_then(Value::as_str),
+        Some("ripr timed out after 600s"),
+        "the producer's own failure message must reach the author: {action}"
+    );
+    assert_eq!(action.get("guidance_status").and_then(Value::as_str), Some("error"));
+    assert!(
+        action.get("repair").and_then(Value::as_str).is_some_and(|repair| repair
+            .contains("did not complete")
+            && repair.contains("do not guess")),
+        "the repair must not tell the author to add tests for seams it refused to name: {action}"
+    );
+
+    // The receipt body carries it too, so downstream consumers do not have to
+    // re-derive the instrument state from the action list.
+    assert_eq!(
+        payload.pointer("/review_guidance/producer_error").and_then(Value::as_str),
+        Some("ripr timed out after 600s")
+    );
+
+    let markdown = fs::read_to_string(&summary)?;
+    assert!(
+        markdown.contains("not named"),
+        "the CI summary a human reads must say the seams were not enumerated: {markdown}"
+    );
+    assert!(
+        markdown.contains("ripr timed out after 600s"),
+        "the CI summary must name the instrument failure: {markdown}"
+    );
+
+    Ok(())
+}
+
+/// Negative control for the test above: when guidance *did* produce actionable
+/// items, the failure must stay a plain named-gap failure. Without this, making
+/// every new-gap failure claim `NOT_PROVEN` would pass the test above.
+#[test]
+fn quality_gate_cli_marks_named_gaps_confirmed_not_unproven() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let ripr = dir.path().join("ripr-plus.json");
+    let ripr_pr = dir.path().join("repo-exposure.json");
+    let review = dir.path().join("comments.json");
+    let receipt = dir.path().join("quality-gate.json");
+    let summary = dir.path().join("quality-gate.md");
+    let head = current_head(&root)?;
+
+    write_ripr_plus_receipt(&ripr, &head)?;
+    write_ripr_pr_receipt(&ripr_pr, &head, 2)?;
+    write_review_guidance_receipt(&review, &head)?;
+
+    new_ripr_quality_gate_command(&root, &ripr, &ripr_pr, &review, &receipt, &summary)?.output()?;
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+    let action = next_action(&payload, "new_ripr_gap")?;
+
+    assert_eq!(action.get("gaps_named").and_then(Value::as_bool), Some(true));
+    assert_eq!(action.get("evidence").and_then(Value::as_str), Some("CONFIRMED"));
+    assert_eq!(action.get("guidance_error"), Some(&Value::Null));
+    assert!(
+        action
+            .get("repair")
+            .and_then(Value::as_str)
+            .is_some_and(|repair| repair.contains("Add focused tests")),
+        "a named-gap failure keeps the actionable add-tests repair: {action}"
+    );
+
+    let markdown = fs::read_to_string(&summary)?;
+    assert!(
+        !markdown.contains("not named"),
+        "a named-gap failure must not claim the seams were unenumerable: {markdown}"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn quality_gate_cli_blocks_new_ripr_when_review_guidance_is_not_actionable() -> TestResult {
     let root = repo_root()?;
@@ -1234,6 +1354,39 @@ fn write_error_review_guidance_receipt(path: &Path, head: &str) -> TestResult {
                 {
                     "kind": "tool_error",
                     "message": "ripr review-comments failed",
+                    "path": null
+                }
+            ]
+        }),
+    )
+}
+
+/// An error receipt whose `tool_error` message is the producer timeout, as
+/// `write_error_review_comments` records it when `run_output_with_timeout`
+/// kills the ripr child process.
+fn write_timed_out_review_guidance_receipt(path: &Path, head: &str, message: &str) -> TestResult {
+    write_json(
+        path,
+        json!({
+            "schema_version": "0.1",
+            "tool": "ripr",
+            "status": "error",
+            "base": "quality-gate-cli-test-base",
+            "base_sha": "quality-gate-cli-test-base-sha",
+            "head": "HEAD",
+            "head_sha": head,
+            "summary": {
+                "comments": 0,
+                "summary_only": 0,
+                "suppressed": 0
+            },
+            "comments": [],
+            "summary_only": [],
+            "suppressed": [],
+            "warnings": [
+                {
+                    "kind": "tool_error",
+                    "message": message,
                     "path": null
                 }
             ]
