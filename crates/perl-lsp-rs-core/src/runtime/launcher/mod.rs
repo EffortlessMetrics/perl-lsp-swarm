@@ -16,7 +16,9 @@ use std::sync::{Once, OnceLock};
 use clap::{Args, Parser};
 pub mod timing;
 pub use crate::features::contracts::trackable_feature_count_for_grid;
-pub use crate::features::grid::{compliance_percent_for_profile, to_json_for_profile};
+pub use crate::features::grid::{
+    compliance_counts_for_profile, compliance_percent_for_profile, to_json_for_profile,
+};
 pub use crate::features::policy::{FeatureProfile, catalog_advertised_feature_ids};
 use crate::features::profile_cli::{feature_profile_supported_tokens, parse_feature_profile_arg};
 use crate::runtime::tuning::{DiagnosticMode, RuntimeMode, RuntimeTuning};
@@ -1124,7 +1126,12 @@ pub fn format_info_output(
     use_color: bool,
 ) -> String {
     let feature_count = catalog_advertised_feature_ids(profile).len();
-    let spec_total = trackable_feature_count_for_grid();
+    // Numerator, denominator, and percent all come from the same helper. The
+    // advertised count above is deliberately not reused here: it includes
+    // features that do not count toward coverage, and using it as the numerator
+    // is what made this line print a fraction that disagreed with its own
+    // percentage.
+    let (covered, spec_total) = compliance_counts_for_profile(profile);
     let coverage = compliance_percent_for_profile(profile);
 
     let mut out = String::with_capacity(256);
@@ -1137,8 +1144,10 @@ pub fn format_info_output(
     out.push_str(&format!("{revision_label:<18}{revision}\n"));
     out.push_str("Parser:           perl-parser v3 (recursive descent)\n");
     out.push_str(&format!("Profile:          {}\n", profile.as_str()));
-    out.push_str(&format!("Features:         {feature_count}/{feature_count} active (100%)\n"));
-    out.push_str(&format!("LSP spec coverage: {feature_count}/{spec_total} ({coverage:.0}%)\n"));
+    // Not `N/N active (100%)`: both sides were the same binding, so the line
+    // could only ever read 100% and told the reader nothing.
+    out.push_str(&format!("Features:         {feature_count} advertised\n"));
+    out.push_str(&format!("LSP spec coverage: {covered}/{spec_total} ({coverage:.0}%)\n"));
     out.push_str(&format!("Executable:       {exe_path}\n"));
     out.push_str("\nTip: run with --log or set PERL_LSP_LOG=1 for diagnostics\n");
 
@@ -1458,7 +1467,7 @@ mod tests {
         );
         assert!(out.contains("0.10.0"));
         assert!(out.contains("perl-parser v3"));
-        assert!(out.contains("active (100%)"));
+        assert!(out.contains("Features:"));
         assert!(out.contains("LSP spec coverage:"));
         assert!(out.contains("/usr/bin/perl-lsp"));
     }
@@ -1478,6 +1487,71 @@ mod tests {
         );
         assert!(out.contains("Git commit:       ba92efb"), "got:\n{out}");
         assert!(!out.contains("Git tag:"), "must not relabel a commit as a tag; got:\n{out}");
+    }
+
+    #[test]
+    fn info_coverage_fraction_evaluates_to_its_printed_percentage() {
+        // The line read `33/60 (53%)` — 33/60 is 55%. The numerator was the raw
+        // advertised count while the percent came from the trackable count.
+        // Recompute the printed percentage from the printed fraction and
+        // require them to agree; restoring the old numerator fails this.
+        let profile = super::FeatureProfile::current();
+        let out = super::format_info_output(
+            "0.17.0",
+            "Git commit:",
+            "9dfdd0b",
+            "/usr/bin/perl-lsp",
+            profile,
+            false,
+        );
+
+        let line = out
+            .lines()
+            .find(|line| line.starts_with("LSP spec coverage:"))
+            .unwrap_or_else(|| panic!("no coverage line in:\n{out}"));
+        let rendered = line.trim_start_matches("LSP spec coverage:").trim();
+        let (fraction, percent) = rendered
+            .split_once(" (")
+            .unwrap_or_else(|| panic!("unexpected coverage format: {line:?}"));
+        let (covered, total) = fraction
+            .split_once('/')
+            .unwrap_or_else(|| panic!("unexpected fraction format: {fraction:?}"));
+
+        let covered: f64 = covered.trim().parse().unwrap_or_else(|_| panic!("{covered:?}"));
+        let total: f64 = total.trim().parse().unwrap_or_else(|_| panic!("{total:?}"));
+        let printed: f64 =
+            percent.trim_end_matches("%)").trim().parse().unwrap_or_else(|_| panic!("{percent:?}"));
+
+        assert!(total > 0.0, "coverage denominator must be positive: {line:?}");
+        let recomputed = (covered / total * 100.0).round();
+        assert!(
+            (recomputed - printed).abs() < f64::EPSILON,
+            "coverage fraction and percentage disagree: {line:?} \
+             — {covered}/{total} is {recomputed}%, printed {printed}%"
+        );
+    }
+
+    #[test]
+    fn info_does_not_compare_a_quantity_against_itself() {
+        // `Features: N/N active (100%)` compared one binding to itself, so it
+        // could only ever print 100% regardless of what was advertised.
+        let out = super::format_info_output(
+            "0.17.0",
+            "Git commit:",
+            "9dfdd0b",
+            "/usr/bin/perl-lsp",
+            super::FeatureProfile::current(),
+            false,
+        );
+        let line = out
+            .lines()
+            .find(|line| line.starts_with("Features:"))
+            .unwrap_or_else(|| panic!("no features line in:\n{out}"));
+        assert!(
+            !line.contains("100%"),
+            "the features line must report a real quantity, not a tautology: {line:?}"
+        );
+        assert!(line.contains("advertised"), "features line should say what it counts: {line:?}");
     }
 
     // ── port_in_use_message ───────────────────────────────────────
