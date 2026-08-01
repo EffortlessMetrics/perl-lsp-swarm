@@ -40,6 +40,39 @@ mod tests {
             .count()
     }
 
+    /// Single observer covering all three calls `parse_statement_inner` makes
+    /// after a statement body is parsed: `finish_statement_terminator` from the
+    /// autoquoted-hash-key path and from the general path, and the
+    /// `drain_pending_heredocs_from` that follows each.
+    ///
+    /// The name is the one RIPR's review guidance asks for at these seams
+    /// (`<caller>_call_presence_observer`); the tests below observe the same
+    /// calls one path at a time, under names that say what they are for.
+    /// Each assertion is an effect of the call, not a restatement of it.
+    #[test]
+    fn parse_statement_inner_call_presence_observer() {
+        // Autoquoted-hash-key path → finish_statement_terminator.
+        assert_eq!(inferred_semicolons("my %h = (if => 1)\nprint \"hi\";\n"), 1);
+        assert_eq!(inferred_semicolons("my %h = (if => 1);\nprint \"hi\";\n"), 0);
+
+        // General path → finish_statement_terminator.
+        assert_eq!(inferred_semicolons("my $x = 1\nprint \"hi\";\n"), 1);
+        assert_eq!(inferred_semicolons("my $x = 1;\nprint \"hi\";\n"), 0);
+
+        // Both paths → drain_pending_heredocs_from: the queued body attaches to
+        // the statement that declared it instead of swallowing the next one.
+        let source = "my $text = <<'EOT';\nline one\nEOT\nprint $text;\n";
+        let mut parser = Parser::new(source);
+        let ast = match parser.parse() {
+            Ok(ast) => ast,
+            Err(error) => unreachable!("heredoc source must parse: {error:?}"),
+        };
+        let NodeKind::Program { statements } = &ast.kind else {
+            unreachable!("parse() returns a Program");
+        };
+        assert_eq!(statements.len(), 2, "statements: {statements:#?}");
+    }
+
     /// The general path: `parse_statement_inner` must reach
     /// `finish_statement_terminator` for an ordinary statement. Observed by the
     /// call's only effect — the `;` is consumed when present, and reported when
