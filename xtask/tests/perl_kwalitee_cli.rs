@@ -227,6 +227,79 @@ fn nightly_profile_scopes_nightly_indicators() -> Result<()> {
     Ok(())
 }
 
+/// Turn `root` into a real single-commit git repo and return its HEAD SHA.
+///
+/// The nightly freshness rule only engages when the evaluated tree stamps a
+/// real commit; `clean_fixture` alone is not a git repo, so it stamps
+/// `"unknown"` and freshness is never asserted.
+fn git_init_commit(root: &Path) -> Result<String> {
+    let git = |args: &[&str]| -> Result<std::process::Output> {
+        let out = std::process::Command::new("git").current_dir(root).args(args).output()?;
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        Ok(out)
+    };
+    git(&["init", "-q"])?;
+    git(&["add", "-A"])?;
+    git(&[
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "user.name=test",
+        "commit",
+        "-q",
+        "-m",
+        "fixture",
+    ])?;
+    let head = git(&["rev-parse", "HEAD"])?;
+    Ok(String::from_utf8(head.stdout)?.trim().to_string())
+}
+
+#[test]
+fn nightly_receipt_from_another_commit_is_not_a_clean_pass() -> Result<()> {
+    // End-to-end wiring proof: a *healthy* nightly receipt stamped at a
+    // different commit describes some other tree, so the advisory indicator
+    // must report `warn`, not `pass`. The same receipt at HEAD passes.
+    let dir = clean_fixture()?;
+    let head = git_init_commit(dir.path())?;
+    let corpus_rel = "target/receipts/format/native-format-corpus.json";
+
+    write(
+        dir.path(),
+        corpus_rel,
+        "{\"kind\":\"native_format_corpus\",\"commit\":\"0000000000000000000000000000000000000000\",\
+         \"passed\":true,\"files_checked\":42}",
+    )?;
+    let stale = report_json(dir.path(), "nightly")?;
+    assert_eq!(
+        stale["commit"], head,
+        "fixture must stamp a real HEAD for this test to mean anything"
+    );
+    assert_eq!(
+        status_of(&stale, "formatter.corpus_idempotent"),
+        "warn",
+        "a healthy receipt from another commit must not report a clean pass",
+    );
+
+    write(
+        dir.path(),
+        corpus_rel,
+        &format!(
+            "{{\"kind\":\"native_format_corpus\",\"commit\":\"{head}\",\
+             \"passed\":true,\"files_checked\":42}}"
+        ),
+    )?;
+    assert_eq!(
+        status_of(&report_json(dir.path(), "nightly")?, "formatter.corpus_idempotent"),
+        "pass",
+        "the same receipt regenerated at HEAD must pass",
+    );
+    Ok(())
+}
+
 #[test]
 fn report_reads_readiness_receipt() -> Result<()> {
     let dir = clean_fixture()?;

@@ -79,23 +79,16 @@ fn native_default(path: Option<&Path>, expected_commit: &str, area: &str, fix: &
         );
     };
 
-    let mut status = map_status(&criterion.status);
     let mut evidence = vec![receipt_ev, EvidenceRef::new("criterion", criterion.name.clone())];
 
     // Freshness: a receipt from a different commit is not trustworthy as a pass.
-    let stale = !expected_commit.is_empty()
-        && expected_commit != "unknown"
-        && !receipt.commit.is_empty()
-        && receipt.commit != expected_commit;
-    if stale {
-        evidence.push(EvidenceRef::new(
-            "note",
-            format!("stale receipt: commit {} != HEAD {}", receipt.commit, expected_commit),
-        ));
-        if status == IndicatorStatus::Pass {
-            status = IndicatorStatus::Warn;
-        }
-    }
+    let status = crate::evidence::apply_freshness(
+        map_status(&criterion.status),
+        &receipt.commit,
+        expected_commit,
+        "commit",
+        &mut evidence,
+    );
 
     match status {
         IndicatorStatus::Pass => Outcome::pass(evidence),

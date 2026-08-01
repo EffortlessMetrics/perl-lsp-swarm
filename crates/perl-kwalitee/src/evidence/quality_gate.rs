@@ -48,7 +48,7 @@ pub(crate) fn no_new_severe_gaps(path: Option<&Path>, expected_commit: &str) -> 
         };
 
     let decision = receipt.decision.trim().to_ascii_lowercase();
-    let mut status = match decision.as_str() {
+    let raw_status = match decision.as_str() {
         "pass" => IndicatorStatus::Pass,
         "fail" => IndicatorStatus::Fail,
         _ => IndicatorStatus::Unverified,
@@ -56,19 +56,13 @@ pub(crate) fn no_new_severe_gaps(path: Option<&Path>, expected_commit: &str) -> 
 
     let mut evidence = vec![receipt_ev, EvidenceRef::new("decision", decision)];
 
-    let stale = !expected_commit.is_empty()
-        && expected_commit != "unknown"
-        && !receipt.head.is_empty()
-        && receipt.head != expected_commit;
-    if stale {
-        evidence.push(EvidenceRef::new(
-            "note",
-            format!("stale receipt: head {} != HEAD {}", receipt.head, expected_commit),
-        ));
-        if status == IndicatorStatus::Pass {
-            status = IndicatorStatus::Warn;
-        }
-    }
+    let status = crate::evidence::apply_freshness(
+        raw_status,
+        &receipt.head,
+        expected_commit,
+        "head",
+        &mut evidence,
+    );
 
     match status {
         IndicatorStatus::Pass => Outcome::pass(evidence),

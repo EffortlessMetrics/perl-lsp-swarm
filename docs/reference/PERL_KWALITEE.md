@@ -80,7 +80,9 @@ table**.
 
 These are non-mandatory and evaluated only under the `nightly` profile. Each
 reads a JSON receipt another xtask task produces; an unhealthy result is a
-`warn` (never a mandatory `fail`), a missing receipt is `unverified`:
+`warn` (never a mandatory `fail`), a missing receipt is `unverified`, and a
+receipt stamped at a commit other than HEAD is `warn` even when its contents
+are healthy (see [receipt freshness](#receipt-freshness)):
 
 - `formatter.corpus_idempotent` ← `native-format-corpus.json` (`passed == true`)
 - `critic.no_false_positives` ← `native-critic-false-positive.json`
@@ -157,9 +159,9 @@ one of three ways:
     `target/receipts/native-tooling/readiness.json`
     (`cargo xtask native-tooling readiness`);
   - `quality.no_new_severe_gaps` ← `target/receipts/quality/quality-gate.json`
-    (`cargo xtask quality-gate`).
-  A receipt whose embedded commit differs from HEAD downgrades a `pass` to
-  `warn` (stale evidence is not trusted).
+    (`cargo xtask quality-gate`);
+  - the four nightly advisory indicators listed above.
+  All of them apply the same freshness rule (below).
 - **external** — the xtask wrapper runs the heavier gate and feeds the result
   in:
   - `release.*` ← `cargo xtask release artifact-check --dist <dir>` (one run,
@@ -169,6 +171,32 @@ one of three ways:
   - `critic.run_critic_registry_parity` ← `cargo test -p perl-lsp-rs --lib
     execute_command::tests::run_critic_native_matches_pull_diagnostics_registry
     -- --exact` (live-workspace only, same as `docs.status_current`).
+
+### Receipt freshness
+
+Every receipt the crate reads records the commit it was generated at
+(`commit`, or `head` for the quality-gate receipt). A receipt stamped at a
+different commit than the evaluated tree's HEAD is evidence about *some other
+tree*, so it never earns a clean pass:
+
+- a `pass` on a stale receipt is downgraded to `warn`;
+- a note naming both commits (`stale receipt: commit <a> != HEAD <b>`) is
+  added to the indicator's evidence;
+- non-pass statuses are left alone — stale evidence never *improves* an
+  outcome.
+
+Freshness is only asserted when both sides name a real commit. An absent field
+and `"unknown"` (the wrapper's placeholder for an unresolvable git HEAD — e.g.
+a `--repo-root` that is not a git top level) are not commits to compare, so the
+status passes through untouched.
+
+The rule applies uniformly to every receipt-backed indicator, including the
+nightly advisory ones. Because those are non-mandatory, a stale nightly receipt
+can only ever produce a `warn` — never a mandatory `fail`. In nightly CI the
+generators run immediately before `report --profile nightly`, so receipts are
+fresh; the rule is what stops a partially-failed generator step, a cached
+`target/` directory, or a stale local run from reporting a pass it cannot
+support.
 
 The authoritative product-surface CI gate remains
 `cargo xtask check-native-product-surface`; the crate mirrors its surface and
