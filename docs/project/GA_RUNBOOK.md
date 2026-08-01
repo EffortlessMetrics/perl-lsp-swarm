@@ -35,14 +35,24 @@ not reintroduce a literal version anywhere in this document.
 Every later step reads `$VERSION`, so run this in the shell you will use for
 the whole release and do not edit versions inline anywhere below.
 
+The mismatch check below exits rather than warning. If you paste it into an
+interactive shell that exit ends the session — that is the intended loud
+failure: reopen, set `VERSION`, and start again. A warning here would scroll
+past and let step 1 rewrite ~190 version sites to the placeholder.
+
 ```bash
 # The version being shipped. Everything else derives from it.
 VERSION="0.0.0"          # ← set this, once
 TAG="v$VERSION"
 
 # It must already match the workspace, which `cargo xtask bump-version` owns.
-test "$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" = "$VERSION" \
-  || { echo "workspace version != $VERSION — run: cargo xtask bump-version $VERSION"; }
+# Halt rather than warn: the case this catches is the placeholder above being
+# left in place, and a warning that scrolls past lets step 1 run
+# `bump-version 0.0.0` across ~190 sites and cut a release nobody asked for.
+if [ "$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" != "$VERSION" ]; then
+  echo "workspace version != $VERSION — run: cargo xtask bump-version $VERSION" >&2
+  exit 1
+fi
 ```
 
 ### 1. Final Version Bump (5 min)
