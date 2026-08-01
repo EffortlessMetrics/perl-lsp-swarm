@@ -194,6 +194,7 @@ pub(crate) struct DecisionFacts {
     pub(crate) subject_complete: bool,
     pub(crate) source_identity_bound: bool,
     pub(crate) governed_target: bool,
+    pub(crate) host_matches_target: bool,
     pub(crate) baseline_flags_clean: bool,
     pub(crate) candidate_flags_exact: bool,
     pub(crate) material_reduction: bool,
@@ -231,6 +232,7 @@ pub(crate) fn decide(facts: &DecisionFacts) -> Recommendation {
         || !facts.subject_complete
         || !facts.source_identity_bound
         || !facts.governed_target
+        || !facts.host_matches_target
         || !facts.baseline_flags_clean
         || !facts.candidate_flags_exact
     {
@@ -346,6 +348,7 @@ mod tests {
             subject_complete: true,
             source_identity_bound: true,
             governed_target: true,
+            host_matches_target: true,
             baseline_flags_clean: true,
             candidate_flags_exact: true,
             material_reduction: true,
@@ -464,6 +467,13 @@ mod tests {
         let delta = size_delta(10_000_000, 9_950_001);
         assert_eq!(delta.reduction_bytes, 49_999);
         assert_eq!(delta.reduction_basis_points, 49);
+    }
+
+    #[test]
+    fn decision_is_not_proven_when_the_host_is_not_the_measured_target() {
+        let mut facts = ready_facts();
+        facts.host_matches_target = false;
+        assert_eq!(decide(&facts), Recommendation::NotProven);
     }
 
     #[test]

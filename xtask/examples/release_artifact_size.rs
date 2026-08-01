@@ -8,7 +8,7 @@
 
 use clap::Parser;
 use color_eyre::eyre::{Result, bail};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[path = "../src/bin/release_artifact_size/measure.rs"]
 mod measure;
@@ -132,7 +132,7 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
     let root = measure::project_root()?;
-    check_distinct_outputs(&root, &args.json, args.markdown.as_deref())?;
+    check_output_paths(&root, &args)?;
     let receipt = evaluate(&root, &args)?;
 
     render::write_json(&root, &args.json, &receipt)?;
@@ -157,20 +157,66 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// The Markdown summary is written after the JSON receipt, so identical
-/// resolved paths would silently replace the machine-readable receipt with
-/// prose. Fail before writing either output.
-fn check_distinct_outputs(root: &Path, json: &Path, markdown: Option<&Path>) -> Result<()> {
-    let Some(markdown) = markdown else {
-        return Ok(());
-    };
-    let json_resolved = measure::resolve_path(root, json);
-    let markdown_resolved = measure::resolve_path(root, markdown);
-    if json_resolved == markdown_resolved {
+/// Resolve against the repository root and then remove `.` and `..`
+/// components, so `out/receipt.json` and `out/sub/../receipt.json` compare
+/// equal. This is lexical on purpose: outputs usually do not exist yet, so
+/// `canonicalize` would fail on exactly the paths that need checking.
+fn normalized_output_path(root: &Path, path: &Path) -> PathBuf {
+    let resolved = measure::resolve_path(root, path);
+    let mut normalized = PathBuf::new();
+    for component in resolved.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+/// Guard both receipt outputs before any evidence is read or written.
+///
+/// The Markdown summary is written after the JSON receipt, so equal paths
+/// would silently replace the machine-readable receipt with prose. An output
+/// aliasing a measured input would destroy the evidence a rerun needs.
+fn check_output_paths(root: &Path, args: &Args) -> Result<()> {
+    let json = normalized_output_path(root, &args.json);
+    let markdown = args.markdown.as_deref().map(|path| normalized_output_path(root, path));
+
+    if markdown.as_ref() == Some(&json) {
         bail!(
             "--json and --markdown resolve to the same path `{}`; give each receipt its own output path",
-            measure::display_path(root, &json_resolved)
+            measure::display_path(root, &json)
         );
+    }
+
+    let mut inputs = vec![
+        args.baseline_archive.clone(),
+        args.candidate_archive.clone(),
+        args.baseline_lsp_smoke.clone(),
+        args.candidate_lsp_smoke.clone(),
+        args.baseline_dap_smoke.clone(),
+        args.candidate_dap_smoke.clone(),
+    ];
+    for directory in [&args.baseline_dir, &args.candidate_dir] {
+        inputs.push(directory.clone());
+        for name in BINARY_NAMES {
+            inputs.push(directory.join(name));
+        }
+    }
+
+    for input in &inputs {
+        let input = normalized_output_path(root, input);
+        for (flag, output) in [("--json", Some(&json)), ("--markdown", markdown.as_ref())] {
+            if output == Some(&input) {
+                bail!(
+                    "{flag} output `{}` is also a measured input; writing it would destroy the evidence this comparison consumed",
+                    measure::display_path(root, &input)
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -254,41 +300,96 @@ fn evaluate(root: &Path, args: &Args) -> Result<Receipt> {
 
 #[cfg(test)]
 mod tests {
-    use super::check_distinct_outputs;
+    use super::{Args, SAFE_ICF_RUSTFLAGS, check_output_paths};
     use std::path::{Path, PathBuf};
+
+    const ROOT: &str = "/repo";
+    const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    fn args(json: &str, markdown: Option<&str>) -> Args {
+        Args {
+            target: "aarch64-apple-darwin".to_string(),
+            baseline_dir: PathBuf::from("evidence/baseline"),
+            candidate_dir: PathBuf::from("evidence/candidate"),
+            baseline_archive: PathBuf::from("evidence/baseline.tar.gz"),
+            candidate_archive: PathBuf::from("evidence/candidate.tar.gz"),
+            baseline_lsp_smoke: PathBuf::from("evidence/baseline-lsp.json"),
+            candidate_lsp_smoke: PathBuf::from("evidence/candidate-lsp.json"),
+            baseline_dap_smoke: PathBuf::from("evidence/baseline-dap.json"),
+            candidate_dap_smoke: PathBuf::from("evidence/candidate-dap.json"),
+            baseline_source_sha: SHA.to_string(),
+            candidate_source_sha: SHA.to_string(),
+            repeat_confirmed: false,
+            minimum_reduction_basis_points: 50,
+            minimum_reduction_bytes: 131_072,
+            maximum_component_growth_basis_points: 25,
+            maximum_component_growth_bytes: 32_768,
+            repeat_required_below_basis_points: 100,
+            baseline_rustflags: String::new(),
+            candidate_rustflags: SAFE_ICF_RUSTFLAGS.to_string(),
+            json: PathBuf::from(json),
+            markdown: markdown.map(PathBuf::from),
+        }
+    }
 
     #[test]
     fn identical_json_and_markdown_paths_are_rejected() {
-        let root = Path::new("/repo");
-        let error = check_distinct_outputs(root, Path::new("receipt"), Some(Path::new("receipt")))
+        let error = check_output_paths(Path::new(ROOT), &args("receipt", Some("receipt")))
             .expect_err("equal output paths must be rejected before writing");
         assert!(error.to_string().contains("same path"), "unexpected error: {error}");
     }
 
     #[test]
     fn equivalent_relative_and_absolute_output_paths_are_rejected() {
-        let root = Path::new("/repo");
         assert!(
-            check_distinct_outputs(
-                root,
-                Path::new("out/receipt.json"),
-                Some(&PathBuf::from("/repo/out/receipt.json")),
+            check_output_paths(
+                Path::new(ROOT),
+                &args("out/receipt.json", Some("/repo/out/receipt.json")),
             )
             .is_err()
         );
     }
 
     #[test]
-    fn distinct_or_absent_markdown_paths_are_accepted() {
-        let root = Path::new("/repo");
+    fn output_paths_aliased_through_dot_segments_are_rejected() {
         assert!(
-            check_distinct_outputs(
-                root,
-                Path::new("out/receipt.json"),
-                Some(Path::new("out/receipt.md")),
+            check_output_paths(
+                Path::new(ROOT),
+                &args("out/receipt.json", Some("out/sub/../receipt.json")),
+            )
+            .is_err()
+        );
+        assert!(
+            check_output_paths(
+                Path::new(ROOT),
+                &args("./out/receipt.json", Some("out/receipt.md"))
             )
             .is_ok()
         );
-        assert!(check_distinct_outputs(root, Path::new("out/receipt.json"), None).is_ok());
+    }
+
+    #[test]
+    fn an_output_that_aliases_a_measured_input_is_rejected() {
+        for aliased in [
+            "evidence/baseline.tar.gz",
+            "evidence/candidate-dap.json",
+            "evidence/baseline/perllsp",
+            "evidence/candidate/perl-dap",
+            "evidence/baseline/../baseline/perllsp",
+        ] {
+            assert!(
+                check_output_paths(Path::new(ROOT), &args(aliased, None)).is_err(),
+                "`{aliased}` must be rejected as an output path"
+            );
+        }
+    }
+
+    #[test]
+    fn distinct_or_absent_markdown_paths_are_accepted() {
+        assert!(
+            check_output_paths(Path::new(ROOT), &args("out/receipt.json", Some("out/receipt.md")))
+                .is_ok()
+        );
+        assert!(check_output_paths(Path::new(ROOT), &args("out/receipt.json", None)).is_ok());
     }
 }

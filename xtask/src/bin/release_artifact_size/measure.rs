@@ -352,6 +352,10 @@ pub(crate) fn recommend(
         subject_complete,
         source_identity_bound: comparison.source_identity_bound,
         governed_target: GOVERNED_TARGETS.contains(&target),
+        // #5432 measures each target on its own native runner. A host that is
+        // not the measured target means the artifacts were cross-built and the
+        // smoke receipts cannot have run on the claimed platform.
+        host_matches_target: subject.host == target,
         baseline_flags_clean: baseline_rustflags.trim().is_empty(),
         candidate_flags_exact: candidate_rustflags.trim() == SAFE_ICF_RUSTFLAGS,
         material_reduction: comparison.material_reduction,
@@ -384,6 +388,12 @@ pub(crate) fn recommend(
         || !facts.candidate_smoke_identity
     {
         limitations.push("required artifact or subject identity is incomplete".to_string());
+    } else if !facts.host_matches_target {
+        limitations.push(format!(
+            "measurement host `{}` is not the measured target `{target}`; safe-ICF evidence must \
+             be produced on the native runner",
+            subject.host
+        ));
     } else if !facts.governed_target {
         limitations.push(format!(
             "safe-ICF adoption policy is limited to the governed targets {}",
