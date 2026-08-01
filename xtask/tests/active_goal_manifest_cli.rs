@@ -21,9 +21,12 @@ fn check_active_goal_manifest_emits_only_the_inert_retirement_receipt() -> Resul
     assert_eq!(output.status.code(), Some(0), "retired compatibility command must always exit 0");
 
     let stdout = String::from_utf8(output.stdout)?;
+    // Compare exact bytes, including the single trailing newline. Trimming
+    // trailing newlines would let an extra `println!()` slip past a pin whose
+    // whole purpose is to enforce "exactly one inert line".
     assert_eq!(
-        stdout.trim_end_matches('\n'),
-        EXPECTED_RECEIPT,
+        stdout,
+        format!("{EXPECTED_RECEIPT}\n"),
         "retirement receipt drifted; the command must emit exactly one inert line"
     );
 
