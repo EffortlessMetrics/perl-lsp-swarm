@@ -331,14 +331,13 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn workspace_index_stale_for_document_false_when_document_is_not_open()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn workspace_index_stale_for_document_false_when_document_is_not_open() {
         let server = LspServer::new();
 
-        if server.workspace_index_stale_for_document("file:///workspace/missing.pl") {
-            return Err("missing open document must not be treated as stale".into());
-        }
-        Ok(())
+        assert!(
+            !server.workspace_index_stale_for_document("file:///workspace/missing.pl"),
+            "missing open document must not be treated as stale"
+        );
     }
 
     #[test]
@@ -352,12 +351,10 @@ mod tests {
         server.test_replace_document_without_index(uri, text, 2).map_err(std::io::Error::other)?;
         server.index_coordinator = None;
 
-        if server.workspace_index_stale_for_document(uri) {
-            return Err(
-                "missing coordinator must fail closed to non-stale rather than blocking local providers"
-                    .into(),
-            );
-        }
+        assert!(
+            !server.workspace_index_stale_for_document(uri),
+            "missing coordinator must fail closed to non-stale rather than blocking local providers"
+        );
 
         Ok(())
     }
@@ -371,14 +368,15 @@ mod tests {
 
         server.test_apply_did_open(uri, text, 1)?;
 
-        if server.document_generation(uri) != Some(0) {
-            return Err(
-                "didOpen must start at document_generation == 0 before any didChange".into()
-            );
-        }
-        if server.workspace_index_stale_for_document(uri) {
-            return Err("document_generation == 0 must never be reported as stale".into());
-        }
+        assert_eq!(
+            server.document_generation(uri),
+            Some(0),
+            "didOpen must start at document_generation == 0 before any didChange"
+        );
+        assert!(
+            !server.workspace_index_stale_for_document(uri),
+            "document_generation == 0 must never be reported as stale"
+        );
 
         Ok(())
     }
@@ -403,22 +401,19 @@ mod tests {
             .index_file_with_generation(url::Url::parse(target_uri)?, target_v1.to_string(), 0)
             .map_err(std::io::Error::other)?;
 
+        let target_v2 = "package Target;\nsub new_target {}\n";
         server
-            .test_replace_document_without_index(
-                target_uri,
-                "package Target;\nsub new_target {}\n",
-                2,
-            )
+            .test_replace_document_without_index(target_uri, target_v2, 2)
             .map_err(std::io::Error::other)?;
 
-        if server.workspace_index_stale_for_document(caller_uri) {
-            return Err(
-                "the unchanged caller must not be reported stale by the per-document helper".into(),
-            );
-        }
-        if !server.workspace_index_stale_for_any_open_document() {
-            return Err("an edited definition target must block cross-file index navigation".into());
-        }
+        assert!(
+            !server.workspace_index_stale_for_document(caller_uri),
+            "the unchanged caller must not be reported stale by the per-document helper"
+        );
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "an edited definition target must block cross-file index navigation"
+        );
 
         Ok(())
     }
@@ -444,9 +439,10 @@ mod tests {
             .index_file_with_generation(url::Url::parse(target_uri)?, target_text.to_string(), 1)
             .map_err(std::io::Error::other)?;
 
-        if server.workspace_index_stale_for_any_open_document() {
-            return Err("a current indexed snapshot must not block navigation".into());
-        }
+        assert!(
+            !server.workspace_index_stale_for_any_open_document(),
+            "a current indexed snapshot must not block navigation"
+        );
 
         Ok(())
     }
@@ -456,15 +452,18 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let mut server = LspServer::new();
         let uri = "file:///workspace/no-cross-file-index.pl";
+
         server.test_apply_did_open(uri, "my $value = 1;\n", 1)?;
         server
             .test_replace_document_without_index(uri, "my $value = 2;\n", 2)
             .map_err(std::io::Error::other)?;
         server.index_coordinator = None;
 
-        if server.workspace_index_stale_for_any_open_document() {
-            return Err("missing coordinator must not block navigation".into());
-        }
+        assert!(
+            !server.workspace_index_stale_for_any_open_document(),
+            "missing coordinator must not block navigation"
+        );
+
         Ok(())
     }
 
@@ -483,9 +482,11 @@ mod tests {
         coordinator.index().remove_file(uri);
         server.test_replace_document_without_index(uri, text, 2).map_err(std::io::Error::other)?;
 
-        if !server.workspace_index_stale_for_any_open_document() {
-            return Err("an eligible document without an indexed snapshot must be stale".into());
-        }
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "an eligible document without an indexed snapshot must be stale"
+        );
+
         Ok(())
     }
 
@@ -503,9 +504,11 @@ mod tests {
             .ok_or("test server must have an index coordinator")?;
         coordinator.index().remove_file(uri);
 
-        if server.workspace_index_stale_for_any_open_document() {
-            return Err("generation zero without an indexed snapshot must not be stale".into());
-        }
+        assert!(
+            !server.workspace_index_stale_for_any_open_document(),
+            "generation zero without an indexed snapshot must not be stale"
+        );
+
         Ok(())
     }
 
@@ -514,23 +517,27 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let uri = "file:///workspace/templates/welcome.html.ep";
-
-        server.test_handle_did_open(Some(json!({
+        let opened = json!({
             "textDocument": {
                 "uri": uri,
                 "languageId": "html",
                 "version": 1,
                 "text": "<div><%= $name %></div>"
             }
-        })))?;
-        server.test_handle_did_change(Some(json!({
+        });
+        let changed = json!({
             "textDocument": { "uri": uri, "version": 2 },
             "contentChanges": [{ "text": "<div><%= $title %></div>" }]
-        })))?;
+        });
 
-        if server.workspace_index_stale_for_any_open_document() {
-            return Err("intentionally unindexed documents must not block navigation".into());
-        }
+        server.test_handle_did_open(Some(opened))?;
+        server.test_handle_did_change(Some(changed))?;
+
+        assert!(
+            !server.workspace_index_stale_for_any_open_document(),
+            "intentionally unindexed documents must not block navigation"
+        );
+
         Ok(())
     }
 
@@ -557,15 +564,21 @@ mod tests {
             .index_file_with_generation(url::Url::parse(uri)?, text.to_string(), 7)
             .map_err(std::io::Error::other)?;
 
-        if server.document_generation(uri) != Some(1) {
-            return Err("the edited document must be at generation 1".into());
-        }
-        if coordinator.index().indexed_generation(uri) != Some(7) {
-            return Err("the index entry must be ahead of the open document".into());
-        }
-        if server.workspace_index_stale_for_any_open_document() {
-            return Err("an index entry ahead of the open document must not be stale".into());
-        }
+        assert_eq!(
+            server.document_generation(uri),
+            Some(1),
+            "the edited document must be at generation 1"
+        );
+        assert_eq!(
+            coordinator.index().indexed_generation(uri),
+            Some(7),
+            "the index entry must be ahead of the open document"
+        );
+        assert!(
+            !server.workspace_index_stale_for_any_open_document(),
+            "an index entry ahead of the open document must not be stale"
+        );
+
         Ok(())
     }
 
@@ -596,24 +609,27 @@ mod tests {
 
         // Real production edit that drives the binary guard: generation is
         // bumped, `parsed` is reset to `None`, and no re-index is scheduled.
-        server.test_handle_did_change(Some(json!({
+        let changed = json!({
             "textDocument": { "uri": uri, "version": 2 },
             "contentChanges": [{ "text": "package BecomesUnparseable;\u{0000}\n" }]
-        })))?;
+        });
+        server.test_handle_did_change(Some(changed))?;
 
-        if server.document_generation(uri) != Some(1) {
-            return Err("the edit must advance the open document generation".into());
-        }
-        if coordinator.index().indexed_generation(uri) != Some(0) {
-            return Err(
-                "the pre-edit index entry must still be present at its older generation".into()
-            );
-        }
-        if !server.workspace_index_stale_for_any_open_document() {
-            return Err(
-                "an indexed document edited into an unindexable state must remain stale".into()
-            );
-        }
+        assert_eq!(
+            server.document_generation(uri),
+            Some(1),
+            "the edit must advance the open document generation"
+        );
+        assert_eq!(
+            coordinator.index().indexed_generation(uri),
+            Some(0),
+            "the pre-edit index entry must still be present at its older generation"
+        );
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "an indexed document edited into an unindexable state must remain stale"
+        );
+
         Ok(())
     }
 }
