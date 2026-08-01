@@ -4,6 +4,6 @@ kind: Fixed
 body: "`perllsp --check` no longer reports `ok` for a file with a missing statement-terminating semicolon. The parser treated the `;` as optional at the end of every statement, so `my $x = 1` followed by `print \"hi\";` — the most common Perl syntax error there is — parsed clean and the check exited 0 on source real `perl` rejects. A statement followed on a later line by another statement, with no `;` between them, is now reported by both `--check` and the editor, while the two omissions Perl permits (before a closing `}`, and at end of file) stay clean. Measured against every Perl file in the repository: zero files that `perl -c` accepts are flagged."
 time: 2026-08-01T00:00:00Z
 custom:
-  PR: "5487"
+  PR: "5503"
   Slug: missing-statement-semicolon-5474
   Breaking: "no"
