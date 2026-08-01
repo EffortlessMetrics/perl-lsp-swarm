@@ -545,7 +545,7 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
 
-        if Self::is_compound_statement(stmt) {
+        if Self::is_brace_terminated_statement(stmt) {
             return Ok(());
         }
 
@@ -618,6 +618,24 @@ impl<'a> Parser<'a> {
     /// (verified: `perl -c` rejects it). Without this, `{ ... }\nfor my $x (...) { }`
     /// would be misread as `{ ... } for my` (postfix-for with `my` as the iterator
     /// expression), causing the `for my $x (LIST) { BLOCK }` form to fail.
+    /// Whether this statement ends with its own closing brace, and so needs no
+    /// `;`.
+    ///
+    /// Narrower than [`Self::is_compound_statement`] in exactly one place:
+    /// `package NAME;` and `package NAME VERSION;` are ordinary statements that
+    /// require a terminator, and only `package NAME { … }` is brace-terminated.
+    /// The two predicates are not the same question — a `package` statement
+    /// cannot take a postfix modifier in either form, which is what the
+    /// compound-statement check is for, but only the block form ends itself.
+    /// Sharing one predicate left `package Foo` followed by another statement
+    /// reported as `ok` while `perl -c` rejects it (found in review, #5503).
+    fn is_brace_terminated_statement(node: &Node) -> bool {
+        if let NodeKind::Package { block, .. } = &node.kind {
+            return block.is_some();
+        }
+        Self::is_compound_statement(node)
+    }
+
     fn is_compound_statement(node: &Node) -> bool {
         matches!(
             node.kind,

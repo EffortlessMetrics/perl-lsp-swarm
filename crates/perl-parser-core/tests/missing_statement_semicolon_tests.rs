@@ -118,6 +118,19 @@ fn class_and_method_declarations_need_no_terminator() {
     assert_eq!(missing_semicolons(source), 0);
 }
 
+/// `package NAME;` is an ordinary statement and needs its terminator; only
+/// `package NAME { … }` ends itself. Both forms are barred from postfix
+/// modifiers, which is a different question — sharing one predicate for the two
+/// left `package Foo` followed by another statement reported as `ok` while
+/// `perl -c` rejects it (found in review, #5503).
+#[test]
+fn only_the_block_form_of_package_ends_itself() {
+    assert_eq!(missing_semicolons("package Foo\nprint \"hi\";\n"), 1);
+    assert_eq!(missing_semicolons("package Foo 1.0\nprint \"hi\";\n"), 1);
+    assert_eq!(missing_semicolons("package Foo;\nprint \"hi\";\n"), 0);
+    assert_eq!(missing_semicolons("package Foo {\n    sub f { 1 }\n}\nprint \"hi\";\n"), 0);
+}
+
 /// Statement modifiers bind to the statement they follow; the terminator check
 /// runs after them, not instead of them.
 #[test]
