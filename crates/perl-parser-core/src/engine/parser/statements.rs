@@ -568,8 +568,48 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
 
-        let statement_end = self.previous_position();
-        let location = self.current_position();
+        // A token that cannot begin a statement means the parser stopped in the
+        // middle of one, not that the user omitted a terminator.
+        //
+        // `File/Copy.pm:175` is the measured case: `copy($from, $to)` and its
+        // continuation `or goto fail_inner;` are one statement wrapped across a
+        // newline, and no Perl statement begins with `or`. Crossing a line
+        // boundary is necessary but not sufficient — this is what makes it
+        // sufficient (found in review, #5503).
+        if Self::cannot_begin_a_statement(self.peek_kind()) {
+            return Ok(());
+        }
+
+        // `use`/`no` import lists are not fully modelled — `no warnings qw(…)`,
+        // multi-line `use overload …` (`autodie/exception.pm:17`) and
+        // `use constant NAME => …` all stop early today. The seam cannot tell
+        // those from a real missing `;`, so it does not police pragmas.
+        if matches!(stmt.kind, NodeKind::Use { .. } | NodeKind::No { .. }) {
+            return Ok(());
+        }
+
+        // Heredoc bodies are collected out of band, so the parser's position is
+        // not trustworthy for a statement that declared one. The AST check alone
+        // is not enough: when the introducer follows an unknown bareword
+        // (`_sprintf562 <<'CODE'`, `ExtUtils/MM_Any.pm:1779`) the lexer emits a
+        // left shift, so no `Heredoc` node exists even though the body lines are
+        // still in the token stream. Scanning the statement's own source span
+        // catches that case too.
+        if !self.pending_heredocs.is_empty()
+            || Self::contains_heredoc(stmt)
+            || self.statement_span_has_heredoc_introducer(stmt)
+        {
+            return Ok(());
+        }
+
+        // A statement that is nothing but a bare identifier is the signature of
+        // a heredoc terminator leaking into the token stream after an
+        // introducer the lexer did not recognise. Real programs essentially
+        // never contain a lone bareword statement, so declining to police this
+        // shape costs no coverage.
+        if Self::is_bare_identifier_statement(stmt) {
+            return Ok(());
+        }
 
         // Only report when the leftover token begins a later line.
         //
@@ -586,17 +626,144 @@ impl<'a> Parser<'a> {
         // false negatives — `my $x = 1 print "hi";` on one line is missed —
         // for no false positives, which is the correct direction for a check
         // that gates a release.
-        let gap = self.src_bytes.get(statement_end..location).unwrap_or_default();
-        if !gap.contains(&b'\n') {
+        if !self.line_break_precedes_current_token() {
             return Ok(());
         }
 
+        let location = self.current_position();
         self.errors.push(ParseError::Recovered {
             site: RecoverySite::Statement,
             kind: RecoveryKind::InferredSemicolon,
             location,
         });
         Ok(())
+    }
+
+    /// Whether only whitespace containing at least one newline separates the
+    /// previous token from the one the parser is positioned on.
+    ///
+    /// Scans the raw source backwards rather than trusting
+    /// `previous_position()`. `last_end_position` is only updated by
+    /// `consume_token()`/`expect()`, and several expression paths take tokens
+    /// straight off the stream, so it lags behind the real end of the statement
+    /// — on `my $x = 1` it sits at the end of `$x`, not of `1`. A window keyed
+    /// on it is wider than the actual gap and can contain a newline that is not
+    /// between the statement and the leftover token (found in review, #5503).
+    fn line_break_precedes_current_token(&mut self) -> bool {
+        let start = self.current_position().min(self.src_bytes.len());
+        self.src_bytes[..start]
+            .iter()
+            .rev()
+            .take_while(|byte| byte.is_ascii_whitespace())
+            .any(|&byte| byte == b'\n')
+    }
+
+    /// Whether this token can never be the first token of a Perl statement.
+    ///
+    /// Infix, postfix and separator tokens all mean the same thing at the
+    /// terminator seam: the parser stopped inside an expression. Reporting a
+    /// missing `;` there blames the user for our gap.
+    fn cannot_begin_a_statement(kind: Option<TokenKind>) -> bool {
+        matches!(
+            kind,
+            Some(
+                TokenKind::WordAnd
+                    | TokenKind::WordOr
+                    | TokenKind::WordXor
+                    | TokenKind::And
+                    | TokenKind::Or
+                    | TokenKind::DefinedOr
+                    | TokenKind::Assign
+                    | TokenKind::Plus
+                    | TokenKind::Star
+                    | TokenKind::Slash
+                    | TokenKind::Percent
+                    | TokenKind::Power
+                    | TokenKind::LeftShift
+                    | TokenKind::RightShift
+                    | TokenKind::BitwiseAnd
+                    | TokenKind::BitwiseOr
+                    | TokenKind::BitwiseXor
+                    | TokenKind::PlusAssign
+                    | TokenKind::MinusAssign
+                    | TokenKind::StarAssign
+                    | TokenKind::SlashAssign
+                    | TokenKind::PercentAssign
+                    | TokenKind::DotAssign
+                    | TokenKind::AndAssign
+                    | TokenKind::OrAssign
+                    | TokenKind::XorAssign
+                    | TokenKind::PowerAssign
+                    | TokenKind::LeftShiftAssign
+                    | TokenKind::RightShiftAssign
+                    | TokenKind::LogicalAndAssign
+                    | TokenKind::LogicalOrAssign
+                    | TokenKind::DefinedOrAssign
+                    | TokenKind::Equal
+                    | TokenKind::NotEqual
+                    | TokenKind::Match
+                    | TokenKind::NotMatch
+                    | TokenKind::SmartMatch
+                    | TokenKind::Less
+                    | TokenKind::Greater
+                    | TokenKind::LessEqual
+                    | TokenKind::GreaterEqual
+                    | TokenKind::Spaceship
+                    | TokenKind::StringCompare
+                    | TokenKind::Arrow
+                    | TokenKind::FatArrow
+                    | TokenKind::Dot
+                    | TokenKind::Range
+                    | TokenKind::DoubleColon
+                    | TokenKind::Question
+                    | TokenKind::Colon
+                    | TokenKind::Comma
+                    | TokenKind::Semicolon
+                    | TokenKind::RightParen
+                    | TokenKind::RightBracket
+            )
+        )
+    }
+
+    /// Whether the statement is a single bare identifier — the signature of a
+    /// heredoc terminator that leaked into the token stream.
+    fn is_bare_identifier_statement(node: &Node) -> bool {
+        match &node.kind {
+            NodeKind::Identifier { .. } => true,
+            NodeKind::ExpressionStatement { expression } => {
+                matches!(expression.kind, NodeKind::Identifier { .. })
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the subtree declares a heredoc.
+    fn contains_heredoc(node: &Node) -> bool {
+        matches!(node.kind, NodeKind::Heredoc { .. })
+            || node.children().into_iter().any(Self::contains_heredoc)
+    }
+
+    /// Whether the source the statement spans contains a heredoc introducer
+    /// (`<<"X"`, `<<'X'`, `<<X`, `<<~X`).
+    ///
+    /// A bare `<<` used as left shift (`1 << 2`) is followed by whitespace or a
+    /// digit and is deliberately not matched, so shift expressions stay policed.
+    fn statement_span_has_heredoc_introducer(&mut self, stmt: &Node) -> bool {
+        let end = self.current_position().min(self.src_bytes.len());
+        let start = stmt.location.start.min(end);
+        let span = &self.src_bytes[start..end];
+
+        span.windows(2).enumerate().any(|(index, pair)| {
+            if pair != b"<<" {
+                return false;
+            }
+            let mut rest = span[index + 2..].iter();
+            let next = match rest.next() {
+                Some(b'~') => rest.next(),
+                other => other,
+            };
+            matches!(next, Some(b'"' | b'\'' | b'`' | b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+        })
     }
 
     /// Mark that we're no longer at statement start (called after consuming statement head)
@@ -609,15 +776,6 @@ impl<'a> Parser<'a> {
         matches!(self.peek_kind(), Some(k) if Self::is_stmt_modifier_kind(k))
     }
 
-    /// Returns true if the node is a compound statement that cannot take a postfix modifier.
-    /// In Perl, compound statements (if/while/for/foreach/given/default/try/sub/package)
-    /// are terminated by their own closing brace — a modifier keyword that follows is a
-    /// new top-level statement, not a modifier on the compound statement.
-    ///
-    /// A bare `Block` is also compound: `{ ... } for @arr` is a syntax error in Perl
-    /// (verified: `perl -c` rejects it). Without this, `{ ... }\nfor my $x (...) { }`
-    /// would be misread as `{ ... } for my` (postfix-for with `my` as the iterator
-    /// expression), causing the `for my $x (LIST) { BLOCK }` form to fail.
     /// Whether this statement ends with its own closing brace, and so needs no
     /// `;`.
     ///
@@ -636,6 +794,19 @@ impl<'a> Parser<'a> {
         Self::is_compound_statement(node)
     }
 
+    /// Returns true if the node is a compound statement that cannot take a postfix modifier.
+    /// In Perl, compound statements (if/while/for/foreach/given/default/try/sub/package)
+    /// are terminated by their own closing brace — a modifier keyword that follows is a
+    /// new top-level statement, not a modifier on the compound statement.
+    ///
+    /// A bare `Block` is also compound: `{ ... } for @arr` is a syntax error in Perl
+    /// (verified: `perl -c` rejects it). Without this, `{ ... }\nfor my $x (...) { }`
+    /// would be misread as `{ ... } for my` (postfix-for with `my` as the iterator
+    /// expression), causing the `for my $x (LIST) { BLOCK }` form to fail.
+    ///
+    /// Not the same question as [`Self::is_brace_terminated_statement`]: this one
+    /// answers "can a postfix modifier follow", which is false for `package` in
+    /// both its statement and block forms.
     fn is_compound_statement(node: &Node) -> bool {
         matches!(
             node.kind,
