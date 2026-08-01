@@ -2781,6 +2781,12 @@ pub enum HirKind {
     ClassDecl(ClassDecl),
     /// `defer { ... }` shell (Perl 5.36+ experimental, stable in 5.40).
     DeferExpr(DeferExpr),
+    /// Heredoc literal shell (`<<EOF`, `<<~EOF`, ``<<`CMD` ``).
+    HeredocExpr(HeredocExpr),
+    /// Readline shell (`<STDIN>`, `<$fh>`, `<>`, `<<>>`).
+    ReadlineExpr(ReadlineExpr),
+    /// Glob shell (`<*.txt>`).
+    GlobExpr(GlobExpr),
 }
 
 impl HirKind {
@@ -2798,6 +2804,8 @@ impl HirKind {
         "DeferExpr",
         "DerefExpr",
         "DynamicBoundary",
+        "GlobExpr",
+        "HeredocExpr",
         "IndirectCallExpr",
         "LiteralExpr",
         "LoopShell",
@@ -2805,6 +2813,7 @@ impl HirKind {
         "MethodCallExpr",
         "MethodDecl",
         "PackageDecl",
+        "ReadlineExpr",
         "RegexExpr",
         "RequireDecl",
         "StatementModifierShell",
@@ -2961,6 +2970,68 @@ pub struct IndirectCallExpr {
 pub struct BarewordExpr {
     /// Bareword text as parsed.
     pub name: String,
+}
+
+/// Heredoc literal shell payload (`<<EOF`, `<<~EOF`, ``<<`CMD` ``).
+///
+/// First slice: the heredoc body text itself is not copied into HIR. The body
+/// is addressable through [`HeredocExpr::body_range`] when the parser recorded
+/// one, so consumers read it from the source buffer instead of holding a second
+/// copy of a potentially large literal.
+///
+/// `command` marks the ``<<`CMD` `` form, which runs its body through the shell
+/// at runtime. That is a runtime effect, not a static string value; consumers
+/// must not treat a command heredoc as a known literal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HeredocExpr {
+    /// Terminator token as written (`EOF`, `"EOF"`, `` `CMD` ``, …).
+    pub delimiter: String,
+    /// Whether the body interpolates variables (`<<"EOF"` / bare `<<EOF`).
+    pub interpolated: bool,
+    /// Whether the indented form (`<<~EOF`) was used.
+    pub indented: bool,
+    /// Whether this is a command heredoc (``<<`CMD` ``) executed at runtime.
+    pub command: bool,
+    /// Source range of the heredoc body, when the parser recorded one.
+    pub body_range: Option<SourceLocation>,
+}
+
+/// Readline expression shell payload (`<STDIN>`, `<$fh>`, `<>`, `<<>>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ReadlineExpr {
+    /// Where the lines come from.
+    pub source: ReadlineSource,
+    /// Filehandle text as parsed (`STDIN`, `$fh`), absent for the diamond forms.
+    pub filehandle: Option<String>,
+}
+
+/// Line source selected by a [`ReadlineExpr`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ReadlineSource {
+    /// Bareword filehandle such as `<STDIN>` or `<FH>`.
+    NamedHandle,
+    /// Scalar holding a filehandle, such as `<$fh>`.
+    ScalarHandle,
+    /// Diamond form (`<>` or `<<>>`): reads the files named in `@ARGV`, or
+    /// `STDIN` when `@ARGV` is empty. The read set is a runtime property.
+    ArgvDiamond,
+}
+
+/// Glob expression shell payload (`<*.txt>`).
+///
+/// Only the angle-bracket form reaches this shell; `glob("...")` is parsed as a
+/// function call and lowers to [`CallExpr`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct GlobExpr {
+    /// Glob pattern as parsed, without the surrounding angle brackets.
+    pub pattern: String,
+    /// Whether the pattern interpolates (`<$dir/*.txt>`). An interpolating
+    /// pattern has no statically known match set.
+    pub interpolated: bool,
 }
 
 /// Regex literal shell payload (`/pattern/modifiers` or `qr/pattern/modifiers`).

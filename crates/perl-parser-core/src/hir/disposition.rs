@@ -182,6 +182,10 @@ pub fn hir_kinds_for(ast_kind: &str) -> &'static [&'static str] {
         "Try" => &["TryExpr"],
         "Class" => &["ClassDecl"],
         "Defer" => &["DeferExpr"],
+        "Heredoc" => &["HeredocExpr"],
+        "Readline" => &["ReadlineExpr"],
+        "Diamond" => &["ReadlineExpr"],
+        "Glob" => &["GlobExpr"],
         _ => &[],
     }
 }
@@ -281,6 +285,38 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
             "Lowered and updates package context plus package scope."
         ),
         "String" => disp!(true, false, false, false, true, "Lowered as string literal shell."),
+        "Heredoc" => disp!(
+            true,
+            false,
+            false,
+            false,
+            true,
+            "Lowered as heredoc shell with delimiter, interpolation, indent, and command facts; the body stays addressable by range."
+        ),
+        "Readline" => disp!(
+            true,
+            false,
+            false,
+            false,
+            true,
+            "Lowered as readline shell classified as a named or scalar filehandle."
+        ),
+        "Diamond" => disp!(
+            true,
+            false,
+            false,
+            false,
+            true,
+            "`<>`/`<<>>` lowered as a readline shell reading the `@ARGV` diamond source."
+        ),
+        "Glob" => disp!(
+            true,
+            false,
+            false,
+            false,
+            true,
+            "Angle-bracket glob lowered as a glob shell recording whether the pattern interpolates."
+        ),
         "Subroutine" => disp!(
             true,
             true,
@@ -693,10 +729,6 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
         "ChainedComparison" => {
             disp!(false, false, true, false, false, "No first-slice HIR shell yet.")
         }
-        "Heredoc" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
-        "Readline" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
-        "Glob" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
-        "Diamond" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "Ellipsis" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "Typeglob" => disp!(
             false,

@@ -17,16 +17,17 @@ use super::model::{
     CompileEnvironmentBoundary, CompileEnvironmentBoundaryKind, CompilePhase, CompilePhaseBlock,
     CompileProvenance, ControlTransfer, ControlTransferKind, DeferExpr, DerefAggregateKind,
     DerefExpr, DerefOperandKind, DynamicBoundary, DynamicBoundaryKind, ExportDeclaration,
-    ExportDeclarationKind, GlobSlot, GlobSlotKind, GlobSlotSource, HIR_BODY_MODEL_VERSION,
-    HirBindingId, HirFile, HirId, HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact,
-    IncRootKind, IndirectCallExpr, InheritanceSource, LiteralExpr, LiteralKind, LoopKind,
-    LoopShell, MatchExpr, MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind,
-    ModuleResolutionStatus, PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind,
-    PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable, RecoveryConfidence, RegexExpr,
-    RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence,
-    StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
-    StatementModifierKind, StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr,
-    TransliterationExpr, TryExpr, UseDecl, VariableBinding, VariableDecl,
+    ExportDeclarationKind, GlobExpr, GlobSlot, GlobSlotKind, GlobSlotSource,
+    HIR_BODY_MODEL_VERSION, HeredocExpr, HirBindingId, HirFile, HirId, HirItem, HirKind,
+    HirScopeId, IncRootAction, IncRootFact, IncRootKind, IndirectCallExpr, InheritanceSource,
+    LiteralExpr, LiteralKind, LoopKind, LoopShell, MatchExpr, MethodCallExpr, MethodDecl,
+    ModuleRequest, ModuleRequestKind, ModuleResolutionStatus, PackageDecl, PackageInheritanceEdge,
+    PackageStash, PragmaArgumentKind, PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable,
+    ReadlineExpr, ReadlineSource, RecoveryConfidence, RegexExpr, RegexTargetKind, RequireDecl,
+    ScopeFrame, ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary,
+    StashDynamicBoundaryKind, StashGraph, StashProvenance, StatementModifierKind,
+    StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr, TransliterationExpr, TryExpr,
+    UseDecl, VariableBinding, VariableDecl,
 };
 
 /// Lower a parser AST into first-slice HIR items plus canonical body arenas.
@@ -507,6 +508,66 @@ impl Lowerer {
                         interpolated: Some(*interpolated),
                         element_count: None,
                         pair_count: None,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+            }
+            NodeKind::Heredoc { delimiter, interpolated, indented, command, body_span, .. } => {
+                // The body text stays in the source buffer; `body_range` is the
+                // handle to it. A command heredoc (`<<`CMD``) runs the shell at
+                // runtime, so `command` marks it as a non-literal value.
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::HeredocExpr(HeredocExpr {
+                        delimiter: delimiter.clone(),
+                        interpolated: *interpolated,
+                        indented: *indented,
+                        command: *command,
+                        body_range: *body_span,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+            }
+            NodeKind::Readline { filehandle } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::ReadlineExpr(ReadlineExpr {
+                        source: readline_source(filehandle.as_deref()),
+                        filehandle: filehandle.clone(),
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+            }
+            NodeKind::Diamond => {
+                // `<>` and `<<>>` both read the files named in `@ARGV`, falling
+                // back to STDIN. The parser keeps no filehandle for either form.
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::ReadlineExpr(ReadlineExpr {
+                        source: ReadlineSource::ArgvDiamond,
+                        filehandle: None,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+            }
+            NodeKind::Glob { pattern } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::GlobExpr(GlobExpr {
+                        pattern: pattern.clone(),
+                        interpolated: glob_pattern_interpolates(pattern),
                     }),
                     self.package_context.clone(),
                     Some(self.current_scope()),
@@ -2396,6 +2457,36 @@ fn is_direct_glob_name(name: &str) -> bool {
 
 fn contains_interpolation_marker(value: &str) -> bool {
     value.contains('$') || value.contains('@') || value.contains('%')
+}
+
+/// Classify the line source of a readline operator from its parsed filehandle.
+///
+/// A leading `$` is a scalar holding the handle (`<$fh>`); any other text is a
+/// bareword handle (`<STDIN>`). The parser builds `NodeKind::Diamond` for the
+/// handle-less forms, so a missing filehandle here is treated as the same
+/// `@ARGV`/STDIN read.
+fn readline_source(filehandle: Option<&str>) -> ReadlineSource {
+    match filehandle {
+        Some(name) if name.starts_with('$') => ReadlineSource::ScalarHandle,
+        Some(_) => ReadlineSource::NamedHandle,
+        None => ReadlineSource::ArgvDiamond,
+    }
+}
+
+/// Whether an angle-bracket glob pattern interpolates, so its match set is not
+/// statically known. `\$` and `\@` are escaped literals, not interpolation.
+fn glob_pattern_interpolates(pattern: &str) -> bool {
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                chars.next();
+            }
+            '$' | '@' => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Map a Perl block/sigil dereference operator to its selected runtime slot.
