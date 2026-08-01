@@ -675,6 +675,13 @@ impl<'a> Parser<'a> {
                     | TokenKind::DefinedOr
                     | TokenKind::Assign
                     | TokenKind::Plus
+                    // `Minus` is here for the same reason as `Plus`, and with
+                    // the same trade: `1\n-$y;` is one subtraction to `perl`,
+                    // not two statements, so a leading `-` is a continuation
+                    // even though unary minus could in principle start a
+                    // statement. Expression parsing already consumes both
+                    // today, so neither costs measured coverage.
+                    | TokenKind::Minus
                     | TokenKind::Star
                     | TokenKind::Slash
                     | TokenKind::Percent

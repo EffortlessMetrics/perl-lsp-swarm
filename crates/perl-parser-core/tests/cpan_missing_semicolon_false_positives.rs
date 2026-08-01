@@ -48,6 +48,22 @@ fn cpan_word_operator_continuation_line_stays_clean() {
     assert_no_blocking_diagnostics("my $x = f()\n    and g();\nprint \"ok\";\n");
 }
 
+/// Arithmetic continuation across a line break. `perl` reads `1\n- 2;` as one
+/// subtraction, not two statements, so a leading operator is a continuation
+/// even where — as with unary minus — it could in principle begin a statement.
+///
+/// Expression parsing already consumes these today, so this passed before
+/// `Minus` joined the continuation set (raised in review on #5503, from the
+/// enumeration rather than from a measurement). Pinned so it stays true if
+/// expression parsing ever stops short of the operator.
+#[test]
+fn arithmetic_continuation_line_stays_clean() {
+    assert_no_blocking_diagnostics("my $x = 1\n- 2;\nprint \"x\";\n");
+    assert_no_blocking_diagnostics("my $y = f()\n- 2;\nprint \"x\";\n");
+    assert_no_blocking_diagnostics("my $z = $a\n- $b;\nprint \"x\";\n");
+    assert_no_blocking_diagnostics("my $w = $a\n. $b;\nprint \"x\";\n");
+}
+
 /// `autodie/exception.pm:17` — a multi-line `use overload` import list. Import
 /// lists are not fully modelled, so the statement stops early through no fault
 /// of the source.
