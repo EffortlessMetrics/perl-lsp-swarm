@@ -45,8 +45,9 @@ may be active simultaneously.
 
 The retired `.perl-lsp/goals/` manifests remain recoverable through Git history.
 The compatibility commands `cargo xtask goals next`, `cargo xtask goals
-reconcile`, and `cargo xtask check-active-goal-manifest` report retirement and
-select no work.
+reconcile`, and `cargo xtask check-active-goal-manifest` return stable retirement
+receipts. They select no work, perform no live validation, never block, and never
+mutate repository or GitHub state.
 
 ## Development method
 
@@ -117,5 +118,8 @@ current generated evidence, including:
 - [Real Perl Editor Trust dashboard](../project/status/real_perl_editor_trust_v1.md)
 - [Provider promotion ledger](../project/status/provider_promotion_ledger.md)
 
-Generated status is evidence for its exact generation and inputs. It does not
-select work or create a repository-global current lane.
+Generated status is evidence for its exact generation and inputs. Inside an
+already selected domain or concern, the governing specification may use that
+evidence to rank or route the next PR-sized claim. Generated status does not
+appoint a repository-global current lane, select work across domains, reserve
+ownership, or override current GitHub and user selection.
