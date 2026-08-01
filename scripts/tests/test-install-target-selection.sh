@@ -84,6 +84,56 @@ assert_bad_override_fails() {
     pass "bad PERL_LSP_LINUX_LIBC override fails clearly"
 }
 
+# Windows target contract (#5007).
+#
+# The release matrix is the only authority for which target triples exist as
+# published assets. An install surface naming a Windows target outside it
+# builds a download URL that always 404s — which is exactly how ARM64 Windows
+# users were routed to an asset that is never produced, and told only "Failed
+# to download". PowerShell cannot be executed on the Linux CI host, so this
+# asserts the contract statically against the release matrix rather than
+# hardcoding the expected triple, which would go stale the day ARM64 ships.
+#
+# Comment lines are stripped so the surfaces can still name the unbuilt target
+# when explaining why they do not request it.
+strip_comments() {
+    sed -E 's://.*$::; s:^[[:space:]]*\*.*$::; s:^[[:space:]]*#.*$::' "$1"
+}
+
+built_windows_targets() {
+    grep -Eo '(x86_64|aarch64|arm64|i686|armv7)-pc-windows-[a-z]+' \
+        "$ROOT/.github/workflows/release.yml" | sort -u
+}
+
+assert_only_built_windows_targets() {
+    local label="$1" file="$2"
+
+    if [[ ! -f "$file" ]]; then
+        fail "$label" "missing $file"
+        return
+    fi
+
+    local built referenced offenders
+    built="$(built_windows_targets)"
+
+    if [[ -z "$built" ]]; then
+        fail "$label" "release.yml names no Windows target; cannot derive the contract"
+        return
+    fi
+
+    referenced="$(strip_comments "$file" \
+        | grep -Eo '(x86_64|aarch64|arm64|i686|armv7)-pc-windows-[a-z]+' | sort -u || true)"
+
+    offenders="$(comm -23 <(printf '%s\n' "$referenced") <(printf '%s\n' "$built"))"
+
+    if [[ -n "$offenders" ]]; then
+        fail "$label" "requests Windows target(s) the release matrix never builds: $(printf '%s' "$offenders" | tr '\n' ' ')"
+        return
+    fi
+
+    pass "$label"
+}
+
 host_arch() {
     case "$(uname -m)" in
         x86_64|amd64|x64) printf '%s\n' "x86_64" ;;
@@ -192,6 +242,12 @@ fi
 if [[ ! -f "$CANONICAL_INSTALLER" ]]; then
     fail "canonical installer exists" "missing $CANONICAL_INSTALLER"
 fi
+
+assert_only_built_windows_targets \
+    "install.ps1 requests only built Windows targets" "$ROOT/install.ps1"
+assert_only_built_windows_targets \
+    "extension downloader requests only built Windows targets" \
+    "$ROOT/vscode-extension/src/downloader.ts"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
     skip "Linux target-selection checks (host is $(uname -s))"

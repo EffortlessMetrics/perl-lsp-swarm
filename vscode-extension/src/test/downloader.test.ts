@@ -184,6 +184,64 @@ describe('BinaryDownloader.getPlatformTarget', () => {
 
     expect(getPlatformTarget(downloader)).toMatch(/-unknown-linux-musl$/);
   });
+
+  // The sibling platform tests above bail out when the host does not match, so
+  // the Windows branch would never execute on Linux CI. Override the process
+  // descriptors instead, so these assertions run on every host.
+  function withProcess<T>(platform: string, arch: string, fn: () => T): T {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    const archDescriptor = Object.getOwnPropertyDescriptor(process, 'arch');
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+    Object.defineProperty(process, 'arch', { value: arch, configurable: true });
+    try {
+      return fn();
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(process, 'platform', platformDescriptor);
+      }
+      if (archDescriptor) {
+        Object.defineProperty(process, 'arch', archDescriptor);
+      }
+    }
+  }
+
+  test('Windows on ARM64 resolves to the published x86_64 build', () => {
+    expect(withProcess('win32', 'arm64', () => getPlatformTarget(downloader))).toBe(
+      'x86_64-pc-windows-msvc',
+    );
+  });
+
+  test('Windows on x64 is unaffected', () => {
+    expect(withProcess('win32', 'x64', () => getPlatformTarget(downloader))).toBe(
+      'x86_64-pc-windows-msvc',
+    );
+  });
+
+  // The bug was requesting an asset the release matrix never produces, which
+  // 404s and surfaces as a generic download failure. Assert the absence of that
+  // triple directly: a target-shape regression fails here even if some future
+  // branch reintroduces it by another route.
+  test('no Windows arch requests a target the release workflow does not build', () => {
+    for (const arch of ['arm64', 'x64', 'ia32']) {
+      expect(withProcess('win32', arch, () => getPlatformTarget(downloader))).not.toContain(
+        'aarch64',
+      );
+    }
+  });
+
+  test('ARM64 Windows explains the emulation fallback in the output channel', () => {
+    const channel = makeOutputChannel();
+    const dl = new BinaryDownloader(
+      makeContext(),
+      channel,
+    ) as unknown as TestDownloader;
+
+    withProcess('win32', 'arm64', () => dl.getPlatformTarget());
+
+    const logged = (channel.appendLine as jest.Mock).mock.calls.map((c) => String(c[0])).join('\n');
+    expect(logged).toMatch(/ARM64/);
+    expect(logged).toMatch(/emulation/i);
+  });
 });
 
 // ---------------------------------------------------------------------------
