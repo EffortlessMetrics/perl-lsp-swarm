@@ -181,19 +181,25 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                 }
             }
 
-            // `__CLASS__` — requires the `class` feature, introduced in Perl v5.40.
+            // `__CLASS__` — introduced in Perl v5.40 as part of the `class` feature.
             //
-            // `__CLASS__` returns the name of the current class inside method bodies.
-            // The parser accepts it unconditionally (PR #5280), so we emit PL900 when
-            // the declared version is below v5.40 and no explicit `use feature 'class'`
-            // is active at the use site.  We gate on the declared version because
-            // `use v5.40` enables `__CLASS__` natively, even if the pragma tracker does
-            // not propagate version bundles to individual feature flags.
+            // `__CLASS__` yields the run-time class of the current instance inside a
+            // method, ADJUST block, or field initializer. The parser accepts it
+            // unconditionally (PR #5280), so this lint carries the version contract.
+            //
+            // The gate is on the declared version alone, deliberately. The `class`
+            // feature shipped in v5.38 but `__CLASS__` did not arrive until v5.40, so
+            // `use feature 'class'` does *not* make `__CLASS__` available on v5.38 or
+            // v5.39. Suppressing on the feature flag would hide a genuine breakage and
+            // — worse — the suggested fix would steer the author into a pragma that
+            // silences the warning without making the code run. Declaring v5.40 enables
+            // both the feature bundle and the keyword, and `declared_version` reads the
+            // version declaration directly, so a version-only gate is exactly right.
             NodeKind::FunctionCall { name, .. } | NodeKind::Identifier { name }
                 if name == "__CLASS__" =>
             {
                 let min_version = PerlVersion::new(5, 40);
-                if !pragma_state.has_feature("class") && declared_version < min_version {
+                if declared_version < min_version {
                     diagnostics.push(make_diagnostic_with_details(
                         n,
                         "__CLASS__",
@@ -201,7 +207,8 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                         (5, 40),
                         DiagnosticSeverity::Warning,
                         Some(format!(
-                            "Update 'use v{}.{}' to 'use v5.40' or add 'use feature \"class\";'",
+                            "Update 'use v{}.{}' to 'use v5.40'; \
+                             __CLASS__ is not available before v5.40 even with 'use feature \"class\";'",
                             declared_version.major, declared_version.minor
                         )),
                     ));
@@ -873,15 +880,29 @@ mod tests {
     }
 
     #[test]
-    fn class_token_with_explicit_class_feature_suppresses_pl900() {
+    fn class_token_with_explicit_class_feature_still_emits_pl900_below_v5_40() {
+        // The `class` feature shipped in v5.38; `__CLASS__` did not arrive until
+        // v5.40. So `use feature 'class'` on v5.36 does NOT make __CLASS__ work,
+        // and the lint must keep warning. Suppressing here would be a false
+        // negative on code that genuinely fails to compile on the declared perl.
         let diags =
             version_compat_diags("use v5.36;\nuse feature 'class';\nmy $name = __CLASS__;\n");
+        let class_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__"))
+            .collect();
         assert!(
-            diags
-                .iter()
-                .all(|d| !(d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__"))),
-            "explicit 'use feature class' should suppress PL900 for __CLASS__"
+            !class_diags.is_empty(),
+            "'use feature class' must not suppress PL900 for __CLASS__ below v5.40: {diags:#?}"
         );
+        // The suggested fix must not point at the pragma that does not help.
+        for d in class_diags {
+            assert!(
+                d.message.contains("v5.40"),
+                "__CLASS__ PL900 must name v5.40 as the fix: {}",
+                d.message
+            );
+        }
     }
 
     #[test]
