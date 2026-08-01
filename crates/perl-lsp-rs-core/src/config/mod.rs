@@ -689,15 +689,15 @@ const NATIVE_CRITIC_PROFILE_VALID_OPTIONS: &str = "recommended, strict";
 /// warnings stay current when rules are added or removed from the registry.
 /// Values are stored as-is even when unknown — the rule simply never matches.
 fn warn_unknown_rule_ids(setting: &str, ids: &[String]) {
-    let known: std::collections::HashSet<&str> =
-        crate::tooling::perl_critic::NativeCriticRegistry::for_profile(
-            crate::tooling::perl_critic::NativeCriticProfile::Strict,
-        )
-        .rule_ids()
-        .into_iter()
-        .collect();
+    if ids.is_empty() {
+        return;
+    }
+    let known = crate::tooling::perl_critic::NativeCriticRegistry::for_profile(
+        crate::tooling::perl_critic::NativeCriticProfile::Strict,
+    )
+    .rule_ids();
     for id in ids {
-        if !known.contains(id.as_str()) {
+        if !known.contains(&id.as_str()) {
             tracing::warn!(
                 target: "perl_lsp::config",
                 setting = %setting,
