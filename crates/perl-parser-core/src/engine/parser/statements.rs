@@ -751,26 +751,71 @@ impl<'a> Parser<'a> {
     }
 
     /// Whether the source the statement spans contains a heredoc introducer
-    /// (`<<"X"`, `<<'X'`, `<<X`, `<<~X`).
+    /// (`<<"X"`, `<<'X'`, `<<X`, `<<~X`) **in code position**.
     ///
-    /// A bare `<<` used as left shift (`1 << 2`) is followed by whitespace or a
-    /// digit and is deliberately not matched, so shift expressions stay policed.
+    /// Two things are deliberately not matched, because matching them would
+    /// suppress a real diagnostic:
+    ///
+    /// - a bare `<<` used as left shift (`1 << 2`), which is followed by
+    ///   whitespace or a digit;
+    /// - `<<` inside a string literal, a comment, or a regex/quote-like body —
+    ///   `my $s = "<<EOF"` is a string containing two angle brackets, not a
+    ///   heredoc, and treating it as one made `--check` answer `ok` for the
+    ///   statement after it (found in review, #5503).
+    ///
+    /// The quote tracking is intentionally shallow: it follows `'`, `"`, `` ` ``
+    /// and `#`-to-end-of-line, which is what distinguishes a literal from code
+    /// for this purpose. It is a heuristic guarding a heuristic, and it errs
+    /// toward *reporting* — an unmatched quote resolves at end of span, so a
+    /// real introducer is never hidden behind one.
     fn statement_span_has_heredoc_introducer(&mut self, stmt: &Node) -> bool {
         let end = self.current_position().min(self.src_bytes.len());
         let start = stmt.location.start.min(end);
         let span = &self.src_bytes[start..end];
 
-        span.windows(2).enumerate().any(|(index, pair)| {
-            if pair != b"<<" {
-                return false;
+        let mut quote: Option<u8> = None;
+        let mut index = 0;
+        while index < span.len() {
+            let byte = span[index];
+
+            if let Some(delimiter) = quote {
+                // `\x` inside a literal escapes whatever follows, including the
+                // closing delimiter.
+                if byte == b'\\' && delimiter != b'#' {
+                    index += 2;
+                    continue;
+                }
+                if byte == delimiter || (delimiter == b'#' && byte == b'\n') {
+                    quote = None;
+                }
+                index += 1;
+                continue;
             }
-            let mut rest = span[index + 2..].iter();
-            let next = match rest.next() {
-                Some(b'~') => rest.next(),
-                other => other,
-            };
-            matches!(next, Some(b'"' | b'\'' | b'`' | b'A'..=b'Z' | b'a'..=b'z' | b'_'))
-        })
+
+            match byte {
+                b'\'' | b'"' | b'`' | b'#' => {
+                    quote = Some(byte);
+                    index += 1;
+                    continue;
+                }
+                b'<' if span.get(index + 1) == Some(&b'<') => {
+                    let mut rest = span[index + 2..].iter();
+                    let next = match rest.next() {
+                        Some(b'~') => rest.next(),
+                        other => other,
+                    };
+                    if matches!(next, Some(b'"' | b'\'' | b'`' | b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+                    {
+                        return true;
+                    }
+                    index += 2;
+                    continue;
+                }
+                _ => index += 1,
+            }
+        }
+
+        false
     }
 
     /// Mark that we're no longer at statement start (called after consuming statement head)

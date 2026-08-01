@@ -111,3 +111,20 @@ fn the_narrowings_do_not_disarm_the_check() {
     assert_blocking_diagnostic("my $x = 1\nprint \"hi\";\n");
     assert_blocking_diagnostic("my $bits = 1 << 2\nprint \"hi\";\n");
 }
+
+/// `<<` inside a string literal, a comment, or a quote-like body is not a
+/// heredoc introducer. Treating it as one suppressed the diagnostic for the
+/// statement after it, so `--check` answered `ok` for source `perl -c` rejects
+/// (found in review, #5503).
+///
+/// The counterpart to `cpan_heredoc_introducer_after_unknown_bareword_stays_clean`:
+/// that one pins what the guard must suppress, this one pins what it must not.
+#[test]
+fn angle_brackets_inside_a_literal_are_not_a_heredoc_introducer() {
+    assert_blocking_diagnostic("my $s = \"<<EOF\"\nprint $s;\n");
+    assert_blocking_diagnostic("my $s = '<<EOF'\nprint $s;\n");
+    assert_blocking_diagnostic("my $x = 1;   # <<EOF in a comment\nmy $y = 2\nprint $y;\n");
+    // An escaped quote inside the literal must not end it early and re-expose
+    // the `<<` to the scan.
+    assert_blocking_diagnostic("my $s = \"a\\\"b <<EOF\"\nprint $s;\n");
+}
