@@ -572,9 +572,9 @@ impl DebugAdapter {
     }
 
     #[cfg(test)]
-    fn seed_session_for_test(&self) {
+    fn seed_session_for_test(&self) -> io::Result<()> {
         // Spawn a cheap no-op subprocess so we have a real Child (no unsafe zeroed memory).
-        let child = Self::spawn_noop_child_for_test();
+        let child = Self::spawn_noop_child_for_test()?;
         let mut session = lock_or_recover(&self.session, "debug_adapter.seed_session");
         *session = Some(DebugSession {
             process: child,
@@ -584,13 +584,14 @@ impl DebugAdapter {
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
         });
+        Ok(())
     }
 
     /// Spawn the cheapest available no-op child process for use in unit tests.
-    /// Tries perl first, then a platform-native no-op.  The test panics if no
+    /// Tries perl first, then a platform-native no-op. Returns an error if no
     /// subprocess can be spawned at all — that indicates a broken CI environment.
     #[cfg(test)]
-    fn spawn_noop_child_for_test() -> std::process::Child {
+    fn spawn_noop_child_for_test() -> io::Result<Child> {
         use std::process::{Command, Stdio};
         // perl -e 1 exits immediately with no output.
         if let Ok(c) = Command::new("perl")
@@ -601,7 +602,7 @@ impl DebugAdapter {
             .stderr(Stdio::piped())
             .spawn()
         {
-            return c;
+            return Ok(c);
         }
         // Platform-native fallback when perl is not on PATH.
         #[cfg(windows)]
@@ -609,17 +610,14 @@ impl DebugAdapter {
         #[cfg(not(windows))]
         let (prog, args): (&str, &[&str]) = ("true", &[]);
         // SAFETY NOTE: no unsafe — uses only std::process::Command.
-        // The panic here is intentional: if *neither* perl nor the OS no-op
-        // binary is available the test environment is fundamentally broken and
-        // proceeding would produce meaningless results.
         Command::new(prog)
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .unwrap_or_else(|e| {
-                panic!("seed_session_for_test: cannot spawn any noop subprocess ({prog}): {e}")
+            .map_err(|e| {
+                io::Error::new(e.kind(), format!("cannot spawn noop subprocess ({prog}): {e}"))
             })
     }
 
@@ -2018,7 +2016,7 @@ print "result: $final\n";
     #[test]
     fn test_handle_continue_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         // Precondition: frames are present
@@ -2043,7 +2041,7 @@ print "result: $final\n";
     #[test]
     fn test_handle_next_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
@@ -2059,7 +2057,7 @@ print "result: $final\n";
     #[test]
     fn test_handle_step_in_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
@@ -2075,7 +2073,7 @@ print "result: $final\n";
     #[test]
     fn test_handle_step_out_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
@@ -2091,7 +2089,7 @@ print "result: $final\n";
     #[test]
     fn test_handle_pause_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
@@ -2110,7 +2108,7 @@ print "result: $final\n";
         // It clears inside the `if let Some(session) && stdin` arm, so a seeded session
         // and a resolvable goto target are both required to exercise the clear path.
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         // Precondition: stale frames are present
