@@ -69,10 +69,29 @@ The main Claude thread is the warm accountable owner unless it was explicitly sp
 with a bounded brief. Naming one issue or PR does not convert the main thread into a
 disposable worker.
 
-Direct execution is normal. Use ordinary subagents, context forks, whole-flow agents,
-or Agent Teams only when another context, oracle, tool surface, or review method
-materially changes the evidence or reduces elapsed work. Teams are useful when agents
-must genuinely communicate; they are not the default lifecycle.
+Use the internal `orchestrate-work` skill for proportional execution shape:
+
+```text
+tiny or tightly coupled work
+→ direct root execution is often cheapest
+
+substantive work
+→ the root normally orchestrates
+→ focused agents consume bounded skills or questions
+→ one writer integrates each current candidate
+
+campaign work
+→ whole-flow claim lanes may run under the campaign root
+→ the root retains goal interpretation and reconciliation
+```
+
+Delegation is worth its cost when it preserves root context, changes the source,
+oracle, tool, environment, or review method, compresses high-output evidence, or
+reduces elapsed time. The brief is the control: bound the target, authority,
+mutation boundary, sufficient result, falsifiers, stop conditions, and non-goals.
+An unknown conclusion may be explored when the search boundary is bounded. Agent
+Teams are useful only when genuine communication changes the result; they are not
+the default lifecycle.
 
 One coherent claim normally has one current candidate, and one writer mutates that
 candidate at a time. Before creating another candidate, check only for an equivalent
