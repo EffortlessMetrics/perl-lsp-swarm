@@ -63,13 +63,12 @@ pub(super) fn run_check_project(dir: &str) -> i32 {
     }
 
     let mut results = ProjectCheckResults::default();
-    // Do not follow symlinks: a link into a vendored or parent tree (common
-    // with `local::lib` and `cpanm -l`) can pull thousands of third-party files
-    // into the scan or create a cycle that `walkdir` walks repeatedly. The
-    // project checker is meant to assess the user's own code, not the contents
-    // of symlinked dependency trees. (#5519 Slice B)
+    // Skip vendored / build directories so the parsability verdict is driven by
+    // the user's own code, not third-party deps. Symlink loops are still
+    // detected and reported by `walkdir`'s built-in visited-inode guard.
+    // (#5519 Slice B)
     let walker = walkdir::WalkDir::new(root)
-        .follow_links(false)
+        .follow_links(true)
         .into_iter()
         .filter_entry(|entry| !is_vendored_dir(entry));
 
@@ -137,12 +136,18 @@ fn is_supported_perl_file(path: &Path) -> bool {
 /// Directory names that hold vendored or generated code rather than the user's
 /// own project source. Skipping them prevents a parsability verdict from being
 /// driven by third-party code the user did not write and cannot fix (#5519
-/// Slice B). The root directory itself is never skipped.
+/// Slice B). The explicitly-requested root directory (depth 0) is never
+/// skipped, even if its name matches a vendored pattern (e.g. `--check-project
+/// vendor`).
 fn is_vendored_dir(entry: &walkdir::DirEntry) -> bool {
     if !entry.file_type().is_dir() {
         return false;
     }
-    // Never skip the root entry — it has no file_name.
+    // The root entry (depth 0) is the directory the user explicitly asked to
+    // scan. Never skip it even if its basename matches a vendored name.
+    if entry.depth() == 0 {
+        return false;
+    }
     let Some(name) = entry.file_name().to_str() else {
         return false;
     };
