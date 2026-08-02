@@ -123,7 +123,10 @@ For substantive work it is a directed, falsifying, and verified judgment:
 The construction context must not be the only detection surface supporting merge.
 Fresh context is useful when it brings a different source, oracle, threat model,
 method, or attention surface; identity separation by itself is neither necessary
-nor sufficient. A clean review is a valid result.
+nor sufficient. For a substantive fixed or refuted disposition, enforced review
+convergence still requires a passing verification receipt from a verifier outside
+the writer set. A clean review is a valid result when that applicable protocol is
+satisfied.
 
 The review sequence is:
 

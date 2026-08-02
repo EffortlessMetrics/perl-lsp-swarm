@@ -176,7 +176,10 @@ subagent verdict alone is not review. A clean review is valid.
 The construction context must not be the only detection surface supporting merge.
 Fresh context is valuable when it changes the source, oracle, threat model, method,
 or attention surface; identity separation alone is neither necessary nor
-sufficient.
+sufficient. For a substantive fixed or refuted disposition, enforced review
+convergence still requires a passing verification receipt from a verifier outside
+the writer set. A clean review is a valid result when that applicable protocol is
+satisfied.
 
 Review has two distinct modes:
 
