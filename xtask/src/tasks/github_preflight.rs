@@ -43,6 +43,17 @@ struct CheckRunsPayload {
 }
 
 #[derive(Debug, Deserialize)]
+struct CommitStatusPayload {
+    statuses: Vec<CommitStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CommitStatus {
+    context: String,
+    state: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct CheckRun {
     name: String,
     status: String,
@@ -108,21 +119,37 @@ fn collect_required_checks(candidate: &CandidateFacts) -> Result<Vec<RequiredChe
     let raw = command_text("gh", &["api", &endpoint])?;
     let payload: CheckRunsPayload = serde_json::from_str(&raw)
         .context("failed to parse check runs for the captured candidate head")?;
+    let status_endpoint = format!(
+        "repos/{}/commits/{}/status?per_page=100",
+        candidate.repository, candidate.head_sha
+    );
+    let status_raw = command_text("gh", &["api", &status_endpoint])?;
+    let status_payload: CommitStatusPayload = serde_json::from_str(&status_raw)
+        .context("failed to parse commit statuses for the captured candidate head")?;
     Ok(candidate
         .required_contexts
         .iter()
         .map(|required| {
             let matching = payload.check_runs.iter().find(|run| run.name == required.name);
+            let status =
+                status_payload.statuses.iter().find(|status| status.context == required.name);
             match matching {
                 Some(run) => RequiredCheckFact {
                     name: required.name.clone(),
                     result: classify_check(run, &candidate.head_sha),
                     evaluated_head_sha: run.head_sha.clone(),
                 },
-                None => RequiredCheckFact {
-                    name: required.name.clone(),
-                    result: "MISSING".to_string(),
-                    evaluated_head_sha: None,
+                None => match status {
+                    Some(status) => RequiredCheckFact {
+                        name: required.name.clone(),
+                        result: classify_status(status),
+                        evaluated_head_sha: Some(candidate.head_sha.clone()),
+                    },
+                    None => RequiredCheckFact {
+                        name: required.name.clone(),
+                        result: "MISSING".to_string(),
+                        evaluated_head_sha: None,
+                    },
                 },
             }
         })
@@ -142,6 +169,16 @@ fn classify_check(run: &CheckRun, candidate_head_sha: &str) -> String {
         Some("CANCELLED") => "CANCELLED",
         Some("TIMED_OUT") | Some("FAILURE") | Some("ACTION_REQUIRED") => "FAILURE",
         Some("STALE") => "STALE",
+        _ => "INSTRUMENT_FAILURE",
+    }
+    .to_string()
+}
+
+fn classify_status(status: &CommitStatus) -> String {
+    match status.state.to_ascii_uppercase().as_str() {
+        "SUCCESS" => "SUCCESS",
+        "PENDING" => "PENDING",
+        "ERROR" | "FAILURE" => "FAILURE",
         _ => "INSTRUMENT_FAILURE",
     }
     .to_string()
@@ -314,5 +351,11 @@ mod tests {
         };
         assert_eq!(classify_check(&stale, "head"), "STALE");
         assert_eq!(classify_check(&pending, "head"), "PENDING");
+    }
+
+    #[test]
+    fn legacy_status_contexts_are_classified_without_false_missing() {
+        let status = CommitStatus { context: "required".to_string(), state: "success".to_string() };
+        assert_eq!(classify_status(&status), "SUCCESS");
     }
 }
