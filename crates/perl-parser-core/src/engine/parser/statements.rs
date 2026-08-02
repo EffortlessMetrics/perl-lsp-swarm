@@ -520,6 +520,44 @@ impl<'a> Parser<'a> {
             if self.pending_heredocs.is_empty() {
                 self.byte_cursor = semi_token.end;
             }
+        } else if !self.tokens.is_eof() {
+            // No semicolon and not at EOF — check if the semicolon is genuinely
+            // missing (not optional). Block-terminated constructs (sub, if, for,
+            // package with block, class, etc.) don't need a trailing semicolon.
+            // Also skip for closing delimiters and format-ended statements.
+            let is_block_terminated = matches!(
+                &stmt.kind,
+                NodeKind::Subroutine { .. }
+                    | NodeKind::Package { block: Some(_), .. }
+                    | NodeKind::Class { .. }
+                    | NodeKind::If { .. }
+                    | NodeKind::While { .. }
+                    | NodeKind::For { .. }
+                    | NodeKind::Foreach { .. }
+                    | NodeKind::Given { .. }
+                    | NodeKind::When { .. }
+                    | NodeKind::Default { .. }
+                    | NodeKind::Try { .. }
+                    | NodeKind::Defer { .. }
+                    | NodeKind::Block { .. }
+                    | NodeKind::Use { .. }
+                    | NodeKind::No { .. }
+                    | NodeKind::PhaseBlock { .. }
+                    | NodeKind::Format { .. }
+                    | NodeKind::Method { .. }
+            );
+            let next_is_closer = matches!(
+                self.peek_kind(),
+                Some(TokenKind::RightBrace) | Some(TokenKind::RightParen) | Some(TokenKind::RightBracket)
+            );
+            if !is_block_terminated && !next_is_closer {
+                let pos = self.current_position();
+                self.errors.push(ParseError::Recovered {
+                    site: RecoverySite::InfixRhs,
+                    kind: RecoveryKind::InferredSemicolon,
+                    location: pos,
+                });
+            }
         }
 
         // Drain pending heredocs after statement completion (attach content to AST)
