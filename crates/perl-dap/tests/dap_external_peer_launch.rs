@@ -443,7 +443,7 @@ fn dap_external_peer_terminated_on_peer_disconnect() {
 }
 
 #[test]
-fn dap_external_peer_rejects_control_in_mirror_mode() {
+fn dap_external_peer_rejects_control_in_mirror_mode() -> TestResult {
     // Even with a fully-capable peer, mirror mode means the peer's UI owns
     // execution: editor-initiated continue/step must be rejected gracefully.
     let peer = FakePeer::start(FakePeerScript {
@@ -465,12 +465,13 @@ fn dap_external_peer_rejects_control_in_mirror_mode() {
             let msg = message.as_deref().unwrap_or("");
             assert!(msg.contains("mirror mode"), "rejection must explain mirror mode: {msg}");
         } else {
-            panic!("expected a response for {cmd}");
+            return Err(format!("expected a response for {cmd}").into());
         }
     }
 
     drop(bridge);
     let _ = peer.handle.join();
+    Ok(())
 }
 
 #[test]
