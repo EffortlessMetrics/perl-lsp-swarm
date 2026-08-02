@@ -2939,25 +2939,6 @@ enum MergeReadyCommand {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Scan all open PRs and resolve label contradictions queue-wide.
-    ///
-    /// Uses live CI state for ci-green/needs-ci-fix decisions, and
-    /// "later-applied wins" timeline logic for other contradiction pairs.
-    /// Apply mode is the default; pass --dry-run for advisory mode.
-    ReconcileQueue {
-        /// Apply label changes (default when neither flag given).
-        #[arg(long)]
-        apply: bool,
-        /// Dry-run: report what would change without applying.
-        #[arg(long, conflicts_with = "apply")]
-        dry_run: bool,
-        /// Limit to a single PR number (useful for testing).
-        #[arg(long)]
-        pr: Option<u64>,
-        /// Output path for the queue-reconcile.json receipt.
-        #[arg(long)]
-        receipt: Option<PathBuf>,
-    },
 }
 
 #[derive(Subcommand)]
@@ -4585,11 +4566,6 @@ fn run_cli(cli: Cli) -> Result<()> {
             MergeReadyCommand::Reconcile { apply, dry_run } => {
                 let run_dry = !apply || dry_run;
                 merge_ready::reconcile(run_dry)
-            }
-            MergeReadyCommand::ReconcileQueue { apply: _, dry_run, pr, receipt } => {
-                // Apply is the default. Only switch to dry-run when --dry-run is explicitly passed.
-                let do_apply = !dry_run;
-                queue_reconciler::reconcile_queue(do_apply, pr, receipt)
             }
         },
         Commands::IgnoredTests { update, check, check_issue_refs, verbose } => {
