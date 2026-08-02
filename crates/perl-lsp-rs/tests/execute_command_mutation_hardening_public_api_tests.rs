@@ -746,7 +746,7 @@ fn test_supported_commands_structure() -> TestResult {
 
     // MUTATION KILLER: Verify not empty/default list
     assert!(!commands.is_empty(), "Supported commands should not be empty");
-    assert_eq!(commands.len(), 20, "Should have exactly 20 supported commands");
+    assert_eq!(commands.len(), 21, "Should have exactly 21 supported commands");
 
     // Verify specific commands are present
     let expected_commands = vec![
