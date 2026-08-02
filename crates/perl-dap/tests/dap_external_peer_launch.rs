@@ -443,7 +443,7 @@ fn dap_external_peer_terminated_on_peer_disconnect() {
 }
 
 #[test]
-fn dap_external_peer_rejects_control_in_mirror_mode() {
+fn dap_external_peer_rejects_control_in_mirror_mode() -> TestResult {
     // Even with a fully-capable peer, mirror mode means the peer's UI owns
     // execution: editor-initiated continue/step must be rejected gracefully.
     let peer = FakePeer::start(FakePeerScript {
@@ -458,19 +458,21 @@ fn dap_external_peer_rejects_control_in_mirror_mode() {
 
     for cmd in ["continue", "next", "stepIn", "stepOut", "pause"] {
         let out = bridge.dispatch(10, cmd, Some(serde_json::json!({ "threadId": 1 })));
-        let (rcmd, ok, _) = as_response(&out[0]);
-        assert_eq!(rcmd, cmd);
-        assert!(!ok, "{cmd} must be rejected while in mirror mode");
-        if let DapMessage::Response { message, .. } = &out[0] {
-            let msg = message.as_deref().unwrap_or("");
-            assert!(msg.contains("mirror mode"), "rejection must explain mirror mode: {msg}");
-        } else {
-            panic!("expected a response for {cmd}");
-        }
+        let Some(response) = out.first() else {
+            return Err(format!("expected a response for {cmd}").into());
+        };
+        let DapMessage::Response { command, success, message, .. } = response else {
+            return Err(format!("expected a response for {cmd}").into());
+        };
+        assert_eq!(command, cmd);
+        assert!(!success, "{cmd} must be rejected while in mirror mode");
+        let msg = message.as_deref().unwrap_or("");
+        assert!(msg.contains("mirror mode"), "rejection must explain mirror mode: {msg}");
     }
 
     drop(bridge);
     let _ = peer.handle.join();
+    Ok(())
 }
 
 #[test]
