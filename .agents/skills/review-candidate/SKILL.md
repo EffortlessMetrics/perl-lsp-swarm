@@ -19,6 +19,12 @@ Resolve current, claim-relative authority before reviewing:
 
 Do not substitute stale conversation or agent self-report for those sources. If the controlling claim or applicable authorities cannot be established reliably, return `NOT_PROVEN`; if investigation changes the premise, return the corrected boundary for issue preparation.
 
+The review is directed at the declared claim, falsifying rather than merely descriptive,
+and verified against the relevant proof and source authority. Where applicable, check
+claim honesty, semantic and external correctness, proof discrimination, production-path
+reachability, negative and fallback behavior, compatibility and rollback, and remaining
+uncertainty.
+
 Use applicable lenses:
 
 - candidate-mode vision alignment;

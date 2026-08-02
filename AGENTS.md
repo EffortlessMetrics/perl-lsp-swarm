@@ -72,6 +72,12 @@ Direct execution is normal. Use focused subagents, context forks, external oracl
 or whole-flow workers when another context, tool surface, or review method materially
 changes the evidence or reduces elapsed work.
 
+Delegate when the evidence-to-answer compression ratio is high: CI or log triage,
+corpus or repository-wide searches, dependency/API audits, external-source collection,
+failure bisection, broad inventories, or an independently useful proof adversary. The
+child returns bounded evidence and references; the warm root keeps decisions,
+contradictions, and integration. This is an evidence-cost trigger, not a required relay.
+
 One coherent claim normally has one current candidate, and one writer mutates that
 candidate at a time. Before creating another candidate, check only for an equivalent
 current PR and explicit prerequisites. Otherwise focus on the selected claim. If Git
