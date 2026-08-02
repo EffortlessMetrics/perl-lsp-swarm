@@ -38,8 +38,8 @@ The snapshot deliberately keeps these states separate:
 
 | Bucket | Meaning | What it does not mean |
 | --- | --- | --- |
-| `conflicting` | GitHub reports `DIRTY` or `CONFLICTING`; an actual textual conflict needs inspection | automatic rebase, obsolescence, or low value |
-| `unknown_not_proven` | GitHub reports `UNKNOWN` or provides no mergeability state | conflict, safe merge, safe close, or safe mutation |
+| `conflicting` | GitHub's native `mergeability` is `CONFLICTING`; when that field is absent, `merge_state_status` is `DIRTY` or `CONFLICTING`; an actual textual conflict needs inspection | automatic rebase, obsolescence, or low value |
+| `unknown_not_proven` | GitHub's native `mergeability` is `UNKNOWN`; when that field is absent, `merge_state_status` is `UNKNOWN` or missing | conflict, safe merge, safe close, or safe mutation |
 | `pending_or_unclassified` | mergeability is known/non-conflicting, but checks are neither terminal-failing nor all non-blocking | product failure or required wait without further classification |
 
 These observations are orthogonal to CI and routing buckets. A PR can be both
@@ -55,8 +55,12 @@ action-shaped categories.
 - current `head_sha` and exact-head check evidence are freshness truth;
 - labels are projected/navigation state, not proof;
 - PR age or inactivity is not a close/rebase/cherry-pick disposition;
-- `UNKNOWN` is `NOT_PROVEN`, never an inferred conflict;
-- `DIRTY`/`CONFLICTING` requires conflict inspection before selecting a repair;
+- native `mergeability` takes precedence over `merge_state_status` for the
+  conflict/unknown observations; the latter is a compatibility fallback when
+  native mergeability is absent;
+- native `UNKNOWN` is `NOT_PROVEN`, never an inferred conflict;
+- native `CONFLICTING`, or fallback `DIRTY`/`CONFLICTING`, requires conflict
+  inspection before selecting a repair;
 - required/advisory/current/stale check semantics belong to the current-head
   proof and merge-readiness authorities;
 - product value, semantic supersession, and base-update strategy belong to

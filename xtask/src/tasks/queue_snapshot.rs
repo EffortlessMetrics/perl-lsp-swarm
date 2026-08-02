@@ -271,7 +271,14 @@ mod tests {
             head_sha: "abc".to_string(),
             base_sha: "def".to_string(),
             is_draft: false,
-            mergeability: Some("MERGEABLE".to_string()),
+            mergeability: Some(
+                match merge_state {
+                    "DIRTY" | "CONFLICTING" => "CONFLICTING",
+                    "UNKNOWN" => "UNKNOWN",
+                    _ => "MERGEABLE",
+                }
+                .to_string(),
+            ),
             merge_state_status: Some(merge_state.to_string()),
             labels: labels.into_iter().map(ToString::to_string).collect(),
             status_check_rollup: checks
@@ -373,9 +380,33 @@ mod tests {
     }
 
     #[test]
+    fn native_mergeability_overrides_stale_merge_state() {
+        let mut conflicting = make_pr_with_state(16, "BEHIND", vec![], vec![("ci", "IN_PROGRESS")]);
+        conflicting.mergeability = Some("CONFLICTING".to_string());
+        let mut unknown = make_pr_with_state(17, "CLEAN", vec![], vec![("ci", "IN_PROGRESS")]);
+        unknown.mergeability = Some("UNKNOWN".to_string());
+
+        let buckets = derive_buckets(&[conflicting, unknown]);
+        assert!(buckets.conflicting.contains(&16));
+        assert!(!buckets.unknown_not_proven.contains(&16));
+        assert!(buckets.unknown_not_proven.contains(&17));
+        assert!(!buckets.pending_or_unclassified.contains(&17));
+    }
+
+    #[test]
+    fn merge_state_is_fallback_when_native_mergeability_is_missing() {
+        let mut pr = make_pr_with_state(18, "DIRTY", vec![], vec![("ci", "IN_PROGRESS")]);
+        pr.mergeability = None;
+        let buckets = derive_buckets(&[pr]);
+        assert!(buckets.conflicting.contains(&18));
+        assert!(!buckets.unknown_not_proven.contains(&18));
+    }
+
+    #[test]
     fn missing_merge_state_routes_to_unknown_not_proven() {
         let mut pr = make_pr(9, vec![], vec![("ci", "IN_PROGRESS")]);
         pr.merge_state_status = None;
+        pr.mergeability = None;
         let buckets = derive_buckets(&[pr]);
         assert!(buckets.unknown_not_proven.contains(&9));
     }
@@ -411,15 +442,24 @@ pub fn derive_buckets(prs: &[PullRequestSnapshot]) -> DerivedBuckets {
             });
         let merge_state = pr.merge_state_status.as_deref().map(str::to_ascii_uppercase);
         let mergeability = pr.mergeability.as_deref().map(str::to_ascii_uppercase);
-        let is_conflicting = matches!(merge_state.as_deref(), Some("DIRTY") | Some("CONFLICTING"));
-        let is_unknown = matches!(merge_state.as_deref(), None | Some("UNKNOWN"));
+        // Prefer GitHub's native `mergeable` observation when it is present.
+        // `mergeStateStatus` is the compatibility fallback for older or
+        // incomplete snapshots; it must not override an explicit native state.
+        let is_conflicting = match mergeability.as_deref() {
+            Some("CONFLICTING") => true,
+            Some(_) => false,
+            None => matches!(merge_state.as_deref(), Some("DIRTY") | Some("CONFLICTING")),
+        };
+        let is_unknown = match mergeability.as_deref() {
+            Some("UNKNOWN") => true,
+            Some(_) => false,
+            None => matches!(merge_state.as_deref(), None | Some("UNKNOWN")),
+        };
 
         if pr.is_draft {
             buckets.draft.push(pr.number);
         }
-        if mergeability.as_deref() == Some("MERGEABLE")
-            && merge_state.as_deref() == Some("CLEAN")
-        {
+        if mergeability.as_deref() == Some("MERGEABLE") && merge_state.as_deref() == Some("CLEAN") {
             buckets.mergeable_clean.push(pr.number);
         }
 
