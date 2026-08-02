@@ -10,6 +10,7 @@
 #
 # The merge state is read once. This helper does not poll, synthesize a
 # readiness label, or treat labels as authority.
+#   4. Canonical review convergence passes against the current head
 #
 # Usage:
 #   scripts/pre-merge-check.sh <pr-number>
@@ -45,6 +46,7 @@ if [[ "$IS_DRAFT" == "true" ]]; then
     FAILED=1
 fi
 
+# Check 2: Native mergeability and queue-eligible state
 if [[ "$MERGEABLE" != "MERGEABLE" || ( "$MERGE_STATE" != "CLEAN" && "$MERGE_STATE" != "BEHIND" ) ]]; then
     echo "FAIL PR #$PR: native merge state is not queue-eligible (mergeable=$MERGEABLE, state=$MERGE_STATE)" >&2
     echo "     Resolve the reported conflict, review, or required-check state before merging" >&2
@@ -57,8 +59,19 @@ if ! printf '%s' "$TITLE" | grep -qE '\(#[0-9]+\)'; then
     FAILED=1
 fi
 
+# Check 4: Canonical review convergence, with lifecycle labels excluded
+REVIEW_EXIT=0
+REVIEW_OUTPUT="$(REVIEW_PROTOCOL_ENFORCE=1 bash scripts/ci/check-pr-review-convergence "$PR" 2>&1)" || REVIEW_EXIT=$?
+if [[ "$REVIEW_EXIT" -ne 0 ]]; then
+    echo "FAIL PR #$PR: canonical review convergence did not pass" >&2
+    printf '%s\n' "$REVIEW_OUTPUT" >&2
+    FAILED=1
+fi
+
+# ── Result ────────────────────────────────────────────────────────────────────
+
 if [[ "$FAILED" -eq 0 ]]; then
-    echo "OK   PR #$PR: native pre-merge checks passed (not draft, mergeable, queue-eligible merge state, issue ref in title)"
+    echo "OK   PR #$PR: pre-merge checks passed (not draft, native merge state queue-eligible, issue ref in title, review converged)"
     exit 0
 fi
 
