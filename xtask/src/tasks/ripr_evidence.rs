@@ -675,7 +675,9 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     verify_revision(repo, &options.head)?;
     let base_sha = revision_sha(repo, &options.base)?;
     let head_sha = revision_sha(repo, &options.head)?;
-    let changed_files = changed_files(repo, &options.base, &options.head)?;
+    let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
+    let changed_files = diff_receipt.changed_paths.clone();
+    let changed_file_count = diff_receipt.entries.len();
     write_pr_diff(repo, &options.base, &options.head)?;
     let check_json = run_ripr_check(repo, options)?;
     let check_value: Value =
@@ -686,15 +688,16 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     // ripr-pr-evidence artifact upload so it is available without re-running ripr.
     write_text(&repo.join(PR_RAW_CHECK_JSON), &check_json)?;
     let suppressions = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))?;
-    let packet = pr_evidence_packet(
+    let packet = pr_evidence_packet_with_count(
         options,
         &changed_files,
         &check_value,
         &base_sha,
         &head_sha,
         &suppressions,
+        changed_file_count,
     );
-    validate_pr_evidence_packet(&packet, options, changed_files.len(), true, &base_sha, &head_sha)?;
+    validate_pr_evidence_packet(&packet, options, changed_file_count, true, &base_sha, &head_sha)?;
     write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&packet)?)?;
     write_text(&repo.join(PR_EVIDENCE_MD), &render_pr_evidence_markdown(&packet))?;
     println!("Wrote {PR_RAW_CHECK_JSON}");
@@ -708,7 +711,15 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     verify_revision(repo, &options.head)?;
     let base_sha = revision_sha(repo, &options.base)?;
     let head_sha = revision_sha(repo, &options.head)?;
-    let changed_files = changed_files(repo, &options.base, &options.head)?;
+    let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
+    let changed_file_count = diff_receipt.entries.len();
+    let committed_diff_text = fs::read_to_string(repo.join(PR_DIFF_RECEIPT))
+        .with_context(|| format!("missing or unreadable {PR_DIFF_RECEIPT}"))?;
+    let committed_diff: CommittedDiffReceipt = serde_json::from_str(&committed_diff_text)
+        .with_context(|| format!("{PR_DIFF_RECEIPT} is invalid"))?;
+    if committed_diff != diff_receipt {
+        bail!("{PR_DIFF_RECEIPT} is stale for the requested base/head range");
+    }
     let text = fs::read_to_string(repo.join(PR_EVIDENCE_JSON))
         .with_context(|| format!("missing or unreadable {PR_EVIDENCE_JSON}"))?;
     let packet: Value =
@@ -716,7 +727,7 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     validate_pr_evidence_packet(
         &packet,
         options,
-        changed_files.len(),
+        changed_file_count,
         repo.join(PR_EVIDENCE_MD).exists(),
         &base_sha,
         &head_sha,
@@ -897,6 +908,26 @@ fn pr_evidence_packet(
     head_sha: &str,
     suppressions: &RiprSuppressionRules,
 ) -> Value {
+    pr_evidence_packet_with_count(
+        options,
+        changed_files,
+        check_value,
+        base_sha,
+        head_sha,
+        suppressions,
+        changed_files.len(),
+    )
+}
+
+fn pr_evidence_packet_with_count(
+    options: &PrEvidenceOptions,
+    _changed_files: &[String],
+    check_value: &Value,
+    base_sha: &str,
+    head_sha: &str,
+    suppressions: &RiprSuppressionRules,
+    changed_file_count: usize,
+) -> Value {
     let check_summary = check_value.get("summary").and_then(Value::as_object);
     let summary = ripr_pr_summary_counts(check_value, check_summary, suppressions);
     let weakly_exposed = summary.weakly_exposed;
@@ -931,7 +962,7 @@ fn pr_evidence_packet(
         "head": options.head,
         "head_sha": head_sha,
         "summary": {
-            "changed_files": changed_files.len(),
+            "changed_files": changed_file_count,
             "comments": 0,
             "summary_only": 0,
             "suppressed": 0,
@@ -1048,7 +1079,7 @@ fn validate_pr_evidence_packet(
         Some(values) if !values.is_empty() => {}
         _ => violations.push("advisory_limits is missing or empty".to_string()),
     }
-    for required in [PR_EVIDENCE_JSON, PR_EVIDENCE_MD] {
+    for required in [PR_EVIDENCE_JSON, PR_EVIDENCE_MD, PR_DIFF_RECEIPT] {
         if !artifact_available(packet, required) {
             violations.push(format!("artifacts[] is missing {required}"));
         }
@@ -1826,7 +1857,7 @@ struct CommittedDiffEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct CommittedDiffReceipt {
-    schema_version: &'static str,
+    schema_version: String,
     base: String,
     head: String,
     base_sha: String,
@@ -1859,6 +1890,7 @@ fn resolve_committed_diff(repo: &Path, base: &str, head: &str) -> Result<Committ
             "-z",
             "--find-renames",
             "--find-copies",
+            "--find-copies-harder",
             "--diff-filter=ACDMRT",
             range.as_str(),
         ],
@@ -1880,7 +1912,7 @@ fn resolve_committed_diff(repo: &Path, base: &str, head: &str) -> Result<Committ
     hasher.update(serde_json::to_vec(&entries)?);
     let diff_digest = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
     Ok(CommittedDiffReceipt {
-        schema_version: "ripr_committed_diff.v1",
+        schema_version: "ripr_committed_diff.v1".to_string(),
         base: resolved_base,
         head: resolved_head,
         base_sha,
