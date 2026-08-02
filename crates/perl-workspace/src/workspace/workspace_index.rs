@@ -2088,18 +2088,20 @@ impl WorkspaceIndex {
                     });
                 }
             }
+        }
 
-            // Update document store -- still holding `files.write()`, so no
-            // other writer of this URI can observe a partial state between
-            // the generation check above and this write.
+        // Update document store AFTER releasing `files.write()` (#3722).
+        // The LineIndex::new(text) inside Document::new()/update() is O(text),
+        // so holding the global files lock during this call serialized all
+        // indexing. document_store has its own internal RwLock, and its
+        // version check handles concurrent writes independently.
+        {
             if self.document_store.is_open(&uri_str) {
                 self.document_store.update(&uri_str, 1, text.clone());
             } else {
                 self.document_store.open(uri_str.clone(), 1, text.clone());
             }
         }
-
-        // Parse the file
         let mut parser = Parser::new(&text);
         let ast = match parser.parse() {
             Ok(ast) => ast,
