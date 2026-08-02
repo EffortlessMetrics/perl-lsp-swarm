@@ -101,6 +101,11 @@ pub fn run_candidate(
     Ok(())
 }
 
+/// Collect candidate facts for composition by another factual instrument.
+pub fn candidate_facts(pr: u64) -> Result<CandidateFacts> {
+    collect_candidate(pr)
+}
+
 fn collect_candidate(pr: u64) -> Result<CandidateFacts> {
     let repository =
         command_text("gh", &["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])?

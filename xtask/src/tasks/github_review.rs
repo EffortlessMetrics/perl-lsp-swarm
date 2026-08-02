@@ -190,15 +190,7 @@ struct GraphQlComments {
 }
 
 pub fn run_review_convergence(pr: u64, json_only: bool) -> Result<()> {
-    let repository =
-        command_text("gh", &["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])?
-            .trim()
-            .to_string();
-    let (owner, repo) = repository
-        .split_once('/')
-        .ok_or_else(|| color_eyre::eyre::eyre!("gh returned invalid repository {repository:?}"))?;
-
-    let snapshot = collect_snapshot(repository.clone(), owner, repo, pr);
+    let snapshot = review_snapshot(pr)?;
     if !json_only {
         println!("review PR #{}: {} (head {})", snapshot.pr, snapshot.result, snapshot.head_sha);
         println!(
@@ -214,6 +206,18 @@ pub fn run_review_convergence(pr: u64, json_only: bool) -> Result<()> {
         bail!("review snapshot is NOT_PROVEN for PR #{}", pr);
     }
     Ok(())
+}
+
+/// Collect the review snapshot for composition by another factual instrument.
+pub fn review_snapshot(pr: u64) -> Result<ReviewSnapshot> {
+    let repository =
+        command_text("gh", &["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])?
+            .trim()
+            .to_string();
+    let (owner, repo) = repository
+        .split_once('/')
+        .ok_or_else(|| color_eyre::eyre::eyre!("gh returned invalid repository {repository:?}"))?;
+    Ok(collect_snapshot(repository.clone(), owner, repo, pr))
 }
 
 fn collect_snapshot(repository: String, owner: &str, repo: &str, pr: u64) -> ReviewSnapshot {
