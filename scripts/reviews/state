@@ -93,7 +93,7 @@ DISPOSITIONS_PRESENT=$(( RESOLVED_THREADS - DISPOSITIONS_MISSING ))
 
 if [[ "$CONVERGED" == "true" ]]; then
     STATE="CONVERGED"
-elif [[ "$REVIEW_RUNS_IN_FLIGHT" -gt 0 || "$PENDING_REVIEWERS" -gt 0 || "$CURRENT_CHANGE_REQUESTS" -gt 0 || "$DEEP_HEAD_MATCH" != "true" ]]; then
+elif [[ "$REVIEW_RUNS_IN_FLIGHT" -gt 0 || "$PENDING_REVIEWERS" -gt 0 || "$DEEP_HEAD_MATCH" != "true" ]]; then
     # A deep receipt bound to an older head (deep_review_receipt_head_match=false)
     # means the deep review must re-run at head — still in flight.
     STATE="REVIEW_IN_FLIGHT"

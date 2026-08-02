@@ -210,9 +210,9 @@ scripts/ci/check-pr-review-convergence <pr-number> [owner/repo]
 `unresolved_total` is their sum. `resolved_without_disposition` (count of
 resolved threads with `comments.totalCount <= 1` — see item 4 above) and
 `independent_review_pending` (the native `pending_reviewers` compatibility
-alias — item 5 above), and `current_change_requests` both block convergence.
+alias — item 5 above), and `current_change_requests` all block convergence.
 `stale_bot_reviews` is a non-blocking (ADVISORY)
-count. The R1 fields (`review_protocol_enforce` and everything after it —
+collection. The R1 fields (`review_protocol_enforce` and everything after it —
 items 6–11 above) are **advisory by default**: reported and `WARN`ed but
 non-blocking unless `review_protocol_enforce` is `true` (set
 `REVIEW_PROTOCOL_ENFORCE=1`). `review_protocol_enforce` echoes which mode the

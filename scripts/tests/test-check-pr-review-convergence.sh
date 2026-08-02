@@ -18,6 +18,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$SCRIPT_DIR/../ci/check-pr-review-convergence"
+STATE_SCRIPT="$SCRIPT_DIR/../reviews/state"
 FIXTURES_ROOT="$SCRIPT_DIR/../ci/fixtures/convergence"
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -39,6 +40,8 @@ fi
 # Prints "<exit_code>\n<stdout>" via globals so callers can inspect both.
 RUN_EXIT=0
 RUN_STDOUT=""
+STATE_EXIT=0
+STATE_STDOUT=""
 run_case() {
     local case_name="$1"
     local fixture_dir="$FIXTURES_ROOT/$case_name"
@@ -67,6 +70,19 @@ run_case_enforce() {
 
     RUN_EXIT=0
     RUN_STDOUT="$(CONVERGENCE_TEST_FIXTURE_DIR="$fixture_dir" REVIEW_PROTOCOL_ENFORCE=1 bash "$SCRIPT" 9999 "test-owner/test-repo" 2>/dev/null)" || RUN_EXIT=$?
+}
+
+run_state_case() {
+    local case_name="$1"
+    local fixture_dir="$FIXTURES_ROOT/$case_name"
+
+    if [[ ! -d "$fixture_dir" ]]; then
+        echo "ERROR: fixture dir missing: $fixture_dir" >&2
+        exit 1
+    fi
+
+    STATE_EXIT=0
+    STATE_STDOUT="$(CONVERGENCE_TEST_FIXTURE_DIR="$fixture_dir" bash "$STATE_SCRIPT" 9999 "test-owner/test-repo" 2>/dev/null)" || STATE_EXIT=$?
 }
 
 json_field() {
@@ -261,6 +277,21 @@ test_current_change_request_blocks() {
         pass "current-head CHANGES_REQUESTED review blocks convergence (exit 1, current_change_requests=1)"
     else
         fail "current-head CHANGES_REQUESTED review should block — got exit=$RUN_EXIT converged=$converged current_change_requests=$change_requests"
+    fi
+}
+
+# Completed CHANGES_REQUESTED is a finding, not an in-flight review. The
+# canonical closeout still blocks convergence; the wrapper must project that
+# result to FINDINGS_CLASSIFIED rather than REVIEW_IN_FLIGHT.
+test_state_current_change_request_is_classified() {
+    run_state_case "current-change-request-blocks"
+
+    local state
+    state="$(json_field "$STATE_STDOUT" '.state')"
+    if [[ "$STATE_EXIT" -eq 0 && "$state" == "FINDINGS_CLASSIFIED" ]]; then
+        pass "state wrapper projects current-head CHANGES_REQUESTED to FINDINGS_CLASSIFIED"
+    else
+        fail "state wrapper should classify completed CHANGES_REQUESTED — got exit=$STATE_EXIT state=$state"
     fi
 }
 
@@ -484,6 +515,7 @@ test_resolved_without_disposition_blocks
 test_resolved_with_disposition_does_not_block
 test_pending_independent_review_blocks
 test_current_change_request_blocks
+test_state_current_change_request_is_classified
 test_prose_reply_blocks_under_enforce
 test_prose_reply_advisory_by_default
 test_unreachable_fix_commit_blocks_under_enforce

@@ -39,7 +39,7 @@ machine — it never re-derives any GraphQL query itself).
 
 | State | Meaning |
 |---|---|
-| `REVIEW_IN_FLIGHT` | A review is running (a `review-run:v1` receipt with `status=running`, or the `needs-deep-review` label is set). No verdict yet. |
+| `REVIEW_IN_FLIGHT` | A review is running (`review-run:v1` with `status=running`, a native pending reviewer, or a deep receipt that is stale at the current head). The `needs-deep-review` label is producer-only and does not block convergence. |
 | `FINDINGS_CLASSIFIED` | Findings exist; dispositions are being recorded but no fix is yet proven reachable at head. |
 | `FIXED_HEAD` | Dispositions present and fix commits reachable at head, but no independent verification receipt at head yet. |
 | `VERIFIED_HEAD` | An independent verification receipt exists at head, but the PR is not yet fully converged. |
