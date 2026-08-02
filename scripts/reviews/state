@@ -9,7 +9,7 @@
 #
 # States (in progression order):
 #   REVIEW_IN_FLIGHT   — a review is running (review-run receipt status=running,
-#                        or the needs-deep-review label is set). No verdict yet.
+#                        or a native GitHub review request remains). No verdict yet.
 #   FINDINGS_CLASSIFIED— findings exist; dispositions are being recorded but the
 #                        fix is not yet proven reachable at head.
 #   FIXED_HEAD         — dispositions present and fix commits reachable at head,
@@ -81,7 +81,7 @@ getf() {
 HEAD="$(getf '.headRefOid' '')"
 CONVERGED="$(getf '.converged' 'false')"
 REVIEW_RUNS_IN_FLIGHT="$(getf '.review_runs_in_flight' '0')"
-INDEPENDENT_PENDING="$(getf '.independent_review_pending' 'false')"
+PENDING_REVIEWERS="$(getf '.pending_reviewers | length' '0')"
 RESOLVED_THREADS="$(getf '.resolved_threads' '0')"
 DISPOSITIONS_MISSING="$(getf '.dispositions_missing_marker' '0')"
 VERIFICATION_HEAD_MATCH="$(getf '.verification_receipt_head_match' 'true')"
@@ -92,7 +92,7 @@ DISPOSITIONS_PRESENT=$(( RESOLVED_THREADS - DISPOSITIONS_MISSING ))
 
 if [[ "$CONVERGED" == "true" ]]; then
     STATE="CONVERGED"
-elif [[ "$REVIEW_RUNS_IN_FLIGHT" -gt 0 || "$INDEPENDENT_PENDING" == "true" || "$DEEP_HEAD_MATCH" != "true" ]]; then
+elif [[ "$REVIEW_RUNS_IN_FLIGHT" -gt 0 || "$PENDING_REVIEWERS" -gt 0 || "$DEEP_HEAD_MATCH" != "true" ]]; then
     # A deep receipt bound to an older head (deep_review_receipt_head_match=false)
     # means the deep review must re-run at head — still in flight.
     STATE="REVIEW_IN_FLIGHT"

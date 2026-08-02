@@ -116,18 +116,15 @@
 #     comment's author, to keep the query cheap) — so the count itself is
 #     not subject to the "first N" pagination cap.
 #
-# ── Independent-review-pending marker (#3693) ───────────────────────────────
+# ── Pending-review state (#3693) ─────────────────────────────────────────────
 #
 # A correctness/deep review existing only in an orchestrator's task list is
 # not repository truth and cannot protect the merge (the other half of the
 # #3647 root cause: the PR merged while its deep review was still running,
 # because nothing in the repo made that in-flight review visible). This
-# script treats the `needs-deep-review` label as a durable, repo-visible
-# blocking marker: while present, convergence is BLOCKED regardless of
-# thread/review state. The label is expected to be applied when an
-# independent review is launched and cleared once the reviewer posts a
-# verdict and any confirmed defects are fixed/refuted — see the sequence in
-# issue #3693.
+# script treats native `reviewRequests` as the durable, repo-visible
+# blocking state: while non-empty, convergence is BLOCKED regardless of
+# thread state. No lifecycle label is required to represent this state.
 #
 # ── Pagination ───────────────────────────────────────────────────────────────
 #
@@ -151,7 +148,7 @@
 #      (neither active nor outdated — see the ACTIVE vs outdated vs resolved
 #      section above), NO resolved thread lacks a disposition reply (see the
 #      resolved-without-disposition section above), and NO independent
-#      review is in flight (`needs-deep-review` label absent). (Stale bot
+#      review is in flight (no native review request remains). (Stale bot
 #      reviews do not block — see bot-exclusion note above.) Merge-ready
 #      from a review-convergence standpoint (other gates — CI, other labels
 #      — are separate and NOT checked by this script).
@@ -168,15 +165,15 @@
 #    "pending_reviewers":[...],"stale_reviews":[...],"stale_bot_reviews":[...],
 #    "unresolved_active":N,"unresolved_outdated":N,"unresolved_total":N,
 #    "resolved_threads":N,"resolved_without_disposition":N,
-#    "independent_review_pending":true|false}
+#    "pending_reviewers":[...]}
 # ("stale_reviews" is human reviewers only — BLOCKING. "stale_bot_reviews" is
 # auto-review-app reviewers whose latest review predates HEAD — ADVISORY,
 # never blocking; see the bot-exclusion note above. "unresolved_active" and
 # "unresolved_outdated" both BLOCK; "unresolved_total" is their sum.
 # "resolved_without_disposition" counts RESOLVED threads whose comment
 # count is <= 1, i.e. no reply was ever posted — BLOCKING; see the
-# resolved-without-disposition section above. "independent_review_pending"
-# reflects the `needs-deep-review` label — BLOCKING while true.)
+# resolved-without-disposition section above. "pending_reviewers" reflects
+# native GitHub review requests — BLOCKING while non-empty.)
 # stderr: BLOCK lines for anything that fails convergence (unresolved
 # threads — active and outdated; resolved-without-disposition threads; a
 # pending independent review); ADVISORY lines only for stale bot reviews,
@@ -414,7 +411,7 @@ commit_reachable_from_head() {
 #
 # Test seam: when CONVERGENCE_TEST_FIXTURE_DIR is set, read
 # "$CONVERGENCE_TEST_FIXTURE_DIR/pr_view.json" (same shape as
-# `gh pr view --json headRefOid,reviewRequests,labels,author`) instead of
+# `gh pr view --json headRefOid,reviewRequests,author`) instead of
 # calling `gh`. The `author` field (#3693 R1) carries the PR author's login,
 # used as the canonical "writer" identity for the writer!=verifier check.
 if [[ -n "$CONVERGENCE_TEST_FIXTURE_DIR" ]]; then
@@ -424,7 +421,7 @@ if [[ -n "$CONVERGENCE_TEST_FIXTURE_DIR" ]]; then
         exit 2
     fi
     PR_META="$(jq -c '.' "$fixture_file")"
-elif ! PR_META="$(gh pr view "$PR" --repo "$OWNER/$REPO" --json headRefOid,reviewRequests,labels,author 2>&1)"; then
+elif ! PR_META="$(gh pr view "$PR" --repo "$OWNER/$REPO" --json headRefOid,reviewRequests,author 2>&1)"; then
     echo "ERROR: could not fetch PR #$PR metadata: $PR_META" >&2
     exit 2
 fi
@@ -452,12 +449,6 @@ PENDING_REVIEWER_COUNT="$(printf '%s' "$PENDING_REVIEWERS" | jq 'length')"
 # `.name`). Iterating `.labels[]?` on a missing/null `labels` key yields no
 # results rather than erroring, so older fixtures without a "labels" key
 # are still handled safely.
-LABELS="$(printf '%s' "$PR_META" | jq -c '[.labels[]?.name]')"
-INDEPENDENT_REVIEW_PENDING="false"
-if printf '%s' "$LABELS" | jq -e 'index("needs-deep-review") != null' >/dev/null; then
-    INDEPENDENT_REVIEW_PENDING="true"
-fi
-
 if [[ -z "$HEAD_REF_OID" || "$HEAD_REF_OID" == "null" ]]; then
     echo "ERROR: could not resolve headRefOid for PR #$PR" >&2
     exit 2
@@ -724,11 +715,6 @@ if [[ "$RESOLVED_WITHOUT_DISPOSITION_COUNT" -gt 0 ]]; then
     done < <(printf '%s' "$RESOLVED_WITHOUT_DISPOSITION_THREADS" | jq -c '.[]')
 fi
 
-if [[ "$INDEPENDENT_REVIEW_PENDING" == "true" ]]; then
-    CONVERGED="false"
-    echo "BLOCK PR #$PR: 'needs-deep-review' label present — an independent review is in flight; convergence is blocked until the reviewer posts a verdict, confirmed defects are fixed/refuted, and the label clears (see #3693)" >&2
-fi
-
 # ══ R1 protocol-axis verdicts (#3693) — advisory unless REVIEW_PROTOCOL_ENFORCE=1 ══
 
 # dispositions_missing_marker — only emit lines for the NET-NEW threads (those
@@ -813,7 +799,6 @@ jq -n \
     --argjson unresolvedTotal "$UNRESOLVED_TOTAL_COUNT" \
     --argjson resolved "$RESOLVED_THREAD_COUNT" \
     --argjson resolvedWithoutDisposition "$RESOLVED_WITHOUT_DISPOSITION_COUNT" \
-    --argjson independentReviewPending "$INDEPENDENT_REVIEW_PENDING" \
     --argjson enforce "$([[ "$REVIEW_PROTOCOL_ENFORCE" == "1" ]] && echo true || echo false)" \
     --argjson reviewRunsInFlight "$REVIEW_RUNS_IN_FLIGHT_COUNT" \
     --argjson verificationRunsInFlight "$VERIFICATION_RUNS_IN_FLIGHT_COUNT" \
@@ -822,7 +807,7 @@ jq -n \
     --argjson dispositionsMissingMarker "$DISPOSITIONS_MISSING_MARKER_COUNT" \
     --argjson followupsWithoutIssue "$FOLLOWUPS_WITHOUT_ISSUE_COUNT" \
     --argjson unreachableFixCommits "$UNREACHABLE_FIX_COMMITS_COUNT" \
-    '{pr: $pr, headRefOid: $head, converged: $converged, pending_reviewers: $pending, stale_reviews: $stale, stale_bot_reviews: $staleBot, unresolved_active: $unresolvedActive, unresolved_outdated: $unresolvedOutdated, unresolved_total: $unresolvedTotal, resolved_threads: $resolved, resolved_without_disposition: $resolvedWithoutDisposition, independent_review_pending: $independentReviewPending, review_protocol_enforce: $enforce, review_runs_in_flight: $reviewRunsInFlight, verification_runs_in_flight: $verificationRunsInFlight, deep_review_receipt_head_match: $deepReviewReceiptHeadMatch, verification_receipt_head_match: $verificationReceiptHeadMatch, dispositions_missing_marker: $dispositionsMissingMarker, followups_without_issue: $followupsWithoutIssue, unreachable_fix_commits: $unreachableFixCommits}'
+    '{pr: $pr, headRefOid: $head, converged: $converged, pending_reviewers: $pending, stale_reviews: $stale, stale_bot_reviews: $staleBot, unresolved_active: $unresolvedActive, unresolved_outdated: $unresolvedOutdated, unresolved_total: $unresolvedTotal, resolved_threads: $resolved, resolved_without_disposition: $resolvedWithoutDisposition, review_protocol_enforce: $enforce, review_runs_in_flight: $reviewRunsInFlight, verification_runs_in_flight: $verificationRunsInFlight, deep_review_receipt_head_match: $deepReviewReceiptHeadMatch, verification_receipt_head_match: $verificationReceiptHeadMatch, dispositions_missing_marker: $dispositionsMissingMarker, followups_without_issue: $followupsWithoutIssue, unreachable_fix_commits: $unreachableFixCommits}'
 
 if [[ "$CONVERGED" == "true" ]]; then
     exit 0
