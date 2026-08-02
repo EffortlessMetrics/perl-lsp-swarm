@@ -907,10 +907,14 @@ fn interpolated_string_preserves_complex_tails() -> R {
             ],
         ),
         (
+            // #5428: Perl does NOT interpolate a bare method call in a
+            // double-quoted string. `"$obj->method(arg"` interpolates `$obj`
+            // then treats `->method(arg` as literal text. Only arrow subscripts
+            // (`->[]`, `->{}`, `->()`) genuinely interpolate (see cases above).
             r#""$obj->method(arg""#,
             vec![
                 StringPart::Variable(Arc::from("$obj")),
-                StringPart::MethodCall(Arc::from("->method(arg")),
+                StringPart::Literal(Arc::from("->method(arg")),
             ],
         ),
         (
