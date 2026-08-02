@@ -98,23 +98,69 @@ fn text_fallback_highlights_comment_and_string_occurrences()
 }
 
 #[test]
-fn text_fallback_does_not_match_longer_variable_name() -> Result<(), Box<dyn std::error::Error>> {
-    // `$count` must not match inside `$counter`. The AST traversal handles the
-    // real `my $counter`; the text fallback must respect the right-side word
-    // boundary and not emit a spurious `Text` hit for the `$count` prefix of
-    // `$counter`.
-    let source = "my $counter = 0;\n$counter += 1;\n";
+fn text_fallback_does_not_match_prefix_of_longer_variable_name()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The target is `$count`, and `$counter` also appears. The text fallback
+    // must respect the right-side word boundary: `$count` must not match the
+    // `$count` prefix inside `$counter`.
+    //
+    // Two real `$count` occurrences (declaration + use) plus one real
+    // `$counter` (declaration only — `$counter += 1` is a second occurrence).
+    // The text fallback scanning for `$count` must NOT emit a spurious hit on
+    // the `$counter` prefix.
+    let source = "my $count = 0;\nmy $counter = 1;\n$count += $counter;\n";
     let ast = parse(source);
     let provider = DocumentHighlightProvider::new();
 
-    let decl = source.find("$counter").ok_or("fixture must contain $counter")?;
+    // Cursor on the first `$count` declaration.
+    let decl = source.find("$count").ok_or("fixture must contain $count")?;
     let highlights = provider.find_highlights(&ast, source, decl + 2);
 
-    // Exactly two real occurrences; the text fallback must not add a prefix hit.
+    // `$count` appears exactly twice in the source (lines 1 and 3). The text
+    // fallback must not add a third hit matching the `$count` prefix of
+    // `$counter`.
+    let count_hits: Vec<_> = highlights
+        .iter()
+        .filter(|h| {
+            let text = &source[h.location.start..h.location.end];
+            text == "$count"
+        })
+        .collect();
     assert_eq!(
-        highlights.len(),
+        count_hits.len(),
         2,
-        "`$count` must not match inside `$counter`; expected 2 highlights, got {highlights:?}"
+        "`$count` must match exactly its 2 real occurrences, not the prefix of \
+         `$counter`; got {highlights:?}"
+    );
+    // None of the `$count` hits may overlap with `$counter`.
+    let counter_pos = source.find("$counter").ok_or("fixture must contain $counter")?;
+    assert!(
+        !highlights.iter().any(|h| h.location.start == counter_pos),
+        "no highlight may start at `$counter`'s position ({counter_pos}); got {highlights:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn text_fallback_respects_utf8_word_boundary() -> Result<(), Box<dyn std::error::Error>> {
+    // `$caf` must not match inside `$café` — the next char after `$caf` in
+    // `$café` is `é` (a multi-byte UTF-8 letter), which is a word character.
+    // The ASCII-only byte check would incorrectly accept it (#5409 review).
+    let source = "my $caf = 1;\nmy $café = 2;\nprint $caf;\n";
+    let ast = parse(source);
+    let provider = DocumentHighlightProvider::new();
+
+    let decl = source.find("$caf ").ok_or("fixture must contain $caf ")?;
+    let highlights = provider.find_highlights(&ast, source, decl + 2);
+
+    // `$caf` appears twice (declaration + print). It must NOT match the `$caf`
+    // prefix inside `$café`.
+    let caf_hits: Vec<_> =
+        highlights.iter().filter(|h| &source[h.location.start..h.location.end] == "$caf").collect();
+    assert_eq!(
+        caf_hits.len(),
+        2,
+        "`$caf` must match exactly 2 occurrences, not the prefix of `$café`; got {highlights:?}"
     );
     Ok(())
 }

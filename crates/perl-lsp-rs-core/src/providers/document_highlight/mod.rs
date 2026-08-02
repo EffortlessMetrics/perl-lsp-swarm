@@ -777,6 +777,11 @@ impl DocumentHighlightProvider {
         let Some(target_sigil) = &target.sigil else {
             return;
         };
+        // An empty name (e.g. a standalone sigil or parser recovery) would
+        // make the needle just the sigil and match every occurrence of it.
+        if target.name.is_empty() {
+            return;
+        }
         let needle = format!("{target_sigil}{}", target.name);
         let needle_bytes = needle.as_bytes();
         // Bound the scan to the relevant scope when the cursor sits inside a
@@ -788,12 +793,16 @@ impl DocumentHighlightProvider {
         for (relative, _) in region.match_indices(needle.as_str()) {
             let abs_start = scan_start + relative;
             // Right-side word boundary: the match must not be a prefix of a
-            // longer identifier (`$foo` must not match inside `$foobar`).
+            // longer identifier (`$foo` must not match inside `$foobar`, and
+            // `$caf` must not match inside `$café`). Inspect the next *char*
+            // (not byte) so multi-byte UTF-8 identifier continuations are
+            // recognized as word characters.
             let end_pos = relative + needle_bytes.len();
             if end_pos < region.len() {
-                let next = region.as_bytes()[end_pos];
-                if next.is_ascii_alphanumeric() || next == b'_' {
-                    continue;
+                if let Some(next) = region[end_pos..].chars().next() {
+                    if next.is_alphanumeric() || next == '_' {
+                        continue;
+                    }
                 }
             }
             highlights.push(DocumentHighlight {
