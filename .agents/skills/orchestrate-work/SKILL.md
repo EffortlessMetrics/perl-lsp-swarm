@@ -41,7 +41,7 @@ Choose proportionally:
 | Goal interpretation or contradiction resolution | Root |
 | Tiny tightly coupled edit | Root/current writer |
 | High-output or bounded exploratory evidence | Focused read-only delegate |
-| One coherent claim | Whole-flow `deliver-pr` lane |
+| One coherent claim | Whole-flow `$deliver-pr` lane |
 | Distinct claims | Separate lane owners/worktrees |
 | Candidate/proof mutation | One writer |
 | Adversarial review | Differentiated oracle, source, or method when useful |
@@ -58,8 +58,8 @@ result cannot change a decision.
 Use one of these forms:
 
 ```text
-Take issue #123 through `deliver-pr`.
-Run `review-tests` against the current proof.
+Take issue #123 through `$deliver-pr`.
+Run `$review-tests` against the current proof.
 Map every live production consumer of X.
 ```
 
@@ -96,14 +96,14 @@ edge. Runtime transcripts are not durable evidence.
 
 ## Skill map
 
-Whole lane → `deliver-pr` or `deliver-goal`.
+Whole lane → `$deliver-pr` or `$deliver-goal`.
 
-One transformation → `prepare-issue`, `research-issue`, `review-issue`,
-`issue-to-plan`, `research-plan`, `review-plan`, `compile-spec`, `prepare-proof`,
-`spec-to-test`, `review-tests`, `build-candidate`, `build-from-proof`,
-`improve-test-suite`, `simplify-candidate`, `review-candidate`, `publish-pr`,
-`address-review-comments`, `final-challenge`, `review-pr`, `verify-live-ci`, or
-`merge-reconcile`, according to the desired result.
+One transformation → `$prepare-issue`, `$research-issue`, `$review-issue`,
+`$issue-to-plan`, `$research-plan`, `$review-plan`, `$compile-spec`, `$prepare-proof`,
+`$spec-to-test`, `$review-tests`, `$build-candidate`, `$build-from-proof`,
+`$improve-test-suite`, `$simplify-candidate`, `$review-candidate`, `$publish-pr`,
+`$address-review-comments`, `$final-challenge`, `$review-pr`, `$verify-live-ci`, or
+`$merge-reconcile`, according to the desired result.
 
 This is a routing aid, not a lifecycle compiler. It must not encode a provider,
 model, agent count, team topology, live issue/PR/stage, reservation, heartbeat,
@@ -125,7 +125,7 @@ remote wait is `IN_FLIGHT`, not a local blocker.
 ## Return
 
 Return control to the invoking flow after joining evidence. Route changed
-authority/scope/claim through `prepare-issue`, weak proof through `prepare-proof`,
-candidate mutation through `build-candidate`, fixed formal judgment through
-`review-pr`, and unchanged GitHub waits as `IN_FLIGHT`. Preserve an exact
+authority/scope/claim through `$prepare-issue`, weak proof through `$prepare-proof`,
+candidate mutation through `$build-candidate`, fixed formal judgment through
+`$review-pr`, and unchanged GitHub waits as `IN_FLIGHT`. Preserve an exact
 `NOT_PROVEN` boundary when identity, authority, or evidence cannot be established.
