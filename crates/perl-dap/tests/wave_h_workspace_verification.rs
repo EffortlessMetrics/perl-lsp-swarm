@@ -85,7 +85,8 @@ fn test_formatting_is_correct() -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new("cargo").args(["fmt", "-p", "perl-dap", "--", "--check"]).output()?;
     if !output.status.success() {
         return Err(format!(
-            "code formatting issues found:\n{}",
+            "code formatting issues found:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         )
         .into());
