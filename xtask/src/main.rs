@@ -1197,6 +1197,16 @@ enum Commands {
         apply: bool,
     },
 
+    /// Capture paginated review and thread facts for one GitHub pull request.
+    GhReviewConvergence {
+        /// Pull request number.
+        #[arg(long)]
+        pr: u64,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Generate bindings
     #[cfg(feature = "parser-tasks")]
     Bindings {
@@ -4289,6 +4299,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::GhLabels => github::run_labels(),
         Commands::GhTriage { limit } => github::run_issues_needing_triage(limit),
         Commands::GhBackfillPrefixedLabels { apply } => github::run_backfill_prefixed_labels(apply),
+        Commands::GhReviewConvergence { pr, json } => {
+            github_review::run_review_convergence(pr, json)
+        }
         Commands::CorpusAudit { corpus_path, output, check, fresh } => {
             corpus_audit::run(corpus_audit::AuditConfig {
                 corpus_path,
