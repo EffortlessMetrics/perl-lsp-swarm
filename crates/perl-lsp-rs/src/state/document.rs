@@ -474,6 +474,13 @@ pub struct DocumentState {
     /// subsystems that operate on `&str`. Updated lazily when rope changes.
     pub text: String,
 
+    /// `Arc<str>` handle to the same content as `text`, maintained in sync.
+    /// Cloning this handle is O(1) (vs O(n) for `text.clone()`), so the
+    /// diagnostic publish path and other snapshot consumers clone the `Arc`
+    /// instead of deep-copying the full document text on every keystroke
+    /// (#5053).
+    pub text_arc: std::sync::Arc<str>,
+
     /// LSP document version number for synchronization
     pub version: i32,
 
@@ -536,6 +543,7 @@ impl DocumentState {
 
         Self {
             rope,
+            text_arc: std::sync::Arc::from(content),
             text,
             version,
             parsed: None,
@@ -566,6 +574,7 @@ impl DocumentState {
         let line_starts = LineStartsCache::new_rope(&rope);
         Self {
             rope,
+            text_arc: std::sync::Arc::from(text.as_str()),
             text,
             version,
             parsed: None,
@@ -590,6 +599,7 @@ impl DocumentState {
     pub fn update_content(&mut self, content: &str, version: i32) {
         self.rope = ropey::Rope::from_str(content);
         self.text = content.to_string();
+        self.text_arc = std::sync::Arc::from(content);
         self.version = version;
         self.line_starts = LineStartsCache::new(content);
         self.generation.fetch_add(1, Ordering::SeqCst);
@@ -630,7 +640,8 @@ impl DocumentState {
     pub(crate) fn replace_text_state(&mut self, rope: ropey::Rope, text: String, version: i32) {
         self.line_starts = LineStartsCache::new_rope(&rope);
         self.rope = rope;
-        self.text = text;
+        self.text = text.clone();
+        self.text_arc = std::sync::Arc::from(text);
         self.version = version;
     }
 
@@ -734,6 +745,7 @@ impl DocumentState {
         // Update cached string and caches. `parsed` is deliberately
         // preserved -- see the doc comment on `update_content`.
         self.text = self.rope.to_string();
+        self.text_arc = std::sync::Arc::from(self.text.as_str());
         self.version = version;
         self.line_starts = LineStartsCache::new(&self.text);
         self.generation.fetch_add(1, Ordering::SeqCst);
