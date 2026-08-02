@@ -4,8 +4,10 @@ use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -183,21 +185,14 @@ fn execute(config: CommandEvidenceConfig) -> Result<CommandEvidenceReceipt> {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let started = Utc::now();
     let started_instant = Instant::now();
-    let argv =
-        std::iter::once(config.program.clone()).chain(config.args.clone()).collect::<Vec<_>>();
+    let argv = std::iter::once(config.program.clone())
+        .chain(config.args.clone())
+        .map(|arg| redact_secrets(&arg))
+        .collect::<Vec<_>>();
     let out_dir = config.out_dir.unwrap_or_else(|| PathBuf::from("target/command-evidence"));
-    let evidence_id = NEXT_EVIDENCE_ID.fetch_add(1, Ordering::Relaxed);
-    let stem = format!(
-        "{}-{}-{}-{}",
-        sanitize_filename(&config.program),
-        started.timestamp_millis(),
-        std::process::id(),
-        evidence_id
-    );
-    let stdout_path = out_dir.join(format!("{stem}-stdout.log"));
-    let stderr_path = out_dir.join(format!("{stem}-stderr.log"));
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("failed to create evidence directory {}", out_dir.display()))?;
+    let (stdout_path, stderr_path) = reserve_evidence_paths(&out_dir, &config.program, started)?;
 
     let captured = match spawn_and_capture(&config.program, &config.args, &cwd, config.timeout) {
         Ok(captured) => captured,
@@ -233,7 +228,12 @@ fn execute(config: CommandEvidenceConfig) -> Result<CommandEvidenceReceipt> {
         .with_context(|| format!("failed to write {}", stderr_path.display()))?;
 
     let output_incomplete = captured.stdout.truncated || captured.stderr.truncated;
-    let result = classify_result(captured.timed_out, output_incomplete, captured.status.code());
+    let result = classify_result(
+        captured.timed_out,
+        output_incomplete,
+        captured.status.code(),
+        terminated_by_signal(&captured.status),
+    );
     let receipt = CommandEvidenceReceipt {
         schema_version: "command-evidence.v1",
         argv,
@@ -278,14 +278,60 @@ fn emit_receipt(receipt: CommandEvidenceReceipt, json_only: bool) -> Result<()> 
     }
 }
 
+fn reserve_evidence_paths(
+    out_dir: &Path,
+    program: &str,
+    started: chrono::DateTime<Utc>,
+) -> Result<(PathBuf, PathBuf)> {
+    loop {
+        let evidence_id = NEXT_EVIDENCE_ID.fetch_add(1, Ordering::Relaxed);
+        let stem = format!(
+            "{}-{}-{}-{}",
+            sanitize_filename(program),
+            started.timestamp_millis(),
+            std::process::id(),
+            evidence_id
+        );
+        let stdout_path = out_dir.join(format!("{stem}-stdout.log"));
+        let stderr_path = out_dir.join(format!("{stem}-stderr.log"));
+        match OpenOptions::new().write(true).create_new(true).open(&stdout_path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to reserve {}", stdout_path.display()));
+            }
+        }
+        match OpenOptions::new().write(true).create_new(true).open(&stderr_path) {
+            Ok(_) => return Ok((stdout_path, stderr_path)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&stdout_path);
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&stdout_path);
+                return Err(error)
+                    .with_context(|| format!("failed to reserve {}", stderr_path.display()));
+            }
+        }
+    }
+}
+
 fn spawn_and_capture(
     program: &str,
     args: &[String],
     cwd: &Path,
     timeout: Option<Duration>,
 ) -> std::result::Result<CapturedOutput, SpawnFailure> {
+    if !cwd.is_dir() {
+        return Err(SpawnFailure {
+            result: ResultClass::SpawnFailure,
+            message: format!("SPAWN_FAILURE: working directory does not exist: {}", cwd.display()),
+        });
+    }
     let mut command = Command::new(program);
     command.args(args).current_dir(cwd).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
     let mut child = command.spawn().map_err(|error| {
         let class = if error.kind() == io::ErrorKind::NotFound {
             ResultClass::MissingExecutable
@@ -307,19 +353,14 @@ fn spawn_and_capture(
             result: ResultClass::InstrumentFailure,
             message: format!("failed waiting for child process: {error}"),
         })? {
-            return Ok(CapturedOutput {
-                status,
-                stdout: join_stream(stdout, "stdout").map_err(|error| SpawnFailure {
-                    result: ResultClass::OutputIncomplete,
-                    message: error.to_string(),
-                })?,
-                stderr: join_stream(stderr, "stderr").map_err(|error| SpawnFailure {
-                    result: ResultClass::OutputIncomplete,
-                    message: error.to_string(),
-                })?,
-                timed_out: false,
-                termination_note: None,
-            });
+            let (stdout, stderr, timed_out, termination_note) = join_streams_with_deadline(
+                stdout, stderr, &mut child, timeout, started,
+            )
+            .map_err(|error| SpawnFailure {
+                result: ResultClass::OutputIncomplete,
+                message: error.to_string(),
+            })?;
+            return Ok(CapturedOutput { status, stdout, stderr, timed_out, termination_note });
         }
         if timeout.is_some_and(|bound| started.elapsed() >= bound) {
             let termination_note = terminate_process_tree(&mut child);
@@ -327,18 +368,25 @@ fn spawn_and_capture(
                 result: ResultClass::InstrumentFailure,
                 message: format!("failed waiting after timeout: {error}"),
             })?;
+            let (stdout, stderr, _drain_timed_out, drain_note) = join_streams_with_deadline(
+                stdout,
+                stderr,
+                &mut child,
+                Some(Duration::from_secs(2)),
+                Instant::now(),
+            )
+            .map_err(|error| SpawnFailure {
+                result: ResultClass::OutputIncomplete,
+                message: error.to_string(),
+            })?;
             return Ok(CapturedOutput {
                 status,
-                stdout: join_stream(stdout, "stdout").map_err(|error| SpawnFailure {
-                    result: ResultClass::OutputIncomplete,
-                    message: error.to_string(),
-                })?,
-                stderr: join_stream(stderr, "stderr").map_err(|error| SpawnFailure {
-                    result: ResultClass::OutputIncomplete,
-                    message: error.to_string(),
-                })?,
+                stdout,
+                stderr,
                 timed_out: true,
-                termination_note: Some(format!("timeout; {termination_note}")),
+                termination_note: Some(
+                    drain_note.unwrap_or_else(|| format!("timeout; {termination_note}")),
+                ),
             });
         }
         thread::sleep(Duration::from_millis(25));
@@ -384,6 +432,66 @@ fn join_stream(
         .with_context(|| format!("failed reading {name}"))
 }
 
+fn join_streams_with_deadline(
+    stdout: Option<thread::JoinHandle<io::Result<OutputCapture>>>,
+    stderr: Option<thread::JoinHandle<io::Result<OutputCapture>>>,
+    child: &mut Child,
+    timeout: Option<Duration>,
+    started: Instant,
+) -> Result<(OutputCapture, OutputCapture, bool, Option<String>)> {
+    let deadline = timeout.map(|bound| started + bound);
+    let mut timed_out = false;
+    let mut termination_note = None;
+    let stdout = join_stream_with_deadline(
+        stdout,
+        "stdout",
+        child,
+        deadline,
+        &mut timed_out,
+        &mut termination_note,
+    )?;
+    let stderr = join_stream_with_deadline(
+        stderr,
+        "stderr",
+        child,
+        deadline,
+        &mut timed_out,
+        &mut termination_note,
+    )?;
+    Ok((stdout, stderr, timed_out, termination_note))
+}
+
+fn join_stream_with_deadline(
+    stream: Option<thread::JoinHandle<io::Result<OutputCapture>>>,
+    name: &str,
+    child: &mut Child,
+    deadline: Option<Instant>,
+    timed_out: &mut bool,
+    termination_note: &mut Option<String>,
+) -> Result<OutputCapture> {
+    let Some(stream) = stream else {
+        return Ok(OutputCapture { bytes: Vec::new(), truncated: false });
+    };
+    let mut drain_deadline = deadline;
+    loop {
+        if stream.is_finished() {
+            return join_stream(Some(stream), name);
+        }
+        if !*timed_out && drain_deadline.is_some_and(|bound| Instant::now() >= bound) {
+            let note = terminate_process_tree(child);
+            let _ = child.wait();
+            *timed_out = true;
+            *termination_note = Some(format!("timeout; {note}"));
+            drain_deadline = Some(Instant::now() + Duration::from_secs(2));
+        } else if *timed_out && drain_deadline.is_some_and(|bound| Instant::now() >= bound) {
+            return Err(color_eyre::eyre::eyre!(
+                "timed out draining {name} after process termination"
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn terminate_process_tree(child: &mut Child) -> &'static str {
     let pid = child.id().to_string();
     #[cfg(windows)]
@@ -392,8 +500,10 @@ fn terminate_process_tree(child: &mut Child) -> &'static str {
         .status()
         .is_ok_and(|status| status.success());
     #[cfg(unix)]
-    let tree_termination_confirmed =
-        Command::new("kill").args(["-TERM", &pid]).status().is_ok_and(|status| status.success());
+    let tree_termination_confirmed = Command::new("kill")
+        .args(["-TERM", &format!("-{pid}")])
+        .status()
+        .is_ok_and(|status| status.success());
     #[cfg(not(any(windows, unix)))]
     let tree_termination_confirmed = false;
     let _ = child.kill();
@@ -408,6 +518,7 @@ fn classify_result(
     timed_out: bool,
     output_incomplete: bool,
     exit_code: Option<i32>,
+    terminated_by_signal: bool,
 ) -> ResultClass {
     if timed_out {
         return ResultClass::Timeout;
@@ -415,10 +526,26 @@ fn classify_result(
     if output_incomplete {
         return ResultClass::OutputIncomplete;
     }
+    if terminated_by_signal {
+        return ResultClass::Failure;
+    }
     match exit_code {
         Some(0) => ResultClass::Success,
         Some(_) => ResultClass::Failure,
-        None => ResultClass::Cancelled,
+        None => ResultClass::Failure,
+    }
+}
+
+fn terminated_by_signal(status: &ExitStatus) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.signal().is_some()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = status;
+        false
     }
 }
 
@@ -428,7 +555,16 @@ fn termination(status: &ExitStatus, timed_out: bool) -> String {
     }
     match status.code() {
         Some(code) => format!("exit_code:{code}"),
-        None => "terminated_without_exit_code".to_string(),
+        None => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                if let Some(signal) = status.signal() {
+                    return format!("signal:{signal}");
+                }
+            }
+            "terminated_without_exit_code".to_string()
+        }
     }
 }
 
@@ -497,11 +633,11 @@ mod tests {
 
     #[test]
     fn result_classes_preserve_exit_and_timeout() {
-        assert_eq!(classify_result(false, false, Some(0)), ResultClass::Success);
-        assert_eq!(classify_result(false, false, Some(1)), ResultClass::Failure);
-        assert_eq!(classify_result(true, false, None), ResultClass::Timeout);
-        assert_eq!(classify_result(false, false, None), ResultClass::Cancelled);
-        assert_eq!(classify_result(false, true, Some(0)), ResultClass::OutputIncomplete);
+        assert_eq!(classify_result(false, false, Some(0), false), ResultClass::Success);
+        assert_eq!(classify_result(false, false, Some(1), false), ResultClass::Failure);
+        assert_eq!(classify_result(true, false, None, false), ResultClass::Timeout);
+        assert_eq!(classify_result(false, false, None, false), ResultClass::Failure);
+        assert_eq!(classify_result(false, true, Some(0), false), ResultClass::OutputIncomplete);
     }
 
     #[test]
