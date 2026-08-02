@@ -7,10 +7,13 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const MAX_EXCERPT_CHARS: usize = 2_000;
+const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
+static NEXT_EVIDENCE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -57,9 +60,15 @@ pub struct CommandEvidenceConfig {
 
 struct CapturedOutput {
     status: ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
+    stdout: OutputCapture,
+    stderr: OutputCapture,
     timed_out: bool,
+    termination_note: Option<String>,
+}
+
+struct OutputCapture {
+    bytes: Vec<u8>,
+    truncated: bool,
 }
 
 struct SpawnFailure {
@@ -81,7 +90,14 @@ pub fn run(config: CommandEvidenceConfig) -> Result<()> {
     let argv =
         std::iter::once(config.program.clone()).chain(config.args.clone()).collect::<Vec<_>>();
     let out_dir = config.out_dir.unwrap_or_else(|| PathBuf::from("target/command-evidence"));
-    let stem = format!("{}-{}", sanitize_filename(&config.program), started.timestamp_millis());
+    let evidence_id = NEXT_EVIDENCE_ID.fetch_add(1, Ordering::Relaxed);
+    let stem = format!(
+        "{}-{}-{}-{}",
+        sanitize_filename(&config.program),
+        started.timestamp_millis(),
+        std::process::id(),
+        evidence_id
+    );
     let stdout_path = out_dir.join(format!("{stem}-stdout.log"));
     let stderr_path = out_dir.join(format!("{stem}-stderr.log"));
     fs::create_dir_all(&out_dir)
@@ -115,12 +131,13 @@ pub fn run(config: CommandEvidenceConfig) -> Result<()> {
     };
     let ended = Utc::now();
     let duration_ms = started_instant.elapsed().as_millis();
-    fs::write(&stdout_path, &captured.stdout)
+    fs::write(&stdout_path, &captured.stdout.bytes)
         .with_context(|| format!("failed to write {}", stdout_path.display()))?;
-    fs::write(&stderr_path, &captured.stderr)
+    fs::write(&stderr_path, &captured.stderr.bytes)
         .with_context(|| format!("failed to write {}", stderr_path.display()))?;
 
-    let result = classify_result(captured.timed_out, captured.status.code());
+    let output_incomplete = captured.stdout.truncated || captured.stderr.truncated;
+    let result = classify_result(captured.timed_out, output_incomplete, captured.status.code());
     let receipt = CommandEvidenceReceipt {
         schema_version: "command-evidence.v1",
         argv,
@@ -130,11 +147,13 @@ pub fn run(config: CommandEvidenceConfig) -> Result<()> {
         ended_at: ended.to_rfc3339(),
         duration_ms,
         exit_code: captured.status.code(),
-        termination: termination(&captured.status, captured.timed_out),
+        termination: captured
+            .termination_note
+            .unwrap_or_else(|| termination(&captured.status, captured.timed_out)),
         stdout_reference: stdout_path.display().to_string(),
         stderr_reference: stderr_path.display().to_string(),
-        stdout_excerpt: redact_excerpt(&captured.stdout),
-        stderr_excerpt: redact_excerpt(&captured.stderr),
+        stdout_excerpt: redact_excerpt(&captured.stdout.bytes),
+        stderr_excerpt: redact_excerpt(&captured.stderr.bytes),
         result,
     };
 
@@ -203,10 +222,11 @@ fn spawn_and_capture(
                     message: error.to_string(),
                 })?,
                 timed_out: false,
+                termination_note: None,
             });
         }
         if timeout.is_some_and(|bound| started.elapsed() >= bound) {
-            terminate_process_tree(&mut child);
+            let termination_note = terminate_process_tree(&mut child);
             let status = child.wait().map_err(|error| SpawnFailure {
                 result: ResultClass::InstrumentFailure,
                 message: format!("failed waiting after timeout: {error}"),
@@ -222,46 +242,82 @@ fn spawn_and_capture(
                     message: error.to_string(),
                 })?,
                 timed_out: true,
+                termination_note: Some(format!("timeout; {termination_note}")),
             });
         }
         thread::sleep(Duration::from_millis(25));
     }
 }
 
-fn read_stream(mut stream: impl Read + Send + 'static) -> thread::JoinHandle<io::Result<Vec<u8>>> {
+fn read_stream(
+    mut stream: impl Read + Send + 'static,
+) -> thread::JoinHandle<io::Result<OutputCapture>> {
     thread::spawn(move || {
-        let mut output = Vec::new();
-        stream.read_to_end(&mut output).map(|_| output)
+        let mut output = Vec::with_capacity(MAX_CAPTURE_BYTES.min(64 * 1024));
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut truncated = false;
+        loop {
+            let read = stream.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            let remaining = MAX_CAPTURE_BYTES.saturating_sub(output.len());
+            if remaining == 0 {
+                truncated = true;
+            } else if read <= remaining {
+                output.extend_from_slice(&buffer[..read]);
+            } else {
+                output.extend_from_slice(&buffer[..remaining]);
+                truncated = true;
+            }
+        }
+        Ok(OutputCapture { bytes: output, truncated })
     })
 }
 
 fn join_stream(
-    stream: Option<thread::JoinHandle<io::Result<Vec<u8>>>>,
+    stream: Option<thread::JoinHandle<io::Result<OutputCapture>>>,
     name: &str,
-) -> Result<Vec<u8>> {
-    let Some(stream) = stream else { return Ok(Vec::new()) };
+) -> Result<OutputCapture> {
+    let Some(stream) = stream else {
+        return Ok(OutputCapture { bytes: Vec::new(), truncated: false });
+    };
     stream
         .join()
         .map_err(|_| color_eyre::eyre::eyre!("{name} reader panicked"))?
         .with_context(|| format!("failed reading {name}"))
 }
 
-fn terminate_process_tree(child: &mut Child) {
+fn terminate_process_tree(child: &mut Child) -> &'static str {
     let pid = child.id().to_string();
     #[cfg(windows)]
-    {
-        let _ = Command::new("taskkill").args(["/PID", &pid, "/T", "/F"]).status();
-    }
+    let tree_termination_confirmed = Command::new("taskkill")
+        .args(["/PID", &pid, "/T", "/F"])
+        .status()
+        .is_ok_and(|status| status.success());
     #[cfg(unix)]
-    {
-        let _ = Command::new("kill").args(["-TERM", &pid]).status();
-    }
+    let tree_termination_confirmed =
+        Command::new("kill").args(["-TERM", &pid]).status().is_ok_and(|status| status.success());
+    #[cfg(not(any(windows, unix)))]
+    let tree_termination_confirmed = false;
     let _ = child.kill();
+    if tree_termination_confirmed {
+        "process_tree_termination_confirmed"
+    } else {
+        "process_tree_termination_unconfirmed"
+    }
 }
 
-fn classify_result(timed_out: bool, exit_code: Option<i32>) -> ResultClass {
+fn classify_result(
+    timed_out: bool,
+    output_incomplete: bool,
+    exit_code: Option<i32>,
+) -> ResultClass {
     if timed_out {
         return ResultClass::Timeout;
+    }
+    if output_incomplete {
+        return ResultClass::OutputIncomplete;
     }
     match exit_code {
         Some(0) => ResultClass::Success,
@@ -289,9 +345,10 @@ fn redact_excerpt(bytes: &[u8]) -> String {
 fn redact_secrets(text: &str) -> String {
     let mut result = text.to_string();
     for key in ["token", "password", "secret", "authorization"] {
-        let lower = result.to_ascii_lowercase();
         let mut start = 0;
-        while let Some(relative) = lower[start..].find(key) {
+        while start < result.len() {
+            let lower = result.to_ascii_lowercase();
+            let Some(relative) = lower[start..].find(key) else { break };
             let key_start = start + relative;
             let after_key = key_start + key.len();
             let suffix = result[after_key..].chars().next();
@@ -302,6 +359,11 @@ fn redact_secrets(text: &str) -> String {
                     .map(|offset| value_start + offset)
                     .unwrap_or(result.len());
                 result.replace_range(value_start..value_end, "<redacted>");
+                start = value_start + "<redacted>".len();
+                if start >= result.len() {
+                    break;
+                }
+                continue;
             }
             start = after_key;
             if start >= result.len() {
@@ -326,13 +388,15 @@ fn sanitize_filename(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn result_classes_preserve_exit_and_timeout() {
-        assert_eq!(classify_result(false, Some(0)), ResultClass::Success);
-        assert_eq!(classify_result(false, Some(1)), ResultClass::Failure);
-        assert_eq!(classify_result(true, None), ResultClass::Timeout);
-        assert_eq!(classify_result(false, None), ResultClass::Cancelled);
+        assert_eq!(classify_result(false, false, Some(0)), ResultClass::Success);
+        assert_eq!(classify_result(false, false, Some(1)), ResultClass::Failure);
+        assert_eq!(classify_result(true, false, None), ResultClass::Timeout);
+        assert_eq!(classify_result(false, false, None), ResultClass::Cancelled);
+        assert_eq!(classify_result(false, true, Some(0)), ResultClass::OutputIncomplete);
     }
 
     #[test]
@@ -348,5 +412,20 @@ mod tests {
     fn argv_rendering_redacts_secret_like_values() {
         let rendered = render_argv(&["tool".to_string(), "--token=abc".to_string()]);
         assert_eq!(rendered, "tool --token=<redacted>");
+    }
+
+    #[test]
+    fn repeated_secret_keys_are_all_redacted() {
+        let excerpt = redact_excerpt(b"token=one token=two");
+        assert_eq!(excerpt, "token=<redacted> token=<redacted>");
+    }
+
+    #[test]
+    fn stream_capture_is_bounded_and_marks_incomplete_output() -> Result<()> {
+        let input = vec![b'x'; MAX_CAPTURE_BYTES + 1];
+        let capture = join_stream(Some(read_stream(Cursor::new(input))), "stdout")?;
+        assert_eq!(capture.bytes.len(), MAX_CAPTURE_BYTES);
+        assert!(capture.truncated);
+        Ok(())
     }
 }
