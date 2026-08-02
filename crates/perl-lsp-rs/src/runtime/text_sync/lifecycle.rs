@@ -238,6 +238,14 @@ impl LspServer {
 
             tracing::debug!("Document will save wait until: {}", uri);
 
+            // Reject stale requests: if the document version in the request is
+            // older than the current version, the edit would apply to outdated
+            // content (#5054). The non-save handle_formatting handler does the
+            // same check (formatting.rs:129-131).
+            let req_version =
+                params["textDocument"]["version"].as_i64().and_then(|n| i32::try_from(n).ok());
+            self.ensure_latest(uri, req_version)?;
+
             // Phase 1: snapshot text under brief lock, then drop.
             // Formatting can shell out to perltidy, so we must NOT hold locks
             // during the format call (#4643 off-lock pattern).
