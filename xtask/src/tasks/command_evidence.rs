@@ -3,6 +3,7 @@
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -58,6 +59,37 @@ pub struct CommandEvidenceConfig {
     pub json_only: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct ProofSetSpec {
+    schema_version: String,
+    commands: Vec<ProofSetCommand>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProofSetCommand {
+    id: String,
+    program: String,
+    #[serde(default)]
+    args: Vec<String>,
+    cwd: Option<PathBuf>,
+    candidate: Option<String>,
+    timeout_secs: Option<u64>,
+    out_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProofSetItem {
+    id: String,
+    receipt: CommandEvidenceReceipt,
+}
+
+#[derive(Debug, Serialize)]
+struct ProofSetReceipt {
+    schema_version: &'static str,
+    commands: Vec<ProofSetItem>,
+    result: ResultClass,
+}
+
 struct CapturedOutput {
     status: ExitStatus,
     stdout: OutputCapture,
@@ -77,6 +109,70 @@ struct SpawnFailure {
 }
 
 pub fn run(config: CommandEvidenceConfig) -> Result<()> {
+    let json_only = config.json_only;
+    let receipt = execute(config)?;
+    emit_receipt(receipt, json_only)
+}
+
+/// Run a bounded proof set serially. Every entry runs once; a failure is
+/// retained in its own receipt and does not hide later entries.
+pub fn run_proof_set(path: &Path, json_only: bool) -> Result<()> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read proof-set specification {}", path.display()))?;
+    let spec: ProofSetSpec = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse proof-set specification {}", path.display()))?;
+    if spec.schema_version != "command-proof-set.v1" {
+        bail!(
+            "unsupported proof-set schema {:?}; expected command-proof-set.v1",
+            spec.schema_version
+        );
+    }
+    if spec.commands.is_empty() {
+        bail!("proof-set specification must contain at least one command");
+    }
+
+    let mut ids = HashSet::new();
+    let mut items = Vec::with_capacity(spec.commands.len());
+    for command in spec.commands {
+        if command.id.trim().is_empty() {
+            bail!("proof-set command id must not be empty");
+        }
+        if !ids.insert(command.id.clone()) {
+            bail!("proof-set command id {:?} is duplicated", command.id);
+        }
+        let receipt = execute(CommandEvidenceConfig {
+            program: command.program,
+            args: command.args,
+            cwd: command.cwd,
+            candidate: command.candidate,
+            timeout: command.timeout_secs.map(Duration::from_secs),
+            out_dir: command.out_dir,
+            json_only: true,
+        })?;
+        items.push(ProofSetItem { id: command.id, receipt });
+    }
+
+    let result = items
+        .iter()
+        .map(|item| item.receipt.result)
+        .find(|result| *result != ResultClass::Success)
+        .unwrap_or(ResultClass::Success);
+    let receipt =
+        ProofSetReceipt { schema_version: "command-proof-set.v1", commands: items, result };
+    if !json_only {
+        for item in &receipt.commands {
+            println!("{}: {:?}", item.id, item.receipt.result);
+        }
+    }
+    println!("{}", serde_json::to_string_pretty(&receipt)?);
+    if receipt.result == ResultClass::Success {
+        Ok(())
+    } else {
+        bail!("proof-set result: {:?}", receipt.result)
+    }
+}
+
+fn execute(config: CommandEvidenceConfig) -> Result<CommandEvidenceReceipt> {
     if config.program.trim().is_empty() {
         bail!("program must not be empty");
     }
@@ -126,7 +222,7 @@ pub fn run(config: CommandEvidenceConfig) -> Result<()> {
                 stderr_excerpt: String::new(),
                 result: failure.result,
             };
-            return emit_receipt(receipt, config.json_only);
+            return Ok(receipt);
         }
     };
     let ended = Utc::now();
@@ -157,7 +253,7 @@ pub fn run(config: CommandEvidenceConfig) -> Result<()> {
         result,
     };
 
-    emit_receipt(receipt, config.json_only)
+    Ok(receipt)
 }
 
 fn emit_receipt(receipt: CommandEvidenceReceipt, json_only: bool) -> Result<()> {
@@ -375,13 +471,22 @@ fn redact_secrets(text: &str) -> String {
 }
 
 fn render_argv(argv: &[String]) -> String {
-    argv.iter().map(|arg| redact_secrets(arg)).collect::<Vec<_>>().join(" ")
+    argv.iter().map(|arg| render_argument(&redact_secrets(arg))).collect::<Vec<_>>().join(" ")
+}
+
+fn render_argument(argument: &str) -> String {
+    if argument.chars().all(|ch| ch.is_ascii_alphanumeric() || "-_.:/\\".contains(ch)) {
+        argument.to_string()
+    } else {
+        format!("\"{}\"", argument.replace('"', "\\\""))
+    }
 }
 
 fn sanitize_filename(value: &str) -> String {
     value
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '_' })
+        .take(80)
         .collect()
 }
 
@@ -411,7 +516,17 @@ mod tests {
     #[test]
     fn argv_rendering_redacts_secret_like_values() {
         let rendered = render_argv(&["tool".to_string(), "--token=abc".to_string()]);
-        assert_eq!(rendered, "tool --token=<redacted>");
+        assert_eq!(rendered, "tool \"--token=<redacted>\"");
+    }
+
+    #[test]
+    fn argv_rendering_preserves_display_boundaries() {
+        let rendered = render_argv(&[
+            "tool".to_string(),
+            "path with spaces".to_string(),
+            "quote\"value".to_string(),
+        ]);
+        assert_eq!(rendered, "tool \"path with spaces\" \"quote\\\"value\"");
     }
 
     #[test]
@@ -426,6 +541,42 @@ mod tests {
         let capture = join_stream(Some(read_stream(Cursor::new(input))), "stdout")?;
         assert_eq!(capture.bytes.len(), MAX_CAPTURE_BYTES);
         assert!(capture.truncated);
+        Ok(())
+    }
+
+    #[test]
+    fn filename_component_is_bounded_for_long_windows_paths() {
+        let filename = sanitize_filename(&"C:\\very-long-program-name".repeat(20));
+        assert_eq!(filename.len(), 80);
+    }
+
+    #[test]
+    fn proof_set_runs_entries_in_order_and_preserves_each_result() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let spec = dir.path().join("proof-set.json");
+        let output = dir.path().join("evidence");
+        let program = if cfg!(windows) { "cmd" } else { "sh" };
+        let first_args = if cfg!(windows) {
+            vec!["/C".to_string(), "exit".to_string(), "0".to_string()]
+        } else {
+            vec!["-c".to_string(), "exit 0".to_string()]
+        };
+        let second_args = if cfg!(windows) {
+            vec!["/C".to_string(), "exit".to_string(), "7".to_string()]
+        } else {
+            vec!["-c".to_string(), "exit 7".to_string()]
+        };
+        let document = serde_json::json!({
+            "schema_version": "command-proof-set.v1",
+            "commands": [
+                {"id": "first", "program": program, "args": first_args, "out_dir": output},
+                {"id": "second", "program": program, "args": second_args, "out_dir": output}
+            ]
+        });
+        fs::write(&spec, serde_json::to_vec(&document)?)?;
+        assert!(run_proof_set(&spec, true).is_err());
+        let logs = fs::read_dir(&output)?.count();
+        assert_eq!(logs, 4, "each command must retain stdout and stderr evidence");
         Ok(())
     }
 }
