@@ -572,7 +572,7 @@ impl DebugAdapter {
     }
 
     #[cfg(test)]
-    fn seed_session_for_test(&self) -> std::io::Result<()> {
+    fn seed_session_for_test(&self) -> io::Result<()> {
         // Spawn a cheap no-op subprocess so we have a real Child (no unsafe zeroed memory).
         let child = Self::spawn_noop_child_for_test()?;
         let mut session = lock_or_recover(&self.session, "debug_adapter.seed_session");
@@ -591,7 +591,7 @@ impl DebugAdapter {
     /// Tries perl first, then a platform-native no-op. Returns an error if no
     /// subprocess can be spawned at all — that indicates a broken CI environment.
     #[cfg(test)]
-    fn spawn_noop_child_for_test() -> std::io::Result<std::process::Child> {
+    fn spawn_noop_child_for_test() -> io::Result<Child> {
         use std::process::{Command, Stdio};
         // perl -e 1 exits immediately with no output.
         if let Ok(c) = Command::new("perl")
@@ -617,7 +617,7 @@ impl DebugAdapter {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| {
-                std::io::Error::new(e.kind(), format!("cannot spawn noop subprocess ({prog}): {e}"))
+                io::Error::new(e.kind(), format!("cannot spawn noop subprocess ({prog}): {e}"))
             })
     }
 
