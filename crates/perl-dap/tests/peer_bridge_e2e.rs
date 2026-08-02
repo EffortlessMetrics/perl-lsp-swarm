@@ -181,6 +181,30 @@ fn response_body<'a>(
     }
 }
 
+#[test]
+fn response_body_reports_malformed_responses() -> Result<(), Box<dyn std::error::Error>> {
+    let event = DapMessage::Event { seq: 1, event: "stopped".to_string(), body: None };
+    let event_error = response_body(&event, "initialize")
+        .err()
+        .ok_or("non-response message unexpectedly succeeded")?;
+    assert!(event_error.to_string().contains("initialize"));
+
+    let missing_body = DapMessage::Response {
+        seq: 1,
+        request_seq: 1,
+        success: true,
+        command: "initialize".to_string(),
+        body: None,
+        message: None,
+    };
+    let body_error = response_body(&missing_body, "initialize")
+        .err()
+        .ok_or("bodyless response unexpectedly succeeded")?;
+    assert!(body_error.to_string().contains("initialize"));
+
+    Ok(())
+}
+
 fn find_event<'a>(msgs: &'a [DapMessage], name: &str) -> Option<&'a DapMessage> {
     msgs.iter().find(|m| matches!(m, DapMessage::Event { event, .. } if event == name))
 }
