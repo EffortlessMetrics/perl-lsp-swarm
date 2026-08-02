@@ -1065,7 +1065,9 @@ fn measure_files(
             line_count,
             error_node_count: salvage.error_node_count,
         });
-        recovered_node_count = recovered_node_count.saturating_add(salvage.recovered_count);
+        recovered_node_count = recovered_node_count
+            .saturating_add(salvage.recovered_count)
+            .saturating_add(salvage.blocking_non_recovered_count);
         match salvage.class {
             RecoverySalvageClass::Clean => {
                 clean_files += 1;
@@ -1086,12 +1088,15 @@ fn measure_files(
                 total_dirty_files += 1;
                 files_with_structured_recovery_only += 1;
                 if options.verbose {
+                    let total_blocking = salvage
+                        .recovered_count
+                        .saturating_add(salvage.blocking_non_recovered_count);
                     file_results.push(FileResult {
                         path: portable_path.clone(),
                         status: "recovered".to_string(),
                         error_node_count: 0,
                         first_error: None,
-                        recovered_count: Some(salvage.recovered_count),
+                        recovered_count: Some(total_blocking),
                         parse_duration_ms: Some(parse_duration_ms),
                         line_count: Some(line_count),
                     });

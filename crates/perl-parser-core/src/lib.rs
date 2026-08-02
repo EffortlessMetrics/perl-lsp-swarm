@@ -164,7 +164,8 @@ pub use error::classifier::{RecoverySalvageMetrics, classify_recovery_salvage};
 /// Parse error, budget, and output types.
 pub use error::{
     BudgetTracker, ErrorCategory, ErrorClass, ParseBudget, ParseDiagnosticSeverity, ParseError,
-    ParseOutput, ParseResult, RecoverySalvageClass, RecoverySalvageProfile,
+    ParseOutput, ParseResult, RecoveryKind, RecoverySalvageClass, RecoverySalvageProfile,
+    RecoverySite,
 };
 
 /// Builtin function signature lookup tables.
