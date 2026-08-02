@@ -74,6 +74,12 @@ or Agent Teams only when another context, oracle, tool surface, or review method
 materially changes the evidence or reduces elapsed work. Teams are useful when agents
 must genuinely communicate; they are not the default lifecycle.
 
+Delegate when the evidence-to-answer compression ratio is high: CI or log triage,
+corpus or repository-wide searches, dependency/API audits, external-source collection,
+failure bisection, broad inventories, or an independently useful proof adversary. The
+child returns bounded evidence and references; the warm root keeps decisions,
+contradictions, and integration. This is an evidence-cost trigger, not a required relay.
+
 One coherent claim normally has one current candidate, and one writer mutates that
 candidate at a time. Before creating another candidate, check only for an equivalent
 current PR and explicit prerequisites. Otherwise focus on the selected claim. If Git
@@ -122,6 +128,25 @@ for remote-only proof, real collaboration, early visible ownership, or a protect
 integration experiment.
 
 A clean review is valid. Never manufacture a finding or edit to prove review effort.
+
+## Review
+
+Review is **directed, falsifying, and verified**. Aim it at the declared claim and its
+real production seam, and try to disprove the claim rather than merely restating the
+diff or green checks. Where applicable, establish:
+
+- claim honesty against current source and external authority;
+- semantic and external correctness;
+- proof discrimination against a realistic wrong implementation;
+- production-path reachability;
+- negative and fallback behavior;
+- compatibility and rollback;
+- remaining uncertainty and evidence limits.
+
+A clean review is valid when these questions were considered and no actionable finding
+remains. Do not manufacture a finding, edit, or second identity to make review visible.
+Material candidate or claim changes require affected proof and a fresh review of the
+resulting candidate.
 
 ## Proof and currentness
 

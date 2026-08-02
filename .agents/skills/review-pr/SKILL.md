@@ -42,6 +42,12 @@ Review:
 - applicable vision, authority, claim, external-truth, security, compatibility, and packaging lenses;
 - what the evidence establishes and does not establish.
 
+The review is directed at the declared claim, falsifying rather than merely descriptive,
+and verified against the relevant proof and source authority. Where applicable, check
+claim honesty, semantic and external correctness, proof discrimination, production-path
+reachability, negative and fallback behavior, compatibility and rollback, and remaining
+uncertainty. A clean review is valid; do not manufacture findings or edits.
+
 Use Codex native review or a read-only reviewer as an instrument where useful, then publish material conclusions through GitHub's submitted review and inline threads.
 
 A review with no material findings is valid.
