@@ -116,18 +116,12 @@
 #     comment's author, to keep the query cheap) — so the count itself is
 #     not subject to the "first N" pagination cap.
 #
-# ── Independent-review-pending marker (#3693) ───────────────────────────────
+# ── Native pending-review state (#3693) ─────────────────────────────────────
 #
 # A correctness/deep review existing only in an orchestrator's task list is
-# not repository truth and cannot protect the merge (the other half of the
-# #3647 root cause: the PR merged while its deep review was still running,
-# because nothing in the repo made that in-flight review visible). This
-# script treats the `needs-deep-review` label as a durable, repo-visible
-# blocking marker: while present, convergence is BLOCKED regardless of
-# thread/review state. The label is expected to be applied when an
-# independent review is launched and cleared once the reviewer posts a
-# verdict and any confirmed defects are fixed/refuted — see the sequence in
-# issue #3693.
+# not repository truth and cannot protect the merge. Native `reviewRequests`,
+# current-head review state, review threads, and receipts are the durable
+# provider-visible evidence; lifecycle labels are not convergence authority.
 #
 # ── Pagination ───────────────────────────────────────────────────────────────
 #
@@ -151,7 +145,7 @@
 #      (neither active nor outdated — see the ACTIVE vs outdated vs resolved
 #      section above), NO resolved thread lacks a disposition reply (see the
 #      resolved-without-disposition section above), and NO independent
-#      review is in flight (`needs-deep-review` label absent). (Stale bot
+#      review is in flight (no native review request remains). (Stale bot
 #      reviews do not block — see bot-exclusion note above.) Merge-ready
 #      from a review-convergence standpoint (other gates — CI, other labels
 #      — are separate and NOT checked by this script).
@@ -165,10 +159,11 @@
 # stdout: a short human-readable summary line + a machine-readable JSON
 # object on the final line (for callers that want structured output):
 #   {"pr":N,"headRefOid":"...","converged":true|false,
-#    "pending_reviewers":[...],"stale_reviews":[...],"stale_bot_reviews":[...],
+#    "pending_reviewers":[...],"independent_review_pending":true|false,
+#    "current_change_requests":[...],"stale_reviews":[...],"stale_bot_reviews":[...],
 #    "unresolved_active":N,"unresolved_outdated":N,"unresolved_total":N,
 #    "resolved_threads":N,"resolved_without_disposition":N,
-#    "independent_review_pending":true|false}
+#    ...}
 # ("stale_reviews" is human reviewers only — BLOCKING. "stale_bot_reviews" is
 # auto-review-app reviewers whose latest review predates HEAD — ADVISORY,
 # never blocking; see the bot-exclusion note above. "unresolved_active" and
@@ -176,7 +171,8 @@
 # "resolved_without_disposition" counts RESOLVED threads whose comment
 # count is <= 1, i.e. no reply was ever posted — BLOCKING; see the
 # resolved-without-disposition section above. "independent_review_pending"
-# reflects the `needs-deep-review` label — BLOCKING while true.)
+# is a compatibility alias derived from native review requests — BLOCKING
+# while true. A current-head CHANGES_REQUESTED review also blocks.)
 # stderr: BLOCK lines for anything that fails convergence (unresolved
 # threads — active and outdated; resolved-without-disposition threads; a
 # pending independent review); ADVISORY lines only for stale bot reviews,
@@ -414,7 +410,7 @@ commit_reachable_from_head() {
 #
 # Test seam: when CONVERGENCE_TEST_FIXTURE_DIR is set, read
 # "$CONVERGENCE_TEST_FIXTURE_DIR/pr_view.json" (same shape as
-# `gh pr view --json headRefOid,reviewRequests,labels,author`) instead of
+# `gh pr view --json headRefOid,reviewRequests,author`) instead of
 # calling `gh`. The `author` field (#3693 R1) carries the PR author's login,
 # used as the canonical "writer" identity for the writer!=verifier check.
 if [[ -n "$CONVERGENCE_TEST_FIXTURE_DIR" ]]; then
@@ -424,7 +420,7 @@ if [[ -n "$CONVERGENCE_TEST_FIXTURE_DIR" ]]; then
         exit 2
     fi
     PR_META="$(jq -c '.' "$fixture_file")"
-elif ! PR_META="$(gh pr view "$PR" --repo "$OWNER/$REPO" --json headRefOid,reviewRequests,labels,author 2>&1)"; then
+elif ! PR_META="$(gh pr view "$PR" --repo "$OWNER/$REPO" --json headRefOid,reviewRequests,author 2>&1)"; then
     echo "ERROR: could not fetch PR #$PR metadata: $PR_META" >&2
     exit 2
 fi
@@ -447,14 +443,8 @@ PENDING_REVIEWERS="$(printf '%s' "$PR_META" | jq -c '[.reviewRequests[]? | (.log
 PENDING_REVIEWER_COUNT="$(printf '%s' "$PENDING_REVIEWERS" | jq 'length')"
 
 # ── Independent-review-pending marker (#3693) ───────────────────────────────
-# `.labels` is a plain array of `{name, ...}` objects (no User/Team-style
-# fallback trap like reviewRequests above — every label node always has
-# `.name`). Iterating `.labels[]?` on a missing/null `labels` key yields no
-# results rather than erroring, so older fixtures without a "labels" key
-# are still handled safely.
-LABELS="$(printf '%s' "$PR_META" | jq -c '[.labels[]?.name]')"
 INDEPENDENT_REVIEW_PENDING="false"
-if printf '%s' "$LABELS" | jq -e 'index("needs-deep-review") != null' >/dev/null; then
+if [[ "$PENDING_REVIEWER_COUNT" -gt 0 ]]; then
     INDEPENDENT_REVIEW_PENDING="true"
 fi
 
@@ -722,11 +712,6 @@ if [[ "$RESOLVED_WITHOUT_DISPOSITION_COUNT" -gt 0 ]]; then
         opener="$(printf '%s' "$row" | jq -r '.comments.nodes[0].author.login // "unknown"')"
         echo "BLOCK PR #$PR: resolved review thread on '$path' (id=$id, opened by '$opener') has NO disposition reply — post 'Disposition: fixed|refuted|superseded|follow-up' with evidence before resolving (resolved-to-clear signature; see #3647/#3693)" >&2
     done < <(printf '%s' "$RESOLVED_WITHOUT_DISPOSITION_THREADS" | jq -c '.[]')
-fi
-
-if [[ "$INDEPENDENT_REVIEW_PENDING" == "true" ]]; then
-    CONVERGED="false"
-    echo "BLOCK PR #$PR: 'needs-deep-review' label present — an independent review is in flight; convergence is blocked until the reviewer posts a verdict, confirmed defects are fixed/refuted, and the label clears (see #3693)" >&2
 fi
 
 # ══ R1 protocol-axis verdicts (#3693) — advisory unless REVIEW_PROTOCOL_ENFORCE=1 ══
