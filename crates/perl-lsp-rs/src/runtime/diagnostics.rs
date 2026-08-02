@@ -292,7 +292,9 @@ impl PullDiagnosticsOrchestrator {
         // Run analysis
         let result = {
             let mut guard = self.critic_analyzer.lock();
-            guard.as_mut().map(|a| a.analyze_file_with_hash(&file_path, content_hash))
+            guard
+                .as_mut()
+                .map(|a| a.analyze_file_with_hash(&file_path, content_hash, Some(doc_text)))
         };
 
         match result {
@@ -2035,7 +2037,9 @@ impl LspServer {
         // only for the duration of the `analyze_file_with_hash` call.
         let result = {
             let mut guard = self.critic_analyzer.lock();
-            guard.as_mut().map(|a| a.analyze_file_with_hash(&file_path, content_hash))
+            guard
+                .as_mut()
+                .map(|a| a.analyze_file_with_hash(&file_path, content_hash, Some(doc_text)))
         };
 
         match result {
