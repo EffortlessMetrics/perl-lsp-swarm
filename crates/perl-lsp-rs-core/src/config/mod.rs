@@ -1038,6 +1038,21 @@ fn validate_resource_include_path_entry(
         if let Err(err) = validate_workspace_path(candidate, root) {
             return Err(RejectedClientIncludePathReason::EscapesWorkspace(err.to_string()));
         }
+    } else {
+        // No workspace root configured (e.g. single-file mode). Fail-closed:
+        // reject relative paths containing `..` components, which could
+        // escape to arbitrary filesystem locations. Without this, a hostile
+        // client could set includePaths to `../../etc/passwd` and probe
+        // files outside any workspace boundary. (#5345)
+        if candidate.components().any(|c| c == std::path::Component::ParentDir) {
+            tracing::warn!(
+                entry = trimmed,
+                "rejecting relative include path with '..' because no workspace root is configured"
+            );
+            return Err(RejectedClientIncludePathReason::EscapesWorkspace(
+                "relative path with '..' cannot be validated without a workspace root".to_string(),
+            ));
+        }
     }
 
     Ok(())
@@ -5207,5 +5222,25 @@ api_key_prefix = "Attacker "
             suggest_rule_id("native.vars.unused_parameter", &known),
             Some("native.variables.unused_parameter")
         );
+    }
+
+    #[test]
+    fn include_path_with_parent_dir_rejected_when_no_workspace_root() {
+        // #5345: when no workspace root is configured (single-file mode),
+        // relative paths with `..` must be rejected fail-closed instead of
+        // passing through unvalidated.
+        let result = validate_resource_include_path_entry("../../etc/passwd", None);
+        assert!(
+            matches!(result, Err(RejectedClientIncludePathReason::EscapesWorkspace(_))),
+            "relative path with '..' must be rejected when no workspace root is set, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn include_path_without_parent_dir_accepted_when_no_workspace_root() {
+        // A simple relative path like "lib" is safe even without a workspace
+        // root — it has no `..` component to escape.
+        let result = validate_resource_include_path_entry("lib", None);
+        assert!(result.is_ok(), "simple relative path must be accepted, got: {result:?}");
     }
 }
