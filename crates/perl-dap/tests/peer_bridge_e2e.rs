@@ -236,6 +236,8 @@ fn full_dap_session_drives_the_live_peer_backend() -> Result<(), Box<dyn std::er
         assert_eq!(b["threadId"], 1);
         assert_eq!(b["allThreadsStopped"], true);
     } else {
+        drop(bridge);
+        let _ = peer.join();
         return Err("stopped event had no body".into());
     }
 
