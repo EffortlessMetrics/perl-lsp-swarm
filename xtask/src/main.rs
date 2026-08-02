@@ -2923,6 +2923,15 @@ enum CommandEvidenceCommand {
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
+    /// Run a small serial set of direct commands and retain one receipt per command.
+    ProofSet {
+        /// JSON proof-set specification.
+        #[arg(long)]
+        spec: PathBuf,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4175,6 +4184,9 @@ fn run_cli(cli: Cli) -> Result<()> {
                 out_dir,
                 json_only: json,
             }),
+            CommandEvidenceCommand::ProofSet { spec, json } => {
+                command_evidence::run_proof_set(&spec, json)
+            }
         },
         Commands::RepoHygiene { base, head, receipt, summary } => {
             repo_hygiene::run(repo_hygiene::RepoHygieneConfig { base, head, receipt, summary })
