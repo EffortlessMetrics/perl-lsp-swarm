@@ -3,11 +3,13 @@
 //! README badges stay repo-scoped. These commands produce diff-scoped artifacts
 //! under `target/` for PR review, annotations, and mutation routing.
 
+use crate::tasks::change_set::{self, ArtifactIdentity};
 use crate::tasks::git_context::{default_windows_drive_mount_root, git_output_with_mount_root};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use glob::Pattern;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
@@ -24,6 +26,7 @@ const DEFAULT_HEAD: &str = "HEAD";
 const PR_EVIDENCE_JSON: &str = "target/ripr/pr/repo-exposure.json";
 const PR_EVIDENCE_MD: &str = "target/ripr/pr/repo-exposure.md";
 const PR_DIFF: &str = "target/ripr/pr/pr.diff";
+const PR_DIFF_RECEIPT: &str = "target/ripr/pr/committed-diff.json";
 /// Raw `ripr check --format json` output, uploaded as a CI artifact for diagnostics (#1346).
 /// The `repo-exposure.json` summary only contains per-bucket counts, not the `findings[]`
 /// array.  Without `findings[]` it is impossible to diagnose suppression mismatches offline.
@@ -964,6 +967,14 @@ fn pr_evidence_packet(
                 "kind": "other",
                 "scope": "diff",
                 "available": true
+            },
+            {
+                "label": "Committed diff status receipt",
+                "path": PR_DIFF_RECEIPT,
+                "kind": "json",
+                "scope": "diff",
+                "available": true,
+                "required": true
             }
         ],
         "warnings": warnings,
@@ -1803,16 +1814,123 @@ fn verify_revision(repo: &Path, rev: &str) -> Result<()> {
 }
 
 fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<String>> {
-    let range = format!("{base}...{head}");
-    // A shallow clone (Claude Code on the web, default Actions checkout) has no
-    // common history, so `base...head` has no merge base and git diff fails with
-    // an opaque message. Attach actionable guidance as context while preserving
-    // the underlying git error as the cause; CI is unaffected (ripr.yml uses
-    // fetch-depth: 0).
-    let output =
-        run_git_output(repo, &["diff", "--name-only", "--diff-filter=ACMR", range.as_str()])
-            .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
-    Ok(output.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect())
+    Ok(resolve_committed_diff(repo, base, head)?.changed_paths)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CommittedDiffEntry {
+    status: String,
+    old_path: Option<String>,
+    new_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CommittedDiffReceipt {
+    schema_version: &'static str,
+    base: String,
+    head: String,
+    base_sha: String,
+    head_sha: String,
+    diff_digest: String,
+    changed_paths: Vec<String>,
+    entries: Vec<CommittedDiffEntry>,
+}
+
+fn resolve_committed_diff(repo: &Path, base: &str, head: &str) -> Result<CommittedDiffReceipt> {
+    let resolved = change_set::resolve_change_set(
+        ArtifactIdentity::CommitRange { base: base.to_string(), head: head.to_string() },
+        repo,
+    )
+    .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
+    let (resolved_base, resolved_head) = match resolved.identity {
+        ArtifactIdentity::CommitRange { base, head } => (base, head),
+        ArtifactIdentity::StagedTree { .. } => {
+            return Err(eyre!("committed diff resolver returned a staged-tree identity"));
+        }
+    };
+    let base_sha = resolved.base_sha.ok_or_else(|| eyre!("committed diff has no base SHA"))?;
+    let head_sha = resolved.head_sha.ok_or_else(|| eyre!("committed diff has no head SHA"))?;
+    let range = format!("{resolved_base}...{resolved_head}");
+    let raw = run_git_bytes(
+        repo,
+        &[
+            "diff",
+            "--name-status",
+            "-z",
+            "--find-renames",
+            "--find-copies",
+            "--diff-filter=ACDMRT",
+            range.as_str(),
+        ],
+    )
+    .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
+    let entries = parse_name_status_z(&raw)?;
+    let changed_paths = entries
+        .iter()
+        .flat_map(|entry| [entry.old_path.as_deref(), entry.new_path.as_deref()])
+        .flatten()
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut hasher = Sha256::new();
+    hasher.update(base_sha.as_bytes());
+    hasher.update([0]);
+    hasher.update(head_sha.as_bytes());
+    hasher.update(serde_json::to_vec(&entries)?);
+    let diff_digest = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(CommittedDiffReceipt {
+        schema_version: "ripr_committed_diff.v1",
+        base: resolved_base,
+        head: resolved_head,
+        base_sha,
+        head_sha,
+        diff_digest,
+        changed_paths,
+        entries,
+    })
+}
+
+fn parse_name_status_z(raw: &[u8]) -> Result<Vec<CommittedDiffEntry>> {
+    let fields = raw.split(|byte| *byte == 0).filter(|field| !field.is_empty()).collect::<Vec<_>>();
+    let mut entries = Vec::new();
+    let mut index = 0;
+    while index < fields.len() {
+        let status = String::from_utf8(fields[index].to_vec())
+            .context("git name-status output contained a non-UTF-8 status")?;
+        let code = status.as_bytes().first().copied().unwrap_or_default() as char;
+        let path = |field: &[u8]| {
+            String::from_utf8(field.to_vec())
+                .context("git name-status output contained a non-UTF-8 path")
+        };
+        match code {
+            'R' | 'C' => {
+                let old_path =
+                    fields.get(index + 1).ok_or_else(|| eyre!("missing old path for {status}"))?;
+                let new_path =
+                    fields.get(index + 2).ok_or_else(|| eyre!("missing new path for {status}"))?;
+                entries.push(CommittedDiffEntry {
+                    status,
+                    old_path: Some(path(old_path)?),
+                    new_path: Some(path(new_path)?),
+                });
+                index += 3;
+            }
+            'A' | 'D' | 'M' | 'T' => {
+                let value =
+                    fields.get(index + 1).ok_or_else(|| eyre!("missing path for {status}"))?;
+                let value = path(value)?;
+                entries.push(CommittedDiffEntry {
+                    old_path: (code == 'D').then_some(value.clone()),
+                    new_path: (code != 'D').then_some(value),
+                    status,
+                });
+                index += 2;
+            }
+            other => bail!("unsupported git name-status code {other:?} in {status:?}"),
+        }
+    }
+    Ok(entries)
 }
 
 fn is_shallow_clone(repo: &Path) -> bool {
@@ -1841,9 +1959,20 @@ fn merge_base_failure_guidance(base: &str, head: &str, shallow: bool) -> String 
 }
 
 fn write_pr_diff(repo: &Path, base: &str, head: &str) -> Result<()> {
-    let range = format!("{base}...{head}");
+    let receipt = resolve_committed_diff(repo, base, head)?;
+    let range = format!("{}...{}", receipt.base, receipt.head);
     let diff = run_git_output(repo, &["diff", "--binary", "--no-ext-diff", range.as_str()])?;
-    write_text(&repo.join(PR_DIFF), &diff)
+    write_text(&repo.join(PR_DIFF), &diff)?;
+    let receipt_json = format_json(&serde_json::to_value(receipt)?)?;
+    write_text(&repo.join(PR_DIFF_RECEIPT), &receipt_json)
+}
+
+fn run_git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let output = git_output_with_mount_root(repo, args, default_windows_drive_mount_root())?;
+    if !output.status.success() {
+        bail!("git {} failed with status {}", args.join(" "), output.status);
+    }
+    Ok(output.stdout)
 }
 
 fn run_git_output(repo: &Path, args: &[&str]) -> Result<String> {
@@ -4040,6 +4169,24 @@ esac
         // Exercise the shallow probe; its value is environment-dependent, so we
         // only assert it returns without error.
         let _ = is_shallow_clone(&repo);
+        Ok(())
+    }
+
+    #[test]
+    fn name_status_parser_preserves_acdmrt_entries() -> Result<()> {
+        let raw = b"A\0added.rs\0C75\0source.rs\0copy.rs\0D\0deleted.rs\0M\0modified.rs\0R100\0old.rs\0renamed.rs\0T\0typed.rs\0";
+        let entries = parse_name_status_z(raw)?;
+        assert_eq!(entries.len(), 6);
+        assert_eq!(entries[0].status, "A");
+        assert_eq!(entries[0].new_path.as_deref(), Some("added.rs"));
+        assert_eq!(entries[1].status, "C75");
+        assert_eq!(entries[1].old_path.as_deref(), Some("source.rs"));
+        assert_eq!(entries[1].new_path.as_deref(), Some("copy.rs"));
+        assert_eq!(entries[2].old_path.as_deref(), Some("deleted.rs"));
+        assert_eq!(entries[3].new_path.as_deref(), Some("modified.rs"));
+        assert_eq!(entries[4].old_path.as_deref(), Some("old.rs"));
+        assert_eq!(entries[4].new_path.as_deref(), Some("renamed.rs"));
+        assert_eq!(entries[5].status, "T");
         Ok(())
     }
 
