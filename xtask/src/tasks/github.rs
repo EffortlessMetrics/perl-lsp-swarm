@@ -31,6 +31,19 @@ pub struct CandidateFacts {
     pub identity_result: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct RequiredStatusChecksPayload {
+    #[serde(default)]
+    contexts: Vec<String>,
+    #[serde(default)]
+    checks: Vec<RequiredStatusCheck>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RequiredStatusCheck {
+    context: String,
+}
+
 pub fn run_labels() -> Result<()> {
     let root = crate::utils::project_root()?;
     let script = root.join("scripts").join("gh").join("ensure-labels.sh");
@@ -145,24 +158,34 @@ fn collect_candidate(pr: u64) -> Result<CandidateFacts> {
         // results against this candidate head, so currentness is not proven
         // by this snapshot.
         required_contexts_result: "NOT_PROVEN".to_string(),
-        identity_result: "current".to_string(),
+        identity_result: "NOT_PROVEN".to_string(),
     })
 }
 
 fn collect_required_contexts(repository: &str, base_ref: &str) -> Result<Vec<RequiredContext>> {
     let encoded_base_ref = encode_path_segment(base_ref);
     let branch_endpoint = format!(
-        "repos/{repository}/branches/{encoded_base_ref}/protection/required_status_checks/contexts"
+        "repos/{repository}/branches/{encoded_base_ref}/protection/required_status_checks"
     );
     let branch_raw = command_text("gh", &["api", &branch_endpoint])?;
-    let branch_names = serde_json::from_str::<Vec<String>>(&branch_raw)
-        .context("failed to parse required branch-protection contexts")?;
+    let branch_names = required_context_names(&branch_raw)?;
 
     let rules_endpoint = format!("repos/{repository}/rules/branches/{encoded_base_ref}");
     let rules_raw = command_text("gh", &["api", &rules_endpoint])?;
     let rules: Value = serde_json::from_str(&rules_raw).context("failed to parse branch rules")?;
 
     Ok(merge_required_contexts(&branch_names, &rules))
+}
+
+fn required_context_names(raw: &str) -> Result<Vec<String>> {
+    if let Ok(payload) = serde_json::from_str::<RequiredStatusChecksPayload>(raw) {
+        let mut names = BTreeSet::new();
+        names.extend(payload.contexts);
+        names.extend(payload.checks.into_iter().map(|check| check.context));
+        return Ok(names.into_iter().collect());
+    }
+    serde_json::from_str::<Vec<String>>(raw)
+        .context("failed to parse required branch-protection checks")
 }
 
 fn merge_required_contexts(branch_names: &[String], rules: &Value) -> Vec<RequiredContext> {
@@ -209,12 +232,7 @@ fn encode_path_segment(value: &str) -> String {
     encoded
 }
 
-fn hex_digit(value: u8) -> char {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    HEX[usize::from(value & 0x0f)] as char
-}
-
-fn command_text(program: &str, args: &[&str]) -> Result<String> {
+pub(crate) fn command_text(program: &str, args: &[&str]) -> Result<String> {
     let output = Command::new(program)
         .args(args)
         .output()
@@ -255,7 +273,7 @@ fn identity_result(expected_head: Option<&str>, actual_head: &str) -> &'static s
     match expected_head {
         Some(expected) if expected == actual_head => "current",
         Some(_) => "moved",
-        None => "current",
+        None => "NOT_PROVEN",
     }
 }
 
@@ -305,7 +323,7 @@ mod tests {
     fn expected_head_comparison_is_explicit() {
         assert_eq!(identity_result(Some("abc123"), "abc123"), "current");
         assert_eq!(identity_result(Some("old456"), "abc123"), "moved");
-        assert_eq!(identity_result(None, "abc123"), "current");
+        assert_eq!(identity_result(None, "abc123"), "NOT_PROVEN");
     }
 
     #[test]
@@ -377,6 +395,15 @@ mod tests {
             Some("branch_protection+ruleset")
         );
         assert!(contexts.iter().any(|context| context.name == "Ruleset only"));
+        Ok(())
+    }
+
+    #[test]
+    fn required_context_names_accepts_native_checks_and_legacy_contexts() -> Result<()> {
+        let names = required_context_names(
+            r#"{"contexts":["legacy"],"checks":[{"context":"native"}]}"#,
+        )?;
+        assert_eq!(names, vec!["legacy".to_string(), "native".to_string()]);
         Ok(())
     }
 }

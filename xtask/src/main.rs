@@ -1222,26 +1222,6 @@ enum Commands {
         command: GhGithubCommand,
     },
 
-    /// Capture paginated review and thread facts for one GitHub pull request.
-    GhReviewConvergence {
-        /// Pull request number.
-        #[arg(long)]
-        pr: u64,
-        /// Emit JSON only.
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Compose candidate, review, required-check, and protected-merge facts.
-    GhPreflight {
-        /// Pull request number.
-        #[arg(long)]
-        pr: u64,
-        /// Emit JSON only.
-        #[arg(long)]
-        json: bool,
-    },
-
     /// Generate bindings
     #[cfg(feature = "parser-tasks")]
     Bindings {
@@ -2953,6 +2933,24 @@ enum GhGithubCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Capture paginated review and thread facts for one GitHub pull request.
+    ReviewConvergence {
+        /// Pull request number.
+        #[arg(long)]
+        pr: u64,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Compose candidate, review, required-check, and protected-merge facts.
+    Preflight {
+        /// Pull request number.
+        #[arg(long)]
+        pr: u64,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4339,11 +4337,11 @@ fn run_cli(cli: Cli) -> Result<()> {
             GhGithubCommand::Candidate { pr, expected_head, fixture, json } => {
                 github::run_candidate(pr, expected_head, fixture, json)
             }
+            GithubCommand::ReviewConvergence { pr, json } => {
+                github_review::run_review_convergence(pr, json)
+            }
+            GithubCommand::Preflight { pr, json } => github_preflight::run_preflight(pr, json),
         },
-        Commands::GhReviewConvergence { pr, json } => {
-            github_review::run_review_convergence(pr, json)
-        }
-        Commands::GhPreflight { pr, json } => github_preflight::run_preflight(pr, json),
         Commands::CorpusAudit { corpus_path, output, check, fresh } => {
             corpus_audit::run(corpus_audit::AuditConfig {
                 corpus_path,
