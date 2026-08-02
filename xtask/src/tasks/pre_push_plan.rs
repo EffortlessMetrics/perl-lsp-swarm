@@ -8,7 +8,13 @@ use sha2::{Digest, Sha256};
 
 use crate::tasks::change_set::{self, ArtifactIdentity};
 use crate::tasks::ci_scope;
+use crate::tasks::git_context::git_stdout_with_worktree_fallback;
 use crate::utils::project_root;
+
+/// Maximum reverse dependents selected for local pre-push proof. The wider
+/// closure is deferred to hosted proof; the source closure is sorted upstream,
+/// so this bound selects a deterministic subset.
+const MAX_BOUNDED_REVERSE_DEPENDENTS: usize = 3;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PrePushProofPlan {
@@ -51,6 +57,11 @@ fn plan_for_repository(root: &Path, base: &str, head: &str) -> Result<PrePushPro
     )?;
     let base_sha = resolved.base_sha.clone().context("change set did not resolve a base SHA")?;
     let head_sha = resolved.head_sha.clone().context("change set did not resolve a head SHA")?;
+    let checked_out_head =
+        git_stdout_with_worktree_fallback(root, &["rev-parse", "--verify", "HEAD^{commit}"])?;
+    if checked_out_head != head_sha {
+        bail!("pre-push plan head {head_sha} is not the checked-out HEAD {checked_out_head}");
+    }
     let metadata = ci_scope::load_metadata(root)?;
     let workspace_root = root.to_string_lossy().replace('\\', "/");
     let scope = ci_scope::classify_files(&resolved.changed_paths, &metadata, &workspace_root)?;
@@ -129,17 +140,27 @@ fn build_plan(input: PlannerInput) -> PrePushProofPlan {
                 reason: "prose-only change has no Rust compile floor".to_string(),
             }),
             "ci_config" => {
-                selected.push(ProofStep {
-                    class: "workflow_policy".to_string(),
-                    command: "cargo xtask workflow-policy-lint".to_string(),
-                    reason: "CI/configuration paths require policy validation".to_string(),
-                });
+                if changed_paths.iter().any(|path| path.starts_with(".github/workflows/")) {
+                    selected.push(ProofStep {
+                        class: "workflow_policy".to_string(),
+                        command: "cargo xtask workflow-policy-lint".to_string(),
+                        reason: "workflow changes require policy validation".to_string(),
+                    });
+                } else {
+                    posture = "BROAD_FALLBACK";
+                    selected.push(ProofStep {
+                        class: "broad_fallback".to_string(),
+                        command: "cargo xtask gates --tier pr-fast --receipt".to_string(),
+                        reason:
+                            "non-workflow CI/configuration change requires the bounded fallback"
+                                .to_string(),
+                    });
+                }
                 deferred.push(ProofStep {
                     class: "workspace_rust".to_string(),
                     command: "cargo test --workspace --locked".to_string(),
-                    reason:
-                        "workspace Rust proof is not the default floor for workflow-only changes"
-                            .to_string(),
+                    reason: "workspace Rust proof is deferred to hosted/integration proof"
+                        .to_string(),
                 });
             }
             "code" | "docs_as_code" => {
@@ -147,24 +168,26 @@ fn build_plan(input: PlannerInput) -> PrePushProofPlan {
                     posture = "BROAD_FALLBACK";
                     selected.push(ProofStep {
                         class: "broad_fallback".to_string(),
-                        command: "cargo xtask pr-fast".to_string(),
+                        command: "cargo xtask gates --tier pr-fast --receipt".to_string(),
                         reason: "code-like change did not map to an affected package".to_string(),
                     });
                 } else {
-                    let packages = affected_packages.join(",");
+                    let package_flags = cargo_package_flags(&affected_packages);
                     selected.push(ProofStep {
                         class: "rust_check".to_string(),
-                        command: format!("cargo check -p {packages} --locked"),
+                        command: format!("cargo check {package_flags} --locked"),
                         reason: "directly affected package set".to_string(),
                     });
                     selected.push(ProofStep {
                         class: "focused_clippy".to_string(),
-                        command: format!("cargo clippy -p {packages} --locked -- -D warnings"),
+                        command: format!(
+                            "cargo clippy {package_flags} --all-targets --locked -- -D warnings"
+                        ),
                         reason: "directly affected package set".to_string(),
                     });
                     selected.push(ProofStep {
                         class: "focused_tests".to_string(),
-                        command: format!("cargo test -p {packages} --all-targets --locked"),
+                        command: format!("cargo test {package_flags} --all-targets --locked"),
                         reason: "directly affected package set".to_string(),
                     });
                     deferred.push(ProofStep {
@@ -179,7 +202,7 @@ fn build_plan(input: PlannerInput) -> PrePushProofPlan {
                 posture = "BROAD_FALLBACK";
                 selected.push(ProofStep {
                     class: "broad_fallback".to_string(),
-                    command: "cargo xtask pr-fast".to_string(),
+                    command: "cargo xtask gates --tier pr-fast --receipt".to_string(),
                     reason: "mixed surfaces cannot be safely narrowed by this bounded planner"
                         .to_string(),
                 });
@@ -197,7 +220,11 @@ fn build_plan(input: PlannerInput) -> PrePushProofPlan {
 
     if risk_tags.iter().any(|tag| tag == "public_api") {
         if !reverse_dependents.is_empty() {
-            let bounded = reverse_dependents.iter().take(3).cloned().collect::<Vec<_>>();
+            let bounded = reverse_dependents
+                .iter()
+                .take(MAX_BOUNDED_REVERSE_DEPENDENTS)
+                .cloned()
+                .collect::<Vec<_>>();
             selected.push(ProofStep {
                 class: "reverse_dependent_tests".to_string(),
                 command: format!(
@@ -242,6 +269,10 @@ fn is_typescript_only(paths: &[String]) -> bool {
             path.starts_with("vscode-extension/")
                 && (path.ends_with(".ts") || path.ends_with(".tsx"))
         })
+}
+
+fn cargo_package_flags(packages: &[String]) -> String {
+    packages.iter().map(|package| format!("-p {package}")).collect::<Vec<_>>().join(" ")
 }
 
 fn digest(base_sha: &str, head_sha: &str, paths: &[String]) -> String {
@@ -291,7 +322,11 @@ mod tests {
         });
         assert_eq!(plan.posture, "PROCEED");
         assert_eq!(plan.selected[0].class, "docs_check");
-        assert!(plan.deferred.is_empty());
+        assert!(
+            plan.deferred.is_empty(),
+            "prose-only plan must defer no proof, got {:?}",
+            plan.deferred
+        );
     }
 
     #[test]
@@ -325,15 +360,42 @@ mod tests {
             risk_tags: Vec::new(),
         });
         assert_eq!(plan.posture, "PROCEED");
-        assert!(plan.selected.iter().any(|step| step.class == "extension_format"));
-        assert!(plan.selected.iter().any(|step| step.class == "extension_lint"));
-        assert!(plan.selected.iter().any(|step| step.class == "extension_typecheck"));
-        assert!(!plan.selected.iter().any(|step| step.class == "rust_check"));
+        for expected in ["extension_format", "extension_lint", "extension_typecheck"] {
+            assert!(
+                plan.selected.iter().any(|step| step.class == expected),
+                "TypeScript-only plan must select {expected}, got {:?}",
+                plan.selected.iter().map(|step| &step.class).collect::<Vec<_>>()
+            );
+        }
+        assert!(
+            !plan.selected.iter().any(|step| step.class == "rust_check"),
+            "TypeScript-only plan must not select a Rust compile floor"
+        );
     }
 
     #[test]
     fn digest_is_deterministic_for_ordered_paths() {
         let paths = vec!["a".to_string(), "b".to_string()];
-        assert_eq!(digest("base", "head", &paths), digest("base", "head", &paths));
+        let reordered = vec!["b".to_string(), "a".to_string()];
+        assert_eq!(
+            digest("base", "head", &paths),
+            digest("base", "head", &paths),
+            "identical inputs must produce one digest"
+        );
+        assert_ne!(
+            digest("base", "head", &paths),
+            digest("base", "head", &reordered),
+            "path order must change the digest"
+        );
+        assert_ne!(
+            digest("base", "head", &paths),
+            digest("base", "other-head", &paths),
+            "head SHA must change the digest"
+        );
+    }
+
+    #[test]
+    fn cargo_package_flags_repeat_package_option() {
+        assert_eq!(cargo_package_flags(&["a".to_string(), "b".to_string()]), "-p a -p b");
     }
 }

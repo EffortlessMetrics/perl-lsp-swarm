@@ -820,6 +820,11 @@ enum Commands {
     },
 
     /// Plan bounded serial pre-push proof from the shared change set.
+    ///
+    /// PLANNING ONLY: emits a deterministic proof plan, including the change-set
+    /// digest, selected and deferred steps, and posture. It runs none of the
+    /// planned Cargo, workflow, or RIPR commands and changes no hook behavior.
+    /// `--base auto` delegates base resolution to the shared change-set resolver.
     PrePushPlan {
         /// Git base ref used by the shared change-set resolver.
         #[arg(long, default_value = "auto")]
