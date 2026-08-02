@@ -218,11 +218,35 @@ fn count_unescaped_slashes(s: &str) -> usize {
     count
 }
 
-/// Simple heuristic to check if position is in a comment.
+/// Check if position is inside a line comment.
+///
+/// Scans the portion of the current line before `position` with a simple
+/// quote-state machine so that a `#` inside a string literal is NOT treated as
+/// a comment start (#4956 bug 4). Previously this was a naive `line.contains('#')`
+/// check, which suppressed completion whenever a `#` appeared anywhere on the
+/// line — including inside strings like `my $x = "a # b";`.
 pub(super) fn is_in_comment(source: &str, position: usize) -> bool {
     let line_start = source[..position].rfind('\n').map_or(0, |p| p + 1);
     let line = &source[line_start..position];
-    line.contains('#')
+    let bytes = line.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'\\' && (in_single || in_double) {
+            i += 2; // skip escaped char
+            continue;
+        }
+        match b {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            b'#' if !in_single && !in_double => return true,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Check if position is inside a heredoc literal.
