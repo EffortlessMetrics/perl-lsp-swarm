@@ -168,8 +168,10 @@ pub fn extract_pod(source: &str) -> PodDoc {
             continue;
         }
 
-        // Accumulate body text
-        if current_section.is_some() && (!body.is_empty() || !line.is_empty()) {
+        // Accumulate body text — also capture =over/=item content even before
+        // any =head section exists (#2488: these form an implicit "SYNOPSIS" or
+        // "DESCRIPTION" block in many CPAN modules).
+        if (!body.is_empty() || !line.is_empty()) && (current_section.is_some() || in_over) {
             if !body.is_empty() {
                 body.push('\n');
             }

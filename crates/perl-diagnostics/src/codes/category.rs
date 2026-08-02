@@ -24,6 +24,8 @@ pub enum DiagnosticCategory {
     Import,
     /// Heredoc anti-patterns (PL800-PL899)
     Heredoc,
+    /// Version compatibility (PL900-PL999)
+    VersionCompatibility,
 }
 
 impl fmt::Display for DiagnosticCategory {
@@ -38,6 +40,7 @@ impl fmt::Display for DiagnosticCategory {
             Self::Security => write!(f, "Security"),
             Self::Import => write!(f, "Import"),
             Self::Heredoc => write!(f, "Heredoc"),
+            Self::VersionCompatibility => write!(f, "Version Compatibility"),
         }
     }
 }
@@ -86,8 +89,9 @@ impl DiagnosticCode {
             | Self::EvalErrorFlow
             | Self::DuplicateHashKey
             | Self::GotoUndefinedLabel
-            | Self::LoopControlUndefinedLabel
-            | Self::VersionIncompatFeature => DiagnosticCategory::BestPractices,
+            | Self::LoopControlUndefinedLabel => DiagnosticCategory::BestPractices,
+
+            Self::VersionIncompatFeature => DiagnosticCategory::VersionCompatibility,
 
             Self::DeprecatedDefined | Self::DeprecatedArrayBase => DiagnosticCategory::Deprecated,
 
