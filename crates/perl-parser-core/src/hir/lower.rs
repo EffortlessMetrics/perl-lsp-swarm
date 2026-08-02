@@ -2252,6 +2252,12 @@ fn static_glob_alias_target(node: &Node) -> Option<(GlobSlotKind, String)> {
             NodeKind::FunctionCall { name, args } if args.is_empty() => {
                 Some((GlobSlotKind::Code, name.clone()))
             }
+            // `\&foo` is parsed as AmperCall (PR #4704), not FunctionCall.
+            // Both forms denote a code reference and must be recognized as a
+            // static typeglob alias (#5543).
+            NodeKind::AmperCall { name, args } if args.is_empty() => {
+                Some((GlobSlotKind::Code, name.clone()))
+            }
             NodeKind::Typeglob { name } => Some((GlobSlotKind::Code, name.clone())),
             NodeKind::Variable { sigil, name } => {
                 slot_kind_for_sigil(sigil).map(|slot_kind| (slot_kind, name.clone()))
