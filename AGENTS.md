@@ -108,6 +108,43 @@ integration experiment.
 
 A clean review is valid. Never manufacture a finding or edit to prove review effort.
 
+## Review
+
+Review is not reading a diff, relaying CI green, or repeating a subagent verdict.
+For substantive work it is a directed, falsifying, and verified judgment:
+
+- **discrimination** — what realistic wrong implementation does the proof reject?
+- **production reachability** — what live request, consumer, or protocol path reaches the change?
+- **external truth** — what competent authority establishes user-visible or protocol semantics?
+- **claim honesty** — what does the evidence establish, and what remains unproved?
+- **authority and complexity** — is this the semantic owner, and is the result free of duplicate authority, residue, or unnecessary API?
+- **risk and rollback** — what compatibility, security, packaging, migration, or support boundary moved?
+
+The construction context must not be the only detection surface supporting merge.
+Fresh context is useful when it brings a different source, oracle, threat model,
+method, or attention surface; identity separation by itself is neither necessary
+nor sufficient. For a substantive fixed or refuted disposition, enforced review
+convergence still requires a passing verification receipt from a verifier outside
+the writer set. A clean review is a valid result when that applicable protocol is
+satisfied.
+
+The review sequence is:
+
+```text
+writer self-check
+→ proof challenge
+→ mutable candidate challenge
+→ repair and simplification
+→ final mutable challenge
+→ fixed-candidate formal review
+→ accountable integration judgment
+```
+
+“Mutable” describes the challenge method, not a pre-publication time window.
+`final-challenge` may run after publication or after accepted repair. `review-pr`
+is fixed-candidate formal judgment; CI and reviewer/subagent conclusions are
+evidence for the accountable owner, not approval by themselves.
+
 ## Proof and currentness
 
 Formal review binds to:
