@@ -30,7 +30,10 @@
     "workspace"
   ],
   "capabilities": {
-    "virtualWorkspaces": true,
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Perl LSP reads files through the OS file system and cannot serve virtual workspaces (vscode.dev, github.dev, GitHub Repositories)."
+    },
     "untrustedWorkspaces": {
       "supported": false
     }
