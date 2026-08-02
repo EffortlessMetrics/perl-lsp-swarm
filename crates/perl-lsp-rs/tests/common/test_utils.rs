@@ -361,8 +361,7 @@ impl Drop for TestServer {
 
 /// Test assertion helpers
 pub mod assertions {
-    #![allow(clippy::panic)]
-
+    use anyhow::{Result, anyhow};
     use serde_json::Value;
 
     /// Assert that the response contains no errors
@@ -375,30 +374,34 @@ pub mod assertions {
     }
 
     /// Assert that diagnostics contain expected error
-    pub fn assert_has_diagnostic(response: &Value, expected_message: &str) {
+    pub fn assert_has_diagnostic(response: &Value, expected_message: &str) -> Result<()> {
         let items = response["result"]["items"]
             .as_array()
-            .unwrap_or_else(|| panic!("Expected diagnostic items array, got: {response:?}"));
+            .ok_or_else(|| anyhow!("Expected diagnostic items array, got: {response:?}"))?;
 
         let found = items
             .iter()
             .any(|item| item["message"].as_str().is_some_and(|msg| msg.contains(expected_message)));
 
-        assert!(found, "Expected diagnostic containing '{}', got: {:?}", expected_message, items);
+        if !found {
+            return Err(anyhow!(
+                "Expected diagnostic containing '{}', got: {:?}",
+                expected_message,
+                items
+            ));
+        }
+        Ok(())
     }
 
     /// Assert symbol count
-    pub fn assert_symbol_count(response: &Value, expected_count: usize) {
+    pub fn assert_symbol_count(response: &Value, expected_count: usize) -> Result<()> {
         let symbols = response["result"]
             .as_array()
-            .unwrap_or_else(|| panic!("Expected symbols array, got: {response:?}"));
-        assert_eq!(
-            symbols.len(),
-            expected_count,
-            "Expected {} symbols, got {}",
-            expected_count,
-            symbols.len()
-        );
+            .ok_or_else(|| anyhow!("Expected symbols array, got: {response:?}"))?;
+        if symbols.len() != expected_count {
+            return Err(anyhow!("Expected {} symbols, got {}", expected_count, symbols.len()));
+        }
+        Ok(())
     }
 
     /// Assert that location matches expected
@@ -409,11 +412,11 @@ pub mod assertions {
     }
 
     /// Assert that definition response contains a location at the expected position
-    pub fn assert_definition_at(response: &Value, uri: &str, line: u32) {
+    pub fn assert_definition_at(response: &Value, uri: &str, line: u32) -> Result<()> {
         let (def_uri, def_line, _) =
-            super::semantic::first_location(response).unwrap_or_else(|| {
-                panic!("Expected definition location in response, got: {response:#}")
-            });
+            super::semantic::first_location(response).ok_or_else(|| {
+                anyhow!("Expected definition location in response, got: {response:#}")
+            })?;
 
         assert_eq!(
             def_uri, uri,
@@ -425,33 +428,40 @@ pub mod assertions {
             "Definition line mismatch.\nExpected: {}\nActual: {}\nFull response: {:#}",
             line, def_line, response
         );
+        Ok(())
     }
 
     /// Assert that hover response contains expected content
-    pub fn assert_hover_contains(response: &Value, expected_content: &str) {
+    pub fn assert_hover_contains(response: &Value, expected_content: &str) -> Result<()> {
         let content = super::semantic::hover_content(response)
-            .unwrap_or_else(|| panic!("Expected hover content in response, got: {response:#}"));
+            .ok_or_else(|| anyhow!("Expected hover content in response, got: {response:#}"))?;
 
-        assert!(
-            content.contains(expected_content),
-            "Hover content does not contain expected string.\nExpected to contain: {}\nActual content: {}\nFull response: {:#}",
-            expected_content,
-            content,
-            response
-        );
+        if !content.contains(expected_content) {
+            return Err(anyhow!(
+                "Hover content does not contain expected string.\nExpected to contain: {}\nActual content: {}\nFull response: {:#}",
+                expected_content,
+                content,
+                response
+            ));
+        }
+        Ok(())
     }
 
     /// Assert that hover response contains any of the expected strings
-    pub fn assert_hover_contains_any(response: &Value, expected_strings: &[&str]) {
+    pub fn assert_hover_contains_any(response: &Value, expected_strings: &[&str]) -> Result<()> {
         let content = super::semantic::hover_content(response)
-            .unwrap_or_else(|| panic!("Expected hover content in response, got: {response:#}"));
+            .ok_or_else(|| anyhow!("Expected hover content in response, got: {response:#}"))?;
 
         let found = expected_strings.iter().any(|s| content.contains(s));
-        assert!(
-            found,
-            "Hover content does not contain any expected string.\nExpected one of: {:?}\nActual content: {}\nFull response: {:#}",
-            expected_strings, content, response
-        );
+        if !found {
+            return Err(anyhow!(
+                "Hover content does not contain any expected string.\nExpected one of: {:?}\nActual content: {}\nFull response: {:#}",
+                expected_strings,
+                content,
+                response
+            ));
+        }
+        Ok(())
     }
 }
 
