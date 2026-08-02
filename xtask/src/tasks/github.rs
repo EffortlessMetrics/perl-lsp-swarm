@@ -91,7 +91,7 @@ pub fn run_candidate(
 
     println!("{}", serde_json::to_string_pretty(&facts)?);
 
-    if facts.identity_result != "current" || facts.required_contexts_result != "current" {
+    if facts.identity_result != "current" {
         bail!("candidate facts are NOT_PROVEN for PR #{}", facts.pr);
     }
 
@@ -139,7 +139,10 @@ fn collect_candidate(pr: u64) -> Result<CandidateFacts> {
             .into_iter()
             .map(|name| RequiredContext { name, source: "branch_protection".to_string() })
             .collect(),
-        required_contexts_result: "current".to_string(),
+        // A1 discovers the policy contexts only. A2 owns evaluating their
+        // results against this candidate head, so currentness is not proven
+        // by this snapshot.
+        required_contexts_result: "NOT_PROVEN".to_string(),
         identity_result: "current".to_string(),
     })
 }
@@ -226,7 +229,7 @@ mod tests {
                 name: "methodology-gate".to_string(),
                 source: "branch_protection".to_string(),
             }],
-            required_contexts_result: "current".to_string(),
+            required_contexts_result: "NOT_PROVEN".to_string(),
             identity_result: "current".to_string(),
         }
     }
@@ -248,12 +251,19 @@ mod tests {
     }
 
     #[test]
+    fn a1_does_not_claim_required_context_results_are_current() -> Result<()> {
+        let facts = fixture();
+        assert_eq!(facts.required_contexts_result, "NOT_PROVEN");
+        Ok(())
+    }
+
+    #[test]
     fn committed_candidate_fixture_reports_current_identity_fields() -> Result<()> {
         let facts: CandidateFacts = serde_json::from_str(include_str!(
             "../../tests/fixtures/github/candidate-current.json"
         ))?;
         assert_eq!(facts.identity_result, "current");
-        assert_eq!(facts.required_contexts_result, "current");
+        assert_eq!(facts.required_contexts_result, "NOT_PROVEN");
         assert!(!facts.head_sha.is_empty());
         assert!(!facts.base_sha.is_empty());
         Ok(())

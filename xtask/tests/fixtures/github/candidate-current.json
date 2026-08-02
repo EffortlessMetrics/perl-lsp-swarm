@@ -19,6 +19,6 @@
       "source": "branch_protection"
     }
   ],
-  "required_contexts_result": "current",
+  "required_contexts_result": "NOT_PROVEN",
   "identity_result": "current"
 }
