@@ -178,8 +178,8 @@ The root may perform a pass directly or delegate focused read-only research, pro
 ### Review standard
 
 Review is **directed, falsifying, and verified**. Aim it at the declared claim and its
-real production seam; try to disprove the claim rather than merely restating the diff or
-its green checks. Where applicable, establish:
+real production seam, and try to disprove the claim rather than merely restating the
+diff or green checks. Where applicable, establish:
 
 - claim honesty against current source and external authority;
 - semantic and external correctness;
