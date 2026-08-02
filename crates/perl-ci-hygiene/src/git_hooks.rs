@@ -25,14 +25,23 @@ if [ "$GIT_USER_NAME" = "Codex Release Validation" ] || \
     echo "   git config --local --unset-all user.email"
     exit 1
 fi
+
+echo "Running exact staged commit gate: cargo xtask precommit"
+cargo xtask precommit
 "#;
 
     pub(super) fn print_install_summary() {
         println!("✅ Installed pre-commit and pre-push hooks");
-        println!("   The pre-commit hook blocks known placeholder git identities");
+        println!(
+            "   The pre-commit hook blocks placeholder identities, then runs 'cargo xtask precommit'"
+        );
         println!("   The pre-push hook runs 'nix develop -c just pr-fast' before each push");
         println!("   Skip with: git commit --no-verify / git push --no-verify");
     }
+}
+
+pub(crate) fn pre_commit_hook_script() -> &'static str {
+    install::PRE_COMMIT_HOOK
 }
 
 pub(crate) fn pre_push_hook_script() -> &'static str {
@@ -336,6 +345,43 @@ pub(crate) fn cmd_install_githooks(repo_root: &Path) -> Result<i32> {
     Ok(0)
 }
 
+/// Check that installed hooks match the repository-generated authorities.
+pub(crate) fn check_githooks(repo_root: &Path) -> Result<i32> {
+    let hooks_dir = resolve_git_hooks_dir(repo_root)?;
+    let expected = [
+        ("pre-commit", pre_commit_hook_script().to_string()),
+        ("pre-push", pre_push_hook_script().to_string()),
+    ];
+    let mut status = 0;
+    for (name, expected_script) in expected {
+        let path = hooks_dir.join(name);
+        let actual = match fs::read_to_string(&path) {
+            Ok(actual) => actual,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                println!("NOT_PROVEN: installed hook is missing: {}", path.display());
+                status = 1;
+                continue;
+            }
+            Err(error) => {
+                println!("NOT_PROVEN: cannot read installed hook {}: {error}", path.display());
+                status = 1;
+                continue;
+            }
+        };
+        if normalize_hook(&actual) == normalize_hook(&expected_script) {
+            println!("current: {name}");
+        } else {
+            println!("stale: {name} ({})", path.display());
+            status = 1;
+        }
+    }
+    Ok(status)
+}
+
+fn normalize_hook(script: &str) -> String {
+    script.replace("\r\n", "\n").trim_end().to_string()
+}
+
 fn resolve_git_hooks_dir(repo_root: &Path) -> Result<PathBuf> {
     let output = Command::new("git")
         .current_dir(repo_root)
@@ -368,4 +414,54 @@ fn write_git_hook(hook_path: &Path, hook: &str) -> Result<()> {
             .with_context(|| format!("setting executable bit for {:?}", hook_path))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_repo() -> Result<PathBuf> {
+        let path = std::env::temp_dir().join(format!(
+            "perl-ci-hygiene-hooks-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        fs::create_dir_all(&path)?;
+        let status = Command::new("git").args(["init", "--quiet"]).current_dir(&path).status()?;
+        if !status.success() {
+            return Err(color_eyre::eyre::eyre!("git init failed"));
+        }
+        Ok(path)
+    }
+
+    #[test]
+    fn pre_commit_guard_precedes_exact_staged_gate() -> Result<()> {
+        let hook = pre_commit_hook_script();
+        let guard = hook
+            .find("Refusing commit with placeholder git identity")
+            .ok_or_else(|| color_eyre::eyre::eyre!("placeholder identity guard missing"))?;
+        let gate = hook
+            .find("cargo xtask precommit")
+            .ok_or_else(|| color_eyre::eyre::eyre!("staged gate missing"))?;
+        assert!(guard < gate);
+        assert!(!hook.contains("cargo fmt"));
+        assert!(!hook.contains("cargo clippy"));
+        assert!(!hook.contains("cargo test"));
+        assert!(!hook.contains("ripr"));
+        Ok(())
+    }
+
+    #[test]
+    fn installed_hook_check_detects_current_and_stale_versions() -> Result<()> {
+        let repo = temp_repo()?;
+        cmd_install_githooks(&repo)?;
+        assert_eq!(check_githooks(&repo)?, 0);
+
+        let hooks_dir = resolve_git_hooks_dir(&repo)?;
+        fs::write(hooks_dir.join("pre-commit"), "stale\n")?;
+        assert_eq!(check_githooks(&repo)?, 1);
+        fs::remove_dir_all(repo)?;
+        Ok(())
+    }
 }
