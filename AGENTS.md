@@ -68,9 +68,27 @@ The root session is the warm accountable owner unless it was explicitly spawned 
 a bounded brief. Naming one issue or PR does not convert the root into a disposable
 worker.
 
-Direct execution is normal. Use focused subagents, context forks, external oracles,
-or whole-flow workers when another context, tool surface, or review method materially
-changes the evidence or reduces elapsed work.
+Use the internal `orchestrate-work` skill for proportional execution shape:
+
+```text
+tiny or tightly coupled work
+→ direct root execution is often cheapest
+
+substantive work
+→ the root normally orchestrates
+→ focused agents consume bounded skills or questions
+→ one writer integrates each current candidate
+
+campaign work
+→ whole-flow claim lanes may run under the campaign root
+→ the root retains goal interpretation and reconciliation
+```
+
+Delegation is worth its cost when it preserves root context, changes the source,
+oracle, tool, environment, or review method, compresses high-output evidence, or
+reduces elapsed time. The brief is the control: bound the target, authority,
+mutation boundary, sufficient result, falsifiers, stop conditions, and non-goals.
+An unknown conclusion may be explored when the search boundary is bounded.
 
 One coherent claim normally has one current candidate, and one writer mutates that
 candidate at a time. Before creating another candidate, check only for an equivalent

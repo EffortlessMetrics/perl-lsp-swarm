@@ -62,6 +62,24 @@ The user-facing vocabulary is intentionally small:
 
 A fresh or resumed session starts with the narrowest applicable public flow. Once inside the loop, each skill names its normal successor and material backward routes. Agents do not run a lifecycle locator between skills.
 
+## Runtime orchestration
+
+The root may load the internal `orchestrate-work` skill to choose the smallest
+useful execution shape for the current flow or atomic skill. Tiny, tightly coupled
+work often stays direct. Substantive work is normally orchestrated through
+bounded skill-consuming agents or questions; a whole coherent claim may be carried
+by one `deliver-pr` lane; genuinely independent claims may use separate lane
+writers. The root remains accountable for goal meaning, claim selection, authority,
+contradiction resolution, joined evidence, review sufficiency, merge judgment, and
+reconciliation.
+
+Every delegation brief identifies the parent flow/skill, exact target, authority,
+candidate and writer boundary, sufficient result, falsifiers, stop/backward routes,
+and non-goals. An unknown conclusion is still delegable when its search space and
+stopping/output contract are bounded. Join direct evidence and contradictions,
+not agent votes. Issue comments are material handoffs, not leases. Runtime
+topology, retries, liveness, and executor identity remain ephemeral.
+
 ## Claim and lane independence
 
 The normal multi-PR model is simple:
