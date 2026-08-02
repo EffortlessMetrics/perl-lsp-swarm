@@ -16,12 +16,15 @@ query(
   $number: Int!,
   $reviewsCursor: String,
   $reviewRequestsCursor: String,
-  $threadsCursor: String
+  $threadsCursor: String,
+  $reviewsActive: Boolean!,
+  $reviewRequestsActive: Boolean!,
+  $threadsActive: Boolean!
 ) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       headRefOid
-      reviews(first: 100, after: $reviewsCursor) {
+      reviews(first: 100, after: $reviewsCursor) @include(if: $reviewsActive) {
         nodes {
           author { login __typename }
           state
@@ -30,7 +33,7 @@ query(
         }
         pageInfo { hasNextPage endCursor }
       }
-      reviewRequests(first: 100, after: $reviewRequestsCursor) {
+      reviewRequests(first: 100, after: $reviewRequestsCursor) @include(if: $reviewRequestsActive) {
         nodes {
           requestedReviewer {
             ... on User { login }
@@ -39,7 +42,7 @@ query(
         }
         pageInfo { hasNextPage endCursor }
       }
-      reviewThreads(first: 100, after: $threadsCursor) {
+      reviewThreads(first: 100, after: $threadsCursor) @include(if: $threadsActive) {
         nodes {
           id
           isResolved
@@ -116,11 +119,11 @@ struct GraphQlRepository {
 struct GraphQlPullRequest {
     #[serde(rename = "headRefOid")]
     head_ref_oid: String,
-    reviews: GraphQlConnection<GraphQlReview>,
+    reviews: Option<GraphQlConnection<GraphQlReview>>,
     #[serde(rename = "reviewRequests")]
-    review_requests: GraphQlConnection<GraphQlReviewRequest>,
+    review_requests: Option<GraphQlConnection<GraphQlReviewRequest>>,
     #[serde(rename = "reviewThreads")]
-    review_threads: GraphQlConnection<GraphQlThread>,
+    review_threads: Option<GraphQlConnection<GraphQlThread>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,8 +210,9 @@ pub fn run_review_convergence(pr: u64, json_only: bool) -> Result<()> {
             snapshot.pending_reviewers.len(),
             snapshot.unresolved_active.len() + snapshot.unresolved_outdated.len()
         );
+    } else {
+        println!("{}", serde_json::to_string_pretty(&snapshot)?);
     }
-    println!("{}", serde_json::to_string_pretty(&snapshot)?);
 
     if snapshot.result == "NOT_PROVEN" {
         bail!("review snapshot is NOT_PROVEN for PR #{}", pr);
@@ -227,6 +231,9 @@ fn collect_snapshot(repository: String, owner: &str, repo: &str, pr: u64) -> Rev
     let mut reviews_cursor = None;
     let mut review_requests_cursor = None;
     let mut threads_cursor = None;
+    let mut reviews_done = false;
+    let mut review_requests_done = false;
+    let mut threads_done = false;
 
     loop {
         let page = match graphql_page(
@@ -236,6 +243,9 @@ fn collect_snapshot(repository: String, owner: &str, repo: &str, pr: u64) -> Rev
             reviews_cursor.as_deref(),
             review_requests_cursor.as_deref(),
             threads_cursor.as_deref(),
+            !reviews_done,
+            !review_requests_done,
+            !threads_done,
         ) {
             Ok(page) => page,
             Err(error) => {
@@ -261,70 +271,87 @@ fn collect_snapshot(repository: String, owner: &str, repo: &str, pr: u64) -> Rev
         if let Some(previous_head) = &head_sha {
             if previous_head != &pull_request.head_ref_oid {
                 errors.push("PR head moved during paginated review snapshot".to_string());
-                head_sha = Some(pull_request.head_ref_oid);
                 break;
             }
         } else {
             head_sha = Some(pull_request.head_ref_oid.clone());
         }
 
-        let current_head = pull_request.head_ref_oid;
-        let reviews_page = pull_request.reviews;
-        let review_requests_page = pull_request.review_requests;
-        let threads_page = pull_request.review_threads;
-        reviews.extend(reviews_page.nodes.into_iter().map(|review| {
-            SubmittedReview {
-                reviewer: review
-                    .author
-                    .as_ref()
-                    .and_then(|actor| actor.login.clone())
-                    .unwrap_or_else(|| "unknown".to_string()),
-                reviewer_kind: review
-                    .author
-                    .and_then(|actor| actor.kind)
-                    .unwrap_or_else(|| "Unknown".to_string()),
-                state: review.state,
-                submitted_at: review.submitted_at,
-                current_at_head: review
-                    .commit
-                    .as_ref()
-                    .is_some_and(|commit| commit.oid == current_head),
-                reviewed_head: review.commit.map(|commit| commit.oid),
-            }
-        }));
-        pending_reviewers.extend(review_requests_page.nodes.into_iter().filter_map(|request| {
-            request.requested_reviewer.and_then(|reviewer| reviewer.login.or(reviewer.name))
-        }));
-        for thread in threads_page.nodes {
-            let fact = ThreadFact {
-                id: thread.id,
-                path: thread.path,
-                line: thread.line,
-                comment_count: thread.comments.total_count,
+        let current_head = pull_request.head_ref_oid.clone();
+        if !reviews_done {
+            let Some(reviews_page) = pull_request.reviews else {
+                errors.push("GraphQL omitted active review page".to_string());
+                break;
             };
-            if !thread.is_resolved {
-                if thread.is_outdated {
-                    unresolved_outdated.push(fact);
-                } else {
-                    unresolved_active.push(fact);
+            reviews.extend(reviews_page.nodes.into_iter().map(|review| {
+                SubmittedReview {
+                    reviewer: review
+                        .author
+                        .as_ref()
+                        .and_then(|actor| actor.login.clone())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    reviewer_kind: review
+                        .author
+                        .and_then(|actor| actor.kind)
+                        .unwrap_or_else(|| "Unknown".to_string()),
+                    state: review.state,
+                    submitted_at: review.submitted_at,
+                    current_at_head: review
+                        .commit
+                        .as_ref()
+                        .is_some_and(|commit| commit.oid == current_head),
+                    reviewed_head: review.commit.map(|commit| commit.oid),
                 }
-            } else if thread.comments.total_count <= 1 {
-                resolved_without_disposition.push(fact);
+            }));
+            reviews_done = !reviews_page.page_info.has_next_page;
+            reviews_cursor = reviews_page.page_info.end_cursor;
+        }
+        if !review_requests_done {
+            let Some(review_requests_page) = pull_request.review_requests else {
+                errors.push("GraphQL omitted active review-request page".to_string());
+                break;
+            };
+            pending_reviewers.extend(review_requests_page.nodes.into_iter().filter_map(
+                |request| {
+                    request.requested_reviewer.and_then(|reviewer| reviewer.login.or(reviewer.name))
+                },
+            ));
+            review_requests_done = !review_requests_page.page_info.has_next_page;
+            review_requests_cursor = review_requests_page.page_info.end_cursor;
+        }
+        if !threads_done {
+            let Some(threads_page) = pull_request.review_threads else {
+                errors.push("GraphQL omitted active review-thread page".to_string());
+                break;
+            };
+            for thread in threads_page.nodes {
+                let fact = ThreadFact {
+                    id: thread.id,
+                    path: thread.path,
+                    line: thread.line,
+                    comment_count: thread.comments.total_count,
+                };
+                if !thread.is_resolved {
+                    if thread.is_outdated {
+                        unresolved_outdated.push(fact);
+                    } else {
+                        unresolved_active.push(fact);
+                    }
+                } else if thread.comments.total_count <= 1 {
+                    resolved_without_disposition.push(fact);
+                }
             }
+            threads_done = !threads_page.page_info.has_next_page;
+            threads_cursor = threads_page.page_info.end_cursor;
         }
 
-        reviews_cursor = next_cursor(reviews_page.page_info);
-        review_requests_cursor = next_cursor(review_requests_page.page_info);
-        threads_cursor = next_cursor(threads_page.page_info);
-        if reviews_cursor.is_none() && review_requests_cursor.is_none() && threads_cursor.is_none()
-        {
+        if reviews_done && review_requests_done && threads_done {
             break;
         }
     }
 
     let head_sha = head_sha.unwrap_or_default();
-    let stale_human =
-        reviews.iter().any(|review| review.reviewer_kind != "Bot" && !review.current_at_head);
+    let stale_human = stale_human_reviews(&reviews);
     let converged = errors.is_empty()
         && pending_reviewers.is_empty()
         && !stale_human
@@ -349,17 +376,40 @@ fn collect_snapshot(repository: String, owner: &str, repo: &str, pr: u64) -> Rev
         unresolved_outdated,
         resolved_without_disposition,
         currentness_basis: vec![
-            "all submitted review pages fetched from pullRequest.reviews".to_string(),
-            "all requested-reviewer pages fetched from pullRequest.reviewRequests".to_string(),
-            "all review-thread pages fetched from pullRequest.reviewThreads".to_string(),
-            "review commit OIDs compared with the captured pullRequest.headRefOid".to_string(),
+            page_basis("submitted review", reviews_done),
+            page_basis("requested-reviewer", review_requests_done),
+            page_basis("review-thread", threads_done),
+            if errors.is_empty() {
+                "review commit OIDs compared with the captured pullRequest.headRefOid".to_string()
+            } else {
+                "review commit currentness is incomplete because the snapshot has errors"
+                    .to_string()
+            },
         ],
         errors,
     }
 }
 
-fn next_cursor(page_info: GraphQlPageInfo) -> Option<String> {
-    if page_info.has_next_page { page_info.end_cursor } else { None }
+fn page_basis(kind: &str, complete: bool) -> String {
+    if complete {
+        format!("all {kind} pages fetched")
+    } else {
+        format!("{kind} pages incomplete; result is NOT_PROVEN")
+    }
+}
+
+fn stale_human_reviews(reviews: &[SubmittedReview]) -> bool {
+    let mut latest = std::collections::BTreeMap::<String, &SubmittedReview>::new();
+    for review in reviews.iter().filter(|review| review.reviewer_kind != "Bot") {
+        let replace = latest.get(&review.reviewer).map_or(true, |current| {
+            review.submitted_at.as_deref().unwrap_or("")
+                >= current.submitted_at.as_deref().unwrap_or("")
+        });
+        if replace {
+            latest.insert(review.reviewer.clone(), review);
+        }
+    }
+    latest.values().any(|review| !review.current_at_head)
 }
 
 fn graphql_page(
@@ -369,6 +419,9 @@ fn graphql_page(
     reviews_cursor: Option<&str>,
     review_requests_cursor: Option<&str>,
     threads_cursor: Option<&str>,
+    reviews_active: bool,
+    review_requests_active: bool,
+    threads_active: bool,
 ) -> Result<GraphQlEnvelope> {
     let number = pr.to_string();
     let reviews = reviews_cursor.unwrap_or("null");
@@ -393,6 +446,12 @@ fn graphql_page(
             &format!("reviewRequestsCursor={review_requests}"),
             "-F",
             &format!("threadsCursor={threads}"),
+            "-F",
+            &format!("reviewsActive={reviews_active}"),
+            "-F",
+            &format!("reviewRequestsActive={review_requests_active}"),
+            "-F",
+            &format!("threadsActive={threads_active}"),
         ])
         .output()
         .context("failed to execute gh GraphQL review snapshot")?;
@@ -468,6 +527,29 @@ mod tests {
     }
 
     #[test]
+    fn only_latest_human_submission_controls_currentness() {
+        let reviews = vec![
+            SubmittedReview {
+                reviewer: "reviewer".to_string(),
+                reviewer_kind: "User".to_string(),
+                state: "CHANGES_REQUESTED".to_string(),
+                submitted_at: Some("2026-08-01T00:00:00Z".to_string()),
+                reviewed_head: Some("old-head".to_string()),
+                current_at_head: false,
+            },
+            SubmittedReview {
+                reviewer: "reviewer".to_string(),
+                reviewer_kind: "User".to_string(),
+                state: "APPROVED".to_string(),
+                submitted_at: Some("2026-08-02T00:00:00Z".to_string()),
+                reviewed_head: Some("current-head".to_string()),
+                current_at_head: true,
+            },
+        ];
+        assert!(!stale_human_reviews(&reviews));
+    }
+
+    #[test]
     fn graphql_page_shape_preserves_reviews_requests_and_threads() -> Result<()> {
         let envelope: GraphQlEnvelope = serde_json::from_str(
             r#"{
@@ -496,9 +578,16 @@ mod tests {
             .and_then(|repository| repository.pull_request)
             .ok_or_else(|| color_eyre::eyre::eyre!("missing pull request"))?;
         assert_eq!(pull_request.head_ref_oid, "head-1");
-        assert_eq!(pull_request.reviews.nodes.len(), 1);
-        assert_eq!(pull_request.review_requests.nodes.len(), 1);
-        assert_eq!(pull_request.review_threads.nodes[0].is_outdated, true);
+        assert_eq!(pull_request.reviews.as_ref().map(|page| page.nodes.len()), Some(1));
+        assert_eq!(pull_request.review_requests.as_ref().map(|page| page.nodes.len()), Some(1));
+        assert_eq!(
+            pull_request
+                .review_threads
+                .as_ref()
+                .and_then(|page| page.nodes.first())
+                .map(|thread| thread.is_outdated),
+            Some(true)
+        );
         Ok(())
     }
 }
