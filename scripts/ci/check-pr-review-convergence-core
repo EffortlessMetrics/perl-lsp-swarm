@@ -162,10 +162,11 @@
 # stdout: a short human-readable summary line + a machine-readable JSON
 # object on the final line (for callers that want structured output):
 #   {"pr":N,"headRefOid":"...","converged":true|false,
-#    "pending_reviewers":[...],"stale_reviews":[...],"stale_bot_reviews":[...],
+#    "pending_reviewers":[...],"independent_review_pending":true|false,
+#    "current_change_requests":[...],"stale_reviews":[...],"stale_bot_reviews":[...],
 #    "unresolved_active":N,"unresolved_outdated":N,"unresolved_total":N,
 #    "resolved_threads":N,"resolved_without_disposition":N,
-#    "pending_reviewers":[...]}
+#    ...}
 # ("stale_reviews" is human reviewers only — BLOCKING. "stale_bot_reviews" is
 # auto-review-app reviewers whose latest review predates HEAD — ADVISORY,
 # never blocking; see the bot-exclusion note above. "unresolved_active" and
@@ -173,7 +174,10 @@
 # "resolved_without_disposition" counts RESOLVED threads whose comment
 # count is <= 1, i.e. no reply was ever posted — BLOCKING; see the
 # resolved-without-disposition section above. "pending_reviewers" reflects
-# native GitHub review requests — BLOCKING while non-empty.)
+# native GitHub review requests — BLOCKING while non-empty. The
+# "independent_review_pending" boolean is retained as a compatibility alias
+# derived from that native list. A current-head CHANGES_REQUESTED review also
+# blocks, even when GitHub has fulfilled the review request.)
 # stderr: BLOCK lines for anything that fails convergence (unresolved
 # threads — active and outdated; resolved-without-disposition threads; a
 # pending independent review); ADVISORY lines only for stale bot reviews,
@@ -442,6 +446,10 @@ PR_AUTHOR_LOGIN="$(printf '%s' "$PR_META" | jq -r '.author.login // empty')"
 # team review still pending" bug this script exists to prevent.
 PENDING_REVIEWERS="$(printf '%s' "$PR_META" | jq -c '[.reviewRequests[]? | (.login // .name // empty)]')"
 PENDING_REVIEWER_COUNT="$(printf '%s' "$PENDING_REVIEWERS" | jq 'length')"
+INDEPENDENT_REVIEW_PENDING="false"
+if [[ "$PENDING_REVIEWER_COUNT" -gt 0 ]]; then
+    INDEPENDENT_REVIEW_PENDING="true"
+fi
 
 # ── Independent-review-pending marker (#3693) ───────────────────────────────
 # `.labels` is a plain array of `{name, ...}` objects (no User/Team-style
@@ -488,6 +496,10 @@ STALE_REVIEW_COUNT="$(printf '%s' "$STALE_REVIEWS" | jq 'length')"
 STALE_BOT_REVIEWS="$(printf '%s' "$BOT_REVIEWS" | jq -c --arg head "$HEAD_REF_OID" \
     '[.[] | select(.commit.oid != $head) | {login: .author.login, reviewedAt: .commit.oid, state: .state}]')"
 STALE_BOT_REVIEW_COUNT="$(printf '%s' "$STALE_BOT_REVIEWS" | jq 'length')"
+
+CURRENT_CHANGE_REQUESTS="$(printf '%s' "$HUMAN_REVIEWS" | jq -c --arg head "$HEAD_REF_OID" \
+    '[.[] | select(.commit.oid == $head and .state == "CHANGES_REQUESTED") | {login: .author.login, reviewedAt: .commit.oid, state: .state}]')"
+CURRENT_CHANGE_REQUEST_COUNT="$(printf '%s' "$CURRENT_CHANGE_REQUESTS" | jq 'length')"
 
 # ── Fetch reviewThreads (paginated) — classify unresolved-active vs
 #    unresolved-outdated vs resolved. BOTH unresolved buckets block
@@ -666,7 +678,9 @@ protocol_violation() {
 # Converged iff:
 #   (a) no pending (unfulfilled) review requests, AND
 #   (b) no reviewer's latest review is stale relative to headRefOid, AND
-#   (c) no unresolved thread remains — active OR outdated (the live 'main'
+#   (c) no current-head human review is CHANGES_REQUESTED, even when its
+#       review request has been fulfilled
+#   (d) no unresolved thread remains — active OR outdated (the live 'main'
 #       ruleset's required_conversation_resolution blocks on isResolved
 #       alone; it does not consult isOutdated — see issue #3679)
 CONVERGED="true"
@@ -685,6 +699,14 @@ if [[ "$STALE_REVIEW_COUNT" -gt 0 ]]; then
         state="$(printf '%s' "$row" | jq -r '.state')"
         echo "BLOCK PR #$PR: '$login's latest review ($state) predates the current HEAD ($HEAD_REF_OID) — needs a fresh review on this push" >&2
     done < <(printf '%s' "$STALE_REVIEWS" | jq -c '.[]')
+fi
+
+if [[ "$CURRENT_CHANGE_REQUEST_COUNT" -gt 0 ]]; then
+    CONVERGED="false"
+    while IFS= read -r row; do
+        login="$(printf '%s' "$row" | jq -r '.login')"
+        echo "BLOCK PR #$PR: '$login' has a current-head CHANGES_REQUESTED review — resolve the substantive request before merging" >&2
+    done < <(printf '%s' "$CURRENT_CHANGE_REQUESTS" | jq -c '.[]')
 fi
 
 if [[ "$UNRESOLVED_ACTIVE_COUNT" -gt 0 ]]; then
@@ -792,6 +814,8 @@ jq -n \
     --arg head "$HEAD_REF_OID" \
     --argjson converged "$CONVERGED" \
     --argjson pending "$PENDING_REVIEWERS" \
+    --argjson independentReviewPending "$INDEPENDENT_REVIEW_PENDING" \
+    --argjson currentChangeRequests "$CURRENT_CHANGE_REQUESTS" \
     --argjson stale "$STALE_REVIEWS" \
     --argjson staleBot "$STALE_BOT_REVIEWS" \
     --argjson unresolvedActive "$UNRESOLVED_ACTIVE_COUNT" \
@@ -807,7 +831,7 @@ jq -n \
     --argjson dispositionsMissingMarker "$DISPOSITIONS_MISSING_MARKER_COUNT" \
     --argjson followupsWithoutIssue "$FOLLOWUPS_WITHOUT_ISSUE_COUNT" \
     --argjson unreachableFixCommits "$UNREACHABLE_FIX_COMMITS_COUNT" \
-    '{pr: $pr, headRefOid: $head, converged: $converged, pending_reviewers: $pending, stale_reviews: $stale, stale_bot_reviews: $staleBot, unresolved_active: $unresolvedActive, unresolved_outdated: $unresolvedOutdated, unresolved_total: $unresolvedTotal, resolved_threads: $resolved, resolved_without_disposition: $resolvedWithoutDisposition, review_protocol_enforce: $enforce, review_runs_in_flight: $reviewRunsInFlight, verification_runs_in_flight: $verificationRunsInFlight, deep_review_receipt_head_match: $deepReviewReceiptHeadMatch, verification_receipt_head_match: $verificationReceiptHeadMatch, dispositions_missing_marker: $dispositionsMissingMarker, followups_without_issue: $followupsWithoutIssue, unreachable_fix_commits: $unreachableFixCommits}'
+    '{pr: $pr, headRefOid: $head, converged: $converged, pending_reviewers: $pending, independent_review_pending: $independentReviewPending, current_change_requests: $currentChangeRequests, stale_reviews: $stale, stale_bot_reviews: $staleBot, unresolved_active: $unresolvedActive, unresolved_outdated: $unresolvedOutdated, unresolved_total: $unresolvedTotal, resolved_threads: $resolved, resolved_without_disposition: $resolvedWithoutDisposition, review_protocol_enforce: $enforce, review_runs_in_flight: $reviewRunsInFlight, verification_runs_in_flight: $verificationRunsInFlight, deep_review_receipt_head_match: $deepReviewReceiptHeadMatch, verification_receipt_head_match: $verificationReceiptHeadMatch, dispositions_missing_marker: $dispositionsMissingMarker, followups_without_issue: $followupsWithoutIssue, unreachable_fix_commits: $unreachableFixCommits}'
 
 if [[ "$CONVERGED" == "true" ]]; then
     exit 0

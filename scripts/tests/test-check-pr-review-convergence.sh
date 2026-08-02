@@ -245,6 +245,25 @@ test_pending_independent_review_blocks() {
     fi
 }
 
+# ── Test 10: a current-head CHANGES_REQUESTED review blocks even after the
+# native request is fulfilled. This is distinct from pending review requests:
+# GitHub removes the request when the reviewer submits the change request.
+
+test_current_change_request_blocks() {
+    run_case "current-change-request-blocks"
+
+    local converged change_requests
+    converged="$(json_field "$RUN_STDOUT" '.converged')"
+    change_requests="$(json_field "$RUN_STDOUT" '.current_change_requests | length')"
+
+    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && \
+          "$change_requests" -eq 1 ]]; then
+        pass "current-head CHANGES_REQUESTED review blocks convergence (exit 1, current_change_requests=1)"
+    else
+        fail "current-head CHANGES_REQUESTED review should block — got exit=$RUN_EXIT converged=$converged current_change_requests=$change_requests"
+    fi
+}
+
 # ══ R1 protocol-axis tests (#3693) ═════════════════════════════════════════
 # Design: each new axis is ADVISORY by default and BLOCK under
 # REVIEW_PROTOCOL_ENFORCE=1. So each axis has (at least) an enforce test
@@ -464,6 +483,7 @@ test_missing_fixture_dir_errors
 test_resolved_without_disposition_blocks
 test_resolved_with_disposition_does_not_block
 test_pending_independent_review_blocks
+test_current_change_request_blocks
 test_prose_reply_blocks_under_enforce
 test_prose_reply_advisory_by_default
 test_unreachable_fix_commit_blocks_under_enforce

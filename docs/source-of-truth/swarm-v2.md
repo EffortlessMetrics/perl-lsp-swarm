@@ -75,9 +75,10 @@ field list):
 - **`reviewer_run ∉ mutation_provenance(head)`** — the **writer-identity
   set** (see below): a verification receipt only counts if its `verifier`
   is outside the writer set.
-- **`verdict clear`** — `review_runs_in_flight == 0` and
-  `independent_review_pending == false` (no `needs-deep-review` label, no
-  `status=running` review-run receipt).
+- **`verdict clear`** — `review_runs_in_flight == 0`,
+  `independent_review_pending == false` (no native review request),
+  `current_change_requests` is empty, and no `status=running` review-run
+  receipt remains.
 - **`blocking dispositioned`** — `resolved_without_disposition == 0` and
   `dispositions_missing_marker == 0`: every resolved thread carries a
   machine-checkable `disposition:v1` marker, not just a resolve-with-no-
