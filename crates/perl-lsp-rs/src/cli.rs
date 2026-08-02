@@ -290,7 +290,10 @@ fn run_check(command_name: &str, files: &[String]) -> i32 {
     if errors > 0 { 1 } else { 0 }
 }
 
-fn format_parse_error_context(source: &str, error: &perl_parser::ParseError) -> Vec<String> {
+pub(crate) fn format_parse_error_context(
+    source: &str,
+    error: &perl_parser::ParseError,
+) -> Vec<String> {
     let contexts = perl_parser::error::get_error_contexts(std::slice::from_ref(error), source);
     let Some(context) = contexts.first() else {
         return Vec::new();

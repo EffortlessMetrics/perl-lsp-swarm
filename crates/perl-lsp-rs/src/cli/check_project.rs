@@ -1,6 +1,31 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+/// A single parse error or advisory rendered with line/column context.
+///
+/// `message` is the `ParseError` Display string; `context` is the human-readable
+/// `--> line N, column M` + source-line + caret rendering produced by
+/// `format_parse_error_context` (#5519). Read errors (no `ParseError`) have an
+/// empty context.
+struct RenderedError {
+    message: String,
+    context: Vec<String>,
+}
+
+impl RenderedError {
+    /// Build from a `ParseError`, rendering line/column context from `source`.
+    fn from_parse(source: &str, err: &perl_parser::ParseError) -> Self {
+        let message = format!("{err}");
+        let context = super::format_parse_error_context(source, err);
+        Self { message, context }
+    }
+
+    /// Build from a plain message (e.g. a read error) with no context.
+    fn plain(message: String) -> Self {
+        Self { message, context: Vec::new() }
+    }
+}
+
 /// Blocking parse errors and advisory diagnostics recorded for one scanned file.
 ///
 /// The two lists are kept apart because only `blocking` decides whether the file
@@ -9,8 +34,8 @@ use std::path::Path;
 /// draws the same line in `cli.rs::run_check`.
 struct FileFindings {
     path: String,
-    blocking: Vec<String>,
-    advisory: Vec<String>,
+    blocking: Vec<RenderedError>,
+    advisory: Vec<RenderedError>,
 }
 
 /// A path the directory walk could not read.
@@ -119,19 +144,20 @@ fn process_file(path: &Path, path_str: String, results: &mut ProjectCheckResults
     let (blocking_errors, advisory_errors): (Vec<_>, Vec<_>) =
         parser.errors().iter().partition(|err| err.blocks_clean_parse());
 
-    let mut blocking: Vec<String> = Vec::new();
-    let advisory: Vec<String> = advisory_errors.iter().map(|err| format!("{err}")).collect();
+    let mut blocking: Vec<RenderedError> = Vec::new();
+    let advisory: Vec<RenderedError> =
+        advisory_errors.iter().map(|err| RenderedError::from_parse(&source, err)).collect();
 
     if let Err(ref e) = parse_result {
-        let message = format!("{e}");
-        record_category(&message, results);
-        blocking.push(message);
+        let rendered = RenderedError::from_parse(&source, e);
+        record_category(&rendered.message, results);
+        blocking.push(rendered);
     }
 
     for err in &blocking_errors {
-        let message = format!("{err}");
-        record_category(&message, results);
-        blocking.push(message);
+        let rendered = RenderedError::from_parse(&source, err);
+        record_category(&rendered.message, results);
+        blocking.push(rendered);
     }
 
     if blocking.is_empty() {
@@ -147,7 +173,7 @@ fn record_file_error(path: String, message: String, results: &mut ProjectCheckRe
     record_category(&message, results);
     results.file_findings.push(FileFindings {
         path,
-        blocking: vec![message],
+        blocking: vec![RenderedError::plain(message)],
         advisory: Vec::new(),
     });
 }
@@ -155,6 +181,18 @@ fn record_file_error(path: String, message: String, results: &mut ProjectCheckRe
 fn record_category(message: &str, results: &mut ProjectCheckResults) {
     let category = categorize_error(message);
     results.category_counts.entry(category).and_modify(|c| *c += 1).or_insert(1);
+}
+
+/// Print one error under its file path, followed by the line/column context
+/// rendering when available (#5519). Previously this printed a bare byte offset
+/// (`at position 4821`) that the user could not act on; `--check` already solved
+/// this with `format_parse_error_context`, and `--check-project` now shares that
+/// rendering.
+fn emit_rendered_error(path: &str, err: &RenderedError) {
+    println!("  {path}: {}", err.message);
+    for line in &err.context {
+        println!("{line}");
+    }
 }
 
 fn emit_report(dir: &str, results: &ProjectCheckResults) -> i32 {
@@ -181,7 +219,7 @@ fn emit_report(dir: &str, results: &ProjectCheckResults) -> i32 {
         println!("Parse errors:");
         for file in blocking_files {
             for err in &file.blocking {
-                println!("  {}: {err}", file.path);
+                emit_rendered_error(file.path.as_str(), err);
             }
         }
         println!();
@@ -193,7 +231,7 @@ fn emit_report(dir: &str, results: &ProjectCheckResults) -> i32 {
         println!("Advisories (do not affect the parsability verdict):");
         for file in advisory_files {
             for err in &file.advisory {
-                println!("  {}: {err}", file.path);
+                emit_rendered_error(file.path.as_str(), err);
             }
         }
         println!();
@@ -310,7 +348,42 @@ fn remediation_hint_for_category(category: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{categorize_error, remediation_hint_for_category};
+    use super::{RenderedError, categorize_error, remediation_hint_for_category};
+
+    #[test]
+    fn rendered_error_from_parse_produces_line_column_not_byte_offset() {
+        // #5519: --check-project previously printed a bare byte offset
+        // (`at position N`) that the user could not act on. The fix reuses
+        // `format_parse_error_context` so each error renders `--> line N,
+        // column M` plus the source line and caret — matching `--check`.
+        //
+        // The unclosed brace on line 2 must produce a context pointing at line 2.
+        let source = "my $x = 1;\nif ($x) {\n";
+        let mut parser = perl_parser::Parser::new(source);
+        let result = parser.parse();
+        // An unclosed block yields a blocking error (either as the returned
+        // Err or in the recovered diagnostics).
+        let err: perl_parser::ParseError = result
+            .err()
+            .or_else(|| parser.errors().iter().next().cloned())
+            .expect("source with an unclosed block must produce a parse error");
+
+        let rendered = RenderedError::from_parse(source, &err);
+
+        // The message still contains the parser's text (which may mention a
+        // byte position internally), but the *context* lines must render a
+        // human-readable `--> line N, column M`.
+        let context_joined = rendered.context.join("\n");
+        assert!(
+            context_joined.contains("--> line"),
+            "context must contain a line annotation, got: {context_joined:?}"
+        );
+        // The context must NOT be empty — every ParseError yields a context.
+        assert!(
+            !rendered.context.is_empty(),
+            "from_parse must produce non-empty context for a parse error"
+        );
+    }
 
     #[test]
     fn categorize_error_maps_known_cases() {
