@@ -4,6 +4,7 @@
 //! lifecycle label, or authorize a merge. A complete snapshot can report a
 //! blocking review state; a failed or partial snapshot is `NOT_PROVEN`.
 
+use super::github;
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -213,10 +214,12 @@ pub fn run_review_convergence(pr: u64, json_only: bool) -> Result<()> {
 
 /// Collect the review snapshot for composition by another factual instrument.
 pub fn review_snapshot(pr: u64) -> Result<ReviewSnapshot> {
-    let repository =
-        command_text("gh", &["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])?
-            .trim()
-            .to_string();
+    let repository = github::command_text(
+        "gh",
+        &["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+    )?
+    .trim()
+    .to_string();
     let (owner, repo) = repository
         .split_once('/')
         .ok_or_else(|| color_eyre::eyre::eyre!("gh returned invalid repository {repository:?}"))?;
@@ -237,8 +240,14 @@ fn collect_snapshot(repository: String, owner: &str, repo: &str, pr: u64) -> Rev
     let mut reviews_done = false;
     let mut review_requests_done = false;
     let mut threads_done = false;
+    let mut page_count = 0;
 
     loop {
+        if page_count >= 100 {
+            errors.push("review GraphQL pagination exceeded the 100-page safety cap".to_string());
+            break;
+        }
+        page_count += 1;
         let page = match graphql_page(
             owner,
             repo,
@@ -286,6 +295,12 @@ fn collect_snapshot(repository: String, owner: &str, repo: &str, pr: u64) -> Rev
                 errors.push("GraphQL omitted active review page".to_string());
                 break;
             };
+            if reviews_page.page_info.has_next_page && reviews_page.page_info.end_cursor.is_none() {
+                errors.push(
+                    "review pagination requested another review page without a cursor".to_string(),
+                );
+                break;
+            }
             reviews.extend(reviews_page.nodes.into_iter().map(|review| {
                 SubmittedReview {
                     reviewer: review
@@ -314,6 +329,15 @@ fn collect_snapshot(repository: String, owner: &str, repo: &str, pr: u64) -> Rev
                 errors.push("GraphQL omitted active review-request page".to_string());
                 break;
             };
+            if review_requests_page.page_info.has_next_page
+                && review_requests_page.page_info.end_cursor.is_none()
+            {
+                errors.push(
+                    "review pagination requested another review-request page without a cursor"
+                        .to_string(),
+                );
+                break;
+            }
             pending_reviewers.extend(review_requests_page.nodes.into_iter().filter_map(
                 |request| {
                     request.requested_reviewer.and_then(|reviewer| reviewer.login.or(reviewer.name))
@@ -327,6 +351,12 @@ fn collect_snapshot(repository: String, owner: &str, repo: &str, pr: u64) -> Rev
                 errors.push("GraphQL omitted active review-thread page".to_string());
                 break;
             };
+            if threads_page.page_info.has_next_page && threads_page.page_info.end_cursor.is_none() {
+                errors.push(
+                    "review pagination requested another thread page without a cursor".to_string(),
+                );
+                break;
+            }
             for thread in threads_page.nodes {
                 let fact = ThreadFact {
                     id: thread.id,
@@ -354,6 +384,42 @@ fn collect_snapshot(repository: String, owner: &str, repo: &str, pr: u64) -> Rev
     }
 
     let head_sha = head_sha.unwrap_or_default();
+    build_snapshot(
+        repository,
+        pr,
+        head_sha,
+        reviews,
+        pending_reviewers,
+        unresolved_active,
+        unresolved_outdated,
+        resolved_without_disposition,
+        vec![
+            page_basis("submitted review", reviews_done),
+            page_basis("requested-reviewer", review_requests_done),
+            page_basis("review-thread", threads_done),
+            if errors.is_empty() {
+                "review commit OIDs compared with the captured pullRequest.headRefOid".to_string()
+            } else {
+                "review commit currentness is incomplete because the snapshot has errors"
+                    .to_string()
+            },
+        ],
+        errors,
+    )
+}
+
+fn build_snapshot(
+    repository: String,
+    pr: u64,
+    head_sha: String,
+    reviews: Vec<SubmittedReview>,
+    pending_reviewers: BTreeSet<String>,
+    unresolved_active: Vec<ThreadFact>,
+    unresolved_outdated: Vec<ThreadFact>,
+    resolved_without_disposition: Vec<ThreadFact>,
+    currentness_basis: Vec<String>,
+    errors: Vec<String>,
+) -> ReviewSnapshot {
     let stale_human = stale_human_reviews(&reviews);
     let converged = errors.is_empty()
         && pending_reviewers.is_empty()
@@ -378,17 +444,7 @@ fn collect_snapshot(repository: String, owner: &str, repo: &str, pr: u64) -> Rev
         unresolved_active,
         unresolved_outdated,
         resolved_without_disposition,
-        currentness_basis: vec![
-            page_basis("submitted review", reviews_done),
-            page_basis("requested-reviewer", review_requests_done),
-            page_basis("review-thread", threads_done),
-            if errors.is_empty() {
-                "review commit OIDs compared with the captured pullRequest.headRefOid".to_string()
-            } else {
-                "review commit currentness is incomplete because the snapshot has errors"
-                    .to_string()
-            },
-        ],
+        currentness_basis,
         errors,
     }
 }
@@ -465,68 +521,48 @@ fn graphql_page(
     serde_json::from_slice(&output.stdout).context("failed to parse gh GraphQL review snapshot")
 }
 
-fn command_text(program: &str, args: &[&str]) -> Result<String> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to execute {program}"))?;
-    if !output.status.success() {
-        bail!(
-            "{program} failed with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn resolved_single_comment_is_separated_as_silent() {
-        let mut snapshot = ReviewSnapshot {
-            repository: "owner/repo".to_string(),
-            pr: 1,
-            head_sha: "head".to_string(),
-            result: "BLOCKED".to_string(),
-            converged: false,
-            submitted_reviews: Vec::new(),
-            pending_reviewers: Vec::new(),
-            unresolved_active: Vec::new(),
-            unresolved_outdated: Vec::new(),
-            resolved_without_disposition: vec![ThreadFact {
+        let snapshot = build_snapshot(
+            "owner/repo".to_string(),
+            1,
+            "head".to_string(),
+            Vec::new(),
+            BTreeSet::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![ThreadFact {
                 id: "thread-1".to_string(),
                 path: Some("src/lib.rs".to_string()),
                 line: Some(10),
                 comment_count: 1,
             }],
-            currentness_basis: Vec::new(),
-            errors: Vec::new(),
-        };
-        snapshot.converged = snapshot.resolved_without_disposition.is_empty();
-        assert!(!snapshot.converged);
+            Vec::new(),
+            Vec::new(),
+        );
+        assert!(!snapshot.converged, "a resolved thread without disposition blocks convergence");
     }
 
     #[test]
     fn incomplete_snapshot_is_not_proven() {
-        let snapshot = ReviewSnapshot {
-            repository: "owner/repo".to_string(),
-            pr: 1,
-            head_sha: "head".to_string(),
-            result: "NOT_PROVEN".to_string(),
-            converged: false,
-            submitted_reviews: Vec::new(),
-            pending_reviewers: Vec::new(),
-            unresolved_active: Vec::new(),
-            unresolved_outdated: Vec::new(),
-            resolved_without_disposition: Vec::new(),
-            currentness_basis: vec!["head".to_string()],
-            errors: vec!["rate limit".to_string()],
-        };
-        assert!(!snapshot.converged);
-        assert_eq!(snapshot.result, "NOT_PROVEN");
+        let snapshot = build_snapshot(
+            "owner/repo".to_string(),
+            1,
+            "head".to_string(),
+            Vec::new(),
+            BTreeSet::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec!["head".to_string()],
+            vec!["rate limit".to_string()],
+        );
+        assert!(!snapshot.converged, "an instrument error cannot converge review");
+        assert_eq!(snapshot.result, "NOT_PROVEN", "an instrument error must remain not proven");
     }
 
     #[test]
@@ -549,7 +585,7 @@ mod tests {
                 current_at_head: true,
             },
         ];
-        assert!(!stale_human_reviews(&reviews));
+        assert!(!stale_human_reviews(&reviews), "latest human submission is current");
     }
 
     #[test]

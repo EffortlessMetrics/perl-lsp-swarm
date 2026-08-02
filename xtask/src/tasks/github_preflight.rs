@@ -1,10 +1,9 @@
 //! Read-only protected-merge preflight composed from the factual GitHub slices.
 
-use super::github::{self, CandidateFacts};
+use super::github::{self, CandidateFacts, RequiredContext};
 use super::github_review::{self, ReviewSnapshot};
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RequiredCheckFact {
@@ -55,19 +54,46 @@ struct CommitStatus {
 
 #[derive(Debug, Deserialize)]
 struct CheckRun {
+    id: u64,
     name: String,
     status: String,
     conclusion: Option<String>,
     head_sha: Option<String>,
+    started_at: Option<String>,
 }
 
 pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
-    let initial_candidate = github::candidate_facts(pr)?;
-    let repository = initial_candidate.repository.clone();
-    let review = github_review::review_snapshot(pr)?;
-    let mut candidate = github::candidate_facts(pr)?;
-    let mut errors = review.errors.clone();
-    if initial_candidate.head_sha != candidate.head_sha {
+    let mut errors = Vec::new();
+    let initial_candidate = match github::candidate_facts(pr) {
+        Ok(candidate) => Some(candidate),
+        Err(error) => {
+            errors.push(format!("failed to collect initial candidate facts: {error}"));
+            None
+        }
+    };
+    let repository = initial_candidate
+        .as_ref()
+        .map(|candidate| candidate.repository.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let review = match github_review::review_snapshot(pr) {
+        Ok(review) => review,
+        Err(error) => {
+            errors.push(format!("failed to collect review facts: {error}"));
+            not_proven_review(&repository, pr, error.to_string())
+        }
+    };
+    let mut candidate = match initial_candidate.as_ref() {
+        Some(_) => match github::candidate_facts(pr) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                errors.push(format!("failed to collect candidate facts: {error}"));
+                not_proven_candidate(&repository, pr)
+            }
+        },
+        None => not_proven_candidate(&repository, pr),
+    };
+    errors.extend(review.errors.clone());
+    if initial_candidate.as_ref().is_some_and(|initial| initial.head_sha != candidate.head_sha) {
         errors.push("candidate head moved while composing the preflight snapshot".to_string());
     }
     if review.head_sha != candidate.head_sha {
@@ -80,10 +106,14 @@ pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
             Vec::new()
         }
     };
-    match github::candidate_facts(pr) {
-        Ok(final_candidate) if final_candidate.head_sha == candidate.head_sha => {}
-        Ok(_) => errors.push("candidate head moved before preflight completion".to_string()),
-        Err(error) => errors.push(format!("failed to revalidate candidate head: {error}")),
+    if initial_candidate.is_some() {
+        match github::candidate_facts(pr) {
+            Ok(final_candidate) if final_candidate.head_sha == candidate.head_sha => {
+                candidate.identity_result = "current".to_string();
+            }
+            Ok(_) => errors.push("candidate head moved before preflight completion".to_string()),
+            Err(error) => errors.push(format!("failed to revalidate candidate head: {error}")),
+        }
     }
     candidate.required_contexts_result = summarize_required_checks(&required_checks, &errors);
     let protected_merge = ProtectedMergeFacts {
@@ -122,6 +152,41 @@ pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
     Ok(())
 }
 
+fn not_proven_candidate(repository: &str, pr: u64) -> CandidateFacts {
+    CandidateFacts {
+        repository: repository.to_string(),
+        pr,
+        state: "UNKNOWN".to_string(),
+        draft: false,
+        head_ref: String::new(),
+        head_sha: String::new(),
+        base_ref: String::new(),
+        base_sha: String::new(),
+        mergeability: "UNKNOWN".to_string(),
+        merge_state: "UNKNOWN".to_string(),
+        required_contexts: Vec::new(),
+        required_contexts_result: "NOT_PROVEN".to_string(),
+        identity_result: "NOT_PROVEN".to_string(),
+    }
+}
+
+fn not_proven_review(repository: &str, pr: u64, error: String) -> ReviewSnapshot {
+    ReviewSnapshot {
+        repository: repository.to_string(),
+        pr,
+        head_sha: String::new(),
+        result: "NOT_PROVEN".to_string(),
+        converged: false,
+        submitted_reviews: Vec::new(),
+        pending_reviewers: Vec::new(),
+        unresolved_active: Vec::new(),
+        unresolved_outdated: Vec::new(),
+        resolved_without_disposition: Vec::new(),
+        currentness_basis: vec!["review facts unavailable".to_string()],
+        errors: vec![error],
+    }
+}
+
 fn collect_required_checks(candidate: &CandidateFacts) -> Result<Vec<RequiredCheckFact>> {
     let mut all_check_runs = Vec::new();
     let mut page = 1;
@@ -130,13 +195,16 @@ fn collect_required_checks(candidate: &CandidateFacts) -> Result<Vec<RequiredChe
             "repos/{}/commits/{}/check-runs?per_page=100&page={page}",
             candidate.repository, candidate.head_sha
         );
-        let raw = command_text("gh", &["api", &endpoint])?;
+        let raw = github::command_text("gh", &["api", &endpoint])?;
         let payload: CheckRunsPayload = serde_json::from_str(&raw)
             .context("failed to parse check runs for the captured candidate head")?;
         let count = payload.check_runs.len();
         all_check_runs.extend(payload.check_runs);
         if count < 100 {
             break;
+        }
+        if page >= 100 {
+            bail!("check-runs pagination exceeded the 100-page safety cap");
         }
         page += 1;
     }
@@ -147,7 +215,7 @@ fn collect_required_checks(candidate: &CandidateFacts) -> Result<Vec<RequiredChe
             "repos/{}/commits/{}/status?per_page=100&page={page}",
             candidate.repository, candidate.head_sha
         );
-        let raw = command_text("gh", &["api", &endpoint])?;
+        let raw = github::command_text("gh", &["api", &endpoint])?;
         let payload: CommitStatusPayload = serde_json::from_str(&raw)
             .context("failed to parse commit statuses for the captured candidate head")?;
         let count = payload.statuses.len();
@@ -155,35 +223,57 @@ fn collect_required_checks(candidate: &CandidateFacts) -> Result<Vec<RequiredChe
         if count < 100 {
             break;
         }
+        if page >= 100 {
+            bail!("commit-status pagination exceeded the 100-page safety cap");
+        }
         page += 1;
     }
     Ok(candidate
         .required_contexts
         .iter()
         .map(|required| {
-            let matching = all_check_runs.iter().find(|run| run.name == required.name);
-            let status = all_statuses.iter().find(|status| status.context == required.name);
-            match matching {
-                Some(run) => RequiredCheckFact {
-                    name: required.name.clone(),
-                    result: classify_check(run, &candidate.head_sha),
-                    evaluated_head_sha: run.head_sha.clone(),
-                },
-                None => match status {
-                    Some(status) => RequiredCheckFact {
-                        name: required.name.clone(),
-                        result: classify_status(status),
-                        evaluated_head_sha: Some(candidate.head_sha.clone()),
-                    },
-                    None => RequiredCheckFact {
-                        name: required.name.clone(),
-                        result: "MISSING".to_string(),
-                        evaluated_head_sha: None,
-                    },
-                },
-            }
+            resolve_required_check(required, &all_check_runs, &all_statuses, &candidate.head_sha)
         })
         .collect())
+}
+
+fn resolve_required_check(
+    required: &RequiredContext,
+    check_runs: &[CheckRun],
+    statuses: &[CommitStatus],
+    candidate_head_sha: &str,
+) -> RequiredCheckFact {
+    let matching = latest_check_run(check_runs, &required.name);
+    let status = statuses.iter().find(|status| status.context == required.name);
+    match matching {
+        Some(run) => RequiredCheckFact {
+            name: required.name.clone(),
+            result: classify_check(run, candidate_head_sha),
+            evaluated_head_sha: run.head_sha.clone(),
+        },
+        None => match status {
+            Some(status) => RequiredCheckFact {
+                name: required.name.clone(),
+                result: classify_status(status),
+                evaluated_head_sha: Some(candidate_head_sha.to_string()),
+            },
+            None => RequiredCheckFact {
+                name: required.name.clone(),
+                result: "MISSING".to_string(),
+                evaluated_head_sha: None,
+            },
+        },
+    }
+}
+
+fn latest_check_run<'a>(runs: &'a [CheckRun], name: &str) -> Option<&'a CheckRun> {
+    runs.iter().filter(|run| run.name == name).max_by(|left, right| {
+        left.started_at
+            .as_deref()
+            .unwrap_or("")
+            .cmp(right.started_at.as_deref().unwrap_or(""))
+            .then_with(|| left.id.cmp(&right.id))
+    })
 }
 
 fn classify_check(run: &CheckRun, candidate_head_sha: &str) -> String {
@@ -218,7 +308,7 @@ fn summarize_required_checks(checks: &[RequiredCheckFact], errors: &[String]) ->
     if !errors.is_empty() {
         return "NOT_PROVEN".to_string();
     }
-    if checks.iter().all(|check| check.result == "SUCCESS") {
+    if !checks.is_empty() && checks.iter().all(|check| check.result == "SUCCESS") {
         "SUCCESS".to_string()
     } else {
         "BLOCKED".to_string()
@@ -238,9 +328,6 @@ fn derive_preflight_result(
                 .to_string(),
         );
         return ("NOT_PROVEN".to_string(), findings);
-    }
-    if candidate.identity_result != "current" {
-        findings.push("candidate identity is not current".to_string());
     }
     if candidate.head_sha != review.head_sha {
         findings.push("candidate and review snapshots describe different heads".to_string());
@@ -270,21 +357,6 @@ fn derive_preflight_result(
     } else {
         ("BLOCKED".to_string(), findings)
     }
-}
-
-fn command_text(program: &str, args: &[&str]) -> Result<String> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to execute {program}"))?;
-    if !output.status.success() {
-        bail!(
-            "{program} failed with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 #[cfg(test)]
@@ -340,7 +412,7 @@ mod tests {
         let (result, findings) =
             derive_preflight_result(&candidate(), &review("CURRENT", true), &checks, &[]);
         assert_eq!(result, "READY");
-        assert!(findings.is_empty());
+        assert!(findings.is_empty(), "ready preflight must have no findings");
     }
 
     #[test]
@@ -353,7 +425,10 @@ mod tests {
         let (result, findings) =
             derive_preflight_result(&candidate(), &review("CURRENT", true), &checks, &[]);
         assert_eq!(result, "BLOCKED");
-        assert!(findings.iter().any(|finding| finding.contains("MISSING")));
+        assert!(
+            findings.iter().any(|finding| finding.contains("MISSING")),
+            "missing required checks must be reported"
+        );
     }
 
     #[test]
@@ -365,22 +440,26 @@ mod tests {
             &["rate limit".to_string()],
         );
         assert_eq!(result, "NOT_PROVEN");
-        assert!(!findings.is_empty());
+        assert!(!findings.is_empty(), "partial data must produce a finding");
     }
 
     #[test]
     fn check_classification_preserves_stale_and_incomplete_states() {
         let stale = CheckRun {
+            id: 1,
             name: "required".to_string(),
             status: "COMPLETED".to_string(),
             conclusion: Some("SUCCESS".to_string()),
             head_sha: Some("old".to_string()),
+            started_at: Some("2026-08-01T00:00:00Z".to_string()),
         };
         let pending = CheckRun {
+            id: 2,
             name: "required".to_string(),
             status: "IN_PROGRESS".to_string(),
             conclusion: None,
             head_sha: Some("head".to_string()),
+            started_at: Some("2026-08-02T00:00:00Z".to_string()),
         };
         assert_eq!(classify_check(&stale, "head"), "STALE");
         assert_eq!(classify_check(&pending, "head"), "PENDING");
@@ -390,5 +469,36 @@ mod tests {
     fn legacy_status_contexts_are_classified_without_false_missing() {
         let status = CommitStatus { context: "required".to_string(), state: "success".to_string() };
         assert_eq!(classify_status(&status), "SUCCESS");
+    }
+
+    #[test]
+    fn latest_check_attempt_controls_required_context_result() {
+        let runs = vec![
+            CheckRun {
+                id: 10,
+                name: "required".to_string(),
+                status: "COMPLETED".to_string(),
+                conclusion: Some("SUCCESS".to_string()),
+                head_sha: Some("head".to_string()),
+                started_at: Some("2026-08-02T00:00:00Z".to_string()),
+            },
+            CheckRun {
+                id: 11,
+                name: "required".to_string(),
+                status: "COMPLETED".to_string(),
+                conclusion: Some("FAILURE".to_string()),
+                head_sha: Some("head".to_string()),
+                started_at: Some("2026-08-02T00:01:00Z".to_string()),
+            },
+        ];
+        let required =
+            RequiredContext { name: "required".to_string(), source: "checks".to_string() };
+        let fact = resolve_required_check(&required, &runs, &[], "head");
+        assert_eq!(fact.result, "FAILURE", "latest check attempt must control the verdict");
+    }
+
+    #[test]
+    fn empty_required_check_set_is_blocked() {
+        assert_eq!(summarize_required_checks(&[], &[]), "BLOCKED");
     }
 }

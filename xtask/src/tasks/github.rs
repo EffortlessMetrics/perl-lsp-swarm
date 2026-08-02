@@ -3,6 +3,7 @@
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -28,6 +29,19 @@ pub struct CandidateFacts {
     pub required_contexts: Vec<RequiredContext>,
     pub required_contexts_result: String,
     pub identity_result: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RequiredStatusChecksPayload {
+    #[serde(default)]
+    contexts: Vec<String>,
+    #[serde(default)]
+    checks: Vec<RequiredStatusCheck>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RequiredStatusCheck {
+    context: String,
 }
 
 pub fn run_labels() -> Result<()> {
@@ -123,11 +137,15 @@ fn collect_candidate(pr: u64) -> Result<CandidateFacts> {
 
     let base_ref = required_string(&pr_value, "baseRefName")?;
     let endpoint = format!(
-        "repos/{repository}/branches/{base_ref}/protection/required_status_checks/contexts"
+        "repos/{repository}/branches/{}/protection/required_status_checks",
+        encode_path_segment(&base_ref)
     );
     let contexts_text = command_text("gh", &["api", &endpoint])?;
-    let context_names: Vec<String> = serde_json::from_str::<Vec<String>>(&contexts_text)
-        .context("failed to parse required branch-protection contexts")?;
+    let mut context_names = BTreeSet::new();
+    let required_checks: RequiredStatusChecksPayload = serde_json::from_str(&contexts_text)
+        .context("failed to parse required branch-protection checks")?;
+    context_names.extend(required_checks.contexts);
+    context_names.extend(required_checks.checks.into_iter().map(|check| check.context));
 
     Ok(CandidateFacts {
         repository,
@@ -148,11 +166,26 @@ fn collect_candidate(pr: u64) -> Result<CandidateFacts> {
         // results against this candidate head, so currentness is not proven
         // by this snapshot.
         required_contexts_result: "NOT_PROVEN".to_string(),
-        identity_result: "current".to_string(),
+        identity_result: "NOT_PROVEN".to_string(),
     })
 }
 
-fn command_text(program: &str, args: &[&str]) -> Result<String> {
+fn encode_path_segment(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0F) as usize] as char);
+        }
+    }
+    encoded
+}
+
+pub(crate) fn command_text(program: &str, args: &[&str]) -> Result<String> {
     let output = Command::new(program)
         .args(args)
         .output()
@@ -193,7 +226,7 @@ fn identity_result(expected_head: Option<&str>, actual_head: &str) -> &'static s
     match expected_head {
         Some(expected) if expected == actual_head => "current",
         Some(_) => "moved",
-        None => "current",
+        None => "NOT_PROVEN",
     }
 }
 
@@ -256,10 +289,13 @@ mod tests {
     }
 
     #[test]
-    fn a1_does_not_claim_required_context_results_are_current() -> Result<()> {
-        let facts = fixture();
-        assert_eq!(facts.required_contexts_result, "NOT_PROVEN");
-        Ok(())
+    fn missing_expected_head_is_not_proven() {
+        assert_eq!(identity_result(None, "abc123"), "NOT_PROVEN");
+    }
+
+    #[test]
+    fn branch_names_are_encoded_as_one_api_path_segment() {
+        assert_eq!(encode_path_segment("feature/branch"), "feature%2Fbranch");
     }
 
     #[test]
@@ -269,8 +305,8 @@ mod tests {
         ))?;
         assert_eq!(facts.identity_result, "current");
         assert_eq!(facts.required_contexts_result, "NOT_PROVEN");
-        assert!(!facts.head_sha.is_empty());
-        assert!(!facts.base_sha.is_empty());
+        assert!(!facts.head_sha.is_empty(), "candidate fixture must include a head SHA");
+        assert!(!facts.base_sha.is_empty(), "candidate fixture must include a base SHA");
         Ok(())
     }
 }
