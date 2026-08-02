@@ -1,5 +1,5 @@
 // Test infrastructure — allow test-friendly patterns.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 //! Scenario 14 — `@INC` consumer-consistency conformance harness.
 //!
