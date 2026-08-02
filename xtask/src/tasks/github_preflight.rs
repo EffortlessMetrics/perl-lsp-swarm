@@ -80,6 +80,11 @@ pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
             Vec::new()
         }
     };
+    match github::candidate_facts(pr) {
+        Ok(final_candidate) if final_candidate.head_sha == candidate.head_sha => {}
+        Ok(_) => errors.push("candidate head moved before preflight completion".to_string()),
+        Err(error) => errors.push(format!("failed to revalidate candidate head: {error}")),
+    }
     candidate.required_contexts_result = summarize_required_checks(&required_checks, &errors);
     let protected_merge = ProtectedMergeFacts {
         base_ref: candidate.base_ref.clone(),
