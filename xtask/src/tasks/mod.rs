@@ -70,6 +70,7 @@ pub mod generate_semantic_snapshot;
 pub mod generated_files;
 pub mod git_context;
 pub mod github;
+pub mod github_preflight;
 pub mod github_review;
 pub mod goals;
 pub mod hardening;
