@@ -900,3 +900,87 @@ fn dollar_triple_colon_folds_only_the_leading_pair() -> R {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// #5428 — plain-identifier `$foo->bar` is literal, not a MethodCall.
+//
+// Real perl does not interpolate a bare method call inside a double-quoted
+// string. `"$foo->bar"` interpolates `$foo` and prints `->bar` as literal
+// text — the method is never called. Only arrow *subscripts* (`->[]`, `->{}`,
+// `->()`) genuinely interpolate. This is the plain-identifier counterpart of
+// `deref_chain_arrow_method_call_stays_literal` above; #5235 fixed the
+// `$$`-deref-chain half and deliberately left this one for #5428.
+//
+// Verified against real perl 5.38.2:
+//   package Foo; sub new { bless {}, shift } sub bar { "METHOD" }
+//   package main; my $o = Foo->new; print "$o->bar"
+//   # prints "Foo=HASH(0x..)->bar", never "METHOD"
+// ---------------------------------------------------------------------------
+
+#[test]
+fn plain_identifier_arrow_method_call_stays_literal() -> R {
+    let parts = interpolated_parts(r#""$foo->bar""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$foo")), StringPart::Literal(Arc::from("->bar")),],
+        "a bare arrow method after a plain identifier must stay literal, got {parts:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn plain_identifier_arrow_method_call_with_args_stays_literal() -> R {
+    // `$foo->method(arg)` — the `(arg)` is part of the (uncalled) method,
+    // so the whole `->method(arg)` stays literal.
+    let parts = interpolated_parts(r#""$foo->method(x)""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![
+            StringPart::Variable(Arc::from("$foo")),
+            StringPart::Literal(Arc::from("->method(x)")),
+        ],
+        "a bare arrow method with args must stay literal, got {parts:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn plain_identifier_arrow_subscripts_still_interpolate() -> R {
+    // Positive guards: the fix must NOT over-correct. Arrow subscripts DO
+    // interpolate and must keep their MethodCall classification.
+    let parts = interpolated_parts(r#""$ar->[1]""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$ar")), StringPart::MethodCall(Arc::from("->[1]")),],
+        "an array arrow subscript must still interpolate, got {parts:?}"
+    );
+
+    let parts = interpolated_parts(r#""$hr->{k}""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$hr")), StringPart::MethodCall(Arc::from("->{k}")),],
+        "a hash arrow subscript must still interpolate, got {parts:?}"
+    );
+
+    let parts = interpolated_parts(r#""$fn->(1)""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$fn")), StringPart::MethodCall(Arc::from("->(1)")),],
+        "a coderef arrow call must still interpolate, got {parts:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn plain_identifier_trailing_arrow_without_subscript_stays_literal() -> R {
+    // `$foo->` at end of string: the arrow has no subscript or identifier, so
+    // it stays literal (mirrors `deref_chain_trailing_arrow_without_subscript`
+    // for the plain-identifier arm).
+    let parts = interpolated_parts(r#""$foo->""#).ok_or("no InterpolatedString")?;
+    assert_eq!(
+        parts,
+        vec![StringPart::Variable(Arc::from("$foo")), StringPart::Literal(Arc::from("->")),],
+        "a trailing arrow with no subscript must stay literal, got {parts:?}"
+    );
+    Ok(())
+}
