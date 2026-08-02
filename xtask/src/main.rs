@@ -819,6 +819,24 @@ enum Commands {
         command: DevexCommand,
     },
 
+    /// Plan bounded serial pre-push proof from the shared change set.
+    ///
+    /// PLANNING ONLY: emits a deterministic proof plan, including the change-set
+    /// digest, selected and deferred steps, and posture. It runs none of the
+    /// planned Cargo, workflow, or RIPR commands and changes no hook behavior.
+    /// `--base auto` delegates base resolution to the shared change-set resolver.
+    PrePushPlan {
+        /// Git base ref used by the shared change-set resolver.
+        #[arg(long, default_value = "auto")]
+        base: String,
+        /// Commit-ish head consumed by the shared change-set resolver.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+        /// Output format: human or json.
+        #[arg(long, default_value = "human")]
+        format: String,
+    },
+
     /// Audit CI workflows for PR-safety and spend-risk controls.
     CiAuditWorkflows,
 
@@ -4067,6 +4085,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 devex_plan::pr_body(devex_plan::DevexPrBodyConfig { base, receipt })
             }
         },
+        Commands::PrePushPlan { base, head, format } => pre_push_plan::run(base, head, format),
         Commands::ParseRust { source, sexp, ast, bench } => {
             parse_rust::run(source, sexp, ast, bench)
         }
