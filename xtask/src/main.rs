@@ -1201,7 +1201,7 @@ enum Commands {
     #[command(name = "github")]
     GhCandidate {
         #[command(subcommand)]
-        command: GithubCommand,
+        command: GhGithubCommand,
     },
 
     /// Generate bindings
@@ -2899,7 +2899,7 @@ enum FreshnessCheckMode {
 }
 
 #[derive(Subcommand)]
-enum GithubCommand {
+enum GhGithubCommand {
     /// Capture candidate identity and required contexts for one pull request.
     Candidate {
         /// Pull request number.
@@ -4316,7 +4316,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::GhTriage { limit } => github::run_issues_needing_triage(limit),
         Commands::GhBackfillPrefixedLabels { apply } => github::run_backfill_prefixed_labels(apply),
         Commands::GhCandidate { command } => match command {
-            GithubCommand::Candidate { pr, expected_head, fixture, json } => {
+            GhGithubCommand::Candidate { pr, expected_head, fixture, json } => {
                 github::run_candidate(pr, expected_head, fixture, json)
             }
         },

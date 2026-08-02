@@ -3,6 +3,7 @@
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -89,7 +90,9 @@ pub fn run_candidate(
         );
     }
 
-    println!("{}", serde_json::to_string_pretty(&facts)?);
+    if json_only {
+        println!("{}", serde_json::to_string_pretty(&facts)?);
+    }
 
     if facts.identity_result != "current" {
         bail!("candidate facts are NOT_PROVEN for PR #{}", facts.pr);
@@ -117,12 +120,7 @@ fn collect_candidate(pr: u64) -> Result<CandidateFacts> {
         serde_json::from_str(&pr_text).context("failed to parse gh pr view JSON")?;
 
     let base_ref = required_string(&pr_value, "baseRefName")?;
-    let endpoint = format!(
-        "repos/{repository}/branches/{base_ref}/protection/required_status_checks/contexts"
-    );
-    let contexts_text = command_text("gh", &["api", &endpoint])?;
-    let context_names: Vec<String> = serde_json::from_str::<Vec<String>>(&contexts_text)
-        .context("failed to parse required branch-protection contexts")?;
+    let required_contexts = collect_required_contexts(&repository, &base_ref)?;
 
     Ok(CandidateFacts {
         repository,
@@ -133,18 +131,78 @@ fn collect_candidate(pr: u64) -> Result<CandidateFacts> {
         head_sha: required_string(&pr_value, "headRefOid")?,
         base_ref,
         base_sha: required_string(&pr_value, "baseRefOid")?,
+        // `gh pr view --json mergeable` exposes GitHub's enum as a string,
+        // unlike the REST pull-request payload's boolean field.
         mergeability: required_string(&pr_value, "mergeable")?,
         merge_state: required_string(&pr_value, "mergeStateStatus")?,
-        required_contexts: context_names
-            .into_iter()
-            .map(|name| RequiredContext { name, source: "branch_protection".to_string() })
-            .collect(),
+        required_contexts,
         // A1 discovers the policy contexts only. A2 owns evaluating their
         // results against this candidate head, so currentness is not proven
         // by this snapshot.
         required_contexts_result: "NOT_PROVEN".to_string(),
         identity_result: "current".to_string(),
     })
+}
+
+fn collect_required_contexts(repository: &str, base_ref: &str) -> Result<Vec<RequiredContext>> {
+    let encoded_base_ref = encode_path_segment(base_ref);
+    let branch_endpoint = format!(
+        "repos/{repository}/branches/{encoded_base_ref}/protection/required_status_checks/contexts"
+    );
+    let branch_raw = command_text("gh", &["api", &branch_endpoint])?;
+    let branch_names = serde_json::from_str::<Vec<String>>(&branch_raw)
+        .context("failed to parse required branch-protection contexts")?;
+
+    let rules_endpoint = format!("repos/{repository}/rules/branches/{encoded_base_ref}");
+    let rules_raw = command_text("gh", &["api", &rules_endpoint])?;
+    let rules: Value = serde_json::from_str(&rules_raw).context("failed to parse branch rules")?;
+
+    let mut sources = BTreeMap::<String, BTreeSet<String>>::new();
+    for name in branch_names {
+        sources.entry(name).or_default().insert("branch_protection".to_string());
+    }
+    for rule in rules.as_array().into_iter().flatten() {
+        if rule.get("type").and_then(Value::as_str) != Some("required_status_checks") {
+            continue;
+        }
+        for check in rule
+            .pointer("/parameters/required_status_checks")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(name) = check.get("context").and_then(Value::as_str) {
+                sources.entry(name.to_string()).or_default().insert("ruleset".to_string());
+            }
+        }
+    }
+
+    Ok(sources
+        .into_iter()
+        .map(|(name, source)| RequiredContext {
+            name,
+            source: source.into_iter().collect::<Vec<_>>().join("+"),
+        })
+        .collect())
+}
+
+fn encode_path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for &byte in value.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(hex_digit(byte >> 4));
+            encoded.push(hex_digit(byte & 0x0f));
+        }
+    }
+    encoded
+}
+
+fn hex_digit(value: u8) -> char {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    HEX[usize::from(value & 0x0f)] as char
 }
 
 fn command_text(program: &str, args: &[&str]) -> Result<String> {
@@ -262,10 +320,27 @@ mod tests {
         let facts: CandidateFacts = serde_json::from_str(include_str!(
             "../../tests/fixtures/github/candidate-current.json"
         ))?;
+        assert_eq!(facts.repository, "EffortlessMetrics/perl-lsp-swarm");
+        assert_eq!(facts.pr, 5609);
+        assert_eq!(facts.state, "OPEN");
+        assert!(!facts.draft);
+        assert_eq!(facts.base_ref, "main");
+        assert_eq!(facts.mergeability, "MERGEABLE");
+        assert_eq!(facts.merge_state, "CLEAN");
+        assert_eq!(facts.required_contexts.len(), 5);
+        assert!(facts.required_contexts.iter().any(|context| {
+            context.name == "Compile All Targets (bit-rot guard)" && context.source == "ruleset"
+        }));
         assert_eq!(facts.identity_result, "current");
         assert_eq!(facts.required_contexts_result, "NOT_PROVEN");
         assert!(!facts.head_sha.is_empty());
         assert!(!facts.base_sha.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn branch_names_are_encoded_as_single_api_path_segments() {
+        assert_eq!(encode_path_segment("main"), "main");
+        assert_eq!(encode_path_segment("release/#123"), "release%2F%23123");
     }
 }

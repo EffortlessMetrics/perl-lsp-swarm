@@ -17,6 +17,18 @@
     {
       "name": "ripr+ New Gap Gate",
       "source": "branch_protection"
+    },
+    {
+      "name": "Compile All Targets (bit-rot guard)",
+      "source": "ruleset"
+    },
+    {
+      "name": "Conflict marker check",
+      "source": "ruleset"
+    },
+    {
+      "name": "validate-title",
+      "source": "ruleset"
     }
   ],
   "required_contexts_result": "NOT_PROVEN",
