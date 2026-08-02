@@ -966,8 +966,16 @@ impl DebugAdapter {
                                                                     .write_all(command.as_bytes());
                                                             }
                                                             let _ = stdin.flush();
-                                                            pending_logpoint = Some(pending);
-                                                            Vec::new()
+                                                            // A hit seen while an earlier
+                                                            // capture is still open would
+                                                            // otherwise drop that capture's
+                                                            // messages on the floor. Emit
+                                                            // what it resolved so far
+                                                            // instead of losing it.
+                                                            pending_logpoint
+                                                                .replace(pending)
+                                                                .map(PendingLogpoint::into_messages)
+                                                                .unwrap_or_default()
                                                         }
                                                         // No stdin to ask on: emit the raw
                                                         // templates rather than nothing.

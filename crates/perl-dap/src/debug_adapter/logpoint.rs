@@ -20,10 +20,65 @@ use std::collections::HashMap;
 /// Prefix marking a single `name<TAB>value` reply line inside a logpoint frame.
 const VALUE_PREFIX: &str = "DAPLPV:";
 
-/// Upper bound on debugger lines a single capture may consume before giving up and
-/// emitting the raw templates. Prevents a wedged or dead debuggee from suppressing
-/// logpoint output forever.
+/// Placeholder the scalar name is substituted into in [`VALUE_QUERY`].
+const NAME_SLOT: &str = "__DAP_NAME__";
+
+/// Command that reports one scalar as exactly one line.
+///
+/// The escaping is the point. This is a line-oriented protocol layered on the
+/// debugger's output stream, so a value that contains a newline — file contents, a
+/// stack trace, any multi-line string — would otherwise arrive split across several
+/// `read_line` calls, and everything after the first line would be swallowed as
+/// framing noise. Escaping backslashes first, then CR and LF, keeps one reply on one
+/// line; [`unescape_value`] restores the original text.
+const VALUE_QUERY: &str = concat!(
+    "p do { my $v = defined($",
+    "__DAP_NAME__",
+    ") ? \"$",
+    "__DAP_NAME__",
+    "\" : \"undef\"; ",
+    "$v =~ s/\\\\/\\\\\\\\/g; $v =~ s/\\n/\\\\n/g; $v =~ s/\\r/\\\\r/g; ",
+    "\"DAPLPV:",
+    "__DAP_NAME__",
+    "\\t\" . $v }"
+);
+
+/// Upper bound on debugger lines a single capture may consume *after* its begin
+/// marker, before giving up and emitting the raw templates. Prevents a wedged or dead
+/// debuggee from suppressing logpoint output forever.
 const MAX_CAPTURE_LINES: usize = 200;
+
+/// Upper bound on lines the capture will wait for its begin marker to appear.
+///
+/// Separate from [`MAX_CAPTURE_LINES`] so that a debuggee which is merely chatty
+/// before answering is not mistaken for one that never will. Both phases stay
+/// bounded, so neither can wedge the reader.
+const MAX_WAIT_LINES: usize = 500;
+
+/// Reverse the escaping applied by [`VALUE_QUERY`].
+fn unescape_value(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('\\') => out.push('\\'),
+            // Not an escape this protocol produces; keep it verbatim rather than
+            // inventing a character.
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
 
 /// What the reader loop should do with the line it just handed to a capture.
 #[derive(Debug, PartialEq, Eq)]
@@ -127,11 +182,9 @@ impl PendingLogpoint {
         let mut commands = Vec::with_capacity(self.names.len() + 2);
         commands.push(format!("p \"{}\"\n", self.begin_marker));
         for name in &self.names {
-            // `name` is a bare identifier (see `is_plain_scalar_name`), so this is a
-            // literal command, not user-controlled Perl.
-            commands.push(format!(
-                "p \"{VALUE_PREFIX}{name}\\t\" . (defined(${name}) ? ${name} : \"undef\")\n"
-            ));
+            // `name` is a bare identifier (see `is_plain_scalar_name`), so the only
+            // dynamic part of this command is a literal identifier.
+            commands.push(format!("{}\n", VALUE_QUERY.replace(NAME_SLOT, name)));
         }
         commands.push(format!("p \"{}\"\n", self.end_marker));
         commands
@@ -140,32 +193,42 @@ impl PendingLogpoint {
     /// Feed one debugger output line to the capture.
     pub(super) fn observe_line(&mut self, line: &str) -> LogpointStep {
         self.lines_seen += 1;
-        if self.lines_seen > MAX_CAPTURE_LINES {
-            // The debuggee never answered; fall back to the raw templates rather than
-            // swallowing the logpoint.
-            return LogpointStep::Abandoned;
-        }
 
         if !self.saw_begin {
             if line.contains(&self.begin_marker) {
                 self.saw_begin = true;
+                // Restart the budget: what matters from here is how long the *answer*
+                // takes, not how chatty the debuggee was before it started.
+                self.lines_seen = 0;
                 return LogpointStep::Consumed;
             }
+            if self.lines_seen > MAX_WAIT_LINES {
+                return LogpointStep::Abandoned;
+            }
             return LogpointStep::Passthrough;
+        }
+
+        // A value line is checked first so that a scalar whose text happens to contain
+        // the end marker cannot terminate its own frame.
+        if let Some(idx) = line.find(VALUE_PREFIX) {
+            let payload = &line[idx + VALUE_PREFIX.len()..];
+            if let Some((name, value)) = payload.split_once('\t') {
+                self.values.insert(name.to_string(), unescape_value(value.trim_end()));
+                return LogpointStep::Consumed;
+            }
         }
 
         if line.contains(&self.end_marker) {
             return LogpointStep::Finished;
         }
 
-        if let Some(idx) = line.find(VALUE_PREFIX) {
-            let payload = &line[idx + VALUE_PREFIX.len()..];
-            if let Some((name, value)) = payload.split_once('\t') {
-                self.values.insert(name.to_string(), value.to_string());
-            }
+        if self.lines_seen > MAX_CAPTURE_LINES {
+            // The debuggee never finished answering; fall back to the raw templates
+            // rather than swallowing the logpoint.
+            return LogpointStep::Abandoned;
         }
 
-        // Everything between the markers is adapter-internal framing noise.
+        // Everything else between the markers is adapter-internal framing noise.
         LogpointStep::Consumed
     }
 
@@ -219,6 +282,112 @@ mod tests {
         Ok(())
     }
 
+    /// The query must keep a multi-line value on one line. Without the escaping, a
+    /// value containing a newline arrives split across `read_line` boundaries and
+    /// everything after the first segment is swallowed as framing noise.
+    #[test]
+    fn value_query_escapes_so_one_value_is_one_line() -> Result<(), String> {
+        let pending = PendingLogpoint::new(9, vec!["x={$x}".to_string()])
+            .map_err(|_| "template references $x, so a capture is expected")?;
+        let query = pending.query_commands().remove(1);
+
+        assert!(query.contains("$v =~ s/\\n/\\\\n/g"), "newlines must be escaped: {query}");
+        assert!(query.contains("$v =~ s/\\r/\\\\r/g"), "carriage returns must be escaped");
+        assert!(
+            query.find("s/\\\\/\\\\\\\\/g") < query.find("s/\\n/\\\\n/g"),
+            "backslashes must be escaped first or the escaping is ambiguous"
+        );
+        assert_eq!(query.matches('\n').count(), 1, "the command itself is a single line");
+        Ok(())
+    }
+
+    #[test]
+    fn multi_line_values_survive_the_round_trip() -> Result<(), String> {
+        let mut pending = PendingLogpoint::new(11, vec!["x is {$x}".to_string()])
+            .map_err(|_| "template references $x, so a capture is expected")?;
+        assert_eq!(pending.observe_line("DAP_LOGPOINT_BEGIN_11"), LogpointStep::Consumed);
+        // What the escaped query puts on the wire for "hello\nworld".
+        assert_eq!(pending.observe_line("DAPLPV:x\thello\\nworld"), LogpointStep::Consumed);
+        assert_eq!(pending.observe_line("DAP_LOGPOINT_END_11"), LogpointStep::Finished);
+
+        assert_eq!(pending.into_messages(), vec!["x is hello\nworld".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn escaped_backslashes_are_not_mistaken_for_escapes() {
+        assert_eq!(unescape_value(r"C:\\path\nfile"), "C:\\path\nfile");
+        assert_eq!(unescape_value(r"literal \q stays"), r"literal \q stays");
+        assert_eq!(unescape_value(r"trailing \"), r"trailing \");
+    }
+
+    /// A value whose text contains the frame's own end marker must not terminate the
+    /// frame — the value line is recognized first.
+    #[test]
+    fn a_value_containing_the_end_marker_does_not_end_the_frame() -> Result<(), String> {
+        let mut pending = PendingLogpoint::new(12, vec!["x={$x} y={$y}".to_string()])
+            .map_err(|_| "template references scalars, so a capture is expected")?;
+        assert_eq!(pending.observe_line("DAP_LOGPOINT_BEGIN_12"), LogpointStep::Consumed);
+        assert_eq!(
+            pending.observe_line("DAPLPV:x\tsaw DAP_LOGPOINT_END_12 in the log"),
+            LogpointStep::Consumed,
+            "a value line is a value, even when its text looks like the end marker"
+        );
+        assert_eq!(
+            pending.observe_line("DAPLPV:y\tsecond value still arrives"),
+            LogpointStep::Consumed
+        );
+        assert_eq!(pending.observe_line("DAP_LOGPOINT_END_12"), LogpointStep::Finished);
+
+        assert_eq!(
+            pending.into_messages(),
+            vec!["x=saw DAP_LOGPOINT_END_12 in the log y=second value still arrives".to_string()]
+        );
+        Ok(())
+    }
+
+    /// The line budget bounds how long the *answer* may take. A debuggee that is
+    /// merely chatty before the marker arrives must still get its capture.
+    #[test]
+    fn noise_before_the_begin_marker_does_not_consume_the_answer_budget() -> Result<(), String> {
+        let mut pending = PendingLogpoint::new(13, vec!["x={$x}".to_string()])
+            .map_err(|_| "template references $x, so a capture is expected")?;
+
+        for _ in 0..(MAX_CAPTURE_LINES + 20) {
+            assert_eq!(
+                pending.observe_line("chatty debuggee output"),
+                LogpointStep::Passthrough,
+                "pre-marker noise is not part of the frame"
+            );
+        }
+
+        assert_eq!(
+            pending.observe_line("DAP_LOGPOINT_BEGIN_13"),
+            LogpointStep::Consumed,
+            "a late but valid begin marker must still open the frame"
+        );
+        assert_eq!(pending.observe_line("DAPLPV:x\t42"), LogpointStep::Consumed);
+        assert_eq!(pending.observe_line("DAP_LOGPOINT_END_13"), LogpointStep::Finished);
+        assert_eq!(pending.into_messages(), vec!["x=42".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn waiting_for_a_begin_marker_that_never_arrives_still_gives_up() -> Result<(), String> {
+        let mut pending = PendingLogpoint::new(14, vec!["x={$x}".to_string()])
+            .map_err(|_| "template references $x, so a capture is expected")?;
+
+        let mut abandoned = false;
+        for _ in 0..(MAX_WAIT_LINES + 5) {
+            if pending.observe_line("noise") == LogpointStep::Abandoned {
+                abandoned = true;
+                break;
+            }
+        }
+        assert!(abandoned, "a marker that never arrives must not wedge the reader forever");
+        Ok(())
+    }
+
     #[test]
     fn capture_folds_framed_values_into_the_template() -> Result<(), String> {
         let mut pending = PendingLogpoint::new(3, vec!["x={$x} y={$y}".to_string()])
@@ -249,7 +418,7 @@ mod tests {
     fn capture_gives_up_instead_of_swallowing_the_message() -> Result<(), String> {
         let mut pending = PendingLogpoint::new(5, vec!["x={$x}".to_string()])
             .map_err(|_| "template references $x, so a capture is expected")?;
-        for _ in 0..MAX_CAPTURE_LINES {
+        for _ in 0..MAX_WAIT_LINES {
             assert_eq!(pending.observe_line("noise"), LogpointStep::Passthrough);
         }
         assert_eq!(
@@ -258,6 +427,31 @@ mod tests {
             "a debuggee that never answers must not suppress the logpoint forever"
         );
         assert_eq!(pending.into_messages(), vec!["x={$x}".to_string()]);
+        Ok(())
+    }
+
+    /// The other half of giving up: the frame opened and then stalled. The partial
+    /// values that did arrive are still better than nothing.
+    #[test]
+    fn a_frame_that_opens_but_never_closes_is_abandoned_with_what_it_has() -> Result<(), String> {
+        let mut pending = PendingLogpoint::new(6, vec!["x={$x} y={$y}".to_string()])
+            .map_err(|_| "template references scalars, so a capture is expected")?;
+        assert_eq!(pending.observe_line("DAP_LOGPOINT_BEGIN_6"), LogpointStep::Consumed);
+        assert_eq!(pending.observe_line("DAPLPV:x\t42"), LogpointStep::Consumed);
+
+        let mut abandoned = false;
+        for _ in 0..(MAX_CAPTURE_LINES + 5) {
+            if pending.observe_line("frame noise, no end marker") == LogpointStep::Abandoned {
+                abandoned = true;
+                break;
+            }
+        }
+        assert!(abandoned, "an unterminated frame must not suppress the logpoint forever");
+        assert_eq!(
+            pending.into_messages(),
+            vec!["x=42 y={$y}".to_string()],
+            "the value that did arrive is kept; the one that did not stays verbatim"
+        );
         Ok(())
     }
 }

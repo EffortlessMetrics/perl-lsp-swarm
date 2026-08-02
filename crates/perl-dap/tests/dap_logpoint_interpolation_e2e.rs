@@ -122,6 +122,53 @@ fn test_logpoint_interpolates_live_scalar_values() -> TestResult {
     Ok(())
 }
 
+/// A scalar holding a multi-line string must arrive whole.
+///
+/// The capture is a line-oriented protocol layered on the debugger's output stream,
+/// so an unescaped `p "DAPLPV:x\t" . $x` splits a value containing a newline across
+/// several `read_line` calls and everything after the first segment is swallowed as
+/// framing noise. This drives the real debugger rather than asserting the wire
+/// format, so it fails if the escaping and the unescaping ever disagree.
+#[test]
+fn test_logpoint_interpolates_multi_line_scalar_values() -> TestResult {
+    if !perl_available() {
+        eprintln!("Skipping test_logpoint_interpolates_multi_line_scalar_values - perl missing");
+        return Ok(());
+    }
+
+    let workspace = tempdir()?;
+    let script = workspace.path().join("logpoint_multiline_e2e.pl");
+    // `$m` spans two lines and also contains a backslash, so both escapes are live.
+    write(
+        &script,
+        "use strict;\nuse warnings;\n\nmy $m = \"first\\nsecond C:\\\\path\";\nmy $n = 1;\nmy $z = $n;\nprint \"$z\\n\";\n",
+    )?;
+    let script_str = script.to_str().ok_or("script path is not valid UTF-8")?.to_string();
+
+    let mut session = DapWorkflowSession::new(workflow_timeout())?;
+    session.launch(&script_str)?;
+    set_logpoint(&mut session, &script_str, LOGPOINT_LINE, "m is [{$m}]")?;
+    session.configuration_done()?;
+
+    let console = collect_console_output(&session);
+    let joined = console.join("");
+
+    assert!(
+        joined.contains("first\nsecond C:\\path"),
+        "a multi-line value must survive the capture whole; console was {console:?}"
+    );
+    assert!(
+        !joined.contains("m is [first]"),
+        "value must not be truncated at the first newline; console was {console:?}"
+    );
+    assert!(
+        !joined.contains("\\n"),
+        "the wire escaping must not leak into the user-visible message; console was {console:?}"
+    );
+
+    Ok(())
+}
+
 /// A logpoint with nothing to interpolate must still be emitted.
 ///
 /// Wiring interpolation in must not cost the plain case: the templates are handed
