@@ -167,14 +167,17 @@ fn spawn_fake_peer(addr: std::net::SocketAddr) -> JoinHandle<()> {
     })
 }
 
-fn response_body<'a>(msg: &'a DapMessage, expect_cmd: &str) -> &'a serde_json::Value {
+fn response_body<'a>(
+    msg: &'a DapMessage,
+    expect_cmd: &str,
+) -> Result<&'a serde_json::Value, Box<dyn std::error::Error>> {
     match msg {
         DapMessage::Response { command, success, body, .. } => {
             assert_eq!(command, expect_cmd, "unexpected response command");
             assert!(success, "response for {expect_cmd} was not successful: {msg:?}");
-            body.as_ref().unwrap_or_else(|| panic!("{expect_cmd} had no body"))
+            body.as_ref().ok_or_else(|| format!("{expect_cmd} had no body").into())
         }
-        _ => panic!("expected a response to {expect_cmd}, got {msg:?}"),
+        _ => Err(format!("expected a response to {expect_cmd}, got {msg:?}").into()),
     }
 }
 
@@ -197,7 +200,7 @@ fn full_dap_session_drives_the_live_peer_backend() -> Result<(), Box<dyn std::er
 
     // initialize → capabilities + initialized event (also completes the handshake).
     let out = bridge.dispatch(1, "initialize", Some(serde_json::json!({ "adapterID": "perl" })));
-    let caps = response_body(&out[0], "initialize");
+    let caps = response_body(&out[0], "initialize")?;
     assert_eq!(caps["supportsConditionalBreakpoints"], true, "ptkdb peer negotiated conditions");
     assert_eq!(caps["supportsLogPoints"], false, "ptkdb v1 has no logpoints");
     assert!(find_event(&out, "initialized").is_some(), "initialized event emitted");
@@ -211,14 +214,14 @@ fn full_dap_session_drives_the_live_peer_backend() -> Result<(), Box<dyn std::er
             "breakpoints": [{ "line": 42, "condition": "$x > 10" }],
         })),
     );
-    let body = response_body(&out[0], "setBreakpoints");
+    let body = response_body(&out[0], "setBreakpoints")?;
     assert_eq!(body["breakpoints"][0]["id"], 1);
     assert_eq!(body["breakpoints"][0]["verified"], true);
     assert_eq!(body["breakpoints"][0]["line"], 42);
 
     // continue → response, and the peer asynchronously emits a stopped event.
     let out = bridge.dispatch(3, "continue", Some(serde_json::json!({ "threadId": 1 })));
-    assert_eq!(response_body(&out[0], "continue")["allThreadsContinued"], true);
+    assert_eq!(response_body(&out[0], "continue")?["allThreadsContinued"], true);
 
     // Accumulate events (DapMessage is not Clone) and poll until the peer's
     // stopped event surfaces as a DAP stopped event.
@@ -243,7 +246,7 @@ fn full_dap_session_drives_the_live_peer_backend() -> Result<(), Box<dyn std::er
 
     // stackTrace → proxied to the peer and returned as a DAP stack.
     let out = bridge.dispatch(4, "stackTrace", Some(serde_json::json!({ "threadId": 1 })));
-    let frames = &response_body(&out[0], "stackTrace")["stackFrames"];
+    let frames = &response_body(&out[0], "stackTrace")?["stackFrames"];
     assert_eq!(frames[0]["name"], "main::run");
     assert_eq!(frames[0]["line"], 42);
 
