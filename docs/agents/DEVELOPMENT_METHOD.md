@@ -173,11 +173,11 @@ Review has two distinct modes:
 1. **Mutable candidate challenge:** fixes are expected; inspect correctness, authority, production reachability, compatibility, security, complexity, and claim honesty.
 2. **Fixed-candidate formal review:** bind the judgment to an identified candidate; do not mutate during the judgment; a clean review is valid.
 
-The root may perform a pass directly or delegate focused read-only research, proof, or review inside the selected claim when that changes the evidence surface or reduces elapsed work. Delegate when the evidence-to-answer compression ratio is high: CI or log triage, corpus or repository-wide searches, dependency/API audits, external-source collection, failure bisection, broad inventories, or an independently useful proof adversary. The child returns bounded evidence and references; the warm root keeps decisions, contradictions, and integration. Delegation is a runtime choice, not a durable execution topology, and it is never required merely to relay attention.
+The root may perform a pass directly or delegate focused read-only research, proof, or review inside the selected claim when that changes the evidence surface or reduces elapsed work. Delegate when the evidence-to-answer compression ratio is high: CI or log triage, corpus or repository-wide searches, dependency/API audits, external-source collection, failure bisection, broad inventories, or an independently useful proof adversary. The child returns bounded evidence and references; the warm root keeps decisions, contradictions, and integration. This is an evidence-cost trigger, not a required relay.
 
 ### Review standard
 
-Review is **directed, falsifying, and verified**. Direct it at the declared claim and its
+Review is **directed, falsifying, and verified**. Aim it at the declared claim and its
 real production seam; try to disprove the claim rather than merely restating the diff or
 its green checks. Where applicable, establish:
 
@@ -191,8 +191,8 @@ its green checks. Where applicable, establish:
 
 A clean review is valid when these questions were considered and no actionable finding
 remains. Do not manufacture a finding, edit, or second identity to make review visible.
-When a material candidate or claim changes, repeat the affected proof and review against
-the resulting candidate.
+Material candidate or claim changes require affected proof and a fresh review of the
+resulting candidate.
 
 ## Hard stops
 
