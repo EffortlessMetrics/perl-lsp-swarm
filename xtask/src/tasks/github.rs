@@ -157,9 +157,13 @@ fn collect_required_contexts(repository: &str, base_ref: &str) -> Result<Vec<Req
     let rules_raw = command_text("gh", &["api", &rules_endpoint])?;
     let rules: Value = serde_json::from_str(&rules_raw).context("failed to parse branch rules")?;
 
+    Ok(merge_required_contexts(&branch_names, &rules))
+}
+
+fn merge_required_contexts(branch_names: &[String], rules: &Value) -> Vec<RequiredContext> {
     let mut sources = BTreeMap::<String, BTreeSet<String>>::new();
     for name in branch_names {
-        sources.entry(name).or_default().insert("branch_protection".to_string());
+        sources.entry(name.clone()).or_default().insert("branch_protection".to_string());
     }
     for rule in rules.as_array().into_iter().flatten() {
         if rule.get("type").and_then(Value::as_str) != Some("required_status_checks") {
@@ -177,13 +181,13 @@ fn collect_required_contexts(repository: &str, base_ref: &str) -> Result<Vec<Req
         }
     }
 
-    Ok(sources
+    sources
         .into_iter()
         .map(|(name, source)| RequiredContext {
             name,
             source: source.into_iter().collect::<Vec<_>>().join("+"),
         })
-        .collect())
+        .collect()
 }
 
 fn encode_path_segment(value: &str) -> String {
@@ -342,5 +346,32 @@ mod tests {
     fn branch_names_are_encoded_as_single_api_path_segments() {
         assert_eq!(encode_path_segment("main"), "main");
         assert_eq!(encode_path_segment("release/#123"), "release%2F%23123");
+    }
+
+    #[test]
+    fn required_contexts_merge_classic_and_ruleset_sources() -> Result<()> {
+        let branch_names = vec!["Shared check".to_string(), "Classic only".to_string()];
+        let rules: Value = serde_json::json!([
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "required_status_checks": [
+                        { "context": "Shared check" },
+                        { "context": "Ruleset only" }
+                    ]
+                }
+            }
+        ]);
+        let contexts = merge_required_contexts(&branch_names, &rules);
+        assert_eq!(contexts.len(), 3);
+        assert_eq!(
+            contexts
+                .iter()
+                .find(|context| context.name == "Shared check")
+                .map(|context| context.source.as_str()),
+            Some("branch_protection+ruleset")
+        );
+        assert!(contexts.iter().any(|context| context.name == "Ruleset only"));
+        Ok(())
     }
 }
