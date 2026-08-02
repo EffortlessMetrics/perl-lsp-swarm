@@ -63,7 +63,15 @@ pub(super) fn run_check_project(dir: &str) -> i32 {
     }
 
     let mut results = ProjectCheckResults::default();
-    let walker = walkdir::WalkDir::new(root).follow_links(true).into_iter();
+    // Do not follow symlinks: a link into a vendored or parent tree (common
+    // with `local::lib` and `cpanm -l`) can pull thousands of third-party files
+    // into the scan or create a cycle that `walkdir` walks repeatedly. The
+    // project checker is meant to assess the user's own code, not the contents
+    // of symlinked dependency trees. (#5519 Slice B)
+    let walker = walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| !is_vendored_dir(entry));
 
     for entry in walker {
         let entry = match entry {
@@ -124,6 +132,36 @@ fn is_supported_perl_file(path: &Path) -> bool {
             .and_then(|e| e.to_str())
             .map(|e| EXTENSIONS.contains(&e))
             .unwrap_or(false)
+}
+
+/// Directory names that hold vendored or generated code rather than the user's
+/// own project source. Skipping them prevents a parsability verdict from being
+/// driven by third-party code the user did not write and cannot fix (#5519
+/// Slice B). The root directory itself is never skipped.
+fn is_vendored_dir(entry: &walkdir::DirEntry) -> bool {
+    if !entry.file_type().is_dir() {
+        return false;
+    }
+    // Never skip the root entry — it has no file_name.
+    let Some(name) = entry.file_name().to_str() else {
+        return false;
+    };
+    is_vendored_dir_name(name)
+}
+
+/// Pure name check extracted from [`is_vendored_dir`] for unit testing.
+fn is_vendored_dir_name(name: &str) -> bool {
+    const VENDORED_DIRS: &[&str] = &[
+        "local",        // Carton / `cpanm -l`
+        "blib",         // `make test` build output
+        "vendor",       // vendored deps
+        "node_modules", // JS ecosystem
+        ".git",         // VCS metadata
+        "target",       // Rust build output (e.g. this project's own target/)
+        ".build",       // Module::Build output
+        "auto",         // XS build artifacts under lib/
+    ];
+    VENDORED_DIRS.contains(&name)
 }
 
 fn process_file(path: &Path, path_str: String, results: &mut ProjectCheckResults) {
@@ -348,7 +386,9 @@ fn remediation_hint_for_category(category: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RenderedError, categorize_error, remediation_hint_for_category};
+    use super::{
+        RenderedError, categorize_error, is_vendored_dir_name, remediation_hint_for_category,
+    };
 
     #[test]
     fn rendered_error_from_parse_produces_line_column_not_byte_offset() {
@@ -429,5 +469,23 @@ mod tests {
     #[test]
     fn remediation_hints_skip_unknown_categories() {
         assert!(remediation_hint_for_category("Other").is_none());
+    }
+
+    #[test]
+    fn vendored_dir_names_are_recognized() {
+        // #5519 Slice B: the project checker must skip vendored / build
+        // directories so a FAIL verdict is not driven by third-party code.
+        for &name in
+            &["local", "blib", "vendor", "node_modules", ".git", "target", ".build", "auto"]
+        {
+            assert!(is_vendored_dir_name(name), "`{name}` should be recognized as a vendored dir");
+        }
+        // User project directories must NOT be skipped.
+        for &name in &["lib", "bin", "t", "script", "src", "app"] {
+            assert!(
+                !is_vendored_dir_name(name),
+                "`{name}` should NOT be treated as a vendored dir"
+            );
+        }
     }
 }
