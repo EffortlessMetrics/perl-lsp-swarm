@@ -183,7 +183,7 @@ fn find_event<'a>(msgs: &'a [DapMessage], name: &str) -> Option<&'a DapMessage> 
 }
 
 #[test]
-fn full_dap_session_drives_the_live_peer_backend() {
+fn full_dap_session_drives_the_live_peer_backend() -> Result<(), Box<dyn std::error::Error>> {
     // Fake ptkdb peer listens; the backend connects to it.
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
     let addr = listener.local_addr().expect("addr");
@@ -236,7 +236,7 @@ fn full_dap_session_drives_the_live_peer_backend() {
         assert_eq!(b["threadId"], 1);
         assert_eq!(b["allThreadsStopped"], true);
     } else {
-        panic!("stopped event had no body");
+        return Err("stopped event had no body".into());
     }
 
     // stackTrace → proxied to the peer and returned as a DAP stack.
@@ -258,6 +258,7 @@ fn full_dap_session_drives_the_live_peer_backend() {
 
     drop(bridge);
     let _ = peer.join();
+    Ok(())
 }
 
 #[test]
