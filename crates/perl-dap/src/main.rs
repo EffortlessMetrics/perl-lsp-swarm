@@ -26,6 +26,28 @@ use perl_lsp_rs_core::runtime::launcher::{init_logging, log_server_startup};
 
 const DEFAULT_DAP_PORT: u16 = 13_603;
 
+/// Render a `TcpListener::bind` error with context, matching the LSP server's
+/// approach (`port_in_use_message`) so a taken port surfaces a helpful message
+/// instead of a bare OS errno like "Address already in use (os error 98)"
+/// (#5521).
+fn bind_error(listener_name: &str, port: u16, error: std::io::Error) -> anyhow::Error {
+    if error.kind() == std::io::ErrorKind::AddrInUse {
+        let alt1 = port.wrapping_add(1);
+        let alt2 = port.wrapping_add(10);
+        anyhow::anyhow!(
+            "Port {port} is already in use. Another debug adapter session may be running.\n\
+             Try a different port:\n\
+             \n\
+             \x20 --port {alt1}\n\
+             \x20 --port {alt2}\n\
+             \n\
+             Or stop the existing process using port {port}."
+        )
+    } else {
+        anyhow::anyhow!("failed to bind {listener_name} listener on port {port}: {error}")
+    }
+}
+
 /// How long to wait for the external peer handshake / a session poll tick.
 const EXTERNAL_PEER_TIMEOUT: Duration = Duration::from_secs(10);
 const EXTERNAL_PEER_POLL: Duration = Duration::from_millis(50);
@@ -41,7 +63,8 @@ fn run_external_peer_bridge(editor_port: u16, peer_addr: &str) -> anyhow::Result
     // connect can queue in the listen backlog) while we connect to the peer, which
     // may take up to EXTERNAL_PEER_TIMEOUT. Otherwise an editor that spawns us and
     // immediately connects could fail before the port ever opened.
-    let listener = TcpListener::bind(("127.0.0.1", editor_port))?;
+    let listener = TcpListener::bind(("127.0.0.1", editor_port))
+        .map_err(|e| bind_error("editor", editor_port, e))?;
     let backend = ExternalDebuggerPeerBackend::connect(peer_addr, EXTERNAL_PEER_TIMEOUT)
         .map_err(|e| anyhow::anyhow!("failed to connect to debugger peer {peer_addr}: {e}"))?;
     let bridge = DapPeerBridge::new(Box::new(backend));
@@ -144,7 +167,8 @@ fn run_external_peer_listen(spec: &str, editor_port: Option<u16>) -> anyhow::Res
     match editor_port {
         Some(port) => {
             use std::net::TcpListener;
-            let editor_listener = TcpListener::bind(("127.0.0.1", port))?;
+            let editor_listener = TcpListener::bind(("127.0.0.1", port))
+                .map_err(|e| bind_error("editor", port, e))?;
             let (editor, _) = editor_listener.accept()?;
             run_mirror_listen_session_socket(
                 editor,
