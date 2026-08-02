@@ -227,23 +227,25 @@ fn find_event<'a>(msgs: &'a [DapMessage], name: &str) -> Option<&'a DapMessage> 
     msgs.iter().find(|m| matches!(m, DapMessage::Event { event, .. } if event == name))
 }
 
-fn as_response(msg: &DapMessage) -> (&str, bool, Option<&serde_json::Value>) {
+fn as_response(
+    msg: &DapMessage,
+) -> Result<(&str, bool, Option<&serde_json::Value>), Box<dyn Error>> {
     match msg {
         DapMessage::Response { command, success, body, .. } => {
-            (command.as_str(), *success, body.as_ref())
+            Ok((command.as_str(), *success, body.as_ref()))
         }
-        other => panic!("expected response, got {other:?}"),
+        other => Err(format!("expected response, got {other:?}").into()),
     }
 }
 
 #[test]
-fn dap_external_peer_launch_queues_breakpoints_before_handshake() {
+fn dap_external_peer_launch_queues_breakpoints_before_handshake() -> TestResult {
     // No peer connected yet: setBreakpoints must be queued and answered with an
     // unverified `pending` response, not sent anywhere or dropped.
     let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
     let init = bridge.dispatch(1, "initialize", Some(serde_json::json!({ "adapterID": "perl" })));
     // Static conservative capabilities are advertised before any peer exists.
-    let caps = as_response(&init[0]).2.expect("caps");
+    let caps = as_response(init.first().ok_or("initialize response missing")?)?.2.expect("caps");
     assert_eq!(caps["supportsConditionalBreakpoints"], true);
     assert_eq!(caps["supportsLogPoints"], false);
 
@@ -256,12 +258,13 @@ fn dap_external_peer_launch_queues_breakpoints_before_handshake() {
         })),
     );
     assert_eq!(bridge.pending_source_count(), 1, "the source's breakpoints are queued");
-    let (_, ok, body) = as_response(&out[0]);
+    let (_, ok, body) = as_response(out.first().ok_or("breakpoint response missing")?)?;
     assert!(ok, "a queued setBreakpoints still returns success");
     let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
     assert_eq!(bps.len(), 2, "response matches the request positionally");
     assert_eq!(bps[0]["verified"], false, "queued breakpoints are unverified until flush");
     assert_eq!(bps[0]["line"], 42);
+    Ok(())
 }
 
 #[test]
@@ -476,7 +479,7 @@ fn dap_external_peer_rejects_control_in_mirror_mode() -> TestResult {
 }
 
 #[test]
-fn dap_external_peer_launch_queues_function_breakpoints_before_handshake() {
+fn dap_external_peer_launch_queues_function_breakpoints_before_handshake() -> TestResult {
     // No peer connected yet: setFunctionBreakpoints must be queued (mirroring
     // the setBreakpoints queue) and answered with an unverified `pending`
     // response, not silently dropped (CodeRabbit finding: peer_launch.rs:~330).
@@ -494,11 +497,12 @@ fn dap_external_peer_launch_queues_function_breakpoints_before_handshake() {
         bridge.has_pending_function_breakpoints(),
         "function breakpoints set before handshake must be queued, not dropped"
     );
-    let (_, ok, body) = as_response(&out[0]);
+    let (_, ok, body) = as_response(out.first().ok_or("function breakpoint response missing")?)?;
     assert!(ok, "a queued setFunctionBreakpoints still returns success");
     let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
     assert_eq!(bps.len(), 1);
     assert_eq!(bps[0]["verified"], false, "queued function breakpoints are unverified until flush");
+    Ok(())
 }
 
 #[test]
@@ -601,7 +605,8 @@ fn dap_external_peer_launch_reports_flush_failure_to_editor() -> TestResult {
 }
 
 #[test]
-fn dap_external_peer_launch_terminate_does_not_duplicate_terminated_after_peer_close() {
+fn dap_external_peer_launch_terminate_does_not_duplicate_terminated_after_peer_close() -> TestResult
+{
     // If the peer already emitted `terminated` (connection closed), a later
     // editor-driven `terminate` must not push a second one (CodeRabbit
     // finding: ~545).
@@ -635,9 +640,10 @@ fn dap_external_peer_launch_terminate_does_not_duplicate_terminated_after_peer_c
         find_event(&out, "terminated").is_none(),
         "terminate after an already-emitted terminated must not duplicate it: {out:?}"
     );
-    let (cmd, ok, _) = as_response(&out[0]);
+    let (cmd, ok, _) = as_response(out.first().ok_or("terminate response missing")?)?;
     assert_eq!(cmd, "terminate");
     assert!(ok, "terminate itself must still succeed");
+    Ok(())
 }
 
 #[test]
