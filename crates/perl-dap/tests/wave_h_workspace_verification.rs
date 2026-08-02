@@ -17,8 +17,7 @@ fn test_perl_lsp_can_build_with_new_imports() -> Result<(), Box<dyn std::error::
 
     let output = Command::new("cargo")
         .args(["build", "-p", "perl-lsp-rs", "--message-format=short"])
-        .output();
-    let output = output?;
+        .output()?;
     if !output.status.success() {
         return Err(format!(
             "perl-lsp-rs build failed: {}",
