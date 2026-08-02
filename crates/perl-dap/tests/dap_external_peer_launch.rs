@@ -549,7 +549,7 @@ fn dap_external_peer_launch_flushes_function_breakpoints_after_hello() -> TestRe
 }
 
 #[test]
-fn dap_external_peer_launch_reports_flush_failure_to_editor() {
+fn dap_external_peer_launch_reports_flush_failure_to_editor() -> TestResult {
     // The peer negotiates *without* source-breakpoint support, so the queued
     // flush in go_live fails; the editor must be told (a `breakpoint` changed
     // event with verified:false and a failure message), not left holding the
@@ -590,11 +590,12 @@ fn dap_external_peer_launch_reports_flush_failure_to_editor() {
             "message must explain the flush failure, got: {message}"
         );
     } else {
-        panic!("breakpoint event had no body");
+        return Err("breakpoint event had no body".into());
     }
 
     drop(bridge);
     let _ = peer.handle.join();
+    Ok(())
 }
 
 #[test]
