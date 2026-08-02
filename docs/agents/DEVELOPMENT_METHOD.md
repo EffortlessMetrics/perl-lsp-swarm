@@ -198,7 +198,7 @@ The root may perform a pass directly or delegate focused read-only research, pro
 
 ### Review standard
 
-Review is **directed, falsifying, and verified**. Direct it at the declared claim and its
+Review is **directed, falsifying, and verified**. Aim it at the declared claim and its
 real production seam; try to disprove the claim rather than merely restating the diff or
 its green checks. Where applicable, establish:
 
@@ -212,8 +212,8 @@ its green checks. Where applicable, establish:
 
 A clean review is valid when these questions were considered and no actionable finding
 remains. Do not manufacture a finding, edit, or second identity to make review visible.
-When a material candidate or claim changes, repeat the affected proof and review against
-the resulting candidate.
+Material candidate or claim changes require affected proof and a fresh review of the
+resulting candidate.
 
 ## Hard stops
 
