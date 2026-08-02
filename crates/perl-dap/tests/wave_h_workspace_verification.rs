@@ -5,9 +5,6 @@
 //!
 //! Run with: `cargo test -p perl-dap --test wave_h_workspace_verification`
 
-// Tests use panic! as structured test failure reporters.
-#![allow(clippy::panic)]
-
 use std::process::Command;
 
 #[test]
@@ -67,34 +64,32 @@ fn test_executable_binary_builds_successfully() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-fn test_clippy_has_no_warnings_in_new_modules() {
+fn test_clippy_has_no_warnings_in_new_modules() -> Result<(), Box<dyn std::error::Error>> {
     // Verify that the new module code doesn't introduce clippy warnings
 
     let output = Command::new("cargo")
         .args(["clippy", "-p", "perl-dap", "--lib", "--", "-D", "warnings"])
-        .output();
-    match output {
-        Ok(out) => {
-            if !out.status.success() {
-                // Log but don't fail (pre-existing warnings may exist)
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                eprintln!("clippy warnings detected (may be pre-existing):\n{}", stderr);
-            }
-        }
-        Err(e) => panic!("cargo clippy failed to start: {e}"),
+        .output()?;
+    if !output.status.success() {
+        // Log but don't fail (pre-existing warnings may exist)
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("clippy warnings detected (may be pre-existing):\n{}", stderr);
     }
+    Ok(())
 }
 
 #[test]
-fn test_formatting_is_correct() {
+fn test_formatting_is_correct() -> Result<(), Box<dyn std::error::Error>> {
     // Verify code formatting is consistent
 
-    let output = Command::new("cargo").args(["fmt", "-p", "perl-dap", "--", "--check"]).output();
-    match output {
-        Ok(out) if !out.status.success() => {
-            panic!("code formatting issues found:\n{}", String::from_utf8_lossy(&out.stderr));
-        }
-        Err(e) => panic!("cargo fmt failed to start: {e}"),
-        _ => {}
+    let output = Command::new("cargo").args(["fmt", "-p", "perl-dap", "--", "--check"]).output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "code formatting issues found:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
     }
+    Ok(())
 }
