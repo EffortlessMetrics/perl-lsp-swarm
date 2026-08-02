@@ -2936,6 +2936,34 @@ enum GhGithubCommand {
 }
 
 #[derive(Subcommand)]
+enum CommandEvidenceCommand {
+    /// Run one command with explicit argv, cwd, candidate identity, and timeout.
+    Run {
+        /// Executable to spawn.
+        #[arg(long)]
+        program: String,
+        /// Working directory for the child process.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Candidate identity supplied by the caller (for example a head SHA).
+        #[arg(long)]
+        candidate: Option<String>,
+        /// Timeout bound in seconds. Omit for no timeout.
+        #[arg(long)]
+        timeout_secs: Option<u64>,
+        /// Directory for full stdout/stderr evidence.
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+        /// Arguments passed verbatim after --.
+        #[arg(trailing_var_arg)]
+        args: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum MergeReadyCommand {
     /// Evaluate a live current-head fan-in snapshot without mutating GitHub state.
     Evaluate {
