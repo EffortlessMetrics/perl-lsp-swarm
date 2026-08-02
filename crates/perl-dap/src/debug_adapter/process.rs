@@ -1144,6 +1144,12 @@ impl DebugAdapter {
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "Error reading from debugger");
+                        // Same contract as the EOF arm above: a read failure during a
+                        // framed value query must still surface the logpoint with
+                        // whatever values arrived, not swallow it.
+                        if let Some(pending) = pending_logpoint.take() {
+                            emit_logpoint_messages(sender.as_ref(), &seq, pending.into_messages());
+                        }
                         // Send termination event before exiting
                         if let Some(ref sender) = sender {
                             emit_terminated_event(
