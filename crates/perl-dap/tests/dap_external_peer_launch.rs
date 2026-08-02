@@ -500,7 +500,7 @@ fn dap_external_peer_launch_queues_function_breakpoints_before_handshake() {
 }
 
 #[test]
-fn dap_external_peer_launch_flushes_function_breakpoints_after_hello() {
+fn dap_external_peer_launch_flushes_function_breakpoints_after_hello() -> TestResult {
     // The queued function breakpoints must actually reach the peer once it
     // handshakes, proving go_live flushes pending_function_breakpoints.
     let peer = FakePeer::start(FakePeerScript {
@@ -540,11 +540,12 @@ fn dap_external_peer_launch_flushes_function_breakpoints_after_hello() {
         assert_eq!(b["reason"], "changed");
         assert_eq!(b["breakpoint"]["verified"], true);
     } else {
-        panic!("breakpoint event had no body");
+        return Err("breakpoint event had no body".into());
     }
 
     drop(bridge);
     let _ = peer.handle.join();
+    Ok(())
 }
 
 #[test]
