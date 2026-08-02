@@ -1,0 +1,24 @@
+{
+  "repository": "EffortlessMetrics/perl-lsp-swarm",
+  "pr": 5609,
+  "state": "OPEN",
+  "draft": false,
+  "head_ref": "codex/5501-review",
+  "head_sha": "9a6d000d2b82fa3948b835715e9a4c4e49fb3348",
+  "base_ref": "main",
+  "base_sha": "bb46779c868b850927ff43ebff52a8c26377bb71",
+  "mergeability": "MERGEABLE",
+  "merge_state": "CLEAN",
+  "required_contexts": [
+    {
+      "name": "Perl LSP Rust Small Result",
+      "source": "branch_protection"
+    },
+    {
+      "name": "ripr+ New Gap Gate",
+      "source": "branch_protection"
+    }
+  ],
+  "required_contexts_result": "current",
+  "identity_result": "current"
+}
