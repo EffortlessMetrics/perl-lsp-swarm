@@ -32,7 +32,11 @@ impl LineIndex {
     /// Convert a byte offset to `(line, column)` using byte columns.
     #[must_use]
     pub fn byte_to_position(&self, byte: usize) -> (usize, usize) {
+        // Clamp to text_len to prevent out-of-range byte offsets from producing
+        // invalid (line, column) pairs (#2279).
+        let byte = byte.min(self.text_len);
         let line = self.line_starts.binary_search(&byte).unwrap_or_else(|i| i.saturating_sub(1));
+        let line = line.min(self.line_starts.len().saturating_sub(1));
         let column = byte - self.line_starts[line];
         (line, column)
     }
