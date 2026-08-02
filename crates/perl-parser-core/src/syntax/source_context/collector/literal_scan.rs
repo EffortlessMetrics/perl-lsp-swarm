@@ -119,6 +119,13 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
     if before.ends_with('<') {
         return None;
     }
+    // Guard against `<<` appearing inside a line comment (#5456). A `#` in the
+    // prefix that is not inside a simple quote pair means the rest of the line
+    // (including the `<<`) is a comment, not a heredoc opener. Without this,
+    // `# see <<EOF docs` would swallow the rest of the file as a heredoc body.
+    if prefix_has_unquoted_comment(before) {
+        return None;
+    }
     let mut rest = &line[marker + 2..];
     let allow_indented = if let Some(stripped) = rest.strip_prefix('~') {
         rest = stripped;
@@ -160,6 +167,31 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
 /// Whether `rest` starts an unquoted heredoc label, i.e. a Perl identifier.
 fn starts_heredoc_label(rest: &str) -> bool {
     rest.starts_with(|character: char| character.is_ascii_alphabetic() || character == '_')
+}
+
+/// Whether `prefix` (the text before a candidate `<<` heredoc opener) contains
+/// an unquoted `#` line-comment marker. A simple single/double-quote state
+/// machine tracks whether the `#` is inside a string literal.
+fn prefix_has_unquoted_comment(prefix: &str) -> bool {
+    let bytes = prefix.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'\\' && (in_single || in_double) {
+            i += 2; // skip escaped char
+            continue;
+        }
+        match b {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            b'#' if !in_single && !in_double => return true,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 fn push_region(regions: &mut Vec<SourceRegion>, start: usize, end: usize, kind: SourceRegionKind) {
@@ -1509,5 +1541,43 @@ mod tests {
         assert_eq!(quote_like_closer(b'|'), Some(b'|'), "punctuation mirrors itself");
         assert_eq!(quote_like_closer(b'a'), None, "a letter is not a delimiter");
         assert_eq!(quote_like_closer(b' '), None, "a space is not a delimiter");
+    }
+
+    #[test]
+    fn heredoc_opener_ignored_inside_comment() {
+        // #5456: `<<` inside a line comment must not be treated as a heredoc
+        // opener. Without the guard, `# see <<EOF docs` would swallow the rest
+        // of the file as a heredoc body.
+        assert_eq!(
+            super::heredoc_opener_on_line("# see <<EOF docs"),
+            None,
+            "heredoc opener inside a comment must be ignored"
+        );
+        assert_eq!(
+            super::heredoc_opener_on_line("my $x = 1; # heredoc: <<END"),
+            None,
+            "heredoc opener after code + comment must be ignored"
+        );
+    }
+
+    #[test]
+    fn heredoc_opener_still_found_in_code() {
+        // Positive guard: a real heredoc opener in code (no comment) must work.
+        assert_eq!(
+            super::heredoc_opener_on_line("my $x = <<EOF;"),
+            Some(("EOF".to_string(), false)),
+            "real heredoc opener must still be found"
+        );
+    }
+
+    #[test]
+    fn heredoc_opener_with_hash_inside_string_not_treated_as_comment() {
+        // A `#` inside a string literal is not a comment, so the `<<` after it
+        // is still a valid heredoc opener.
+        assert_eq!(
+            super::heredoc_opener_on_line("my $m = '#'; print <<END;"),
+            Some(("END".to_string(), false)),
+            "heredoc opener after a quoted # must still be found"
+        );
     }
 }
