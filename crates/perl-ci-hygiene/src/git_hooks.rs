@@ -368,7 +368,7 @@ pub(crate) fn check_githooks(repo_root: &Path) -> Result<i32> {
                 continue;
             }
         };
-        if normalize_hook(&actual) == normalize_hook(&expected_script) {
+        if normalize_hook(&actual) == normalize_hook(&expected_script) && is_executable(&path) {
             println!("current: {name}");
         } else {
             println!("stale: {name} ({})", path.display());
@@ -406,6 +406,10 @@ fn resolve_git_hooks_dir(repo_root: &Path) -> Result<PathBuf> {
 }
 
 fn write_git_hook(hook_path: &Path, hook: &str) -> Result<()> {
+    if fs::symlink_metadata(hook_path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        fs::remove_file(hook_path)
+            .with_context(|| format!("removing legacy symlink {:?}", hook_path))?;
+    }
     fs::write(hook_path, format!("{hook}\n"))
         .with_context(|| format!("writing {:?}", hook_path))?;
     #[cfg(unix)]
@@ -414,6 +418,19 @@ fn write_git_hook(hook_path: &Path, hook: &str) -> Result<()> {
             .with_context(|| format!("setting executable bit for {:?}", hook_path))?;
     }
     Ok(())
+}
+
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
+    }
 }
 
 #[cfg(test)]
@@ -460,6 +477,20 @@ mod tests {
 
         let hooks_dir = resolve_git_hooks_dir(&repo)?;
         fs::write(hooks_dir.join("pre-commit"), "stale\n")?;
+        assert_eq!(check_githooks(&repo)?, 1);
+        fs::remove_dir_all(repo)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_hook_check_rejects_non_executable_current_bytes() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = temp_repo()?;
+        cmd_install_githooks(&repo)?;
+        let hooks_dir = resolve_git_hooks_dir(&repo)?;
+        fs::set_permissions(hooks_dir.join("pre-commit"), fs::Permissions::from_mode(0o644))?;
         assert_eq!(check_githooks(&repo)?, 1);
         fs::remove_dir_all(repo)?;
         Ok(())
