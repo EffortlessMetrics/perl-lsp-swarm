@@ -250,7 +250,7 @@ the reconciler uses timeline precedence for those.
 **Reconciler**: Automation that converts GitHub facts and receipts into current derived
 queue state. Owns contradiction resolution (later-applied wins for no-live-signal labels),
 staleness detection (strips stale CI labels based on live CI), and authoritative state
-derivation. Implementation: `xtask/src/tasks/queue_reconciler.rs`.
+derivation from current PR, review, thread, check, and branch-rule evidence.
 
 **Reconciliation Dividend**: The gain from continuously stripping stale state and
 re-deriving current routing from live signals. Without it, the visibility dividend
