@@ -32,6 +32,13 @@ fn is_integration_test_file(path: &Path) -> bool {
     path.components().any(|component| component.as_os_str() == "tests")
 }
 
+fn is_complete_test_source_file(path: &Path) -> bool {
+    is_integration_test_file(path)
+        || path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+            ["_test.rs", "_tests.rs", "tests.rs"].iter().any(|suffix| name.ends_with(suffix))
+        })
+}
+
 fn is_excluded_integration_test_path(path: &Path) -> bool {
     if path.components().any(|component| {
         let value = component.as_os_str();
@@ -54,6 +61,91 @@ fn walk_integration_test_files(repo_root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+fn walk_complete_test_source_files(repo_root: &Path) -> Vec<PathBuf> {
+    walk_rs_files(&repo_root.join("crates"))
+        .into_iter()
+        .filter(|path| {
+            is_complete_test_source_file(path) && !is_excluded_integration_test_path(path)
+        })
+        .collect()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PanicSiteIdentity {
+    path: String,
+    enclosing_test_or_function: String,
+    macro_family: &'static str,
+    normalized_snippet: String,
+    line: usize,
+}
+
+fn enclosing_test_or_function(lines: &[String], line_index: usize) -> String {
+    lines[..=line_index]
+        .iter()
+        .rev()
+        .find_map(|line| {
+            let start = line.find("fn ")? + 3;
+            let name = line[start..].split(['(', '<', '{', ' ']).next()?.trim();
+            (!name.is_empty()).then(|| name.to_string())
+        })
+        .unwrap_or_else(|| "<unknown>".to_string())
+}
+
+fn complete_panic_site_inventory(repo_root: &Path) -> Result<Vec<PanicSiteIdentity>> {
+    let panic_re = regex_from_static(&PANIC_MACRO_RE, "panic macro")?;
+    let comment_re = regex_from_static(&COMMENT_RE, "comment")?;
+    let mut sites = Vec::new();
+
+    for path in walk_complete_test_source_files(repo_root) {
+        let lines = read_lines(&path)?;
+        let relative =
+            path.strip_prefix(repo_root).unwrap_or(&path).display().to_string().replace('\\', "/");
+        for (index, line) in lines.iter().enumerate() {
+            if comment_re.is_match(line) {
+                continue;
+            }
+            for _ in panic_re.find_iter(line) {
+                sites.push(PanicSiteIdentity {
+                    path: relative.clone(),
+                    enclosing_test_or_function: enclosing_test_or_function(&lines, index),
+                    macro_family: "panic!",
+                    normalized_snippet: line.split_whitespace().collect::<Vec<_>>().join(" "),
+                    line: index + 1,
+                });
+            }
+        }
+    }
+    sites.sort_by(|left, right| {
+        (&left.path, left.line, &left.enclosing_test_or_function).cmp(&(
+            &right.path,
+            right.line,
+            &right.enclosing_test_or_function,
+        ))
+    });
+    Ok(sites)
+}
+
+/// Emit the complete test-source panic identity inventory without changing the
+/// established count gate. This is the measurement surface for #2332 while
+/// the accepted identity registry is being adjudicated.
+pub(crate) fn write_inventory(repo_root: &Path) -> Result<i32> {
+    let sites = complete_panic_site_inventory(repo_root)?;
+    let json_sites = sites
+        .iter()
+        .map(|site| {
+            serde_json::json!({
+                "path": site.path,
+                "enclosing_test_or_function": site.enclosing_test_or_function,
+                "macro_family": site.macro_family,
+                "normalized_snippet": site.normalized_snippet,
+                "line": site.line,
+            })
+        })
+        .collect::<Vec<_>>();
+    println!("{}", serde_json::to_string_pretty(&json_sites)?);
+    Ok(0)
+}
+
 fn count_panic_lines(
     lines: &[String],
     start_line: usize,
@@ -71,7 +163,7 @@ fn count_panic_lines(
         .sum()
 }
 
-/// Count `panic!` macro uses in test code (integration tests and `#[cfg(test)]` modules).
+/// Count `panic!` macro uses in integration tests and `#[cfg(test)]` modules.
 pub(crate) fn count_panic_in_test_code(repo_root: &Path) -> Result<usize> {
     let panic_re = regex_from_static(&PANIC_MACRO_RE, "panic macro")?;
     let comment_re = regex_from_static(&COMMENT_RE, "comment")?;
@@ -172,6 +264,20 @@ fn demo() {
 "#,
         )?;
         assert_eq!(count_panic_in_test_code(&repo.path)?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn complete_inventory_counts_test_suffixed_source_files() -> Result<()> {
+        let repo = TempRepo::new("test-suffix")?;
+        fs::write(
+            repo.path.join("crates/demo/src/parser_tests.rs"),
+            "#[test]\nfn demo() { panic!(\"boom\"); }\n",
+        )?;
+        let inventory = complete_panic_site_inventory(&repo.path)?;
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].path, "crates/demo/src/parser_tests.rs");
+        assert_eq!(inventory[0].enclosing_test_or_function, "demo");
         Ok(())
     }
 

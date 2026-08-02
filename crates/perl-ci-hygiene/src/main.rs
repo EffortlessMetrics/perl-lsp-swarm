@@ -114,7 +114,13 @@ fn run() -> Result<i32> {
         CliCommand::CheckUnsafeProd => cmd_check_unsafe_prod(&repo_root)?,
         CliCommand::CheckUnwrapsModules => cmd_check_unwraps_modules(&repo_root)?,
         CliCommand::CheckUnwrapsProd => cmd_check_unwraps_prod(&repo_root)?,
-        CliCommand::CheckPanicTest => check_panic_test(&repo_root)?,
+        CliCommand::CheckPanicTest { inventory } => {
+            if inventory {
+                commands::panic_test::write_inventory(&repo_root)?
+            } else {
+                check_panic_test(&repo_root)?
+            }
+        }
         CliCommand::CheckPrintInLib => check_print_in_lib(&repo_root)?,
         CliCommand::CheckRegexStatic => check_regex_static(&repo_root)?,
         CliCommand::QuickCheck => cmd_quick_check(&repo_root)?,
