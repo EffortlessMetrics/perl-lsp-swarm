@@ -98,6 +98,15 @@ test_clean_pr_passes() {
     [[ "$code" -eq 0 ]] && pass "clean native snapshot exits zero" || fail "clean native snapshot failed"
 }
 
+test_behind_merge_state_passes() {
+    local mock json code
+    json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"BEHIND","title":"feat: add thing (#3321)"}'
+    mock="$(make_mock_gh "$json")"
+    code="$(run_check "$mock")"
+    cleanup "$mock"
+    [[ "$code" -eq 0 ]] && pass "behind native merge state exits zero" || fail "behind native merge state unexpectedly failed"
+}
+
 test_error_messages_are_native() {
     local mock json output
     json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","title":"feat: no issue ref"}'
@@ -123,6 +132,7 @@ test_blocked_merge_state_fails
 test_conflicting_pr_fails
 test_missing_issue_ref_fails
 test_clean_pr_passes
+test_behind_merge_state_passes
 test_error_messages_are_native
 test_no_pr_number_fails
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="
