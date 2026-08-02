@@ -28,7 +28,7 @@ mod git_hooks;
 mod process;
 
 use crate::cli::{Cli, CliCommand};
-use crate::commands::panic_test::check_panic_test;
+use crate::commands::panic_test::{check_panic_test, check_panic_test_with_registry};
 use crate::commands::print_in_lib::check_print_in_lib;
 use crate::commands::regex_static::check_regex_static;
 #[cfg(test)]
@@ -114,9 +114,11 @@ fn run() -> Result<i32> {
         CliCommand::CheckUnsafeProd => cmd_check_unsafe_prod(&repo_root)?,
         CliCommand::CheckUnwrapsModules => cmd_check_unwraps_modules(&repo_root)?,
         CliCommand::CheckUnwrapsProd => cmd_check_unwraps_prod(&repo_root)?,
-        CliCommand::CheckPanicTest { inventory } => {
+        CliCommand::CheckPanicTest { inventory, identity_registry } => {
             if inventory {
                 commands::panic_test::write_inventory(&repo_root)?
+            } else if let Some(identity_registry) = identity_registry {
+                check_panic_test_with_registry(&repo_root, &identity_registry)?
             } else {
                 check_panic_test(&repo_root)?
             }
