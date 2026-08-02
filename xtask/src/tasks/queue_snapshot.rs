@@ -30,6 +30,8 @@ pub struct PullRequestSnapshot {
     pub head_sha: String,
     pub base_sha: String,
     pub is_draft: bool,
+    #[serde(default)]
+    pub mergeability: Option<String>,
     pub merge_state_status: Option<String>,
     pub labels: Vec<String>,
     pub status_check_rollup: Vec<StatusCheck>,
@@ -47,17 +49,14 @@ pub struct StatusCheck {
 /// Derived observations for queue navigation.
 ///
 /// These buckets are intentionally not mutually exclusive: CI state,
-/// mergeability, draft state, and routing labels are independent observations.
+/// mergeability, and draft state are independent observations.
 /// They are navigation/projected state, not merge authorization.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct DerivedBuckets {
-    pub merge_ready: Vec<u64>,
+    pub mergeable_clean: Vec<u64>,
     pub ci_green: Vec<u64>,
     pub needs_ci_fix: Vec<u64>,
-    pub needs_builder_fix: Vec<u64>,
-    pub needs_diff_fix: Vec<u64>,
-    pub diff_audited_waiting_ci: Vec<u64>,
     /// GitHub reports an actual textual conflict (`DIRTY`/`CONFLICTING`).
     pub conflicting: Vec<u64>,
     /// GitHub did not establish mergeability (`UNKNOWN` or missing state).
@@ -130,7 +129,7 @@ fn snapshot_from_gh_cli() -> Result<QueueSnapshot> {
             "--limit",
             "200",
             "--json",
-            "number,title,isDraft,headRefOid,baseRefOid,mergeStateStatus,labels,statusCheckRollup,updatedAt,author,reviewDecision",
+            "number,title,isDraft,headRefOid,baseRefOid,mergeable,mergeStateStatus,labels,statusCheckRollup,updatedAt,author,reviewDecision",
         ])
         .output()
         .context("failed to execute gh pr list")?;
@@ -161,6 +160,10 @@ fn snapshot_from_gh_cli() -> Result<QueueSnapshot> {
                 .unwrap_or_default()
                 .to_string(),
             is_draft: pr.get("isDraft").and_then(serde_json::Value::as_bool).unwrap_or(false),
+            mergeability: pr
+                .get("mergeable")
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string),
             merge_state_status: pr
                 .get("mergeStateStatus")
                 .and_then(serde_json::Value::as_str)
@@ -268,6 +271,7 @@ mod tests {
             head_sha: "abc".to_string(),
             base_sha: "def".to_string(),
             is_draft: false,
+            mergeability: Some("MERGEABLE".to_string()),
             merge_state_status: Some(merge_state.to_string()),
             labels: labels.into_iter().map(ToString::to_string).collect(),
             status_check_rollup: checks
@@ -289,6 +293,17 @@ mod tests {
         let buckets = derive_buckets(&prs);
         assert!(buckets.needs_ci_fix.contains(&1), "CANCELLED must route to needs_ci_fix");
         assert!(!buckets.ci_green.contains(&1));
+    }
+
+    #[test]
+    fn lifecycle_labels_do_not_create_merge_bucket() {
+        let prs = vec![make_pr(
+            15,
+            vec!["merge-ready", "needs-builder-fix", "needs-diff-fix", "diff-audited"],
+            vec![("ci", "SUCCESS")],
+        )];
+        let buckets = derive_buckets(&prs);
+        assert!(buckets.mergeable_clean.contains(&15));
     }
 
     #[test]
@@ -394,25 +409,18 @@ pub fn derive_buckets(prs: &[PullRequestSnapshot]) -> DerivedBuckets {
                     || check.state.eq_ignore_ascii_case("neutral")
                     || check.state.eq_ignore_ascii_case("skipped")
             });
-        let labels = &pr.labels;
         let merge_state = pr.merge_state_status.as_deref().map(str::to_ascii_uppercase);
+        let mergeability = pr.mergeability.as_deref().map(str::to_ascii_uppercase);
         let is_conflicting = matches!(merge_state.as_deref(), Some("DIRTY") | Some("CONFLICTING"));
         let is_unknown = matches!(merge_state.as_deref(), None | Some("UNKNOWN"));
 
         if pr.is_draft {
             buckets.draft.push(pr.number);
         }
-        if labels.iter().any(|label| label == "merge-ready") {
-            buckets.merge_ready.push(pr.number);
-        }
-        if labels.iter().any(|label| label == "needs-builder-fix") {
-            buckets.needs_builder_fix.push(pr.number);
-        }
-        if labels.iter().any(|label| label == "needs-diff-fix") {
-            buckets.needs_diff_fix.push(pr.number);
-        }
-        if labels.iter().any(|label| label == "diff-audited") && all_green {
-            buckets.diff_audited_waiting_ci.push(pr.number);
+        if mergeability.as_deref() == Some("MERGEABLE")
+            && merge_state.as_deref() == Some("CLEAN")
+        {
+            buckets.mergeable_clean.push(pr.number);
         }
 
         if is_conflicting {

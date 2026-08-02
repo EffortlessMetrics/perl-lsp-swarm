@@ -14,19 +14,19 @@ semantic PR-value classifier.
 - top-level: `snapshot_id`, `captured_at`, `repository`, `default_branch`,
   `master_sha`, `ruleset_summary`;
 - per PR: `number`, `title`, `head_sha`, `base_sha`, `is_draft`,
-  `merge_state_status`, `labels`, `status_check_rollup`, `updated_at`, `author`,
+  `mergeability`, `merge_state_status`, `labels`, `status_check_rollup`, `updated_at`, `author`,
   `review_decision`;
 - derived observations:
-  - `merge_ready`;
+  - `mergeable_clean`;
   - `ci_green`;
   - `needs_ci_fix`;
-  - `needs_builder_fix`;
-  - `needs_diff_fix`;
-  - `diff_audited_waiting_ci`;
   - `conflicting`;
   - `unknown_not_proven`;
   - `pending_or_unclassified`;
   - `draft`.
+
+Labels are retained as metadata only; no bucket or merge observation is derived
+from lifecycle labels.
 
 `master_sha` is a legacy serialized field name retained for compatibility. Its
 value is the captured SHA of the current default integration branch, which is
