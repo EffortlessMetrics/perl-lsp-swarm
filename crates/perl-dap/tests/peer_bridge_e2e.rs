@@ -255,7 +255,7 @@ fn full_dap_session_drives_the_live_peer_backend() -> Result<(), Box<dyn std::er
             assert_eq!(command, "disconnect");
             assert!(success, "disconnect should succeed");
         }
-        other => panic!("expected disconnect response, got {other:?}"),
+        other => return Err(format!("expected disconnect response, got {other:?}").into()),
     }
 
     drop(bridge);
