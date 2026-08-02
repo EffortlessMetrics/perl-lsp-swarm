@@ -310,8 +310,25 @@ pub fn apply_edit_utf8(
     old_end_byte: usize,
     replacement: &str,
 ) {
-    if !text.is_char_boundary(start_byte) || !text.is_char_boundary(old_end_byte) {
-        // Safety: ensure we're at char boundaries
+    if !text.is_char_boundary(start_byte) {
+        // Snap forward to the next char boundary instead of silently dropping the edit
+        let mut corrected = start_byte;
+        while corrected < text.len() && !text.is_char_boundary(corrected) {
+            corrected += 1;
+        }
+        if corrected > old_end_byte {
+            return;
+        }
+        text.replace_range(corrected..old_end_byte, replacement);
+        return;
+    }
+    if !text.is_char_boundary(old_end_byte) {
+        // Snap backward to the previous char boundary instead of silently dropping the edit
+        let mut corrected = old_end_byte;
+        while corrected > start_byte && !text.is_char_boundary(corrected) {
+            corrected -= 1;
+        }
+        text.replace_range(start_byte..corrected, replacement);
         return;
     }
     text.replace_range(start_byte..old_end_byte, replacement);
