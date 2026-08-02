@@ -2961,6 +2961,15 @@ enum CommandEvidenceCommand {
         #[arg(trailing_var_arg)]
         args: Vec<String>,
     },
+    /// Run a small serial set of direct commands and retain one receipt per command.
+    ProofSet {
+        /// JSON proof-set specification.
+        #[arg(long)]
+        spec: PathBuf,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4177,6 +4186,28 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CiContract { base, head, receipt, summary } => {
             ci_contract::run(ci_contract::CiContractConfig { base, head, receipt, summary })
         }
+        Commands::CommandEvidence { command } => match command {
+            CommandEvidenceCommand::Run {
+                program,
+                cwd,
+                candidate,
+                timeout_secs,
+                out_dir,
+                json,
+                args,
+            } => command_evidence::run(command_evidence::CommandEvidenceConfig {
+                program,
+                args,
+                cwd,
+                candidate,
+                timeout: timeout_secs.map(std::time::Duration::from_secs),
+                out_dir,
+                json_only: json,
+            }),
+            CommandEvidenceCommand::ProofSet { spec, json } => {
+                command_evidence::run_proof_set(&spec, json)
+            }
+        },
         Commands::RepoHygiene { base, head, receipt, summary } => {
             repo_hygiene::run(repo_hygiene::RepoHygieneConfig { base, head, receipt, summary })
         }
