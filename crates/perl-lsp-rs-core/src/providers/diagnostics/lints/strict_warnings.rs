@@ -120,6 +120,11 @@ pub(crate) fn implies_strict(module: &str, args: &[String]) -> bool {
         // nothing; neither counts as a flag.
         return args.iter().any(|a| !is_empty_qw_list(a) && !is_version_literal(a));
     }
+    // `use Module ()` — explicit empty import list suppresses import() call,
+    // so strict/warnings are NOT enabled (#3733).
+    if args.iter().any(|a| a.trim() == "()") {
+        return false;
+    }
     IMPLICIT_STRICT_MODULES.contains(&bare)
 }
 
