@@ -915,10 +915,17 @@ print "result: $final\n";
             ("supportsDataBreakpoints", crate::feature_catalog::has_feature("dap.watchpoints")),
             (
                 "supportsTerminateThreadsRequest",
-                crate::feature_catalog::has_feature("dap.terminate_threads"),
+                // Handler unconditionally returns success: false — do not
+                // advertise (#5045).
+                false,
             ),
             ("supportsGotoTargetsRequest", crate::feature_catalog::has_feature("dap.core")),
-            ("supportsRestartFrame", crate::feature_catalog::has_feature("dap.restart_frame")),
+            (
+                "supportsRestartFrame",
+                // Handler unconditionally returns success: false — do not
+                // advertise (#5045).
+                false,
+            ),
             (
                 "supportsStepInTargetsRequest",
                 crate::feature_catalog::has_feature("dap.step_in_targets"),
@@ -1104,13 +1111,14 @@ print "result: $final\n";
             }
         }
 
-        // supportsTerminateThreadsRequest matches feature advertising (now enabled)
-        let terminate_threads_expected =
-            crate::feature_catalog::has_feature("dap.terminate_threads");
+        // supportsTerminateThreadsRequest is not advertised because the handler
+        // unconditionally returns success: false (#5045). The feature catalog
+        // entry exists for future use, but the capability is suppressed until
+        // a real implementation lands.
         assert_eq!(
             capability_map.get("supportsTerminateThreadsRequest").and_then(|v| v.as_bool()),
-            Some(terminate_threads_expected),
-            "supportsTerminateThreadsRequest must match dap.terminate_threads feature setting"
+            Some(false),
+            "supportsTerminateThreadsRequest must not be advertised (handler always fails)"
         );
 
         Ok(())
@@ -1566,8 +1574,10 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_terminate_threads_capability_is_advertised_when_feature_enabled()
+    fn test_terminate_threads_capability_is_not_advertised()
     -> Result<(), Box<dyn std::error::Error>> {
+        // #5045: supportsTerminateThreadsRequest is not advertised because the
+        // handler unconditionally returns success: false.
         let mut adapter = DebugAdapter::new();
         let init = adapter.handle_request(1, "initialize", None);
         let capabilities = match init {
@@ -1575,11 +1585,10 @@ print "result: $final\n";
             _ => return Err("Expected successful initialize response".into()),
         };
         let cap_map = capabilities.as_object().ok_or("body must be object")?;
-        let expected = crate::feature_catalog::has_feature("dap.terminate_threads");
         assert_eq!(
             cap_map.get("supportsTerminateThreadsRequest").and_then(|v| v.as_bool()),
-            Some(expected),
-            "supportsTerminateThreadsRequest must match dap.terminate_threads feature setting"
+            Some(false),
+            "supportsTerminateThreadsRequest must not be advertised (handler always fails)"
         );
         Ok(())
     }

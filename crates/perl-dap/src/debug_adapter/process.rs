@@ -65,7 +65,11 @@ impl DebugAdapter {
             "supportsEvaluateForHovers": supports_core,
             "supportsStepBack": false,
             "supportsSetVariable": supports_core,
-            "supportsRestartFrame": true,
+            // restartFrame is advertised but the handler unconditionally returns
+            // success: false ("Perl does not support restarting execution from a
+            // specific stack frame"). Stop advertising it so the client UI does
+            // not offer an action that always fails (#5045).
+            "supportsRestartFrame": false,
             "supportsGotoTargetsRequest": supports_core,
             "supportsStepInTargetsRequest": true,
             "supportsCompletionsRequest": supports_completions,
@@ -78,7 +82,10 @@ impl DebugAdapter {
             "supportsDelayedStackTraceLoading": false,
             "supportsLoadedSourcesRequest": true,
             "supportsLogPoints": supports_log_points,
-            "supportsTerminateThreadsRequest": true,
+            // terminateThreads is advertised but the handler unconditionally
+            // returns success: false ("Perl threading model does not support
+            // targeted thread termination"). Stop advertising it (#5045).
+            "supportsTerminateThreadsRequest": false,
             "supportsSetExpression": supports_core,
             "supportsTerminateRequest": supports_core,
             "supportsDataBreakpoints": supports_watchpoints,
