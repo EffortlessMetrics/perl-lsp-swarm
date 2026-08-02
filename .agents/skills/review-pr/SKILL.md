@@ -42,6 +42,11 @@ Review:
 - applicable vision, authority, claim, external-truth, security, compatibility, and packaging lenses;
 - what the evidence establishes and does not establish.
 
+The formal judgment is directed at the applicable discrimination, reachability,
+external-truth, claim, authority, complexity, security/compatibility, packaging,
+and rollback questions; it actively seeks realistic falsifiers; and it is verified
+against current evidence or competent authority. A clean review is valid.
+
 Use Codex native review or a read-only reviewer as an instrument where useful, then publish material conclusions through GitHub's submitted review and inline threads.
 
 A review with no material findings is valid.

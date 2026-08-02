@@ -31,6 +31,12 @@ Use applicable lenses:
 
 Check the cumulative candidate, not only the latest edit. Verify that real user or protocol paths can reach the changed behavior and that the PR-sized claim remains coherent.
 
+The review is directed at the applicable vision, authority, production path,
+external-truth, claim, security/compatibility, complexity, proof, and rollback
+questions. It is falsifying: identify realistic wrong behavior or residue that the
+candidate should reject. It is verified through execution or competent authority,
+not a diff impression, green CI, or an ungrounded delegate verdict.
+
 A clean review is valid.
 
 ## Orchestration

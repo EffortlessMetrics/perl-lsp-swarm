@@ -46,7 +46,7 @@ already reconciled
   → return RECONCILED
 ```
 
-A candidate or material-claim change makes formal-review evidence stale. Final challenge is a runtime-local pre-review pass, not a second durable stage. If a session resumes before current formal review exists, rerun the bounded challenge and continue directly to `review-pr`. Do not infer formal review from conversation, task state, or agent identity. Do not review or merge an already merged/closed PR.
+A candidate or material-claim change makes formal-review evidence stale. Final challenge is a runtime-local mutable pass, not a second durable stage or a pre-publication-only step. It may run after publication or accepted repair. If a session resumes before current formal review exists, rerun the bounded challenge and continue directly to `review-pr`. Do not infer formal review from conversation, task state, or agent identity. Do not review or merge an already merged/closed PR.
 
 ## Candidate boundary
 

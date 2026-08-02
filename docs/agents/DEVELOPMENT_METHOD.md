@@ -168,10 +168,28 @@ After implementation, revisit proof from the actual candidate:
 - whether the production seam is exercised;
 - whether the proof runs at the cheapest effective layer.
 
+Review is a directed, falsifying, and verified judgment. It must answer, where
+applicable, discrimination, production reachability, external truth, claim
+honesty, authority, complexity, and risk/rollback. Reading a diff, green CI, or a
+subagent verdict alone is not review. A clean review is valid.
+
+The construction context must not be the only detection surface supporting merge.
+Fresh context is valuable when it changes the source, oracle, threat model, method,
+or attention surface; identity separation alone is neither necessary nor
+sufficient.
+
 Review has two distinct modes:
 
 1. **Mutable candidate challenge:** fixes are expected; inspect correctness, authority, production reachability, compatibility, security, complexity, and claim honesty.
 2. **Fixed-candidate formal review:** bind the judgment to an identified candidate; do not mutate during the judgment; a clean review is valid.
+
+The mutable/fixed distinction is about method, not publication timing. The
+`final-challenge` pass may run after a PR is published or after accepted repair;
+`review-pr` is the fixed-candidate formal judgment. The normal sequence is writer
+self-check, proof challenge, mutable candidate challenge, repair/simplification,
+final mutable challenge, fixed formal review, accountable integration judgment,
+and landed reconciliation. CI and reviewer/subagent conclusions are evidence for
+the accountable owner, not approval by themselves.
 
 The root may perform a pass directly or delegate focused read-only research, proof, or review inside the selected claim when that changes the evidence surface or reduces elapsed work. Delegation is a runtime choice, not a durable execution topology.
 
