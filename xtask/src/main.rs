@@ -1197,6 +1197,13 @@ enum Commands {
         apply: bool,
     },
 
+    /// Read focused, provider-neutral facts for one GitHub pull request.
+    #[command(name = "github")]
+    GhCandidate {
+        #[command(subcommand)]
+        command: GhGithubCommand,
+    },
+
     /// Generate bindings
     #[cfg(feature = "parser-tasks")]
     Bindings {
@@ -2892,6 +2899,25 @@ enum FreshnessCheckMode {
 }
 
 #[derive(Subcommand)]
+enum GhGithubCommand {
+    /// Capture candidate identity and required contexts for one pull request.
+    Candidate {
+        /// Pull request number.
+        #[arg(long)]
+        pr: u64,
+        /// Optional head SHA to compare with the live candidate.
+        #[arg(long)]
+        expected_head: Option<String>,
+        /// Normalized fixture JSON for deterministic offline tests.
+        #[arg(long, hide = true)]
+        fixture: Option<PathBuf>,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum MergeReadyCommand {
     /// Evaluate a live current-head fan-in snapshot without mutating GitHub state.
     Evaluate {
@@ -4289,6 +4315,11 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::GhLabels => github::run_labels(),
         Commands::GhTriage { limit } => github::run_issues_needing_triage(limit),
         Commands::GhBackfillPrefixedLabels { apply } => github::run_backfill_prefixed_labels(apply),
+        Commands::GhCandidate { command } => match command {
+            GhGithubCommand::Candidate { pr, expected_head, fixture, json } => {
+                github::run_candidate(pr, expected_head, fixture, json)
+            }
+        },
         Commands::CorpusAudit { corpus_path, output, check, fresh } => {
             corpus_audit::run(corpus_audit::AuditConfig {
                 corpus_path,
