@@ -575,10 +575,10 @@ fn missing_value_keeps_the_parser_diagnostic() -> anyhow::Result<()> {
 /// Whatever the token, the message never carries clap's usage banner or its
 /// `--help` pointer — the CLI owns that output.
 #[test]
-fn unknown_option_message_never_embeds_clap_usage_block() {
+fn unknown_option_message_never_embeds_clap_usage_block() -> anyhow::Result<()> {
     for token in ["--doctr", "--zzzzzzzzzz", "--por"] {
         let Err(err) = parse_args(["perl-lsp", token]) else {
-            panic!("expected a parse error for {token}");
+            anyhow::bail!("expected a parse error for {token}");
         };
 
         let rendered = format!("{err}");
@@ -589,6 +589,7 @@ fn unknown_option_message_never_embeds_clap_usage_block() {
             "{token}: leaked clap help pointer: {rendered}"
         );
     }
+    Ok(())
 }
 
 #[test]
