@@ -265,7 +265,7 @@ fn dap_external_peer_launch_queues_breakpoints_before_handshake() {
 }
 
 #[test]
-fn dap_external_peer_launch_flushes_breakpoints_after_hello() {
+fn dap_external_peer_launch_flushes_breakpoints_after_hello() -> TestResult {
     let peer = FakePeer::start(FakePeerScript {
         caps: full_caps(),
         emit_after_hello: vec![],
@@ -306,11 +306,12 @@ fn dap_external_peer_launch_flushes_breakpoints_after_hello() {
         assert_eq!(b["breakpoint"]["verified"], true);
         assert_eq!(b["breakpoint"]["line"], 42);
     } else {
-        panic!("breakpoint event had no body");
+        return Err("breakpoint event had no body".into());
     }
 
     drop(bridge);
     let _ = peer.handle.join();
+    Ok(())
 }
 
 #[test]
