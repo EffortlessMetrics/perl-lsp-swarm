@@ -128,7 +128,7 @@ readme-heading-check:
     fi
     echo "✅ README heading structure looks good"
 
-# Pre-merge guard: verify a PR is not draft, has merge-ready label, and title has (#NNN)
+# Pre-merge guard: verify native merge state and title has (#NNN)
 # Usage: just pre-merge-check 3291
 pre-merge-check NUMBER:
     bash scripts/pre-merge-check.sh {{NUMBER}}
