@@ -164,9 +164,8 @@ fn collect_candidate(pr: u64) -> Result<CandidateFacts> {
 
 fn collect_required_contexts(repository: &str, base_ref: &str) -> Result<Vec<RequiredContext>> {
     let encoded_base_ref = encode_path_segment(base_ref);
-    let branch_endpoint = format!(
-        "repos/{repository}/branches/{encoded_base_ref}/protection/required_status_checks"
-    );
+    let branch_endpoint =
+        format!("repos/{repository}/branches/{encoded_base_ref}/protection/required_status_checks");
     let branch_raw = command_text("gh", &["api", &branch_endpoint])?;
     let branch_names = required_context_names(&branch_raw)?;
 
@@ -400,9 +399,8 @@ mod tests {
 
     #[test]
     fn required_context_names_accepts_native_checks_and_legacy_contexts() -> Result<()> {
-        let names = required_context_names(
-            r#"{"contexts":["legacy"],"checks":[{"context":"native"}]}"#,
-        )?;
+        let names =
+            required_context_names(r#"{"contexts":["legacy"],"checks":[{"context":"native"}]}"#)?;
         assert_eq!(names, vec!["legacy".to_string(), "native".to_string()]);
         Ok(())
     }
