@@ -48,6 +48,13 @@ const VALUE_QUERY: &str = concat!(
 /// debuggee from suppressing logpoint output forever.
 const MAX_CAPTURE_LINES: usize = 200;
 
+/// Upper bound on residual frame lines the reader filters after a capture is
+/// abandoned mid-frame, while it waits for the end marker.
+///
+/// Bounded so an end marker that never arrives cannot suppress real debuggee output
+/// indefinitely — the reader would rather leak one stray framing line than go deaf.
+pub(super) const MAX_DRAIN_LINES: usize = 64;
+
 /// Upper bound on lines the capture will wait for its begin marker to appear.
 ///
 /// Separate from [`MAX_CAPTURE_LINES`] so that a debuggee which is merely chatty
@@ -89,9 +96,14 @@ pub(super) enum LogpointStep {
     Passthrough,
     /// Capture is complete; take the interpolated messages and drop this line.
     Finished,
-    /// Capture gave up waiting; take the interpolated messages, then handle this
-    /// line normally — it was never part of the frame.
+    /// Capture gave up *before* its frame opened; take the interpolated messages,
+    /// then handle this line normally — it was never part of the frame.
     Abandoned,
+    /// Capture gave up *inside* an open frame; take the interpolated messages and
+    /// drop this line. It sits between the markers, so it is adapter framing rather
+    /// than debuggee output, and the reader must keep suppressing until the end
+    /// marker arrives or nothing else in the frame would be filtered.
+    AbandonedInFrame,
 }
 
 /// Extract the distinct, safely-queryable scalar names a logpoint template refers to.
@@ -177,6 +189,14 @@ impl PendingLogpoint {
         })
     }
 
+    /// Marker that closes this capture's frame.
+    ///
+    /// The reader needs it to keep filtering residual frame lines after the capture
+    /// has been abandoned mid-frame.
+    pub(super) fn end_marker(&self) -> &str {
+        &self.end_marker
+    }
+
     /// Debugger commands that frame and answer this capture, in write order.
     pub(super) fn query_commands(&self) -> Vec<String> {
         let mut commands = Vec::with_capacity(self.names.len() + 2);
@@ -224,8 +244,9 @@ impl PendingLogpoint {
 
         if self.lines_seen > MAX_CAPTURE_LINES {
             // The debuggee never finished answering; fall back to the raw templates
-            // rather than swallowing the logpoint.
-            return LogpointStep::Abandoned;
+            // rather than swallowing the logpoint. This line is still inside the
+            // frame, so it must not reach the client.
+            return LogpointStep::AbandonedInFrame;
         }
 
         // Everything else between the markers is adapter-internal framing noise.
@@ -254,7 +275,22 @@ mod tests {
 
     #[test]
     fn referenced_scalars_skips_expressions_the_interpolator_leaves_verbatim() {
-        assert!(referenced_scalars("{@list} {%h} {$x + 1} {$Pkg::x} {$x[0]} {}").is_empty());
+        assert!(
+            referenced_scalars("{@list} {%h} {$x + 1} {$Pkg::x} {$x[0]} {}").is_empty(),
+            "only bare scalar identifiers are queryable"
+        );
+    }
+
+    /// `concat!` cannot reference `NAME_SLOT`, so the placeholder is spelled twice:
+    /// once as the constant and once inline. Renaming one silently stops
+    /// substitution, and every value would come back `undef`.
+    #[test]
+    fn value_query_embeds_the_name_slot_constant() {
+        assert_eq!(
+            VALUE_QUERY.matches(NAME_SLOT).count(),
+            3,
+            "VALUE_QUERY must embed NAME_SLOT at every substitution site"
+        );
     }
 
     /// A template with nothing to resolve must hand its text back rather than be
@@ -276,9 +312,9 @@ mod tests {
             .map_err(|_| "template references $x, so a capture is expected")?;
         let commands = pending.query_commands();
         assert_eq!(commands.len(), 3, "begin marker, one value query, end marker");
-        assert!(commands[0].contains("DAP_LOGPOINT_BEGIN_7"));
+        assert!(commands[0].contains("DAP_LOGPOINT_BEGIN_7"), "first command opens the frame");
         assert!(commands[1].contains("DAPLPV:x"), "value query must be self-identifying");
-        assert!(commands[2].contains("DAP_LOGPOINT_END_7"));
+        assert!(commands[2].contains("DAP_LOGPOINT_END_7"), "last command closes the frame");
         Ok(())
     }
 
@@ -441,12 +477,17 @@ mod tests {
 
         let mut abandoned = false;
         for _ in 0..(MAX_CAPTURE_LINES + 5) {
-            if pending.observe_line("frame noise, no end marker") == LogpointStep::Abandoned {
+            if pending.observe_line("frame noise, no end marker") == LogpointStep::AbandonedInFrame
+            {
                 abandoned = true;
                 break;
             }
         }
-        assert!(abandoned, "an unterminated frame must not suppress the logpoint forever");
+        assert!(
+            abandoned,
+            "an unterminated frame must not suppress the logpoint forever, and must report \
+             that it gave up *inside* the frame so the reader keeps filtering it"
+        );
         assert_eq!(
             pending.into_messages(),
             vec!["x=42 y={$y}".to_string()],

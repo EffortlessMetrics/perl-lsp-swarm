@@ -20,7 +20,13 @@ use tempfile::tempdir;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-/// Line 4 assigns `$x`, line 5 assigns `$y`, so a logpoint on line 6 sees both.
+/// Shared logpoint location for every fixture in this file.
+///
+/// All four fixtures are separate string literals that must keep the same shape: two
+/// `use` lines, a blank line, then scalar assignments on lines 4 and 5, so a logpoint
+/// on line 6 sees them all. Edit one fixture's leading lines and its scalar is no
+/// longer assigned when the logpoint fires — the test then fails with a confusing
+/// "value missing" message rather than pointing at the fixture.
 const LOGPOINT_LINE: u64 = 6;
 
 fn logpoint_script() -> &'static str {
@@ -262,14 +268,17 @@ fn test_logpoint_keeps_unresolvable_expressions_verbatim() -> TestResult {
 
     let mut session = DapWorkflowSession::new(workflow_timeout())?;
     session.launch(&script_str)?;
-    set_logpoint(&mut session, &script_str, LOGPOINT_LINE, "x={$x} expr={$x + 1}")?;
+    // `{ $x }` pins that the extractor and the interpolator agree on inner
+    // whitespace: `referenced_scalars` trims before validating, so it queries `x`.
+    set_logpoint(&mut session, &script_str, LOGPOINT_LINE, "x={$x} pad={ $x } expr={$x + 1}")?;
     session.configuration_done()?;
 
     let console = collect_console_output(&session);
 
     assert!(
-        console.iter().any(|line| line.contains("x=10 expr={$x + 1}")),
-        "resolvable scalars interpolate while expressions stay verbatim; console was {console:?}"
+        console.iter().any(|line| line.contains("x=10 pad=10 expr={$x + 1}")),
+        "resolvable scalars interpolate — including with inner whitespace — while \
+         expressions stay verbatim; console was {console:?}"
     );
 
     Ok(())

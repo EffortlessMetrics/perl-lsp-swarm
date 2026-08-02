@@ -14,7 +14,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 cargo build -p perl-dap               # Build
 cargo build -p perl-dap --release     # Build optimized
 cargo test -p perl-dap                # Run tests
-cargo test -p perl-dap --features test-helpers   # Include seed-helper test targets
+cargo test -p perl-dap --features test-helpers --all-targets --locked  # Seed-helper targets
 cargo clippy -p perl-dap              # Lint
 cargo doc -p perl-dap --open          # View docs
 ./target/release/perl-dap --stdio     # Run native adapter (stdio)
@@ -72,7 +72,10 @@ assuming a path.
 `initialize` capabilities are **gated on the feature catalog**, not hardcoded. A
 `supportsX` flag is a promise that the request can succeed, so:
 
-- adding a capability means adding/advertising its `features.toml` entry, and
+- adding a capability touches three places, not one: the `features.toml` entry, the
+  catalog-to-DAP mapping in `backend/capabilities.rs::CatalogDapFlags::from_catalog`,
+  and the backend gating in `intersect_dap_capabilities` — a flag that stops at the
+  catalog is advertised but never reaches a backend that can honour it; and
 - a request whose handler always returns `success: false` (currently `restartFrame` and
   `terminateThreads` — perl5db has no primitive for either) stays `advertised = false`
   with `maturity = "planned"`.
@@ -116,13 +119,29 @@ println!("{}", create_launch_json_snippet());
 - The output reader thread in `debug_adapter/process.rs` is the **sole** consumer of the
   debugger control stream. It must never block on a request/response round trip through
   `recent_output` — it is that buffer's producer. Work that needs debugger values from
-  inside the reader (e.g. logpoint interpolation) queues framed commands and folds the
+  inside the reader (e.g. logpoint interpolation), queues framed commands and folds the
   replies in as they stream past; see `debug_adapter/logpoint.rs`
 - Request handlers running on other threads use `send_framed_debugger_commands` +
   `capture_framed_debugger_output` for synchronous queries
 - Platform-specific code gated with `cfg(unix)` / `cfg(windows)` for signal handling
 - Security module enforces workspace-boundary path checks and expression sanitization
 - All regex patterns use `OnceLock<Result<Regex, regex::Error>>` or `Lazy<Option<Regex>>` for graceful degradation
-- A handful of tests fail in sandboxed/local environments for environment reasons (fake
-  PID attach, path canonicalization, renderer drift) — see issue #1435 before assuming a
-  regression
+- Known-failing baseline. `cargo test --locked --tests -p perl-dap -p perl-lsp-rs
+  -p perl-lsp-rs-core -p perl-parser -p perl-semantic-analyzer -p perl-workspace` (the
+  `unit_routed_full` CI gate) is red on `origin/main` itself, so a red run here is not
+  by itself a regression signal. Verified against a clean `origin/main` worktree on
+  2026-08-02:
+  - 11 in `perl-dap` (issue #1435) — `test_e2e_attach_workflow_stop_on_entry`,
+    `test_e2e_attach_workflow_stopped_event`, `test_variables_request_during_stepping_sequence`,
+    `test_variables_lazy_expansion_indicators`, `test_variables_placeholder_pagination`,
+    `test_scalar_truncation`, `parse_value_array_ref`, `parse_value_code_ref`,
+    `parse_value_hash_ref`, `normalize_path_wsl_short_mnt_path_no_conversion`,
+    `terminate_twice_in_succession_both_succeed_and_emit_events`;
+  - 5 in `perl-lsp-rs` from un-regenerated LSP snapshots (`refactor.inline` →
+    `source.modernize`) — `test_all_capabilities_snapshot`,
+    `test_ga_lock_capabilities_snapshot`, `test_production_capabilities_snapshot`,
+    `test_supported_commands_structure`, `regenerate_snapshots`.
+
+  Diff your run against that list before concluding anything. Several `perl-lsp-rs`
+  LSP integration tests also hang in sandboxed environments while passing in CI, so an
+  interrupted local run is missing results rather than reporting passes.

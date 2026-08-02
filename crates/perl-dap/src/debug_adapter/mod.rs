@@ -868,7 +868,7 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_initialize_capabilities_follow_feature_catalog()
+    fn test_initialize_capabilities_mirror_feature_catalog()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         let init = adapter.handle_request(1, "initialize", None);

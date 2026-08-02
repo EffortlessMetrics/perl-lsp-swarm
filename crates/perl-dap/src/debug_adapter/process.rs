@@ -1,6 +1,6 @@
 //! Process lifecycle management: initialize, launch, attach, disconnect, terminate, restart.
 
-use super::logpoint::{LogpointStep, PendingLogpoint};
+use super::logpoint::{LogpointStep, MAX_DRAIN_LINES, PendingLogpoint};
 use super::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -698,6 +698,9 @@ impl DebugAdapter {
             // through this same loop and are folded into the message here (#5045).
             let mut pending_logpoint: Option<PendingLogpoint> = None;
             let mut logpoint_marker_id: u64 = 0;
+            // Residual frame lines to filter after a capture is abandoned mid-frame:
+            // (end marker, remaining budget).
+            let mut logpoint_drain: Option<(String, usize)> = None;
 
             loop {
                 line.clear();
@@ -745,6 +748,21 @@ impl DebugAdapter {
                         // Fold logpoint value replies before the line reaches the
                         // client or the recent-output buffer: those lines are adapter
                         // framing, not debuggee output.
+                        // A capture abandoned mid-frame leaves the rest of its frame
+                        // still coming. Those lines are adapter framing — late
+                        // `DAPLPV:` replies and the end marker — so keep filtering
+                        // them instead of forwarding protocol noise to the client.
+                        // Bounded so a marker that never arrives cannot swallow real
+                        // debuggee output indefinitely.
+                        if let Some((marker, remaining)) = logpoint_drain.as_mut() {
+                            let closed = sanitized_text.contains(marker.as_str());
+                            *remaining = remaining.saturating_sub(1);
+                            if closed || *remaining == 0 {
+                                logpoint_drain = None;
+                            }
+                            continue;
+                        }
+
                         if let Some(pending) = pending_logpoint.as_mut() {
                             // Deliberately `sanitized_text`, not `analysis_text`:
                             // `normalize_debugger_output_line` truncates the line to
@@ -753,16 +771,29 @@ impl DebugAdapter {
                             // prefix and be mistaken for framing noise. The capture
                             // only needs ANSI stripped; its own markers frame it.
                             let step = pending.observe_line(&sanitized_text);
-                            if matches!(step, LogpointStep::Finished | LogpointStep::Abandoned)
-                                && let Some(pending) = pending_logpoint.take()
+                            if matches!(
+                                step,
+                                LogpointStep::Finished
+                                    | LogpointStep::Abandoned
+                                    | LogpointStep::AbandonedInFrame
+                            ) && let Some(pending) = pending_logpoint.take()
                             {
+                                if matches!(step, LogpointStep::AbandonedInFrame) {
+                                    logpoint_drain =
+                                        Some((pending.end_marker().to_string(), MAX_DRAIN_LINES));
+                                }
                                 emit_logpoint_messages(
                                     sender.as_ref(),
                                     &seq,
                                     pending.into_messages(),
                                 );
                             }
-                            if matches!(step, LogpointStep::Consumed | LogpointStep::Finished) {
+                            if matches!(
+                                step,
+                                LogpointStep::Consumed
+                                    | LogpointStep::Finished
+                                    | LogpointStep::AbandonedInFrame
+                            ) {
                                 continue;
                             }
                         }
