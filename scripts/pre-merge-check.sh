@@ -3,7 +3,9 @@
 #
 # Checks that a PR is safe to hand to GitHub's protected merge path:
 #   1. Not in draft state
-#   2. GitHub reports the PR as mergeable and its merge state as CLEAN
+#   2. GitHub reports the PR as mergeable and its merge state as CLEAN or
+#      BEHIND. A conflict-free behind candidate may enter the protected queue;
+#      unrelated base movement does not require a refresh.
 #   3. Title contains an issue reference (#NNN)
 #
 # The merge state is read once. This helper does not poll, synthesize a
@@ -43,8 +45,8 @@ if [[ "$IS_DRAFT" == "true" ]]; then
     FAILED=1
 fi
 
-if [[ "$MERGEABLE" != "MERGEABLE" || "$MERGE_STATE" != "CLEAN" ]]; then
-    echo "FAIL PR #$PR: native merge state is not clean (mergeable=$MERGEABLE, state=$MERGE_STATE)" >&2
+if [[ "$MERGEABLE" != "MERGEABLE" || ( "$MERGE_STATE" != "CLEAN" && "$MERGE_STATE" != "BEHIND" ) ]]; then
+    echo "FAIL PR #$PR: native merge state is not queue-eligible (mergeable=$MERGEABLE, state=$MERGE_STATE)" >&2
     echo "     Resolve the reported conflict, review, or required-check state before merging" >&2
     FAILED=1
 fi
@@ -56,7 +58,7 @@ if ! printf '%s' "$TITLE" | grep -qE '\(#[0-9]+\)'; then
 fi
 
 if [[ "$FAILED" -eq 0 ]]; then
-    echo "OK   PR #$PR: native pre-merge checks passed (not draft, mergeable, merge state CLEAN, issue ref in title)"
+    echo "OK   PR #$PR: native pre-merge checks passed (not draft, mergeable, queue-eligible merge state, issue ref in title)"
     exit 0
 fi
 
