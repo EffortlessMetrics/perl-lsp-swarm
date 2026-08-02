@@ -14,19 +14,19 @@ semantic PR-value classifier.
 - top-level: `snapshot_id`, `captured_at`, `repository`, `default_branch`,
   `master_sha`, `ruleset_summary`;
 - per PR: `number`, `title`, `head_sha`, `base_sha`, `is_draft`,
-  `merge_state_status`, `labels`, `status_check_rollup`, `updated_at`, `author`,
+  `mergeability`, `merge_state_status`, `labels`, `status_check_rollup`, `updated_at`, `author`,
   `review_decision`;
 - derived observations:
-  - `merge_ready`;
+  - `mergeable_clean`;
   - `ci_green`;
   - `needs_ci_fix`;
-  - `needs_builder_fix`;
-  - `needs_diff_fix`;
-  - `diff_audited_waiting_ci`;
   - `conflicting`;
   - `unknown_not_proven`;
   - `pending_or_unclassified`;
   - `draft`.
+
+Labels are retained as metadata only; no bucket or merge observation is derived
+from lifecycle labels.
 
 `master_sha` is a legacy serialized field name retained for compatibility. Its
 value is the captured SHA of the current default integration branch, which is
@@ -38,8 +38,9 @@ The snapshot deliberately keeps these states separate:
 
 | Bucket | Meaning | What it does not mean |
 | --- | --- | --- |
-| `conflicting` | GitHub reports `DIRTY` or `CONFLICTING`; an actual textual conflict needs inspection | automatic rebase, obsolescence, or low value |
-| `unknown_not_proven` | GitHub reports `UNKNOWN` or provides no mergeability state | conflict, safe merge, safe close, or safe mutation |
+| `mergeable_clean` | GitHub reports native `MERGEABLE` and `merge_state_status` is `CLEAN`; both observations are required because native mergeability alone does not establish queue cleanliness | approval, green CI, or permission to bypass protected merge rules |
+| `conflicting` | GitHub's native `mergeability` is `CONFLICTING`; when that field is absent, `merge_state_status` is `DIRTY` or `CONFLICTING`; an actual textual conflict needs inspection | automatic rebase, obsolescence, or low value |
+| `unknown_not_proven` | GitHub's native `mergeability` is `UNKNOWN`; when that field is absent, `merge_state_status` is `UNKNOWN` or missing | conflict, safe merge, safe close, or safe mutation |
 | `pending_or_unclassified` | mergeability is known/non-conflicting, but checks are neither terminal-failing nor all non-blocking | product failure or required wait without further classification |
 
 These observations are orthogonal to CI and routing buckets. A PR can be both
@@ -55,8 +56,12 @@ action-shaped categories.
 - current `head_sha` and exact-head check evidence are freshness truth;
 - labels are projected/navigation state, not proof;
 - PR age or inactivity is not a close/rebase/cherry-pick disposition;
-- `UNKNOWN` is `NOT_PROVEN`, never an inferred conflict;
-- `DIRTY`/`CONFLICTING` requires conflict inspection before selecting a repair;
+- native `mergeability` takes precedence over `merge_state_status` for the
+  conflict/unknown observations; the latter is a compatibility fallback when
+  native mergeability is absent;
+- native `UNKNOWN` is `NOT_PROVEN`, never an inferred conflict;
+- native `CONFLICTING`, or fallback `DIRTY`/`CONFLICTING`, requires conflict
+  inspection before selecting a repair;
 - required/advisory/current/stale check semantics belong to the current-head
   proof and merge-readiness authorities;
 - product value, semantic supersession, and base-update strategy belong to
