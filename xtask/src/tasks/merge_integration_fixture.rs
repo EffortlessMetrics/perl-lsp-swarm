@@ -1,4 +1,4 @@
-//! Deterministic combined-tree regression fixture for #4556.
+// Deterministic combined-tree regression fixture for #4556.
 
 use color_eyre::eyre::{Context, Result, eyre};
 use std::fs;
