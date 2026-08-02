@@ -256,7 +256,18 @@ fn emit_category_section(category_counts: &HashMap<String, usize>) {
 }
 
 fn categorize_error(msg: &str) -> String {
-    if msg.contains("Unexpected end of input") {
+    // The parser emits several surface strings for end-of-input failures:
+    //   "Unexpected end of input", "Unclosed block: expected '}' but reached
+    //   end of input", "expected ';' but found end of input",
+    //   "Unexpected end of file", "... found EOF".  Group them all so users
+    //   receive the unclosed-block remediation hint instead of "Other".
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("end of input")
+        || lower.contains("end of file")
+        || lower.contains("reached end")
+        || lower.contains("found eof")
+        || lower.contains("unexpected eof")
+    {
         "Unexpected EOF".to_string()
     } else if msg.contains("expected") && msg.contains("found") {
         "Unexpected token".to_string()
@@ -310,6 +321,26 @@ mod tests {
         assert_eq!(categorize_error("Recursion depth exceeded"), "Recursion limit");
         assert_eq!(categorize_error("read error: permission denied"), "IO error");
         assert_eq!(categorize_error("something new"), "Other");
+    }
+
+    #[test]
+    fn categorize_error_groups_end_of_input_variants() {
+        // #1991: parser emits several end-of-input surface strings that
+        // previously fell through to "Other", suppressing the unclosed-block
+        // remediation hint.
+        assert_eq!(
+            categorize_error("Unclosed block: expected '}' but reached end of input"),
+            "Unexpected EOF"
+        );
+        assert_eq!(categorize_error("expected ';' but found end of input"), "Unexpected EOF");
+        assert_eq!(categorize_error("Unexpected end of file"), "Unexpected EOF");
+        assert_eq!(categorize_error("expected name but found EOF"), "Unexpected EOF");
+        // Case-insensitivity: a stray lowercase "eof" substring must not
+        // capture unrelated words (e.g. "does"), but genuine EOF messages of
+        // any case must match.
+        assert_eq!(categorize_error("parser reached end of input prematurely"), "Unexpected EOF");
+        // Non-EOF "found" message stays in the token category.
+        assert_eq!(categorize_error("expected ';' but found '}'"), "Unexpected token");
     }
 
     #[test]
