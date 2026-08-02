@@ -676,9 +676,8 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let base_sha = revision_sha(repo, &options.base)?;
     let head_sha = revision_sha(repo, &options.head)?;
     let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
-    let changed_files = diff_receipt.changed_paths.clone();
     let changed_file_count = diff_receipt.entries.len();
-    write_pr_diff(repo, &options.base, &options.head)?;
+    write_pr_diff(repo, &diff_receipt)?;
     let check_json = run_ripr_check(repo, options)?;
     let check_value: Value =
         serde_json::from_str(&check_json).context("ripr check output was not valid JSON")?;
@@ -690,7 +689,6 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let suppressions = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))?;
     let packet = pr_evidence_packet_with_count(
         options,
-        &changed_files,
         &check_value,
         &base_sha,
         &head_sha,
@@ -910,7 +908,6 @@ fn pr_evidence_packet(
 ) -> Value {
     pr_evidence_packet_with_count(
         options,
-        changed_files,
         check_value,
         base_sha,
         head_sha,
@@ -921,7 +918,6 @@ fn pr_evidence_packet(
 
 fn pr_evidence_packet_with_count(
     options: &PrEvidenceOptions,
-    _changed_files: &[String],
     check_value: &Value,
     base_sha: &str,
     head_sha: &str,
@@ -1953,7 +1949,7 @@ fn parse_name_status_z(raw: &[u8]) -> Result<Vec<CommittedDiffEntry>> {
                     fields.get(index + 1).ok_or_else(|| eyre!("missing path for {status}"))?;
                 let value = path(value)?;
                 entries.push(CommittedDiffEntry {
-                    old_path: (code == 'D').then_some(value.clone()),
+                    old_path: (code == 'D' || code == 'M' || code == 'T').then_some(value.clone()),
                     new_path: (code != 'D').then_some(value),
                     status,
                 });
@@ -1990,8 +1986,7 @@ fn merge_base_failure_guidance(base: &str, head: &str, shallow: bool) -> String 
     message
 }
 
-fn write_pr_diff(repo: &Path, base: &str, head: &str) -> Result<()> {
-    let receipt = resolve_committed_diff(repo, base, head)?;
+fn write_pr_diff(repo: &Path, receipt: &CommittedDiffReceipt) -> Result<()> {
     let range = format!("{}...{}", receipt.base, receipt.head);
     let diff = run_git_output(repo, &["diff", "--binary", "--no-ext-diff", range.as_str()])?;
     write_text(&repo.join(PR_DIFF), &diff)?;
@@ -2002,7 +1997,12 @@ fn write_pr_diff(repo: &Path, base: &str, head: &str) -> Result<()> {
 fn run_git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let output = git_output_with_mount_root(repo, args, default_windows_drive_mount_root())?;
     if !output.status.success() {
-        bail!("git {} failed with status {}", args.join(" "), output.status);
+        bail!(
+            "git {} failed with status {}\nstderr:\n{}",
+            args.join(" "),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     Ok(output.stdout)
 }
@@ -4216,9 +4216,12 @@ esac
         assert_eq!(entries[1].new_path.as_deref(), Some("copy.rs"));
         assert_eq!(entries[2].old_path.as_deref(), Some("deleted.rs"));
         assert_eq!(entries[3].new_path.as_deref(), Some("modified.rs"));
+        assert_eq!(entries[3].old_path.as_deref(), Some("modified.rs"));
         assert_eq!(entries[4].old_path.as_deref(), Some("old.rs"));
         assert_eq!(entries[4].new_path.as_deref(), Some("renamed.rs"));
         assert_eq!(entries[5].status, "T");
+        assert_eq!(entries[5].old_path.as_deref(), Some("typed.rs"));
+        assert_eq!(entries[5].new_path.as_deref(), Some("typed.rs"));
         Ok(())
     }
 
