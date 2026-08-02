@@ -169,6 +169,49 @@ fn test_logpoint_interpolates_multi_line_scalar_values() -> TestResult {
     Ok(())
 }
 
+/// A value whose own text contains a `DB<N>` prompt token must survive.
+///
+/// The reader normalizes debugger output by truncating each line to whatever follows
+/// the *last* `DB<...>` token. Feeding that to the capture destroys the `DAPLPV:`
+/// prefix of any value containing `DB<4>`, so the reply is mistaken for framing noise
+/// and the user gets the raw template back. This is end-to-end on purpose: the choice
+/// of which text reaches the capture is made in the reader, not in `observe_line`, so
+/// a unit test on the capture cannot catch a regression here.
+#[test]
+fn test_logpoint_value_containing_a_prompt_token_survives() -> TestResult {
+    if !perl_available() {
+        eprintln!("Skipping test_logpoint_value_containing_a_prompt_token_survives - perl missing");
+        return Ok(());
+    }
+
+    let workspace = tempdir()?;
+    let script = workspace.path().join("logpoint_prompt_token_e2e.pl");
+    write(
+        &script,
+        "use strict;\nuse warnings;\n\nmy $d = \"DB<4> was logged\";\nmy $n = 1;\nmy $z = $n;\nprint \"$z\\n\";\n",
+    )?;
+    let script_str = script.to_str().ok_or("script path is not valid UTF-8")?.to_string();
+
+    let mut session = DapWorkflowSession::new(workflow_timeout())?;
+    session.launch(&script_str)?;
+    set_logpoint(&mut session, &script_str, LOGPOINT_LINE, "d is [{$d}]")?;
+    session.configuration_done()?;
+
+    let console = collect_console_output(&session);
+    let joined = console.join("");
+
+    assert!(
+        joined.contains("d is [DB<4> was logged]"),
+        "a value containing a prompt token must survive normalization; console was {console:?}"
+    );
+    assert!(
+        !joined.contains("d is [{$d}]"),
+        "the template must not fall back to its raw form; console was {console:?}"
+    );
+
+    Ok(())
+}
+
 /// A logpoint with nothing to interpolate must still be emitted.
 ///
 /// Wiring interpolation in must not cost the plain case: the templates are handed

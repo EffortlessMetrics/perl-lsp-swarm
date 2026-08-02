@@ -746,7 +746,13 @@ impl DebugAdapter {
                         // client or the recent-output buffer: those lines are adapter
                         // framing, not debuggee output.
                         if let Some(pending) = pending_logpoint.as_mut() {
-                            let step = pending.observe_line(&analysis_text);
+                            // Deliberately `sanitized_text`, not `analysis_text`:
+                            // `normalize_debugger_output_line` truncates the line to
+                            // whatever follows the *last* `DB<...>` token, so a value
+                            // whose own text contains `DB<4>` would lose its `DAPLPV:`
+                            // prefix and be mistaken for framing noise. The capture
+                            // only needs ANSI stripped; its own markers frame it.
+                            let step = pending.observe_line(&sanitized_text);
                             if matches!(step, LogpointStep::Finished | LogpointStep::Abandoned)
                                 && let Some(pending) = pending_logpoint.take()
                             {
