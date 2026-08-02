@@ -322,12 +322,19 @@ pub(super) fn fix_parse_error(
             CodeActionKind::QuickFix,
             TextEdit { range: (diagnostic.range.1, diagnostic.range.1), new_text: ")".to_string() },
         ),
-        "parse-error-unclosedbrace" => diagnostic_action(
-            diagnostic,
-            "Add closing brace",
-            CodeActionKind::QuickFix,
-            TextEdit { range: (diagnostic.range.1, diagnostic.range.1), new_text: "}".to_string() },
-        ),
+        "parse-error-unclosedbrace" => {
+            // Insert at end-of-document: the diagnostic anchor may point at the
+            // opening `{` (when anchored by the parser per #5546), not at EOF.
+            // The missing `}` always belongs at the end of the unclosed scope,
+            // which in practice is the end of the file.
+            let eof = provider.source().len();
+            diagnostic_action(
+                diagnostic,
+                "Add closing brace",
+                CodeActionKind::QuickFix,
+                TextEdit { range: (eof, eof), new_text: "}".to_string() },
+            )
+        }
         _ => return Vec::new(),
     };
 

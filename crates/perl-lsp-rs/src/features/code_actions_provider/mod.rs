@@ -50,7 +50,7 @@ impl CodeActionsProvider {
     }
 
     /// Get code actions for a specific diagnostic
-    fn get_actions_for_diagnostic(&self, diagnostic: &Diagnostic) -> Vec<CodeAction> {
+    pub fn get_actions_for_diagnostic(&self, diagnostic: &Diagnostic) -> Vec<CodeAction> {
         if !source_utils::is_valid_source_range(self.source(), diagnostic.range) {
             return Vec::new();
         }
@@ -1138,10 +1138,13 @@ mod tests {
     #[test]
     fn test_parse_error_unclosed_brace_fix() {
         let source = "if ($x) {\n    print 1;\n".to_string();
+        let eof = source.len();
         let provider = CodeActionsProvider::new(source);
 
+        // Anchor at the opening `{` (position 8) — as the parser does after #5546.
+        // The edit must land at end-of-document regardless.
         let diagnostic = make_diagnostic(
-            (8, 22),
+            (8, 9),
             DiagnosticSeverity::Error,
             "parse-error-unclosedbrace",
             "Unclosed brace",
@@ -1151,6 +1154,46 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].title, "Add closing brace");
         assert_eq!(actions[0].edit.new_text, "}");
+        assert_eq!(
+            actions[0].edit.range,
+            (eof, eof),
+            "closing brace must be inserted at end-of-document, not at the diagnostic anchor"
+        );
+    }
+
+    #[test]
+    fn test_pl001_unclosed_block_actual_message_triggers_add_brace_action() {
+        // Regression guard for issue #5547: parse_error_fix_code_from_message
+        // previously matched only "unclosed brace" / "missing '}'" / "unclosed `{`",
+        // none of which match the parser's actual message.  The fix adds "unclosed
+        // block" so the "Add closing brace" quick-fix fires on real PL001 diagnostics.
+        let source = "sub foo {\n    my $x = 1;\n".to_string();
+        let eof = source.len();
+        let provider = CodeActionsProvider::new(source);
+
+        // Exact message emitted by perl-parser-core (verified in
+        // unclosed_block_recovery_tests.rs): "Unclosed block: expected '}' but
+        // reached end of input"
+        let diagnostic = make_diagnostic(
+            (8, 9),
+            DiagnosticSeverity::Error,
+            "PL001",
+            "Unclosed block: expected '}' but reached end of input",
+        );
+
+        let actions = provider.get_actions_for_diagnostic(&diagnostic);
+        assert_eq!(
+            actions.len(),
+            1,
+            "PL001 with real unclosed-block message must offer 'Add closing brace', got: {actions:?}"
+        );
+        assert_eq!(actions[0].title, "Add closing brace");
+        assert_eq!(actions[0].edit.new_text, "}");
+        assert_eq!(
+            actions[0].edit.range,
+            (eof, eof),
+            "closing brace must be inserted at end-of-document"
+        );
     }
 
     #[test]
@@ -1606,6 +1649,7 @@ mod tests {
     #[test]
     fn test_pl002_unclosed_brace_message_triggers_fix() {
         let source = "sub x { print 'ok';\n".to_string();
+        let eof = source.len();
         let provider = CodeActionsProvider::new(source);
 
         let diagnostic = make_diagnostic(
@@ -1619,6 +1663,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].title, "Add closing brace");
         assert_eq!(actions[0].edit.new_text, "}");
+        assert_eq!(actions[0].edit.range, (eof, eof));
     }
 
     #[test]

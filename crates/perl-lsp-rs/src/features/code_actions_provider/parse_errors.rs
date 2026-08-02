@@ -12,6 +12,7 @@ pub(super) fn parse_error_fix_code_from_message(message: &str) -> Option<&'stati
     if message_lower.contains("unclosed brace")
         || message_lower.contains("missing '}'")
         || message_lower.contains("unclosed `{`")
+        || message_lower.contains("unclosed block")
     {
         return Some("parse-error-unclosedbrace");
     }
