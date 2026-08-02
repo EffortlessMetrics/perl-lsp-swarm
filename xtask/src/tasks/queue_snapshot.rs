@@ -310,7 +310,10 @@ mod tests {
             vec![("ci", "SUCCESS")],
         )];
         let buckets = derive_buckets(&prs);
-        assert!(buckets.mergeable_clean.contains(&15));
+        assert!(
+            buckets.mergeable_clean.contains(&15),
+            "lifecycle labels must not create a merge bucket; native clean state should do so"
+        );
     }
 
     #[test]
@@ -387,10 +390,22 @@ mod tests {
         unknown.mergeability = Some("UNKNOWN".to_string());
 
         let buckets = derive_buckets(&[conflicting, unknown]);
-        assert!(buckets.conflicting.contains(&16));
-        assert!(!buckets.unknown_not_proven.contains(&16));
-        assert!(buckets.unknown_not_proven.contains(&17));
-        assert!(!buckets.pending_or_unclassified.contains(&17));
+        assert!(
+            buckets.conflicting.contains(&16),
+            "native CONFLICTING must win over stale BEHIND merge_state_status"
+        );
+        assert!(
+            !buckets.unknown_not_proven.contains(&16),
+            "native CONFLICTING must not be routed to unknown_not_proven"
+        );
+        assert!(
+            buckets.unknown_not_proven.contains(&17),
+            "native UNKNOWN must route to unknown_not_proven"
+        );
+        assert!(
+            !buckets.pending_or_unclassified.contains(&17),
+            "native UNKNOWN must not be routed to pending_or_unclassified"
+        );
     }
 
     #[test]
@@ -398,8 +413,14 @@ mod tests {
         let mut pr = make_pr_with_state(18, "DIRTY", vec![], vec![("ci", "IN_PROGRESS")]);
         pr.mergeability = None;
         let buckets = derive_buckets(&[pr]);
-        assert!(buckets.conflicting.contains(&18));
-        assert!(!buckets.unknown_not_proven.contains(&18));
+        assert!(
+            buckets.conflicting.contains(&18),
+            "DIRTY fallback must route to conflicting when native mergeability is absent"
+        );
+        assert!(
+            !buckets.unknown_not_proven.contains(&18),
+            "DIRTY fallback must not route to unknown_not_proven"
+        );
     }
 
     #[test]

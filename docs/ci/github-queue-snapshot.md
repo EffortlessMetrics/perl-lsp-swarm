@@ -38,6 +38,7 @@ The snapshot deliberately keeps these states separate:
 
 | Bucket | Meaning | What it does not mean |
 | --- | --- | --- |
+| `mergeable_clean` | GitHub reports native `MERGEABLE` and `merge_state_status` is `CLEAN`; both observations are required because native mergeability alone does not establish queue cleanliness | approval, green CI, or permission to bypass protected merge rules |
 | `conflicting` | GitHub's native `mergeability` is `CONFLICTING`; when that field is absent, `merge_state_status` is `DIRTY` or `CONFLICTING`; an actual textual conflict needs inspection | automatic rebase, obsolescence, or low value |
 | `unknown_not_proven` | GitHub's native `mergeability` is `UNKNOWN`; when that field is absent, `merge_state_status` is `UNKNOWN` or missing | conflict, safe merge, safe close, or safe mutation |
 | `pending_or_unclassified` | mergeability is known/non-conflicting, but checks are neither terminal-failing nor all non-blocking | product failure or required wait without further classification |

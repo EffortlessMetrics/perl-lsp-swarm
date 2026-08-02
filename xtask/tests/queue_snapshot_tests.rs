@@ -32,10 +32,19 @@ fn queue_snapshot_from_fixture_derives_distinct_mergeability_buckets() {
     assert!(!legacy_main_sha.is_empty(), "legacy master_sha must remain populated");
     assert_eq!(buckets.get("mergeable_clean"), Some(&serde_json::json!([1])));
     assert_eq!(buckets.get("ci_green"), Some(&serde_json::json!([1])));
-    assert!(buckets.get("merge_ready").is_none());
-    assert!(buckets.get("needs_builder_fix").is_none());
-    assert!(buckets.get("needs_diff_fix").is_none());
-    assert!(buckets.get("diff_audited_waiting_ci").is_none());
+    assert!(buckets.get("merge_ready").is_none(), "retired merge_ready bucket must be absent");
+    assert!(
+        buckets.get("needs_builder_fix").is_none(),
+        "retired needs_builder_fix bucket must be absent"
+    );
+    assert!(
+        buckets.get("needs_diff_fix").is_none(),
+        "retired needs_diff_fix bucket must be absent"
+    );
+    assert!(
+        buckets.get("diff_audited_waiting_ci").is_none(),
+        "retired diff_audited_waiting_ci bucket must be absent"
+    );
     assert_eq!(buckets.get("conflicting"), Some(&serde_json::json!([2])));
     assert_eq!(buckets.get("unknown_not_proven"), Some(&serde_json::json!([3])));
     assert_eq!(buckets.get("pending_or_unclassified"), Some(&serde_json::json!([])));
