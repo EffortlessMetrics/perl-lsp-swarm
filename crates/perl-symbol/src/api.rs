@@ -12,7 +12,7 @@
 //!   public API — a one-line rename keeps their downstream callers working).
 
 // types — at crate root for ergonomics
-pub use crate::types::{SymbolKind, VarKind};
+pub use crate::types::{MIN_LOOSE_MATCH_QUERY_CHARS, SymbolKind, VarKind};
 
 // cursor — full public surface
 pub use crate::cursor::{

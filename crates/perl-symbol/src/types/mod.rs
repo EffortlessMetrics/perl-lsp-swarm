@@ -13,6 +13,23 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Minimum query length (in `char`s of the lowercased query) that admits the
+/// loose match tiers — substring and subsequence — for symbol search. (#5335)
+///
+/// A one-character query is too weak to justify loose matching: nearly every
+/// symbol in a workspace contains that character somewhere, producing an
+/// overwhelming and unhelpful result set. Such queries are restricted to the
+/// exact and prefix tiers instead.
+///
+/// Length is measured on the *lowercased* query, because lowercasing can
+/// lengthen a one-character input: 'İ' (U+0130) lowercases to the two chars
+/// "i\u{307}", which then admits loose tiers. This is intentional — the
+/// lowercased form is what the matchers actually compare against.
+///
+/// Applied consistently to every symbol source that feeds a `workspace/symbol`
+/// response so that all result sets narrow short queries identically. (#5407)
+pub const MIN_LOOSE_MATCH_QUERY_CHARS: usize = 2;
+
 /// Variable sigil classification for Perl's three primary container types.
 ///
 /// Perl distinguishes variables by their sigil prefix, which determines
