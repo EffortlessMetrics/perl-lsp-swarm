@@ -5,6 +5,25 @@
 
 use std::collections::{HashMap, HashSet};
 
+/// Minimum query length (in `char`s of the lowercased query) that admits the
+/// loose match tiers — substring and subsequence. (#5335)
+///
+/// A one-character query is too weak to justify loose matching: every symbol
+/// whose name contains that character anywhere would match, which is nearly
+/// the whole workspace. Queries shorter than this threshold are restricted to
+/// the exact and prefix tiers instead.
+///
+/// Length is measured on the *lowercased* query because lowercasing can
+/// lengthen a one-character input — `'İ'` (U+0130) lowercases to two chars —
+/// and the lowercased form is what the matchers actually compare against.
+///
+/// This is the single canonical definition. All workspace symbol matchers
+/// (`perl_workspace::workspace_index::search_source_symbols`,
+/// `search_generated_workspace_symbols`, and
+/// `perl_lsp_rs_core::providers::symbol_query::matches_query`) import it from
+/// here rather than defining their own copies.
+pub const MIN_LOOSE_MATCH_QUERY_CHARS: usize = 2;
+
 /// Symbol index for fast lookups.
 ///
 /// Supports both prefix and fuzzy matching using a trie and inverted index.

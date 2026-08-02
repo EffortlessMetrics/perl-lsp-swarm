@@ -6,8 +6,8 @@
 //! every microcrate-collapse facade.
 
 use perl_symbol::{
-    SymbolDecl, SymbolDeclSemanticFacts, SymbolIndex, SymbolKind, SymbolRef, SymbolRefKind,
-    SymbolRefSemanticFacts, VarKind,
+    MIN_LOOSE_MATCH_QUERY_CHARS, SymbolDecl, SymbolDeclSemanticFacts, SymbolIndex, SymbolKind,
+    SymbolRef, SymbolRefKind, SymbolRefSemanticFacts, VarKind,
     cursor::{
         CursorSymbolKind, byte_offset_utf16, extract_symbol_from_source,
         get_symbol_range_at_position, is_modchar, is_word_boundary, token_under_cursor,
@@ -15,6 +15,15 @@ use perl_symbol::{
     extract_symbol_decls, extract_symbol_refs, symbol_decls_to_semantic_facts,
     symbol_refs_to_semantic_facts,
 };
+
+#[test]
+fn min_loose_match_query_chars_accessible_at_crate_root() {
+    // The constant is the single canonical definition (#5407).
+    // Both perl_workspace and perl_lsp_rs_core import it from here.
+    assert_eq!(MIN_LOOSE_MATCH_QUERY_CHARS, 2);
+    // Also accessible through the module path.
+    assert_eq!(perl_symbol::index::MIN_LOOSE_MATCH_QUERY_CHARS, 2);
+}
 
 #[test]
 fn symbol_kind_and_var_kind_accessible_at_crate_root() {

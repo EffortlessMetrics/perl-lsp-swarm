@@ -553,3 +553,80 @@ sub build {
 
     Ok(())
 }
+
+/// Guard: single-character workspace/symbol queries must only return exact and prefix matches.
+///
+/// `MIN_LOOSE_MATCH_QUERY_CHARS` (canonical source: `perl_symbol::index`) gates the loose
+/// match tiers (substring and subsequence) behind a minimum query length of 2. A one-character
+/// query like "s" would otherwise match every symbol containing the letter 's' anywhere —
+/// effectively the whole workspace — via the substring tier.
+///
+/// This test catches split-brain: if any workspace symbol matcher (source-symbol, generated, or
+/// open-document fallback) re-introduces loose matching for short queries, the substring-only
+/// symbol `reset_counter` would appear in results and the assertion below would fail. (#5407)
+#[test]
+fn test_workspace_symbol_one_char_query_exact_and_prefix_only() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let doc_uri = "file:///one_char_query_test.pl";
+    harness.open(
+        doc_uri,
+        r#"package Guard::OneChar;
+
+# Starts with 's' — exact/prefix match for query "s" — should appear.
+sub set_value {
+    my ($self, $v) = @_;
+    $self->{value} = $v;
+}
+
+sub save_record {
+    my ($self) = @_;
+    return $self->{value};
+}
+
+# Contains 's' mid-name only — substring match — must NOT appear for a one-char query.
+sub reset_counter {
+    my ($self) = @_;
+    $self->{counter} = 0;
+}
+
+sub format_output {
+    my ($self) = @_;
+    return "$self->{value}";
+}
+
+1;
+"#,
+    )?;
+
+    let response = harness
+        .request("workspace/symbol", json!({ "query": "s" }))
+        .map_err(|e| format!("workspace/symbol request failed: {e}"))?;
+
+    assert!(response.is_array(), "workspace/symbol should return an array, got: {:?}", response);
+
+    let symbols = response.as_array().ok_or("response is not an array")?;
+    let names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
+
+    // Prefix matches must appear.
+    assert!(
+        names.iter().any(|n| *n == "set_value"),
+        "one-char query 's' must match prefix symbol 'set_value'; got: {:?}",
+        names
+    );
+    assert!(
+        names.iter().any(|n| *n == "save_record"),
+        "one-char query 's' must match prefix symbol 'save_record'; got: {:?}",
+        names
+    );
+
+    // Substring-only matches must be absent — 'reset_counter' contains 's' but does not start with it.
+    assert!(
+        !names.iter().any(|n| *n == "reset_counter"),
+        "one-char query 's' must NOT match substring-only symbol 'reset_counter'; got: {:?}",
+        names
+    );
+
+    Ok(())
+}

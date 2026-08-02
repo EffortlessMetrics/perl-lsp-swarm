@@ -1086,6 +1086,7 @@ fn default_has_body() -> bool {
 // Re-export the unified symbol types from perl-symbol
 /// Symbol kind enums used during Index/Analyze workflows.
 pub use perl_symbol::{SymbolKind, VarKind};
+pub use perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS;
 
 // `PartialEq` added for 1711-B shadow-compare parity assertions -- `Range`
 // and `ReferenceKind` already derive `PartialEq`, so this is purely additive.
@@ -12997,20 +12998,6 @@ sub bar { return $greeting; }
         );
     }
 }
-
-/// Minimum query length (in `char`s of the lowercased query) that admits the
-/// loose match tiers -- substring and subsequence. (#5335)
-///
-/// A one-character query is too weak to justify loose matching: every symbol
-/// whose name contains that character anywhere would match, which is nearly
-/// the whole workspace. Such queries are restricted to the exact and prefix
-/// tiers instead.
-///
-/// The same threshold is applied by the open-document fallback matcher,
-/// `perl_lsp_rs_core::providers::symbol_query::matches_query`. The two
-/// matchers are independent implementations, so the constant is deliberately
-/// duplicated rather than shared across the crate boundary.
-pub const MIN_LOOSE_MATCH_QUERY_CHARS: usize = 2;
 
 /// Check if `needle` is a subsequence of `haystack` (fuzzy match).
 /// E.g. "gpn" is a subsequence of "get_page_name". (#5087)

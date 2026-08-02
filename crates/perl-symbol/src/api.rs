@@ -21,7 +21,7 @@ pub use crate::cursor::{
 };
 
 // index — full public surface
-pub use crate::index::SymbolIndex;
+pub use crate::index::{MIN_LOOSE_MATCH_QUERY_CHARS, SymbolIndex};
 
 // surface — full public surface
 pub use crate::surface::{
