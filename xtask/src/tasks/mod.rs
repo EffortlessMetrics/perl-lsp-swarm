@@ -88,6 +88,8 @@ pub mod lsp_318_claims;
 pub mod lsp_318_matrix;
 pub mod lsp_ux_smoke;
 pub mod memory_trends;
+#[cfg(test)]
+mod merge_integration_fixture;
 pub mod merge_ready;
 pub mod methodology_gate;
 pub mod metrics;
