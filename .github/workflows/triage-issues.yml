@@ -141,11 +141,9 @@ jobs:
               return 0
             fi
 
-            local LABELS CREATED UPDATED ASSIGNEES BODY COMMENTS_COUNT
+            local LABELS UPDATED BODY COMMENTS_COUNT
             LABELS=$(echo "$ISSUE" | jq -r '.labels[].name' | tr '\n' ' ')
-            CREATED=$(echo "$ISSUE" | jq -r '.created_at')
             UPDATED=$(echo "$ISSUE" | jq -r '.updated_at')
-            ASSIGNEES=$(echo "$ISSUE" | jq -r '.assignees | length')
             BODY=$(echo "$ISSUE" | jq -r '.body // ""')
             COMMENTS_COUNT=$(echo "$ISSUE" | jq -r '.comments')
 
@@ -178,22 +176,6 @@ jobs:
               fi
             else
               echo "  WARNING: could not parse updated_at for #$number, skipping age labels"
-            fi
-
-            # --- needs-assignee: unassigned > 3 days ---
-            local CREATED_TS CREATED_DAYS
-            CREATED_TS=$(parse_date "$CREATED")
-
-            if [ -n "$CREATED_TS" ]; then
-              CREATED_DAYS=$(( (NOW - CREATED_TS) / 86400 ))
-
-              if [ "$ASSIGNEES" -eq 0 ] && [ "$CREATED_DAYS" -ge 3 ]; then
-                TO_ADD+=("needs-assignee")
-              elif [ "$ASSIGNEES" -gt 0 ]; then
-                TO_REMOVE+=("needs-assignee")
-              fi
-            else
-              echo "  WARNING: could not parse created_at for #$number, skipping needs-assignee"
             fi
 
             # --- needs-spec: no implementation plan detected ---
