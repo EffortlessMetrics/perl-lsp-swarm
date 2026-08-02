@@ -173,8 +173,15 @@ fn response_body<'a>(
 ) -> Result<&'a serde_json::Value, Box<dyn std::error::Error>> {
     match msg {
         DapMessage::Response { command, success, body, .. } => {
-            assert_eq!(command, expect_cmd, "unexpected response command");
-            assert!(success, "response for {expect_cmd} was not successful: {msg:?}");
+            if command != expect_cmd {
+                return Err(format!(
+                    "unexpected response command: expected {expect_cmd}, got {command}"
+                )
+                .into());
+            }
+            if !success {
+                return Err(format!("response for {expect_cmd} was not successful: {msg:?}").into());
+            }
             body.as_ref().ok_or_else(|| format!("{expect_cmd} had no body").into())
         }
         _ => Err(format!("expected a response to {expect_cmd}, got {msg:?}").into()),
@@ -201,6 +208,32 @@ fn response_body_reports_malformed_responses() -> Result<(), Box<dyn std::error:
         .err()
         .ok_or("bodyless response unexpectedly succeeded")?;
     assert!(body_error.to_string().contains("initialize"));
+
+    let wrong_command = DapMessage::Response {
+        seq: 1,
+        request_seq: 1,
+        success: true,
+        command: "threads".to_string(),
+        body: Some(serde_json::json!({})),
+        message: None,
+    };
+    let command_error = response_body(&wrong_command, "initialize")
+        .err()
+        .ok_or("wrong-command response unexpectedly succeeded")?;
+    assert!(command_error.to_string().contains("initialize"));
+
+    let failed_response = DapMessage::Response {
+        seq: 1,
+        request_seq: 1,
+        success: false,
+        command: "initialize".to_string(),
+        body: None,
+        message: Some("backend failed".to_string()),
+    };
+    let failure_error = response_body(&failed_response, "initialize")
+        .err()
+        .ok_or("failed response unexpectedly succeeded")?;
+    assert!(failure_error.to_string().contains("initialize"));
 
     Ok(())
 }
