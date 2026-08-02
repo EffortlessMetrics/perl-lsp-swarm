@@ -11,20 +11,22 @@
 use std::process::Command;
 
 #[test]
-fn test_perl_lsp_can_build_with_new_imports() {
+fn test_perl_lsp_can_build_with_new_imports() -> Result<(), Box<dyn std::error::Error>> {
     // Verify that perl-lsp crate builds successfully with the new import paths
     // It should depend on perl_dap instead of perl_dap_platform
 
     let output = Command::new("cargo")
         .args(["build", "-p", "perl-lsp-rs", "--message-format=short"])
-        .output();
-    match output {
-        Ok(out) if !out.status.success() => {
-            panic!("perl-lsp-rs build failed: {}", String::from_utf8_lossy(&out.stderr));
-        }
-        Err(e) => panic!("cargo build failed to start: {e}"),
-        _ => {}
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "perl-lsp-rs build failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
     }
+
+    Ok(())
 }
 
 #[test]
