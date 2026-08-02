@@ -79,15 +79,10 @@ pub fn extract_pod(source: &str) -> PodDoc {
     let mut in_over = false;
 
     for line in source.lines() {
-        // Detect POD start directives
-        if line.starts_with("=head")
-            || line.starts_with("=pod")
-            || line.starts_with("=over")
-            || line.starts_with("=begin")
-            || line.starts_with("=for")
-            || line.starts_with("=encoding")
-            || line.starts_with("=item")
-        {
+        // Detect POD start directives. Use exact command-word matching to avoid
+        // false positives like `=cutlery` matching `=cut` or `=headache`
+        // matching `=head` (#4971).
+        if pod_command(line).is_some() {
             in_pod = true;
         }
 
@@ -96,7 +91,7 @@ pub fn extract_pod(source: &str) -> PodDoc {
         }
 
         // =cut ends POD
-        if line.starts_with("=cut") {
+        if matches!(pod_command(line), Some("cut")) {
             flush_section(&mut doc, &current_section, &body, in_over);
             current_section = None;
             body.clear();
@@ -106,18 +101,18 @@ pub fn extract_pod(source: &str) -> PodDoc {
         }
 
         // =over / =item / =back for lists
-        if line.starts_with("=over") {
+        if matches!(pod_command(line), Some("over")) {
             in_over = true;
             body.push('\n');
             continue;
         }
-        if line.starts_with("=back") {
+        if matches!(pod_command(line), Some("back")) {
             in_over = false;
             body.push('\n');
             continue;
         }
-        if line.starts_with("=item") {
-            let item_text = line.strip_prefix("=item").map(str::trim).unwrap_or("");
+        if matches!(pod_command(line), Some("item")) {
+            let item_text = pod_command_arg(line, "=item");
             if !body.is_empty() {
                 body.push('\n');
             }
@@ -128,10 +123,10 @@ pub fn extract_pod(source: &str) -> PodDoc {
         }
 
         // New head1 section
-        if let Some(heading) = line.strip_prefix("=head1") {
+        if matches!(pod_command(line), Some("head1")) {
+            let heading = pod_command_arg(line, "=head1").trim();
             flush_section(&mut doc, &current_section, &body, false);
             body.clear();
-            let heading = heading.trim();
             if let Some(section) = match heading {
                 "NAME" => Some(Section::Name),
                 "SYNOPSIS" => Some(Section::Synopsis),
@@ -150,21 +145,32 @@ pub fn extract_pod(source: &str) -> PodDoc {
         }
 
         // New head2 section — treated as method documentation
-        if let Some(heading) = line.strip_prefix("=head2") {
+        if matches!(pod_command(line), Some("head2")) {
+            let heading = strip_pod_formatting(pod_command_arg(line, "=head2").trim());
             flush_section(&mut doc, &current_section, &body, false);
             body.clear();
-            let heading = strip_pod_formatting(heading.trim());
             current_section = Some(Section::Method(heading));
             continue;
         }
 
+        // =head3–=head6: flush the current section and treat as sub-section
+        // boundaries (no dedicated Section variant, but must not fall through
+        // to body accumulation).
+        if matches!(
+            pod_command(line),
+            Some("head3") | Some("head4") | Some("head5") | Some("head6")
+        ) {
+            flush_section(&mut doc, &current_section, &body, false);
+            current_section = None;
+            body.clear();
+            continue;
+        }
+
         // Skip other directives
-        if line.starts_with("=pod")
-            || line.starts_with("=encoding")
-            || line.starts_with("=begin")
-            || line.starts_with("=end")
-            || line.starts_with("=for")
-        {
+        if matches!(
+            pod_command(line),
+            Some("pod") | Some("encoding") | Some("begin") | Some("end") | Some("for")
+        ) {
             continue;
         }
 
@@ -183,6 +189,52 @@ pub fn extract_pod(source: &str) -> PodDoc {
     flush_section(&mut doc, &current_section, &body, in_over);
 
     doc
+}
+
+/// Recognized POD commands. Returns the command name (without `=`) when `line`
+/// starts with `=` followed by exactly one of the known command identifiers and
+/// a word boundary (space, tab, or end-of-line). This prevents `=cutlery` from
+/// matching `=cut` and `=headache` from matching `=head` (#4971).
+fn pod_command(line: &str) -> Option<&'static str> {
+    let rest = line.strip_prefix('=')?;
+    // The command is the leading alphanumeric run (e.g. `head1`, `head2`).
+    let cmd_end = rest.find(|c: char| !c.is_ascii_alphanumeric()).unwrap_or(rest.len());
+    let cmd = &rest[..cmd_end];
+    // After the command, the next char must be whitespace or end-of-line.
+    if cmd_end < rest.len() && !rest[cmd_end..].starts_with(char::is_whitespace) {
+        return None;
+    }
+    match cmd {
+        "pod" | "cut" | "head1" | "head2" | "head3" | "head4" | "head5" | "head6" | "over"
+        | "back" | "item" | "begin" | "end" | "for" | "encoding" => Some(
+            // Safety: `cmd` is a substring of a static match arm.
+            match cmd {
+                "pod" => "pod",
+                "cut" => "cut",
+                "head1" => "head1",
+                "head2" => "head2",
+                "head3" => "head3",
+                "head4" => "head4",
+                "head5" => "head5",
+                "head6" => "head6",
+                "over" => "over",
+                "back" => "back",
+                "item" => "item",
+                "begin" => "begin",
+                "end" => "end",
+                "for" => "for",
+                "encoding" => "encoding",
+                _ => unreachable!(),
+            },
+        ),
+        _ => None,
+    }
+}
+
+/// Extract the argument text after a POD command prefix (e.g. the heading text
+/// after `=head1` or the item text after `=item`).
+fn pod_command_arg<'a>(line: &'a str, prefix: &str) -> &'a str {
+    line.strip_prefix(prefix).map(str::trim).unwrap_or("")
 }
 
 #[derive(Debug)]
@@ -651,6 +703,58 @@ mod tests {
         let doc = extract_pod(&source);
 
         assert_eq!(doc.methods.len(), 1, "expected exactly one method section");
+    }
+
+    // ── POD command-prefix matching (#4971) ────────────────────────────────
+
+    #[test]
+    fn pod_command_matches_exact_names() {
+        assert_eq!(pod_command("=head1 NAME"), Some("head1"));
+        assert_eq!(pod_command("=head2 Method"), Some("head2"));
+        assert_eq!(pod_command("=head3 Sub"), Some("head3"));
+        assert_eq!(pod_command("=cut"), Some("cut"));
+        assert_eq!(pod_command("=over 4"), Some("over"));
+        assert_eq!(pod_command("=back"), Some("back"));
+        assert_eq!(pod_command("=item * foo"), Some("item"));
+        assert_eq!(pod_command("=pod"), Some("pod"));
+        assert_eq!(pod_command("=encoding utf-8"), Some("encoding"));
+    }
+
+    #[test]
+    fn pod_command_rejects_prefix_only_matches() {
+        // #4971: `=cutlery` must NOT match `=cut`, `=headache` must NOT match
+        // `=head`, `=overboard` must NOT match `=over`.
+        assert_eq!(pod_command("=cutlery"), None);
+        assert_eq!(pod_command("=headache"), None);
+        assert_eq!(pod_command("=overboard"), None);
+        assert_eq!(pod_command("=backspace"), None);
+        assert_eq!(pod_command("=items"), None);
+        assert_eq!(pod_command("=podcast"), None);
+    }
+
+    #[test]
+    fn extract_pod_does_not_treat_fake_commands_as_pod() {
+        // `=cutlery` inside a POD block must NOT end POD — it's not a real
+        // `=cut` directive. Use ARGUMENTS (which captures full body text, not
+        // just the first paragraph) so we can verify text after the fake
+        // command is retained.
+        let source =
+            "=head1 ARGUMENTS\n\nFirst argument.\n\n=cutlery\n\nSecond argument.\n\n=cut\n";
+        let doc = extract_pod(&source);
+        let args = doc.arguments.as_deref().unwrap_or("");
+        assert!(
+            args.contains("Second argument"),
+            "text after fake =cutlery must still be captured, got arguments: {args:?}"
+        );
+    }
+
+    #[test]
+    fn extract_pod_handles_head3_through_head6() {
+        // #4971: =head3–=head6 must flush the current section rather than
+        // falling through to body accumulation.
+        let source = "=head1 NAME\n\nFoo\n\n=head2 method_a\n\nBody A\n\n=head3 Details\n\n=head2 method_b\n\nBody B\n\n=cut\n";
+        let doc = extract_pod(&source);
+        assert_eq!(doc.methods.len(), 2, "expected 2 methods, got {}", doc.methods.len());
     }
 
     // ── encode_pod_link_target ───────────────────────────────────────────────
