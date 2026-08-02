@@ -150,6 +150,10 @@ jobs:
             local -a TO_ADD=()
             local -a TO_REMOVE=()
 
+            # needs-assignee is retired lifecycle state; clear historical
+            # instances now that no producer maintains it.
+            TO_REMOVE+=("needs-assignee")
+
             # --- Age labels ---
             local NOW UPDATED_TS DAYS_SINCE
             NOW=$(date +%s)

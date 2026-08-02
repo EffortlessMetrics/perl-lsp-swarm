@@ -89,6 +89,10 @@ while true; do
     TO_ADD=()
     TO_REMOVE=()
 
+    # needs-assignee is retired lifecycle state; clear historical instances
+    # now that no producer maintains it.
+    TO_REMOVE+=("needs-assignee")
+
     # Age
     NOW=$(date +%s)
     UPDATED_TS=$(parse_date "$UPDATED")
