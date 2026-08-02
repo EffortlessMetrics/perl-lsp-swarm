@@ -13,8 +13,7 @@ on:
     # that cancels the prior in-progress run (see `cancel-in-progress` below). This
     # caused a cascade observed across ~20 admin-merges: each pipeline label applied by
     # agents killed the running CI, restarting from scratch and eating minutes of compute
-    # per label. The merge-ready-reconciler.yml applies the same exclusion for the same
-    # reason (infinite-loop guard). `ready_for_review` and `converted_to_draft` are kept
+    # per label. `ready_for_review` and `converted_to_draft` are kept
     # because they change the draft-pr-check guard behavior and must trigger CI.
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   merge_group: {}

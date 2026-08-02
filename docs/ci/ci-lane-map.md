@@ -58,7 +58,7 @@ them.
 
 `ci-nightly.yml` (mutation, coverage), `perl-version-matrix.yml`, scheduled passes
 of `vscode-managed-binary-smoke.yml`, `ci-security.yml`, `flake-detection.yml`,
-`triage-issues.yml`, `merge-ready-reconciler.yml`, `tokmd.yml`.
+`triage-issues.yml`, `tokmd.yml`.
 
 Coverage is scheduled/manual only. It is not a PR label-gated lane and is not
 part of the merge queue.

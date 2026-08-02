@@ -1980,7 +1980,6 @@ coverage-proof base='origin/main':
     "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask quality_baseline --locked
     "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask merge_ready --locked
     "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask gates --locked
-    "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask queue_reconciler --locked
     "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask ci_route --locked
     "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask workflow_policy_lint --locked
     "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask allocation_tracker --locked

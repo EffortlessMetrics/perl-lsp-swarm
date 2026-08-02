@@ -67,7 +67,6 @@ is decided in PR 15+ once actuals confirm the overlap.
 | `post-merge-status.yml` | `push` (master) | no | `ubuntu-24.04` | Regenerate status docs | 3 | _add in PR 11_ | keep |
 | `post-publish-smoke.yml` | `release`, `workflow_dispatch` | no | mixed | Post-publish smoke | varies | _add in PR 11_ | keep |
 | `tokmd.yml` | `schedule`, `workflow_dispatch` | no | `ubuntu-24.04` | Token usage / metrics | varies | _add in PR 11_ | keep |
-| `merge-ready-reconciler.yml` | `schedule`, `workflow_dispatch` | no | `ubuntu-24.04` | Reconcile merge-ready labels | 1 | _add in PR 11_ | keep |
 | `triage-issues.yml` | `schedule`, `issues` | no | `ubuntu-24.04` | Issue triage automation | 1 | _add in PR 11_ | keep |
 | `ci-gate-self-tests.yml` | `pull_request` (gate paths), `workflow_dispatch` | no | `ubuntu-24.04` | Validate gate definitions | 3 | _add in PR 11_ | keep |
 

@@ -2545,7 +2545,6 @@
 | `.github/workflows/em-ci-routed-rust.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/flake-detection.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/lsp-318-claim-guard.yml` | config | `non-rust-github-workflows` | release/ci |
-| `.github/workflows/merge-ready-reconciler.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/methodology-gate.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/perl-core-harness.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/perl-version-matrix.yml` | config | `non-rust-github-workflows` | release/ci |
