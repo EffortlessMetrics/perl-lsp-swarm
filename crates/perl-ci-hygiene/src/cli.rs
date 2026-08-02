@@ -86,6 +86,8 @@ pub(crate) enum CliCommand {
     },
     /// Install local development git hooks.
     InstallGithooks,
+    /// Check installed git hooks against the repository-generated versions.
+    CheckGithooks,
     /// Check docs for machine-specific paths.
     CheckDocPaths { docs_dir: Option<String> },
     /// Check active status docs agree with the canonical workspace version and published-crate count.

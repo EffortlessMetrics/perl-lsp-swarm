@@ -2230,7 +2230,6 @@
 | `.ci/flaky-tests.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/gate-policy.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/generated-files.toml` | config | `non-rust-ci-config` | release/ci |
-| `.ci/hooks/pre-commit` | config | `non-rust-ci-config` | release/ci |
 | `.ci/kwalitee/perlcriticrc` | config | `non-rust-ci-config` | release/ci |
 | `.ci/kwalitee/perltidyrc` | config | `non-rust-ci-config` | release/ci |
 | `.ci/metrics/.gitkeep` | config | `non-rust-ci-config` | release/ci |

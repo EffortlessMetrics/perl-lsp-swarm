@@ -37,9 +37,9 @@ use crate::commands::todos::{
     has_unlinked_todo_in_rust_line_with_block_context, has_unlinked_todo_in_rust_line_with_state,
     linked_marker,
 };
-use crate::git_hooks::cmd_install_githooks;
 #[cfg(test)]
 use crate::git_hooks::pre_push_hook_script;
+use crate::git_hooks::{check_githooks, cmd_install_githooks};
 use crate::process::*;
 
 const RED: &str = "\x1b[0;31m";
@@ -77,6 +77,7 @@ fn run() -> Result<i32> {
         CliCommand::RunParserComparison => cmd_run_parser_comparison(&repo_root)?,
         CliCommand::GenerateBadges { check } => cmd_generate_badges(&repo_root, check)?,
         CliCommand::InstallGithooks => cmd_install_githooks(&repo_root)?,
+        CliCommand::CheckGithooks => check_githooks(&repo_root)?,
         CliCommand::VerifyStacker => cmd_verify_stacker(&repo_root)?,
         CliCommand::TestIterativeParser => cmd_test_iterative_parser(&repo_root)?,
         CliCommand::CheckV2BundleSync => cmd_check_v2_bundle_sync(&repo_root)?,
