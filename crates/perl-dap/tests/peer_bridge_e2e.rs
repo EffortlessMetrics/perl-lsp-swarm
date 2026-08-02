@@ -194,7 +194,10 @@ fn response_body_reports_malformed_responses() -> Result<(), Box<dyn std::error:
     let event_error = response_body(&event, "initialize")
         .err()
         .ok_or("non-response message unexpectedly succeeded")?;
-    assert!(event_error.to_string().contains("initialize"));
+    assert!(
+        event_error.to_string().contains("initialize"),
+        "event error did not include the expected command"
+    );
 
     let missing_body = DapMessage::Response {
         seq: 1,
@@ -207,7 +210,10 @@ fn response_body_reports_malformed_responses() -> Result<(), Box<dyn std::error:
     let body_error = response_body(&missing_body, "initialize")
         .err()
         .ok_or("bodyless response unexpectedly succeeded")?;
-    assert!(body_error.to_string().contains("initialize"));
+    assert!(
+        body_error.to_string().contains("initialize"),
+        "missing-body error did not include the expected command"
+    );
 
     let wrong_command = DapMessage::Response {
         seq: 1,
@@ -220,7 +226,10 @@ fn response_body_reports_malformed_responses() -> Result<(), Box<dyn std::error:
     let command_error = response_body(&wrong_command, "initialize")
         .err()
         .ok_or("wrong-command response unexpectedly succeeded")?;
-    assert!(command_error.to_string().contains("initialize"));
+    assert!(
+        command_error.to_string().contains("initialize"),
+        "wrong-command error did not include the expected command"
+    );
 
     let failed_response = DapMessage::Response {
         seq: 1,
@@ -233,7 +242,10 @@ fn response_body_reports_malformed_responses() -> Result<(), Box<dyn std::error:
     let failure_error = response_body(&failed_response, "initialize")
         .err()
         .ok_or("failed response unexpectedly succeeded")?;
-    assert!(failure_error.to_string().contains("initialize"));
+    assert!(
+        failure_error.to_string().contains("initialize"),
+        "failed-response error did not include the expected command"
+    );
 
     Ok(())
 }
