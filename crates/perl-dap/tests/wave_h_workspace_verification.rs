@@ -54,8 +54,7 @@ fn test_executable_binary_builds_successfully() -> Result<(), Box<dyn std::error
     // with the new module structure
 
     let output =
-        Command::new("cargo").args(["build", "-p", "perl-dap", "--bin", "perl-dap"]).output();
-    let output = output?;
+        Command::new("cargo").args(["build", "-p", "perl-dap", "--bin", "perl-dap"]).output()?;
     if !output.status.success() {
         return Err(format!(
             "perl-dap binary build failed: {}",
