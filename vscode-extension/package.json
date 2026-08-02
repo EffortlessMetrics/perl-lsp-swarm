@@ -662,8 +662,8 @@
               "Choose the profile automatically based on the bundled binary.",
               "Lock to the general-availability profile with conservative defaults.",
               "Use the general-availability profile.",
-              "Use the production profile (alias for ga).",
-              "Use the production profile (alias for ga).",
+              "Use the production profile.",
+              "Alias for prod (production profile).",
               "Enable every supported feature, including experimental ones."
             ],
             "default": "auto",
