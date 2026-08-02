@@ -227,22 +227,21 @@ test_resolved_with_disposition_does_not_block() {
     fi
 }
 
-# ── Test 9: 'needs-deep-review' label BLOCKS regardless of thread state ────
-# Makes an in-flight independent review mechanically visible — the #3647
-# hole was that the review existed only in an orchestrator's task list.
+# ── Test 9: native review request BLOCKS regardless of thread state ────────
+# A requested reviewer is the GitHub-native representation of review in flight.
 
 test_pending_independent_review_blocks() {
     run_case "pending-independent-review-blocks"
 
-    local converged independent_review_pending
+    local converged pending_reviewers
     converged="$(json_field "$RUN_STDOUT" '.converged')"
-    independent_review_pending="$(json_field "$RUN_STDOUT" '.independent_review_pending')"
+    pending_reviewers="$(json_field "$RUN_STDOUT" '.pending_reviewers | length')"
 
     if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && \
-          "$independent_review_pending" == "true" ]]; then
-        pass "'needs-deep-review' label blocks convergence (exit 1, converged:false, independent_review_pending:true)"
+          "$pending_reviewers" -gt 0 ]]; then
+        pass "native review request blocks convergence (exit 1, converged:false, pending_reviewers>0)"
     else
-        fail "needs-deep-review label should block — got exit=$RUN_EXIT converged=$converged independent_review_pending=$independent_review_pending"
+        fail "native review request should block — got exit=$RUN_EXIT converged=$converged pending_reviewers=$pending_reviewers"
     fi
 }
 
