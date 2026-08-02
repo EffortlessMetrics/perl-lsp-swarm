@@ -110,9 +110,9 @@ pub(super) fn generate_tests_status(
     missing_docs_baseline: Option<usize>,
     original: &str,
 ) -> Result<String> {
-    if !matches!(tests.tier_a_lib_tests, Some(count) if count > 0) {
-        bail!("test discovery returned no Tier A lib tests; refusing to overwrite tests.md");
-    }
+    // Allow zero or None — render as UNVERIFIED instead of bailing (#5275).
+    // The previous behavior panicked when cargo test --list returned empty
+    // output (e.g. in CI environments without all features compiled).
     let tier_a_tests_str =
         tests.tier_a_lib_tests.map_or_else(|| "UNVERIFIED".to_string(), |n| n.to_string());
 
@@ -167,7 +167,8 @@ mod fail_closed_tests {
 <!-- BEGIN: TESTS_METRICS_BULLETS -->\nold\n<!-- END: TESTS_METRICS_BULLETS -->\n";
 
     #[test]
-    fn generate_tests_status_rejects_zero_discovery() -> Result<()> {
+    fn generate_tests_status_handles_zero_discovery_gracefully() -> Result<()> {
+        // #5275: zero discovery should render as "0" not bail/panic
         let counts = TestCounts {
             tier_a_lib_tests: Some(0),
             ignored_total: Some(0),
@@ -175,12 +176,18 @@ mod fail_closed_tests {
             manual_count: Some(0),
         };
         let result = generate_tests_status(&counts, Some(0), Some(0), STATUS_TEMPLATE);
-        color_eyre::eyre::ensure!(result.is_err(), "zero discovery must not overwrite tests.md");
+        color_eyre::eyre::ensure!(
+            result.is_ok(),
+            "zero discovery should produce UNVERIFIED, not error"
+        );
+        let output = result.unwrap();
+        color_eyre::eyre::ensure!(output.contains("0 lib tests"), "should show 0 tests: {output}");
         Ok(())
     }
 
     #[test]
-    fn generate_tests_status_rejects_missing_discovery() -> Result<()> {
+    fn generate_tests_status_handles_missing_discovery_gracefully() -> Result<()> {
+        // #5275: None discovery should render as "UNVERIFIED" not bail/panic
         let counts = TestCounts {
             tier_a_lib_tests: None,
             ignored_total: Some(0),
@@ -188,7 +195,15 @@ mod fail_closed_tests {
             manual_count: Some(0),
         };
         let result = generate_tests_status(&counts, Some(0), Some(0), STATUS_TEMPLATE);
-        color_eyre::eyre::ensure!(result.is_err(), "missing discovery must not overwrite tests.md");
+        color_eyre::eyre::ensure!(
+            result.is_ok(),
+            "None discovery should produce UNVERIFIED, not error"
+        );
+        let output = result.unwrap();
+        color_eyre::eyre::ensure!(
+            output.contains("UNVERIFIED"),
+            "should show UNVERIFIED for tier_a: {output}"
+        );
         Ok(())
     }
 }

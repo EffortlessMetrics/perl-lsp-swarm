@@ -504,16 +504,43 @@ fn make_diagnostic(
     declared_version: PerlVersion,
     min_version: (u32, u32),
 ) -> Diagnostic {
+    // Map display name to the actual pragma name perl accepts.
+    // `display` is a human-readable construct name (e.g. "postfix deref",
+    // "subroutine signatures") but `use feature` requires the exact pragma
+    // keyword (e.g. "postderef_qq", "signatures"). Not all constructs map
+    // to a feature pragma — for those, omit the `use feature` suggestion.
+    let feature_name = match display {
+        "say" => Some("say"),
+        "state" => Some("state"),
+        "isa" => Some("isa"),
+        "switch" => Some("switch"),
+        "smartmatch" => Some("smartmatch"),
+        "signatures" => Some("signatures"),
+        "postderef_qq" | "postfix_deref" => Some("postderef_qq"),
+        "try" => Some("try"),
+        "defer" => Some("defer"),
+        "class" => Some("class"),
+        // Builtins and other constructs don't have a feature pragma
+        _ => None,
+    };
+    let hint = if let Some(feat) = feature_name {
+        format!(
+            "Update 'use v{}.{}' to 'use v{}.{}' or add 'use feature \"{}\";'",
+            declared_version.major, declared_version.minor, min_version.0, min_version.1, feat,
+        )
+    } else {
+        format!(
+            "Update 'use v{}.{}' to 'use v{}.{}'",
+            declared_version.major, declared_version.minor, min_version.0, min_version.1,
+        )
+    };
     make_diagnostic_with_details(
         node,
         display,
         declared_version,
         min_version,
         DiagnosticSeverity::Warning,
-        Some(format!(
-            "Update 'use v{}.{}' to 'use v{}.{}' or add 'use feature \"{}\";'",
-            declared_version.major, declared_version.minor, min_version.0, min_version.1, display,
-        )),
+        Some(hint),
     )
 }
 
