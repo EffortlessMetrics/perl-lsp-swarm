@@ -35,6 +35,7 @@ pub mod ci_pr_summary;
 pub mod ci_route;
 pub mod ci_scope;
 pub mod clean;
+pub mod command_evidence;
 pub mod commit_checks;
 pub mod compare;
 #[cfg(feature = "parser-tasks")]
