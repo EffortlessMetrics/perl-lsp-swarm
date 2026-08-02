@@ -62,10 +62,17 @@ struct CheckRun {
 }
 
 pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
-    let candidate = github::candidate_facts(pr)?;
-    let repository = candidate.repository.clone();
+    let initial_candidate = github::candidate_facts(pr)?;
+    let repository = initial_candidate.repository.clone();
     let review = github_review::review_snapshot(pr)?;
+    let mut candidate = github::candidate_facts(pr)?;
     let mut errors = review.errors.clone();
+    if initial_candidate.head_sha != candidate.head_sha {
+        errors.push("candidate head moved while composing the preflight snapshot".to_string());
+    }
+    if review.head_sha != candidate.head_sha {
+        errors.push("candidate and review snapshots describe different heads".to_string());
+    }
     let required_checks = match collect_required_checks(&candidate) {
         Ok(checks) => checks,
         Err(error) => {
@@ -73,7 +80,6 @@ pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
             Vec::new()
         }
     };
-    let mut candidate = candidate;
     candidate.required_contexts_result = summarize_required_checks(&required_checks, &errors);
     let protected_merge = ProtectedMergeFacts {
         base_ref: candidate.base_ref.clone(),
@@ -112,27 +118,46 @@ pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
 }
 
 fn collect_required_checks(candidate: &CandidateFacts) -> Result<Vec<RequiredCheckFact>> {
-    let endpoint = format!(
-        "repos/{}/commits/{}/check-runs?per_page=100",
-        candidate.repository, candidate.head_sha
-    );
-    let raw = command_text("gh", &["api", &endpoint])?;
-    let payload: CheckRunsPayload = serde_json::from_str(&raw)
-        .context("failed to parse check runs for the captured candidate head")?;
-    let status_endpoint = format!(
-        "repos/{}/commits/{}/status?per_page=100",
-        candidate.repository, candidate.head_sha
-    );
-    let status_raw = command_text("gh", &["api", &status_endpoint])?;
-    let status_payload: CommitStatusPayload = serde_json::from_str(&status_raw)
-        .context("failed to parse commit statuses for the captured candidate head")?;
+    let mut all_check_runs = Vec::new();
+    let mut page = 1;
+    loop {
+        let endpoint = format!(
+            "repos/{}/commits/{}/check-runs?per_page=100&page={page}",
+            candidate.repository, candidate.head_sha
+        );
+        let raw = command_text("gh", &["api", &endpoint])?;
+        let payload: CheckRunsPayload = serde_json::from_str(&raw)
+            .context("failed to parse check runs for the captured candidate head")?;
+        let count = payload.check_runs.len();
+        all_check_runs.extend(payload.check_runs);
+        if count < 100 {
+            break;
+        }
+        page += 1;
+    }
+    let mut all_statuses = Vec::new();
+    let mut page = 1;
+    loop {
+        let endpoint = format!(
+            "repos/{}/commits/{}/status?per_page=100&page={page}",
+            candidate.repository, candidate.head_sha
+        );
+        let raw = command_text("gh", &["api", &endpoint])?;
+        let payload: CommitStatusPayload = serde_json::from_str(&raw)
+            .context("failed to parse commit statuses for the captured candidate head")?;
+        let count = payload.statuses.len();
+        all_statuses.extend(payload.statuses);
+        if count < 100 {
+            break;
+        }
+        page += 1;
+    }
     Ok(candidate
         .required_contexts
         .iter()
         .map(|required| {
-            let matching = payload.check_runs.iter().find(|run| run.name == required.name);
-            let status =
-                status_payload.statuses.iter().find(|status| status.context == required.name);
+            let matching = all_check_runs.iter().find(|run| run.name == required.name);
+            let status = all_statuses.iter().find(|status| status.context == required.name);
             match matching {
                 Some(run) => RequiredCheckFact {
                     name: required.name.clone(),
@@ -211,6 +236,9 @@ fn derive_preflight_result(
     }
     if candidate.identity_result != "current" {
         findings.push("candidate identity is not current".to_string());
+    }
+    if candidate.head_sha != review.head_sha {
+        findings.push("candidate and review snapshots describe different heads".to_string());
     }
     if candidate.state != "OPEN" {
         findings.push(format!("candidate state is {}", candidate.state));
