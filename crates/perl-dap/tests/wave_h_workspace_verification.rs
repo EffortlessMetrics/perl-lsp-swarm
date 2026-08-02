@@ -49,19 +49,21 @@ fn test_rs_core_config_can_build_after_absorption() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-fn test_executable_binary_builds_successfully() {
+fn test_executable_binary_builds_successfully() -> Result<(), Box<dyn std::error::Error>> {
     // Verify that the perl-dap binary itself builds successfully
     // with the new module structure
 
     let output =
-        Command::new("cargo").args(["build", "-p", "perl-dap", "--bin", "perl-dap"]).output();
-    match output {
-        Ok(out) if !out.status.success() => {
-            panic!("perl-dap binary build failed: {}", String::from_utf8_lossy(&out.stderr));
-        }
-        Err(e) => panic!("cargo build failed: {e}"),
-        _ => {}
+        Command::new("cargo").args(["build", "-p", "perl-dap", "--bin", "perl-dap"]).output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "perl-dap binary build failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
     }
+
+    Ok(())
 }
 
 #[test]
