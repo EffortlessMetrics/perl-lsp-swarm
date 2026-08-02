@@ -274,3 +274,65 @@ fn until_with_always_true_condition_is_flagged() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn else_block_after_return_not_flagged_as_dead() -> TestResult {
+    // #4656: `} else {` after a `return` must not be flagged as unreachable.
+    // Before the fix, is_structural_line rejected `} else {` (it contains
+    // letters), so the dead-code analyzer flagged the else branch.
+    let index = WorkspaceIndex::new();
+    index_file_str(
+        &index,
+        "file:///script.pl",
+        "sub f {\n    if ($x) {\n        return 1;\n    } else {\n        return 2;\n    }\n}\n",
+    )?;
+
+    let detector = DeadCodeDetector::new(index);
+    let dead = detector.analyze_file(&PathBuf::from("/script.pl"))?;
+
+    assert!(
+        !dead.iter().any(|d| d.code_type == DeadCodeType::UnreachableCode),
+        "`}} else {{` after return must not be flagged as unreachable, got: {dead:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn elsif_block_after_return_not_flagged_as_dead() -> TestResult {
+    // #4656: `} elsif` chain after a `return` must not be flagged.
+    let index = WorkspaceIndex::new();
+    index_file_str(
+        &index,
+        "file:///script.pl",
+        "sub f {\n    if ($x) {\n        return 1;\n    } elsif ($y) {\n        return 2;\n    }\n}\n",
+    )?;
+
+    let detector = DeadCodeDetector::new(index);
+    let dead = detector.analyze_file(&PathBuf::from("/script.pl"))?;
+
+    assert!(
+        !dead.iter().any(|d| d.code_type == DeadCodeType::UnreachableCode),
+        "`}} elsif` after return must not be flagged as unreachable, got: {dead:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn goto_croak_confess_detected_as_terminators() -> TestResult {
+    // #4656: goto, croak, and confess are unconditional terminators.
+    let index = WorkspaceIndex::new();
+    index_file_str(
+        &index,
+        "file:///script.pl",
+        "sub f {\n    croak 'error';\n    print 'unreachable';\n}\n",
+    )?;
+
+    let detector = DeadCodeDetector::new(index);
+    let dead = detector.analyze_file(&PathBuf::from("/script.pl"))?;
+
+    assert!(
+        dead.iter().any(|d| d.code_type == DeadCodeType::UnreachableCode),
+        "code after croak must be flagged as unreachable, got: {dead:?}"
+    );
+    Ok(())
+}
