@@ -7,6 +7,7 @@
 use super::super::*;
 use crate::cancellation::RequestCleanupGuard;
 use crate::protocol::{REQUEST_CANCELLED, req_uri};
+use crate::runtime::window::RequestProgressGuard;
 use crate::state::semantic_tokens_deadline;
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 use perl_semantic_facts::ProviderFallbackState;
@@ -57,6 +58,13 @@ impl LspServer {
                 crate::runtime::timing::ScopedSpan::start("provider.semantic_tokens.analyze", uri);
             let parsed = doc.current_parsed();
             if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
+                // Coarse workDoneProgress for the tokenization work. Initialized
+                // here (after the document-existence and AST-availability checks)
+                // so that immediately-failing or empty requests don't trigger an
+                // unnecessary workDoneProgress/create round-trip (#4626, gemini
+                // review).
+                let _progress =
+                    RequestProgressGuard::new(self, "semantic-tokens", "Computing semantic tokens");
                 let data =
                     crate::semantic_tokens::collect_semantic_tokens(ast, &doc.text, &|off| {
                         self.offset_to_pos16(doc, off)

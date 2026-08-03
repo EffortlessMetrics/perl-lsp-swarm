@@ -9,6 +9,7 @@ use crate::features::diagnostics::{
     Diagnostic as InternalDiagnostic, DiagnosticTag as InternalDiagnosticTag,
     PullDiagnosticsContext,
 };
+use crate::runtime::window::RequestProgressGuard;
 use perl_diagnostics::codes::DiagnosticCode;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1123,6 +1124,13 @@ impl LspServer {
         };
 
         if let Some((doc, generation, gen_at_snapshot)) = doc_snapshot {
+            // Coarse workDoneProgress for the full pull-diagnostics path, which
+            // may spawn the perlcritic subprocess over large trees. Initialized
+            // here (after the document-existence check) so that immediately-
+            // failing or empty requests don't trigger an unnecessary
+            // workDoneProgress/create round-trip (#4626, gemini review).
+            let _progress = RequestProgressGuard::new(self, "diagnostics", "Running diagnostics");
+
             // Build context from server state
             let context = self.pull_diagnostics_orchestrator.build_context(self, uri_str);
 
@@ -1482,6 +1490,16 @@ impl LspServer {
                 })
                 .collect()
         };
+
+        // Coarse workDoneProgress for the workspace diagnostic path, which
+        // iterates over every open document and invokes perlcritic per
+        // document — the path most consistent with #4626's "may spawn the
+        // perlcritic subprocess over large trees" rationale (#4626, factory-droid review).
+        let _workspace_progress = RequestProgressGuard::new(
+            self,
+            "workspace-diagnostics",
+            "Scanning workspace diagnostics",
+        );
 
         for (i, (uri_str, doc, generation, gen_at_snapshot)) in docs_snapshot.iter().enumerate() {
             // Cooperative yield every 8 documents
