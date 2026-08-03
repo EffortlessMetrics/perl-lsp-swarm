@@ -119,6 +119,21 @@ pub fn run(config: CommandEvidenceConfig) -> Result<()> {
 /// Run a bounded proof set serially. Every entry runs once; a failure is
 /// retained in its own receipt and does not hide later entries.
 pub fn run_proof_set(path: &Path, json_only: bool) -> Result<()> {
+    let receipt = run_proof_set_receipt(path)?;
+    if !json_only {
+        for item in &receipt.commands {
+            println!("{}: {:?}", item.id, item.receipt.result);
+        }
+    }
+    println!("{}", serde_json::to_string_pretty(&receipt)?);
+    if receipt.result == ResultClass::Success {
+        Ok(())
+    } else {
+        bail!("proof-set result: {:?}", receipt.result)
+    }
+}
+
+fn run_proof_set_receipt(path: &Path) -> Result<ProofSetReceipt> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read proof-set specification {}", path.display()))?;
     let spec: ProofSetSpec = serde_json::from_str(&raw)
@@ -134,24 +149,32 @@ pub fn run_proof_set(path: &Path, json_only: bool) -> Result<()> {
     }
 
     let mut ids = HashSet::new();
-    let mut items = Vec::with_capacity(spec.commands.len());
-    for command in spec.commands {
+    for command in &spec.commands {
         if command.id.trim().is_empty() {
             bail!("proof-set command id must not be empty");
         }
         if !ids.insert(command.id.clone()) {
             bail!("proof-set command id {:?} is duplicated", command.id);
         }
+        if command.program.trim().is_empty() {
+            bail!("proof-set command {:?} must define a non-empty program", command.id);
+        }
+    }
+
+    let mut items = Vec::with_capacity(spec.commands.len());
+    for command in spec.commands {
+        let id = command.id.clone();
         let receipt = execute(CommandEvidenceConfig {
-            program: command.program,
-            args: command.args,
-            cwd: command.cwd,
-            candidate: command.candidate,
+            program: command.program.clone(),
+            args: command.args.clone(),
+            cwd: command.cwd.clone(),
+            candidate: command.candidate.clone(),
             timeout: command.timeout_secs.map(Duration::from_secs),
-            out_dir: command.out_dir,
+            out_dir: command.out_dir.clone(),
             json_only: true,
-        })?;
-        items.push(ProofSetItem { id: command.id, receipt });
+        })
+        .unwrap_or_else(|error| instrument_failure_receipt(&command, error.to_string()));
+        items.push(ProofSetItem { id, receipt });
     }
 
     let result = items
@@ -159,18 +182,35 @@ pub fn run_proof_set(path: &Path, json_only: bool) -> Result<()> {
         .map(|item| item.receipt.result)
         .find(|result| *result != ResultClass::Success)
         .unwrap_or(ResultClass::Success);
-    let receipt =
-        ProofSetReceipt { schema_version: "command-proof-set.v1", commands: items, result };
-    if !json_only {
-        for item in &receipt.commands {
-            println!("{}: {:?}", item.id, item.receipt.result);
-        }
-    }
-    println!("{}", serde_json::to_string_pretty(&receipt)?);
-    if receipt.result == ResultClass::Success {
-        Ok(())
-    } else {
-        bail!("proof-set result: {:?}", receipt.result)
+    Ok(ProofSetReceipt { schema_version: "command-proof-set.v1", commands: items, result })
+}
+
+fn instrument_failure_receipt(command: &ProofSetCommand, error: String) -> CommandEvidenceReceipt {
+    let started = Utc::now();
+    CommandEvidenceReceipt {
+        schema_version: "command-evidence.v1",
+        argv: redact_argv(
+            &std::iter::once(command.program.clone())
+                .chain(command.args.clone())
+                .collect::<Vec<_>>(),
+        ),
+        cwd: command
+            .cwd
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+            .display()
+            .to_string(),
+        candidate_identity: command.candidate.clone(),
+        started_at: started.to_rfc3339(),
+        ended_at: started.to_rfc3339(),
+        duration_ms: 0,
+        exit_code: None,
+        termination: error,
+        stdout_reference: String::new(),
+        stderr_reference: String::new(),
+        stdout_excerpt: String::new(),
+        stderr_excerpt: String::new(),
+        result: ResultClass::InstrumentFailure,
     }
 }
 
@@ -353,7 +393,12 @@ fn spawn_and_capture(
             message: format!("failed waiting for child process: {error}"),
         })? {
             let (stdout, stderr, timed_out, termination_note) = join_streams_with_deadline(
-                stdout, stderr, &mut child, timeout, started,
+                stdout,
+                stderr,
+                &mut child,
+                Some(Duration::from_secs(2)),
+                Instant::now(),
+                true,
             )
             .map_err(|error| SpawnFailure {
                 result: ResultClass::OutputIncomplete,
@@ -373,6 +418,7 @@ fn spawn_and_capture(
                 &mut child,
                 Some(Duration::from_secs(2)),
                 Instant::now(),
+                true,
             )
             .map_err(|error| SpawnFailure {
                 result: ResultClass::OutputIncomplete,
@@ -437,9 +483,11 @@ fn join_streams_with_deadline(
     child: &mut Child,
     timeout: Option<Duration>,
     started: Instant,
+    already_reaped: bool,
 ) -> Result<(OutputCapture, OutputCapture, bool, Option<String>)> {
     let deadline = timeout.map(|bound| started + bound);
     let mut timed_out = false;
+    let mut process_reaped = already_reaped;
     let mut termination_note = None;
     let stdout = join_stream_with_deadline(
         stdout,
@@ -447,14 +495,17 @@ fn join_streams_with_deadline(
         child,
         deadline,
         &mut timed_out,
+        &mut process_reaped,
         &mut termination_note,
     )?;
+    let stderr_deadline = timeout.map(|bound| Instant::now() + bound);
     let stderr = join_stream_with_deadline(
         stderr,
         "stderr",
         child,
-        deadline,
+        stderr_deadline,
         &mut timed_out,
+        &mut process_reaped,
         &mut termination_note,
     )?;
     Ok((stdout, stderr, timed_out, termination_note))
@@ -466,6 +517,7 @@ fn join_stream_with_deadline(
     child: &mut Child,
     deadline: Option<Instant>,
     timed_out: &mut bool,
+    process_reaped: &mut bool,
     termination_note: &mut Option<String>,
 ) -> Result<OutputCapture> {
     let Some(stream) = stream else {
@@ -477,9 +529,15 @@ fn join_stream_with_deadline(
             return join_stream(Some(stream), name);
         }
         if !*timed_out && drain_deadline.is_some_and(|bound| Instant::now() >= bound) {
+            if *process_reaped {
+                return Err(color_eyre::eyre::eyre!(
+                    "timed out draining {name} after process reaping"
+                ));
+            }
             let note = terminate_process_tree(child);
             let _ = child.wait();
             *timed_out = true;
+            *process_reaped = true;
             *termination_note = Some(format!("timeout; {note}"));
             drain_deadline = Some(Instant::now() + Duration::from_secs(2));
         } else if *timed_out && drain_deadline.is_some_and(|bound| Instant::now() >= bound) {
@@ -628,7 +686,17 @@ fn redact_argv(argv: &[String]) -> Vec<String> {
 
 fn is_secret_option(argument: &str) -> bool {
     let option = argument.trim_start_matches('-').to_ascii_lowercase();
-    matches!(option.as_str(), "token" | "password" | "secret" | "authorization")
+    const SECRET_KEYS: [&str; 8] = [
+        "token",
+        "password",
+        "passwd",
+        "secret",
+        "authorization",
+        "api-key",
+        "apikey",
+        "credential",
+    ];
+    option == "p" || SECRET_KEYS.iter().any(|key| option == *key || option.ends_with(key))
 }
 
 fn render_argv(argv: &[String]) -> String {
@@ -669,9 +737,15 @@ mod tests {
     fn excerpts_are_bounded_and_streams_are_redacted() {
         let text = format!("token=abc password:xyz {}", "x".repeat(3_000));
         let excerpt = redact_excerpt(text.as_bytes());
-        assert!(excerpt.contains("token=<redacted>"));
-        assert!(excerpt.contains("password:<redacted>"));
-        assert!(excerpt.chars().count() <= MAX_EXCERPT_CHARS);
+        assert!(excerpt.contains("token=<redacted>"), "token value must be redacted: {excerpt}");
+        assert!(
+            excerpt.contains("password:<redacted>"),
+            "password value must be redacted: {excerpt}"
+        );
+        assert!(
+            excerpt.chars().count() <= MAX_EXCERPT_CHARS,
+            "excerpt must stay within the character bound"
+        );
     }
 
     #[test]
@@ -686,10 +760,35 @@ mod tests {
             "tool".to_string(),
             "--token".to_string(),
             "abc".to_string(),
+            "--auth-token".to_string(),
+            "def".to_string(),
+            "--api-key".to_string(),
+            "ghi".to_string(),
+            "--access-token".to_string(),
+            "jkl".to_string(),
+            "-p".to_string(),
+            "mno".to_string(),
             "--mode".to_string(),
             "safe".to_string(),
         ]);
-        assert_eq!(redacted, ["tool", "--token", "<redacted>", "--mode", "safe"]);
+        assert_eq!(
+            redacted,
+            [
+                "tool",
+                "--token",
+                "<redacted>",
+                "--auth-token",
+                "<redacted>",
+                "--api-key",
+                "<redacted>",
+                "--access-token",
+                "<redacted>",
+                "-p",
+                "<redacted>",
+                "--mode",
+                "safe"
+            ]
+        );
     }
 
     #[test]
@@ -713,7 +812,7 @@ mod tests {
         let input = vec![b'x'; MAX_CAPTURE_BYTES + 1];
         let capture = join_stream(Some(read_stream(Cursor::new(input))), "stdout")?;
         assert_eq!(capture.bytes.len(), MAX_CAPTURE_BYTES);
-        assert!(capture.truncated);
+        assert!(capture.truncated, "capture must be marked truncated at the byte cap");
         Ok(())
     }
 
@@ -747,7 +846,20 @@ mod tests {
             ]
         });
         fs::write(&spec, serde_json::to_vec(&document)?)?;
-        assert!(run_proof_set(&spec, true).is_err());
+        let receipt = run_proof_set_receipt(&spec)?;
+        assert_eq!(receipt.result, ResultClass::Failure, "a failing entry must fail the proof set");
+        assert_eq!(receipt.commands[0].id, "first", "proof entries must retain input order");
+        assert_eq!(
+            receipt.commands[0].receipt.result,
+            ResultClass::Success,
+            "first proof entry must retain its successful result"
+        );
+        assert_eq!(receipt.commands[1].id, "second", "proof entries must retain input order");
+        assert_eq!(
+            receipt.commands[1].receipt.result,
+            ResultClass::Failure,
+            "second proof entry must retain its failing result"
+        );
         let logs = fs::read_dir(&output)?.count();
         assert_eq!(logs, 4, "each command must retain stdout and stderr evidence");
         Ok(())
