@@ -32,24 +32,42 @@ impl TcpAttachSession {
     }
 
     /// Connect to the debugger via TCP
-    pub fn connect(&mut self, config: &TcpAttachConfig) -> Result<()> {
+    ///
+    /// Uses the SSRF-approved addresses from `config.resolved_addrs` (populated
+    /// by `validate()`) to prevent DNS-rebinding TOCTOU: the IP that was
+    /// validated is the same IP that receives the connection (#5257).
+    pub fn connect(&mut self, config: &mut TcpAttachConfig) -> Result<()> {
         config.validate()?;
 
-        let address = format!("{}:{}", config.host, config.port);
-        tracing::info!(address, "Connecting to Perl debugger");
+        if config.resolved_addrs.is_empty() {
+            anyhow::bail!("No resolved addresses available after validation");
+        }
 
-        let stream = TcpStream::connect_timeout(&address.parse()?, config.timeout_duration())
-            .context(format!("Failed to connect to {}", address))?;
-
-        let timeout = Some(config.timeout_duration());
-        stream.set_read_timeout(timeout)?;
-        stream.set_write_timeout(timeout)?;
-
-        self.stream = Some(stream);
-        self.set_connected(true);
-
-        tracing::info!(address, "Successfully connected to Perl debugger");
-        Ok(())
+        // DNS pinning: connect directly to the validated SocketAddrs instead of
+        // re-resolving the host string. This closes the DNS-rebinding TOCTOU
+        // window that would exist if we re-resolved at connect time.
+        let timeout = config.timeout_duration();
+        let mut last_err = None;
+        for addr in &config.resolved_addrs {
+            match TcpStream::connect_timeout(addr, timeout) {
+                Ok(stream) => {
+                    stream.set_read_timeout(Some(timeout))?;
+                    stream.set_write_timeout(Some(timeout))?;
+                    self.stream = Some(stream);
+                    self.set_connected(true);
+                    tracing::info!(address = %addr, "Successfully connected to Perl debugger");
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!(address = %addr, error = %e, "Failed to connect to resolved address");
+                    last_err = Some(e);
+                }
+            }
+        }
+        let err = last_err.unwrap_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "no addresses to connect")
+        });
+        anyhow::bail!("Failed to connect to any resolved address for '{}': {}", config.host, err);
     }
 
     /// Check if connected

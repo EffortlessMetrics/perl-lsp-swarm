@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::net::SocketAddr;
 use std::time::Duration;
 
 /// Maximum connection timeout in milliseconds (5 minutes)
@@ -16,12 +17,19 @@ pub struct TcpAttachConfig {
     pub port: u16,
     /// Connection timeout in milliseconds
     pub timeout_ms: Option<u32>,
+    /// SSRF-approved resolved addresses from the last `validate()` call.
+    ///
+    /// When non-empty, [`TcpAttachSession::connect`](super::session::TcpAttachSession::connect)
+    /// connects directly to these addresses instead of re-resolving the host
+    /// string. This prevents DNS-rebinding TOCTOU: the IP that was validated
+    /// is the same IP that receives the connection (#5257).
+    pub resolved_addrs: Vec<SocketAddr>,
 }
 
 impl TcpAttachConfig {
     /// Create a new TCP attach configuration
     pub fn new(host: String, port: u16) -> Self {
-        Self { host, port, timeout_ms: None }
+        Self { host, port, timeout_ms: None, resolved_addrs: Vec::new() }
     }
 
     /// Set the connection timeout
@@ -36,7 +44,10 @@ impl TcpAttachConfig {
     /// characters, valid port range), this resolves the host and rejects any
     /// resolved address in the private/link-local/metadata/CGNAT ranges (except
     /// loopback) to prevent SSRF via a hostile `.vscode/launch.json` (#5257).
-    pub fn validate(&self) -> Result<()> {
+    ///
+    /// The validated resolved addresses are stored in `resolved_addrs` so that
+    /// the connect path can pin to them, preventing DNS-rebinding TOCTOU.
+    pub fn validate(&mut self) -> Result<()> {
         let host = self.host.trim_matches(' ');
         if host.is_empty() {
             anyhow::bail!("Host cannot be empty");
@@ -53,10 +64,16 @@ impl TcpAttachConfig {
         // SSRF defense: resolve the host and reject disallowed addresses
         // (private, link-local, cloud metadata 169.254.169.254, CGNAT, …).
         // Loopback is allowed because the debugger typically runs locally.
-        // Errors here are mapped to anyhow but do not block legitimate
-        // localhost/loopback attach.
-        if let Err(e) = perl_lsp_rs_core::providers::ai::validate_tcp_attach_host(host, self.port) {
-            anyhow::bail!("TCP attach host '{host}' rejected: {e}");
+        // The resolved IPs are captured for DNS pinning at connect time.
+        match perl_lsp_rs_core::providers::ai::validate_tcp_attach_host(host, self.port) {
+            Ok(ips) => {
+                // Pin: store the validated IPs as SocketAddrs for connect.
+                self.resolved_addrs =
+                    ips.into_iter().map(|ip| SocketAddr::new(ip, self.port)).collect();
+            }
+            Err(e) => {
+                anyhow::bail!("TCP attach host '{host}' rejected: {e}");
+            }
         }
         if let Some(timeout) = self.timeout_ms {
             if timeout == 0 {
@@ -81,31 +98,31 @@ mod tests {
 
     #[test]
     fn validates_required_host_port_and_timeout_bounds() {
-        let config = TcpAttachConfig::new("localhost".to_string(), 13603);
+        let mut config = TcpAttachConfig::new("localhost".to_string(), 13603);
         assert!(config.validate().is_ok());
 
-        let config = TcpAttachConfig::new("".to_string(), 13603);
+        let mut config = TcpAttachConfig::new("".to_string(), 13603);
         assert!(config.validate().is_err());
 
-        let config = TcpAttachConfig::new(" localhost ".to_string(), 13603);
+        let mut config = TcpAttachConfig::new(" localhost ".to_string(), 13603);
         assert!(config.validate().is_ok());
 
-        let config = TcpAttachConfig::new("local host".to_string(), 13603);
+        let mut config = TcpAttachConfig::new("local host".to_string(), 13603);
         assert!(config.validate().is_err());
 
-        let config = TcpAttachConfig::new("localhost\n".to_string(), 13603);
+        let mut config = TcpAttachConfig::new("localhost\n".to_string(), 13603);
         assert!(config.validate().is_err());
 
-        let config = TcpAttachConfig::new("localhost".to_string(), 0);
+        let mut config = TcpAttachConfig::new("localhost".to_string(), 0);
         assert!(config.validate().is_err());
 
-        let config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(5000);
+        let mut config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(5000);
         assert!(config.validate().is_ok());
 
-        let config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(0);
+        let mut config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(0);
         assert!(config.validate().is_err());
 
-        let config =
+        let mut config =
             TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(MAX_TIMEOUT_MS + 1);
         assert!(config.validate().is_err());
     }
