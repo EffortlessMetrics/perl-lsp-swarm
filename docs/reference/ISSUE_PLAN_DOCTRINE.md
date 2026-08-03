@@ -348,7 +348,7 @@ lands).
 
 | Command | Purpose |
 |---------|---------|
-| `cargo xtask issue-plan audit` | Report-only. Flags explicit `## Builder-Ready Plan` or `## Builder Spec` work packets whose body is missing a required section, work packets on closed issues, and `#0000` placeholder references. Optional `--label` only scopes the GitHub query; labels do not activate audit rules. Reads a `--fixture` JSON array or live `gh issue list`. Always exits 0; writes `target/receipts/issue-plan-audit.json`. |
+| `cargo xtask issue-plan audit` | Report-only. Flags explicit `## Builder-Ready Plan` or `## Builder Spec` work packets whose body is missing a required section and `#0000` placeholder references. Closed work packets remain retained as historical context without a finding. Optional `--label` only scopes the GitHub query; labels do not activate audit rules. Reads a `--fixture` JSON array or live `gh issue list`. Always exits 0; writes `target/receipts/issue-plan-audit.json`. |
 
 ### Proposed (not yet implemented)
 
