@@ -1245,7 +1245,15 @@ impl LspServer {
 
                 let mut inline_values = Vec::new();
 
-                let lines: Vec<&str> = doc.text.lines().collect();
+                let source_text = doc.text.as_str();
+                // Build the AST-aware source-region index once for the entire
+                // document so we can classify each match's byte range and skip
+                // matches inside string literals, quote-like bodies, and
+                // heredocs (#4630).
+                let region_index =
+                    perl_parser_core::syntax::source_context::SourceRegionIndex::build(source_text);
+
+                let lines: Vec<&str> = source_text.lines().collect();
                 let requested_line_count = effective_end
                     .checked_sub(start_line)
                     .map_or(0, |line_delta| line_delta.saturating_add(1) as usize);
@@ -1298,9 +1306,44 @@ impl LspServer {
                     }
 
                     // Find $scalar, @array, and %hash variables
+                    // Compute the byte offset of this line's start in the
+                    // full source so we can classify match ranges against the
+                    // SourceRegionIndex.
+                    let line_byte_start = source_text
+                        .lines()
+                        .take(line_num as usize)
+                        .map(|l| l.len() + 1) // +1 for the \n
+                        .sum::<usize>();
                     for cap in re.captures_iter(line_text) {
                         if let Some(m) = cap.get(0) {
                             let var_text = m.as_str();
+
+                            // Classify this match against the source-region
+                            // index. Skip matches inside string literals,
+                            // quote-like bodies, and heredocs to prevent the
+                            // DAP client from resolving inline values for
+                            // variables embedded in strings (#4630).
+                            let abs_start = line_byte_start + m.start();
+                            let abs_end = line_byte_start + m.end();
+                            use perl_parser_core::syntax::source_context::RangeClassification;
+                            match region_index.classify_range(abs_start, abs_end) {
+                                RangeClassification::Proven { kind }
+                                    if matches!(
+                                        kind,
+                                        perl_parser_core::syntax::source_context::SourceRegionKind::StringLiteral
+                                            | perl_parser_core::syntax::source_context::SourceRegionKind::QuoteLike
+                                            | perl_parser_core::syntax::source_context::SourceRegionKind::Heredoc
+                                            | perl_parser_core::syntax::source_context::SourceRegionKind::RegexLike
+                                    ) =>
+                                {
+                                    continue;
+                                }
+                                RangeClassification::Ambiguous | RangeClassification::OutOfBounds => {
+                                    // Skip uncertain regions
+                                    continue;
+                                }
+                                _ => {} // Code or other proven kinds: keep
+                            }
                             // Convert byte positions to UTF-16 code units for LSP compliance
                             let start_utf16 = byte_to_utf16_col(line_text, m.start());
                             let end_utf16 = byte_to_utf16_col(line_text, m.end());
