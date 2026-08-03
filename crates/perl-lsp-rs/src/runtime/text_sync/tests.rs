@@ -1430,6 +1430,36 @@ fn test_did_save_publishes_diagnostics_with_original_uri() -> Result<(), Box<dyn
     Ok(())
 }
 
+/// didSave text reconciliation must preserve the client document version.
+#[test]
+fn test_did_save_text_preserves_client_version() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///test_save_version.pl";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 3,
+            "text": "my $x = 1;\n"
+        }
+    }))?;
+
+    server.handle_did_save(Some(json!({
+        "textDocument": {"uri": uri, "version": 3},
+        "text": "my $x = 2;\n"
+    })))?;
+
+    let normalized_uri = server.normalize_uri_key(uri);
+    let documents = server.documents.lock();
+    let document = documents
+        .get(&normalized_uri)
+        .ok_or("didSave must retain the open document")?;
+    assert_eq!(document.version, 3);
+    assert_eq!(document.text, "my $x = 2;\n");
+    Ok(())
+}
+
 /// A parse cancelled via a pre-set flag must return Ok(()) and not store
 /// a document, so the caller behaves as if the parse simply didn't happen.
 #[test]

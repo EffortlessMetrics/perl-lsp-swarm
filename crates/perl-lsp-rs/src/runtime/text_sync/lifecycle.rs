@@ -82,7 +82,7 @@ impl LspServer {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
             let normalized_uri = self.normalize_uri_key(uri);
-            let _version = params
+            let version = params
                 .pointer("/textDocument/version")
                 .and_then(|v| v.as_i64())
                 .and_then(|v| i32::try_from(v).ok());
@@ -102,7 +102,11 @@ impl LspServer {
                             uri,
                             "didSave text differs from in-memory buffer; reconciling"
                         );
-                        doc.update_content(saved_text, doc.version + 1);
+                        // didSave carries the client's current document version.
+                        // Reconciliation changes the server's text generation,
+                        // not the LSP version; inventing a new version would
+                        // make later client requests appear stale.
+                        doc.update_content(saved_text, version.unwrap_or(doc.version));
                     }
                 }
             }
