@@ -84,6 +84,8 @@ Verification statuses:
 - `stale_gate_graph`
 - `blocked`
 - `missing`
+- `not_proven` (the receipt itself records an instrument-incomplete verdict;
+  this is non-ready, not an unknown success)
 
 ## Current operation
 

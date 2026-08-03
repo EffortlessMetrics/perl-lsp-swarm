@@ -1,6 +1,6 @@
 # Merge-train protocol (operator-run, no auto-merge)
 
-This protocol defines a **bounded merge-train check-and-merge flow** so batch/admin merges do not treat `main` as the first integration branch.
+This protocol defines a **bounded merge-train check-and-merge flow** so batch/admin merges test candidates in an explicit order before landing on `main`.
 
 It is intentionally an **operator playbook**, not a merge bot:
 
@@ -34,9 +34,13 @@ readiness through lifecycle labels.
 A PR is train-eligible only if all required conditions hold at planning time:
 
 1. **Current head SHA known** and recorded in the train plan.
-2. **Review and thread convergence is current**, with no unresolved actionable findings.
+2. **The canonical review-convergence verdict is current**, with no pending
+   review requests, stale human reviews, current-head `CHANGES_REQUESTED`, or
+   unresolved threads (including outdated threads).
 3. **Required checks are green**, or an expected-skip result is explicitly explained by live policy.
 4. **Mergeable now**, or explicitly marked as **intentionally ordered** behind a PR expected to resolve dependency/conflict ordering.
+5. **A valid merge-ready receipt is present** for the candidate head, exact
+   `main` base lineage, gate-graph version, required checks, and review evidence.
 
 If any candidate violates these requirements, the train is not launched.
 
@@ -72,10 +76,10 @@ just check-conflict-markers
 cargo xtask fmt --check
 
 # shared PR-fast gate
-cargo xtask gates --tier pr-fast --base origin/master --receipt
+cargo xtask gates --tier pr-fast --base origin/main --receipt
 ```
 
-If a temporary integration branch/worktree is used, it must be disposable and never force-pushed over `master`.
+If a temporary integration branch/worktree is used, it must be disposable and never force-pushed over `main`.
 
 ## Stop conditions (hard fail)
 
@@ -104,7 +108,7 @@ Suggested template:
 ```md
 ## Merge Train Receipt
 
-- Base: `master@<sha>` (green at plan time)
+- Base: `main@<sha>` (green at plan time)
 - Profile: `3-overlap | 5-normal | 10-docs-leaf`
 - Candidates:
   1. #1234 @ <sha>
@@ -113,9 +117,9 @@ Suggested template:
 - Checks:
   - `just check-conflict-markers`: pass|fail
   - `cargo xtask fmt --check`: pass|fail
-  - `cargo xtask gates --tier pr-fast --base origin/master --receipt`: pass|fail
+  - `cargo xtask gates --tier pr-fast --base origin/main --receipt`: pass|fail
 - Verdict: pass|stop
-- Stop reason: <none|conflict|stale-sha|failed-check|unexpected-skip|master-red>
+- Stop reason: <none|conflict|stale-sha|failed-check|unexpected-skip|main-red>
 ```
 
 ## Recommended operator flow
@@ -126,7 +130,11 @@ Suggested template:
 4. Build an ordered plan with explicit SHAs.
 5. Simulate/apply in a disposable integration branch/worktree from green `main`.
 6. Run required checks.
-7. If pass, perform manual merges in tested order.
-8. Post train receipt summary.
+7. Immediately before each manual merge, capture a fresh protected-preflight
+   packet and compare the candidate head, `main` base, review convergence,
+   required checks, and mergeability with the planned receipt. Stop and refresh
+   the candidate if any material fact moved.
+8. If pass, perform manual merges in tested order.
+9. Post train receipt summary.
 
-This keeps `master` out of first-contact integration risk while preserving human control.
+This keeps the integration order explicit while preserving human control.
