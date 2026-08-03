@@ -39,6 +39,17 @@ impl LspServer {
                             coordinator.index().remove_file(&key);
                         }
                     }
+                } else {
+                    // File is on disk: retain the index entry (symbols are still
+                    // valid) but reset the generation counters so the reopened
+                    // document — which starts at generation 0 — is not blocked
+                    // by the stale high-water mark from the previous session
+                    // (#5438).
+                    if let Some(coordinator) = self.coordinator() {
+                        for key in self.uri_key_variants(uri) {
+                            coordinator.index().reset_generation_for_close(&key);
+                        }
+                    }
                 }
             }
 
