@@ -497,6 +497,10 @@ export async function activate(context: vscode.ExtensionContext) {
   );
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBarItem.command = 'perl-lsp.showStatusMenu';
+  statusBarItem.accessibilityInformation = {
+    label: 'Perl Language Server',
+    role: 'button',
+  };
   statusBarItem.show();
   healthWidget = new HealthWidget(statusBarItem);
   healthWidget.onStateChange(ClientState.Starting);
