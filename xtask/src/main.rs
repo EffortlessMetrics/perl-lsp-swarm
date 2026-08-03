@@ -937,6 +937,18 @@ enum Commands {
         command: CommandEvidenceCommand,
     },
 
+    /// Construct one bounded synthetic integration proof from an existing
+    /// trigger packet and selected command evidence.
+    #[command(name = "integration-proof")]
+    IntegrationProof {
+        /// JSON input containing the #4588 trigger packet and selected proof commands.
+        #[arg(long)]
+        spec: PathBuf,
+        /// JSON receipt output path.
+        #[arg(long, default_value = "target/receipts/integration-proof.json")]
+        receipt: PathBuf,
+    },
+
     /// Run exact-head Taplo and typos checks for changed repository files.
     ///
     /// The command composes the shared change-set resolver and invokes both
@@ -4264,6 +4276,9 @@ fn run_cli(cli: Cli) -> Result<()> {
                 command_evidence::run_proof_set(&spec, json)
             }
         },
+        Commands::IntegrationProof { spec, receipt } => {
+            integration_proof::run_from_file(&spec, &receipt)
+        }
         Commands::RepoHygiene { base, head, receipt, summary } => {
             repo_hygiene::run(repo_hygiene::RepoHygieneConfig { base, head, receipt, summary })
         }
