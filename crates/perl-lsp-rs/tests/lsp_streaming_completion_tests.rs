@@ -582,7 +582,10 @@ mod mock_streaming_completion_tests {
                         && msg.pointer("/params/token").and_then(|v| v.as_str()) == Some(token)
                 })
                 .collect();
-            if !matching.is_empty() || Instant::now() >= deadline {
+            let has_final = matching.iter().any(|msg| {
+                msg.pointer("/params/value/isFinal").and_then(Value::as_bool).unwrap_or(false)
+            });
+            if has_final || Instant::now() >= deadline {
                 return matching;
             }
             thread::sleep(Duration::from_millis(10));
@@ -798,6 +801,31 @@ mod mock_streaming_completion_tests {
         assert_eq!(progress.len(), 1);
         assert!(progress[0]["params"]["value"]["isFinal"].as_bool().unwrap_or(false));
         assert!(progress[0]["params"]["value"]["items"].as_array().is_some_and(Vec::is_empty));
+    }
+
+    #[test]
+    fn streaming_completion_sequence_starts_at_zero_after_filtered_prefix() {
+        let (server, capture) = create_server();
+        let backend = MockChunkBackend {
+            chunks: vec!["my $value = ;", "my $value = 1;"],
+            delays_ms: vec![0, 0],
+        };
+        server.test_install_ai_backend(Some(Arc::new(backend)));
+
+        let uri = "file:///streaming-mock-filtered-prefix.pl";
+        open_doc(&server, uri, "");
+        let result = request_streaming_completion(&server, uri, 0, "stream-mock-filtered-prefix");
+        assert!(result.is_null());
+
+        let progress = wait_for_progress_messages(
+            &capture,
+            "stream-mock-filtered-prefix",
+            Duration::from_millis(500),
+        );
+        assert_eq!(progress.len(), 1);
+        assert_eq!(progress[0]["params"]["value"]["sequence"], 0);
+        assert_eq!(progress[0]["params"]["value"]["items"][0]["insertText"], "my $value = 1;");
+        assert!(progress[0]["params"]["value"]["isFinal"].as_bool().unwrap_or(false));
     }
 
     #[test]

@@ -138,7 +138,6 @@ impl LspServer {
                     *text = chunk.text.clone();
                 }
 
-                let seq = session.next_sequence();
                 let is_final = chunk.is_final;
                 if is_final {
                     sent_final = true;
@@ -148,7 +147,7 @@ impl LspServer {
                     perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
                         items: vec![
                             perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem {
-                                insert_text: chunk.text.clone(),
+                                insert_text: chunk.text,
                                 filter_text: None,
                                 range: None,
                                 command: None,
@@ -165,6 +164,8 @@ impl LspServer {
                 if safe_items.is_empty() && !is_final {
                     return perl_lsp_rs_core::providers::inline_completion::StreamControl::Continue;
                 }
+
+                let seq = session.next_sequence();
 
                 // Keep the first update responsive, then suppress intermediate
                 // chunks until the configured interval has elapsed. A final
