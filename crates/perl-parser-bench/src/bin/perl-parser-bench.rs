@@ -87,8 +87,8 @@ fn main() {
         };
 
         println!(
-            "total_files={} error_files={} walk_errors={} success_rate={:.1} total_duration_us={}",
-            total_files, error_files, walk_errors, success_rate, total_duration
+            "total_files={} error_files={} success_rate={:.1} total_duration_us={} walk_errors={}",
+            total_files, error_files, success_rate, total_duration, walk_errors
         );
     } else {
         eprintln!("Path does not exist: {}", path.display());
