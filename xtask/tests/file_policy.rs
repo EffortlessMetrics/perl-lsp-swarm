@@ -172,6 +172,13 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
         gate.get("command").and_then(Value::as_str),
         Some("cargo xtask non-rust inventory --check")
     );
+    assert_eq!(gate.get("timeout_seconds").and_then(Value::as_u64), Some(300));
+    assert_eq!(
+        gate.get("budgets")
+            .and_then(|budgets| budgets.get("max_duration_ms"))
+            .and_then(Value::as_u64),
+        Some(240_000)
+    );
 
     let mapped = policy
         .get("workflow_integration")
