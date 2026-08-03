@@ -189,7 +189,7 @@ fn check_work_packet(issue: &Issue, out: &mut Vec<Finding>) {
         ("verification notes", &RE_VERIFICATION),
     ];
     for (label, re) in sections {
-        if !re_matches(re, body) {
+        if !re_matches(re, &body) {
             out.push(Finding {
                 issue: issue.number,
                 check: "work-packet-missing-section".to_string(),
