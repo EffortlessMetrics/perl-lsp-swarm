@@ -213,6 +213,9 @@ impl LspServer {
         // Log backend errors but don't propagate -- the protocol contract
         // only needs the final isFinal:true notification to be sent.
         if let Err(e) = stream_result {
+            if matches!(e, perl_lsp_rs_core::providers::inline_completion::BackendError::Auth(_)) {
+                self.notify_ai_auth_failure();
+            }
             tracing::debug!("streaming inline completion backend error: {}", e);
         }
 

@@ -979,6 +979,14 @@ impl LspServer {
                             }
                         }
                         Err(ref e) => {
+                            if matches!(
+                                e,
+                                perl_lsp_rs_core::providers::inline_completion::BackendError::Auth(
+                                    _
+                                )
+                            ) {
+                                self.notify_ai_auth_failure();
+                            }
                             tracing::debug!("AI inline completion failed: {}", e);
                             if !ai_config.fallback {
                                 return Ok(Some(json!({ "items": [] })));
