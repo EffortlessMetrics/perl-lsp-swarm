@@ -50,12 +50,12 @@ assuming a path.
 | `lib.rs` | re-exports | Public surface; see `pub use` block at the bottom |
 | `server/` | `DapServer`, `DapConfig`, `DapMode` | Server entry point; dispatches to Native or Bridge mode |
 | `main.rs` | `Args` (clap) | CLI binary; parses `--stdio`, `--socket`, `--bridge`, `--port`, `--log-level` |
-| `debug_adapter/` | `DebugAdapter`, `DapMessage` | Native adapter, split by concern: `process` (lifecycle + output reader), `execution` (stepping), `breakpoints`, `variables`, `evaluation`, `frames`, `logpoint`, `transport`, `dispatch` |
+| `debug_adapter/` | `DebugAdapter`, `DapMessage` | Native adapter, split by concern: `process` (lifecycle + output reader), `execution` (stepping), `frames`, `logpoint` (live handling plus reusable interpolation), `transport`, `dispatch` |
 | `backend/` | `DebugBackend`, `NativePerlDbBackend`, peer bridge/launch | Backend abstraction and the external-peer (ptkdb) path |
 | `peer_protocol/` | framing, message, payload types | Wire protocol for external debugger peers |
 | `bridge_adapter.rs` | `BridgeAdapter` | Spawns Perl::LanguageServer in DAP mode, proxies messages via stdio |
 | `protocol.rs` | `Request`, `Response`, `Event`, `Capabilities`, `SourceBreakpoint`, ... | DAP protocol type definitions (serde-annotated) |
-| `breakpoints.rs` | `BreakpointStore`, `BreakpointRecord`, `BreakpointHitOutcome`, `interpolate_logpoint_message` | Breakpoint storage with REPLACE semantics, hit counting, logpoint templating |
+| `breakpoints.rs` | `BreakpointStore`, `BreakpointRecord`, `BreakpointHitOutcome`, `interpolate_logpoint_message` | Reusable breakpoint storage with REPLACE semantics, hit counting, and logpoint interpolation |
 | `breakpoint/` | `AstBreakpointValidator`, `BreakpointValidator` | AST-based breakpoint line validation and suggestions |
 | `eval/` | `SafeEvaluator` | Expression admission control for `evaluate`/`setExpression` |
 | `stack/` | `PerlStackParser` | Stack trace extraction and frame classification |
