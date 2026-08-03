@@ -141,10 +141,7 @@ fn collect_skills(skill_root: &Path, errors: &mut Vec<String>) -> Result<Vec<Ski
             continue;
         }
         let text = fs::read_to_string(&skill_path)?;
-        let metadata_chars = text
-            .split_once("---")
-            .and_then(|(_, remainder)| remainder.split_once("---"))
-            .map_or(0, |(frontmatter, _)| frontmatter.len());
+        let metadata_chars = frontmatter_metadata_chars(&text);
         match frontmatter_value(&text, "name") {
             Some(name) if name == directory_name => {}
             Some(name) => errors.push(format!(
@@ -186,6 +183,22 @@ fn frontmatter_value(text: &str, key: &str) -> Option<String> {
         }
     }
     closed.then_some(value).flatten()
+}
+
+fn frontmatter_metadata_chars(text: &str) -> usize {
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return 0;
+    }
+
+    let mut metadata_chars = 0;
+    for line in lines {
+        if line.trim() == "---" {
+            return metadata_chars;
+        }
+        metadata_chars += line.len() + 1;
+    }
+    0
 }
 
 fn route_targets(text: &str) -> Vec<String> {
@@ -278,7 +291,7 @@ fn print_human(report: &CheckReport) {
 
 #[cfg(test)]
 mod tests {
-    use super::{frontmatter_value, route_targets, route_tokens};
+    use super::{frontmatter_metadata_chars, frontmatter_value, route_targets, route_tokens};
 
     #[test]
     fn parses_frontmatter_name() {
@@ -304,5 +317,12 @@ mod tests {
     fn rejects_unclosed_frontmatter() {
         let text = "---\nname: prepare-issue\ndescription: truncated\n";
         assert_eq!(frontmatter_value(text, "name"), None);
+        assert_eq!(frontmatter_metadata_chars(text), 0);
+    }
+
+    #[test]
+    fn ignores_delimiters_inside_document_body_for_metadata_size() {
+        let text = "# Skill\n\n---\nnot frontmatter\n---\n";
+        assert_eq!(frontmatter_metadata_chars(text), 0);
     }
 }
