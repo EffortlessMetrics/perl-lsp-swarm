@@ -185,10 +185,9 @@ fn execute(config: CommandEvidenceConfig) -> Result<CommandEvidenceReceipt> {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let started = Utc::now();
     let started_instant = Instant::now();
-    let argv = std::iter::once(config.program.clone())
-        .chain(config.args.clone())
-        .map(|arg| redact_secrets(&arg))
-        .collect::<Vec<_>>();
+    let argv =
+        std::iter::once(config.program.clone()).chain(config.args.clone()).collect::<Vec<_>>();
+    let argv = redact_argv(&argv);
     let out_dir = config.out_dir.unwrap_or_else(|| PathBuf::from("target/command-evidence"));
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("failed to create evidence directory {}", out_dir.display()))?;
@@ -606,8 +605,34 @@ fn redact_secrets(text: &str) -> String {
     result
 }
 
+fn redact_argv(argv: &[String]) -> Vec<String> {
+    let mut redacted = Vec::with_capacity(argv.len());
+    let mut redact_next = false;
+
+    for argument in argv {
+        if redact_next {
+            redacted.push("<redacted>".to_string());
+            redact_next = false;
+            continue;
+        }
+
+        let sanitized = redact_secrets(argument);
+        if is_secret_option(argument) && argument == sanitized {
+            redact_next = true;
+        }
+        redacted.push(sanitized);
+    }
+
+    redacted
+}
+
+fn is_secret_option(argument: &str) -> bool {
+    let option = argument.trim_start_matches('-').to_ascii_lowercase();
+    matches!(option.as_str(), "token" | "password" | "secret" | "authorization")
+}
+
 fn render_argv(argv: &[String]) -> String {
-    argv.iter().map(|arg| render_argument(&redact_secrets(arg))).collect::<Vec<_>>().join(" ")
+    redact_argv(argv).iter().map(|arg| render_argument(arg)).collect::<Vec<_>>().join(" ")
 }
 
 fn render_argument(argument: &str) -> String {
@@ -653,6 +678,18 @@ mod tests {
     fn argv_rendering_redacts_secret_like_values() {
         let rendered = render_argv(&["tool".to_string(), "--token=abc".to_string()]);
         assert_eq!(rendered, "tool \"--token=<redacted>\"");
+    }
+
+    #[test]
+    fn argv_redaction_hides_separate_secret_values() {
+        let redacted = redact_argv(&[
+            "tool".to_string(),
+            "--token".to_string(),
+            "abc".to_string(),
+            "--mode".to_string(),
+            "safe".to_string(),
+        ]);
+        assert_eq!(redacted, ["tool", "--token", "<redacted>", "--mode", "safe"]);
     }
 
     #[test]
