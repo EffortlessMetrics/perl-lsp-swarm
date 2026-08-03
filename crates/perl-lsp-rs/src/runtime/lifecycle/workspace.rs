@@ -36,7 +36,8 @@ fn perl_not_found_message(configured: Option<&str>) -> String {
         Some(configured) => {
             format!(
                 "perl-lsp: The configured Perl interpreter was not found at `{configured}`. \
-                 Check that the path exists and is executable, then use Developer: Reload Window."
+                 Check that the path exists and is executable, then restart/reload server. \
+                 (VS Code: Developer: Reload Window.)"
             )
         }
         None => format!("perl-lsp: Perl missing on PATH. {PERL_REMEDIATION}"),
@@ -450,6 +451,10 @@ mod tests {
         assert!(
             !msg.contains("Install Perl"),
             "a configured-but-missing path is not an install problem, got: {msg}"
+        );
+        assert!(
+            msg.contains("restart/reload server"),
+            "configured path must provide a client-neutral re-trigger action, got: {msg}"
         );
     }
 
