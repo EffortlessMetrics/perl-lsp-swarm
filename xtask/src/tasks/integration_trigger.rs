@@ -147,15 +147,19 @@ pub fn evaluate(input: IntegrationTriggerInput) -> IntegrationTriggerPacket {
                 .push(format!("{label} identity must be a 40-character hexadecimal Git object ID"));
         }
     }
+    let has_identity_diagnostics = !diagnostics.is_empty();
+    let mut has_evidence_metadata_diagnostics = false;
 
     for evidence in &evidence {
         if evidence.detail.trim().is_empty() {
             diagnostics.push(format!("{:?} evidence detail is missing", evidence.kind));
+            has_evidence_metadata_diagnostics = true;
         }
         if evidence.references.is_empty()
             || evidence.references.iter().all(|reference| reference.trim().is_empty())
         {
             diagnostics.push(format!("{:?} evidence references are missing", evidence.kind));
+            has_evidence_metadata_diagnostics = true;
         }
         if evidence.kind.is_required() || evidence.kind == TriggerKind::AuthorityUnavailable {
             findings.push(IntegrationTriggerFinding {
@@ -166,12 +170,20 @@ pub fn evaluate(input: IntegrationTriggerInput) -> IntegrationTriggerPacket {
         }
     }
     let has_actual_trigger = findings.iter().any(|finding| finding.kind.is_required());
+    let has_textual_conflict =
+        findings.iter().any(|finding| finding.kind == TriggerKind::TextualConflict);
     let has_unavailable_authority =
         findings.iter().any(|finding| finding.kind == TriggerKind::AuthorityUnavailable);
 
     if !diagnostics.is_empty() {
         result = IntegrationTriggerResult::NotProven;
-        next_action = "Resolve invalid candidate identities before deciding".to_string();
+        next_action = if has_identity_diagnostics {
+            "Resolve invalid candidate identities before deciding".to_string()
+        } else if has_evidence_metadata_diagnostics {
+            "Repair missing interaction evidence metadata before deciding".to_string()
+        } else {
+            "Resolve invalid trigger input before deciding".to_string()
+        };
     } else if pr_head_sha != reviewed_head_sha {
         result = IntegrationTriggerResult::ReturnToReview;
         next_action =
@@ -185,6 +197,10 @@ pub fn evaluate(input: IntegrationTriggerInput) -> IntegrationTriggerPacket {
     } else if evidence_missing {
         result = IntegrationTriggerResult::NotProven;
         next_action = "Obtain source interaction evidence before deciding".to_string();
+    } else if has_textual_conflict {
+        result = IntegrationTriggerResult::Blocked;
+        next_action =
+            "Resolve the textual conflict before selecting combined-tree proof".to_string();
     } else if has_actual_trigger {
         match proof_selection.as_ref() {
             Some(selection) if selection_is_complete(selection) => {
@@ -347,6 +363,16 @@ mod tests {
         assert_eq!(packet.result, IntegrationTriggerResult::NotProven);
         assert!(packet.diagnostics.iter().any(|diagnostic| diagnostic.contains("detail")));
         assert!(packet.diagnostics.iter().any(|diagnostic| diagnostic.contains("references")));
+        assert!(packet.next_action.contains("evidence metadata"));
+    }
+
+    #[test]
+    fn textual_conflict_blocks_before_proof_selection() {
+        let mut input = input(vec![evidence(TriggerKind::TextualConflict)]);
+        input.proof_selection = Some(selection());
+        let packet = evaluate(input);
+        assert_eq!(packet.result, IntegrationTriggerResult::Blocked);
+        assert!(packet.next_action.contains("textual conflict"));
     }
 
     #[test]
