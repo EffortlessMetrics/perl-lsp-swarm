@@ -18,6 +18,13 @@ pub struct LineIndex {
 
 impl LineIndex {
     /// Build a line index from UTF-8 text.
+    ///
+    /// Only `\n` starts a new line. A preceding `\r` remains part of the
+    /// indexed line, so CRLF input has both bytes addressable on the line that
+    /// ends with `\n`. The input is indexed verbatim: this constructor does not
+    /// strip a leading UTF-8 BOM. Callers that own text normalization must
+    /// remove a BOM before constructing the index and use the normalized text
+    /// consistently for offset mapping.
     #[must_use]
     pub fn new(text: &str) -> Self {
         let mut line_starts = vec![0];
@@ -264,6 +271,17 @@ mod tests {
         // position_to_byte_checked: line 0 ends at the \n (col 2), col 3 is the next line.
         assert_eq!(idx.position_to_byte_checked(0, 2), Some(2));
         assert_eq!(idx.position_to_byte_checked(0, 3), None);
+    }
+
+    #[test]
+    fn leading_bom_is_indexed_as_input_content() {
+        // `LineIndex` is a generic byte index, not a text-normalization
+        // boundary. The three-byte BOM remains addressable before `a`.
+        let idx = LineIndex::new("\u{FEFF}a\nb");
+        assert_eq!(idx.byte_to_position(0), (0, 0));
+        assert_eq!(idx.byte_to_position(3), (0, 3));
+        assert_eq!(idx.position_to_byte(0, 4), Some(4));
+        assert_eq!(idx.byte_to_position(5), (1, 0));
     }
 
     #[test]
