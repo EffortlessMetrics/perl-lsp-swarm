@@ -29,7 +29,7 @@ fn regex_from_static(
 
 /// Enforce that regex constructors (`Regex::new` / `RegexBuilder::new` /
 /// `Regex::builder`) in library source live inside a lazily-evaluated static
-/// (`LazyLock`, `LazyCell`, `once_cell::sync::Lazy`, or an `OnceLock`/`OnceCell`
+/// (`LazyLock`, `LazyCell`, `std::sync::LazyLock`, or an `OnceLock`/`OnceCell`
 /// `get_or_init` closure).
 ///
 /// A `Regex::new(...)` inside a function body recompiles the pattern on every call —

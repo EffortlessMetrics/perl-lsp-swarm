@@ -4,7 +4,7 @@
 //! into structured [`StackFrame`] representations.
 
 use super::{Source, StackFrame, StackFramePresentationHint};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 use thiserror::Error;
 
@@ -28,7 +28,7 @@ pub enum StackParseError {
 /// Matches formats like:
 /// - `Package::func(file.pl:42):`
 /// - `main::(script.pl):42:`
-static CONTEXT_RE: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
+static CONTEXT_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
     Regex::new(
         r"^(?:(?P<func>[A-Za-z_][\w:]*+?)::(?:\((?P<file>[^:)]+):(?P<line>\d+)\):?|__ANON__)|main::(?:\((?P<file2_paren>[^)]+)\)|(?P<file2>[^:]+)):(?P<line2>\d+):?)",
     )
@@ -38,7 +38,7 @@ static CONTEXT_RE: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
 /// Matches formats like:
 /// - `  @ = Package::func called from file 'path/file.pl' line 42`
 /// - `  #0  main::foo at script.pl line 10`
-static STACK_FRAME_RE: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
+static STACK_FRAME_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
     Regex::new(
         r"^\s*#?\s*(?P<frame>\d+)?\s+(?P<func>[A-Za-z_][\w:]*+?)(?:\s+called)?\s+at\s+(?P<file>.+?)\s+line\s+(?P<line>\d+)",
     )
@@ -47,7 +47,7 @@ static STACK_FRAME_RE: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
 /// Pattern for Perl debugger 'T' command output (verbose backtrace).
 /// Matches formats like:
 /// - `$ = My::Module::method(arg1, arg2) called from file `/path/file.pm' line 123`
-static VERBOSE_FRAME_RE: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
+static VERBOSE_FRAME_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
     Regex::new(
         r"^\s*[\$\@\.]\s*=\s*(?P<func>[A-Za-z_][\w:]*+?)\((?P<args>.*?)\)\s+called\s+from\s+file\s+[`'](?P<file>[^'`]+)[`']\s+line\s+(?P<line>\d+)",
     )
@@ -56,7 +56,7 @@ static VERBOSE_FRAME_RE: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
 /// Pattern for simple 'T' command format.
 /// Matches formats like:
 /// - `. = My::Module::method() called from '-e' line 1`
-static SIMPLE_FRAME_RE: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
+static SIMPLE_FRAME_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
     Regex::new(
         r"^\s*[\$\@\.]\s*=\s*(?P<func>[A-Za-z_][\w:]*+?)\s*\(\)\s+called\s+from\s+[`'](?P<file>[^'`]+)[`']\s+line\s+(?P<line>\d+)",
     )
@@ -65,12 +65,12 @@ static SIMPLE_FRAME_RE: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
 /// Pattern for eval context in stack traces.
 /// Matches formats like:
 /// - `(eval 10)[/path/file.pm:42]`
-static EVAL_CONTEXT_RE: Lazy<Result<Regex, regex::Error>> =
-    Lazy::new(|| Regex::new(r"^\(eval\s+(?P<eval_num>\d+)\)\[(?P<file>[^\]:]+):(?P<line>\d+)\]"));
+static EVAL_CONTEXT_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"^\(eval\s+(?P<eval_num>\d+)\)\[(?P<file>[^\]:]+):(?P<line>\d+)\]"));
 
 /// Pattern for extracting a best-effort function name from stack-like lines
 /// that do not include source location information.
-static UNKNOWN_FRAME_NAME_RE: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
+static UNKNOWN_FRAME_NAME_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
     Regex::new(r"^\s*(?:#\s*\d+\s+)?(?:[\$\@\.]\s*=\s*)?(?P<func>[A-Za-z_][\w:]*+?)\b")
 });
 
