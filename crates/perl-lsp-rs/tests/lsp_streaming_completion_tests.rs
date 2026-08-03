@@ -641,6 +641,26 @@ mod mock_streaming_completion_tests {
         (server, capture)
     }
 
+    fn set_streaming_debounce(server: &LspServer, milliseconds: u64) {
+        let config_request = JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: None,
+            method: "workspace/didChangeConfiguration".into(),
+            params: Some(json!({
+                "settings": {
+                    "perl": {
+                        "aiCompletion": {
+                            "streaming": {
+                                "updateDebounceMs": milliseconds
+                            }
+                        }
+                    }
+                }
+            })),
+        };
+        let _ = server.handle_request(config_request);
+    }
+
     fn open_doc(server: &LspServer, uri: &str, text: &str) {
         let _ = server.handle_request(JsonRpcRequest {
             _jsonrpc: "2.0".into(),
@@ -728,6 +748,7 @@ mod mock_streaming_completion_tests {
     #[test]
     fn streaming_completion_mock_backend_cumulative_chunks() {
         let (server, capture) = create_server();
+        set_streaming_debounce(&server, 0);
 
         let backend = MockChunkBackend {
             chunks: vec!["fi", "find_", "find_user($id)"],
@@ -757,6 +778,30 @@ mod mock_streaming_completion_tests {
             last_sequence = Some(sequence);
             assert_eq!(value["items"][0]["insertText"], expected[idx]);
         }
+    }
+
+    #[test]
+    fn streaming_completion_debounces_intermediate_chunks_but_emits_final() {
+        let (server, capture) = create_server();
+        set_streaming_debounce(&server, 1_000);
+
+        let backend = MockChunkBackend {
+            chunks: vec!["fi", "find_", "find_user($id)"],
+            delays_ms: vec![0, 0, 0],
+        };
+        server.test_install_ai_backend(Some(Arc::new(backend)));
+
+        let uri = "file:///streaming-debounce.pl";
+        open_doc(&server, uri, "my $obj = Package->");
+        let result = request_streaming_completion(&server, uri, "stream-debounce-1");
+        assert!(result.is_null());
+
+        let progress =
+            wait_for_progress_messages(&capture, "stream-debounce-1", Duration::from_millis(500));
+        assert_eq!(progress.len(), 2, "first and final updates should be emitted");
+        assert_eq!(progress[0]["params"]["value"]["items"][0]["insertText"], "fi");
+        assert_eq!(progress[1]["params"]["value"]["items"][0]["insertText"], "find_user($id)");
+        assert_eq!(progress[1]["params"]["value"]["isFinal"], true);
     }
 
     #[test]
