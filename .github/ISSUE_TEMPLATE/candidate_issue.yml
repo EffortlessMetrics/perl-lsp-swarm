@@ -139,11 +139,9 @@ body:
       label: Suggested next workflow
       description: Where should this candidate go after triage?
       options:
-        - needs-plan-review
-        - needs-research
-        - needs-repro
-        - needs-source-grounding
-        - needs-architecture-review
+        - source-grounding review
+        - research or reproduction review
+        - architecture review
         - direct small builder candidate
         - discard if disproven
     validations:
