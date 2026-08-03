@@ -11,10 +11,9 @@ body:
         everything a builder needs to implement without rediscovering the problem.
 
         **Filing this template does not grant the `builder-ready` label.** It
-        enters at `needs-plan-review`. The `builder-ready` label is *earned* by
-        passing Gate-2 review (plan-review, and architecture-review when the
-        change touches crate boundaries, public API/AST shape, LSP/DAP protocol,
-        CI policy, or workflow routing). `builder-ready` means builder-ready.
+        enters at `needs-plan-review`. The `builder-ready` label is earned by
+        passing the repository's current plan-review contract; it is not an
+        assignment or build-state authority.
 
         Answer every section — even if the answer is "none" or "not applicable."
         See [ISSUE_PLAN_DOCTRINE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ISSUE_PLAN_DOCTRINE.md).
