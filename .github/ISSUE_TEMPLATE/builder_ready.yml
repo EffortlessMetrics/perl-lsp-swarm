@@ -1,6 +1,6 @@
 name: Builder-Ready Plan
 description: A fully structured work-order proposal — problem, fix plan, acceptance tests, non-goals, dependencies, risk
-labels: ["swarm-discovered"]
+labels: ["swarm-discovered", "needs-plan-review"]
 body:
   - type: markdown
     attributes:
@@ -10,10 +10,10 @@ body:
         This template captures the **quality bar** for a builder-ready issue:
         everything a builder needs to implement without rediscovering the problem.
 
-        **Filing this template does not grant a lifecycle label.** The issue
-        body carries the proposed work packet; current review and build state
-        comes from GitHub issue/PR facts and receipts. `builder-ready` is a
-        quality description, not an assignment or routing authority.
+        **Filing this template does not grant the `builder-ready` label.** It
+        enters at `needs-plan-review`. The `builder-ready` label is earned by
+        passing the repository's current plan-review contract; it is not an
+        assignment or build-state authority.
 
         Answer every section — even if the answer is "none" or "not applicable."
         See [ISSUE_PLAN_DOCTRINE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ISSUE_PLAN_DOCTRINE.md).

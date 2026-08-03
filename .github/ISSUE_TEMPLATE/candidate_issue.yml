@@ -13,8 +13,9 @@ body:
         full builder-ready plan.
 
         File only **high-confidence** findings here. Medium-confidence
-        findings become `needs-research`. Low-confidence findings stay in the
-        scout report. Never apply `builder-ready` — that belongs to plan review.
+        findings go to a bounded research or reproduction review. Low-confidence
+        findings stay in the scout report. Never apply `builder-ready` — that
+        belongs to plan review.
 
   - type: textarea
     id: finding
@@ -140,7 +141,8 @@ body:
       description: Where should this candidate go after triage?
       options:
         - source-grounding review
-        - research or reproduction review
+        - research review
+        - reproduction review
         - architecture review
         - direct small builder candidate
         - discard if disproven
@@ -151,7 +153,7 @@ body:
     id: confidence
     attributes:
       label: Confidence
-      description: Only `high` should be filed directly. `medium` → needs-research. `low` → keep in scout report, do not file.
+      description: Only `high` should be filed directly. `medium` → research or reproduction review. `low` → keep in scout report, do not file.
       options:
         - high
         - medium
