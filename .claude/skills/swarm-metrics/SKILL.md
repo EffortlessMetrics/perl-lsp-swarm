@@ -1,4 +1,5 @@
 ---
+name: swarm-metrics
 description: Aggregate and interpret swarm metrics for status and report surfaces
 ---
 
