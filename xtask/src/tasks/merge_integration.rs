@@ -149,7 +149,7 @@ fn run_git_bytes(directory: &Path, args: &[&str]) -> Result<Vec<u8>> {
 
 fn apply_patch(worktree: &Path, patch: &[u8]) -> Result<()> {
     let mut child = Command::new("git")
-        .args(["apply", "--index", "--whitespace=nowarn"])
+        .args(["apply", "--index", "--3way", "--whitespace=nowarn"])
         .current_dir(worktree)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -433,6 +433,44 @@ mod tests {
 
         assert_eq!(result.synthetic_tree, git(&repository, &["rev-parse", "HEAD^{tree}"])?.trim());
         assert_eq!(result.cleanup, SyntheticCleanup::Complete);
+        Ok(())
+    }
+
+    #[test]
+    fn three_way_application_preserves_compatible_context_movement() -> Result<()> {
+        let scratch = tempdir()?;
+        let repository = scratch.path().join("repository");
+        fs::create_dir(&repository)?;
+        git(&repository, &["init", "--quiet"])?;
+        git(&repository, &["config", "user.email", "test@example.invalid"])?;
+        git(&repository, &["config", "user.name", "synthetic-test"])?;
+
+        fs::write(repository.join("shared.txt"), "one\ntwo\nthree\nfour\nfive\n")?;
+        git(&repository, &["add", "shared.txt"])?;
+        git(&repository, &["commit", "--quiet", "-m", "base"])?;
+        git(&repository, &["branch", "integration"])?;
+
+        fs::write(repository.join("shared.txt"), "one\ntwo\nthree\nfour\npr-five\n")?;
+        git(&repository, &["add", "shared.txt"])?;
+        git(&repository, &["commit", "--quiet", "-m", "candidate"])?;
+        let pr_head = git(&repository, &["rev-parse", "HEAD"])?.trim().to_owned();
+
+        git(&repository, &["switch", "--quiet", "integration"])?;
+        fs::write(repository.join("shared.txt"), "one\nintegration-two\nthree\nfour\nfive\n")?;
+        git(&repository, &["add", "shared.txt"])?;
+        git(&repository, &["commit", "--quiet", "-m", "integration"])?;
+        let integration_basis = git(&repository, &["rev-parse", "HEAD"])?.trim().to_owned();
+
+        let result = construct_synthetic_squash(SyntheticSquashRequest {
+            repository: &repository,
+            pr_base: &integration_basis,
+            pr_head: &pr_head,
+            integration_basis: &integration_basis,
+        })?;
+        let merged = git(&repository, &["show", &format!("{}:shared.txt", result.synthetic_tree)])?;
+
+        assert!(merged.contains("integration-two"));
+        assert!(merged.contains("pr-five"));
         Ok(())
     }
 
