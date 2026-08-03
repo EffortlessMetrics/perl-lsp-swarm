@@ -1209,7 +1209,7 @@ impl LspServer {
             } else {
                 invalid.value.trim().to_ascii_lowercase()
             };
-            let key = format!("{}={normalized_value}", invalid.setting);
+            let key = format!("{}={}={normalized_value}", invalid.setting, invalid.value_type);
             if !self.client_setting_warnings_sent.lock().insert(key) {
                 continue;
             }
@@ -3052,6 +3052,34 @@ mod tests {
             "formatter warning must list the accepted values: {formatter_text}"
         );
         assert_eq!(current_engine, perl_lsp_rs_core::config::CriticEngine::Native);
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_client_enum_warning_keeps_json_types_distinct()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, output) = server_with_output_capture();
+
+        for engine in [json!("false"), json!(false)] {
+            server.test_handle_did_change_configuration(Some(json!({
+                "settings": { "perl": { "critic": { "engine": engine } } }
+            })));
+        }
+
+        drop(server);
+        let warnings: Vec<Value> = output
+            .messages()?
+            .into_iter()
+            .filter(|message| {
+                message.get("method").and_then(Value::as_str) == Some("window/showMessage")
+                    && message
+                        .pointer("/params/message")
+                        .and_then(Value::as_str)
+                        .is_some_and(|text| text.contains("critic.engine"))
+            })
+            .collect();
+
+        assert_eq!(warnings.len(), 2, "string and boolean values need distinct warning keys");
         Ok(())
     }
 

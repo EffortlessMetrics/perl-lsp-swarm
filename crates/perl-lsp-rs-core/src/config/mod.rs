@@ -669,6 +669,7 @@ impl ServerConfig {
                     invalid.push(InvalidClientSetting {
                         setting: "critic.engine",
                         value: client_setting_display_value(engine),
+                        value_type: client_setting_value_type(engine),
                         valid_options: CLIENT_CRITIC_ENGINE_VALID_OPTIONS,
                     });
                 }
@@ -682,6 +683,7 @@ impl ServerConfig {
                     invalid.push(InvalidClientSetting {
                         setting: "critic.profile",
                         value: client_setting_display_value(profile),
+                        value_type: client_setting_value_type(profile),
                         valid_options: NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
                     });
                 }
@@ -698,6 +700,7 @@ impl ServerConfig {
                     invalid.push(InvalidClientSetting {
                         setting: "formatting.engine",
                         value: client_setting_display_value(engine),
+                        value_type: client_setting_value_type(engine),
                         valid_options: FORMATTER_MODE_VALID_OPTIONS,
                     });
                 }
@@ -712,6 +715,17 @@ fn client_setting_display_value(value: &serde_json::Value) -> String {
     value.as_str().map(ToOwned::to_owned).unwrap_or_else(|| value.to_string())
 }
 
+fn client_setting_value_type(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
 /// An invalid enum value found in editor-provided LSP settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidClientSetting {
@@ -719,6 +733,8 @@ pub struct InvalidClientSetting {
     pub setting: &'static str,
     /// Value supplied by the client.
     pub value: String,
+    /// JSON type supplied by the client, used to distinguish values that render identically.
+    pub value_type: &'static str,
     /// Human-readable accepted values for the setting.
     pub valid_options: &'static str,
 }
@@ -3849,16 +3865,19 @@ profile = "recommended"
                 InvalidClientSetting {
                     setting: "critic.engine",
                     value: "nativ".to_string(),
+                    value_type: "string",
                     valid_options: CLIENT_CRITIC_ENGINE_VALID_OPTIONS,
                 },
                 InvalidClientSetting {
                     setting: "critic.profile",
                     value: "recomended".to_string(),
+                    value_type: "string",
                     valid_options: NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
                 },
                 InvalidClientSetting {
                     setting: "formatting.engine",
                     value: "perltide".to_string(),
+                    value_type: "string",
                     valid_options: FORMATTER_MODE_VALID_OPTIONS,
                 },
             ]
