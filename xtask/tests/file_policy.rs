@@ -55,6 +55,18 @@ fn non_rust_inventory_command_exits_zero() -> Result<()> {
     Ok(())
 }
 
+/// Read-only end-to-end check against the committed inventory.
+#[test]
+fn non_rust_inventory_check_command_exits_zero() -> Result<()> {
+    let _guard = inventory_output_lock()?;
+    Command::cargo_bin("xtask")?
+        .args(["non-rust", "inventory", "--check"])
+        .current_dir(project_root()?)
+        .assert()
+        .success();
+    Ok(())
+}
+
 /// Verify that the expected output files are created.
 #[test]
 fn non_rust_inventory_creates_output_files() -> Result<()> {
