@@ -313,8 +313,8 @@ test_formal_review_classes() {
     run_case "formal-review-current"
     classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
     reason="$(json_field "$RUN_STDOUT" '.formal_review.reason')"
-    if [[ "$classification" == "CURRENT" && "$reason" == "submitted_human_review_at_candidate_head" ]]; then
-        pass "formal review accepts a clean submitted human review without a marker"
+    if [[ "$classification" == "CURRENT" && "$reason" == "submitted_human_review_and_current_material_claim_receipt" ]]; then
+        pass "formal review requires a current claim receipt alongside a submitted human review"
     else
         fail "formal review current classification expected CURRENT — got classification=$classification reason=$reason"
     fi
@@ -348,10 +348,10 @@ test_formal_review_classes() {
     run_case "formal-review-not-proven"
     classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
     status="$(json_field "$RUN_STDOUT" '.formal_review.status')"
-    if [[ "$classification" == "NOT_PROVEN" && "$status" == "instrument_failure" ]]; then
-        pass "formal review preserves material-claim instrument failure as NOT_PROVEN"
+    if [[ "$classification" == "NOT_PROVEN" && "$status" == "unusable" ]]; then
+        pass "formal review preserves missing claim evidence as NOT_PROVEN"
     else
-        fail "formal review instrument failure expected NOT_PROVEN/instrument_failure — got classification=$classification status=$status"
+        fail "formal review missing claim evidence expected NOT_PROVEN/unusable — got classification=$classification status=$status"
     fi
 }
 

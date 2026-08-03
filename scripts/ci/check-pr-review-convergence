@@ -135,9 +135,15 @@ elif [[ "$CORE_CURRENT_CHANGE_COUNT" -gt 0 || "$CORE_UNRESOLVED_COUNT" -gt 0 || 
     fi
     FORMAL_STATUS="findings_open"
 elif [[ "$CORE_CURRENT_REVIEW_COUNT" -gt 0 ]]; then
-    FORMAL_CLASSIFICATION="CURRENT"
-    FORMAL_REASON="submitted_human_review_at_candidate_head"
-    FORMAL_STATUS="clean"
+    if [[ "$CLAIM_RESULT_VALUE" == "current" ]]; then
+        FORMAL_CLASSIFICATION="CURRENT"
+        FORMAL_REASON="submitted_human_review_and_current_material_claim_receipt"
+        FORMAL_STATUS="clean"
+    else
+        FORMAL_CLASSIFICATION="NOT_PROVEN"
+        FORMAL_REASON="current_human_review_without_claim_evidence"
+        FORMAL_STATUS="unusable"
+    fi
 elif [[ "$CORE_STALE_REVIEW_COUNT" -gt 0 ]]; then
     FORMAL_CLASSIFICATION="STALE"
     FORMAL_REASON="latest_human_review_predates_candidate_head"
