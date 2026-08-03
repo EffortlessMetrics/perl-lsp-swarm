@@ -85,37 +85,31 @@ deliberate, evidence-backed, and reversible-in-principle.
 
 ---
 
-## Issue lifecycle
+## Issue lifecycle and disposition
 
-The desk tracks each issue through explicit states. Most states map directly to
-**existing** labels (see the reconciliation table below); a few are proposed
-refinements that must be created before agents rely on them.
+The desk records descriptive issue states in the issue body and linked receipts.
+Labels remain stable navigation metadata; they do not authorize a plan stage,
+assignment, build state, review, or merge.
 
 ```text
 candidate     → a raw finding, not yet verified
 researched    → claims grounded against source
 filed         → exists as a GitHub issue
-needs-plan-review → in the verification + plan-review pipeline
-plan-reviewed → spec refined and approved (PIPELINE_GATES.md's Gate-2 exit label)
-architecture-reviewed → structural fit confirmed (when relevant)
-builder-ready → desk-level issue-quality marker; see reconciliation note below
-in-build      → builder working (PR exists)
-implemented   → PR merged
+plan-reviewed → plan disposition recorded in the body and receipts
+architecture-reviewed → structural fit recorded when relevant
+builder-ready → work-packet quality recorded in the body and receipts
+implementation → native PR state and checks
+implemented   → native merged PR and closeout receipt
 superseded    → replaced by other work
 duplicate     → folded into another issue
 stale         → invalidated by main moving
 blocked       → waiting on a dependency or authority
 ```
 
-**Reconciliation note (Gate-2 exit label):** [PIPELINE_GATES.md](./PIPELINE_GATES.md)
-defines Gate 2's exit condition as the `plan-reviewed` label — spec-planner (which
-creates the impl branch and `.spec/` checklist) runs *within* Gate 2, after
-plan-review, so Gate 2 can close out on `plan-reviewed` alone. This desk additionally
-tracks `builder-ready` as a supplementary issue-quality marker (all ten work-order
-sections answered and reviewed) for issues that flow through the lighter
-`research_finding.yml` intake rather than spec-planner's impl-branch path. Treat
-`plan-reviewed` as authoritative for the Gate 2 → Gate 3 transition; `builder-ready`
-is advisory quality signal, not a second required gate.
+Plan review and builder readiness are dispositions, not admission labels. The
+issue body, linked specification, review receipts, and native PR state together
+carry the current decision; historical labels may remain as context until the
+label-consumer cleanup is complete.
 
 ### Label reconciliation (existing vs proposed)
 
@@ -126,10 +120,10 @@ exists** and treats the rest as proposals:
 | Desk concept | Existing label to use now | Proposed refinement (not yet created) |
 |--------------|---------------------------|----------------------------------------|
 | Raw finding needs triage | `swarm-discovered` | `needs-triage`, `needs-research` |
-| In verification + plan-review | `needs-plan-review` | — |
-| Spec approved | `plan-reviewed` | — |
-| Structural fit confirmed | `architecture-reviewed` | `needs-architecture-review` (routing flag) |
-| Ready to build | `builder-ready` | — |
+| In verification + plan-review | issue body and review receipt | — |
+| Spec approved | issue body/spec disposition | — |
+| Structural fit confirmed | issue body/review receipt | — |
+| Ready to build | work-packet body and acceptance evidence | — |
 | Blocks other work | `structural-blocker` | generic `blocked` |
 | Needs a reproduction | — (note in body) | `needs-repro` |
 | Needs acceptance tests | — (note in body) | `needs-acceptance-tests` |
@@ -138,12 +132,10 @@ exists** and treats the rest as proposals:
 | Replaced by other work | close, cross-link the replacement | `superseded` |
 | Folded into another issue | close with `state_reason: duplicate` | — |
 
-**Rule:** do not apply a label that does not exist — GitHub silently drops
-unknown labels from issue templates and API calls, producing a no-op that looks
-like routing. Proposed labels must be created by a maintainer **and** added to
-[LIVE_SIGNALS_VS_LABELS.md](./LIVE_SIGNALS_VS_LABELS.md) before any agent uses
-them. Until then, use the existing label and record the finer state in the issue
-body.
+**Rule:** do not use lifecycle labels as routing or completion authority. Use
+native issue/PR state, checks, reviews, threads, close reasons, and receipts;
+stable labels may classify the area, risk, release, blocker, or requested human
+decision.
 
 ---
 
@@ -332,7 +324,7 @@ Two GitHub-Forms templates support the desk's entry points:
 | Template | File | Entry label | Use |
 |----------|------|-------------|-----|
 | Research Finding | [`research_finding.yml`](../../.github/ISSUE_TEMPLATE/research_finding.yml) | `swarm-discovered`, `needs-triage` | A raw observation or hypothesis to verify and dedupe before it enters plan review |
-| Builder-Ready Plan | [`builder_ready.yml`](../../.github/ISSUE_TEMPLATE/builder_ready.yml) | `swarm-discovered`, `needs-plan-review` | A fully structured work-order proposal entering the verification + plan-review pipeline |
+| Builder-Ready Plan | [`builder_ready.yml`](../../.github/ISSUE_TEMPLATE/builder_ready.yml) | `swarm-discovered` | A fully structured work packet whose plan disposition is recorded in the body and linked receipts |
 
 The two templates differ by **depth and intent**, not just fields: a research
 finding is a hypothesis at the `candidate`/`researched` stage; a builder-ready
