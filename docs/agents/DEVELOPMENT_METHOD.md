@@ -212,7 +212,26 @@ final mutable challenge, fixed formal review, accountable integration judgment,
 and landed reconciliation. CI and reviewer/subagent conclusions are evidence for
 the accountable owner, not approval by themselves.
 
-The root may perform a pass directly or delegate focused read-only research, proof, or review inside the selected claim when that changes the evidence surface or reduces elapsed work. Delegation is a runtime choice, not a durable execution topology.
+The root may perform a pass directly or delegate focused read-only research, proof, or review inside the selected claim when that changes the evidence surface or reduces elapsed work. Delegate when the evidence-to-answer compression ratio is high: CI or log triage, corpus or repository-wide searches, dependency/API audits, external-source collection, failure bisection, broad inventories, or an independently useful proof adversary. The child returns bounded evidence and references; the warm root keeps decisions, contradictions, and integration. Delegation is a runtime choice, not a durable execution topology, and it is never required merely to relay attention.
+
+### Review standard
+
+Review is **directed, falsifying, and verified**. Aim it at the declared claim and its
+real production seam, and try to disprove the claim rather than merely restating the
+diff or green checks. Where applicable, establish:
+
+- claim honesty against current source and external authority;
+- semantic and external correctness;
+- proof discrimination against a realistic wrong implementation;
+- production-path reachability;
+- negative and fallback behavior;
+- compatibility and rollback;
+- remaining uncertainty and evidence limits.
+
+A clean review is valid when these questions were considered and no actionable finding
+remains. Do not manufacture a finding, edit, or second identity to make review visible.
+Material candidate or claim changes require affected proof and a fresh review of the
+resulting candidate.
 
 ## Hard stops
 
