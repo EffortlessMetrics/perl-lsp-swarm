@@ -101,10 +101,6 @@ skip = [
     # syn: 2.x vs 3.x split (ecosystem transition).
     # 2.0.117 — most crates use syn 2.x. 3.0.2 — clap_derive (via criterion) pulls syn 3.x.
     { crate = "syn@2.0.117", reason = "most crates use syn 2.x; clap_derive (criterion) pulls 3.x" },
-
-    # similar: 2.x vs 3.x split.
-    # 2.7.0 — insta (dev-deps) pins similar 2.x. 3.1.1 — xtask uses similar 3.x.
-    { crate = "similar@2.7.0", reason = "insta (dev-deps) pins similar 2.x; xtask uses 3.x" },
 ]
 
 # Windows platform crate duplicates: windows-sys 0.52 (ring 0.17 tree) pulls in
