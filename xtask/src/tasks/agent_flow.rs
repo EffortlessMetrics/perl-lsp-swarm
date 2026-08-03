@@ -181,15 +181,7 @@ pub fn run(config: CheckConfig) -> Result<()> {
 pub fn run_scenarios(config: ScenarioConfig) -> Result<()> {
     let root = project_root()?;
     let report = check_repository(&root, None)?;
-    let scenarios = report.scenarios;
-    let result = if report.errors.is_empty() { "PASS" } else { "FAIL" };
-    let output = ScenarioOutput {
-        schema: "agent-flow-scenarios.v1",
-        result,
-        fixture_count: scenarios.fixture_count,
-        checked_providers: scenarios.checked_providers,
-        errors: report.errors,
-    };
+    let output = scenario_output(report);
 
     match config.format.as_str() {
         "human" => {
@@ -211,6 +203,18 @@ pub fn run_scenarios(config: ScenarioConfig) -> Result<()> {
         bail!("agent-flow scenarios failed")
     }
     Ok(())
+}
+
+fn scenario_output(report: CheckReport) -> ScenarioOutput {
+    let scenarios = report.scenarios;
+    let result = if scenarios.errors.is_empty() { "PASS" } else { "FAIL" };
+    ScenarioOutput {
+        schema: "agent-flow-scenarios.v1",
+        result,
+        fixture_count: scenarios.fixture_count,
+        checked_providers: scenarios.checked_providers,
+        errors: scenarios.errors,
+    }
 }
 
 fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckReport> {
@@ -592,5 +596,23 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("no route from 'deliver-pr' to 'prepare-proof'"))
         );
+    }
+
+    #[test]
+    fn scenario_output_ignores_unrelated_inventory_errors() {
+        let output = super::scenario_output(super::CheckReport {
+            schema: "agent-flow-check.v1",
+            result: "FAIL",
+            providers: BTreeMap::new(),
+            scenarios: super::ScenarioReport {
+                fixture_count: SCENARIO_FIXTURES.len(),
+                checked_providers: vec!["codex".to_string()],
+                errors: Vec::new(),
+            },
+            errors: vec!["codex: unrelated metadata error".to_string()],
+            advisories: Vec::new(),
+        });
+        assert_eq!(output.result, "PASS");
+        assert!(output.errors.is_empty());
     }
 }
