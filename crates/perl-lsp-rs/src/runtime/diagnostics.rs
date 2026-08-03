@@ -1882,7 +1882,10 @@ impl LspServer {
             crate::perl_critic::CriticContext::new(doc_text, ast.as_ref(), &critic_config);
         let profile = crate::perl_critic::NativeCriticProfile::parse(&native_profile)
             .unwrap_or(crate::perl_critic::NativeCriticProfile::Strict);
-        let registry = crate::perl_critic::NativeCriticRegistry::for_profile(profile);
+        let mut registry = crate::perl_critic::NativeCriticRegistry::for_profile(profile);
+        // Add strict-only rules that the user explicitly included via
+        // include=[...] even when the active profile is 'recommended' (#4984).
+        registry.ensure_included(&critic_config.include);
 
         diagnostics
             .extend(registry.check(&critic_context).into_iter().map(native_finding_to_diagnostic));
