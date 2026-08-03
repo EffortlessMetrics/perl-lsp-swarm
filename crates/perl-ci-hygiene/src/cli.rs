@@ -130,7 +130,7 @@ pub(crate) enum CliCommand {
     CheckUnwrapsModules,
     /// Enforce production unwrap/panic-family budgets.
     CheckUnwrapsProd,
-    /// Enforce test-code `panic!` budget against `ci/panic_test_baseline.txt`.
+    /// Enforce complete test-code `panic!` identities against `ci/panic_test_identities.json`.
     CheckPanicTest {
         /// Emit the complete test-source panic identity inventory without applying the legacy count gate.
         #[arg(long)]
