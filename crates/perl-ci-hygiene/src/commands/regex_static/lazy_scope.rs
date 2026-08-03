@@ -2,7 +2,7 @@
 //!
 //! A `Regex::new(...)` / `RegexBuilder::new(...)` / `Regex::builder(...)` call is
 //! allowed when it is reached from inside a lazily-evaluated static initializer
-//! (`LazyLock`, `LazyCell`, `std::sync::LazyLock`, or `OnceLock::get_or_init`),
+//! (`LazyLock`/`LazyCell`, or `OnceLock::get_or_init`),
 //! because the regex is then compiled exactly once rather than per call.
 //!
 //! The existing hygiene ratchets are line-based scanners, so a `LazyLock::new(|| {
@@ -19,10 +19,9 @@
 
 /// Substrings that open a lazy / once-cell static initializer. A regex constructor
 /// reached from inside one of these is compiled once and is therefore allowed.
-const LAZY_INIT_TRIGGERS: [&str; 5] = [
-    "LazyLock::new(",
+const LAZY_INIT_TRIGGERS: [&str; 4] = [
+    "LazyLock::new(", // std::sync::LazyLock (the only Lazy type after once_cell removal)
     "LazyCell::new(",
-    "LazyLock::new(",    // std::sync::LazyLock
     ".get_or_init(", // OnceLock / OnceCell runtime-chosen pattern
     ".get_or_try_init(",
 ];
