@@ -39,6 +39,8 @@ impl TcpAttachSession {
     pub fn connect(&mut self, config: &mut TcpAttachConfig) -> Result<()> {
         config.validate()?;
 
+        // Defense-in-depth: validate() should always populate resolved_addrs
+        // on success, but guard against a future code path that might bypass it.
         if config.resolved_addrs.is_empty() {
             anyhow::bail!("No resolved addresses available after validation");
         }
