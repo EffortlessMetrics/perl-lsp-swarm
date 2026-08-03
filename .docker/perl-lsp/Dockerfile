@@ -44,12 +44,15 @@ RUN cargo build -p perllsp --release --bin perllsp
 FROM perl:5.40-slim-bookworm AS runtime
 
 # Common CPAN modules useful for real projects.
-# cpanminus is already included in the official perl image; we add Moose
-# and ca-certificates here.
+# Install Moose via cpanm (into the Perl 5.40 tree) rather than apt
+# (libmoose-perl targets the Debian system Perl 5.36 and would create two
+# incompatible Perl ecosystems — chatgpt-codex review on PR #5720).
+# ca-certificates is installed via apt (system-level, not Perl-specific).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libmoose-perl \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && cpanm --no-wget Moose \
+    && rm -rf /root/.cpanm
 
 # Copy the compiled LSP server binary.
 COPY --from=builder /build/target/release/perllsp /usr/local/bin/perllsp
