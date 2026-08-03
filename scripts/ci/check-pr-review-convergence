@@ -32,8 +32,8 @@ CORE_SUMMARY="$(sed '/^{/,$d' "$TMP_DIR/core.out")"
 if ! jq -e . >/dev/null 2>&1 <<<"$CORE_JSON"; then
     echo "ERROR: review convergence core did not emit its final JSON verdict" >&2
     cat "$TMP_DIR/core.out" >&2
-    jq -n --argjson pr "$1" \
-        '{pr: $pr, headRefOid: null, converged: false, formal_review: {
+    jq -n --arg pr "$1" \
+        '{pr: ($pr | tonumber? // $pr), headRefOid: null, converged: false, formal_review: {
             classification: "NOT_PROVEN",
             status: "instrument_failure",
             reason: "github_facts_unavailable",
