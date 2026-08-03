@@ -1204,7 +1204,7 @@ impl LspServer {
         for invalid in
             perl_lsp_rs_core::config::ServerConfig::invalid_client_setting_values(settings)
         {
-            let key = format!("{}={}", invalid.setting, invalid.value);
+            let key = format!("{}={}", invalid.setting, invalid.value.trim().to_ascii_lowercase());
             if !self.client_setting_warnings_sent.lock().insert(key) {
                 continue;
             }
@@ -2923,8 +2923,6 @@ mod tests {
     use serde_json::{Value, json};
     use std::io::{self, Write};
     use std::sync::Arc;
-    use std::thread;
-    use std::time::Duration;
 
     #[derive(Clone, Default)]
     struct OutputCapture {
@@ -2987,7 +2985,16 @@ mod tests {
                 }
             }
         })));
-        thread::sleep(Duration::from_millis(50));
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": {
+                "perl": {
+                    "critic": { "engine": " Nativ " }
+                }
+            }
+        })));
+
+        let current_engine = server.config.lock().critic_engine;
+        drop(server);
 
         let messages = output.messages()?;
         let warnings: Vec<&Value> = messages
@@ -3006,10 +3013,7 @@ mod tests {
         assert!(text.contains("critic.engine"));
         assert!(text.contains("nativ"));
         assert!(text.contains("native"));
-        assert_eq!(
-            server.config.lock().critic_engine,
-            perl_lsp_rs_core::config::CriticEngine::Native
-        );
+        assert_eq!(current_engine, perl_lsp_rs_core::config::CriticEngine::Native);
         Ok(())
     }
 

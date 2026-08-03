@@ -642,12 +642,12 @@ impl ServerConfig {
 
         if let Some(critic) = settings.get("critic") {
             if let Some(engine) = critic.get("engine").and_then(|value| value.as_str())
-                && parse_critic_engine(engine).is_none()
+                && parse_lsp_critic_engine(engine).is_none()
             {
                 invalid.push(InvalidClientSetting {
                     setting: "critic.engine",
                     value: engine.to_string(),
-                    valid_options: CRITIC_ENGINE_VALID_OPTIONS,
+                    valid_options: CLIENT_CRITIC_ENGINE_VALID_OPTIONS,
                 });
             }
             if let Some(profile) = critic.get("profile").and_then(|value| value.as_str())
@@ -724,6 +724,13 @@ fn parse_critic_engine(value: &str) -> Option<CriticEngine> {
     }
 }
 
+fn parse_lsp_critic_engine(value: &str) -> Option<CriticEngine> {
+    match parse_critic_engine(value) {
+        Some(CriticEngine::Native) => Some(CriticEngine::Native),
+        Some(CriticEngine::Legacy) | None => None,
+    }
+}
+
 fn parse_native_critic_profile(value: &str) -> Option<&'static str> {
     match value.trim().to_ascii_lowercase().as_str() {
         "recommended" => Some("recommended"),
@@ -742,6 +749,11 @@ const FORMATTER_MODE_VALID_OPTIONS: &str = "native, compat (perltidy-compat), ex
 /// `tracing::warn!` messages when a user supplies an unrecognized value.
 /// Kept in sync with [`parse_critic_engine`].
 const CRITIC_ENGINE_VALID_OPTIONS: &str = "native, legacy (external, perlcritic)";
+
+/// Human-readable values accepted for `critic.engine` on the LSP client-settings
+/// channel. Legacy subprocess aliases remain available only through trusted
+/// project configuration.
+const CLIENT_CRITIC_ENGINE_VALID_OPTIONS: &str = "native";
 
 /// Human-readable list of accepted `critic.profile` values, used in
 /// `tracing::warn!` messages when a user supplies an unrecognized value.
@@ -3785,7 +3797,7 @@ profile = "recommended"
                 InvalidClientSetting {
                     setting: "critic.engine",
                     value: "nativ".to_string(),
-                    valid_options: CRITIC_ENGINE_VALID_OPTIONS,
+                    valid_options: CLIENT_CRITIC_ENGINE_VALID_OPTIONS,
                 },
                 InvalidClientSetting {
                     setting: "critic.profile",
@@ -3800,13 +3812,13 @@ profile = "recommended"
             ]
         );
 
-        assert!(
-            ServerConfig::invalid_client_setting_values(&serde_json::json!({
-                "critic": { "engine": " LEGACY ", "profile": "STRICT" },
-                "formatting": { "engine": "external_perltidy" }
-            }))
-            .is_empty()
-        );
+        let legacy = ServerConfig::invalid_client_setting_values(&serde_json::json!({
+            "critic": { "engine": " LEGACY ", "profile": "STRICT" },
+            "formatting": { "engine": "external_perltidy" }
+        }));
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].setting, "critic.engine");
+        assert_eq!(legacy[0].valid_options, CLIENT_CRITIC_ENGINE_VALID_OPTIONS);
     }
 
     #[test]
