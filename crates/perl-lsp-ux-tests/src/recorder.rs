@@ -561,6 +561,7 @@ fn run_ux_scenario_with_receipt_dir<F>(
             let class = classify_error(err);
             let receipt = recorder.finish_fail(class);
             write_wrapper_receipt(&recorder, &receipt, receipt_dir);
+            report_scenario_failure(test_name, err);
             std::panic::resume_unwind(Box::new(format!("UX scenario failed: {err}")));
         }
         // Closure panicked — write receipt then re-raise.
@@ -570,6 +571,18 @@ fn run_ux_scenario_with_receipt_dir<F>(
             std::panic::resume_unwind(panic_payload);
         }
     }
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "failed UX scenarios must preserve their actionable error chain in CI logs"
+)]
+fn report_scenario_failure(test_name: &str, error: &anyhow::Error) {
+    eprintln!("{}", format_scenario_failure(test_name, error));
+}
+
+fn format_scenario_failure(test_name: &str, error: &anyhow::Error) -> String {
+    format!("UX scenario `{test_name}` failed: {error:#}")
 }
 
 fn write_wrapper_receipt(
@@ -1065,6 +1078,19 @@ mod tests {
         assert_eq!(receipt.route, Some(UxRoute::Triage));
         assert_eq!(receipt.assertions.failed, Some(1));
         assert_eq!(receipt.assertions.failed_check_names, vec!["this will fail"]);
+        Ok(())
+    }
+
+    #[test]
+    fn scenario_failure_report_preserves_error_chain() -> Result<(), Box<dyn std::error::Error>> {
+        let root = anyhow::anyhow!("command not allowed");
+        let error = root.context("workspace/executeCommand rejected the request");
+
+        let report = format_scenario_failure("scenario_44", &error);
+
+        assert!(report.contains("scenario_44"));
+        assert!(report.contains("workspace/executeCommand rejected the request"));
+        assert!(report.contains("command not allowed"));
         Ok(())
     }
 
