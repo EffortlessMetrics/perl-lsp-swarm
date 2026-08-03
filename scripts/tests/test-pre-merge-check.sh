@@ -22,7 +22,11 @@ make_mock_gh() {
     json="$1"
     cat > "$tmpdir/gh" <<EOF
 #!/usr/bin/env bash
-printf '%s' '$json'
+if [[ "\$*" == *"repo view"* ]]; then
+    printf '%s' 'test-owner/test-repo'
+else
+    printf '%s' '$json'
+fi
 EOF
     chmod +x "$tmpdir/gh"
     echo "$tmpdir"
@@ -39,7 +43,9 @@ run_check() {
     local mock_dir="$1"
     local pr_number="${2:-42}"
     local code=0
-    PATH="$mock_dir:$PATH" bash "$IMPL" "$pr_number" >/dev/null 2>&1 || code=$?
+    PATH="$mock_dir:$PATH" \
+        CONVERGENCE_TEST_FIXTURE_DIR="$SCRIPT_DIR/../ci/fixtures/convergence/all-resolved-converges" \
+        bash "$IMPL" "$pr_number" >/dev/null 2>&1 || code=$?
     echo "$code"
 }
 
@@ -48,7 +54,9 @@ run_check_with_output() {
     local pr_number="${2:-42}"
     local code=0
     local output
-    output="$(PATH="$mock_dir:$PATH" bash "$IMPL" "$pr_number" 2>&1)" || code=$?
+    output="$(PATH="$mock_dir:$PATH" \
+        CONVERGENCE_TEST_FIXTURE_DIR="$SCRIPT_DIR/../ci/fixtures/convergence/all-resolved-converges" \
+        bash "$IMPL" "$pr_number" 2>&1)" || code=$?
     echo "EXIT:$code"
     echo "$output"
 }

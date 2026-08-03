@@ -2548,7 +2548,6 @@
 | `.github/workflows/methodology-gate.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/perl-core-harness.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/perl-version-matrix.yml` | config | `non-rust-github-workflows` | release/ci |
-| `.github/workflows/pipeline-labels.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/policy-validators.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/post-merge-corpus-ratchet.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/post-merge-status.yml` | config | `non-rust-github-workflows` | release/ci |

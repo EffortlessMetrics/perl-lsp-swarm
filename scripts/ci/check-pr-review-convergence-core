@@ -125,6 +125,9 @@
 # script treats native `reviewRequests` as the durable, repo-visible
 # blocking state: while non-empty, convergence is BLOCKED regardless of
 # thread state. No lifecycle label is required to represent this state.
+# Native `reviewRequests`, current-head review state, review threads, and
+# receipts are the provider-visible evidence; lifecycle labels are not
+# convergence authority.
 #
 # ── Pagination ───────────────────────────────────────────────────────────────
 #
