@@ -147,17 +147,17 @@ fn test_tcp_attach_session_disconnect() {
 
 #[test]
 fn test_tcp_attach_config_edge_cases() {
-    // Test with IPv6 address
+    // Test with IPv6 loopback
     let config = TcpAttachConfig::new("::1".to_string(), 13603);
     assert!(config.validate().is_ok());
 
-    // Test with hostname
-    let config = TcpAttachConfig::new("example.com".to_string(), 13603);
+    // Test with a public IP literal (RFC 5737 TEST-NET-3 — no DNS required).
+    let config = TcpAttachConfig::new("203.0.113.1".to_string(), 13603);
     assert!(config.validate().is_ok());
 
-    // Test with IP address
+    // Test with private IP — rejected by SSRF guard.
     let config = TcpAttachConfig::new("192.168.1.1".to_string(), 13603);
-    assert!(config.validate().is_ok());
+    assert!(config.validate().is_err());
 
     // Test with maximum valid port
     let config = TcpAttachConfig::new("localhost".to_string(), 65535);

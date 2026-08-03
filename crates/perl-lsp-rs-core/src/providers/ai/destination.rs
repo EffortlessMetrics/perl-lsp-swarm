@@ -51,6 +51,52 @@ pub enum DestinationError {
 
 type ResolveFn = dyn Fn(&str, u16) -> Result<Vec<IpAddr>, DestinationError>;
 
+/// Validate a bare hostname or IP for use in a TCP connection (non-HTTP context).
+///
+/// Accepts loopback addresses. Rejects private, link-local, CGNAT, and metadata
+/// addresses using the same policy as [`validate_endpoint`]. For IP literals the
+/// check is purely local; for hostnames it resolves via DNS so every returned
+/// address is checked.
+///
+/// # Errors
+///
+/// Returns [`DestinationError::DisallowedAddress`] for any address that falls in
+/// a blocked range, [`DestinationError::LocalhostNotLoopback`] when `localhost`
+/// resolves to a non-loopback address, and [`DestinationError::UnresolvedHost`]
+/// when DNS returns no results.
+pub fn reject_ssrf_tcp_host(host: &str, port: u16) -> Result<(), DestinationError> {
+    reject_ssrf_tcp_host_with_resolver(host, port, &default_resolver)
+}
+
+/// Like [`reject_ssrf_tcp_host`], but with an injectable DNS resolver (for tests).
+///
+/// The resolver is bound by lifetime `'r` rather than `'static` so callers may
+/// pass short-lived closures that capture local variables (e.g. a test fixture
+/// that returns a fixed set of addresses).
+pub fn reject_ssrf_tcp_host_with_resolver<'r>(
+    host: &str,
+    port: u16,
+    resolve: &'r (dyn Fn(&str, u16) -> Result<Vec<IpAddr>, DestinationError> + 'r),
+) -> Result<(), DestinationError> {
+    let host = host.trim();
+    if host.is_empty() {
+        return Err(DestinationError::UnresolvedHost);
+    }
+    let host_bare = strip_ipv6_brackets(host);
+    let resolved_ips = resolve(host_bare, port)?;
+    if resolved_ips.is_empty() {
+        return Err(DestinationError::UnresolvedHost);
+    }
+    let all_loopback = resolved_ips.iter().copied().all(|ip| ip.is_loopback());
+    if host_bare.eq_ignore_ascii_case("localhost") && !all_loopback {
+        return Err(DestinationError::LocalhostNotLoopback);
+    }
+    if resolved_ips.iter().copied().any(is_disallowed_address) {
+        return Err(DestinationError::DisallowedAddress);
+    }
+    Ok(())
+}
+
 /// Validate `url` and resolve its host before any outbound AI HTTP request.
 pub fn validate_endpoint(
     url: &str,
