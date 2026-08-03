@@ -6,7 +6,9 @@
 //! Perl debugger process.
 
 use perl_dap::tcp_attach::{DapEvent, TcpAttachConfig, TcpAttachSession};
-use perl_dap::{BridgeAdapter, DapConfig, DapMode, DapServer};
+use perl_dap::{BridgeAdapter, DapConfig, DapMode, DapServer, DapSocketBindError};
+use std::io;
+use std::net::TcpListener;
 use std::time::Duration;
 
 // ── DapMode ────────────────────────────────────────────────────────
@@ -67,6 +69,31 @@ fn dap_server_socket_rejects_bridge_mode() -> Result<(), Box<dyn std::error::Err
     assert!(result.is_err(), "Socket transport should be rejected in bridge mode");
     let err_msg = result.err().ok_or("Expected error")?.to_string();
     assert!(err_msg.contains("not supported"), "Error should mention lack of support: {err_msg}");
+    Ok(())
+}
+
+#[test]
+fn dap_server_socket_reports_occupied_native_port_before_accept()
+-> Result<(), Box<dyn std::error::Error>> {
+    let occupied = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = occupied.local_addr()?.port();
+    let config =
+        DapConfig { log_level: "info".to_string(), mode: DapMode::Native, workspace_root: None };
+    let mut server = DapServer::new(config)?;
+
+    let error = match server.run_socket(port) {
+        Ok(()) => return Err(io::Error::other("occupied native port unexpectedly accepted").into()),
+        Err(error) => error,
+    };
+    let marker = error.downcast_ref::<DapSocketBindError>().ok_or_else(|| {
+        io::Error::other("native bind failure did not preserve the DAP bind marker")
+    })?;
+    assert_eq!(marker.port, port, "bind marker must preserve the occupied port");
+    let source = error
+        .downcast_ref::<io::Error>()
+        .ok_or_else(|| io::Error::other("native bind source must remain available"))?;
+    assert_eq!(source.kind(), io::ErrorKind::AddrInUse);
+    assert!(error.to_string().contains(&port.to_string()));
     Ok(())
 }
 
