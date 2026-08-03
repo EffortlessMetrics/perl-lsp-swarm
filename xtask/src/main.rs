@@ -1245,6 +1245,17 @@ enum Commands {
         json: bool,
     },
 
+    /// Compose candidate, review, required-check, and protected-merge facts.
+    #[command(name = "gh-preflight")]
+    GhPreflight {
+        /// Pull request number.
+        #[arg(long)]
+        pr: u64,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Generate bindings
     #[cfg(feature = "parser-tasks")]
     Bindings {
@@ -4414,6 +4425,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::GhReviewConvergence { pr, json } => {
             github_review::run_review_convergence(pr, json)
         }
+        Commands::GhPreflight { pr, json } => github_preflight::run_preflight(pr, json),
         Commands::CorpusAudit { corpus_path, output, check, fresh } => {
             corpus_audit::run(corpus_audit::AuditConfig {
                 corpus_path,
