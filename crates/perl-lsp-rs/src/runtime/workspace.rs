@@ -1943,24 +1943,31 @@ impl LspServer {
                         continue;
                     };
 
+                    // Normalize URIs so the index and pinned_doc_map_for
+                    // lookups (which use normalize_uri_key / uri_key) match
+                    // regardless of percent-encoding or case differences in
+                    // the client-supplied URIs (#3665).
+                    let old_uri = self.normalize_uri_key(old_uri);
+                    let new_uri = self.normalize_uri_key(new_uri);
+
                     tracing::debug!("File renamed: {} -> {}", old_uri, new_uri);
 
                     // Update the index for the renamed file
                     // Note: Mutation operation - use coordinator with lifecycle tracking
                     #[cfg(feature = "workspace")]
                     if let Some(coordinator) = self.coordinator() {
-                        coordinator.notify_change(old_uri);
-                        coordinator.notify_change(new_uri);
+                        coordinator.notify_change(&old_uri);
+                        coordinator.notify_change(&new_uri);
 
                         // Remove old file from index
-                        coordinator.index().remove_file(old_uri);
+                        coordinator.index().remove_file(&old_uri);
 
                         // Index new file if it's a Perl file
-                        if is_perl_source_uri(new_uri) {
-                            if let Some(path) = uri_to_fs_path(new_uri) {
+                        if is_perl_source_uri(&new_uri) {
+                            if let Some(path) = uri_to_fs_path(&new_uri) {
                                 match read_text_file_with_encoding(&path) {
                                     Ok(content) => {
-                                        if let Ok(url) = url::Url::parse(new_uri) {
+                                        if let Ok(url) = url::Url::parse(&new_uri) {
                                             match coordinator.index().index_file(url, content) {
                                                 Ok(()) => {
                                                     tracing::debug!(
@@ -1987,15 +1994,15 @@ impl LspServer {
                             }
                         }
 
-                        coordinator.notify_parse_complete(old_uri);
-                        coordinator.notify_parse_complete(new_uri);
+                        coordinator.notify_parse_complete(&old_uri);
+                        coordinator.notify_parse_complete(&new_uri);
                     }
 
                     // Update document store
                     {
                         let mut documents = self.documents.lock();
-                        if let Some(doc) = documents.remove(old_uri) {
-                            documents.insert(new_uri.to_string(), doc);
+                        if let Some(doc) = documents.remove(&old_uri) {
+                            documents.insert(new_uri.clone(), doc);
                         }
                     }
                 }
