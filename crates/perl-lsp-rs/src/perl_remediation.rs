@@ -33,8 +33,9 @@
 ///
 /// If an interpreter-path channel is ever intentionally wired, this constant and
 /// the DAP-side guidance are updated together.
-pub(crate) const PERL_REMEDIATION: &str = "Install Perl (Windows: strawberryperl.com; macOS: `brew install perl`; \
-     Linux: use your system package manager), add `perl` to PATH, then use Developer: Reload Window.";
+pub(crate) const PERL_REMEDIATION: &str = "Install Perl: Windows strawberryperl.com; macOS brew install perl; \
+     Linux package manager; Termux pkg install perl. Add perl to PATH, then restart/reload server. \
+     (VS Code: Developer: Reload Window.)";
 
 #[cfg(test)]
 mod tests {
@@ -59,7 +60,12 @@ mod tests {
         assert!(PERL_REMEDIATION.contains("strawberryperl.com"), "Windows route missing");
         assert!(PERL_REMEDIATION.contains("brew install perl"), "macOS route missing");
         assert!(PERL_REMEDIATION.contains("package manager"), "Linux route missing");
+        assert!(PERL_REMEDIATION.contains("pkg install perl"), "Termux route missing");
         assert!(PERL_REMEDIATION.contains("PATH"), "PATH is the resolution channel");
         assert!(PERL_REMEDIATION.contains("Reload Window"), "must say how to re-trigger detection");
+        assert!(
+            PERL_REMEDIATION.contains("restart/reload server"),
+            "must provide a client-neutral re-trigger action"
+        );
     }
 }
