@@ -229,7 +229,7 @@ pub fn review_snapshot(pr: u64) -> Result<ReviewSnapshot> {
     let (owner, repo) = repository
         .split_once('/')
         .ok_or_else(|| color_eyre::eyre::eyre!("gh returned invalid repository {repository:?}"))?;
-    Ok(collect_snapshot(repository, owner, repo, pr))
+    Ok(collect_snapshot(repository.clone(), owner, repo, pr))
 }
 
 fn collect_snapshot(repository: String, owner: &str, repo: &str, pr: u64) -> ReviewSnapshot {
