@@ -240,6 +240,7 @@ mod tests {
     use crate::tasks::integration_trigger::{
         IntegrationTriggerFinding, ProofPackSelection, TriggerKind,
     };
+    use color_eyre::eyre::eyre;
     use std::process::Command;
     use tempfile::tempdir;
 
@@ -324,6 +325,12 @@ mod tests {
         })?;
         assert_eq!(receipt.result, IntegrationProofResult::Blocked);
         Ok(())
+    }
+
+    #[test]
+    fn wrapped_patch_failure_remains_blocked() {
+        let error = eyre!("git apply failed with conflict").wrap_err("applying the PR net patch");
+        assert!(is_patch_application_failure(&error));
     }
 
     #[test]
