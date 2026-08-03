@@ -29,6 +29,7 @@ import * as path from 'path';
 const EXT_ROOT = path.resolve(__dirname, '..', '..');
 
 type CommandContribution = { command: string; title?: string; category?: string };
+type LocalizationCatalog = Record<string, string>;
 type MenuEntry = { command: string; when?: string };
 type Keybinding = { command: string; key: string; when?: string };
 // Manifest arrays are validated by the surrounding contract assertions. This
@@ -54,6 +55,23 @@ function readPackageJson(): ExtensionManifest {
   return JSON.parse(
     fs.readFileSync(path.join(EXT_ROOT, 'package.json'), 'utf8'),
   ) as ExtensionManifest;
+}
+
+function readLocalizationCatalog(): LocalizationCatalog {
+  return JSON.parse(
+    fs.readFileSync(path.join(EXT_ROOT, 'package.nls.json'), 'utf8'),
+  ) as LocalizationCatalog;
+}
+
+function expectLocalizedCommandTitle(
+  command: CommandContribution | undefined,
+  id: string,
+  englishDefault: string,
+): void {
+  const key = `command.${id.replace(/^perl-lsp\./, '')}.title`;
+  expect(command).toBeDefined();
+  expect(command?.title).toBe(`%${key}%`);
+  expect(readLocalizationCatalog()[key]).toBe(englishDefault);
 }
 
 // ---------------------------------------------------------------------------
@@ -189,12 +207,11 @@ describe('perl-lsp.extractVariable command', () => {
     expect(ids).toContain('perl-lsp.extractVariable');
   });
 
-  test('has title "Extract Variable"', () => {
+  test('has localized title "Extract Variable"', () => {
     const cmd = pkg.contributes.commands.find(
       (c: CommandContribution) => c.command === 'perl-lsp.extractVariable',
     );
-    expect(cmd).toBeDefined();
-    expect(cmd.title).toBe('Extract Variable');
+    expectLocalizedCommandTitle(cmd, 'perl-lsp.extractVariable', 'Extract Variable');
   });
 
   test('has Perl category', () => {
@@ -237,12 +254,11 @@ describe('perl-lsp.runTestAtCursor command', () => {
     expect(ids).toContain('perl-lsp.runTestAtCursor');
   });
 
-  test('has title "Run Test at Cursor"', () => {
+  test('has localized title "Run Test at Cursor"', () => {
     const cmd = pkg.contributes.commands.find(
       (c: CommandContribution) => c.command === 'perl-lsp.runTestAtCursor',
     );
-    expect(cmd).toBeDefined();
-    expect(cmd.title).toBe('Run Test at Cursor');
+    expectLocalizedCommandTitle(cmd, 'perl-lsp.runTestAtCursor', 'Run Test at Cursor');
   });
 
   test('has a command palette entry guarded by editorLangId == perl', () => {
@@ -283,12 +299,11 @@ describe('perl-lsp.extractMethod command', () => {
     expect(ids).toContain('perl-lsp.extractMethod');
   });
 
-  test('has title "Extract Method"', () => {
+  test('has localized title "Extract Method"', () => {
     const cmd = pkg.contributes.commands.find(
       (c: CommandContribution) => c.command === 'perl-lsp.extractMethod',
     );
-    expect(cmd).toBeDefined();
-    expect(cmd.title).toBe('Extract Method');
+    expectLocalizedCommandTitle(cmd, 'perl-lsp.extractMethod', 'Extract Method');
   });
 
   test('has Perl category', () => {
@@ -331,12 +346,11 @@ describe('perl-lsp.showRefactoringOptions command', () => {
     expect(ids).toContain('perl-lsp.showRefactoringOptions');
   });
 
-  test('has title "Show Refactoring Options"', () => {
+  test('has localized title "Show Refactoring Options"', () => {
     const cmd = pkg.contributes.commands.find(
       (c: CommandContribution) => c.command === 'perl-lsp.showRefactoringOptions',
     );
-    expect(cmd).toBeDefined();
-    expect(cmd.title).toBe('Show Refactoring Options');
+    expectLocalizedCommandTitle(cmd, 'perl-lsp.showRefactoringOptions', 'Show Refactoring Options');
   });
 
   test('has Perl category', () => {
@@ -369,12 +383,11 @@ describe('perl-lsp.createDebugConfig command', () => {
     expect(ids).toContain('perl-lsp.createDebugConfig');
   });
 
-  test('has title "Create Debug Configuration"', () => {
+  test('has localized title "Create Debug Configuration"', () => {
     const cmd = pkg.contributes.commands.find(
       (c: CommandContribution) => c.command === 'perl-lsp.createDebugConfig',
     );
-    expect(cmd).toBeDefined();
-    expect(cmd.title).toBe('Create Debug Configuration');
+    expectLocalizedCommandTitle(cmd, 'perl-lsp.createDebugConfig', 'Create Debug Configuration');
   });
 
   test('has Perl category', () => {
@@ -418,8 +431,7 @@ describe('perl-lsp trust explanation commands', () => {
   ])('%s is declared as a Perl command', (id, title) => {
     const cmd = pkg.contributes.commands.find((c: CommandContribution) => c.command === id);
     expect(commandIds).toContain(id);
-    expect(cmd).toBeDefined();
-    expect(cmd.title).toBe(title);
+    expectLocalizedCommandTitle(cmd, id, title);
     expect(cmd.category).toBe('Perl');
   });
 
