@@ -13,8 +13,9 @@ use tempfile::tempdir;
 
 /// Inputs for constructing a synthetic squash result in an isolated worktree.
 ///
-/// All identities are full commit IDs. The PR base is used only to derive the
-/// PR's net patch; neither the PR branch nor the integration base is mutated.
+/// All identities are full commit IDs. The PR base is used to derive the PR's
+/// merge base and net patch; neither the PR branch nor the integration base is
+/// mutated.
 #[derive(Debug, Clone, Copy)]
 pub struct SyntheticSquashRequest<'a> {
     pub repository: &'a Path,
@@ -51,14 +52,14 @@ pub fn construct_synthetic_squash(
         ("PR head", request.pr_head),
         ("integration basis", request.integration_basis),
     ] {
-        validate_full_commit_id(label, identity)?;
-        run_git(request.repository, &["cat-file", "-e", &format!("{identity}^{{commit}}")])
-            .with_context(|| format!("validating {label} commit {identity}"))?;
+        validate_commit_object(request.repository, label, identity)?;
     }
 
+    let merge_base = run_git(request.repository, &["merge-base", request.pr_base, request.pr_head])
+        .context("deriving the PR merge base")?;
     let patch = run_git_bytes(
         request.repository,
-        &["diff", "--binary", "--full-index", request.pr_base, request.pr_head],
+        &["diff", "--binary", "--full-index", merge_base.trim(), request.pr_head],
     )
     .context("deriving the PR net patch")?;
 
@@ -77,9 +78,13 @@ pub fn construct_synthetic_squash(
     .context("creating isolated synthetic integration worktree")?;
 
     let construction = (|| {
-        apply_patch(&worktree, &patch).context("applying the PR net patch")?;
-        let synthetic_tree =
-            run_git(&worktree, &["write-tree"]).context("writing synthetic tree")?;
+        let synthetic_tree = if patch.is_empty() {
+            run_git(&worktree, &["rev-parse", "HEAD^{tree}"])
+                .context("reading unchanged synthetic tree")?
+        } else {
+            apply_patch(&worktree, &patch).context("applying the PR net patch")?;
+            run_git(&worktree, &["write-tree"]).context("writing synthetic tree")?
+        };
         Ok(SyntheticSquashConstruction {
             pr_head: request.pr_head.to_owned(),
             integration_basis: request.integration_basis.to_owned(),
@@ -108,6 +113,19 @@ pub fn construct_synthetic_squash(
 fn validate_full_commit_id(label: &str, identity: &str) -> Result<()> {
     if !is_git_object_id(identity) {
         return Err(eyre!("{label} identity must be a 40-character hexadecimal Git commit ID"));
+    }
+    Ok(())
+}
+
+fn validate_commit_object(repository: &Path, label: &str, identity: &str) -> Result<()> {
+    validate_full_commit_id(label, identity)?;
+    let object_type = run_git(repository, &["cat-file", "-t", identity])
+        .with_context(|| format!("validating {label} object {identity}"))?;
+    if object_type.trim() != "commit" {
+        return Err(eyre!(
+            "{label} identity {identity} must name a commit object, found {}",
+            object_type.trim()
+        ));
     }
     Ok(())
 }
@@ -335,7 +353,6 @@ mod tests {
         fs::write(repository.join("base.txt"), "base\n")?;
         git(&repository, &["add", "base.txt"])?;
         git(&repository, &["commit", "--quiet", "-m", "base"])?;
-        let pr_base = git(&repository, &["rev-parse", "HEAD"])?.trim().to_owned();
         git(&repository, &["branch", "integration"])?;
 
         fs::write(repository.join("candidate.txt"), "candidate\n")?;
@@ -351,7 +368,7 @@ mod tests {
 
         let result = construct_synthetic_squash(SyntheticSquashRequest {
             repository: &repository,
-            pr_base: &pr_base,
+            pr_base: &integration_basis,
             pr_head: &pr_head,
             integration_basis: &integration_basis,
         })?;
@@ -367,6 +384,55 @@ mod tests {
         assert!(
             git(&repository, &["ls-tree", "-r", &result.synthetic_tree])?.contains("unrelated.txt")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_annotated_tag_object_ids() -> Result<()> {
+        let scratch = tempdir()?;
+        let repository = scratch.path().join("repository");
+        fs::create_dir(&repository)?;
+        git(&repository, &["init", "--quiet"])?;
+        git(&repository, &["config", "user.email", "test@example.invalid"])?;
+        git(&repository, &["config", "user.name", "synthetic-test"])?;
+
+        fs::write(repository.join("base.txt"), "base\n")?;
+        git(&repository, &["add", "base.txt"])?;
+        git(&repository, &["commit", "--quiet", "-m", "base"])?;
+        git(&repository, &["tag", "-a", "release", "-m", "release"])?;
+        let tag_object =
+            git(&repository, &["rev-parse", "refs/tags/release^{tag}"])?.trim().to_owned();
+
+        let error = validate_commit_object(&repository, "PR base", &tag_object)
+            .err()
+            .ok_or_else(|| eyre!("expected annotated tag object to be rejected"))?;
+        assert!(error.to_string().contains("must name a commit object"));
+        Ok(())
+    }
+
+    #[test]
+    fn unchanged_trees_return_the_integration_basis_tree() -> Result<()> {
+        let scratch = tempdir()?;
+        let repository = scratch.path().join("repository");
+        fs::create_dir(&repository)?;
+        git(&repository, &["init", "--quiet"])?;
+        git(&repository, &["config", "user.email", "test@example.invalid"])?;
+        git(&repository, &["config", "user.name", "synthetic-test"])?;
+
+        fs::write(repository.join("base.txt"), "base\n")?;
+        git(&repository, &["add", "base.txt"])?;
+        git(&repository, &["commit", "--quiet", "-m", "base"])?;
+        let base = git(&repository, &["rev-parse", "HEAD"])?.trim().to_owned();
+
+        let result = construct_synthetic_squash(SyntheticSquashRequest {
+            repository: &repository,
+            pr_base: &base,
+            pr_head: &base,
+            integration_basis: &base,
+        })?;
+
+        assert_eq!(result.synthetic_tree, git(&repository, &["rev-parse", "HEAD^{tree}"])?.trim());
+        assert_eq!(result.cleanup, SyntheticCleanup::Complete);
         Ok(())
     }
 
