@@ -868,6 +868,7 @@ describe('package.json contributes', () => {
 
       for (const document of [setupGuide, configReference, ...canonicalReferences]) {
         expect(document).not.toContain('perl-lsp.enableDiagnostics');
+        expect(document).not.toMatch(/(?:^|[^.\w])enableDiagnostics(?:$|[^\w])/);
         expect(document).not.toContain('perl-lsp.enableRefactoring');
       }
     });
