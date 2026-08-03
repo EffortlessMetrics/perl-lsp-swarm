@@ -416,15 +416,23 @@ mod tests {
     }
 
     #[test]
-    fn native_socket_bind_failure_preserves_marker_and_io_downcast() {
-        let error = bind_socket_listener_with(13_603, |_port| {
+    fn native_socket_bind_failure_preserves_marker_and_io_downcast() -> anyhow::Result<()> {
+        let error = match bind_socket_listener_with(13_603, |_port| {
             Err(io::Error::new(io::ErrorKind::PermissionDenied, "permission denied"))
-        })
-        .expect_err("injected bind failure must be returned");
+        }) {
+            Ok(_) => anyhow::bail!("injected bind failure unexpectedly succeeded"),
+            Err(error) => error,
+        };
 
-        assert!(error.downcast_ref::<DapSocketBindError>().is_some());
-        let source = error.downcast_ref::<io::Error>().expect("io source must remain downcastable");
+        let marker = error.downcast_ref::<DapSocketBindError>().ok_or_else(|| {
+            io::Error::other("injected bind failure did not preserve the DAP bind marker")
+        })?;
+        assert_eq!(marker.port, 13_603, "bind marker must preserve the requested port");
+        let source = error.downcast_ref::<io::Error>().ok_or_else(|| {
+            io::Error::other("injected bind failure did not preserve its I/O source")
+        })?;
         assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
+        Ok(())
     }
 
     /// Regression for issue #5149 / PR #5318 defect 1, exercised against the actual
