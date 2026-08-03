@@ -416,6 +416,37 @@ impl LspServer {
         params: Option<Value>,
         cancellation_token: Option<Arc<AtomicBool>>,
     ) -> Result<(), JsonRpcError> {
+        self.handle_did_change_with_version_policy(params, cancellation_token, false)
+    }
+
+    /// Reconcile `didSave.text` through the normal full-document lifecycle.
+    ///
+    /// A save carries no new document version authority. The lifecycle still
+    /// needs to advance the internal generation and enqueue a parse, but must
+    /// preserve the latest client version already known for the buffer. The
+    /// equal-version policy is therefore private to this save path.
+    pub(crate) fn handle_did_save_text_replacement(
+        &self,
+        uri: &str,
+        text: &str,
+        version: i32,
+    ) -> Result<(), JsonRpcError> {
+        self.handle_did_change_with_version_policy(
+            Some(serde_json::json!({
+                "textDocument": {"uri": uri, "version": version},
+                "contentChanges": [{"text": text}],
+            })),
+            None,
+            true,
+        )
+    }
+
+    fn handle_did_change_with_version_policy(
+        &self,
+        params: Option<Value>,
+        cancellation_token: Option<Arc<AtomicBool>>,
+        allow_same_version: bool,
+    ) -> Result<(), JsonRpcError> {
         if let Some(params) = params {
             let uri = params
                 .pointer("/textDocument/uri")
@@ -479,7 +510,9 @@ impl LspServer {
                 // We only gate on explicit client-provided versions; if a client omits
                 // the version field we preserve legacy behavior and treat the change as new.
                 if let Some(version) = incoming_version {
-                    if version <= doc_state.version {
+                    if version < doc_state.version
+                        || (!allow_same_version && version == doc_state.version)
+                    {
                         tracing::debug!(
                             "Ignoring stale didChange for {} (incoming version {} <= current {})",
                             uri,

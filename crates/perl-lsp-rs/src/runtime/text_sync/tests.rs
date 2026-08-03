@@ -1445,6 +1445,13 @@ fn test_did_save_text_preserves_client_version() -> Result<(), Box<dyn std::erro
         }
     }))?;
 
+    let initial_generation = server
+        .documents
+        .lock()
+        .get(&server.normalize_uri_key(uri))
+        .ok_or("didSave test document must be open")?
+        .current_generation();
+
     server.handle_did_save(Some(json!({
         "textDocument": {"uri": uri, "version": 3},
         "text": "my $x = 2;\n"
@@ -1455,6 +1462,15 @@ fn test_did_save_text_preserves_client_version() -> Result<(), Box<dyn std::erro
     let document = documents.get(&normalized_uri).ok_or("didSave must retain the open document")?;
     assert_eq!(document.version, 3);
     assert_eq!(document.text, "my $x = 2;\n");
+    assert!(
+        document.current_generation() > initial_generation,
+        "changed didSave text must advance the document generation"
+    );
+    assert_eq!(
+        document.current_parsed().map(|snapshot| snapshot.generation()),
+        Some(document.current_generation()),
+        "changed didSave text must be parsed and published for the new generation"
+    );
     drop(documents);
 
     server.handle_did_save(Some(json!({
