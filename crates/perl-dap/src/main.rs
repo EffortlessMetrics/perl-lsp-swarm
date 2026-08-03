@@ -21,7 +21,7 @@ use perl_dap::backend::{
 use perl_dap::model::{DebugSessionPacket, DebugSource};
 use perl_dap::ptkdb_bootstrap::render_ptkdbrc;
 use perl_dap::session_plan::DebugSessionPlanBuilder;
-use perl_dap::{DapConfig, DapMode, DapServer};
+use perl_dap::{DapConfig, DapMode, DapServer, DapSocketBindError};
 use perl_lsp_rs_core::runtime::launcher::{init_logging, log_server_startup};
 
 const DEFAULT_DAP_PORT: u16 = 13_603;
@@ -37,7 +37,33 @@ fn shell_quote(value: &str) -> String {
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | ':' | '_' | '-' | '/'));
-    if bare { value.to_owned() } else { format!("'{}'", value.replace('\'', r"'\''")) }
+    if bare {
+        value.to_owned()
+    } else if cfg!(windows) {
+        windows_shell_quote(value)
+    } else {
+        format!("'{}'", value.replace('\'', r"'\''"))
+    }
+}
+
+/// Quote a value for a `cmd.exe` command line.
+///
+/// The remediation is displayed to users on the host that will run it. POSIX
+/// single quotes are literal characters to `cmd.exe`, so use its double-quoted
+/// region convention instead. Percent signs are doubled because variable
+/// expansion occurs before command metacharacter handling.
+fn windows_shell_quote(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    for character in value.chars() {
+        match character {
+            '%' => quoted.push_str("%%"),
+            '"' => quoted.push_str("\"\""),
+            _ => quoted.push(character),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 /// Two alternative ports near the one that failed.
@@ -139,6 +165,18 @@ fn bind_editor_listener(
 ) -> anyhow::Result<std::net::TcpListener> {
     std::net::TcpListener::bind(("127.0.0.1", port))
         .map_err(|error| describe_editor_bind_error(port, listener, &error))
+}
+
+/// Preserve the distinction between a native socket bind failure and a later
+/// accepted-session failure while giving bind failures the same user-facing
+/// context as the external-peer paths.
+fn describe_native_socket_error(port: u16, error: anyhow::Error) -> anyhow::Error {
+    match error.downcast_ref::<DapSocketBindError>() {
+        Some(bind) => {
+            describe_editor_bind_error(port, &EditorListener::native_socket(), &bind.source)
+        }
+        None => error,
+    }
 }
 
 /// How long to wait for the external peer handshake / a session poll tick.
@@ -383,25 +421,10 @@ fn main() -> anyhow::Result<()> {
 
     if let Some(port) = resolve_socket_port(&args.transport) {
         tracing::info!("Starting DAP server on port {}", port);
-        // `run_socket` returns `io::Result`, so its bind failure would otherwise
-        // reach the user as a bare `Address already in use (os error 98)`. This
-        // is the default `--socket` path and the most commonly hit of the three.
-        //
-        // Only `AddrInUse` is rewritten. `run_socket` also accepts a connection
-        // and then runs the whole session, so relabelling every one of its
-        // errors as a bind failure would attribute mid-session I/O faults to a
-        // port conflict. `AddrInUse` is the one kind that can only come from the
-        // bind — accept and stream I/O do not produce it — so it is safe to
-        // attribute and everything else passes through untouched.
-        server.run_socket(port).map_err(|error| match error.downcast_ref::<std::io::Error>() {
-            Some(io) if io.kind() == std::io::ErrorKind::AddrInUse => {
-                anyhow::anyhow!(
-                    "{}",
-                    editor_port_in_use_message(port, &EditorListener::native_socket())
-                )
-            }
-            _ => error,
-        })?;
+        // `run_socket` marks the bind operation before accepting a client, so
+        // every bind failure can be contextualized without relabelling later
+        // session I/O failures.
+        server.run_socket(port).map_err(|error| describe_native_socket_error(port, error))?;
         return Ok(());
     }
 
@@ -414,8 +437,9 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Args, DEFAULT_DAP_PORT, EditorListener, bind_editor_listener, describe_editor_bind_error,
-        editor_port_in_use_message, resolve_socket_port, suggested_alternative_ports,
+        Args, DEFAULT_DAP_PORT, DapSocketBindError, EditorListener, bind_editor_listener,
+        describe_editor_bind_error, describe_native_socket_error, editor_port_in_use_message,
+        resolve_socket_port, suggested_alternative_ports, windows_shell_quote,
     };
     use clap::{CommandFactory, Parser};
 
@@ -486,10 +510,21 @@ mod tests {
     fn remediation_quotes_a_spec_that_needs_it() {
         let message =
             editor_port_in_use_message(9000, &EditorListener::peer_listen("a b; rm -rf /"));
+        let expected = if cfg!(windows) {
+            "--external-peer-listen \"a b; rm -rf /\""
+        } else {
+            "--external-peer-listen 'a b; rm -rf /'"
+        };
         assert!(
-            message.contains("--external-peer-listen 'a b; rm -rf /'"),
+            message.contains(expected),
             "a spec with shell metacharacters must be quoted: {message}"
         );
+    }
+
+    #[test]
+    fn windows_remediation_uses_cmd_quoting() {
+        assert_eq!(windows_shell_quote("[::1]:13604"), "\"[::1]:13604\"");
+        assert_eq!(windows_shell_quote("100% ready\"now"), "\"100%% ready\"\"now\"");
     }
 
     /// A non-`AddrInUse` bind failure must still name the port and the listener.
@@ -506,6 +541,36 @@ mod tests {
             !rendered.contains("already in use"),
             "a permission failure must not be reported as a port conflict: {rendered}"
         );
+    }
+
+    #[test]
+    fn native_bind_failures_are_contextualized_without_touching_session_errors() {
+        let bind_error = anyhow::Error::new(DapSocketBindError {
+            port: 13_603,
+            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        });
+        let rendered = describe_native_socket_error(13_603, bind_error).to_string();
+        assert!(rendered.contains("13603"), "must name the port: {rendered}");
+        assert!(rendered.contains("DAP socket transport"), "must name the listener: {rendered}");
+        assert!(!rendered.contains("os error"), "must add bind context: {rendered}");
+
+        let session_error = anyhow::anyhow!("accepted-session failure");
+        assert_eq!(
+            describe_native_socket_error(13_603, session_error).to_string(),
+            "accepted-session failure"
+        );
+    }
+
+    #[test]
+    fn peer_bind_failures_name_their_distinct_roles() {
+        let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        for (listener, expected_role) in [
+            (EditorListener::peer_bridge("127.0.0.1:5000"), "editor-facing bridge listener"),
+            (EditorListener::peer_listen("127.0.0.1"), "editor-facing listen-mode listener"),
+        ] {
+            let rendered = describe_editor_bind_error(13_603, &listener, &error).to_string();
+            assert!(rendered.contains(expected_role), "missing {expected_role}: {rendered}");
+        }
     }
 
     /// The suggested alternatives must be usable and must differ from the port
