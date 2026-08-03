@@ -98,7 +98,10 @@ fn classify(raw: &str, sha: Option<String>) -> UxRegressionReceipt {
     });
 
     let route = route_for_failure_class(failure_class);
-    let result = if raw.contains("test result: ok") { "pass" } else { "fail" }.to_string();
+    let has_failed_test = first_failing_test.is_some()
+        || lines.iter().any(|line| line.contains("test result: FAILED"));
+    let has_passing_summary = lines.iter().any(|line| line.contains("test result: ok"));
+    let result = if has_passing_summary && !has_failed_test { "pass" } else { "fail" }.to_string();
     let blocking = result != "pass";
     let merge_action = if !blocking {
         "merge_allowed"
@@ -361,6 +364,35 @@ mod tests {
         assert_eq!(receipt.result, "pass", "log with 'test result: ok' should produce result=pass");
         assert!(!receipt.blocking);
         assert_eq!(receipt.merge_action, "merge_allowed");
+    }
+
+    #[test]
+    fn classify_mixed_nested_results_fails_closed_on_selected_failure() {
+        let log = "running 1 test\n\
+            test helper::setup ... ok\n\
+            test result: ok. 1 passed; 0 failed\n\
+            test ux_scenario_44_real_editor_trust_smoke_receipt::scenario_44_real_editor_trust_smoke_receipt ... FAILED\n\
+            test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, Some("sha-mixed".to_string()));
+
+        assert_eq!(receipt.result, "fail");
+        assert!(receipt.blocking);
+        assert_ne!(receipt.merge_action, "merge_allowed");
+        assert_eq!(
+            receipt.first_failing_test.as_deref(),
+            Some(
+                "ux_scenario_44_real_editor_trust_smoke_receipt::scenario_44_real_editor_trust_smoke_receipt"
+            )
+        );
+    }
+
+    #[test]
+    fn classify_missing_summary_fails_closed() {
+        let receipt = classify("just ux-tests: command failed before test summary", None);
+
+        assert_eq!(receipt.result, "fail");
+        assert!(receipt.blocking);
+        assert_ne!(receipt.merge_action, "merge_allowed");
     }
 
     #[test]
