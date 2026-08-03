@@ -136,7 +136,7 @@ $unknown->run;
 "#;
 const TYPE_DEFINITION_UNSCANNABLE_LIB_URI: &str = "file:///workspace/lib/Trace/BinaryTypeTarget.pm";
 const TYPE_DEFINITION_UNSCANNABLE_LIB_DOC: &str =
-    "package Trace::BinaryTypeTarget;\n\0not parser-scannable Perl source\n";
+    "package Trace::BinaryTypeTarget;\n\0\0\0\0\0\0\0\0not parser-scannable Perl source\n";
 const TYPE_DEFINITION_UNSCANNABLE_MAIN_URI: &str =
     "file:///workspace/script/type-definition-unscannable.pl";
 const TYPE_DEFINITION_UNSCANNABLE_MAIN_DOC: &str = r#"use strict;
