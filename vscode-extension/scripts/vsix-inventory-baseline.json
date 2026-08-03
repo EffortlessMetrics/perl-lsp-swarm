@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "total_files": 29,
-  "total_bytes": 1507463,
+  "total_bytes": 1507900,
   "files": {
-    "package.json": 55944,
+    "package.json": 56381,
     "language-configuration.json": 1010,
     "icon.png": 8358,
     "gherkin-language-configuration.json": 510,
