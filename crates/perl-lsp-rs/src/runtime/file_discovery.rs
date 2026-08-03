@@ -5,5 +5,6 @@
 
 pub use perl_workspace::discovery::{
     DiscoveryConfig, DiscoveryMethod, DiscoveryResult, discover_perl_files,
-    discover_perl_files_with_config, discover_perl_files_with_include_paths,
+    discover_perl_files_with_config, discover_perl_files_with_config_and_cancel,
+    discover_perl_files_with_include_paths,
 };

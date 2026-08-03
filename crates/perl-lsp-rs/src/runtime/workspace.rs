@@ -186,6 +186,11 @@ fn next_indexing_progress_request_id(next_request_id: &AtomicI32) -> ServerReque
 }
 
 #[cfg(feature = "workspace")]
+fn indexing_cancellation_request_id(progress_create_id: ServerRequestId) -> JsonRpcId {
+    JsonRpcId::String(format!("workspace-indexing:{}", progress_create_id.as_i32()))
+}
+
+#[cfg(feature = "workspace")]
 fn claim_indexing_slot(
     indexing_in_progress: &AtomicBool,
     indexing_rescan_pending: &AtomicBool,
@@ -2194,7 +2199,11 @@ impl LspServer {
         let progress_create_id = next_indexing_progress_request_id(&resources.next_request_id);
         let outbound = resources.outbound;
         let work_done_progress = resources.work_done_progress;
-        let progress_request_id = JsonRpcId::Integer(i64::from(progress_create_id.as_i32()));
+        // Keep the cancellation registry identity in a string namespace. The
+        // progress-create request ID is server-generated, while the registry
+        // also contains client request IDs; sharing numeric IDs would allow a
+        // progress registration to overwrite an unrelated client request.
+        let progress_request_id = indexing_cancellation_request_id(progress_create_id);
         let progress_tokens = resources.progress_tokens;
         let progress_token_to_request = resources.progress_token_to_request;
         if work_done_progress {
@@ -2269,11 +2278,21 @@ impl LspServer {
                     workspace_config.discovery_extra_extensions.clone(),
                     workspace_config.discovery_extra_skipped_dirs.clone(),
                 );
-                let discovery = super::file_discovery::discover_perl_files_with_config(
+                let discovery = super::file_discovery::discover_perl_files_with_config_and_cancel(
                     &root,
                     &workspace_config.include_paths,
                     &discovery_config,
+                    || {
+                        work_done_progress
+                            && GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id)
+                    },
                 );
+
+                if discovery.cancelled {
+                    let elapsed_ms = budget_start.elapsed().as_millis() as u64;
+                    early_exit = Some((EarlyExitReason::Cancelled, elapsed_ms, 0, files.len()));
+                    break 'scan;
+                }
 
                 for path in discovery.files {
                     if GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id) {
@@ -2993,6 +3012,10 @@ mod tests {
     use super::WORKSPACE_INDEX_PROGRESS_TOKEN;
     use super::{LspServer, module_name_appears_in_text};
     #[cfg(feature = "workspace")]
+    use crate::cancellation::{GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken};
+    #[cfg(feature = "workspace")]
+    use crate::protocol::JsonRpcId;
+    #[cfg(feature = "workspace")]
     use crate::util::read_text_file_with_encoding;
     use parking_lot::Mutex;
     use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
@@ -3649,6 +3672,12 @@ mod tests {
         server
             .readiness_receipt_observer_id
             .store(_receipt_observer_guard.id(), std::sync::atomic::Ordering::Relaxed);
+        let client_request_id = JsonRpcId::Integer(1);
+        GLOBAL_CANCELLATION_REGISTRY.remove_request(&client_request_id);
+        GLOBAL_CANCELLATION_REGISTRY.register_token(PerlLspCancellationToken::new(
+            client_request_id.clone(),
+            "client-request".to_string(),
+        ))?;
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         server.test_gate_workspace_indexing_start(started_tx, release_rx);
@@ -3675,6 +3704,12 @@ mod tests {
             || server.progress_token_to_request.lock().contains_key(WORKSPACE_INDEX_PROGRESS_TOKEN)
         {
             return Err("cancelled indexing left progress registration behind".into());
+        }
+        let client_request_preserved =
+            GLOBAL_CANCELLATION_REGISTRY.get_token(&client_request_id).is_some();
+        GLOBAL_CANCELLATION_REGISTRY.remove_request(&client_request_id);
+        if !client_request_preserved {
+            return Err("workspace indexing overwrote a client cancellation registration".into());
         }
         drop(server);
         let messages = output.messages()?;
