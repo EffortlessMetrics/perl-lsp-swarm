@@ -46,11 +46,15 @@ const BINARY_NUL_RATIO: f64 = 0.05;
 /// occurrence of either token (#5209).
 #[must_use]
 pub fn is_binary_content(text: &str) -> bool {
-    // Find the probe window: everything before __DATA__/__END__, capped at
-    // BINARY_PROBE_BYTES. If neither token is present, use the full probe.
-    let probe_bytes = text
-        .get(..BINARY_PROBE_BYTES.min(text.len()))
-        .unwrap_or(text);
+    // Cap the probe at BINARY_PROBE_BYTES, rounding down to a char boundary so
+    // that a multibyte character split at the boundary doesn't cause
+    // str::get to return None (which would silently uncap the probe).
+    let cap = BINARY_PROBE_BYTES.min(text.len());
+    let cap = text.floor_char_boundary(cap);
+    let probe_bytes = &text[..cap];
+
+    // Find the probe window: everything before __DATA__/__END__. If neither
+    // token is present, use the full probe.
     let window = data_section_start(probe_bytes).unwrap_or(probe_bytes.len());
 
     let scan = &probe_bytes[..window];
@@ -67,23 +71,72 @@ pub fn is_binary_content(text: &str) -> bool {
 ///
 /// Both tokens must appear on their own line to be recognized by Perl, so we
 /// only match line-start occurrences.
+///
+/// The offset is computed from the raw byte slice (not `str::lines()`) so that
+/// CRLF line endings are accounted for correctly: `\r\n` is 2 bytes, not 1.
 fn data_section_start(text: &str) -> Option<usize> {
-    text.lines()
-        .scan(0usize, |offset, line| {
-            let trimmed = line.trim_start();
-            let leading = line.len() - trimmed.len();
-            let start = *offset + leading;
-            *offset += line.len() + 1; // +1 for the newline
-            Some((start, trimmed))
-        })
-        .find_map(|(start, line)| {
-            let rest = line.split_ascii_whitespace().next().unwrap_or("");
-            if rest == "__DATA__" || rest == "__END__" {
-                Some(start)
-            } else {
-                None
+    // Iterate over byte offsets, tracking line starts manually to handle both
+    // LF and CRLF endings correctly (str::lines() collapses both to a single
+    // delimiter, losing the byte-count accuracy we need for the returned offset).
+    let bytes = text.as_bytes();
+    let mut line_start = 0usize;
+    while line_start < bytes.len() {
+        // Find the end of this line (next \n or end of text).
+        let line_end = bytes[line_start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(bytes.len(), |pos| line_start + pos);
+
+        // The line content excludes a trailing \r (for CRLF files).
+        let content_end = if line_end > line_start && bytes[line_end - 1] == b'\r' {
+            line_end - 1
+        } else {
+            line_end
+        };
+
+        // Skip leading whitespace to find the first token.
+        let line = &text[line_start..content_end];
+        let trimmed = line.trim_start();
+        let leading = line.len() - trimmed.len();
+        let token_start = line_start + leading;
+
+        let first_word = trimmed.split_ascii_whitespace().next().unwrap_or("");
+        // Perl recognizes __DATA__ and __END__ as line-start tokens. The token
+        // may be followed by punctuation or other text on the same line (Perl's
+        // lexer matches the token and treats the rest of the line as data), so
+        // we check that the first word starts with the marker AND is followed
+        // by a non-identifier character (or end of string). This avoids matching
+        // look-alikes like __DATA__FOO while accepting __DATA__; and __END__.
+        if is_data_marker_token(first_word) {
+            return Some(token_start);
+        }
+
+        // Advance past this line and its line ending (\n or \r\n).
+        line_start = if line_end < bytes.len() { line_end + 1 } else { bytes.len() };
+    }
+    None
+}
+
+/// Returns `true` if `word` is a Perl data-section marker (`__DATA__` or
+/// `__END__`), optionally followed by a non-identifier character (e.g. a
+/// semicolon) or end of string. This mirrors Perl's lexer, which matches the
+/// token at line start and treats the rest of the line as data.
+fn is_data_marker_token(word: &str) -> bool {
+    for marker in &["__DATA__", "__END__"] {
+        if word == *marker {
+            return true;
+        }
+        // Check if the word starts with the marker followed by a non-identifier
+        // character (e.g. "__DATA__;junk" → marker + ";junk").
+        if let Some(rest) = word.strip_prefix(marker) {
+            if let Some(next_char) = rest.chars().next() {
+                if !next_char.is_ascii_alphanumeric() && next_char != '_' {
+                    return true;
+                }
             }
-        })
+        }
+    }
+    false
 }
 
 /// Canonical Perl source file extensions.
@@ -300,7 +353,7 @@ mod tests {
     #[test]
     fn binary_content_single_null_byte_does_not_trigger_guard() {
         // A single stray NUL byte in otherwise-clean Perl source must NOT be
-        // classified as binary — the ratio heuristic requires >1% NUL density
+        // classified as binary — the ratio heuristic requires >5% NUL density
         // (#5209).
         let text = "use strict;\x00\nuse warnings;\n";
         assert!(
@@ -395,6 +448,28 @@ mod tests {
         assert!(
             !is_binary_content(perl),
             "single NUL before __DATA__ must not trigger binary guard"
+        );
+    }
+
+    #[test]
+    fn binary_content_data_section_with_crlf_line_endings() {
+        // CRLF line endings must not corrupt the __DATA__ offset computation
+        // (chatgpt-codex P1 review on PR #5716): \r\n is 2 bytes, not 1.
+        let perl = "package Foo;\r\nuse strict;\r\n1;\r\n__DATA__\r\n\x00\x00\x00binary blob\x00";
+        assert!(
+            !is_binary_content(perl),
+            "binary data after __DATA__ with CRLF endings must not trigger binary guard"
+        );
+    }
+
+    #[test]
+    fn binary_content_punctuated_data_marker() {
+        // Perl recognizes __DATA__ and __END__ even when followed by
+        // punctuation like a semicolon (chatgpt-codex P2 review on PR #5716).
+        let perl = "package Foo;\nuse strict;\n1;\n__DATA__;junk\n\x00\x00\x00binary blob\x00";
+        assert!(
+            !is_binary_content(perl),
+            "binary data after __DATA__; must not trigger binary guard"
         );
     }
 }

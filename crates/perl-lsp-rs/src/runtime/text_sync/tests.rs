@@ -1581,7 +1581,7 @@ fn test_binary_file_guard_dense_null_bytes_trigger_guard() -> Result<(), Box<dyn
 {
     let server = LspServer::new();
     let uri = "file:///test_binary.pl";
-    // 20 NUL bytes in a 40-byte prefix = 50% density, well above the 5% threshold.
+    // 20 NUL bytes in a 35-byte string (~57% density), well above the 5% threshold.
     let binary_content = "#!/usr/bin/perl\n\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
 
     server.did_open(json!({
