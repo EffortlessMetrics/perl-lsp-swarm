@@ -1,7 +1,8 @@
 # perl-lsp Docker image — Perl runtime + perllsp LSP server
 #
 # Stage 1: Build the perllsp binary from source
-# Stage 2: Minimal runtime image with Perl installed
+# Stage 2: Minimal runtime image with Perl 5.40 installed (supports class/method
+#          and try/catch syntax — #5210)
 #
 # Usage (stdio LSP transport):
 #   docker run --rm -i -v "${PWD}:/workspace" ghcr.io/effortlessmetrics/perl-lsp:latest-perl
@@ -36,15 +37,17 @@ RUN cargo build -p perllsp --release --bin perllsp
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 2: runtime
 # ─────────────────────────────────────────────────────────────────────────────
-FROM debian:bookworm-slim AS runtime
+# Use the official Perl 5.40 image as the runtime base instead of
+# debian:bookworm-slim + apt perl (which ships Perl 5.36). Perl 5.40 provides
+# the `class`/`method` syntax (5.38+) and `try`/`catch` (5.34+, experimental
+# stabilization in 5.40) that modern Perl projects depend on (#5210).
+FROM perl:5.40-slim-bookworm AS runtime
 
-# Perl runtime + common CPAN modules useful for real projects.
-# cpanminus bootstraps further module installs inside the container.
+# Common CPAN modules useful for real projects.
+# cpanminus is already included in the official perl image; we add Moose
+# and ca-certificates here.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    perl \
-    perl-modules-5.36 \
     libmoose-perl \
-    cpanminus \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
