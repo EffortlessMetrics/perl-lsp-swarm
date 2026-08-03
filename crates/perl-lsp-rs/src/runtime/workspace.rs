@@ -1348,9 +1348,10 @@ impl LspServer {
                         }
                     }
 
-                    if perl.get("aiCompletion").is_some() {
-                        self.ai_backend_warnings_sent.lock().clear();
-                    }
+                    // A configuration notification starts a new user-visible
+                    // configuration session; do not let an old auth failure
+                    // suppress feedback after settings are changed or removed.
+                    self.ai_backend_warnings_sent.lock().clear();
 
                     // Refresh AI backend when config changes (constructs or clears provider)
                     self.refresh_ai_backend();
