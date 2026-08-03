@@ -44,8 +44,11 @@ perl-parser-bench path/to/project/
 Output:
 
 ```
-total_files=42 error_files=0 success_rate=100.0 total_duration_us=567890
+total_files=42 error_files=0 success_rate=100.0 total_duration_us=567890 walk_errors=0
 ```
+
+The `walk_errors` field counts directory-walk errors (permission denied, I/O
+errors) that were logged to stderr and skipped (#3916).
 
 The `error` flag reports whether the parse returned an `Err` (as distinct from
 a successful parse that contains recoverable errors — those are still counted
