@@ -2974,15 +2974,6 @@ enum MergeReadyCommand {
         #[arg(long)]
         fixture: Option<PathBuf>,
     },
-    /// Reconcile merge-ready label state from receipts.
-    Reconcile {
-        /// Apply changes (default is advisory dry-run).
-        #[arg(long)]
-        apply: bool,
-        /// Force dry-run mode.
-        #[arg(long)]
-        dry_run: bool,
-    },
 }
 
 #[derive(Subcommand)]
@@ -4613,10 +4604,6 @@ fn run_cli(cli: Cli) -> Result<()> {
                 merge_ready::emit(pr, receipt, snapshot)
             }
             MergeReadyCommand::Verify { pr, fixture } => merge_ready::verify(pr, fixture),
-            MergeReadyCommand::Reconcile { apply, dry_run } => {
-                let run_dry = !apply || dry_run;
-                merge_ready::reconcile(run_dry)
-            }
         },
         Commands::IgnoredTests { update, check, check_issue_refs, verbose } => {
             ignored_tests::run(update, check, check_issue_refs, verbose)

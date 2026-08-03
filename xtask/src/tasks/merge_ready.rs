@@ -638,32 +638,6 @@ pub fn verify(pr: Option<u64>, fixture: Option<PathBuf>) -> Result<()> {
     }
 }
 
-pub fn reconcile(dry_run: bool) -> Result<()> {
-    let root = project_root()?;
-    let path = root.join(DEFAULT_RECEIPT_PATH);
-
-    if !path.exists() {
-        println!("missing: {}", path.display());
-        return Ok(());
-    }
-
-    let receipt = load_receipt(&path)?;
-    let required_checks = load_required_checks(&root)?;
-    let current_head = git_output(&root, &["rev-parse", "HEAD"])?;
-    let current_base = resolve_base_sha(&root)?;
-    let current_gate_graph = compute_gate_graph_version(&root, &required_checks)?;
-    let status = evaluate_receipt(&receipt, &current_head, &current_base, &current_gate_graph);
-
-    println!("status={}", status.as_str());
-    if dry_run {
-        println!("advisory: would reconcile merge-ready label changes only");
-    } else {
-        println!("apply: merge-ready reconciliation would be applied by workflow automation");
-    }
-
-    Ok(())
-}
-
 fn evaluate_receipt(
     receipt: &MergeReadinessReceipt,
     current_head: &str,

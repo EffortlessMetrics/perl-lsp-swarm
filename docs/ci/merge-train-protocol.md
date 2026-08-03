@@ -24,8 +24,10 @@ Use existing queue tooling to gather queue context before train construction:
 ```bash
 cargo xtask queue-snapshot --out target/queue-snapshot.json
 cargo xtask queue-health --fixture xtask/tests/fixtures/queue-health/master-green.json # fixture mode example
-cargo xtask merge-ready reconcile --dry-run
 ```
+
+Use the protected merge preflight and current GitHub facts; do not reconcile
+readiness through lifecycle labels.
 
 ## Candidate requirements
 

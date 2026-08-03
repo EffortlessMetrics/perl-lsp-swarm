@@ -71,9 +71,10 @@ Inputs are normalized for line endings and sorted to exclude nondeterministic or
 cargo xtask merge-ready emit --pr <N> --receipt target/receipts/merge-readiness.json
 cargo xtask merge-ready verify --pr <N>
 cargo xtask merge-ready verify --fixture xtask/tests/fixtures/merge-ready/valid.json
-cargo xtask merge-ready reconcile --dry-run
-cargo xtask merge-ready reconcile --apply
 ```
+
+There is no `merge-ready reconcile` command. Readiness is a receipt and live
+GitHub fact, not a lifecycle-label projection.
 
 Verification statuses:
 
