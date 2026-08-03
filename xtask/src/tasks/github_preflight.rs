@@ -327,24 +327,33 @@ fn resolve_required_check(
         .is_none()
         .then(|| statuses.iter().find(|status| status.context == required.name))
         .flatten();
-    match matching {
-        Some(run) => RequiredCheckFact {
-            name: required.name.clone(),
-            result: classify_check(run, candidate_head_sha),
-            evaluated_head_sha: run.head_sha.clone(),
-        },
-        None => match status {
-            Some(status) => RequiredCheckFact {
-                name: required.name.clone(),
-                result: classify_status(status),
-                evaluated_head_sha: Some(candidate_head_sha.to_string()),
-            },
-            None => RequiredCheckFact {
-                name: required.name.clone(),
-                result: "MISSING".to_string(),
-                evaluated_head_sha: None,
-            },
-        },
+    let run_result = matching.map(|run| classify_check(run, candidate_head_sha));
+    let status_result = status.map(classify_status);
+    let result = match (run_result.as_deref(), status_result.as_deref()) {
+        (Some(run), Some(status)) => combine_required_results(run, status),
+        (Some(run), None) => run.to_string(),
+        (None, Some(status)) => status.to_string(),
+        (None, None) => "MISSING".to_string(),
+    };
+    RequiredCheckFact {
+        name: required.name.clone(),
+        result,
+        evaluated_head_sha: matching
+            .and_then(|run| run.head_sha.clone())
+            .or_else(|| status.map(|_| candidate_head_sha.to_string())),
+    }
+}
+
+fn combine_required_results(run: &str, status: &str) -> String {
+    for result in ["INSTRUMENT_FAILURE", "STALE", "FAILURE", "CANCELLED", "PENDING", "SKIPPED"] {
+        if run == result || status == result {
+            return result.to_string();
+        }
+    }
+    if run == "SUCCESS" && status == "SUCCESS" {
+        "SUCCESS".to_string()
+    } else {
+        "INSTRUMENT_FAILURE".to_string()
     }
 }
 
@@ -426,6 +435,13 @@ fn derive_preflight_result(
     }
     if candidate.draft {
         findings.push("candidate is a draft".to_string());
+    }
+    if candidate.mergeability == "UNKNOWN" || candidate.merge_state == "UNKNOWN" {
+        findings.push(format!(
+            "native merge state is NOT_PROVEN: {} / {}",
+            candidate.mergeability, candidate.merge_state
+        ));
+        return ("NOT_PROVEN".to_string(), findings);
     }
     if candidate.mergeability != "MERGEABLE" || candidate.merge_state != "CLEAN" {
         findings.push(format!(
@@ -634,5 +650,43 @@ mod tests {
             app_id: Some(1),
         };
         assert_eq!(resolve_required_check(&required, &runs, &[], "head").result, "SUCCESS");
+    }
+
+    #[test]
+    fn app_neutral_required_context_requires_both_check_sources() {
+        let run = CheckRun {
+            id: 1,
+            name: "required".to_string(),
+            status: "COMPLETED".to_string(),
+            conclusion: Some("SUCCESS".to_string()),
+            head_sha: Some("head".to_string()),
+            started_at: Some("2026-08-02T00:00:00Z".to_string()),
+            app: None,
+        };
+        let status = CommitStatus { context: "required".to_string(), state: "failure".to_string() };
+        let required = RequiredContext {
+            name: "required".to_string(),
+            source: "branch_protection".to_string(),
+            app_id: None,
+        };
+        assert_eq!(resolve_required_check(&required, &[run], &[status], "head").result, "FAILURE");
+    }
+
+    #[test]
+    fn unknown_mergeability_is_not_proven() {
+        let mut candidate = candidate();
+        candidate.mergeability = "UNKNOWN".to_string();
+        let (result, findings) = derive_preflight_result(
+            &candidate,
+            &review("CURRENT", true),
+            &[RequiredCheckFact {
+                name: "required".to_string(),
+                result: "SUCCESS".to_string(),
+                evaluated_head_sha: Some("head".to_string()),
+            }],
+            &[],
+        );
+        assert_eq!(result, "NOT_PROVEN");
+        assert!(findings.iter().any(|finding| finding.contains("NOT_PROVEN")));
     }
 }

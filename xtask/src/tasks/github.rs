@@ -235,7 +235,7 @@ fn merge_required_contexts(
             if let Some(name) = check.get("context").and_then(Value::as_str) {
                 let entry = sources.entry(name.to_string()).or_default();
                 entry.0.insert("ruleset".to_string());
-                if let Some(app_id) = check.get("app_id").and_then(Value::as_u64) {
+                if let Some(app_id) = check.get("integration_id").and_then(Value::as_u64) {
                     entry.1 = Some(app_id);
                 }
             }
@@ -450,7 +450,7 @@ mod tests {
                 "parameters": {
                     "required_status_checks": [
                         { "context": "Shared check" },
-                        { "context": "Ruleset only" }
+                        { "context": "Ruleset only", "integration_id": 42 }
                     ]
                 }
             }
@@ -464,7 +464,8 @@ mod tests {
                 .map(|context| context.source.as_str()),
             Some("branch_protection+ruleset")
         );
-        assert!(contexts.iter().any(|context| context.name == "Ruleset only"));
+        let ruleset_only = contexts.iter().find(|context| context.name == "Ruleset only");
+        assert_eq!(ruleset_only.map(|context| context.app_id), Some(Some(42)));
         Ok(())
     }
 }
