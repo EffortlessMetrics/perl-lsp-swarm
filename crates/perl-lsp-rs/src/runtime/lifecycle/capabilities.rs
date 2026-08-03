@@ -566,6 +566,7 @@ impl LspServer {
                         let mut config = self.config.lock();
                         config.update_from_value(perl);
                     }
+                    self.update_last_formatting_options(perl);
                     {
                         let mut workspace_config = self.workspace_config.lock();
                         workspace_config.update_from_value(perl);
@@ -902,6 +903,13 @@ mod tests {
                     },
                     "inlayHints": {
                         "enabled": false
+                    },
+                    "formatting": {
+                        "tabSize": 2.0,
+                        "insertSpaces": false,
+                        "trimTrailingWhitespace": false,
+                        "insertFinalNewline": false,
+                        "trimFinalNewlines": false
                     }
                 }
             }
@@ -914,6 +922,13 @@ mod tests {
 
         let config = server.config.lock();
         assert!(!config.inlay_hints_enabled);
+
+        let formatting = server.last_formatting_options.lock();
+        assert_eq!(formatting.tab_size, 2);
+        assert!(!formatting.insert_spaces);
+        assert_eq!(formatting.trim_trailing_whitespace, Some(false));
+        assert_eq!(formatting.insert_final_newline, Some(false));
+        assert_eq!(formatting.trim_final_newlines, Some(false));
         Ok(())
     }
 

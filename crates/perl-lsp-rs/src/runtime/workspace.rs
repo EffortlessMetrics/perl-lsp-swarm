@@ -21,6 +21,7 @@ use crate::runtime::workspace_progress::{
     send_progress_report,
 };
 use crate::state::workspace_symbol_cap;
+use perl_lsp_rs_core::config::as_config_u64;
 use perl_module::path::file_path_to_module_name;
 use perl_module::rename::{apply_module_rename_edits, plan_module_rename_edits};
 #[cfg(feature = "workspace")]
@@ -2513,7 +2514,7 @@ impl LspServer {
     /// standard LSP names when clients provide them and the repository's
     /// existing formatting aliases for clients that configure the formatter
     /// through `didChangeConfiguration`.
-    fn update_last_formatting_options(&self, settings: &Value) {
+    pub(crate) fn update_last_formatting_options(&self, settings: &Value) {
         let Some(formatting) = settings.get("formatting") else {
             return;
         };
@@ -2522,7 +2523,7 @@ impl LspServer {
         if let Some(tab_size) = formatting
             .get("tabSize")
             .or_else(|| formatting.get("indentColumns"))
-            .and_then(Value::as_u64)
+            .and_then(as_config_u64)
             .and_then(|value| u32::try_from(value).ok())
             .filter(|value| *value > 0)
         {
@@ -2532,6 +2533,15 @@ impl LspServer {
             options.insert_spaces = insert_spaces;
         } else if let Some(tabs) = formatting.get("tabs").and_then(Value::as_bool) {
             options.insert_spaces = !tabs;
+        }
+        if let Some(value) = formatting.get("trimTrailingWhitespace").and_then(Value::as_bool) {
+            options.trim_trailing_whitespace = Some(value);
+        }
+        if let Some(value) = formatting.get("insertFinalNewline").and_then(Value::as_bool) {
+            options.insert_final_newline = Some(value);
+        }
+        if let Some(value) = formatting.get("trimFinalNewlines").and_then(Value::as_bool) {
+            options.trim_final_newlines = Some(value);
         }
     }
 }

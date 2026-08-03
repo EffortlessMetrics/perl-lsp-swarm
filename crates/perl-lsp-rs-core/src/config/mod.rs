@@ -1181,7 +1181,7 @@ fn string_array(value: Option<&serde_json::Value>) -> Option<Vec<String>> {
 /// `serde_json::Value::as_u64()` rejects JSON floats (e.g. `4.0`), which some
 /// configuration generators emit. This helper accepts both `4` and `4.0` and
 /// also rejects negative values (all config numeric fields are non-negative).
-fn as_config_u64(value: &serde_json::Value) -> Option<u64> {
+pub fn as_config_u64(value: &serde_json::Value) -> Option<u64> {
     value
         .as_u64()
         .or_else(|| value.as_f64().filter(|f| *f >= 0.0 && f.is_finite()).map(|f| f as u64))
