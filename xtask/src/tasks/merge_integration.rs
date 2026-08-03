@@ -161,8 +161,11 @@ mod tests {
     }
 
     #[test]
-    fn verdict_serializes_with_established_evidence_tokens() {
-        assert_eq!(serde_json::to_string(&SyntheticVerdict::NotProven).unwrap(), "\"NOT_PROVEN\"");
-        assert_eq!(serde_json::to_string(&SyntheticVerdict::Failure).unwrap(), "\"FAILURE\"");
+    fn verdict_serializes_with_established_evidence_tokens() -> serde_json::Result<()> {
+        let not_proven = serde_json::to_string(&SyntheticVerdict::NotProven)?;
+        let failure = serde_json::to_string(&SyntheticVerdict::Failure)?;
+        assert_eq!(not_proven, "\"NOT_PROVEN\"");
+        assert_eq!(failure, "\"FAILURE\"");
+        Ok(())
     }
 }
