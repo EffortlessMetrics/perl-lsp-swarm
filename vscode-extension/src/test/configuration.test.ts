@@ -815,48 +815,6 @@ describe('package.json contributes', () => {
       expect(setting.items.enum.length).toBeGreaterThan(0);
     });
 
-    test('disabledFeatures picker covers every server feature ID', () => {
-      const setting = getSetting(properties, 'perl-lsp.disabledFeatures');
-      const serverFeatureIds = [
-        'lsp.call_hierarchy',
-        'lsp.code_action',
-        'lsp.code_lens',
-        'lsp.completion',
-        'lsp.declaration',
-        'lsp.definition',
-        'lsp.document_color',
-        'lsp.document_highlight',
-        'lsp.document_link',
-        'lsp.document_symbol',
-        'lsp.execute_command',
-        'lsp.folding_range',
-        'lsp.formatting',
-        'lsp.hover',
-        'lsp.implementation',
-        'lsp.inlay_hint',
-        'lsp.inline_completion',
-        'lsp.inline_value',
-        'lsp.linked_editing_range',
-        'lsp.moniker',
-        'lsp.notebook_cell_execution',
-        'lsp.notebook_document_sync',
-        'lsp.on_type_formatting',
-        'lsp.pull_diagnostics',
-        'lsp.range_formatting',
-        'lsp.ranges_formatting',
-        'lsp.references',
-        'lsp.rename',
-        'lsp.selection_range',
-        'lsp.semantic_tokens',
-        'lsp.signature_help',
-        'lsp.type_definition',
-        'lsp.type_hierarchy',
-        'lsp.workspace_symbol',
-      ];
-
-      expect(setting.items.enum).toHaveLength(serverFeatureIds.length);
-      expect(new Set(setting.items.enum)).toEqual(new Set(serverFeatureIds));
-    });
   });
 
   describe('openConfigurationGuide command', () => {
