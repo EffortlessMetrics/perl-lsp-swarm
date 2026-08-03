@@ -399,7 +399,7 @@ mod tests {
         let receipt = classify(log, Some("sha-mixed".to_string()));
 
         assert_eq!(receipt.result, "fail");
-        assert!(receipt.blocking, "missing test summary must block the receipt");
+        assert!(receipt.blocking, "selected test failure must block the receipt");
         assert_ne!(receipt.merge_action, "merge_allowed");
         assert_eq!(
             receipt.first_failing_test.as_deref(),
@@ -414,7 +414,7 @@ mod tests {
         let receipt = classify("just ux-tests: command failed before test summary", None);
 
         assert_eq!(receipt.result, "fail");
-        assert!(receipt.blocking, "nonzero command status must block the receipt");
+        assert!(receipt.blocking, "missing test summary must block the receipt");
         assert_ne!(receipt.merge_action, "merge_allowed");
     }
 
@@ -424,7 +424,7 @@ mod tests {
         let receipt = classify_with_exit_status(log, Some("sha-abort".to_string()), Some(134));
 
         assert_eq!(receipt.result, "fail");
-        assert!(receipt.blocking);
+        assert!(receipt.blocking, "nonzero command status must block the receipt");
         assert_ne!(receipt.merge_action, "merge_allowed");
     }
 
