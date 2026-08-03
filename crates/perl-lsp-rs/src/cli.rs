@@ -348,7 +348,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                 Ok(rt) => rt,
                 Err(e) => {
                     eprintln!(
-                        "Perl LSP failed to start: could not initialize the async \
+                        "Perl LSP: failed to start: could not initialize the async \
                          runtime ({e}). This is usually caused by system resource limits. \
                          Try restarting VS Code or increasing your OS thread limits."
                     );
@@ -403,7 +403,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                 Ok(rt) => rt,
                 Err(e) => {
                     eprintln!(
-                        "Perl LSP failed to start: could not initialize the async \
+                        "Perl LSP: failed to start: could not initialize the async \
                          runtime ({e}). This is usually caused by system resource limits. \
                          Try restarting VS Code or increasing your OS thread limits."
                     );
@@ -422,7 +422,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                             );
                         } else {
                             eprintln!(
-                                "Perl LSP could not listen on {addr}: {e}. \
+                                "Perl LSP: could not listen on {addr}: {e}. \
                                  Try a different port with --port or check firewall settings."
                             );
                         }
@@ -433,7 +433,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                     Ok(a) => a,
                     Err(e) => {
                         eprintln!(
-                            "Perl LSP started but could not determine its \
+                            "Perl LSP: started but could not determine its \
                              listening address: {e}."
                         );
                         process::exit(1);
