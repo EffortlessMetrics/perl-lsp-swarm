@@ -3782,6 +3782,12 @@ enum AgentFlowCommand {
         #[arg(long, default_value = "human")]
         format: String,
     },
+    /// Check the deterministic route-scenario fixtures only.
+    Scenarios {
+        /// Output format: human or json.
+        #[arg(long, default_value = "human")]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4144,6 +4150,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::AgentFlow { command } => match command {
             AgentFlowCommand::Check { skill, format } => {
                 agent_flow::run(agent_flow::CheckConfig { skill, format })
+            }
+            AgentFlowCommand::Scenarios { format } => {
+                agent_flow::run_scenarios(agent_flow::ScenarioConfig { format })
             }
         },
         Commands::PrePushPlan { base, head, format } => pre_push_plan::run(base, head, format),

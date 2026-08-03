@@ -1,4 +1,5 @@
 ---
+name: scout-issue
 description: Canonical issue templates for scout agents filing GitHub issues
 ---
 
