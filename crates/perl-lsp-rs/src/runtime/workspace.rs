@@ -1204,7 +1204,12 @@ impl LspServer {
         for invalid in
             perl_lsp_rs_core::config::ServerConfig::invalid_client_setting_values(settings)
         {
-            let key = format!("{}={}", invalid.setting, invalid.value.trim().to_ascii_lowercase());
+            let normalized_value = if invalid.setting == "formatting.engine" {
+                perl_lsp_rs_core::config::normalize_formatter_mode_value(&invalid.value)
+            } else {
+                invalid.value.trim().to_ascii_lowercase()
+            };
+            let key = format!("{}={normalized_value}", invalid.setting);
             if !self.client_setting_warnings_sent.lock().insert(key) {
                 continue;
             }
@@ -2988,7 +2993,15 @@ mod tests {
         server.test_handle_did_change_configuration(Some(json!({
             "settings": {
                 "perl": {
-                    "critic": { "engine": " Nativ " }
+                    "critic": { "engine": " Nativ " },
+                    "formatting": { "engine": "bad_mode" }
+                }
+            }
+        })));
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": {
+                "perl": {
+                    "formatting": { "engine": "bad-mode" }
                 }
             }
         })));
@@ -3004,15 +3017,40 @@ mod tests {
             })
             .collect();
         let warning = warnings.first().ok_or("expected an invalid-setting warning")?;
-        assert_eq!(warnings.len(), 1, "repeated values must be deduplicated: {warnings:?}");
+        assert_eq!(
+            warnings.len(),
+            2,
+            "semantically repeated values must be deduplicated: {warnings:?}"
+        );
         assert_eq!(warning.pointer("/params/type").and_then(Value::as_i64), Some(2));
         let text = warning
             .pointer("/params/message")
             .and_then(Value::as_str)
             .ok_or("expected warning message text")?;
-        assert!(text.contains("critic.engine"));
-        assert!(text.contains("nativ"));
-        assert!(text.contains("native"));
+        assert!(text.contains("critic.engine"), "critic warning must name its setting: {text}");
+        assert!(text.contains("nativ"), "critic warning must preserve the supplied value: {text}");
+        assert!(text.contains("native"), "critic warning must list the accepted value: {text}");
+        let formatter_warning = warnings
+            .iter()
+            .find(|message| {
+                message
+                    .pointer("/params/message")
+                    .and_then(Value::as_str)
+                    .is_some_and(|message| message.contains("formatting.engine"))
+            })
+            .ok_or("expected a formatter warning")?;
+        let formatter_text = formatter_warning
+            .pointer("/params/message")
+            .and_then(Value::as_str)
+            .ok_or("expected formatter warning message text")?;
+        assert!(
+            formatter_text.contains("bad_mode"),
+            "formatter warning must preserve the supplied value: {formatter_text}"
+        );
+        assert!(
+            formatter_text.contains("Valid values"),
+            "formatter warning must list the accepted values: {formatter_text}"
+        );
         assert_eq!(current_engine, perl_lsp_rs_core::config::CriticEngine::Native);
         Ok(())
     }

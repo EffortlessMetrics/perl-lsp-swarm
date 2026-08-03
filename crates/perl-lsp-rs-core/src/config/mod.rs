@@ -641,39 +641,56 @@ impl ServerConfig {
         let mut invalid = Vec::new();
 
         if let Some(critic) = settings.get("critic") {
-            if let Some(engine) = critic.get("engine").and_then(|value| value.as_str())
-                && parse_lsp_critic_engine(engine).is_none()
-            {
-                invalid.push(InvalidClientSetting {
-                    setting: "critic.engine",
-                    value: engine.to_string(),
-                    valid_options: CLIENT_CRITIC_ENGINE_VALID_OPTIONS,
-                });
+            if let Some(engine) = critic.get("engine") {
+                let invalid_engine = engine
+                    .as_str()
+                    .map(|value| parse_lsp_critic_engine(value).is_none())
+                    .unwrap_or(true);
+                if invalid_engine {
+                    invalid.push(InvalidClientSetting {
+                        setting: "critic.engine",
+                        value: client_setting_display_value(engine),
+                        valid_options: CLIENT_CRITIC_ENGINE_VALID_OPTIONS,
+                    });
+                }
             }
-            if let Some(profile) = critic.get("profile").and_then(|value| value.as_str())
-                && parse_native_critic_profile(profile).is_none()
-            {
-                invalid.push(InvalidClientSetting {
-                    setting: "critic.profile",
-                    value: profile.to_string(),
-                    valid_options: NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
-                });
+            if let Some(profile) = critic.get("profile") {
+                let invalid_profile = profile
+                    .as_str()
+                    .map(|value| parse_native_critic_profile(value).is_none())
+                    .unwrap_or(true);
+                if invalid_profile {
+                    invalid.push(InvalidClientSetting {
+                        setting: "critic.profile",
+                        value: client_setting_display_value(profile),
+                        valid_options: NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
+                    });
+                }
             }
         }
 
-        if let Some(formatting) = settings.get("formatting")
-            && let Some(engine) = formatting.get("engine").and_then(|value| value.as_str())
-            && parse_formatter_mode(engine).is_none()
-        {
-            invalid.push(InvalidClientSetting {
-                setting: "formatting.engine",
-                value: engine.to_string(),
-                valid_options: FORMATTER_MODE_VALID_OPTIONS,
-            });
+        if let Some(formatting) = settings.get("formatting") {
+            if let Some(engine) = formatting.get("engine") {
+                let invalid_engine = engine
+                    .as_str()
+                    .map(|value| parse_formatter_mode(value).is_none())
+                    .unwrap_or(true);
+                if invalid_engine {
+                    invalid.push(InvalidClientSetting {
+                        setting: "formatting.engine",
+                        value: client_setting_display_value(engine),
+                        valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                    });
+                }
+            }
         }
 
         invalid
     }
+}
+
+fn client_setting_display_value(value: &serde_json::Value) -> String {
+    value.as_str().map(ToOwned::to_owned).unwrap_or_else(|| value.to_string())
 }
 
 /// An invalid enum value found in editor-provided LSP settings.
@@ -706,8 +723,17 @@ fn warn_on_type_mismatch(settings: &serde_json::Value, section: &str, field: &st
     }
 }
 
+/// Normalize a formatter mode for comparison and warning deduplication.
+///
+/// This is shared by the parser and the client-setting warning path so aliases
+/// differing only by case, surrounding whitespace, or underscore/hyphen spelling
+/// receive the same semantic treatment.
+pub fn normalize_formatter_mode_value(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace('_', "-")
+}
+
 fn parse_formatter_mode(value: &str) -> Option<FormatterMode> {
-    match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+    match normalize_formatter_mode_value(value).as_str() {
         "native" => Some(FormatterMode::Native),
         "compat" | "perltidy-compat" => Some(FormatterMode::Compat),
         "external-legacy" | "external-perltidy" | "perltidy" => Some(FormatterMode::ExternalLegacy),
@@ -3819,6 +3845,25 @@ profile = "recommended"
         assert_eq!(legacy.len(), 1);
         assert_eq!(legacy[0].setting, "critic.engine");
         assert_eq!(legacy[0].valid_options, CLIENT_CRITIC_ENGINE_VALID_OPTIONS);
+    }
+
+    #[test]
+    fn client_invalid_enum_inspection_reports_wrong_value_types() {
+        let invalid = ServerConfig::invalid_client_setting_values(&serde_json::json!({
+            "critic": {
+                "engine": false,
+                "profile": ["recommended"]
+            },
+            "formatting": { "engine": null }
+        }));
+
+        assert_eq!(invalid.len(), 3);
+        assert_eq!(invalid[0].setting, "critic.engine");
+        assert_eq!(invalid[0].value, "false");
+        assert_eq!(invalid[1].setting, "critic.profile");
+        assert_eq!(invalid[1].value, "[\"recommended\"]");
+        assert_eq!(invalid[2].setting, "formatting.engine");
+        assert_eq!(invalid[2].value, "null");
     }
 
     #[test]
