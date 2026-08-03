@@ -1245,6 +1245,17 @@ enum Commands {
         json: bool,
     },
 
+    /// Compose candidate, review, required-check, and protected-merge facts.
+    #[command(name = "gh-preflight")]
+    GhPreflight {
+        /// Pull request number.
+        #[arg(long)]
+        pr: u64,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Generate bindings
     #[cfg(feature = "parser-tasks")]
     Bindings {
@@ -2302,7 +2313,11 @@ enum NonRustCommand {
     /// Walk `git ls-files`, classify tracked files against the allowlist,
     /// and emit `target/policy/non-rust-inventory.{md,json}` plus
     /// `docs/policy/NON_RUST_INVENTORY.md`.
-    Inventory,
+    Inventory {
+        /// Check the committed Markdown inventory without rewriting outputs.
+        #[arg(long)]
+        check: bool,
+    },
 
     /// Check non-Rust files against the allowlist and report violations.
     ///
@@ -3771,6 +3786,12 @@ enum AgentFlowCommand {
         #[arg(long, default_value = "human")]
         format: String,
     },
+    /// Check the deterministic route-scenario fixtures only.
+    Scenarios {
+        /// Output format: human or json.
+        #[arg(long, default_value = "human")]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4134,6 +4155,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             AgentFlowCommand::Check { skill, format } => {
                 agent_flow::run(agent_flow::CheckConfig { skill, format })
             }
+            AgentFlowCommand::Scenarios { format } => {
+                agent_flow::run_scenarios(agent_flow::ScenarioConfig { format })
+            }
         },
         Commands::PrePushPlan { base, head, format } => pre_push_plan::run(base, head, format),
         Commands::ParseRust { source, sexp, ast, bench } => {
@@ -4414,6 +4438,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::GhReviewConvergence { pr, json } => {
             github_review::run_review_convergence(pr, json)
         }
+        Commands::GhPreflight { pr, json } => github_preflight::run_preflight(pr, json),
         Commands::CorpusAudit { corpus_path, output, check, fresh } => {
             corpus_audit::run(corpus_audit::AuditConfig {
                 corpus_path,
@@ -5059,9 +5084,13 @@ fn run_cli(cli: Cli) -> Result<()> {
             } => generated_files::check(receipt, fixture, generator_receipt, allow_manual_edits),
         },
         Commands::NonRust { command } => match command {
-            NonRustCommand::Inventory => {
+            NonRustCommand::Inventory { check } => {
                 let root = utils::project_root()?;
-                tasks::file_policy::non_rust_inventory(&root)
+                if check {
+                    tasks::file_policy::non_rust_inventory_check(&root)
+                } else {
+                    tasks::file_policy::non_rust_inventory(&root)
+                }
             }
             NonRustCommand::Check { mode, json, allowlist, root: root_override } => {
                 use tasks::file_policy::{CheckFilePolicyConfig, CheckFilePolicyMode};

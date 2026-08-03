@@ -115,7 +115,7 @@ impl CriticAnalyzer {
     ) -> Result<Vec<Violation>, String> {
         let (args, stdin) = if let Some(text) = doc_text {
             // Pipe via stdin with `-` as the file path.
-            let mut args = build_perlcritic_args(&self.config, "-");
+            let args = build_perlcritic_args(&self.config, "-");
             (args, Some(text.as_bytes()))
         } else {
             let args = build_perlcritic_args(&self.config, path_str);

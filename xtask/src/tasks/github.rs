@@ -12,6 +12,8 @@ use std::process::Command;
 pub struct RequiredContext {
     pub name: String,
     pub source: String,
+    #[serde(default)]
+    pub app_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -31,6 +33,21 @@ pub struct CandidateFacts {
     pub identity_result: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct RequiredStatusChecksPayload {
+    #[serde(default)]
+    contexts: Vec<String>,
+    #[serde(default)]
+    checks: Vec<RequiredStatusCheck>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RequiredStatusCheck {
+    context: String,
+    #[serde(default)]
+    app_id: Option<u64>,
+}
+
 pub fn run_labels() -> Result<()> {
     let root = crate::utils::project_root()?;
     let script = root.join("scripts").join("gh").join("ensure-labels.sh");
@@ -48,6 +65,11 @@ pub fn run_backfill_prefixed_labels(apply: bool) -> Result<()> {
     let root = crate::utils::project_root()?;
     let script = root.join("scripts").join("gh").join("backfill-prefixed-labels.sh");
     if apply { run_script(&script, &["--apply"]) } else { run_script(&script, &[]) }
+}
+
+/// Collect candidate facts for composition by another factual instrument.
+pub fn candidate_facts(pr: u64) -> Result<CandidateFacts> {
+    collect_candidate(pr)
 }
 
 pub fn run_candidate(
@@ -146,12 +168,14 @@ fn collect_candidate(pr: u64) -> Result<CandidateFacts> {
 
 fn collect_required_contexts(repository: &str, base_ref: &str) -> Result<Vec<RequiredContext>> {
     let encoded_base_ref = encode_path_segment(base_ref);
-    let branch_endpoint = format!(
-        "repos/{repository}/branches/{encoded_base_ref}/protection/required_status_checks/contexts"
-    );
-    let branch_raw = command_text("gh", &["api", &branch_endpoint])?;
-    let branch_names = serde_json::from_str::<Vec<String>>(&branch_raw)
-        .context("failed to parse required branch-protection contexts")?;
+    let branch_endpoint =
+        format!("repos/{repository}/branches/{encoded_base_ref}/protection/required_status_checks");
+    let branch_raw = match command_text("gh", &["api", &branch_endpoint]) {
+        Ok(raw) => raw,
+        Err(error) if error.to_string().contains("404") => "[]".to_string(),
+        Err(error) => return Err(error),
+    };
+    let branch_names = required_context_names(&branch_raw)?;
 
     let rules_endpoint = format!("repos/{repository}/rules/branches/{encoded_base_ref}");
     let rules_raw = command_text("gh", &["api", &rules_endpoint])?;
@@ -160,10 +184,43 @@ fn collect_required_contexts(repository: &str, base_ref: &str) -> Result<Vec<Req
     Ok(merge_required_contexts(&branch_names, &rules))
 }
 
-fn merge_required_contexts(branch_names: &[String], rules: &Value) -> Vec<RequiredContext> {
-    let mut sources = BTreeMap::<String, BTreeSet<String>>::new();
-    for name in branch_names {
-        sources.entry(name.clone()).or_default().insert("branch_protection".to_string());
+fn required_context_names(raw: &str) -> Result<Vec<RequiredContext>> {
+    if let Ok(payload) = serde_json::from_str::<RequiredStatusChecksPayload>(raw) {
+        if payload.contexts.is_empty() && payload.checks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut contexts = BTreeMap::<String, Option<u64>>::new();
+        for name in payload.contexts {
+            contexts.entry(name).or_insert(None);
+        }
+        for check in payload.checks {
+            contexts.insert(check.context, check.app_id);
+        }
+        return Ok(contexts
+            .into_iter()
+            .map(|(name, app_id)| RequiredContext {
+                name,
+                source: "branch_protection".to_string(),
+                app_id,
+            })
+            .collect());
+    }
+    Ok(serde_json::from_str::<Vec<String>>(raw)
+        .context("failed to parse required branch-protection checks")?
+        .into_iter()
+        .map(|name| RequiredContext { name, source: "branch_protection".to_string(), app_id: None })
+        .collect())
+}
+
+fn merge_required_contexts(
+    branch_contexts: &[RequiredContext],
+    rules: &Value,
+) -> Vec<RequiredContext> {
+    let mut sources = BTreeMap::<String, (BTreeSet<String>, Option<u64>)>::new();
+    for context in branch_contexts {
+        let entry = sources.entry(context.name.clone()).or_default();
+        entry.0.insert("branch_protection".to_string());
+        entry.1 = context.app_id;
     }
     for rule in rules.as_array().into_iter().flatten() {
         if rule.get("type").and_then(Value::as_str) != Some("required_status_checks") {
@@ -176,16 +233,21 @@ fn merge_required_contexts(branch_names: &[String], rules: &Value) -> Vec<Requir
             .flatten()
         {
             if let Some(name) = check.get("context").and_then(Value::as_str) {
-                sources.entry(name.to_string()).or_default().insert("ruleset".to_string());
+                let entry = sources.entry(name.to_string()).or_default();
+                entry.0.insert("ruleset".to_string());
+                if let Some(app_id) = check.get("integration_id").and_then(Value::as_u64) {
+                    entry.1 = Some(app_id);
+                }
             }
         }
     }
 
     sources
         .into_iter()
-        .map(|(name, source)| RequiredContext {
+        .map(|(name, (source, app_id))| RequiredContext {
             name,
             source: source.into_iter().collect::<Vec<_>>().join("+"),
+            app_id,
         })
         .collect()
 }
@@ -209,7 +271,7 @@ fn hex_digit(value: u8) -> char {
     HEX[usize::from(value & 0x0f)] as char
 }
 
-fn command_text(program: &str, args: &[&str]) -> Result<String> {
+pub(crate) fn command_text(program: &str, args: &[&str]) -> Result<String> {
     let output = Command::new(program)
         .args(args)
         .output()
@@ -290,6 +352,7 @@ mod tests {
             required_contexts: vec![RequiredContext {
                 name: "methodology-gate".to_string(),
                 source: "branch_protection".to_string(),
+                app_id: None,
             }],
             required_contexts_result: "NOT_PROVEN".to_string(),
             identity_result: "current".to_string(),
@@ -301,6 +364,25 @@ mod tests {
         assert_eq!(identity_result(Some("abc123"), "abc123"), "current");
         assert_eq!(identity_result(Some("old456"), "abc123"), "moved");
         assert_eq!(identity_result(None, "abc123"), "current");
+    }
+
+    #[test]
+    fn required_context_names_accepts_native_checks_and_legacy_contexts() -> Result<()> {
+        let names = required_context_names(
+            r#"{"contexts":["legacy"],"checks":[{"context":"native","app_id":42}]}"#,
+        )?;
+        assert_eq!(
+            names.iter().map(|context| context.name.as_str()).collect::<Vec<_>>(),
+            vec!["legacy", "native"]
+        );
+        assert_eq!(names[1].app_id, Some(42));
+        Ok(())
+    }
+
+    #[test]
+    fn empty_object_required_context_payload_is_an_empty_policy() -> Result<()> {
+        assert!(required_context_names(r#"{"contexts":[],"checks":[]}"#)?.is_empty());
+        Ok(())
     }
 
     #[test]
@@ -350,14 +432,25 @@ mod tests {
 
     #[test]
     fn required_contexts_merge_classic_and_ruleset_sources() -> Result<()> {
-        let branch_names = vec!["Shared check".to_string(), "Classic only".to_string()];
+        let branch_names = vec![
+            RequiredContext {
+                name: "Shared check".to_string(),
+                source: "branch_protection".to_string(),
+                app_id: None,
+            },
+            RequiredContext {
+                name: "Classic only".to_string(),
+                source: "branch_protection".to_string(),
+                app_id: None,
+            },
+        ];
         let rules: Value = serde_json::json!([
             {
                 "type": "required_status_checks",
                 "parameters": {
                     "required_status_checks": [
                         { "context": "Shared check" },
-                        { "context": "Ruleset only" }
+                        { "context": "Ruleset only", "integration_id": 42 }
                     ]
                 }
             }
@@ -371,7 +464,8 @@ mod tests {
                 .map(|context| context.source.as_str()),
             Some("branch_protection+ruleset")
         );
-        assert!(contexts.iter().any(|context| context.name == "Ruleset only"));
+        let ruleset_only = contexts.iter().find(|context| context.name == "Ruleset only");
+        assert_eq!(ruleset_only.map(|context| context.app_id), Some(Some(42)));
         Ok(())
     }
 }

@@ -1965,13 +1965,11 @@ impl DebugAdapter {
         }
     }
 
-    /// Send interrupt signal to process (cross-platform).
+    /// Send SIGINT to a Unix process, with a test-only fallback elsewhere.
     ///
-    /// On Unix, sends SIGINT. On Windows, writes the interrupt character to
-    /// debugger stdin for a launched session; PID-attached pause is unsupported.
-    /// On stdin-write failure, returns `false` without terminating the debuggee
-    /// (the session is left intact for the client to retry or disposition).
-    /// Returns `false` on unsupported platforms.
+    /// On failure, returns `false` without terminating the debuggee. The
+    /// session is left intact for the client to retry or disposition.
+    #[cfg(any(unix, test))]
     pub(super) fn send_interrupt_signal(&self, pid: u32) -> bool {
         if pid == 0 {
             tracing::warn!("send_interrupt_signal called with pid 0, ignoring");
@@ -1991,44 +1989,9 @@ impl DebugAdapter {
                 }
             }
         }
-        #[cfg(windows)]
+        #[cfg(all(test, not(unix)))]
         {
-            // Write the interrupt character to debugger stdin (session mode only).
-            // On stdin-write failure, return `false` — do NOT terminate the debuggee.
-            if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
-            {
-                if let Some(stdin) = session.process.stdin.as_mut() {
-                    match stdin.write_all(b"\x03\n") {
-                        Ok(()) => {
-                            let _ = stdin.flush();
-                            tracing::info!("Sent interrupt via stdin to process {}", pid);
-                            true
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to send interrupt to process {} via stdin: {}. \
-                                 Pause delivery failed — session left intact (not terminated).",
-                                pid,
-                                e
-                            );
-                            false
-                        }
-                    }
-                } else {
-                    tracing::warn!("No stdin handle for process {}", pid);
-                    false
-                }
-            } else {
-                tracing::warn!(
-                    pid,
-                    "PID-attached pause is unsupported on Windows; refusing to signal the target"
-                );
-                false
-            }
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            tracing::warn!("send_interrupt_signal: unsupported platform for pid {}", pid);
+            tracing::warn!("send_interrupt_signal is unavailable on this test platform");
             false
         }
     }

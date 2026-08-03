@@ -27,12 +27,13 @@ Use one of the public install paths that matches how you work:
 Do not install the unrelated crates.io package named `perl-lsp`. That package
 name is owned by another project, so the supported Cargo package is `perllsp`.
 
-Verify the install before wiring it into an editor:
+Inspect the install before wiring it into an editor. `--doctor` reports the
+local Perl and workspace setup; it is a diagnostic report, not a CI gate.
+`--health` is only a liveness probe that confirms the binary can execute:
 
 ```bash
 perllsp --version
-perllsp --health
-perllsp --info
+perllsp --doctor
 ```
 
 ## Installer Script (macOS and Linux)
@@ -241,11 +242,16 @@ Once `perllsp` is installed, add it to your editor with the command:
 perllsp --stdio
 ```
 
-Then confirm the install from a shell before debugging editor integration:
+Then inspect the install from a shell before debugging editor integration:
 
 ```bash
-perllsp --health
+perllsp --doctor
 ```
+
+`perllsp --health` is also available as a liveness probe. It prints `ok <version>`
+but does not inspect Perl, workspace, or module-lookup
+configuration. For CI, use explicit checks for the environment paths your job
+requires rather than treating the doctor report or its exit status as a gate.
 
 ## Release Maintainers
 

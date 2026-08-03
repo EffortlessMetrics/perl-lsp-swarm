@@ -123,6 +123,22 @@ What remains unproved
 
 Use the repository-owned claim-digest/currentness helper where present rather than inventing a second normalization. A clean review is valid.
 
+The canonical convergence command also reports a factual `formal_review`
+observation. Its `classification` is one of:
+
+```text
+CURRENT | FINDINGS_OPEN | PENDING | STALE | NOT_APPLICABLE | NOT_PROVEN
+```
+
+`CURRENT` means a submitted human review is attached to the candidate head;
+`FINDINGS_OPEN` means current change requests or unresolved review evidence
+remains; `PENDING` means a native request, draft, or in-flight review remains;
+`STALE` means the latest human review predates the candidate; and
+`NOT_APPLICABLE` is reserved for the provider's no-required-review case with
+no review evidence. Fetch, snapshot, or claim-instrument failures are
+`NOT_PROVEN`. This is an observation surface, not merge authorization, a
+review quota, or a requirement for a magic phrase or receipt marker.
+
 ## Finding disposition
 
 Before resolving a substantive thread, reply with one supported disposition:

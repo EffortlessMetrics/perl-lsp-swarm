@@ -320,7 +320,7 @@ impl DebugAdapter {
                         let _ = pid;
                         (false, "Pause is unsupported for PID-attached sessions on Windows")
                     }
-                    #[cfg(not(windows))]
+                    #[cfg(unix)]
                     {
                         (self.send_interrupt_signal(pid), "Failed to pause debugger")
                     }
