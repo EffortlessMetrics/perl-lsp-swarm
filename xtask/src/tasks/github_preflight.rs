@@ -83,8 +83,15 @@ pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
         }
     };
     let mut candidate = match initial_candidate.as_ref() {
-        Some(_) => match github::candidate_facts(pr) {
-            Ok(candidate) => candidate,
+        Some(initial) => match github::candidate_facts(pr) {
+            Ok(candidate) => {
+                if initial.head_sha != candidate.head_sha {
+                    errors.push(
+                        "candidate head moved while composing the preflight snapshot".to_string(),
+                    );
+                }
+                candidate
+            }
             Err(error) => {
                 errors.push(format!("failed to collect candidate facts: {error}"));
                 not_proven_candidate(&repository, pr)
@@ -93,9 +100,6 @@ pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
         None => not_proven_candidate(&repository, pr),
     };
     errors.extend(review.errors.clone());
-    if initial_candidate.as_ref().is_some_and(|initial| initial.head_sha != candidate.head_sha) {
-        errors.push("candidate head moved while composing the preflight snapshot".to_string());
-    }
     if review.head_sha != candidate.head_sha {
         errors.push("candidate and review snapshots describe different heads".to_string());
     }
