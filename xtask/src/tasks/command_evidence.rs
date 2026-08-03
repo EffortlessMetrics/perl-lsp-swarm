@@ -67,29 +67,29 @@ struct ProofSetSpec {
     commands: Vec<ProofSetCommand>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ProofSetCommand {
-    id: String,
-    program: String,
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProofSetCommand {
+    pub id: String,
+    pub program: String,
     #[serde(default)]
-    args: Vec<String>,
-    cwd: Option<PathBuf>,
-    candidate: Option<String>,
-    timeout_secs: Option<u64>,
-    out_dir: Option<PathBuf>,
+    pub args: Vec<String>,
+    pub cwd: Option<PathBuf>,
+    pub candidate: Option<String>,
+    pub timeout_secs: Option<u64>,
+    pub out_dir: Option<PathBuf>,
 }
 
-#[derive(Debug, Serialize)]
-struct ProofSetItem {
-    id: String,
-    receipt: CommandEvidenceReceipt,
+#[derive(Debug, Clone, Serialize)]
+pub struct ProofSetItem {
+    pub id: String,
+    pub receipt: CommandEvidenceReceipt,
 }
 
-#[derive(Debug, Serialize)]
-struct ProofSetReceipt {
-    schema_version: &'static str,
-    commands: Vec<ProofSetItem>,
-    result: ResultClass,
+#[derive(Debug, Clone, Serialize)]
+pub struct ProofSetReceipt {
+    pub schema_version: &'static str,
+    pub commands: Vec<ProofSetItem>,
+    pub result: ResultClass,
 }
 
 struct CapturedOutput {
@@ -161,8 +161,32 @@ fn run_proof_set_receipt(path: &Path) -> Result<ProofSetReceipt> {
         }
     }
 
-    let mut items = Vec::with_capacity(spec.commands.len());
-    for command in spec.commands {
+    run_proof_commands(spec.commands)
+}
+
+/// Execute a caller-supplied, ordered proof set and return typed evidence
+/// without printing or writing a second receipt. Integration callers consume
+/// this boundary so command identity and termination state remain intact.
+pub fn run_proof_commands(commands: Vec<ProofSetCommand>) -> Result<ProofSetReceipt> {
+    if commands.is_empty() {
+        bail!("proof-set must contain at least one command");
+    }
+
+    let mut ids = HashSet::new();
+    for command in &commands {
+        if command.id.trim().is_empty() {
+            bail!("proof-set command id must not be empty");
+        }
+        if !ids.insert(command.id.clone()) {
+            bail!("proof-set command id {:?} is duplicated", command.id);
+        }
+        if command.program.trim().is_empty() {
+            bail!("proof-set command {:?} must define a non-empty program", command.id);
+        }
+    }
+
+    let mut items = Vec::with_capacity(commands.len());
+    for command in commands {
         let id = command.id.clone();
         let receipt = execute(CommandEvidenceConfig {
             program: command.program.clone(),
