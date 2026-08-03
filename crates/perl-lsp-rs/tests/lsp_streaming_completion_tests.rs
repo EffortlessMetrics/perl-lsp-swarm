@@ -994,7 +994,7 @@ mod mock_streaming_completion_tests {
         let uri = "file:///streaming-auth-error.pl";
         open_doc(&server, uri, "my $obj = Package->");
 
-        let _ = request_streaming_completion(&server, uri, "stream-auth-error");
+        let _ = request_streaming_completion(&server, uri, 19, "stream-auth-error");
 
         let deadline = Instant::now() + Duration::from_millis(500);
         let messages = loop {
@@ -1031,7 +1031,7 @@ mod mock_streaming_completion_tests {
             })),
         });
         server.test_install_ai_backend(Some(Arc::new(MockAuthBackend)));
-        let _ = request_streaming_completion(&server, uri, "stream-auth-error-after-config");
+        let _ = request_streaming_completion(&server, uri, 19, "stream-auth-error-after-config");
 
         let deadline = Instant::now() + Duration::from_millis(500);
         let messages_after_config = loop {
