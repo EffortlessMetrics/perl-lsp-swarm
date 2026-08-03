@@ -61,7 +61,11 @@ fi
 
 # Check 4: Canonical review convergence, with lifecycle labels excluded
 REVIEW_EXIT=0
-REVIEW_OUTPUT="$(REVIEW_PROTOCOL_ENFORCE=1 bash scripts/ci/check-pr-review-convergence "$PR" 2>&1)" || REVIEW_EXIT=$?
+REVIEW_REPO="${GITHUB_REPOSITORY:-}"
+if [[ -z "$REVIEW_REPO" ]]; then
+    REVIEW_REPO="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
+fi
+REVIEW_OUTPUT="$(REVIEW_PROTOCOL_ENFORCE=1 bash scripts/ci/check-pr-review-convergence "$PR" "$REVIEW_REPO" 2>&1)" || REVIEW_EXIT=$?
 if [[ "$REVIEW_EXIT" -ne 0 ]]; then
     echo "FAIL PR #$PR: canonical review convergence did not pass" >&2
     printf '%s\n' "$REVIEW_OUTPUT" >&2
