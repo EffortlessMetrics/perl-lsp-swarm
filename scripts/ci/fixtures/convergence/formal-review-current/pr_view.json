@@ -1,0 +1,7 @@
+{
+  "headRefOid": "1212121212121212121212121212121212121212",
+  "reviewDecision": "APPROVED",
+  "isDraft": false,
+  "reviewRequests": [],
+  "author": {"login": "alice"}
+}
