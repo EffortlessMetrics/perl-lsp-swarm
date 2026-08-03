@@ -675,7 +675,7 @@ fn redact_argv(argv: &[String]) -> Vec<String> {
         }
 
         let sanitized = redact_secrets(argument);
-        if is_secret_option(argument) && argument == sanitized {
+        if is_secret_option(argument) && argument == &sanitized {
             redact_next = true;
         }
         redacted.push(sanitized);

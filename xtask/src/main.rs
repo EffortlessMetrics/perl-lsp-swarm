@@ -924,6 +924,12 @@ enum Commands {
         summary: PathBuf,
     },
 
+    /// Capture typed evidence for one command or a small serial proof set.
+    CommandEvidence {
+        #[command(subcommand)]
+        command: CommandEvidenceCommand,
+    },
+
     /// Run exact-head Taplo and typos checks for changed repository files.
     ///
     /// The command composes the shared change-set resolver and invokes both
