@@ -16,6 +16,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::{Duration, Instant};
+
+mod common;
 use tempfile::tempdir;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -49,24 +51,7 @@ fn wait_for_event(
     event_name: &str,
     timeout: Duration,
 ) -> Result<DapMessage, String> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return Err(format!("timeout waiting for event `{event_name}`"));
-        }
-        let remaining = deadline.saturating_duration_since(now);
-        match rx.recv_timeout(remaining) {
-            Ok(msg) => {
-                if let DapMessage::Event { event, .. } = &msg
-                    && event == event_name
-                {
-                    return Ok(msg);
-                }
-            }
-            Err(_) => return Err(format!("channel timeout waiting for `{event_name}`")),
-        }
-    }
+    common::wait_for_event(rx, event_name, timeout)
 }
 
 fn response_success(msg: DapMessage, command: &str) -> Result<Option<Value>, String> {
