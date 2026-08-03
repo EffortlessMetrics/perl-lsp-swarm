@@ -105,7 +105,7 @@ fn classify_with_exit_status(
     let scenario = first_failing_test.as_ref().and_then(|name| scenario_from_test_name(name));
     let workflow = first_failing_test.as_ref().and_then(|name| workflow_from_test_name(name));
 
-    let failure_class = infer_failure_class(raw);
+    let failure_class = infer_failure_class(&classification_input(raw));
 
     let canonical_repro = first_failing_test.as_ref().map(|name| {
         format!("cargo test -p perl-lsp-ux-tests {name} -- --test-threads=1 --nocapture")
@@ -175,6 +175,22 @@ fn classify_with_exit_status(
         attempt: None,
         platform: None,
     }
+}
+
+fn classification_input(raw: &str) -> String {
+    let mut in_detail = false;
+    let mut retained = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("UX_SCENARIO_DETAIL_BEGIN:") {
+            in_detail = true;
+        } else if trimmed == "UX_SCENARIO_DETAIL_END" {
+            in_detail = false;
+        } else if !in_detail {
+            retained.push(line);
+        }
+    }
+    retained.join("\n")
 }
 
 fn scenario_from_test_name(test: &str) -> Option<String> {
@@ -387,6 +403,22 @@ mod tests {
         assert_eq!(receipt.result, "pass", "log with 'test result: ok' should produce result=pass");
         assert!(!receipt.blocking);
         assert_eq!(receipt.merge_action, "merge_allowed");
+    }
+
+    #[test]
+    fn classify_ignores_diagnostic_detail_lines() {
+        let log = "running 1 test\n\
+test ux_scenario_44_editor_trust::scenario_44_real_editor_trust_smoke_receipt ... FAILED\n\
+UX_SCENARIO_DETAIL_BEGIN: `scenario_44`\n\
+workspace/executeCommand rejected the request: command not allowed; timeout details are diagnostic only\n\
+UX_SCENARIO_DETAIL_END\n\
+test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, Some("sha-detail".to_string()));
+        assert!(
+            matches!(receipt.failure_class, UxFailureClass::Unknown),
+            "diagnostic detail must not change the scenario receipt classification: {:?}",
+            receipt.failure_class
+        );
     }
 
     #[test]

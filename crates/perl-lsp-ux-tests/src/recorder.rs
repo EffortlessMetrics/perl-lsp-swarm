@@ -582,7 +582,7 @@ fn report_scenario_failure(test_name: &str, error: &anyhow::Error) {
 }
 
 fn format_scenario_failure(test_name: &str, error: &anyhow::Error) -> String {
-    format!("UX scenario `{test_name}` failed: {error:#}")
+    format!("UX_SCENARIO_DETAIL_BEGIN: `{test_name}`\n{error:#}\nUX_SCENARIO_DETAIL_END")
 }
 
 fn write_wrapper_receipt(

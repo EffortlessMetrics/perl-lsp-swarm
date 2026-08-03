@@ -199,7 +199,9 @@ jobs:
               "uncategorized":    [],
           }
 
-          # Simple line-based parser: detect PASS/FAIL/SKIP lines
+          # Count only cargo test result lines. Scenario diagnostics are emitted
+          # separately and may contain words such as "failed" or "timeout";
+          # they must not become additional scenario results.
           pass_count = 0
           fail_count = 0
           skip_count = 0
@@ -212,15 +214,15 @@ jobs:
                   if cat.lower() in line.lower():
                       current_category = cat
                       break
-              # Detect test result lines
-              if re.search(r'\bPASS\b|\bpassed\b|test \S+ \.\.\. ok', line, re.IGNORECASE):
+              # Detect exact cargo test result lines
+              if re.search(r'^\s*test\s+\S+\s+\.\.\.\s+ok\s*$', line):
                   pass_count += 1
                   categories[current_category].append(("PASS", line.strip()))
-              elif re.search(r'\bFAIL\b|\bfailed\b|test \S+ \.\.\. FAILED', line, re.IGNORECASE):
+              elif re.search(r'^\s*test\s+\S+\s+\.\.\.\s+FAILED\s*$', line):
                   fail_count += 1
                   categories[current_category].append(("FAIL", line.strip()))
                   failed_scenarios.append(line.strip())
-              elif re.search(r'\bSKIP\b|\bskipped\b|test \S+ \.\.\. ignored', line, re.IGNORECASE):
+              elif re.search(r'^\s*test\s+\S+\s+\.\.\.\s+ignored\s*$', line):
                   skip_count += 1
 
           total = pass_count + fail_count + skip_count
