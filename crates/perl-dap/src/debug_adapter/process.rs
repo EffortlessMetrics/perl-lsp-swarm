@@ -1,6 +1,6 @@
 //! Process lifecycle management: initialize, launch, attach, disconnect, terminate, restart.
 
-use super::logpoint::{LogpointStep, MAX_DRAIN_LINES, PendingLogpoint};
+use super::logpoint::{self, LogpointStep, MAX_DRAIN_LINES, PendingLogpoint};
 use super::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -755,7 +755,13 @@ impl DebugAdapter {
                         // Bounded so a marker that never arrives cannot swallow real
                         // debuggee output indefinitely.
                         if let Some((marker, remaining)) = logpoint_drain.as_mut() {
-                            let closed = sanitized_text.contains(marker.as_str());
+                            // Same precedence as `PendingLogpoint::observe_line`: a
+                            // value line is a value even when its own text contains
+                            // the end marker. Closing on it would end the drain early
+                            // and leak the rest of the frame — later replies and the
+                            // real marker — to the client as debuggee output.
+                            let closed = !logpoint::is_value_reply(&sanitized_text)
+                                && sanitized_text.contains(marker.as_str());
                             *remaining = remaining.saturating_sub(1);
                             if closed || *remaining == 0 {
                                 logpoint_drain = None;

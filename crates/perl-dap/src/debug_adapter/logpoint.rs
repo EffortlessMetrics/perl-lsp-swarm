@@ -55,6 +55,16 @@ const MAX_CAPTURE_LINES: usize = 200;
 /// indefinitely — the reader would rather leak one stray framing line than go deaf.
 pub(super) const MAX_DRAIN_LINES: usize = 64;
 
+/// Whether a debugger line is one of this protocol's value replies.
+///
+/// The drain that runs after a mid-frame abandonment needs the same
+/// value-before-end-marker precedence as [`PendingLogpoint::observe_line`]: a value
+/// whose own text contains the end marker must not be mistaken for the marker, or
+/// the drain closes early and leaks the rest of the frame to the client.
+pub(super) fn is_value_reply(line: &str) -> bool {
+    line.contains(VALUE_PREFIX)
+}
+
 /// Upper bound on lines the capture will wait for its begin marker to appear.
 ///
 /// Separate from [`MAX_CAPTURE_LINES`] so that a debuggee which is merely chatty
@@ -267,6 +277,25 @@ impl PendingLogpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The post-abandonment drain reuses this predicate to keep value-before-end-
+    /// marker precedence. Without it, a late value whose text contains the frame's
+    /// end marker closes the drain early and the rest of the frame — later replies
+    /// and the real marker — leaks to the client as debuggee output.
+    #[test]
+    fn value_replies_are_recognised_regardless_of_their_text() {
+        assert!(is_value_reply("DAPLPV:x\t42"), "a plain value reply is a value line");
+        assert!(
+            is_value_reply("DAPLPV:x\tsaw DAP_LOGPOINT_END_3 in the log"),
+            "a value whose text contains an end marker is still a value line"
+        );
+        assert!(
+            is_value_reply("  DB<4> DAPLPV:x\t42"),
+            "a prompt-prefixed value reply is still a value line"
+        );
+        assert!(!is_value_reply("DAP_LOGPOINT_END_3"), "the end marker is not a value line");
+        assert!(!is_value_reply("ordinary debuggee output"), "debuggee output is not a value line");
+    }
 
     #[test]
     fn referenced_scalars_collects_distinct_plain_names() {
