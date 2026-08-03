@@ -8,7 +8,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -222,9 +222,16 @@ pub fn run_proof_commands_in_dir(
         .map(|mut command| {
             command.cwd = Some(match command.cwd.take() {
                 None => synthetic_worktree.to_path_buf(),
-                Some(cwd) if cwd.is_absolute() => {
+                Some(cwd)
+                    if cwd.components().any(|component| {
+                        matches!(
+                            component,
+                            Component::Prefix(_) | Component::RootDir | Component::ParentDir
+                        )
+                    }) =>
+                {
                     return Err(color_eyre::eyre::eyre!(
-                        "proof command {:?} must use a relative cwd inside the synthetic worktree",
+                        "proof command {:?} must use a relative cwd without root or parent components",
                         command.id
                     ));
                 }
@@ -933,6 +940,26 @@ mod tests {
         )
         .expect_err("absolute working directory must not escape synthetic proof");
         assert!(error.to_string().contains("relative cwd"));
+        Ok(())
+    }
+
+    #[test]
+    fn synthetic_proof_rejects_parent_working_directories() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let error = run_proof_commands_in_dir(
+            vec![ProofSetCommand {
+                id: "parent-cwd".to_string(),
+                program: "git".to_string(),
+                args: vec!["--version".to_string()],
+                cwd: Some(PathBuf::from("..").join("outside")),
+                candidate: Some("candidate".to_string()),
+                timeout_secs: Some(10),
+                out_dir: None,
+            }],
+            root.path(),
+        )
+        .expect_err("parent working directory must not escape synthetic proof");
+        assert!(error.to_string().contains("parent components"));
         Ok(())
     }
 }
