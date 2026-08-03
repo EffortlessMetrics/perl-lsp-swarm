@@ -45,7 +45,7 @@ pub struct Diagnostic {
 /// principle.
 impl From<Diagnostic> for perl_diagnostics::Diagnostic {
     fn from(inner: Diagnostic) -> Self {
-        let code = inner.code.as_deref().and_then(|s| parse_diagnostic_code(s)).unwrap_or_default();
+        let code = inner.code.as_deref().and_then(parse_diagnostic_code).unwrap_or_default();
         perl_diagnostics::Diagnostic {
             code,
             severity: inner.severity,
