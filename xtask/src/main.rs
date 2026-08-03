@@ -2964,7 +2964,7 @@ enum CommandEvidenceCommand {
         #[arg(long)]
         json: bool,
         /// Arguments passed verbatim after --.
-        #[arg(trailing_var_arg)]
+        #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
     /// Run a small serial set of direct commands and retain one receipt per command.
