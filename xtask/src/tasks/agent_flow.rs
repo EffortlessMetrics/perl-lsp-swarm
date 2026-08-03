@@ -20,6 +20,11 @@ pub struct CheckConfig {
     pub format: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ScenarioConfig {
+    pub format: String,
+}
+
 #[derive(Debug, Serialize)]
 struct CheckReport {
     schema: &'static str,
@@ -41,6 +46,15 @@ struct ProviderReport {
 
 #[derive(Debug, Serialize)]
 struct ScenarioReport {
+    fixture_count: usize,
+    checked_providers: Vec<String>,
+    errors: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ScenarioOutput {
+    schema: &'static str,
+    result: &'static str,
     fixture_count: usize,
     checked_providers: Vec<String>,
     errors: Vec<String>,
@@ -160,6 +174,41 @@ pub fn run(config: CheckConfig) -> Result<()> {
 
     if report.result == "FAIL" {
         bail!("agent-flow check failed")
+    }
+    Ok(())
+}
+
+pub fn run_scenarios(config: ScenarioConfig) -> Result<()> {
+    let root = project_root()?;
+    let report = check_repository(&root, None)?;
+    let scenarios = report.scenarios;
+    let result = if report.errors.is_empty() { "PASS" } else { "FAIL" };
+    let output = ScenarioOutput {
+        schema: "agent-flow-scenarios.v1",
+        result,
+        fixture_count: scenarios.fixture_count,
+        checked_providers: scenarios.checked_providers,
+        errors: report.errors,
+    };
+
+    match config.format.as_str() {
+        "human" => {
+            println!("{}", output.result);
+            println!(
+                "scenarios: {} fixtures across {} providers",
+                output.fixture_count,
+                output.checked_providers.len()
+            );
+            for error in &output.errors {
+                println!("ERROR: {error}");
+            }
+        }
+        "json" => println!("{}", serde_json::to_string_pretty(&output)?),
+        other => bail!("unsupported agent-flow output format '{other}'; use human or json"),
+    }
+
+    if output.result == "FAIL" {
+        bail!("agent-flow scenarios failed")
     }
     Ok(())
 }
