@@ -188,26 +188,6 @@ pub fn evaluate(input: IntegrationTriggerInput) -> IntegrationTriggerPacket {
         }
     }
 
-    if !findings.is_empty() && result == IntegrationTriggerResult::NotRequired {
-        result = IntegrationTriggerResult::NotProven;
-        next_action =
-            "Resolve the reported trigger evidence before treating the candidate as clean"
-                .to_string();
-    }
-    if !findings.is_empty()
-        && result == IntegrationTriggerResult::ReturnToReview
-        && !source_evidence_complete
-    {
-        next_action =
-            "PR head moved and source evidence is incomplete; return to review".to_string();
-    }
-    if !findings.is_empty()
-        && !source_evidence_complete
-        && result == IntegrationTriggerResult::NotProven
-    {
-        next_action = "Obtain the missing source or ownership evidence before deciding".to_string();
-    }
-
     IntegrationTriggerPacket {
         schema: SCHEMA_VERSION.to_string(),
         repository,
@@ -334,6 +314,16 @@ mod tests {
         let packet = evaluate(input);
         assert_eq!(packet.result, IntegrationTriggerResult::NotProven);
         assert!(!packet.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn invalid_identity_remains_primary_over_incomplete_evidence() {
+        let mut input = input(vec![evidence(TriggerKind::SamePublicSymbolSurface)]);
+        input.integration_base_sha = "placeholder".to_string();
+        input.source_evidence_complete = false;
+        let packet = evaluate(input);
+        assert_eq!(packet.result, IntegrationTriggerResult::NotProven);
+        assert!(packet.next_action.contains("candidate identities"));
     }
 
     #[test]
