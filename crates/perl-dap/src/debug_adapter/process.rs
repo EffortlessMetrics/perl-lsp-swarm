@@ -1450,18 +1450,6 @@ impl DebugAdapter {
                     config = config.with_timeout(t);
                 }
 
-                // Validate configuration
-                if let Err(e) = config.validate() {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some(format!("Invalid attach configuration: {}", e)),
-                    };
-                }
-
                 // Create TCP attach session
                 let mut session = TcpAttachSession::new();
 
@@ -1469,8 +1457,10 @@ impl DebugAdapter {
                 let (tx, rx) = channel::<DapEvent>();
                 session.set_event_sender(tx);
 
-                // Attempt to connect
-                match session.connect(&config) {
+                // Attempt to connect (validate is called inside connect,
+                // which also pins the resolved addresses for DNS-rebinding
+                // defense #5257)
+                match session.connect(&mut config) {
                     Ok(()) => {
                         if let Err(e) = session.start_reader() {
                             tracing::error!(error = %e, "Failed to start TCP reader");
