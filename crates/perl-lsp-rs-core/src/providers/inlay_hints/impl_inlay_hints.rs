@@ -656,10 +656,11 @@ pub fn trivial_type_hints(
                         out.push(val);
                     }
                 }
-                // Return true to continue walking children (the initializer
-                // literal will also get its own hint, which is fine — clients
-                // can deduplicate by position).
-                return true;
+                // Return false to skip walking the initializer's children —
+                // the declaration-site hint already shows the inferred type,
+                // so visiting the initializer literal would emit a duplicate
+                // hint at a different position (chatgpt-codex review on #5727).
+                return false;
             }
             // Fall through to semantic type inference for non-literal nodes
             _ => infer_semantic_type(node).map(|t| (t, None)),
