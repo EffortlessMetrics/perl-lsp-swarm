@@ -94,36 +94,36 @@ fn tcp_attach_config_custom_timeout_duration() {
 
 #[test]
 fn tcp_attach_config_validate_whitespace_host() {
-    let config = TcpAttachConfig::new("   ".to_string(), 13603);
+    let mut config = TcpAttachConfig::new("   ".to_string(), 13603);
     assert!(config.validate().is_err(), "Whitespace-only host should be rejected");
 }
 
 #[test]
 fn tcp_attach_config_validate_port_1_is_valid() {
-    let config = TcpAttachConfig::new("localhost".to_string(), 1);
+    let mut config = TcpAttachConfig::new("localhost".to_string(), 1);
     assert!(config.validate().is_ok());
 }
 
 #[test]
 fn tcp_attach_config_validate_max_port_is_valid() {
-    let config = TcpAttachConfig::new("localhost".to_string(), 65535);
+    let mut config = TcpAttachConfig::new("localhost".to_string(), 65535);
     assert!(config.validate().is_ok());
 }
 
 #[test]
 fn tcp_attach_config_validate_boundary_timeout() {
     // At 300_000 (5 min) should be valid
-    let config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(300_000);
+    let mut config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(300_000);
     assert!(config.validate().is_ok());
 
     // At 300_001 should fail
-    let config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(300_001);
+    let mut config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(300_001);
     assert!(config.validate().is_err());
 }
 
 #[test]
 fn tcp_attach_config_validate_1ms_timeout() {
-    let config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(1);
+    let mut config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(1);
     assert!(config.validate().is_ok());
 }
 
@@ -160,16 +160,16 @@ fn tcp_attach_session_start_reader_without_connection_fails() {
 fn tcp_attach_session_connect_to_invalid_host_fails() {
     let mut session = TcpAttachSession::new();
     // Use a very short timeout to fail fast
-    let config = TcpAttachConfig::new("192.0.2.1".to_string(), 59999).with_timeout(100);
-    let result = session.connect(&config);
+    let mut config = TcpAttachConfig::new("192.0.2.1".to_string(), 59999).with_timeout(100);
+    let result = session.connect(&mut config);
     assert!(result.is_err(), "Connecting to unreachable host should fail");
 }
 
 #[test]
 fn tcp_attach_session_connect_with_invalid_config_fails() {
     let mut session = TcpAttachSession::new();
-    let config = TcpAttachConfig::new("".to_string(), 0);
-    let result = session.connect(&config);
+    let mut config = TcpAttachConfig::new("".to_string(), 0);
+    let result = session.connect(&mut config);
     assert!(result.is_err(), "Should fail validation before attempting connection");
 }
 
