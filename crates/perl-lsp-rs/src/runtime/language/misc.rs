@@ -20,7 +20,7 @@ use crate::runtime::window::RequestProgressGuard;
 use crate::state::{code_lens_cap, code_lens_resolve_deadline, inlay_hints_cap};
 use perl_lsp_rs_core::providers::completion::collect_module_names_from_roots_with_cache;
 use perl_lsp_rs_core::providers::inline_completion::{
-    InlineCompletionEnvironment, InlinePackageMethodFact,
+    BackendError, InlineCompletionEnvironment, InlinePackageMethodFact,
 };
 use perl_lsp_rs_core::providers::normalize_provider_decision_receipt;
 use perl_parser_core::source_file::is_perl_source_uri;
@@ -981,6 +981,9 @@ impl LspServer {
                             }
                         }
                         Err(ref e) => {
+                            if matches!(e, BackendError::Auth(_)) {
+                                self.notify_ai_auth_failure();
+                            }
                             tracing::debug!("AI inline completion failed: {}", e);
                             if !ai_config.fallback {
                                 return Ok(Some(json!({ "items": [] })));

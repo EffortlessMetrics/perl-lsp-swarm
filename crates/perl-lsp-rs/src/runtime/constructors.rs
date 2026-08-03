@@ -122,6 +122,7 @@ impl LspServer {
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
+            ai_backend_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(feature = "incremental")]
             incremental_eager: AtomicBool::new(false),
         }
@@ -300,6 +301,7 @@ impl LspServer {
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
+            ai_backend_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(feature = "incremental")]
             incremental_eager: AtomicBool::new(false),
         }
@@ -419,6 +421,7 @@ impl LspServer {
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
+            ai_backend_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(feature = "incremental")]
             incremental_eager: AtomicBool::new(false),
         }

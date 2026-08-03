@@ -753,6 +753,23 @@ mod mock_streaming_completion_tests {
         }
     }
 
+    struct MockAuthBackend;
+
+    impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend for MockAuthBackend {
+        fn stream(
+            &self,
+            _req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+            _sink: &mut dyn FnMut(
+                perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+            )
+                -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+        ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
+            Err(perl_lsp_rs_core::providers::inline_completion::BackendError::Auth(
+                "provider rejected credentials".into(),
+            ))
+        }
+    }
+
     #[test]
     fn streaming_completion_mock_backend_cumulative_chunks() {
         let (server, capture) = create_server();
@@ -966,6 +983,91 @@ mod mock_streaming_completion_tests {
         assert!(
             final_progress["params"]["value"]["sequence"].as_u64().is_some(),
             "final progress frame should carry sequence"
+        );
+    }
+
+    #[test]
+    fn ai_auth_failure_notifies_once_across_one_shot_and_streaming_paths() {
+        let (server, capture) = create_server();
+        server.test_install_ai_backend(Some(Arc::new(MockAuthBackend)));
+
+        let uri = "file:///streaming-auth-error.pl";
+        open_doc(&server, uri, "my $obj = Package->");
+
+        let _ = request_streaming_completion(&server, uri, 19, "stream-auth-error");
+
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let messages = loop {
+            let messages: Vec<_> = capture
+                .messages()
+                .into_iter()
+                .filter(|message| {
+                    message.get("method").and_then(Value::as_str) == Some("window/showMessage")
+                })
+                .collect();
+            if !messages.is_empty() || Instant::now() >= deadline {
+                break messages;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+
+        assert_eq!(messages.len(), 1, "authentication failure should be shown once");
+        assert_eq!(messages[0]["params"]["type"], 2);
+        assert_eq!(
+            messages[0]["params"]["message"],
+            "AI inline completion authentication failed. Check the configured API key and provider settings."
+        );
+
+        server.handle_request(JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: None,
+            method: "workspace/didChangeConfiguration".into(),
+            params: Some(json!({
+                "settings": {
+                    "perl": {
+                        "aiCompletion": { "model": "updated-model" }
+                    }
+                }
+            })),
+        });
+        server.test_install_ai_backend(Some(Arc::new(MockAuthBackend)));
+        let _ = request_streaming_completion(&server, uri, 19, "stream-auth-error-after-config");
+
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let messages_after_config = loop {
+            let messages: Vec<_> = capture
+                .messages()
+                .into_iter()
+                .filter(|message| {
+                    message.get("method").and_then(Value::as_str) == Some("window/showMessage")
+                })
+                .collect();
+            if messages.len() >= 2 || Instant::now() >= deadline {
+                break messages;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(messages_after_config.len(), 2);
+
+        let _ = server.handle_request(JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
+            method: "textDocument/inlineCompletion".into(),
+            params: Some(json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 0, "character": 19 }
+            })),
+        });
+        assert_eq!(
+            capture
+                .messages()
+                .into_iter()
+                .filter(|message| {
+                    message.get("method").and_then(Value::as_str) == Some("window/showMessage")
+                })
+                .count(),
+            2,
+            "one-shot and streaming paths should share the reset deduplication key"
         );
     }
 }
