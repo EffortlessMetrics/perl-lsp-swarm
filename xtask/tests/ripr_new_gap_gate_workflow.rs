@@ -105,7 +105,13 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing()
     let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
 
     assert_eq!(
-        workflow.matches("if ! docker image inspect em-ci-rust:1.95").count(),
+        workflow
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .filter(|line| {
+                line.trim_start().starts_with("if ! docker image inspect em-ci-rust:1.95")
+            })
+            .count(),
         2,
         "CX53 and CX43 preflight must both check the required Docker image before running ripr"
     );
