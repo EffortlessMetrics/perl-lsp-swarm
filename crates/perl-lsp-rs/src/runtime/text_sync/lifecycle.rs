@@ -296,10 +296,12 @@ impl LspServer {
 
             // Phase 2: format off-lock using the user's actual perltidy config.
             let config = self.build_perltidy_config();
+            let tab_size = config.indent_columns.unwrap_or(4) as u32;
+            let insert_spaces = !config.tabs.unwrap_or(false);
             let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());
             let format_options = FormattingOptions {
-                tab_size: 4,
-                insert_spaces: true,
+                tab_size,
+                insert_spaces,
                 trim_trailing_whitespace: Some(true),
                 insert_final_newline: Some(true),
                 trim_final_newlines: Some(true),
