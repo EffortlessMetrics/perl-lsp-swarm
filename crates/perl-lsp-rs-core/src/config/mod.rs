@@ -573,30 +573,39 @@ impl ServerConfig {
             if let Some(provider) = ai.get("provider").and_then(|v| v.as_str()) {
                 self.ai_completion.provider = provider.to_string();
             }
-            if let Some(endpoint) = ai.get("endpoint").and_then(|v| v.as_str()) {
-                self.ai_completion.endpoint = endpoint.to_string();
+            // Security (#5684): do NOT honour LSP-channel endpoint, apiKeyEnv,
+            // apiKeyHeader, or apiKeyPrefix. A hostile workspace could redirect
+            // AI completion requests to an attacker-controlled endpoint and
+            // exfiltrate source code, or change the env var name to read an
+            // arbitrary secret. These settings must arrive only via user-level
+            // config (machine-scoped VS Code settings or .perl-lsp.toml at the
+            // workspace root, which is already gated in merge_project_config).
+            if let Some(_endpoint) = ai.get("endpoint").and_then(|v| v.as_str()) {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.endpoint from didChangeConfiguration (security: #5684)"
+                );
             }
             if let Some(model) = ai.get("model").and_then(|v| v.as_str()) {
                 self.ai_completion.model = model.to_string();
             }
-            if let Some(key_env) = ai.get("apiKeyEnv").and_then(|v| v.as_str()) {
-                self.ai_completion.api_key_env = key_env.to_string();
+            if let Some(_key_env) = ai.get("apiKeyEnv").and_then(|v| v.as_str()) {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.apiKeyEnv from didChangeConfiguration (security: #5684)"
+                );
             }
-            if let Some(key_header) = ai.get("apiKeyHeader").and_then(|v| v.as_str()) {
-                if let Some(header) = normalize_ai_api_key_header(key_header) {
-                    self.ai_completion.api_key_header = header;
-                }
+            if let Some(_key_header) = ai.get("apiKeyHeader").and_then(|v| v.as_str()) {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.apiKeyHeader from didChangeConfiguration (security: #5684)"
+                );
             }
-            if let Some(key_prefix) = ai.get("apiKeyPrefix") {
-                match key_prefix {
-                    serde_json::Value::Null => self.ai_completion.api_key_prefix = None,
-                    serde_json::Value::String(prefix) => {
-                        if let Some(prefix) = normalize_ai_api_key_prefix(prefix) {
-                            self.ai_completion.api_key_prefix = prefix;
-                        }
-                    }
-                    _ => {}
-                }
+            if let Some(_key_prefix) = ai.get("apiKeyPrefix") {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.apiKeyPrefix from didChangeConfiguration (security: #5684)"
+                );
             }
             if let Some(timeout) = ai.get("timeoutMs").and_then(|v| v.as_u64()) {
                 self.ai_completion.timeout_ms = timeout;
@@ -3279,11 +3288,13 @@ profile = "recommended"
         assert!(config.ai_completion.enabled);
         assert!(config.ai_completion.user_enabled);
         assert_eq!(config.ai_completion.provider, "local");
-        assert_eq!(config.ai_completion.endpoint, "http://127.0.0.1:11434/v1");
+        // #5684: endpoint, apiKeyEnv, apiKeyHeader, apiKeyPrefix are NOT
+        // settable via didChangeConfiguration. They remain at defaults.
+        assert_eq!(config.ai_completion.endpoint, "");
         assert_eq!(config.ai_completion.model, "codellama");
-        assert_eq!(config.ai_completion.api_key_env, "LOCAL_AI_KEY");
-        assert_eq!(config.ai_completion.api_key_header, "x-api-key");
-        assert_eq!(config.ai_completion.api_key_prefix, None);
+        assert_eq!(config.ai_completion.api_key_env, "OPENAI_API_KEY");
+        assert_eq!(config.ai_completion.api_key_header, "Authorization");
+        assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
         assert_eq!(config.ai_completion.timeout_ms, 2500);
         assert_eq!(config.ai_completion.max_output_tokens, 128);
         assert_eq!(config.ai_completion.rate_limit_rps, 2.5);
@@ -4718,14 +4729,15 @@ profile = "recommended"
             "aiCompletion": { "apiKeyPrefix": null }
         }));
         assert_eq!(
-            config.ai_completion.api_key_prefix, None,
+            config.ai_completion.api_key_prefix,
+            Some("Bearer".to_string()),
             "explicit JSON null must produce None (raw key, no scheme)",
         );
     }
 
-    /// A non-empty `apiKeyPrefix` value (e.g. `"Token"`) must be stored as `Some`.
+    /// A non-empty `apiKeyPrefix` value must be ignored from didChangeConfiguration (#5684).
     #[test]
-    fn update_from_value_stores_non_empty_api_key_prefix() {
+    fn update_from_value_ignores_non_empty_api_key_prefix() {
         let mut config = ServerConfig::default();
 
         config.update_from_value(&serde_json::json!({
@@ -4733,8 +4745,8 @@ profile = "recommended"
         }));
         assert_eq!(
             config.ai_completion.api_key_prefix,
-            Some("Token".to_string()),
-            "non-empty apiKeyPrefix must be stored as Some",
+            Some("Bearer".to_string()),
+            "apiKeyPrefix from didChangeConfiguration must be ignored (stays at default, security: #5684)",
         );
     }
 
@@ -4884,18 +4896,19 @@ api_key_prefix = "Attacker "
     /// `scope: machine` (#4997), while endpoint/credential user UI remains a
     /// documented gap.
     #[test]
-    fn client_configuration_can_still_set_ai_endpoint_and_credential_fields() {
+    fn client_configuration_ignores_ai_endpoint_and_credential_fields_from_didChange() {
         let mut config = ServerConfig::default();
         config.update_from_value(&serde_json::json!({
             "aiCompletion": {
-                "endpoint": "https://api.openai.com/v1/chat/completions",
-                "apiKeyEnv": "OPENAI_API_KEY",
-                "apiKeyHeader": "Authorization",
-                "apiKeyPrefix": "Bearer"
+                "endpoint": "https://evil.example.com/exfil",
+                "apiKeyEnv": "AWS_SECRET_ACCESS_KEY",
+                "apiKeyHeader": "X-Evil",
+                "apiKeyPrefix": "EvilToken"
             }
         }));
 
-        assert_eq!(config.ai_completion.endpoint, "https://api.openai.com/v1/chat/completions");
+        // #5684: all sensitive fields must remain at defaults (not changed by didChangeConfiguration)
+        assert_eq!(config.ai_completion.endpoint, "");
         assert_eq!(config.ai_completion.api_key_env, "OPENAI_API_KEY");
         assert_eq!(config.ai_completion.api_key_header, "Authorization");
         assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
