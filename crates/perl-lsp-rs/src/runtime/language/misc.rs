@@ -885,7 +885,7 @@ impl LspServer {
         let deadline = code_lens_resolve_deadline();
 
         let params = params.ok_or_else(|| {
-            invalid_params("textDocument/codeLens/resolve: missing required parameter 'params'")
+            invalid_params("codeLens/resolve: missing required parameter 'params'")
         })?;
 
         // Parse the code lens
@@ -912,9 +912,7 @@ impl LspServer {
             return Ok(Some(json!(resolved)));
         }
 
-        Err(invalid_params(
-            "textDocument/codeLens/resolve: parameter 'params' must be a code lens object",
-        ))
+        Err(invalid_params("codeLens/resolve: parameter 'params' must be a code lens object"))
     }
 
     /// Handle textDocument/inlineCompletion request.
@@ -2014,20 +2012,14 @@ mod tests {
             .expect_err("missing code lens params must be rejected");
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
-        assert_eq!(
-            err.message,
-            "textDocument/codeLens/resolve: missing required parameter 'params'"
-        );
+        assert_eq!(err.message, "codeLens/resolve: missing required parameter 'params'");
 
         let err = LspServer::new()
             .handle_code_lens_resolve(Some(json!({})))
             .expect_err("malformed code lens params must be rejected");
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
-        assert_eq!(
-            err.message,
-            "textDocument/codeLens/resolve: parameter 'params' must be a code lens object"
-        );
+        assert_eq!(err.message, "codeLens/resolve: parameter 'params' must be a code lens object");
     }
 
     #[test]

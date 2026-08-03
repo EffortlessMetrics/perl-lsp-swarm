@@ -19,7 +19,8 @@ impl LspServer {
     ) -> Result<Option<Value>, JsonRpcError> {
         let params = params.ok_or_else(|| JsonRpcError {
             code: crate::protocol::INVALID_PARAMS,
-            message: "workspace/textDocumentContent: missing required parameter 'uri'".to_string(),
+            message: "workspace/textDocumentContent: missing required parameter 'params'"
+                .to_string(),
             data: None,
         })?;
 
@@ -307,7 +308,10 @@ mod tests {
             .expect_err("missing virtual document params must be rejected");
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
-        assert_eq!(err.message, "workspace/textDocumentContent: missing required parameter 'uri'");
+        assert_eq!(
+            err.message,
+            "workspace/textDocumentContent: missing required parameter 'params'"
+        );
     }
 
     #[test]
