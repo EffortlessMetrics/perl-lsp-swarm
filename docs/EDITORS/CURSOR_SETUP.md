@@ -55,7 +55,6 @@ setup, create or edit `.vscode/settings.json` in your project root:
 ```json
 {
   "perl-lsp.autoDownload": true,
-  "perl-lsp.enableDiagnostics": true,
   "perl-lsp.enableSemanticTokens": true,
   "perl-lsp.enableFormatting": true,
   "perl-lsp.formatOnSave": false,
@@ -170,7 +169,9 @@ perllsp --check path/to/file.pl
 
 - Confirm the file extension is `.pl`, `.pm`, or `.t`.
 - Confirm the language mode in the status bar shows **Perl**.
-- Confirm `perl-lsp.enableDiagnostics` is `true`.
+- Diagnostics are enabled by default; if no squiggle appears, check the
+  language mode, server output, and whether the Perl file is inside the
+  workspace.
 
 ### Module resolution fails
 

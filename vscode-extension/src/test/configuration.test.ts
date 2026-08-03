@@ -836,6 +836,12 @@ describe('package.json contributes', () => {
         readRepoText('docs/how-to/PERFORMANCE_TUNING.md'),
         readRepoText('book/src/getting-started/configuration.md'),
         readRepoText('docs/reference/CONFIGURATION_SCHEMA.md'),
+        readRepoText('docs/EDITORS/CURSOR_SETUP.md'),
+        readRepoText('docs/EDITORS/TRAE_SETUP.md'),
+        readRepoText('docs/EDITORS/KIRO_SETUP.md'),
+        readRepoText('docs/specs/PACKAGING_INSTALL_SPEC.md'),
+        readRepoText('vscode-extension/INTERNAL_DEPLOYMENT.md'),
+        readRepoText('docs/issues/DEVELOPER_FRICTION.md'),
       ];
       const minimumVersion = pkg.engines.vscode.match(/(\d+\.\d+)/)?.[1];
 

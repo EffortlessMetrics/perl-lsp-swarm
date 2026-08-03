@@ -224,7 +224,6 @@ _Note: This section documents the configuration options that should be extracted
 | `includePaths` | `string[]` | `["lib"]` | Directories to add to @INC for module resolution |
 | `enableWorkspaceIndex` | `boolean` | `true` | Enable cross-file features (definition, references) |
 | `maxFiles` | `number` | `10000` | Maximum files to index |
-| `enableDiagnostics` | `boolean` | `true` | Enable syntax and lint diagnostics |
 | `enableFormatting` | `boolean` | `true` | Enable document formatting |
 | `perltidyPath` | `string` | `"perltidy"` | Path to perltidy executable |
 | `perlcriticPath` | `string` | `"perlcritic"` | Path to perlcritic executable |
