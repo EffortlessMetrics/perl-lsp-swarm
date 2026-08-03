@@ -92,6 +92,7 @@ pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
         initial_repository
     };
     let mut candidate_identity_error = false;
+    let mut candidate_refresh_error = false;
     let mut candidate = match initial_candidate.as_ref() {
         Some(initial) => match github::candidate_facts(pr) {
             Ok(candidate) => {
@@ -104,6 +105,7 @@ pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
                 candidate
             }
             Err(error) => {
+                candidate_refresh_error = true;
                 errors.push(format!("failed to collect candidate facts: {error}"));
                 not_proven_candidate(&repository, pr)
             }
@@ -128,21 +130,29 @@ pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
     if initial_candidate.is_some() {
         match github::candidate_facts(pr) {
             Ok(final_candidate) => {
-                let head_changed = final_candidate.head_sha != candidate.head_sha;
-                let integration_changed =
-                    !candidate_integration_facts_match(&final_candidate, &candidate);
-                if head_changed {
-                    errors.push("candidate head moved before preflight completion".to_string());
-                } else if integration_changed && !candidate_identity_error {
+                if candidate_refresh_error {
+                    candidate.identity_result = "NOT_PROVEN".to_string();
                     errors.push(
-                        "candidate base, merge, or required-policy facts changed before preflight completion"
+                        "candidate facts were unavailable during snapshot composition; head stability is NOT_PROVEN"
                             .to_string(),
                     );
-                }
-                if head_changed || integration_changed || candidate_identity_error {
-                    candidate.identity_result = "NOT_PROVEN".to_string();
                 } else {
-                    candidate.identity_result = "current".to_string();
+                    let head_changed = final_candidate.head_sha != candidate.head_sha;
+                    let integration_changed =
+                        !candidate_integration_facts_match(&final_candidate, &candidate);
+                    if head_changed {
+                        errors.push("candidate head moved before preflight completion".to_string());
+                    } else if integration_changed && !candidate_identity_error {
+                        errors.push(
+                            "candidate base, merge, or required-policy facts changed before preflight completion"
+                                .to_string(),
+                        );
+                    }
+                    if head_changed || integration_changed || candidate_identity_error {
+                        candidate.identity_result = "NOT_PROVEN".to_string();
+                    } else {
+                        candidate.identity_result = "current".to_string();
+                    }
                 }
             }
             Err(error) => {
