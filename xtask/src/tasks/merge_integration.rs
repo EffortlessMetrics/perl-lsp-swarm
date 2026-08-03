@@ -51,9 +51,23 @@ pub fn evaluate_synthetic_squash(input: SyntheticSquashInput) -> SyntheticSquash
         ("integration basis", input.integration_basis.as_str()),
         ("synthetic tree", input.synthetic_tree.as_str()),
     ] {
-        if identity.trim().is_empty() {
+        let identity = identity.trim();
+        if identity.is_empty() {
             findings.push(format!("{label} identity is missing"));
+        } else if !is_git_object_id(identity) {
+            findings
+                .push(format!("{label} identity must be a 40-character hexadecimal Git object ID"));
         }
+    }
+
+    if matches!(
+        input.observation,
+        SyntheticObservation::Missing
+            | SyntheticObservation::Skipped
+            | SyntheticObservation::Cancelled
+            | SyntheticObservation::InstrumentFailure
+    ) {
+        findings.push(format!("synthetic observation is {:?}", input.observation));
     }
 
     let verdict = if !findings.is_empty() {
@@ -65,10 +79,7 @@ pub fn evaluate_synthetic_squash(input: SyntheticSquashInput) -> SyntheticSquash
             SyntheticObservation::Missing
             | SyntheticObservation::Skipped
             | SyntheticObservation::Cancelled
-            | SyntheticObservation::InstrumentFailure => {
-                findings.push(format!("synthetic observation is {:?}", input.observation));
-                SyntheticVerdict::NotProven
-            }
+            | SyntheticObservation::InstrumentFailure => SyntheticVerdict::NotProven,
         }
     };
 
@@ -83,15 +94,19 @@ pub fn evaluate_synthetic_squash(input: SyntheticSquashInput) -> SyntheticSquash
     }
 }
 
+fn is_git_object_id(identity: &str) -> bool {
+    identity.len() == 40 && identity.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn input(observation: SyntheticObservation) -> SyntheticSquashInput {
         SyntheticSquashInput {
-            pr_head: "pr-head".to_string(),
-            integration_basis: "integration-basis".to_string(),
-            synthetic_tree: "synthetic-tree".to_string(),
+            pr_head: "0123456789abcdef0123456789abcdef01234567".to_string(),
+            integration_basis: "89abcdef0123456789abcdef0123456789abcdef".to_string(),
+            synthetic_tree: "fedcba9876543210fedcba9876543210fedcba98".to_string(),
             observation,
         }
     }
@@ -100,9 +115,9 @@ mod tests {
     fn success_preserves_separate_integration_identities() {
         let receipt = evaluate_synthetic_squash(input(SyntheticObservation::Success));
         assert_eq!(receipt.verdict, SyntheticVerdict::Success);
-        assert_eq!(receipt.pr_head, "pr-head");
-        assert_eq!(receipt.integration_basis, "integration-basis");
-        assert_eq!(receipt.synthetic_tree, "synthetic-tree");
+        assert_eq!(receipt.pr_head, "0123456789abcdef0123456789abcdef01234567");
+        assert_eq!(receipt.integration_basis, "89abcdef0123456789abcdef0123456789abcdef");
+        assert_eq!(receipt.synthetic_tree, "fedcba9876543210fedcba9876543210fedcba98");
     }
 
     #[test]
@@ -133,5 +148,21 @@ mod tests {
         let receipt = evaluate_synthetic_squash(input);
         assert_eq!(receipt.verdict, SyntheticVerdict::NotProven);
         assert!(receipt.findings.iter().any(|finding| finding.contains("integration basis")));
+    }
+
+    #[test]
+    fn malformed_identity_and_incomplete_observation_are_both_reported() {
+        let mut input = input(SyntheticObservation::Skipped);
+        input.synthetic_tree = "placeholder".to_string();
+        let receipt = evaluate_synthetic_squash(input);
+        assert_eq!(receipt.verdict, SyntheticVerdict::NotProven);
+        assert!(receipt.findings.iter().any(|finding| finding.contains("synthetic tree")));
+        assert!(receipt.findings.iter().any(|finding| finding.contains("synthetic observation")));
+    }
+
+    #[test]
+    fn verdict_serializes_with_established_evidence_tokens() {
+        assert_eq!(serde_json::to_string(&SyntheticVerdict::NotProven).unwrap(), "\"NOT_PROVEN\"");
+        assert_eq!(serde_json::to_string(&SyntheticVerdict::Failure).unwrap(), "\"FAILURE\"");
     }
 }
