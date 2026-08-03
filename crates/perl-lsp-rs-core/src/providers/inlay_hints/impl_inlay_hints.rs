@@ -631,6 +631,10 @@ pub fn trivial_type_hints(
                         NodeKind::Regex { .. } => {
                             Some(("Regex".to_string(), Some("Regular expression")))
                         }
+                        NodeKind::Subroutine { name: None, .. } => Some((
+                            "CodeRef".to_string(),
+                            Some("Anonymous subroutine (code reference)"),
+                        )),
                         _ => infer_semantic_type(init).map(|t| (t, None)),
                     };
                     if let Some((hint, tooltip)) = inferred {
@@ -1173,6 +1177,18 @@ $obj->render("hello", 10);"#;
         assert!(
             !labels.iter().any(|l| l.starts_with(": ")),
             "my $uninit; (no initializer) should not emit any type hint, got: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn test_variable_declaration_coderef_hint() {
+        // my $coderef = sub { ... } should emit : CodeRef.
+        let ast = ast_for("my $coderef = sub { 1 };");
+        let hints = trivial_type_hints(&ast, &dummy_pos, None);
+        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        assert!(
+            labels.contains(&": CodeRef"),
+            "my $coderef = sub {{ ... }} should emit a : CodeRef type hint, got: {labels:?}"
         );
     }
 }
