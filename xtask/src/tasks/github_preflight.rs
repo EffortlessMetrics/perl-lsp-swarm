@@ -140,14 +140,12 @@ pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
                     );
                 }
                 if head_changed || integration_changed || candidate_identity_error {
-                    candidate_identity_error = true;
                     candidate.identity_result = "NOT_PROVEN".to_string();
                 } else {
                     candidate.identity_result = "current".to_string();
                 }
             }
             Err(error) => {
-                candidate_identity_error = true;
                 candidate.identity_result = "NOT_PROVEN".to_string();
                 errors.push(format!("failed to revalidate candidate head: {error}"));
             }
