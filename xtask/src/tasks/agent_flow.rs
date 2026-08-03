@@ -25,6 +25,7 @@ struct CheckReport {
     schema: &'static str,
     result: &'static str,
     providers: BTreeMap<String, ProviderReport>,
+    scenarios: ScenarioReport,
     errors: Vec<String>,
     advisories: Vec<String>,
 }
@@ -38,6 +39,13 @@ struct ProviderReport {
     metadata_chars: usize,
 }
 
+#[derive(Debug, Serialize)]
+struct ScenarioReport {
+    fixture_count: usize,
+    checked_providers: Vec<String>,
+    errors: Vec<String>,
+}
+
 #[derive(Debug)]
 struct Skill {
     name: String,
@@ -45,6 +53,100 @@ struct Skill {
     route_targets: Vec<String>,
     metadata_chars: usize,
 }
+
+#[derive(Debug)]
+struct ScenarioFixture {
+    name: &'static str,
+    required_skills: &'static [&'static str],
+    required_edges: &'static [(&'static str, &'static str)],
+}
+
+const SCENARIO_FIXTURES: &[ScenarioFixture] = &[
+    ScenarioFixture {
+        name: "fresh_issue",
+        required_skills: &["deliver-pr", "prepare-issue"],
+        required_edges: &[("deliver-pr", "prepare-issue"), ("deliver-pr", "prepare-proof")],
+    },
+    ScenarioFixture {
+        name: "existing_issue_no_proof",
+        required_skills: &["deliver-pr", "prepare-proof"],
+        required_edges: &[("deliver-pr", "prepare-proof")],
+    },
+    ScenarioFixture {
+        name: "reviewed_proof_no_candidate",
+        required_skills: &["deliver-pr", "build-candidate"],
+        required_edges: &[("deliver-pr", "build-candidate")],
+    },
+    ScenarioFixture {
+        name: "existing_coherent_pr",
+        required_skills: &["deliver-pr", "finish-pr"],
+        required_edges: &[("deliver-pr", "finish-pr")],
+    },
+    ScenarioFixture {
+        name: "docs_no_proof",
+        required_skills: &["deliver-pr", "prepare-proof"],
+        required_edges: &[("deliver-pr", "prepare-proof")],
+    },
+    ScenarioFixture {
+        name: "proof_authority_drift",
+        required_skills: &["prepare-proof", "prepare-issue"],
+        required_edges: &[("prepare-proof", "prepare-issue")],
+    },
+    ScenarioFixture {
+        name: "candidate_scope_drift",
+        required_skills: &["finish-pr", "build-candidate", "prepare-issue"],
+        required_edges: &[("finish-pr", "prepare-issue")],
+    },
+    ScenarioFixture {
+        name: "clean_formal_review",
+        required_skills: &["finish-pr", "review-pr"],
+        required_edges: &[("finish-pr", "review-pr")],
+    },
+    ScenarioFixture {
+        name: "repair_changes_head",
+        required_skills: &["finish-pr", "address-review-comments", "final-challenge", "review-pr"],
+        required_edges: &[
+            ("finish-pr", "address-review-comments"),
+            ("finish-pr", "final-challenge"),
+            ("finish-pr", "review-pr"),
+        ],
+    },
+    ScenarioFixture {
+        name: "post_publication_final_challenge",
+        required_skills: &["finish-pr", "final-challenge"],
+        required_edges: &[("finish-pr", "final-challenge")],
+    },
+    ScenarioFixture {
+        name: "stale_candidate_claim_review",
+        required_skills: &["finish-pr", "final-challenge", "review-pr"],
+        required_edges: &[("finish-pr", "final-challenge"), ("finish-pr", "review-pr")],
+    },
+    ScenarioFixture {
+        name: "merged_unreconciled_pr",
+        required_skills: &["deliver-pr", "merge-reconcile"],
+        required_edges: &[("deliver-pr", "merge-reconcile")],
+    },
+    ScenarioFixture {
+        name: "multi_pr_in_flight",
+        required_skills: &["deliver-goal", "deliver-pr"],
+        required_edges: &[("deliver-goal", "deliver-pr")],
+    },
+    ScenarioFixture {
+        name: "same_candidate_writer_collision",
+        required_skills: &["orchestrate-work", "finish-pr", "build-candidate"],
+        required_edges: &[("finish-pr", "build-candidate")],
+    },
+    ScenarioFixture {
+        name: "actual_conflict",
+        required_skills: &["finish-pr", "build-candidate"],
+        required_edges: &[("finish-pr", "build-candidate")],
+    },
+    ScenarioFixture {
+        name: "unchanged_main_movement",
+        required_skills: &["deliver-pr", "finish-pr", "verify-live-ci"],
+        required_edges: &[("finish-pr", "verify-live-ci")],
+    },
+];
 
 pub fn run(config: CheckConfig) -> Result<()> {
     let root = project_root()?;
@@ -64,6 +166,7 @@ pub fn run(config: CheckConfig) -> Result<()> {
 
 fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckReport> {
     let mut providers = BTreeMap::new();
+    let mut provider_skills = BTreeMap::new();
     let mut errors = Vec::new();
     let mut advisories = Vec::new();
     let mut selected_matches = 0;
@@ -72,6 +175,13 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
         let skill_root = root.join(relative_root);
         let skills = collect_skills(&skill_root, &mut errors)?;
         let known_names = skills.iter().map(|skill| skill.name.clone()).collect::<BTreeSet<_>>();
+        let route_map = skills
+            .iter()
+            .map(|skill| {
+                (skill.name.clone(), skill.route_targets.iter().cloned().collect::<BTreeSet<_>>())
+            })
+            .collect::<BTreeMap<_, _>>();
+        provider_skills.insert((*provider).to_string(), (known_names.clone(), route_map));
         let mut route_count = 0;
         let mut metadata_chars = 0;
         let mut checked_skills = Vec::new();
@@ -122,8 +232,50 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
         ));
     }
 
+    let scenario_errors = check_scenarios(&provider_skills);
+    errors.extend(scenario_errors.iter().cloned());
+    let scenarios = ScenarioReport {
+        fixture_count: SCENARIO_FIXTURES.len(),
+        checked_providers: provider_skills.keys().cloned().collect(),
+        errors: scenario_errors,
+    };
+
     let result = if errors.is_empty() { "PASS" } else { "FAIL" };
-    Ok(CheckReport { schema: "agent-flow-check.v1", result, providers, errors, advisories })
+    Ok(CheckReport {
+        schema: "agent-flow-check.v1",
+        result,
+        providers,
+        scenarios,
+        errors,
+        advisories,
+    })
+}
+
+fn check_scenarios(
+    provider_skills: &BTreeMap<String, (BTreeSet<String>, BTreeMap<String, BTreeSet<String>>)>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (provider, (skill_names, route_map)) in provider_skills {
+        for fixture in SCENARIO_FIXTURES {
+            for required_skill in fixture.required_skills {
+                if !skill_names.contains(*required_skill) {
+                    errors.push(format!(
+                        "{provider}: scenario '{}' requires missing skill '{}'",
+                        fixture.name, required_skill
+                    ));
+                }
+            }
+            for (source, target) in fixture.required_edges {
+                if !route_map.get(*source).is_some_and(|routes| routes.contains(*target)) {
+                    errors.push(format!(
+                        "{provider}: scenario '{}' has no route from '{}' to '{}'",
+                        fixture.name, source, target
+                    ));
+                }
+            }
+        }
+    }
+    errors
 }
 
 fn collect_skills(skill_root: &Path, errors: &mut Vec<String>) -> Result<Vec<Skill>> {
@@ -218,8 +370,10 @@ fn route_targets(text: &str) -> Vec<String> {
 fn is_route_heading(heading: &str) -> bool {
     let normalized = heading.trim_start_matches('#').trim().to_ascii_lowercase();
     normalized.contains("route")
+        || normalized.contains("routing")
         || normalized.contains("valid exit")
         || normalized == "flow"
+        || normalized == "loop"
         || normalized.contains("orchestration")
         || normalized.contains("outcome")
         || normalized == "procedure"
@@ -281,6 +435,11 @@ fn print_human(report: &CheckReport) {
             provider_report.metadata_chars
         );
     }
+    println!(
+        "scenarios: {} fixtures across {} providers",
+        report.scenarios.fixture_count,
+        report.scenarios.checked_providers.len()
+    );
     for error in &report.errors {
         println!("ERROR: {error}");
     }
@@ -291,7 +450,12 @@ fn print_human(report: &CheckReport) {
 
 #[cfg(test)]
 mod tests {
-    use super::{frontmatter_metadata_chars, frontmatter_value, route_targets, route_tokens};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::{
+        SCENARIO_FIXTURES, check_scenarios, frontmatter_metadata_chars, frontmatter_value,
+        route_targets, route_tokens,
+    };
 
     #[test]
     fn parses_frontmatter_name() {
@@ -303,6 +467,18 @@ mod tests {
     fn extracts_provider_route_targets_from_route_bearing_sections() {
         let text = "# Skill\n\n`not-a-route`\n\n## Procedure\n- `PLAN_READY` -> `$prepare-proof`\n- clean -> `deliver-pr`\n\n## Notes\n- `not-a-route`\n";
         assert_eq!(route_targets(text), vec!["deliver-pr", "prepare-proof"]);
+    }
+
+    #[test]
+    fn treats_routing_headings_as_route_bearing_sections() {
+        let text = "## Entry routing\n- `READY` -> `$prepare-proof`\n";
+        assert_eq!(route_targets(text), vec!["prepare-proof"]);
+    }
+
+    #[test]
+    fn treats_flow_loop_headings_as_route_bearing_sections() {
+        let text = "## Loop\n- `$deliver-pr`\n";
+        assert_eq!(route_targets(text), vec!["deliver-pr"]);
     }
 
     #[test]
@@ -324,5 +500,47 @@ mod tests {
     fn ignores_delimiters_inside_document_body_for_metadata_size() {
         let text = "# Skill\n\n---\nnot frontmatter\n---\n";
         assert_eq!(frontmatter_metadata_chars(text), 0);
+    }
+
+    #[test]
+    fn scenario_fixture_names_are_unique_and_cover_the_required_route_cases() {
+        let names = SCENARIO_FIXTURES.iter().map(|fixture| fixture.name).collect::<BTreeSet<_>>();
+        assert_eq!(names.len(), SCENARIO_FIXTURES.len());
+        assert!(names.contains("fresh_issue"));
+        assert!(names.contains("same_candidate_writer_collision"));
+        assert!(names.contains("unchanged_main_movement"));
+    }
+
+    #[test]
+    fn scenario_checker_reports_missing_static_route_contracts() {
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            "codex".to_string(),
+            (
+                [
+                    "deliver-pr".to_string(),
+                    "prepare-issue".to_string(),
+                    "prepare-proof".to_string(),
+                ]
+                .into_iter()
+                .collect(),
+                [
+                    ("deliver-pr".to_string(), ["prepare-issue".to_string()].into_iter().collect()),
+                    (
+                        "prepare-proof".to_string(),
+                        ["prepare-issue".to_string()].into_iter().collect(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        );
+
+        let errors = check_scenarios(&providers);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("no route from 'deliver-pr' to 'prepare-proof'"))
+        );
     }
 }
