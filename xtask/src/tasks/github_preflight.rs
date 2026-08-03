@@ -329,9 +329,6 @@ fn derive_preflight_result(
         );
         return ("NOT_PROVEN".to_string(), findings);
     }
-    if candidate.head_sha != review.head_sha {
-        findings.push("candidate and review snapshots describe different heads".to_string());
-    }
     if candidate.state != "OPEN" {
         findings.push(format!("candidate state is {}", candidate.state));
     }

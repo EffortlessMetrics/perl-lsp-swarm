@@ -4337,10 +4337,10 @@ fn run_cli(cli: Cli) -> Result<()> {
             GhGithubCommand::Candidate { pr, expected_head, fixture, json } => {
                 github::run_candidate(pr, expected_head, fixture, json)
             }
-            GithubCommand::ReviewConvergence { pr, json } => {
+            GhGithubCommand::ReviewConvergence { pr, json } => {
                 github_review::run_review_convergence(pr, json)
             }
-            GithubCommand::Preflight { pr, json } => github_preflight::run_preflight(pr, json),
+            GhGithubCommand::Preflight { pr, json } => github_preflight::run_preflight(pr, json),
         },
         Commands::CorpusAudit { corpus_path, output, check, fresh } => {
             corpus_audit::run(corpus_audit::AuditConfig {

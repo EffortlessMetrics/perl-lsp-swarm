@@ -231,6 +231,10 @@ fn encode_path_segment(value: &str) -> String {
     encoded
 }
 
+fn hex_digit(value: u8) -> char {
+    b"0123456789ABCDEF"[value as usize] as char
+}
+
 pub(crate) fn command_text(program: &str, args: &[&str]) -> Result<String> {
     let output = Command::new(program)
         .args(args)
