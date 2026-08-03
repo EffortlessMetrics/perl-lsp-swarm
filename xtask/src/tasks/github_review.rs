@@ -350,6 +350,32 @@ fn collect_snapshot(repository: String, owner: &str, repo: &str, pr: u64) -> Rev
         }
     }
 
+    if errors.is_empty() {
+        let pr_arg = pr.to_string();
+        match command_text(
+            "gh",
+            &[
+                "pr",
+                "view",
+                &pr_arg,
+                "--repo",
+                repository.as_str(),
+                "--json",
+                "headRefOid",
+                "--jq",
+                ".headRefOid",
+            ],
+        ) {
+            Ok(final_head) if final_head.trim() == head_sha.as_deref().unwrap_or_default() => {}
+            Ok(final_head) => errors.push(format!(
+                "PR head moved after paginated review snapshot: captured {}, final {}",
+                head_sha.as_deref().unwrap_or_default(),
+                final_head.trim()
+            )),
+            Err(error) => errors.push(format!("failed to verify PR head after snapshot: {error}")),
+        }
+    }
+
     let head_sha = head_sha.unwrap_or_default();
     let stale_human = stale_human_reviews(&reviews);
     let converged = errors.is_empty()
