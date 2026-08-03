@@ -2313,7 +2313,11 @@ enum NonRustCommand {
     /// Walk `git ls-files`, classify tracked files against the allowlist,
     /// and emit `target/policy/non-rust-inventory.{md,json}` plus
     /// `docs/policy/NON_RUST_INVENTORY.md`.
-    Inventory,
+    Inventory {
+        /// Check the committed Markdown inventory without rewriting outputs.
+        #[arg(long)]
+        check: bool,
+    },
 
     /// Check non-Rust files against the allowlist and report violations.
     ///
@@ -5080,9 +5084,13 @@ fn run_cli(cli: Cli) -> Result<()> {
             } => generated_files::check(receipt, fixture, generator_receipt, allow_manual_edits),
         },
         Commands::NonRust { command } => match command {
-            NonRustCommand::Inventory => {
+            NonRustCommand::Inventory { check } => {
                 let root = utils::project_root()?;
-                tasks::file_policy::non_rust_inventory(&root)
+                if check {
+                    tasks::file_policy::non_rust_inventory_check(&root)
+                } else {
+                    tasks::file_policy::non_rust_inventory(&root)
+                }
             }
             NonRustCommand::Check { mode, json, allowlist, root: root_override } => {
                 use tasks::file_policy::{CheckFilePolicyConfig, CheckFilePolicyMode};
