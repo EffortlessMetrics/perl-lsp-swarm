@@ -113,7 +113,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
       "enclosing_test_or_function": "unwrap_expr_stmt",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected ExpressionStatement, got {} (sexp: {})\", stmt.kind.kind_name(), stmt.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -122,7 +122,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
       "enclosing_test_or_function": "method_after_arrow_hash_deref",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected MethodCall for $obj->{{key}}->method(), got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -131,7 +131,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
       "enclosing_test_or_function": "method_after_arrow_array_deref",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected MethodCall for $obj->[0]->method(), got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -140,7 +140,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
       "enclosing_test_or_function": "deep_chain_hash_deref_then_methods",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected inner MethodCall (resultset), got {} (sexp: {})\", object.kind.kind_name(), object.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -149,16 +149,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
       "enclosing_test_or_function": "deep_chain_hash_deref_then_methods",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:2",
-      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
-      "state": "active"
-    },
-    {
-      "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
-      "enclosing_test_or_function": "chain_after_bare_hash_access",
-      "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected MethodCall for deep chain, got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -167,8 +158,17 @@
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
       "enclosing_test_or_function": "chain_after_bare_hash_access",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:2",
+      "normalized_snippet": "_ => panic!( \"Expected inner MethodCall, got {} (sexp: {})\", object.kind.kind_name(), object.to_sexp() ),",
+      "selector_identity": "occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
+      "enclosing_test_or_function": "chain_after_bare_hash_access",
+      "macro_family": "panic!",
+      "normalized_snippet": "_ => panic!( \"Expected MethodCall for chain after bare hash, got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
+      "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
@@ -176,7 +176,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
       "enclosing_test_or_function": "mixed_chain_method_hash_array_method",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected MethodCall (final_method), got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -185,7 +185,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
       "enclosing_test_or_function": "hash_deref_then_array_deref",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected inner Binary (hash), got {} (sexp: {})\", left.kind.kind_name(), left.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -194,16 +194,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
       "enclosing_test_or_function": "hash_deref_then_array_deref",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:2",
-      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
-      "state": "active"
-    },
-    {
-      "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
-      "enclosing_test_or_function": "array_deref_then_hash_deref",
-      "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected Binary (array subscript), got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -212,16 +203,16 @@
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
       "enclosing_test_or_function": "array_deref_then_hash_deref",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:2",
+      "normalized_snippet": "_ => panic!( \"Expected inner Binary (array), got {} (sexp: {})\", left.kind.kind_name(), left.to_sexp() ),",
+      "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
     {
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
-      "enclosing_test_or_function": "method_then_hash_deref",
+      "enclosing_test_or_function": "array_deref_then_hash_deref",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected Binary (hash subscript), got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -230,16 +221,16 @@
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
       "enclosing_test_or_function": "method_then_hash_deref",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:2",
+      "normalized_snippet": "_ => panic!( \"Expected inner MethodCall, got {} (sexp: {})\", left.kind.kind_name(), left.to_sexp() ),",
+      "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
     {
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
-      "enclosing_test_or_function": "method_then_array_deref",
+      "enclosing_test_or_function": "method_then_hash_deref",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected Binary (hash subscript), got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -248,8 +239,17 @@
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
       "enclosing_test_or_function": "method_then_array_deref",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:2",
+      "normalized_snippet": "_ => panic!( \"Expected inner MethodCall, got {} (sexp: {})\", left.kind.kind_name(), left.to_sexp() ),",
+      "selector_identity": "occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
+      "enclosing_test_or_function": "method_then_array_deref",
+      "macro_family": "panic!",
+      "normalized_snippet": "_ => panic!( \"Expected Binary (array subscript), got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
+      "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
@@ -311,7 +311,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
       "enclosing_test_or_function": "mixed_chain_uses_arrow_deref_ops",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected inner MethodCall, got {} (sexp: {})\", left.kind.kind_name(), left.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -356,7 +356,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/coderef_invocation_tests.rs",
       "enclosing_test_or_function": "unwrap_expr_stmt",
       "macro_family": "panic!",
-      "normalized_snippet": "panic!(",
+      "normalized_snippet": "panic!( \"Expected ExpressionStatement, got {} (sexp: {})\", stmt.kind.kind_name(), stmt.to_sexp() );",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -365,7 +365,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/coderef_invocation_tests.rs",
       "enclosing_test_or_function": "coderef_invocation_no_args",
       "macro_family": "panic!",
-      "normalized_snippet": "panic!(",
+      "normalized_snippet": "panic!( \"Expected FunctionCall for $code->(), got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() );",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -374,7 +374,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/coderef_invocation_tests.rs",
       "enclosing_test_or_function": "coderef_invocation_with_args",
       "macro_family": "panic!",
-      "normalized_snippet": "panic!(",
+      "normalized_snippet": "panic!( \"Expected FunctionCall for $code->($x, $y), got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() );",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -383,7 +383,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/coderef_invocation_tests.rs",
       "enclosing_test_or_function": "hash_element_coderef_invocation",
       "macro_family": "panic!",
-      "normalized_snippet": "panic!(",
+      "normalized_snippet": "panic!( \"Expected FunctionCall for $hash{{callback}}->(), got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() );",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -392,7 +392,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/coderef_invocation_tests.rs",
       "enclosing_test_or_function": "array_element_coderef_invocation",
       "macro_family": "panic!",
-      "normalized_snippet": "panic!(",
+      "normalized_snippet": "panic!( \"Expected FunctionCall for $arr[0]->(), got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() );",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -401,7 +401,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/coderef_invocation_tests.rs",
       "enclosing_test_or_function": "chained_method_then_coderef",
       "macro_family": "panic!",
-      "normalized_snippet": "panic!(",
+      "normalized_snippet": "panic!( \"Expected FunctionCall for $obj->method->(), got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() );",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -410,7 +410,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/coderef_invocation_tests.rs",
       "enclosing_test_or_function": "can_method_coderef_invocation",
       "macro_family": "panic!",
-      "normalized_snippet": "panic!(",
+      "normalized_snippet": "panic!( \"Expected FunctionCall for $self->can('method')->(), got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() );",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -419,7 +419,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/coderef_invocation_tests.rs",
       "enclosing_test_or_function": "coderef_invocation_with_string_arg",
       "macro_family": "panic!",
-      "normalized_snippet": "panic!(",
+      "normalized_snippet": "panic!( \"Expected FunctionCall for $handler->(\\\"hello\\\"), got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() );",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -428,7 +428,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/coderef_invocation_tests.rs",
       "enclosing_test_or_function": "double_coderef_chain",
       "macro_family": "panic!",
-      "normalized_snippet": "panic!(",
+      "normalized_snippet": "panic!( \"Expected FunctionCall for $factory->()->(), got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() );",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -437,8 +437,8 @@
       "path": "crates/perl-parser-core/src/engine/parser/coderef_invocation_tests.rs",
       "enclosing_test_or_function": "double_coderef_chain",
       "macro_family": "panic!",
-      "normalized_snippet": "panic!(",
-      "selector_identity": "occurrence:2",
+      "normalized_snippet": "panic!( \"Expected inner FunctionCall for $factory->()->(), got {} (sexp: {})\", args[0].kind.kind_name(), args[0].to_sexp() );",
+      "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
@@ -473,7 +473,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "qualified_scalar_array_subscript",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected Variable node as subscript target, got: {}\", left.kind.kind_name() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -482,16 +482,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "qualified_scalar_array_subscript",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:2",
-      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
-      "state": "active"
-    },
-    {
-      "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
-      "enclosing_test_or_function": "qualified_scalar_hash_subscript",
-      "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected Binary subscript node, got: {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -500,16 +491,16 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "qualified_scalar_hash_subscript",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:2",
+      "normalized_snippet": "_ => panic!( \"Expected Variable node as subscript target, got: {}\", left.kind.kind_name() ),",
+      "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
     {
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
-      "enclosing_test_or_function": "qualified_array_slice",
+      "enclosing_test_or_function": "qualified_scalar_hash_subscript",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected Binary subscript node, got: {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -518,16 +509,16 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "qualified_array_slice",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:2",
+      "normalized_snippet": "_ => panic!( \"Expected Variable node as slice target, got: {}\", target.kind.kind_name() ),",
+      "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
     {
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
-      "enclosing_test_or_function": "qualified_hash_slice",
+      "enclosing_test_or_function": "qualified_array_slice",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected ArraySlice node, got: {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -536,16 +527,16 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "qualified_hash_slice",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:2",
+      "normalized_snippet": "_ => panic!( \"Expected Variable node as slice target, got: {}\", target.kind.kind_name() ),",
+      "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
     {
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
-      "enclosing_test_or_function": "scalar_ref_hash_slice_preserves_base_target",
+      "enclosing_test_or_function": "qualified_hash_slice",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected KeyValueSlice node, got: {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -554,8 +545,8 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "scalar_ref_hash_slice_preserves_base_target",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:2",
+      "normalized_snippet": "_ => panic!( \"Expected inner Variable in deref, got: {}\", operand.kind.kind_name() ),",
+      "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
@@ -563,8 +554,8 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "scalar_ref_hash_slice_preserves_base_target",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:3",
+      "normalized_snippet": "_ => panic!( \"Expected Unary deref node as slice target, got: {} (sexp: {})\", target.kind.kind_name(), expr.to_sexp(), ),",
+      "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
@@ -572,16 +563,16 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "scalar_ref_hash_slice_preserves_base_target",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:4",
+      "normalized_snippet": "_ => panic!( \"Expected ArrayLiteral slice key list, got: {}\", keys.kind.kind_name() ),",
+      "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
     {
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
-      "enclosing_test_or_function": "scalar_ref_hash_slice_list_preserves_base_target",
+      "enclosing_test_or_function": "scalar_ref_hash_slice_preserves_base_target",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected KeyValueSlice node for %$href{{...}}, got: {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -590,8 +581,8 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "scalar_ref_hash_slice_list_preserves_base_target",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:2",
+      "normalized_snippet": "_ => panic!( \"Expected inner Variable in deref, got: {}\", operand.kind.kind_name() ),",
+      "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
@@ -599,8 +590,8 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "scalar_ref_hash_slice_list_preserves_base_target",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:3",
+      "normalized_snippet": "_ => panic!( \"Expected Unary deref node as slice target, got: {} (sexp: {})\", target.kind.kind_name(), expr.to_sexp(), ),",
+      "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
@@ -608,8 +599,17 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "scalar_ref_hash_slice_list_preserves_base_target",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:4",
+      "normalized_snippet": "_ => panic!( \"Expected ArrayLiteral slice key list, got: {}\", keys.kind.kind_name() ),",
+      "selector_identity": "occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
+      "enclosing_test_or_function": "scalar_ref_hash_slice_list_preserves_base_target",
+      "macro_family": "panic!",
+      "normalized_snippet": "_ => panic!( \"Expected HashSlice node for @$href{{...}}, got: {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
+      "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
@@ -626,7 +626,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "deeply_qualified_variable_subscript",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected Binary subscript, got: {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -635,7 +635,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "qualified_variable_chained_subscripts",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected Variable node, got: {}\", inner_left.kind.kind_name() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -653,8 +653,8 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "qualified_variable_chained_subscripts",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:2",
+      "normalized_snippet": "_ => panic!( \"Expected Binary subscript, got: {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
+      "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
@@ -671,7 +671,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "qualified_negative_index",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected Binary subscript, got: {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -689,7 +689,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "qualified_expression_index",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected Binary + expression in index, got: {}\", right.kind.kind_name() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -698,8 +698,8 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "qualified_expression_index",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
-      "selector_identity": "occurrence:2",
+      "normalized_snippet": "_ => panic!( \"Expected Binary subscript, got: {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
+      "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
@@ -725,7 +725,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "qualified_hash_variable_key",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected Binary subscript, got: {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -752,7 +752,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "qualified_subscript_then_arrow_deref",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected Binary arrow deref, got: {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -779,7 +779,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "qualified_subscript_in_arithmetic",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected Binary +, got: {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -797,7 +797,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "deeply_qualified_string_key",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected Binary subscript, got: {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
@@ -824,7 +824,7 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "deeply_qualified_hex_index_structure",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!(",
+      "normalized_snippet": "_ => panic!( \"Expected Binary subscript, got: {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
       "selector_identity": "occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"

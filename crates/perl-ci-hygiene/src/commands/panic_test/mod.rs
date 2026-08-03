@@ -72,6 +72,37 @@ fn walk_complete_test_source_files(repo_root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+fn external_test_module_files(path: &Path, lines: &[String]) -> Vec<PathBuf> {
+    let Some(start_line) = first_cfg_test_line_number(path).ok().filter(|line| *line != usize::MAX)
+    else {
+        return Vec::new();
+    };
+
+    let mut files = Vec::new();
+    for line in lines.iter().skip(start_line.saturating_sub(1)) {
+        let Some(name) = line
+            .trim()
+            .strip_prefix("mod ")
+            .and_then(|name| name.strip_suffix(';'))
+            .map(str::trim)
+            .filter(|name| {
+                !name.is_empty() && name.chars().all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+            })
+        else {
+            continue;
+        };
+        let sibling = path.with_file_name(format!("{name}.rs"));
+        let nested = path.with_file_name(name).join("mod.rs");
+        if sibling.is_file() {
+            files.push(sibling);
+        }
+        if nested.is_file() {
+            files.push(nested);
+        }
+    }
+    files
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct PanicSiteIdentity {
     path: String,
@@ -147,6 +178,52 @@ fn enclosing_test_or_function(lines: &[String], line_index: usize) -> String {
         .unwrap_or_else(|| "<unknown>".to_string())
 }
 
+fn normalized_panic_invocation(lines: &[String], line_index: usize, column: usize) -> String {
+    let mut text = String::new();
+    let mut depth = 0usize;
+    let mut started = false;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, line) in lines.iter().enumerate().skip(line_index).take(16) {
+        let fragment = line.as_str();
+        let scan_fragment =
+            if offset == line_index { line.get(column..).unwrap_or("") } else { line.as_str() };
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(fragment);
+
+        for ch in scan_fragment.chars() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            if ch == '"' {
+                in_string = true;
+                continue;
+            }
+            if ch == '(' || ch == '{' {
+                started = true;
+                depth += 1;
+            } else if (ch == ')' || ch == '}') && started {
+                depth = depth.saturating_sub(1);
+            }
+        }
+        if started && depth == 0 {
+            break;
+        }
+    }
+
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn complete_panic_site_inventory(repo_root: &Path) -> Result<Vec<PanicSiteIdentity>> {
     let panic_re = regex_from_static(&PANIC_MACRO_RE, "panic macro")?;
     let comment_re = regex_from_static(&COMMENT_RE, "comment")?;
@@ -154,14 +231,20 @@ fn complete_panic_site_inventory(repo_root: &Path) -> Result<Vec<PanicSiteIdenti
 
     let complete_files = walk_complete_test_source_files(repo_root);
     let complete_file_set = complete_files.iter().cloned().collect::<BTreeSet<_>>();
-    let mut files = complete_files.into_iter().map(|path| (path, 1)).collect::<Vec<_>>();
+    let mut files = complete_files.into_iter().map(|path| (path, 1)).collect::<BTreeMap<_, _>>();
     for path in walk_workspace_rust_files(repo_root) {
         if complete_file_set.contains(&path) || is_excluded_integration_test_path(&path) {
             continue;
         }
         let inline_test_start = first_cfg_test_line_number(&path).unwrap_or(usize::MAX);
         if inline_test_start != usize::MAX {
-            files.push((path, inline_test_start));
+            let lines = read_lines(&path)?;
+            files.insert(path.clone(), inline_test_start);
+            for module in external_test_module_files(&path, &lines) {
+                if !is_excluded_integration_test_path(&module) {
+                    files.insert(module, 1);
+                }
+            }
         }
     }
 
@@ -173,12 +256,16 @@ fn complete_panic_site_inventory(repo_root: &Path) -> Result<Vec<PanicSiteIdenti
             if comment_re.is_match(line) {
                 continue;
             }
-            for _ in panic_re.find_iter(line) {
+            for panic_match in panic_re.find_iter(line) {
                 sites.push(PanicSiteIdentity {
                     path: relative.clone(),
                     enclosing_test_or_function: enclosing_test_or_function(&lines, index),
                     macro_family: "panic!",
-                    normalized_snippet: line.split_whitespace().collect::<Vec<_>>().join(" "),
+                    normalized_snippet: normalized_panic_invocation(
+                        &lines,
+                        index,
+                        panic_match.start(),
+                    ),
                     selector_identity: String::new(),
                     line: index + 1,
                 });
@@ -499,6 +586,21 @@ fn demo() {
     }
 
     #[test]
+    fn complete_inventory_follows_cfg_test_external_modules() -> Result<()> {
+        let repo = TempRepo::new("external-test-module")?;
+        fs::write(repo.path.join("crates/demo/src/lib.rs"), "#[cfg(test)]\nmod external;\n")?;
+        fs::write(
+            repo.path.join("crates/demo/src/external.rs"),
+            "#[test]\nfn external() { panic!(\"external\"); }\n",
+        )?;
+
+        let inventory = complete_panic_site_inventory(&repo.path)?;
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].path, "crates/demo/src/external.rs");
+        Ok(())
+    }
+
+    #[test]
     fn complete_inventory_ignores_production_code() -> Result<()> {
         let repo = TempRepo::new("production")?;
         fs::write(
@@ -586,6 +688,32 @@ pub fn boom() {
         )?;
         fs::write(&source, "\n\n#[test]\nfn demo() { panic!(\"boom\"); }\n")?;
         assert_eq!(check_panic_test_with_registry(&repo.path, &path)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn identity_registry_rejects_changed_multiline_invocation() -> Result<()> {
+        let repo = TempRepo::new("registry-multiline-invocation")?;
+        let source = repo.path.join("crates/demo/tests/demo.rs");
+        fs::write(
+            &source,
+            "#[test]\nfn demo() {\n    panic!(\n        \"first\"\n    );\n    panic!(\n        \"second\"\n    );\n}\n",
+        )?;
+        let sites = complete_panic_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 2);
+        assert!(sites[0].normalized_snippet.contains("first"));
+        let path = write_registry(
+            &repo,
+            serde_json::json!({
+                "schema_version": 1,
+                "sites": sites.iter().map(|site| registry_site(site, "active", "intentional fixture panic")).collect::<Vec<_>>()
+            }),
+        )?;
+        fs::write(
+            &source,
+            "#[test]\nfn demo() {\n    panic!(\n        \"changed\"\n    );\n    panic!(\n        \"second\"\n    );\n}\n",
+        )?;
+        assert_eq!(check_panic_test_with_registry(&repo.path, &path)?, 1);
         Ok(())
     }
 
