@@ -85,8 +85,12 @@ jobs:
             done
 
             if [ "$docs_only" = "true" ]; then
-              echo "run_ci=false" >> "$GITHUB_OUTPUT"
-              echo "::notice::Docs/assets-only PR detected — skipping Rust CI jobs; lightweight workflows still run"
+              # The policy shard includes the generated non-Rust inventory
+              # freshness gate. Keep the existing required CI contexts active
+              # for docs/assets-only changes so tracked-file additions and
+              # removals cannot bypass that check.
+              echo "run_ci=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::Docs/assets-only PR detected — running the policy shard for generated-inventory freshness"
             else
               echo "run_ci=true" >> "$GITHUB_OUTPUT"
               echo "::notice::Non-draft PR with code/config changes — running merge-gate (pr-smoke, conflict-markers, shards, UX tests); supersede protection via preflight-latest-check (#1484)"
