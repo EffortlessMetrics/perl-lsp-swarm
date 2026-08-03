@@ -657,7 +657,14 @@ pub fn wait_for_event(
                     return Ok(message);
                 }
             }
-            Err(_) => return Err(format!("channel timeout waiting for `{event_name}`")),
+            Err(RecvTimeoutError::Timeout) => {
+                return Err(format!("timeout waiting for event `{event_name}`"));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(format!(
+                    "channel disconnected waiting for `{event_name}` — debuggee exited or crashed"
+                ));
+            }
         }
     }
 }
