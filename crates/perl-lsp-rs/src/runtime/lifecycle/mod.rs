@@ -111,7 +111,7 @@ impl LspServer {
                 // temporarily degraded.  window/logMessage (Info=3) is non-intrusive
                 // — it appears in the Output panel without a popup dialog.
                 // Sent exactly once per Building transition (no per-file spam).
-                let msg = "Perl Language Server: Indexing workspace files. \
+                let msg = "Perl LSP: Indexing workspace files. \
                            Go-to-definition, completion, and workspace search will be \
                            available when indexing completes.";
                 if let Err(e) = self.log_message(super::window::MessageType::Info, msg) {
