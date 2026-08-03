@@ -814,7 +814,6 @@ describe('package.json contributes', () => {
       expect(Array.isArray(setting.items.enum)).toBe(true);
       expect(setting.items.enum.length).toBeGreaterThan(0);
     });
-
   });
 
   describe('openConfigurationGuide command', () => {
