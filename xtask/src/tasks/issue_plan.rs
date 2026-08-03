@@ -394,10 +394,8 @@ mod tests {
         // actual argv the live loader sends to `gh issue list`.
         //
         // Without the fix (state hardcoded to "open"), this assertion fails:
-        // args contains "open", not "all" — the `work-packet-on-closed`
-        // check (see `closed_work_packet_is_flagged` above) would never
-        // see a closed issue in production, because `gh issue list --state
-        // open` never returns one.
+        // args contains "open", not "all", so the body-driven audit would
+        // never inspect closed durable work packets in production.
         let config = AuditConfig {
             fixture: None,
             repo: Some("EffortlessMetrics/perl-lsp-swarm".to_string()),
@@ -416,9 +414,9 @@ mod tests {
         assert_eq!(
             state_value,
             Some("all"),
-            "live loader must request --state all so closed issues (and the \
-             work-packet-on-closed check) are reachable in \
-             production, not just via --fixture; got args: {args:?}"
+            "live loader must request --state all so closed durable work \
+             packets are inspected in production, not just via --fixture; \
+             got args: {args:?}"
         );
 
         // The --label filter still scopes the (now-broader) query.
