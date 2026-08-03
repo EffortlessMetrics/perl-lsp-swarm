@@ -952,7 +952,8 @@ pub fn compare_reports(current: &SweepReport, baseline: &SweepReport) -> Vec<Rat
 
 /// Persist a sweep receipt in the canonical profile-scoped location.
 pub fn write_sweep_receipt(report: &SweepReport) -> Result<PathBuf> {
-    let receipt_path = receipt_path_for_profile(&report.corpus_profile);
+    let receipt_path =
+        crate::utils::project_root()?.join(receipt_path_for_profile(&report.corpus_profile));
     if let Some(parent) = receipt_path.parent() {
         fs::create_dir_all(parent).context("Failed to create receipt directory")?;
     }
@@ -2366,6 +2367,10 @@ mod tests {
     fn test_write_sweep_receipt_succeeds_for_dirty_manifest_report() -> Result<()> {
         let report = test_report(0, 1, 3, 0, BTreeMap::new());
         let receipt_path = write_sweep_receipt(&report)?;
+        assert_eq!(
+            receipt_path,
+            crate::utils::project_root()?.join("target/receipts/system-corpus-sweep.json")
+        );
         assert!(receipt_path.exists());
         let contents = fs::read_to_string(receipt_path)?;
         assert!(contents.contains("\"files_with_errors\": 1"));
