@@ -66,6 +66,7 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
     let mut providers = BTreeMap::new();
     let mut errors = Vec::new();
     let mut advisories = Vec::new();
+    let mut selected_matches = 0;
 
     for (provider, relative_root) in PROVIDER_SKILL_ROOTS {
         let skill_root = root.join(relative_root);
@@ -79,6 +80,7 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
             .iter()
             .filter(|skill| selected_skill.is_none_or(|selected| selected == skill.name))
         {
+            selected_matches += 1;
             metadata_chars += skill.metadata_chars;
             route_count += skill.route_targets.len();
             checked_skills.push(skill.name.clone());
@@ -112,6 +114,14 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
         );
     }
 
+    if let Some(selected_skill) = selected_skill
+        && selected_matches == 0
+    {
+        errors.push(format!(
+            "skill selector '{selected_skill}' did not match any provider-local skill"
+        ));
+    }
+
     let result = if errors.is_empty() { "PASS" } else { "FAIL" };
     Ok(CheckReport { schema: "agent-flow-check.v1", result, providers, errors, advisories })
 }
@@ -121,7 +131,6 @@ fn collect_skills(skill_root: &Path, errors: &mut Vec<String>) -> Result<Vec<Ski
     let mut entries = fs::read_dir(skill_root)?.collect::<std::result::Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
-        let entry = entry?;
         if !entry.file_type()?.is_dir() {
             continue;
         }
@@ -159,42 +168,51 @@ fn collect_skills(skill_root: &Path, errors: &mut Vec<String>) -> Result<Vec<Ski
 }
 
 fn frontmatter_value(text: &str, key: &str) -> Option<String> {
-    let mut in_frontmatter = false;
-    for line in text.lines() {
+    let mut lines = text.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    let mut value = None;
+    let mut closed = false;
+    for line in lines {
         if line.trim() == "---" {
-            if in_frontmatter {
-                break;
-            }
-            in_frontmatter = true;
-            continue;
+            closed = true;
+            break;
         }
-        if in_frontmatter
-            && let Some((candidate_key, value)) = line.split_once(':')
+        if let Some((candidate_key, candidate_value)) = line.split_once(':')
             && candidate_key.trim() == key
         {
-            return Some(value.trim().trim_matches('"').to_string());
+            value = Some(candidate_value.trim().trim_matches('"').to_string());
         }
     }
-    None
+    closed.then_some(value).flatten()
 }
 
 fn route_targets(text: &str) -> Vec<String> {
-    let mut in_routes = false;
+    let mut in_route_section = false;
     let mut targets = BTreeSet::new();
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("## ") {
-            in_routes = trimmed.eq_ignore_ascii_case("## Routes");
+            in_route_section = is_route_heading(trimmed);
             continue;
         }
-        if in_routes {
-            targets.extend(route_tokens(trimmed));
-        }
+        targets.extend(route_tokens(trimmed, in_route_section));
     }
     targets.into_iter().collect()
 }
 
-fn route_tokens(line: &str) -> Vec<String> {
+fn is_route_heading(heading: &str) -> bool {
+    let normalized = heading.trim_start_matches('#').trim().to_ascii_lowercase();
+    normalized.contains("route")
+        || normalized.contains("valid exit")
+        || normalized == "flow"
+        || normalized.contains("orchestration")
+        || normalized.contains("outcome")
+        || normalized == "procedure"
+}
+
+fn route_tokens(line: &str, in_route_section: bool) -> Vec<String> {
     let mut tokens = Vec::new();
     let chars = line.chars().collect::<Vec<_>>();
     let mut index = 0;
@@ -213,7 +231,7 @@ fn route_tokens(line: &str) -> Vec<String> {
                 tokens.push(chars[start..end].iter().collect());
             }
             index = end;
-        } else if chars[index] == '`' {
+        } else if in_route_section && chars[index] == '`' {
             let start = index + 1;
             if let Some(relative_end) =
                 chars[start..].iter().position(|character| *character == '`')
@@ -269,13 +287,22 @@ mod tests {
     }
 
     #[test]
-    fn extracts_provider_route_targets_only_from_routes_section() {
-        let text = "# Skill\n\n`not-a-route`\n\n## Routes\n- `PLAN_READY` -> `$prepare-proof`\n- clean -> `deliver-pr`\n";
+    fn extracts_provider_route_targets_from_route_bearing_sections() {
+        let text = "# Skill\n\n`not-a-route`\n\n## Procedure\n- `PLAN_READY` -> `$prepare-proof`\n- clean -> `deliver-pr`\n\n## Notes\n- `not-a-route`\n";
         assert_eq!(route_targets(text), vec!["deliver-pr", "prepare-proof"]);
     }
 
     #[test]
     fn ignores_uppercase_status_tokens() {
-        assert_eq!(route_tokens("- `REVIEW_CURRENT` -> `$verify-live-ci`"), vec!["verify-live-ci"]);
+        assert_eq!(
+            route_tokens("- `REVIEW_CURRENT` -> `$verify-live-ci`", true),
+            vec!["verify-live-ci"]
+        );
+    }
+
+    #[test]
+    fn rejects_unclosed_frontmatter() {
+        let text = "---\nname: prepare-issue\ndescription: truncated\n";
+        assert_eq!(frontmatter_value(text, "name"), None);
     }
 }
