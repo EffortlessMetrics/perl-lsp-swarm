@@ -19,20 +19,20 @@ impl LspServer {
     ) -> Result<Option<Value>, JsonRpcError> {
         let params = params.ok_or_else(|| JsonRpcError {
             code: crate::protocol::INVALID_PARAMS,
-            message: "Missing params".to_string(),
+            message: "workspace/textDocumentContent: missing required parameter 'uri'".to_string(),
             data: None,
         })?;
 
         let uri = params.get("uri").and_then(|u| u.as_str()).ok_or_else(|| JsonRpcError {
             code: crate::protocol::INVALID_PARAMS,
-            message: "Missing or invalid URI".to_string(),
+            message: "workspace/textDocumentContent: parameter 'uri' must be a string".to_string(),
             data: None,
         })?;
 
         if !is_valid_virtual_content_uri(uri) {
             return Err(JsonRpcError {
                 code: crate::protocol::INVALID_PARAMS,
-                message: "Missing or invalid URI".to_string(),
+                message: "workspace/textDocumentContent: parameter 'uri' is not a valid virtual document URI".to_string(),
                 data: None,
             });
         }
@@ -298,6 +298,16 @@ mod tests {
         if let Some(content) = content {
             assert!(!content.is_empty());
         }
+    }
+
+    #[test]
+    fn text_document_content_invalid_params_name_method_and_field() {
+        let err = LspServer::new()
+            .handle_text_document_content(None)
+            .expect_err("missing virtual document params must be rejected");
+
+        assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
+        assert_eq!(err.message, "workspace/textDocumentContent: missing required parameter 'uri'");
     }
 
     #[test]

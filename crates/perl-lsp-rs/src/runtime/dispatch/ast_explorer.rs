@@ -38,7 +38,7 @@ impl LspServer {
         let uri = params.as_ref().and_then(|p| p.get("uri")).and_then(|u| u.as_str()).ok_or_else(
             || JsonRpcError {
                 code: INVALID_PARAMS,
-                message: "Missing required 'uri' parameter".to_string(),
+                message: "perl/showAst: missing required parameter 'uri'".to_string(),
                 data: None,
             },
         )?;
@@ -67,5 +67,20 @@ impl LspServer {
                 data: None,
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn show_ast_missing_uri_names_method_and_field() {
+        let err = LspServer::new()
+            .handle_show_ast_dispatch(None)
+            .expect_err("missing showAst params must be rejected");
+
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert_eq!(err.message, "perl/showAst: missing required parameter 'uri'");
     }
 }
