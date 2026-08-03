@@ -7,6 +7,7 @@
 use super::super::*;
 use crate::cancellation::RequestCleanupGuard;
 use crate::protocol::{REQUEST_CANCELLED, req_uri};
+use crate::runtime::window::RequestProgressGuard;
 use crate::state::semantic_tokens_deadline;
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 use perl_semantic_facts::ProviderFallbackState;
@@ -26,6 +27,12 @@ impl LspServer {
         if !self.advertised_features.lock().semantic_tokens {
             return Err(crate::protocol::method_not_advertised());
         }
+
+        // Coarse workDoneProgress for the full semantic-token request. Large
+        // files can take a noticeable time to tokenize; the guard emits
+        // begin/end on every exit path when the client supports progress (#4626).
+        let _progress =
+            RequestProgressGuard::new(self, "semantic-tokens", "Computing semantic tokens");
 
         let start = Instant::now();
         let deadline = semantic_tokens_deadline();

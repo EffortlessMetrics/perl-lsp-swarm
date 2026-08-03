@@ -9,6 +9,7 @@ use crate::features::diagnostics::{
     Diagnostic as InternalDiagnostic, DiagnosticTag as InternalDiagnosticTag,
     PullDiagnosticsContext,
 };
+use crate::runtime::window::RequestProgressGuard;
 use perl_diagnostics::codes::DiagnosticCode;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1108,6 +1109,11 @@ impl LspServer {
             let _ = previous_result_id;
             return Ok(Some(Self::empty_full_diagnostic_report()));
         }
+
+        // Coarse workDoneProgress for the full pull-diagnostics path, which may
+        // spawn the perlcritic subprocess over large trees. The syntax-only
+        // short-circuit above is fast enough to skip progress (#4626).
+        let _progress = RequestProgressGuard::new(self, "diagnostics", "Running diagnostics");
 
         // Snapshot the document, capturing a clone of the generation Arc so
         // we can re-check after computation (mirrors the push-path guard).
