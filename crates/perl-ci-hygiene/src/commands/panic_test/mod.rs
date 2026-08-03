@@ -1,6 +1,6 @@
 use color_eyre::eyre::{Result, eyre};
 use regex::Regex;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -62,8 +62,16 @@ fn walk_integration_test_files(repo_root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+fn walk_workspace_rust_files(repo_root: &Path) -> Vec<PathBuf> {
+    let mut files = BTreeSet::new();
+    for root in [repo_root.join("crates"), repo_root.join("xtask")] {
+        files.extend(walk_rs_files(&root));
+    }
+    files.into_iter().collect()
+}
+
 fn walk_complete_test_source_files(repo_root: &Path) -> Vec<PathBuf> {
-    walk_rs_files(&repo_root.join("crates"))
+    walk_workspace_rust_files(repo_root)
         .into_iter()
         .filter(|path| {
             is_complete_test_source_file(path) && !is_excluded_integration_test_path(path)
@@ -131,6 +139,9 @@ fn enclosing_test_or_function(lines: &[String], line_index: usize) -> String {
         .iter()
         .rev()
         .find_map(|line| {
+            if line.trim_start().starts_with("//") {
+                return None;
+            }
             let start = line.find("fn ")? + 3;
             let name = line[start..].split(['(', '<', '{', ' ']).next()?.trim();
             (!name.is_empty()).then(|| name.to_string())
@@ -143,11 +154,24 @@ fn complete_panic_site_inventory(repo_root: &Path) -> Result<Vec<PanicSiteIdenti
     let comment_re = regex_from_static(&COMMENT_RE, "comment")?;
     let mut sites = Vec::new();
 
-    for path in walk_complete_test_source_files(repo_root) {
+    let complete_files = walk_complete_test_source_files(repo_root);
+    let complete_file_set = complete_files.iter().cloned().collect::<BTreeSet<_>>();
+    let mut files = complete_files.into_iter().map(|path| (path, 1)).collect::<Vec<_>>();
+    for path in walk_workspace_rust_files(repo_root) {
+        if complete_file_set.contains(&path) || is_excluded_integration_test_path(&path) {
+            continue;
+        }
+        let inline_test_start = first_cfg_test_line_number(&path).unwrap_or(usize::MAX);
+        if inline_test_start != usize::MAX {
+            files.push((path, inline_test_start));
+        }
+    }
+
+    for (path, start_line) in files {
         let lines = read_lines(&path)?;
         let relative =
             path.strip_prefix(repo_root).unwrap_or(&path).display().to_string().replace('\\', "/");
-        for (index, line) in lines.iter().enumerate() {
+        for (index, line) in lines.iter().enumerate().skip(start_line.saturating_sub(1)) {
             if comment_re.is_match(line) {
                 continue;
             }
@@ -420,6 +444,8 @@ mod tests {
             fs::create_dir_all(path.join("ci"))?;
             fs::create_dir_all(path.join("crates/demo/tests"))?;
             fs::create_dir_all(path.join("crates/demo/src"))?;
+            fs::create_dir_all(path.join("crates/demo/benches"))?;
+            fs::create_dir_all(path.join("xtask/tests"))?;
             fs::write(path.join("Cargo.toml"), "[workspace]\nmembers = [\"crates/demo\"]\n")?;
             fs::write(
                 path.join("crates/demo/Cargo.toml"),
@@ -479,6 +505,37 @@ fn demo() {
         assert_eq!(inventory.len(), 1);
         assert_eq!(inventory[0].path, "crates/demo/src/parser_tests.rs");
         assert_eq!(inventory[0].enclosing_test_or_function, "demo");
+        Ok(())
+    }
+
+    #[test]
+    fn complete_inventory_covers_workspace_and_inline_tests() -> Result<()> {
+        let repo = TempRepo::new("complete-sources")?;
+        fs::write(
+            repo.path.join("crates/demo/src/parser_tests.rs"),
+            "#[test]\nfn suffixed() { panic!(\"one\"); panic!(\"two\"); }\n",
+        )?;
+        fs::write(
+            repo.path.join("crates/demo/src/lib.rs"),
+            "#[cfg(test)]\nmod tests {\n    fn inline() {\n        // see fn misleading above\n        panic!(\"inline\");\n    }\n}\n",
+        )?;
+        fs::write(
+            repo.path.join("xtask/tests/fixture.rs"),
+            "#[test]\nfn xtask_fixture() { panic!(\"xtask\"); }\n",
+        )?;
+        fs::write(
+            repo.path.join("crates/demo/benches/bench_tests.rs"),
+            "fn bench_fixture() { panic!(\"ignored\"); }\n",
+        )?;
+
+        let inventory = complete_panic_site_inventory(&repo.path)?;
+        assert_eq!(inventory.len(), 4);
+        assert!(inventory.iter().any(|site| site.path == "xtask/tests/fixture.rs"));
+        assert!(inventory.iter().any(|site| {
+            site.path == "crates/demo/src/lib.rs" && site.enclosing_test_or_function == "inline"
+        }));
+        assert!(inventory.iter().all(|site| !site.path.contains("benches")));
+        assert_eq!(inventory[0].path, "crates/demo/src/lib.rs");
         Ok(())
     }
 
