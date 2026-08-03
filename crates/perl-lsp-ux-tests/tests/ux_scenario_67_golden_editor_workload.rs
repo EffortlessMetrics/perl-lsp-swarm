@@ -321,6 +321,16 @@ fn scenario_67_golden_editor_workload_receipt() {
                     &mut rows,
                 )?;
                 let runtime = collect_runtime_receipt(&harness);
+                ensure!(
+                    !runtime.indexing.is_empty(),
+                    "project {} emitted no workspace indexing receipt",
+                    project.name
+                );
+                ensure!(
+                    !runtime.readiness.is_empty(),
+                    "project {} emitted no workspace readiness receipt",
+                    project.name
+                );
                 let project_receipt = project_receipts
                     .last_mut()
                     .context("project receipt missing after workload execution")?;
