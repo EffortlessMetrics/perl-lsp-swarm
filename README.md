@@ -96,9 +96,9 @@ has not been promoted to the publication repo
 ([#4348](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4348)). Use
 the manual archive until it has.
 
-Then confirm the install before wiring it into an editor or CI. `--doctor`
-checks the local Perl and workspace setup; `--health` is only a liveness
-probe that confirms the binary can execute:
+Then inspect the install before wiring it into an editor. `--doctor` reports
+the local Perl and workspace setup; it is a diagnostic report, not a CI gate.
+`--health` is only a liveness probe that confirms the binary can execute:
 
 ```bash
 perllsp --version
@@ -111,8 +111,10 @@ Editor configuration: [docs/how-to/EDITOR_SETUP.md](docs/how-to/EDITOR_SETUP.md)
 
 The verified GitHub `v0.17.0` release assets are public beta. Other distribution
 channels are independently versioned and are not proven current by that receipt;
-verify `perllsp --version` and `perllsp --doctor` before editor or CI use. Use
-`perllsp --health` when you only need to confirm that the executable starts.
+inspect `perllsp --version` and `perllsp --doctor` before editor use. For CI,
+run explicit checks for the Perl, workspace, and module paths your job requires;
+the doctor report's exit status is not a readiness gate. Use `perllsp --health`
+when you only need to confirm that the executable starts; it prints `ok <version>`.
 
 Other editors use the `perllsp --stdio` server command after installing a release binary.
 
