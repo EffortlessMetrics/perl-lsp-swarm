@@ -628,6 +628,63 @@ impl ServerConfig {
         warn_on_type_mismatch(settings, "critic", "enabled", "boolean");
         warn_on_type_mismatch(settings, "formatting", "enabled", "boolean");
     }
+
+    /// Return invalid enum values supplied through the LSP client-settings channel.
+    ///
+    /// The normal update path deliberately keeps an invalid value from changing
+    /// the active configuration and emits a tracing warning. Runtime callers can
+    /// use this companion inspection before applying the same payload when they
+    /// need to surface an actionable `window/showMessage` to the editor user.
+    pub fn invalid_client_setting_values(
+        settings: &serde_json::Value,
+    ) -> Vec<InvalidClientSetting> {
+        let mut invalid = Vec::new();
+
+        if let Some(critic) = settings.get("critic") {
+            if let Some(engine) = critic.get("engine").and_then(|value| value.as_str())
+                && parse_critic_engine(engine).is_none()
+            {
+                invalid.push(InvalidClientSetting {
+                    setting: "critic.engine",
+                    value: engine.to_string(),
+                    valid_options: CRITIC_ENGINE_VALID_OPTIONS,
+                });
+            }
+            if let Some(profile) = critic.get("profile").and_then(|value| value.as_str())
+                && parse_native_critic_profile(profile).is_none()
+            {
+                invalid.push(InvalidClientSetting {
+                    setting: "critic.profile",
+                    value: profile.to_string(),
+                    valid_options: NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
+                });
+            }
+        }
+
+        if let Some(formatting) = settings.get("formatting")
+            && let Some(engine) = formatting.get("engine").and_then(|value| value.as_str())
+            && parse_formatter_mode(engine).is_none()
+        {
+            invalid.push(InvalidClientSetting {
+                setting: "formatting.engine",
+                value: engine.to_string(),
+                valid_options: FORMATTER_MODE_VALID_OPTIONS,
+            });
+        }
+
+        invalid
+    }
+}
+
+/// An invalid enum value found in editor-provided LSP settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidClientSetting {
+    /// Dotted setting path used by the client configuration surface.
+    pub setting: &'static str,
+    /// Value supplied by the client.
+    pub value: String,
+    /// Human-readable accepted values for the setting.
+    pub valid_options: &'static str,
 }
 
 /// Log a warning when a config value has the wrong type. (#5093)

@@ -375,6 +375,12 @@ pub struct LspServer {
     /// users with identical `window/showMessage` warnings.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) critic_workspace_warnings_sent: Mutex<std::collections::HashSet<String>>,
+    /// Deduplication set for invalid enum warnings from editor-provided settings.
+    ///
+    /// The same client payload can arrive through initialization, configuration
+    /// pulls, and repeated `didChangeConfiguration` notifications. Warn once per
+    /// setting/value pair per server session so a typo is visible without toast spam.
+    pub(crate) client_setting_warnings_sent: Mutex<std::collections::HashSet<String>>,
     /// Test-only hook invoked after push diagnostics capture their document
     /// snapshot and before the stale-generation guard decides whether to
     /// publish. This keeps concurrency boundary tests deterministic without
