@@ -15,7 +15,7 @@ pub struct SyntheticSquashInput {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "UPPERCASE")]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SyntheticObservation {
     Success,
     Failure,
@@ -26,7 +26,7 @@ pub enum SyntheticObservation {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "UPPERCASE")]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SyntheticVerdict {
     Success,
     Failure,
