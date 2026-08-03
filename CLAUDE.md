@@ -127,7 +127,9 @@ Detailed method and contracts:
 [`docs/agents/DEVELOPMENT_METHOD.md`](docs/agents/DEVELOPMENT_METHOD.md),
 [`docs/agents/GITHUB_SURFACES.md`](docs/agents/GITHUB_SURFACES.md),
 [`docs/agents/REVIEW_CURRENTNESS.md`](docs/agents/REVIEW_CURRENTNESS.md), and
-[`docs/agents/SKILL_CONTRACT.md`](docs/agents/SKILL_CONTRACT.md).
+[`docs/agents/SKILL_CONTRACT.md`](docs/agents/SKILL_CONTRACT.md). The operator
+recovery and handoff sequence is in
+[`docs/how-to/SESSION_OPERATIONS.md`](docs/how-to/SESSION_OPERATIONS.md).
 
 ## GitHub-native work
 
