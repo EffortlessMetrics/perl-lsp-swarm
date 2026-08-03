@@ -8,6 +8,7 @@
 use super::super::*;
 use crate::protocol::{invalid_params, req_position, req_uri};
 use crate::runtime::stream_session::SessionKey;
+use std::time::{Duration, Instant};
 
 impl LspServer {
     /// Handle `textDocument/perlInlineCompletionStream` custom request.
@@ -123,6 +124,8 @@ impl LspServer {
 
         // Track whether we sent any chunk so we know if a final is needed
         let mut sent_final = false;
+        let debounce = Duration::from_millis(ai_config.streaming.update_debounce_ms);
+        let mut last_emitted_at: Option<Instant> = None;
 
         // Stream from the backend -- each chunk carries cumulative text
         let stream_result = backend.stream(
@@ -142,6 +145,16 @@ impl LspServer {
                 let is_final = chunk.is_final;
                 if is_final {
                     sent_final = true;
+                }
+
+                // Keep the first update responsive, then suppress intermediate
+                // chunks until the configured interval has elapsed. A final
+                // chunk always goes through so the client receives the complete
+                // cumulative result even when the provider emits rapidly.
+                let should_emit = is_final
+                    || last_emitted_at.map(|last| last.elapsed() >= debounce).unwrap_or(true);
+                if !should_emit {
+                    return perl_lsp_rs_core::providers::inline_completion::StreamControl::Continue;
                 }
 
                 let progress = json!({
@@ -165,6 +178,7 @@ impl LspServer {
                     tracing::debug!("streaming inline completion: failed to send progress: {}", e);
                     return perl_lsp_rs_core::providers::inline_completion::StreamControl::Stop;
                 }
+                last_emitted_at = Some(Instant::now());
 
                 if is_final {
                     perl_lsp_rs_core::providers::inline_completion::StreamControl::Stop

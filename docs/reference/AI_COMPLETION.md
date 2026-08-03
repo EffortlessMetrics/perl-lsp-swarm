@@ -57,7 +57,7 @@ accepted:
 | `maxInflight` | integer | `1` | Maximum concurrent in-flight requests (burst size). |
 | `fallback` | boolean | `true` | Fall back to deterministic completions on AI failure. |
 | `streaming.enabled` | boolean | `true` | Enable streaming mode (progressive ghost text). |
-| `streaming.updateDebounceMs` | integer | `60` | _(Reserved — not yet implemented.)_ Intended minimum milliseconds between streamed ghost text updates. Currently every chunk is forwarded immediately. |
+| `streaming.updateDebounceMs` | integer | `60` | Minimum milliseconds between streamed ghost text updates. The first and final cumulative updates are always emitted. |
 
 ## Project Config File (`.perl-lsp.toml`)
 
@@ -187,9 +187,9 @@ The server supports two completion delivery modes:
 **Streaming (default, `streaming.enabled: true`)**:
 The server opens an SSE connection to the provider and delivers partial
 completions as ghost text via `$/progress` notifications. Each update
-contains the cumulative text so far (not a delta). Updates are currently
-forwarded immediately (the `updateDebounceMs` setting is reserved but
-not yet implemented). A
+contains the cumulative text so far (not a delta). The first update is
+immediate, intermediate updates respect `updateDebounceMs`, and the final
+cumulative result is always emitted. A
 session manager tracks active streams with cancel-previous semantics --
 when the user types or moves the cursor, the stale stream is cancelled
 and a new one starts.
