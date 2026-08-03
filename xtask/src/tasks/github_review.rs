@@ -193,15 +193,7 @@ struct GraphQlComments {
 }
 
 pub fn run_review_convergence(pr: u64, json_only: bool) -> Result<()> {
-    let repository =
-        command_text("gh", &["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])?
-            .trim()
-            .to_string();
-    let (owner, repo) = repository
-        .split_once('/')
-        .ok_or_else(|| color_eyre::eyre::eyre!("gh returned invalid repository {repository:?}"))?;
-
-    let snapshot = collect_snapshot(repository.clone(), owner, repo, pr);
+    let snapshot = review_snapshot(pr)?;
     if !json_only {
         println!("review PR #{}: {} (head {})", snapshot.pr, snapshot.result, snapshot.head_sha);
         println!(

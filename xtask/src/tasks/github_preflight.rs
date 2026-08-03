@@ -3,7 +3,8 @@
 use super::github::{self, CandidateFacts, RequiredContext};
 use super::github_review::{self, ReviewSnapshot};
 use color_eyre::eyre::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RequiredCheckFact {
@@ -60,6 +61,12 @@ struct CheckRun {
     conclusion: Option<String>,
     head_sha: Option<String>,
     started_at: Option<String>,
+    app: Option<CheckRunApp>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CheckRunApp {
+    id: u64,
 }
 
 pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
@@ -71,21 +78,25 @@ pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
             None
         }
     };
-    let repository = initial_candidate
+    let initial_repository = initial_candidate
         .as_ref()
         .map(|candidate| candidate.repository.clone())
         .unwrap_or_else(|| "unknown".to_string());
     let review = match github_review::review_snapshot(pr) {
         Ok(review) => review,
-        Err(error) => {
-            errors.push(format!("failed to collect review facts: {error}"));
-            not_proven_review(&repository, pr, error.to_string())
-        }
+        Err(error) => not_proven_review(&initial_repository, pr, error.to_string()),
     };
+    let repository = if initial_repository == "unknown" {
+        review.repository.clone()
+    } else {
+        initial_repository
+    };
+    let mut candidate_identity_error = false;
     let mut candidate = match initial_candidate.as_ref() {
         Some(initial) => match github::candidate_facts(pr) {
             Ok(candidate) => {
                 if initial.head_sha != candidate.head_sha {
+                    candidate_identity_error = true;
                     errors.push(
                         "candidate head moved while composing the preflight snapshot".to_string(),
                     );
@@ -103,26 +114,56 @@ pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
     if review.head_sha != candidate.head_sha {
         errors.push("candidate and review snapshots describe different heads".to_string());
     }
-    let required_checks = match collect_required_checks(&candidate) {
-        Ok(checks) => checks,
-        Err(error) => {
-            errors.push(error.to_string());
-            Vec::new()
+    let required_checks = if candidate.head_sha.is_empty() {
+        Vec::new()
+    } else {
+        match collect_required_checks(&candidate) {
+            Ok(checks) => checks,
+            Err(error) => {
+                errors.push(error.to_string());
+                Vec::new()
+            }
         }
     };
     if initial_candidate.is_some() {
         match github::candidate_facts(pr) {
-            Ok(final_candidate) if final_candidate.head_sha == candidate.head_sha => {
-                candidate.identity_result = "current".to_string();
+            Ok(final_candidate) => {
+                let head_changed = final_candidate.head_sha != candidate.head_sha;
+                let integration_changed =
+                    !candidate_integration_facts_match(&final_candidate, &candidate);
+                if head_changed {
+                    errors.push("candidate head moved before preflight completion".to_string());
+                } else if integration_changed && !candidate_identity_error {
+                    errors.push(
+                        "candidate base, merge, or required-policy facts changed before preflight completion"
+                            .to_string(),
+                    );
+                }
+                if head_changed || integration_changed || candidate_identity_error {
+                    candidate_identity_error = true;
+                    candidate.identity_result = "NOT_PROVEN".to_string();
+                } else {
+                    candidate.identity_result = "current".to_string();
+                }
             }
-            Ok(_) => errors.push("candidate head moved before preflight completion".to_string()),
-            Err(error) => errors.push(format!("failed to revalidate candidate head: {error}")),
+            Err(error) => {
+                candidate_identity_error = true;
+                candidate.identity_result = "NOT_PROVEN".to_string();
+                errors.push(format!("failed to revalidate candidate head: {error}"));
+            }
         }
     }
     candidate.required_contexts_result = summarize_required_checks(&required_checks, &errors);
     let protected_merge = ProtectedMergeFacts {
         base_ref: candidate.base_ref.clone(),
-        policy_source: "branch_protection".to_string(),
+        policy_source: candidate
+            .required_contexts
+            .iter()
+            .map(|context| context.source.as_str())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join("+"),
         required_contexts: candidate
             .required_contexts
             .iter()
@@ -154,6 +195,17 @@ pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
         bail!("protected merge preflight is NOT_PROVEN for PR #{}", pr);
     }
     Ok(())
+}
+
+fn candidate_integration_facts_match(left: &CandidateFacts, right: &CandidateFacts) -> bool {
+    left.state == right.state
+        && left.draft == right.draft
+        && left.head_sha == right.head_sha
+        && left.base_ref == right.base_ref
+        && left.base_sha == right.base_sha
+        && left.mergeability == right.mergeability
+        && left.merge_state == right.merge_state
+        && left.required_contexts == right.required_contexts
 }
 
 fn not_proven_candidate(repository: &str, pr: u64) -> CandidateFacts {
@@ -192,46 +244,20 @@ fn not_proven_review(repository: &str, pr: u64, error: String) -> ReviewSnapshot
 }
 
 fn collect_required_checks(candidate: &CandidateFacts) -> Result<Vec<RequiredCheckFact>> {
-    let mut all_check_runs = Vec::new();
-    let mut page = 1;
-    loop {
-        let endpoint = format!(
-            "repos/{}/commits/{}/check-runs?per_page=100&page={page}",
-            candidate.repository, candidate.head_sha
-        );
-        let raw = github::command_text("gh", &["api", &endpoint])?;
-        let payload: CheckRunsPayload = serde_json::from_str(&raw)
-            .context("failed to parse check runs for the captured candidate head")?;
-        let count = payload.check_runs.len();
-        all_check_runs.extend(payload.check_runs);
-        if count < 100 {
-            break;
-        }
-        if page >= 100 {
-            bail!("check-runs pagination exceeded the 100-page safety cap");
-        }
-        page += 1;
-    }
-    let mut all_statuses = Vec::new();
-    let mut page = 1;
-    loop {
-        let endpoint = format!(
-            "repos/{}/commits/{}/status?per_page=100&page={page}",
-            candidate.repository, candidate.head_sha
-        );
-        let raw = github::command_text("gh", &["api", &endpoint])?;
-        let payload: CommitStatusPayload = serde_json::from_str(&raw)
-            .context("failed to parse commit statuses for the captured candidate head")?;
-        let count = payload.statuses.len();
-        all_statuses.extend(payload.statuses);
-        if count < 100 {
-            break;
-        }
-        if page >= 100 {
-            bail!("commit-status pagination exceeded the 100-page safety cap");
-        }
-        page += 1;
-    }
+    let all_check_runs = paginate_github_items(
+        &candidate.repository,
+        &candidate.head_sha,
+        "check-runs",
+        "check runs",
+        |payload: CheckRunsPayload| payload.check_runs,
+    )?;
+    let all_statuses = paginate_github_items(
+        &candidate.repository,
+        &candidate.head_sha,
+        "status",
+        "commit statuses",
+        |payload: CommitStatusPayload| payload.statuses,
+    )?;
     Ok(candidate
         .required_contexts
         .iter()
@@ -241,14 +267,51 @@ fn collect_required_checks(candidate: &CandidateFacts) -> Result<Vec<RequiredChe
         .collect())
 }
 
+fn paginate_github_items<T, P, F>(
+    repository: &str,
+    head_sha: &str,
+    endpoint_kind: &str,
+    label: &str,
+    extract: F,
+) -> Result<Vec<T>>
+where
+    P: DeserializeOwned,
+    F: Fn(P) -> Vec<T>,
+{
+    let mut items = Vec::new();
+    let mut page = 1;
+    loop {
+        let endpoint = format!(
+            "repos/{repository}/commits/{head_sha}/{endpoint_kind}?per_page=100&page={page}"
+        );
+        let raw = github::command_text("gh", &["api", &endpoint])?;
+        let payload: P = serde_json::from_str(&raw)
+            .with_context(|| format!("failed to parse {label} for the captured candidate head"))?;
+        let page_items = extract(payload);
+        let count = page_items.len();
+        items.extend(page_items);
+        if count < 100 {
+            return Ok(items);
+        }
+        if page >= 100 {
+            bail!("{label} pagination exceeded the 100-page safety cap");
+        }
+        page += 1;
+    }
+}
+
 fn resolve_required_check(
     required: &RequiredContext,
     check_runs: &[CheckRun],
     statuses: &[CommitStatus],
     candidate_head_sha: &str,
 ) -> RequiredCheckFact {
-    let matching = latest_check_run(check_runs, &required.name);
-    let status = statuses.iter().find(|status| status.context == required.name);
+    let matching = latest_check_run(check_runs, required);
+    let status = required
+        .app_id
+        .is_none()
+        .then(|| statuses.iter().find(|status| status.context == required.name))
+        .flatten();
     match matching {
         Some(run) => RequiredCheckFact {
             name: required.name.clone(),
@@ -270,14 +333,21 @@ fn resolve_required_check(
     }
 }
 
-fn latest_check_run<'a>(runs: &'a [CheckRun], name: &str) -> Option<&'a CheckRun> {
-    runs.iter().filter(|run| run.name == name).max_by(|left, right| {
-        left.started_at
-            .as_deref()
-            .unwrap_or("")
-            .cmp(right.started_at.as_deref().unwrap_or(""))
-            .then_with(|| left.id.cmp(&right.id))
-    })
+fn latest_check_run<'a>(runs: &'a [CheckRun], required: &RequiredContext) -> Option<&'a CheckRun> {
+    runs.iter()
+        .filter(|run| run.name == required.name)
+        .filter(|run| {
+            required
+                .app_id
+                .map_or(true, |app_id| run.app.as_ref().is_some_and(|app| app.id == app_id))
+        })
+        .max_by(|left, right| {
+            left.started_at
+                .as_deref()
+                .unwrap_or("")
+                .cmp(right.started_at.as_deref().unwrap_or(""))
+                .then_with(|| left.id.cmp(&right.id))
+        })
 }
 
 fn classify_check(run: &CheckRun, candidate_head_sha: &str) -> String {
@@ -289,6 +359,9 @@ fn classify_check(run: &CheckRun, candidate_head_sha: &str) -> String {
     }
     match run.conclusion.as_deref().map(str::to_ascii_uppercase).as_deref() {
         Some("SUCCESS") | Some("NEUTRAL") => "SUCCESS",
+        // Keep SKIPPED distinct. A required check that GitHub reports as
+        // skipped remains blocked here; only an explicitly successful check
+        // is sufficient for this factual preflight.
         Some("SKIPPED") => "SKIPPED",
         Some("CANCELLED") => "CANCELLED",
         Some("TIMED_OUT") | Some("FAILURE") | Some("ACTION_REQUIRED") => "FAILURE",
@@ -348,6 +421,9 @@ fn derive_preflight_result(
     if review.result != "CURRENT" || !review.converged {
         findings.push(format!("review convergence is {}", review.result));
     }
+    if checks.is_empty() {
+        findings.push("no required checks were discovered".to_string());
+    }
     for check in checks {
         if check.result != "SUCCESS" {
             findings.push(format!("required check {} is {}", check.name, check.result));
@@ -380,6 +456,7 @@ mod tests {
             required_contexts: vec![RequiredContext {
                 name: "required".to_string(),
                 source: "branch_protection".to_string(),
+                app_id: None,
             }],
             required_contexts_result: "SUCCESS".to_string(),
             identity_result: "current".to_string(),
@@ -453,6 +530,7 @@ mod tests {
             conclusion: Some("SUCCESS".to_string()),
             head_sha: Some("old".to_string()),
             started_at: Some("2026-08-01T00:00:00Z".to_string()),
+            app: None,
         };
         let pending = CheckRun {
             id: 2,
@@ -461,6 +539,7 @@ mod tests {
             conclusion: None,
             head_sha: Some("head".to_string()),
             started_at: Some("2026-08-02T00:00:00Z".to_string()),
+            app: None,
         };
         assert_eq!(classify_check(&stale, "head"), "STALE");
         assert_eq!(classify_check(&pending, "head"), "PENDING");
@@ -482,6 +561,7 @@ mod tests {
                 conclusion: Some("SUCCESS".to_string()),
                 head_sha: Some("head".to_string()),
                 started_at: Some("2026-08-02T00:00:00Z".to_string()),
+                app: None,
             },
             CheckRun {
                 id: 11,
@@ -490,10 +570,14 @@ mod tests {
                 conclusion: Some("FAILURE".to_string()),
                 head_sha: Some("head".to_string()),
                 started_at: Some("2026-08-02T00:01:00Z".to_string()),
+                app: None,
             },
         ];
-        let required =
-            RequiredContext { name: "required".to_string(), source: "checks".to_string() };
+        let required = RequiredContext {
+            name: "required".to_string(),
+            source: "checks".to_string(),
+            app_id: None,
+        };
         let fact = resolve_required_check(&required, &runs, &[], "head");
         assert_eq!(fact.result, "FAILURE", "latest check attempt must control the verdict");
     }
@@ -501,5 +585,39 @@ mod tests {
     #[test]
     fn empty_required_check_set_is_blocked() {
         assert_eq!(summarize_required_checks(&[], &[]), "BLOCKED");
+        let (result, findings) =
+            derive_preflight_result(&candidate(), &review("CURRENT", true), &[], &[]);
+        assert_eq!(result, "BLOCKED");
+        assert!(findings.iter().any(|finding| finding.contains("no required checks")));
+    }
+
+    #[test]
+    fn required_app_identity_selects_only_the_matching_check_run() {
+        let runs = vec![
+            CheckRun {
+                id: 1,
+                name: "required".to_string(),
+                status: "COMPLETED".to_string(),
+                conclusion: Some("SUCCESS".to_string()),
+                head_sha: Some("head".to_string()),
+                started_at: Some("2026-08-02T00:00:00Z".to_string()),
+                app: Some(CheckRunApp { id: 1 }),
+            },
+            CheckRun {
+                id: 2,
+                name: "required".to_string(),
+                status: "COMPLETED".to_string(),
+                conclusion: Some("FAILURE".to_string()),
+                head_sha: Some("head".to_string()),
+                started_at: Some("2026-08-02T00:01:00Z".to_string()),
+                app: Some(CheckRunApp { id: 2 }),
+            },
+        ];
+        let required = RequiredContext {
+            name: "required".to_string(),
+            source: "ruleset".to_string(),
+            app_id: Some(1),
+        };
+        assert_eq!(resolve_required_check(&required, &runs, &[], "head").result, "SUCCESS");
     }
 }
