@@ -962,6 +962,8 @@ impl LspServer {
                             let list = provider.apply_replacement_ranges_for_context(
                                 list, &context, line, character,
                             );
+                            let list =
+                                provider.filter_parse_safe_items(list, &text, line, character);
                             let list = constrain_inline_completions_to_selected_info(
                                 list,
                                 selected_completion.as_ref(),

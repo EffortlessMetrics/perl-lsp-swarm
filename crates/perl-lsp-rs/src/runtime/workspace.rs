@@ -1198,6 +1198,38 @@ pub(crate) fn extract_perl_settings(settings: &Value) -> Option<&Value> {
 }
 
 impl LspServer {
+    /// Surface invalid enum values from editor-provided settings without changing
+    /// the fail-safe configuration update behavior.
+    fn warn_invalid_client_settings(&self, settings: &Value) {
+        for invalid in
+            perl_lsp_rs_core::config::ServerConfig::invalid_client_setting_values(settings)
+        {
+            let normalized_value = if invalid.setting == "formatting.engine" {
+                perl_lsp_rs_core::config::normalize_formatter_mode_value(&invalid.value)
+            } else {
+                invalid.value.trim().to_ascii_lowercase()
+            };
+            let key = format!("{}={}={normalized_value}", invalid.setting, invalid.value_type);
+            if !self.client_setting_warnings_sent.lock().insert(key) {
+                continue;
+            }
+
+            let message = format!(
+                "Perl LSP ignored invalid `{}` value {:?}; keeping the current setting. Valid values: {}.",
+                invalid.setting, invalid.value, invalid.valid_options
+            );
+            if let Err(error) =
+                self.show_message(crate::runtime::window::MessageType::Warning, &message)
+            {
+                tracing::warn!(
+                    setting = invalid.setting,
+                    error = %error,
+                    "failed to show invalid client setting warning"
+                );
+            }
+        }
+    }
+
     /// Handle workspace/didChangeConfiguration notification
     ///
     /// Updates both ServerConfig and WorkspaceConfig when the client
@@ -1213,6 +1245,7 @@ impl LspServer {
                 //   - Wrapped:   {"perl": { "workspace": { "includePaths": [...] } }}
                 //   - Unwrapped: { "workspace": { "includePaths": [...] } }
                 if let Some(perl) = extract_perl_settings(settings) {
+                    self.warn_invalid_client_settings(perl);
                     // Snapshot the critic-relevant config fields before applying the
                     // update so we can decide whether to reset the shared
                     // CriticAnalyzer (config-bound on severity/profile/enabled). We
@@ -2891,17 +2924,168 @@ mod tests {
     use super::{LspServer, module_name_appears_in_text};
     #[cfg(feature = "workspace")]
     use crate::util::read_text_file_with_encoding;
+    use parking_lot::Mutex;
+    use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
     #[cfg(feature = "workspace")]
     use perl_parser::workspace_index::{
         IndexCoordinator, IndexPerformanceCaps, IndexResourceLimits,
     };
-    use serde_json::json;
-    #[cfg(feature = "workspace")]
-    use std::io::Write;
+    use serde_json::{Value, json};
+    use std::io::{self, Write};
+    use std::sync::Arc;
+
+    #[derive(Clone, Default)]
+    struct OutputCapture {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl OutputCapture {
+        fn messages(&self) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+            let bytes = self.buffer.lock().clone();
+            let mut framer = ContentLengthFramer::new();
+            framer.push(&bytes);
+            let mut messages = Vec::new();
+            while let Some(body) = framer.try_next()? {
+                messages.push(serde_json::from_slice::<Value>(&body)?);
+            }
+            Ok(messages)
+        }
+    }
+
+    impl Write for OutputCapture {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.buffer.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn server_with_output_capture() -> (LspServer, OutputCapture) {
+        let output = OutputCapture::default();
+        let server = LspServer::with_output(Arc::new(Mutex::new(
+            Box::new(output.clone()) as Box<dyn Write + Send>
+        )));
+        (server, output)
+    }
 
     #[test]
     fn test_module_name_appears_exact_match() {
         assert!(module_name_appears_in_text("use MyBase;", "MyBase"));
+    }
+
+    #[test]
+    fn invalid_client_enum_setting_is_shown_once_and_keeps_current_value()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, output) = server_with_output_capture();
+
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": {
+                "perl": {
+                    "critic": { "engine": "nativ" }
+                }
+            }
+        })));
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": {
+                "perl": {
+                    "critic": { "engine": "nativ" }
+                }
+            }
+        })));
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": {
+                "perl": {
+                    "critic": { "engine": " Nativ " },
+                    "formatting": { "engine": "bad_mode" }
+                }
+            }
+        })));
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": {
+                "perl": {
+                    "formatting": { "engine": "bad-mode" }
+                }
+            }
+        })));
+
+        let current_engine = server.config.lock().critic_engine;
+        drop(server);
+
+        let messages = output.messages()?;
+        let warnings: Vec<&Value> = messages
+            .iter()
+            .filter(|message| {
+                message.get("method").and_then(Value::as_str) == Some("window/showMessage")
+            })
+            .collect();
+        let warning = warnings.first().ok_or("expected an invalid-setting warning")?;
+        assert_eq!(
+            warnings.len(),
+            2,
+            "semantically repeated values must be deduplicated: {warnings:?}"
+        );
+        assert_eq!(warning.pointer("/params/type").and_then(Value::as_i64), Some(2));
+        let text = warning
+            .pointer("/params/message")
+            .and_then(Value::as_str)
+            .ok_or("expected warning message text")?;
+        assert!(text.contains("critic.engine"), "critic warning must name its setting: {text}");
+        assert!(text.contains("nativ"), "critic warning must preserve the supplied value: {text}");
+        assert!(text.contains("native"), "critic warning must list the accepted value: {text}");
+        let formatter_warning = warnings
+            .iter()
+            .find(|message| {
+                message
+                    .pointer("/params/message")
+                    .and_then(Value::as_str)
+                    .is_some_and(|message| message.contains("formatting.engine"))
+            })
+            .ok_or("expected a formatter warning")?;
+        let formatter_text = formatter_warning
+            .pointer("/params/message")
+            .and_then(Value::as_str)
+            .ok_or("expected formatter warning message text")?;
+        assert!(
+            formatter_text.contains("bad_mode"),
+            "formatter warning must preserve the supplied value: {formatter_text}"
+        );
+        assert!(
+            formatter_text.contains("Valid values"),
+            "formatter warning must list the accepted values: {formatter_text}"
+        );
+        assert_eq!(current_engine, perl_lsp_rs_core::config::CriticEngine::Native);
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_client_enum_warning_keeps_json_types_distinct()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, output) = server_with_output_capture();
+
+        for engine in [json!("false"), json!(false)] {
+            server.test_handle_did_change_configuration(Some(json!({
+                "settings": { "perl": { "critic": { "engine": engine } } }
+            })));
+        }
+
+        drop(server);
+        let warnings: Vec<Value> = output
+            .messages()?
+            .into_iter()
+            .filter(|message| {
+                message.get("method").and_then(Value::as_str) == Some("window/showMessage")
+                    && message
+                        .pointer("/params/message")
+                        .and_then(Value::as_str)
+                        .is_some_and(|text| text.contains("critic.engine"))
+            })
+            .collect();
+
+        assert_eq!(warnings.len(), 2, "string and boolean values need distinct warning keys");
+        Ok(())
     }
 
     #[test]
