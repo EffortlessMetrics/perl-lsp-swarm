@@ -1,6 +1,7 @@
 //! Transport layer: run (stdin/stdout), run_socket, run_with_io.
 
 use super::*;
+use crate::server::DapSocketBindError;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::TryRecvError;
 
@@ -70,15 +71,16 @@ impl DebugAdapter {
     ///
     /// This binds to `127.0.0.1:<port>`, accepts one client connection, and
     /// serves the DAP session on that stream.
-    pub(crate) fn run_socket(&mut self, port: u16) -> io::Result<()> {
-        let listener = TcpListener::bind(("127.0.0.1", port))?;
+    pub(crate) fn run_socket(&mut self, port: u16) -> anyhow::Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", port))
+            .map_err(|source| anyhow::Error::new(DapSocketBindError { port, source }))?;
         tracing::info!(port, "DAP socket transport listening on 127.0.0.1");
 
         let (stream, peer_addr) = listener.accept()?;
         tracing::info!(peer_addr = %peer_addr, "DAP socket client connected");
 
         let reader_stream = stream.try_clone()?;
-        self.run_with_io(reader_stream, stream)
+        self.run_with_io(reader_stream, stream).map_err(Into::into)
     }
 
     /// Shared DAP transport loop used by stdio and socket modes.
