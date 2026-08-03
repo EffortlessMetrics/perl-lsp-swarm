@@ -128,6 +128,7 @@ pub fn evaluate(input: IntegrationTriggerInput) -> IntegrationTriggerPacket {
     let mut findings = Vec::new();
     let mut result = IntegrationTriggerResult::NotRequired;
     let mut next_action = "No combined-tree proof selected".to_string();
+    let evidence_missing = evidence.is_empty();
 
     if repository.trim().is_empty() {
         diagnostics.push("repository identity is missing".to_string());
@@ -170,6 +171,9 @@ pub fn evaluate(input: IntegrationTriggerInput) -> IntegrationTriggerPacket {
     } else if has_unavailable_authority {
         result = IntegrationTriggerResult::NotProven;
         next_action = "Resolve unavailable authority evidence before selecting proof".to_string();
+    } else if evidence_missing {
+        result = IntegrationTriggerResult::NotProven;
+        next_action = "Obtain source interaction evidence before deciding".to_string();
     } else if has_actual_trigger {
         match proof_selection.as_ref() {
             Some(selection) if selection_is_complete(selection) => {
@@ -314,6 +318,13 @@ mod tests {
         let packet = evaluate(input);
         assert_eq!(packet.result, IntegrationTriggerResult::NotProven);
         assert!(packet.next_action.contains("missing"));
+    }
+
+    #[test]
+    fn empty_authority_evidence_is_not_proven() {
+        let packet = evaluate(input(Vec::new()));
+        assert_eq!(packet.result, IntegrationTriggerResult::NotProven);
+        assert!(packet.next_action.contains("interaction evidence"));
     }
 
     #[test]
