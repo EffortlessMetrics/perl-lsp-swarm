@@ -106,7 +106,7 @@ pub fn construct_synthetic_squash(
 }
 
 fn validate_full_commit_id(label: &str, identity: &str) -> Result<()> {
-    if identity.len() != 40 || !identity.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if !is_git_object_id(identity) {
         return Err(eyre!("{label} identity must be a 40-character hexadecimal Git commit ID"));
     }
     Ok(())
