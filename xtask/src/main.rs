@@ -3611,8 +3611,8 @@ enum SyncDivergenceCommand {
 
 #[derive(Subcommand)]
 enum IssuePlanSubcommand {
-    /// Report-only audit of issue-plan quality (builder-ready completeness,
-    /// label drift, `#0000` placeholder references). Always exits 0.
+    /// Report-only audit of explicit issue work packets and `#0000` references.
+    /// Always exits 0; lifecycle labels are not audit authority.
     Audit {
         /// JSON fixture: an array of issues (offline / testing).
         #[arg(long)]
