@@ -66,35 +66,35 @@
       "journey": "edit_burst_completion",
       "expected_error_class": "request_superseded",
       "issue": 4050,
-      "expires_after": "2026-08-01"
+      "expires_after": "2026-09-01"
     },
     {
       "project": "dancer2",
       "journey": "edit_burst_completion",
       "expected_error_class": "request_superseded",
       "issue": 4050,
-      "expires_after": "2026-08-01"
+      "expires_after": "2026-09-01"
     },
     {
       "project": "catalyst",
       "journey": "edit_burst_completion",
       "expected_error_class": "request_superseded",
       "issue": 4050,
-      "expires_after": "2026-08-01"
+      "expires_after": "2026-09-01"
     },
     {
       "project": "plain_modern_oo",
       "journey": "edit_burst_completion",
       "expected_error_class": "request_superseded",
       "issue": 4050,
-      "expires_after": "2026-08-01"
+      "expires_after": "2026-09-01"
     },
     {
       "project": "plain_modern_oo",
       "journey": "rename_safe_lexical",
       "expected_error_class": "timeout",
       "issue": 4050,
-      "expires_after": "2026-08-01"
+      "expires_after": "2026-09-01"
     }
   ]
 }
