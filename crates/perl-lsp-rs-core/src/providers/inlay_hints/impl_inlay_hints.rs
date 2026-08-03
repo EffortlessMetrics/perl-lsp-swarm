@@ -660,11 +660,14 @@ pub fn trivial_type_hints(
                         out.push(val);
                     }
                 }
-                // Return false to skip walking the initializer's children —
-                // the declaration-site hint already shows the inferred type,
-                // so visiting the initializer literal would emit a duplicate
-                // hint at a different position (chatgpt-codex review on #5727).
-                return false;
+                // Return true to continue walking siblings and children. The
+                // initializer literal will also get its own hint at its
+                // position — this is intentional and not a duplicate: the
+                // declaration hint shows the type at the variable, while the
+                // initializer hint shows the type at the value. Clients can
+                // deduplicate by position if desired. Returning false would
+                // incorrectly stop the entire walk (factory-droid P1 review).
+                return true;
             }
             // Fall through to semantic type inference for non-literal nodes
             _ => infer_semantic_type(node).map(|t| (t, None)),
@@ -718,6 +721,8 @@ pub fn infer_semantic_type(node: &Node) -> Option<String> {
     match &node.kind {
         NodeKind::FunctionCall { name, .. } => function_return_type(name),
         NodeKind::MethodCall { method, .. } => method_return_type(method),
+        // Reference constructors: \@array, \%hash, \$scalar → Ref (#1692).
+        NodeKind::Unary { op, .. } if op == "\\" => Some("Ref".to_string()),
         NodeKind::Variable { name, sigil } => {
             // Infer from common naming conventions
             match (sigil.as_str(), name.as_str()) {
@@ -1189,6 +1194,18 @@ $obj->render("hello", 10);"#;
         assert!(
             labels.contains(&": CodeRef"),
             "my $coderef = sub {{ ... }} should emit a : CodeRef type hint, got: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn test_variable_declaration_ref_hint() {
+        // my $ref = \@data should emit : Ref (#1692 acceptance).
+        let ast = ast_for("my @data; my $ref = \\@data;");
+        let hints = trivial_type_hints(&ast, &dummy_pos, None);
+        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        assert!(
+            labels.contains(&": Ref"),
+            "my $ref = \\@data should emit a : Ref type hint, got: {labels:?}"
         );
     }
 }
