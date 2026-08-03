@@ -94,9 +94,9 @@ fi
 
 # Formal-review classification is an observation composed from the canonical
 # GitHub facts above and the optional material-claim receipt. It is not a merge
-# gate or a second state database. A submitted current human review is
-# sufficient; review-run markers bind claim currentness when present but are
-# not required for a clean natural-language GitHub review.
+# gate or a second state database. A submitted current human review must be
+# paired with a current material-claim receipt; head-bound review alone does
+# not establish that the visible claim was reviewed.
 CORE_IS_DRAFT="$(jq -r '.is_draft // false' <<<"$CORE_JSON")"
 CORE_PENDING_COUNT="$(jq -r '.pending_reviewers | length' <<<"$CORE_JSON")"
 CORE_REVIEW_RUNS="$(jq -r '.review_runs_in_flight // 0' <<<"$CORE_JSON")"
