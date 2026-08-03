@@ -187,7 +187,7 @@ fn collect_required_contexts(repository: &str, base_ref: &str) -> Result<Vec<Req
 fn required_context_names(raw: &str) -> Result<Vec<RequiredContext>> {
     if let Ok(payload) = serde_json::from_str::<RequiredStatusChecksPayload>(raw) {
         if payload.contexts.is_empty() && payload.checks.is_empty() {
-            bail!("required branch-protection checks payload contained no contexts or checks");
+            return Ok(Vec::new());
         }
         let mut contexts = BTreeMap::<String, Option<u64>>::new();
         for name in payload.contexts {
@@ -380,10 +380,9 @@ mod tests {
     }
 
     #[test]
-    fn empty_object_required_context_payload_is_rejected() {
-        let error = required_context_names(r#"{"contexts":[],"checks":[]}"#)
-            .expect_err("an empty object is not a proven required-check policy");
-        assert!(error.to_string().contains("no contexts or checks"));
+    fn empty_object_required_context_payload_is_an_empty_policy() -> Result<()> {
+        assert!(required_context_names(r#"{"contexts":[],"checks":[]}"#)?.is_empty());
+        Ok(())
     }
 
     #[test]

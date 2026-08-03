@@ -131,6 +131,7 @@ pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
         match github::candidate_facts(pr) {
             Ok(final_candidate) => {
                 if candidate_refresh_error {
+                    candidate = final_candidate;
                     candidate.identity_result = "NOT_PROVEN".to_string();
                     errors.push(
                         "candidate facts were unavailable during snapshot composition; head stability is NOT_PROVEN"
