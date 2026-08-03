@@ -128,7 +128,7 @@ readme-heading-check:
     fi
     echo "✅ README heading structure looks good"
 
-# Pre-merge guard: verify a PR is not draft, has merge-ready label, and title has (#NNN)
+# Pre-merge guard: verify native merge state and title has (#NNN)
 # Usage: just pre-merge-check 3291
 pre-merge-check NUMBER:
     bash scripts/pre-merge-check.sh {{NUMBER}}
@@ -1980,7 +1980,6 @@ coverage-proof base='origin/main':
     "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask quality_baseline --locked
     "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask merge_ready --locked
     "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask gates --locked
-    "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask queue_reconciler --locked
     "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask ci_route --locked
     "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask workflow_policy_lint --locked
     "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask allocation_tracker --locked

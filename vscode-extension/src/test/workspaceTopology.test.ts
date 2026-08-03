@@ -12,7 +12,13 @@ function document(scheme: string, fsPath?: string) {
 describe('workspace topology capability contract', () => {
   test('keeps manifest capability claims tied to the tested contract', () => {
     expect(packageJson.extensionKind).toEqual(['workspace']);
-    expect(packageJson.capabilities?.virtualWorkspaces).toBe(true);
+    // Virtual workspaces (vscode.dev, github.dev) are not supported: the
+    // language server is a native binary reading through the OS file system,
+    // and the document selector only covers scheme file/untitled (#5532).
+    expect(packageJson.capabilities?.virtualWorkspaces).toEqual({
+      supported: false,
+      description: expect.any(String),
+    });
     expect(packageJson.capabilities?.untrustedWorkspaces).toEqual({ supported: false });
   });
 

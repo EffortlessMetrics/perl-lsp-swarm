@@ -20,7 +20,7 @@ use crate::runtime::window::RequestProgressGuard;
 use crate::state::{code_lens_cap, code_lens_resolve_deadline, inlay_hints_cap};
 use perl_lsp_rs_core::providers::completion::collect_module_names_from_roots_with_cache;
 use perl_lsp_rs_core::providers::inline_completion::{
-    InlineCompletionEnvironment, InlinePackageMethodFact,
+    BackendError, InlineCompletionEnvironment, InlinePackageMethodFact,
 };
 use perl_lsp_rs_core::providers::normalize_provider_decision_receipt;
 use perl_parser_core::source_file::is_perl_source_uri;
@@ -316,6 +316,13 @@ impl LspServer {
             json!(u64::try_from(shape.result_count).unwrap_or(u64::MAX)),
         );
         receipt.insert("trace_only_no_live_behavior_change".to_string(), json!(true));
+        if provider == "hover" {
+            // Request-scoped: the hover handler that just ran set this on this
+            // same thread inside the dispatcher's blocking task (#5003 PR1).
+            if let Some(kind) = super::hover::take_hover_trace_source_region_kind() {
+                receipt.insert("source_region_kind".to_string(), json!(kind));
+            }
+        }
         receipt.insert(
             "claim_boundary".to_string(),
             json!(
@@ -955,6 +962,8 @@ impl LspServer {
                             let list = provider.apply_replacement_ranges_for_context(
                                 list, &context, line, character,
                             );
+                            let list =
+                                provider.filter_parse_safe_items(list, &text, line, character);
                             let list = constrain_inline_completions_to_selected_info(
                                 list,
                                 selected_completion.as_ref(),
@@ -972,6 +981,9 @@ impl LspServer {
                             }
                         }
                         Err(ref e) => {
+                            if matches!(e, BackendError::Auth(_)) {
+                                self.notify_ai_auth_failure();
+                            }
                             tracing::debug!("AI inline completion failed: {}", e);
                             if !ai_config.fallback {
                                 return Ok(Some(json!({ "items": [] })));
@@ -1238,7 +1250,15 @@ impl LspServer {
 
                 let mut inline_values = Vec::new();
 
-                let lines: Vec<&str> = doc.text.lines().collect();
+                let source_text = doc.text.as_str();
+                // Build the AST-aware source-region index once for the entire
+                // document so we can classify each match's byte range and skip
+                // matches inside string literals, quote-like bodies, and
+                // heredocs (#4630).
+                let region_index =
+                    perl_parser_core::syntax::source_context::SourceRegionIndex::build(source_text);
+
+                let lines: Vec<&str> = source_text.lines().collect();
                 let requested_line_count = effective_end
                     .checked_sub(start_line)
                     .map_or(0, |line_delta| line_delta.saturating_add(1) as usize);
@@ -1291,9 +1311,41 @@ impl LspServer {
                     }
 
                     // Find $scalar, @array, and %hash variables
+                    // Compute the byte offset of this line's start in the
+                    // full source so we can classify match ranges against the
+                    // SourceRegionIndex.
+                    let line_byte_start = source_text
+                        .lines()
+                        .take(line_num as usize)
+                        .map(|l| l.len() + 1) // +1 for the \n
+                        .sum::<usize>();
                     for cap in re.captures_iter(line_text) {
                         if let Some(m) = cap.get(0) {
                             let var_text = m.as_str();
+
+                            // Classify this match against the source-region
+                            // index. Skip matches inside string literals,
+                            // quote-like bodies, and heredocs to prevent the
+                            // DAP client from resolving inline values for
+                            // variables embedded in strings (#4630).
+                            let abs_start = line_byte_start + m.start();
+                            let abs_end = line_byte_start + m.end();
+                            use perl_parser_core::syntax::source_context::RangeClassification;
+                            match region_index.classify_range(abs_start, abs_end) {
+                                RangeClassification::Proven {
+                                    kind: perl_parser_core::syntax::source_context::SourceRegionKind::StringLiteral
+                                        | perl_parser_core::syntax::source_context::SourceRegionKind::QuoteLike
+                                        | perl_parser_core::syntax::source_context::SourceRegionKind::Heredoc
+                                        | perl_parser_core::syntax::source_context::SourceRegionKind::RegexLike,
+                                } => {
+                                    continue;
+                                }
+                                RangeClassification::Ambiguous | RangeClassification::OutOfBounds => {
+                                    // Skip uncertain regions
+                                    continue;
+                                }
+                                _ => {} // Code or other proven kinds: keep
+                            }
                             // Convert byte positions to UTF-16 code units for LSP compliance
                             let start_utf16 = byte_to_utf16_col(line_text, m.start());
                             let end_utf16 = byte_to_utf16_col(line_text, m.end());

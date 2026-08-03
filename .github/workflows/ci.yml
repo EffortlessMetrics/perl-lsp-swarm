@@ -8,14 +8,10 @@ name: CI
 on:
   pull_request:
     branches: [ main, master ]
-    # Deliberately exclude `labeled` / `unlabeled` — every label-add (e.g., applying
-    # `ci-green`, `merge-ready`, pipeline sign-off labels) would trigger a fresh CI run
-    # that cancels the prior in-progress run (see `cancel-in-progress` below). This
-    # caused a cascade observed across ~20 admin-merges: each pipeline label applied by
-    # agents killed the running CI, restarting from scratch and eating minutes of compute
-    # per label. The merge-ready-reconciler.yml applies the same exclusion for the same
-    # reason (infinite-loop guard). `ready_for_review` and `converted_to_draft` are kept
-    # because they change the draft-pr-check guard behavior and must trigger CI.
+    # Deliberately exclude `labeled` / `unlabeled` — labels are navigation and
+    # classification metadata, not CI authority. `ready_for_review` and
+    # `converted_to_draft` are kept because they change the draft-pr-check guard
+    # behavior and must trigger CI.
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   merge_group: {}
   push:
@@ -89,8 +85,12 @@ jobs:
             done
 
             if [ "$docs_only" = "true" ]; then
-              echo "run_ci=false" >> "$GITHUB_OUTPUT"
-              echo "::notice::Docs/assets-only PR detected — skipping Rust CI jobs; lightweight workflows still run"
+              # The policy shard includes the generated non-Rust inventory
+              # freshness gate. Keep the existing required CI contexts active
+              # for docs/assets-only changes so tracked-file additions and
+              # removals cannot bypass that check.
+              echo "run_ci=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::Docs/assets-only PR detected — running the policy shard for generated-inventory freshness"
             else
               echo "run_ci=true" >> "$GITHUB_OUTPUT"
               echo "::notice::Non-draft PR with code/config changes — running merge-gate (pr-smoke, conflict-markers, shards, UX tests); supersede protection via preflight-latest-check (#1484)"
@@ -378,7 +378,7 @@ jobs:
           - name: corpus
             gates: common_corpus_clean
           - name: policy
-            gates: docs_build v2_bundle_sync nested_lock_check published_crate_count
+            gates: docs_build non_rust_inventory_check v2_bundle_sync nested_lock_check published_crate_count
     permissions:
       contents: read
     # Run on every PR push and on push to main/master

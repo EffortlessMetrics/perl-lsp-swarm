@@ -45,7 +45,12 @@ fn main() {
 
     if path.is_file() {
         let (has_error, duration) = process_file(path);
-        println!("status=success error={} duration_us={}", has_error, duration);
+        println!(
+            "status={} error={} duration_us={}",
+            if has_error { "error" } else { "success" },
+            has_error,
+            duration
+        );
     } else if path.is_dir() {
         let mut total_files = 0;
         let mut error_files = 0;

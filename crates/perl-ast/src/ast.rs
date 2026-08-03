@@ -1979,7 +1979,7 @@ pub enum NodeKind {
     /// precedence level. Semantically equivalent to `($a op1 $b) && ($b op2 $c)`
     /// with each intermediate operand evaluated only once.
     ///
-    /// A single comparison (`$x < 10`) always produces [`Binary`] instead.
+    /// A single comparison (`$x < 10`) always produces [`Binary`](Self::Binary) instead.
     ChainedComparison {
         /// The N+1 operands in declaration order, where N is the number of operators (N >= 2).
         operands: Vec<Node>,

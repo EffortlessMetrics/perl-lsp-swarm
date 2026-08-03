@@ -1,5 +1,5 @@
 // Test infrastructure — allow test-friendly patterns.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 //! Scenario 14 — `@INC` consumer-consistency conformance harness.
 //!
@@ -236,10 +236,10 @@ use Gre\n\
 ";
 
 #[test]
-fn scenario_14_relative_include_path() {
+fn scenario_14_relative_include_path() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_14_relative_include_path: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let harness = UxHarness::new(
@@ -283,12 +283,12 @@ fn scenario_14_relative_include_path() {
     // Consistency check: PL701 and definition must agree.
     // If definition resolves, PL701 must not fire (and vice versa).
     if def_resolves && !pl701_absent {
-        panic!(
+        return Err(format!(
             "Consumer inconsistency (relative_include_path): goto-def resolved but PL701 fired.\n\
              goto-def: {:?}\n\
              diagnostics: {:?}",
             defs, diags
-        );
+        ));
     }
 
     // The module IS resolvable — at minimum definition should find it.
@@ -315,6 +315,8 @@ fn scenario_14_relative_include_path() {
     }
 
     harness.assert_no_crash();
+
+    Ok(())
 }
 
 // Removed `scenario_14_include_path_completion_external_module` (was the
@@ -364,10 +366,10 @@ sub compute {\n\
 ";
 
 #[test]
-fn scenario_14_use_lib_lexical() {
+fn scenario_14_use_lib_lexical() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_14_use_lib_lexical: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let harness = UxHarness::new(
@@ -404,12 +406,12 @@ fn scenario_14_use_lib_lexical() {
 
     // Consistency check.
     if def_resolves && !pl701_absent {
-        panic!(
+        return Err(format!(
             "Consumer inconsistency (lexical_use_lib): goto-def resolved but PL701 fired.\n\
              goto-def: {:?}\n\
              diagnostics: {:?}",
             defs, diags
-        );
+        ));
     }
 
     assert!(
@@ -430,6 +432,8 @@ fn scenario_14_use_lib_lexical() {
     }
 
     harness.assert_no_crash();
+
+    Ok(())
 }
 
 // =============================================================================
@@ -461,10 +465,10 @@ sub value {\n\
 ";
 
 #[test]
-fn scenario_14_absolute_include_path() {
+fn scenario_14_absolute_include_path() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_14_absolute_include_path: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let abs_root = tempfile::tempdir().expect("Failed to create absolute include tempdir");
@@ -509,12 +513,12 @@ fn scenario_14_absolute_include_path() {
     print_conformance("absolute_include_path", pl701_absent, completion_ok, def_resolves, hover_ok);
 
     if def_resolves && !pl701_absent {
-        panic!(
+        return Err(format!(
             "Consumer inconsistency (absolute_include_path): goto-def resolved but PL701 fired.\n\
              goto-def: {:?}\n\
              diagnostics: {:?}",
             defs, diags
-        );
+        ));
     }
 
     assert!(
@@ -535,6 +539,8 @@ fn scenario_14_absolute_include_path() {
     }
 
     harness.assert_no_crash();
+
+    Ok(())
 }
 
 // =============================================================================
@@ -708,10 +714,10 @@ sub value {\n\
 ";
 
 #[test]
-fn scenario_14_findbin_relative() {
+fn scenario_14_findbin_relative() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_14_findbin_relative: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     // The harness workspace root acts as $FindBin::Bin.
@@ -749,12 +755,12 @@ fn scenario_14_findbin_relative() {
 
     // Consistency check.
     if def_resolves && !pl701_absent {
-        panic!(
+        return Err(format!(
             "Consumer inconsistency (findbin_relative): goto-def resolved but PL701 fired.\n\
              goto-def: {:?}\n\
              diagnostics: {:?}",
             defs, diags
-        );
+        ));
     }
     if !def_resolves && pl701_absent {
         // Both agree module doesn't resolve — log but don't fail the consistency test.
@@ -772,6 +778,8 @@ fn scenario_14_findbin_relative() {
     }
 
     harness.assert_no_crash();
+
+    Ok(())
 }
 
 // =============================================================================
@@ -813,10 +821,10 @@ use Sys\n\
 ";
 
 #[test]
-fn scenario_14_perl5lib_env() {
+fn scenario_14_perl5lib_env() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_14_perl5lib_env: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     // Create a separate tempdir to act as the PERL5LIB entry.
@@ -863,12 +871,12 @@ fn scenario_14_perl5lib_env() {
 
     // Consistency check.
     if def_resolves && !pl701_absent {
-        panic!(
+        return Err(format!(
             "Consumer inconsistency (perl5lib_env): goto-def resolved but PL701 fired.\n\
              goto-def: {:?}\n\
              diagnostics: {:?}",
             defs, diags
-        );
+        ));
     }
 
     assert!(
@@ -888,6 +896,8 @@ fn scenario_14_perl5lib_env() {
 
     // Keep system_dir alive until after all LSP calls complete.
     drop(system_dir);
+
+    Ok(())
 }
 
 // =============================================================================
@@ -920,12 +930,12 @@ sub answer {\n\
 ";
 
 #[test]
-fn scenario_14_nested_module_relative_include_path() {
+fn scenario_14_nested_module_relative_include_path() -> Result<(), String> {
     if !binary_available() {
         eprintln!(
             "SKIP scenario_14_nested_module_relative_include_path: perl-lsp binary not found"
         );
-        return;
+        return Ok(());
     }
 
     let harness = UxHarness::new(
@@ -968,12 +978,12 @@ fn scenario_14_nested_module_relative_include_path() {
     );
 
     if def_resolves && !pl701_absent {
-        panic!(
+        return Err(format!(
             "Consumer inconsistency (nested_module_relative_include_path): goto-def resolved but PL701 fired.\n\
              goto-def: {:?}\n\
              diagnostics: {:?}",
             defs, diags
-        );
+        ));
     }
 
     assert!(
@@ -994,6 +1004,8 @@ fn scenario_14_nested_module_relative_include_path() {
     }
 
     harness.assert_no_crash();
+
+    Ok(())
 }
 
 // =============================================================================
@@ -1023,12 +1035,12 @@ use MissingFro\n\
 ";
 
 #[test]
-fn scenario_14_include_path_missing_module_consistency() {
+fn scenario_14_include_path_missing_module_consistency() -> Result<(), String> {
     if !binary_available() {
         eprintln!(
             "SKIP scenario_14_include_path_missing_module_consistency: perl-lsp binary not found"
         );
-        return;
+        return Ok(());
     }
 
     let harness = UxHarness::new(
@@ -1070,13 +1082,13 @@ fn scenario_14_include_path_missing_module_consistency() {
     );
 
     if !def_empty && pl701_fires {
-        panic!(
+        return Err(format!(
             "Consumer inconsistency (include_path_missing_module_consistency): goto-def resolved \
              but PL701 fired.\n\
              goto-def: {:?}\n\
              diagnostics: {:?}",
             defs, diags
-        );
+        ));
     }
 
     assert!(
@@ -1092,6 +1104,8 @@ fn scenario_14_include_path_missing_module_consistency() {
     );
 
     harness.assert_no_crash();
+
+    Ok(())
 }
 
 #[test]
@@ -1241,12 +1255,12 @@ fn scenario_14_perl5lib_completion_gating_matrix() {
 }
 
 #[test]
-fn scenario_14_perl5lib_completion_without_system_inc() {
+fn scenario_14_perl5lib_completion_without_system_inc() -> Result<(), String> {
     if !binary_available() {
         eprintln!(
             "SKIP scenario_14_perl5lib_completion_without_system_inc: perl-lsp binary not found"
         );
-        return;
+        return Ok(());
     }
 
     // Four-consumer parity at (usePerl5lib=true, useSystemInc=false): the
@@ -1297,13 +1311,13 @@ fn scenario_14_perl5lib_completion_without_system_inc() {
     );
 
     if def_resolves && !pl701_absent {
-        panic!(
+        return Err(format!(
             "Consumer inconsistency (perl5lib_completion_without_system_inc): \
              goto-def resolved but PL701 fired.\n\
              goto-def: {:?}\n\
              diagnostics: {:?}",
             defs, diags
-        );
+        ));
     }
 
     assert!(
@@ -1329,6 +1343,8 @@ fn scenario_14_perl5lib_completion_without_system_inc() {
 
     harness.assert_no_crash();
     drop(system_dir);
+
+    Ok(())
 }
 
 /// Regression guard for the startup-`@INC` env-inheritance leak: with

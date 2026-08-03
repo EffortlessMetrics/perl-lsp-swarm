@@ -39,7 +39,7 @@ machine — it never re-derives any GraphQL query itself).
 
 | State | Meaning |
 |---|---|
-| `REVIEW_IN_FLIGHT` | A review is running (a `review-run:v1` receipt with `status=running`, or the `needs-deep-review` label is set). No verdict yet. |
+| `REVIEW_IN_FLIGHT` | A review is running (`review-run:v1` with `status=running`, a native pending reviewer, or a deep receipt that is stale at the current head). The `needs-deep-review` label is producer-only and does not block convergence. |
 | `FINDINGS_CLASSIFIED` | Findings exist; dispositions are being recorded but no fix is yet proven reachable at head. |
 | `FIXED_HEAD` | Dispositions present and fix commits reachable at head, but no independent verification receipt at head yet. |
 | `VERIFIED_HEAD` | An independent verification receipt exists at head, but the PR is not yet fully converged. |
@@ -75,9 +75,10 @@ field list):
 - **`reviewer_run ∉ mutation_provenance(head)`** — the **writer-identity
   set** (see below): a verification receipt only counts if its `verifier`
   is outside the writer set.
-- **`verdict clear`** — `review_runs_in_flight == 0` and
-  `independent_review_pending == false` (no `needs-deep-review` label, no
-  `status=running` review-run receipt).
+- **`verdict clear`** — `review_runs_in_flight == 0`,
+  `independent_review_pending == false` (no native review request),
+  `current_change_requests` is empty, and no `status=running` review-run
+  receipt remains.
 - **`blocking dispositioned`** — `resolved_without_disposition == 0` and
   `dispositions_missing_marker == 0`: every resolved thread carries a
   machine-checkable `disposition:v1` marker, not just a resolve-with-no-

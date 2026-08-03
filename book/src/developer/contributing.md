@@ -310,15 +310,10 @@ fn status_round_trip() {
 
 #### Pre-Commit Hook (Optional)
 
-To catch policy violations before pushing, install the pre-commit hook:
+To install the generated commit and pre-push gates, run:
 
 ```bash
-# Option 1: Copy hook (manual updates needed)
-cp .ci/hooks/pre-commit .git/hooks/pre-commit
-chmod +x .git/hooks/pre-commit
-
-# Option 2: Symlink hook (auto-updates with git pull)
-ln -sf ../../.ci/hooks/pre-commit .git/hooks/pre-commit
+cargo xtask ci-hygiene install-githooks
 ```
 
 #### Manual Policy Check

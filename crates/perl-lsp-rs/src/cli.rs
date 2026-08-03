@@ -13,16 +13,17 @@
 
 use crate::LspServer;
 use perl_lsp_rs_core::runtime::launcher::{
-    LaunchAction, LaunchConfig, StartupTimer, TransportMode, format_health_output,
-    format_info_output, format_startup_banner, help_text, init_logging, log_server_startup,
-    logging_filter, parse_args, port_in_use_message, shell_completion, should_enable_logging,
-    should_use_ansi_stdout,
+    LaunchAction, LaunchConfig, LaunchParseError, StartupTimer, TransportMode,
+    format_health_output, format_info_output, format_startup_banner, help_text, init_logging,
+    log_server_startup, logging_filter, parse_args, port_in_use_message, shell_completion,
+    should_enable_logging, should_use_ansi_stdout,
 };
 use perl_lsp_rs_core::tooling::native_compat::{
     classify_perlcritic_profile, classify_perltidy_profile, render_perlcritic_compat_markdown,
     render_perltidy_compat_markdown,
 };
 use std::env;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process;
 use std::sync::Arc;
@@ -46,7 +47,11 @@ where
         Ok(plan) => plan,
         Err(error) => {
             eprintln!("{error}");
-            eprintln!("{}", render_help_text(&command_name));
+            // A parser diagnostic already carries its own usage line and
+            // `--help` pointer; adding ours would repeat it.
+            if !matches!(error, LaunchParseError::ParserDiagnostic { .. }) {
+                eprintln!("Run '{command_name} --help' for available options.");
+            }
             return 1;
         }
     };
@@ -286,7 +291,10 @@ fn run_check(command_name: &str, files: &[String]) -> i32 {
     if errors > 0 { 1 } else { 0 }
 }
 
-fn format_parse_error_context(source: &str, error: &perl_parser::ParseError) -> Vec<String> {
+pub(crate) fn format_parse_error_context(
+    source: &str,
+    error: &perl_parser::ParseError,
+) -> Vec<String> {
     let contexts = perl_parser::error::get_error_contexts(std::slice::from_ref(error), source);
     let Some(context) = contexts.first() else {
         return Vec::new();
@@ -357,6 +365,20 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                 startup_timer.checkpoint("server_construction");
 
                 let (tx, rx) = tokio::sync::mpsc::channel(64);
+
+                // If stdin is a TTY, the user launched the server directly in a
+                // terminal instead of through an editor. The server will block
+                // reading LSP messages from stdin with no prompt — which reads
+                // as a hang to anyone unfamiliar with language servers. Print a
+                // hint so they know what is happening and how to exit. (#5518)
+                if std::io::stdin().is_terminal() {
+                    eprintln!(
+                        "{command_name} is running in stdio mode and waiting for LSP messages on \
+                         stdin. This is normal when launched by an editor; if you launched it \
+                         manually, press Ctrl-C to exit. Use '{command_name} --help' for options."
+                    );
+                }
+
                 spawn_reader_thread(std::io::stdin(), tx);
 
                 if logging_enabled {

@@ -28,7 +28,7 @@ mod git_hooks;
 mod process;
 
 use crate::cli::{Cli, CliCommand};
-use crate::commands::panic_test::check_panic_test;
+use crate::commands::panic_test::{check_panic_test, check_panic_test_with_registry};
 use crate::commands::print_in_lib::check_print_in_lib;
 use crate::commands::regex_static::check_regex_static;
 #[cfg(test)]
@@ -37,9 +37,9 @@ use crate::commands::todos::{
     has_unlinked_todo_in_rust_line_with_block_context, has_unlinked_todo_in_rust_line_with_state,
     linked_marker,
 };
-use crate::git_hooks::cmd_install_githooks;
 #[cfg(test)]
 use crate::git_hooks::pre_push_hook_script;
+use crate::git_hooks::{check_githooks, cmd_install_githooks};
 use crate::process::*;
 
 const RED: &str = "\x1b[0;31m";
@@ -77,6 +77,7 @@ fn run() -> Result<i32> {
         CliCommand::RunParserComparison => cmd_run_parser_comparison(&repo_root)?,
         CliCommand::GenerateBadges { check } => cmd_generate_badges(&repo_root, check)?,
         CliCommand::InstallGithooks => cmd_install_githooks(&repo_root)?,
+        CliCommand::CheckGithooks => check_githooks(&repo_root)?,
         CliCommand::VerifyStacker => cmd_verify_stacker(&repo_root)?,
         CliCommand::TestIterativeParser => cmd_test_iterative_parser(&repo_root)?,
         CliCommand::CheckV2BundleSync => cmd_check_v2_bundle_sync(&repo_root)?,
@@ -114,7 +115,15 @@ fn run() -> Result<i32> {
         CliCommand::CheckUnsafeProd => cmd_check_unsafe_prod(&repo_root)?,
         CliCommand::CheckUnwrapsModules => cmd_check_unwraps_modules(&repo_root)?,
         CliCommand::CheckUnwrapsProd => cmd_check_unwraps_prod(&repo_root)?,
-        CliCommand::CheckPanicTest => check_panic_test(&repo_root)?,
+        CliCommand::CheckPanicTest { inventory, identity_registry } => {
+            if inventory {
+                commands::panic_test::write_inventory(&repo_root)?
+            } else if let Some(identity_registry) = identity_registry {
+                check_panic_test_with_registry(&repo_root, &identity_registry)?
+            } else {
+                check_panic_test(&repo_root)?
+            }
+        }
         CliCommand::CheckPrintInLib => check_print_in_lib(&repo_root)?,
         CliCommand::CheckRegexStatic => check_regex_static(&repo_root)?,
         CliCommand::QuickCheck => cmd_quick_check(&repo_root)?,

@@ -85,51 +85,48 @@ deliberate, evidence-backed, and reversible-in-principle.
 
 ---
 
-## Issue lifecycle
+## Issue lifecycle and disposition
 
-The desk tracks each issue through explicit states. Most states map directly to
-**existing** labels (see the reconciliation table below); a few are proposed
-refinements that must be created before agents rely on them.
+The desk records descriptive issue states in the issue body and linked receipts.
+Some stable labels remain useful for navigation, but no label authorizes a plan
+stage, assignment, build state, review, or merge.
 
 ```text
 candidate     → a raw finding, not yet verified
 researched    → claims grounded against source
 filed         → exists as a GitHub issue
-needs-plan-review → in the verification + plan-review pipeline
-plan-reviewed → spec refined and approved (PIPELINE_GATES.md's Gate-2 exit label)
-architecture-reviewed → structural fit confirmed (when relevant)
-builder-ready → desk-level issue-quality marker; see reconciliation note below
-in-build      → builder working (PR exists)
-implemented   → PR merged
+ work packet → issue body contains an explicit builder-ready plan or builder spec
+ plan-reviewed → plan disposition recorded in the body and receipts
+ reviewed → current review decision recorded in the issue/PR evidence
+ architecture-reviewed → structural fit recorded when relevant; navigation only
+ builder-ready → work-packet quality recorded in the body and receipts
+ implementation → native PR state, checks, and merge receipt
+ implemented   → native merged PR and closeout receipt
 superseded    → replaced by other work
 duplicate     → folded into another issue
 stale         → invalidated by main moving
 blocked       → waiting on a dependency or authority
 ```
 
-**Reconciliation note (Gate-2 exit label):** [PIPELINE_GATES.md](./PIPELINE_GATES.md)
-defines Gate 2's exit condition as the `plan-reviewed` label — spec-planner (which
-creates the impl branch and `.spec/` checklist) runs *within* Gate 2, after
-plan-review, so Gate 2 can close out on `plan-reviewed` alone. This desk additionally
-tracks `builder-ready` as a supplementary issue-quality marker (all ten work-order
-sections answered and reviewed) for issues that flow through the lighter
-`research_finding.yml` intake rather than spec-planner's impl-branch path. Treat
-`plan-reviewed` as authoritative for the Gate 2 → Gate 3 transition; `builder-ready`
-is advisory quality signal, not a second required gate.
+The issue body is the durable work packet. Plan review and builder readiness are
+dispositions, not admission labels. Current review, check, mergeability, and
+closure state comes from GitHub facts and receipts; no lifecycle label is a
+Gate-2 or build authorization.
 
-### Label reconciliation (existing vs proposed)
+### Navigation metadata and body dispositions
 
 The authoritative label catalog is [LIVE_SIGNALS_VS_LABELS.md](./LIVE_SIGNALS_VS_LABELS.md)
 and the label tables in [CLAUDE.md](../../CLAUDE.md). The desk **uses what
 exists** and treats the rest as proposals:
 
-| Desk concept | Existing label to use now | Proposed refinement (not yet created) |
+| Desk concept | Current expression | Optional navigation metadata |
 |--------------|---------------------------|----------------------------------------|
 | Raw finding needs triage | `swarm-discovered` | `needs-triage`, `needs-research` |
-| In verification + plan-review | `needs-plan-review` | — |
-| Spec approved | `plan-reviewed` | — |
-| Structural fit confirmed | `architecture-reviewed` | `needs-architecture-review` (routing flag) |
-| Ready to build | `builder-ready` | — |
+ | Work packet present | `## Builder-Ready Plan` or `## Builder Spec` in the body | — |
+ | In verification + plan-review | issue body and review receipt | — |
+ | Spec approved | issue body/spec disposition | — |
+ | Structural fit confirmed | issue body/review receipt | — |
+ | Ready to build | work-packet body and acceptance evidence | — |
 | Blocks other work | `structural-blocker` | generic `blocked` |
 | Needs a reproduction | — (note in body) | `needs-repro` |
 | Needs acceptance tests | — (note in body) | `needs-acceptance-tests` |
@@ -138,12 +135,11 @@ exists** and treats the rest as proposals:
 | Replaced by other work | close, cross-link the replacement | `superseded` |
 | Folded into another issue | close with `state_reason: duplicate` | — |
 
-**Rule:** do not apply a label that does not exist — GitHub silently drops
-unknown labels from issue templates and API calls, producing a no-op that looks
-like routing. Proposed labels must be created by a maintainer **and** added to
-[LIVE_SIGNALS_VS_LABELS.md](./LIVE_SIGNALS_VS_LABELS.md) before any agent uses
-them. Until then, use the existing label and record the finer state in the issue
-body.
+**Rule:** labels do not establish assignment, review quality, build readiness,
+or lifecycle stage. Record decisions in the issue body and use native issue/PR
+state, checks, reviews, threads, close reasons, and receipts for live state.
+Stable classification, area, risk, release, blocker, and human-decision labels
+remain navigation metadata.
 
 ---
 
@@ -169,13 +165,13 @@ but no section is silently omitted.
 The [`builder_ready.yml`](../../.github/ISSUE_TEMPLATE/builder_ready.yml) issue
 template captures exactly these sections.
 
-### `builder-ready` is earned, not self-declared
+### A work packet is explicit, not label-declared
 
-Filing an issue with the builder-ready template does **not** grant the
-`builder-ready` label. The template captures the *structure* a builder-ready
-issue must have; the *label* is earned by passing Gate-2 review (plan-review,
-and architecture-review when relevant). A freshly filed issue enters at
-`needs-plan-review`.
+Filing an issue with the builder-ready template does not grant lifecycle state.
+The template captures the structure a work packet needs, while the plan-review
+desk records its current decision in the issue body and linked receipts. The
+audit recognizes `## Builder-Ready Plan` or `## Builder Spec` headings, not
+labels.
 
 This is the anti-pattern the desk exists to prevent: a "builder-ready" issue
 with no acceptance test, an unreviewed architecture decision, or a stale
@@ -191,14 +187,14 @@ pick the smallest safe workflow.
 | Classification | Workflow |
 |----------------|----------|
 | New finding | research → dedupe → file |
-| Weak existing issue | plan-review → improve body → label |
+| Weak existing issue | plan-review → improve body → record disposition |
 | Duplicate candidate | compare evidence → close/link only if truly duplicate |
 | Stale / superseded | verify against main → close or update |
 | Architecture-sensitive | architecture-review before `builder-ready` |
 | Missing reproduction | repro-review before `builder-ready` |
 | Missing acceptance tests | acceptance-review before `builder-ready` |
 | Scope too broad | split into smaller issues |
-| Builder-ready | add dependency map and wave priority |
+| Builder-ready | add dependency map and wave priority in the body |
 | Blocked by dependency | record the blocker, sequence behind it |
 | Wrong premise | correct the body or close with evidence |
 
@@ -254,7 +250,7 @@ claim has at least one concrete artifact.
 
 ### Gate 2 — Plan review
 
-An issue may move to `plan-reviewed` only when the problem is specific, the fix
+An issue may be marked plan-reviewed in its body only when the problem is specific, the fix
 plan is plausible, acceptance tests are concrete, non-goals are explicit, and
 dependencies are listed.
 
@@ -267,10 +263,10 @@ cross-lane status receipts. This is the architecture-reviewer's pass in Gate 2
 
 ### Gate 4 — Builder-ready
 
-An issue may get `builder-ready` only when it is plan-reviewed,
+An issue may be described as builder-ready only when it is plan-reviewed,
 architecture-reviewed (if needed), has concrete acceptance tests, a known
-conflict surface, and a known rollback/rollout mode — and its labels match
-reality.
+conflict surface, and a known rollback/rollout mode — and its body disposition
+matches the current evidence.
 
 ---
 
@@ -331,13 +327,13 @@ Two GitHub-Forms templates support the desk's entry points:
 
 | Template | File | Entry label | Use |
 |----------|------|-------------|-----|
-| Research Finding | [`research_finding.yml`](../../.github/ISSUE_TEMPLATE/research_finding.yml) | `swarm-discovered`, `needs-triage` | A raw observation or hypothesis to verify and dedupe before it enters plan review |
-| Builder-Ready Plan | [`builder_ready.yml`](../../.github/ISSUE_TEMPLATE/builder_ready.yml) | `swarm-discovered`, `needs-plan-review` | A fully structured work-order proposal entering the verification + plan-review pipeline |
+ | Research Finding | [`research_finding.yml`](../../.github/ISSUE_TEMPLATE/research_finding.yml) | `swarm-discovered`, `needs-triage` | A raw observation or hypothesis to verify and dedupe before it enters plan review |
+ | Builder-Ready Plan | [`builder_ready.yml`](../../.github/ISSUE_TEMPLATE/builder_ready.yml) | `swarm-discovered` | A fully structured work packet whose plan disposition is recorded in the body and linked receipts |
 
 The two templates differ by **depth and intent**, not just fields: a research
 finding is a hypothesis at the `candidate`/`researched` stage; a builder-ready
 plan is a decided work order awaiting Gate-2 confirmation. Neither template
-grants `builder-ready` on filing — that label is earned through review.
+grants lifecycle state on filing; the decision belongs in the body and receipts.
 
 ---
 
@@ -352,7 +348,7 @@ lands).
 
 | Command | Purpose |
 |---------|---------|
-| `cargo xtask issue-plan audit` | Report-only. Flags `builder-ready` issues whose body is missing a required work-order section (acceptance, reproduction, root area, non-goals, dependencies, risk, verification), `builder-ready` on a closed issue, stale routing-label contradictions (`needs-plan-review` co-present with a later `builder-ready`/`plan-reviewed` sign-off), and `#0000` placeholder references. Reads a `--fixture` JSON array or live `gh issue list`. Always exits 0; writes `target/receipts/issue-plan-audit.json`. |
+| `cargo xtask issue-plan audit` | Report-only. Flags explicit `## Builder-Ready Plan` or `## Builder Spec` work packets whose body is missing a required section and `#0000` placeholder references. Closed work packets remain retained as historical context without a finding. Optional `--label` only scopes the GitHub query; labels do not activate audit rules. Reads a `--fixture` JSON array or live `gh issue list`. Always exits 0; writes `target/receipts/issue-plan-audit.json`. |
 
 ### Proposed (not yet implemented)
 
@@ -360,7 +356,7 @@ Do not reference these as if they exist.
 
 | Command | Purpose |
 |---------|---------|
-| `cargo xtask issue-plan promote <n> --to builder-ready` | Validate required fields before *suggesting* labels (no GitHub mutation at first) |
+| `cargo xtask issue-plan promote <n> --to builder-ready` | Validate required fields before *suggesting* a body disposition (no GitHub mutation at first) |
 | `cargo xtask issue-plan dedupe --label <l>` | Report overlap by shared files, failure mode, and acceptance tests with a distinct/sequence/split/merge/duplicate recommendation |
 | `cargo xtask issue-plan stale` | Report issues mentioning files removed from `main`, issues whose acceptance tests already exist, or whose linked PR merged |
 | `cargo xtask issue-plan wave --label builder-ready --max-conflict-risk low` | Output safe groupings, dependency order, and conflict files |
@@ -374,7 +370,7 @@ The desk exists to stop low-friction wrongness:
 - a curator confidently closing distinct work as duplicate
 - a scout filing a plan with wrong premises
 - a builder starting from an unreviewed spec
-- issue labels drifting from reality
+- issue body dispositions drifting from current GitHub facts
 - an agent claiming a filing that did not happen
 - duplicate fragments splitting the same work
 - `main` moving while issue plans stay stale

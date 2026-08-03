@@ -819,6 +819,31 @@ enum Commands {
         command: DevexCommand,
     },
 
+    /// Validate the static provider-native agent-flow topology.
+    #[command(name = "agent-flow")]
+    AgentFlow {
+        #[command(subcommand)]
+        command: AgentFlowCommand,
+    },
+
+    /// Plan bounded serial pre-push proof from the shared change set.
+    ///
+    /// PLANNING ONLY: emits a deterministic proof plan, including the change-set
+    /// digest, selected and deferred steps, and posture. It runs none of the
+    /// planned Cargo, workflow, or RIPR commands and changes no hook behavior.
+    /// `--base auto` delegates base resolution to the shared change-set resolver.
+    PrePushPlan {
+        /// Git base ref used by the shared change-set resolver.
+        #[arg(long, default_value = "auto")]
+        base: String,
+        /// Commit-ish head consumed by the shared change-set resolver.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+        /// Output format: human or json.
+        #[arg(long, default_value = "human")]
+        format: String,
+    },
+
     /// Audit CI workflows for PR-safety and spend-risk controls.
     CiAuditWorkflows,
 
@@ -904,6 +929,12 @@ enum Commands {
         /// Markdown summary output path.
         #[arg(long, default_value = "target/receipts/ci-contract.md")]
         summary: PathBuf,
+    },
+
+    /// Capture typed evidence for one command or a small serial proof set.
+    CommandEvidence {
+        #[command(subcommand)]
+        command: CommandEvidenceCommand,
     },
 
     /// Run exact-head Taplo and typos checks for changed repository files.
@@ -1195,6 +1226,34 @@ enum Commands {
         /// Apply label updates instead of dry run.
         #[arg(long)]
         apply: bool,
+    },
+
+    /// Read focused, provider-neutral facts for one GitHub pull request.
+    #[command(name = "github")]
+    GhCandidate {
+        #[command(subcommand)]
+        command: GhGithubCommand,
+    },
+
+    /// Capture paginated review and thread facts for one GitHub pull request.
+    GhReviewConvergence {
+        /// Pull request number.
+        #[arg(long)]
+        pr: u64,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Compose candidate, review, required-check, and protected-merge facts.
+    #[command(name = "gh-preflight")]
+    GhPreflight {
+        /// Pull request number.
+        #[arg(long)]
+        pr: u64,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Generate bindings
@@ -2254,7 +2313,11 @@ enum NonRustCommand {
     /// Walk `git ls-files`, classify tracked files against the allowlist,
     /// and emit `target/policy/non-rust-inventory.{md,json}` plus
     /// `docs/policy/NON_RUST_INVENTORY.md`.
-    Inventory,
+    Inventory {
+        /// Check the committed Markdown inventory without rewriting outputs.
+        #[arg(long)]
+        check: bool,
+    },
 
     /// Check non-Rust files against the allowlist and report violations.
     ///
@@ -2892,6 +2955,62 @@ enum FreshnessCheckMode {
 }
 
 #[derive(Subcommand)]
+enum GhGithubCommand {
+    /// Capture candidate identity and required contexts for one pull request.
+    Candidate {
+        /// Pull request number.
+        #[arg(long)]
+        pr: u64,
+        /// Optional head SHA to compare with the live candidate.
+        #[arg(long)]
+        expected_head: Option<String>,
+        /// Normalized fixture JSON for deterministic offline tests.
+        #[arg(long, hide = true)]
+        fixture: Option<PathBuf>,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum CommandEvidenceCommand {
+    /// Run one command with explicit argv, cwd, candidate identity, and timeout.
+    Run {
+        /// Executable to spawn.
+        #[arg(long)]
+        program: String,
+        /// Working directory for the child process.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Candidate identity supplied by the caller (for example a head SHA).
+        #[arg(long)]
+        candidate: Option<String>,
+        /// Timeout bound in seconds. Omit for no timeout.
+        #[arg(long)]
+        timeout_secs: Option<u64>,
+        /// Directory for full stdout/stderr evidence.
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+        /// Arguments passed verbatim after --.
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+    /// Run a small serial set of direct commands and retain one receipt per command.
+    ProofSet {
+        /// JSON proof-set specification.
+        #[arg(long)]
+        spec: PathBuf,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum MergeReadyCommand {
     /// Evaluate a live current-head fan-in snapshot without mutating GitHub state.
     Evaluate {
@@ -2929,34 +3048,6 @@ enum MergeReadyCommand {
         /// Verify a fixture file instead of the default receipt path.
         #[arg(long)]
         fixture: Option<PathBuf>,
-    },
-    /// Reconcile merge-ready label state from receipts.
-    Reconcile {
-        /// Apply changes (default is advisory dry-run).
-        #[arg(long)]
-        apply: bool,
-        /// Force dry-run mode.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Scan all open PRs and resolve label contradictions queue-wide.
-    ///
-    /// Uses live CI state for ci-green/needs-ci-fix decisions, and
-    /// "later-applied wins" timeline logic for other contradiction pairs.
-    /// Apply mode is the default; pass --dry-run for advisory mode.
-    ReconcileQueue {
-        /// Apply label changes (default when neither flag given).
-        #[arg(long)]
-        apply: bool,
-        /// Dry-run: report what would change without applying.
-        #[arg(long, conflicts_with = "apply")]
-        dry_run: bool,
-        /// Limit to a single PR number (useful for testing).
-        #[arg(long)]
-        pr: Option<u64>,
-        /// Output path for the queue-reconcile.json receipt.
-        #[arg(long)]
-        receipt: Option<PathBuf>,
     },
 }
 
@@ -3535,8 +3626,8 @@ enum SyncDivergenceCommand {
 
 #[derive(Subcommand)]
 enum IssuePlanSubcommand {
-    /// Report-only audit of issue-plan quality (builder-ready completeness,
-    /// label drift, `#0000` placeholder references). Always exits 0.
+    /// Report-only audit of explicit issue work packets and `#0000` references.
+    /// Always exits 0; lifecycle labels are not audit authority.
     Audit {
         /// JSON fixture: an array of issues (offline / testing).
         #[arg(long)]
@@ -3681,6 +3772,25 @@ enum SmokeCommand {
         /// Path to the perl-lsp binary to execute.
         #[arg(long)]
         binary: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentFlowCommand {
+    /// Check provider-local skill metadata and route references.
+    Check {
+        /// Restrict the check to one skill name in each provider tree.
+        #[arg(long)]
+        skill: Option<String>,
+        /// Output format: human or json.
+        #[arg(long, default_value = "human")]
+        format: String,
+    },
+    /// Check the deterministic route-scenario fixtures only.
+    Scenarios {
+        /// Output format: human or json.
+        #[arg(long, default_value = "human")]
+        format: String,
     },
 }
 
@@ -4041,6 +4151,15 @@ fn run_cli(cli: Cli) -> Result<()> {
                 devex_plan::pr_body(devex_plan::DevexPrBodyConfig { base, receipt })
             }
         },
+        Commands::AgentFlow { command } => match command {
+            AgentFlowCommand::Check { skill, format } => {
+                agent_flow::run(agent_flow::CheckConfig { skill, format })
+            }
+            AgentFlowCommand::Scenarios { format } => {
+                agent_flow::run_scenarios(agent_flow::ScenarioConfig { format })
+            }
+        },
+        Commands::PrePushPlan { base, head, format } => pre_push_plan::run(base, head, format),
         Commands::ParseRust { source, sexp, ast, bench } => {
             parse_rust::run(source, sexp, ast, bench)
         }
@@ -4123,6 +4242,28 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CiContract { base, head, receipt, summary } => {
             ci_contract::run(ci_contract::CiContractConfig { base, head, receipt, summary })
         }
+        Commands::CommandEvidence { command } => match command {
+            CommandEvidenceCommand::Run {
+                program,
+                cwd,
+                candidate,
+                timeout_secs,
+                out_dir,
+                json,
+                args,
+            } => command_evidence::run(command_evidence::CommandEvidenceConfig {
+                program,
+                args,
+                cwd,
+                candidate,
+                timeout: timeout_secs.map(std::time::Duration::from_secs),
+                out_dir,
+                json_only: json,
+            }),
+            CommandEvidenceCommand::ProofSet { spec, json } => {
+                command_evidence::run_proof_set(&spec, json)
+            }
+        },
         Commands::RepoHygiene { base, head, receipt, summary } => {
             repo_hygiene::run(repo_hygiene::RepoHygieneConfig { base, head, receipt, summary })
         }
@@ -4289,6 +4430,15 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::GhLabels => github::run_labels(),
         Commands::GhTriage { limit } => github::run_issues_needing_triage(limit),
         Commands::GhBackfillPrefixedLabels { apply } => github::run_backfill_prefixed_labels(apply),
+        Commands::GhCandidate { command } => match command {
+            GhGithubCommand::Candidate { pr, expected_head, fixture, json } => {
+                github::run_candidate(pr, expected_head, fixture, json)
+            }
+        },
+        Commands::GhReviewConvergence { pr, json } => {
+            github_review::run_review_convergence(pr, json)
+        }
+        Commands::GhPreflight { pr, json } => github_preflight::run_preflight(pr, json),
         Commands::CorpusAudit { corpus_path, output, check, fresh } => {
             corpus_audit::run(corpus_audit::AuditConfig {
                 corpus_path,
@@ -4582,15 +4732,6 @@ fn run_cli(cli: Cli) -> Result<()> {
                 merge_ready::emit(pr, receipt, snapshot)
             }
             MergeReadyCommand::Verify { pr, fixture } => merge_ready::verify(pr, fixture),
-            MergeReadyCommand::Reconcile { apply, dry_run } => {
-                let run_dry = !apply || dry_run;
-                merge_ready::reconcile(run_dry)
-            }
-            MergeReadyCommand::ReconcileQueue { apply: _, dry_run, pr, receipt } => {
-                // Apply is the default. Only switch to dry-run when --dry-run is explicitly passed.
-                let do_apply = !dry_run;
-                queue_reconciler::reconcile_queue(do_apply, pr, receipt)
-            }
         },
         Commands::IgnoredTests { update, check, check_issue_refs, verbose } => {
             ignored_tests::run(update, check, check_issue_refs, verbose)
@@ -4943,9 +5084,13 @@ fn run_cli(cli: Cli) -> Result<()> {
             } => generated_files::check(receipt, fixture, generator_receipt, allow_manual_edits),
         },
         Commands::NonRust { command } => match command {
-            NonRustCommand::Inventory => {
+            NonRustCommand::Inventory { check } => {
                 let root = utils::project_root()?;
-                tasks::file_policy::non_rust_inventory(&root)
+                if check {
+                    tasks::file_policy::non_rust_inventory_check(&root)
+                } else {
+                    tasks::file_policy::non_rust_inventory(&root)
+                }
             }
             NonRustCommand::Check { mode, json, allowlist, root: root_override } => {
                 use tasks::file_policy::{CheckFilePolicyConfig, CheckFilePolicyMode};

@@ -2,6 +2,7 @@
 
 pub mod active_goal_manifest;
 pub mod agent_capability_policy;
+pub mod agent_flow;
 pub mod agent_lease;
 pub mod agent_ledgers;
 pub mod agent_receipt;
@@ -35,6 +36,7 @@ pub mod ci_pr_summary;
 pub mod ci_route;
 pub mod ci_scope;
 pub mod clean;
+pub mod command_evidence;
 pub mod commit_checks;
 pub mod compare;
 #[cfg(feature = "parser-tasks")]
@@ -70,6 +72,8 @@ pub mod generate_semantic_snapshot;
 pub mod generated_files;
 pub mod git_context;
 pub mod github;
+pub mod github_preflight;
+pub mod github_review;
 pub mod goals;
 pub mod hardening;
 #[cfg(feature = "parser-tasks")]
@@ -88,6 +92,7 @@ pub mod lsp_318_claims;
 pub mod lsp_318_matrix;
 pub mod lsp_ux_smoke;
 pub mod memory_trends;
+pub mod merge_integration;
 pub mod merge_ready;
 pub mod methodology_gate;
 pub mod metrics;
@@ -108,6 +113,7 @@ pub mod populate_book;
 pub mod pr;
 pub mod pr_close_proof;
 pub mod pr_ledger;
+pub mod pre_push_plan;
 pub mod prep_crates_io_launch;
 pub mod provider_confidence_matrix;
 pub mod provider_promotion_ledger;
@@ -119,7 +125,6 @@ pub mod publish_receipts;
 pub mod quality_baseline;
 pub mod quality_gate;
 pub mod queue_health;
-pub mod queue_reconciler;
 pub mod queue_snapshot;
 pub mod receipts;
 pub mod release;
