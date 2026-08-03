@@ -10,6 +10,7 @@ package-lock.json
 # Debug and build artifacts
 /debug_parse/
 /target/
+/xtask/target/
 crates/*/target/
 /target-tests/
 .build/
@@ -269,4 +270,3 @@ test_corpus/workspaces/xlarge/bin/
 
 # Devplane-routed build output (not repo-local)
 /build/
-xtask/target/
