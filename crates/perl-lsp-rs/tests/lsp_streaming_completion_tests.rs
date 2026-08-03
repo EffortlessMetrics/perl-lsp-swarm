@@ -641,6 +641,26 @@ mod mock_streaming_completion_tests {
         (server, capture)
     }
 
+    fn set_streaming_debounce(server: &LspServer, milliseconds: u64) {
+        let config_request = JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: None,
+            method: "workspace/didChangeConfiguration".into(),
+            params: Some(json!({
+                "settings": {
+                    "perl": {
+                        "aiCompletion": {
+                            "streaming": {
+                                "updateDebounceMs": milliseconds
+                            }
+                        }
+                    }
+                }
+            })),
+        };
+        let _ = server.handle_request(config_request);
+    }
+
     fn open_doc(server: &LspServer, uri: &str, text: &str) {
         let _ = server.handle_request(JsonRpcRequest {
             _jsonrpc: "2.0".into(),
@@ -733,6 +753,7 @@ mod mock_streaming_completion_tests {
     #[test]
     fn streaming_completion_mock_backend_cumulative_chunks() {
         let (server, capture) = create_server();
+        set_streaming_debounce(&server, 0);
 
         let backend = MockChunkBackend { chunks: vec!["1", "1;"], delays_ms: vec![0, 0] };
         server.test_install_ai_backend(Some(Arc::new(backend)));
@@ -777,6 +798,27 @@ mod mock_streaming_completion_tests {
         assert_eq!(progress.len(), 1);
         assert!(progress[0]["params"]["value"]["isFinal"].as_bool().unwrap_or(false));
         assert!(progress[0]["params"]["value"]["items"].as_array().is_some_and(Vec::is_empty));
+    }
+
+    #[test]
+    fn streaming_completion_debounces_intermediate_chunks_but_emits_final() {
+        let (server, capture) = create_server();
+        set_streaming_debounce(&server, 1_000);
+
+        let backend = MockChunkBackend { chunks: vec!["1", "1;", "1;"], delays_ms: vec![0, 0, 0] };
+        server.test_install_ai_backend(Some(Arc::new(backend)));
+
+        let uri = "file:///streaming-debounce.pl";
+        open_doc(&server, uri, "my $value = ");
+        let result = request_streaming_completion(&server, uri, 12, "stream-debounce-1");
+        assert!(result.is_null());
+
+        let progress =
+            wait_for_progress_messages(&capture, "stream-debounce-1", Duration::from_millis(500));
+        assert_eq!(progress.len(), 2, "first and final updates should be emitted");
+        assert_eq!(progress[0]["params"]["value"]["items"][0]["insertText"], "1");
+        assert_eq!(progress[1]["params"]["value"]["items"][0]["insertText"], "1;");
+        assert_eq!(progress[1]["params"]["value"]["isFinal"], true);
     }
 
     #[test]
