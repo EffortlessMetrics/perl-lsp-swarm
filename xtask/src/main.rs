@@ -819,6 +819,13 @@ enum Commands {
         command: DevexCommand,
     },
 
+    /// Validate the static provider-native agent-flow topology.
+    #[command(name = "agent-flow")]
+    AgentFlow {
+        #[command(subcommand)]
+        command: AgentFlowCommand,
+    },
+
     /// Plan bounded serial pre-push proof from the shared change set.
     ///
     /// PLANNING ONLY: emits a deterministic proof plan, including the change-set
@@ -3710,6 +3717,19 @@ enum SmokeCommand {
 }
 
 #[derive(Subcommand)]
+enum AgentFlowCommand {
+    /// Check provider-local skill metadata and route references.
+    Check {
+        /// Restrict the check to one skill name in each provider tree.
+        #[arg(long)]
+        skill: Option<String>,
+        /// Output format: human or json.
+        #[arg(long, default_value = "human")]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum AgentCommand {
     /// Lease lifecycle commands.
     Lease {
@@ -4064,6 +4084,11 @@ fn run_cli(cli: Cli) -> Result<()> {
             }
             DevexCommand::PrBody { base, receipt } => {
                 devex_plan::pr_body(devex_plan::DevexPrBodyConfig { base, receipt })
+            }
+        },
+        Commands::AgentFlow { command } => match command {
+            AgentFlowCommand::Check { skill, format } => {
+                agent_flow::run(agent_flow::CheckConfig { skill, format })
             }
         },
         Commands::PrePushPlan { base, head, format } => pre_push_plan::run(base, head, format),
