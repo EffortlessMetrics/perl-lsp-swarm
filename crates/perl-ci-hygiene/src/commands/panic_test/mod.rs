@@ -224,6 +224,15 @@ fn normalized_panic_invocation(lines: &[String], line_index: usize, column: usiz
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn selector_identity(snippet: &str, occurrence: usize) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in snippet.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("invocation:{hash:016x}:occurrence:{occurrence}")
+}
+
 fn complete_panic_site_inventory(repo_root: &Path) -> Result<Vec<PanicSiteIdentity>> {
     let panic_re = regex_from_static(&PANIC_MACRO_RE, "panic macro")?;
     let comment_re = regex_from_static(&COMMENT_RE, "comment")?;
@@ -279,17 +288,17 @@ fn complete_panic_site_inventory(repo_root: &Path) -> Result<Vec<PanicSiteIdenti
             &right.enclosing_test_or_function,
         ))
     });
-    let mut selector_counts = BTreeMap::<(String, String, String, String), usize>::new();
+    let mut selector_counts = BTreeMap::<(String, String, &'static str, String), usize>::new();
     for site in &mut sites {
         let selector_key = (
             site.path.clone(),
             site.enclosing_test_or_function.clone(),
-            site.macro_family.to_string(),
+            site.macro_family,
             site.normalized_snippet.clone(),
         );
         let occurrence = selector_counts.entry(selector_key).or_default();
         *occurrence += 1;
-        site.selector_identity = format!("occurrence:{occurrence}");
+        site.selector_identity = selector_identity(&site.normalized_snippet, *occurrence);
     }
     Ok(sites)
 }
@@ -702,6 +711,7 @@ pub fn boom() {
         let sites = complete_panic_site_inventory(&repo.path)?;
         assert_eq!(sites.len(), 2);
         assert!(sites[0].normalized_snippet.contains("first"));
+        assert!(sites[0].selector_identity.starts_with("invocation:"));
         let path = write_registry(
             &repo,
             serde_json::json!({
