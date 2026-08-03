@@ -136,6 +136,12 @@ pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
                         "candidate facts were unavailable during snapshot composition; head stability is NOT_PROVEN"
                             .to_string(),
                     );
+                } else if candidate.head_sha.is_empty() {
+                    candidate.identity_result = "NOT_PROVEN".to_string();
+                    errors.push(
+                        "candidate facts were incomplete during snapshot composition; head stability is NOT_PROVEN"
+                            .to_string(),
+                    );
                 } else {
                     let head_changed = final_candidate.head_sha != candidate.head_sha;
                     let integration_changed =
