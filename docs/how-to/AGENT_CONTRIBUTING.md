@@ -42,8 +42,9 @@ conflict changed.
   failed evidence as `NOT_PROVEN`.
 
 Labels may help people navigate history, but live GitHub state, repository
-contracts, checks, reviews, and the branch ruleset are the authorities. See
-[Live Signals vs Label Signals](../reference/LIVE_SIGNALS_VS_LABELS.md).
+contracts, checks, reviews, and the branch ruleset are the authorities. See the
+[GitHub surfaces contract](../agents/GITHUB_SURFACES.md) for the current label
+boundary.
 
 ## Make proof discriminating
 
@@ -64,8 +65,9 @@ documentation or policy changes, verify every link and run the narrow repository
 check that governs the edited surface. A passing command is not evidence that a
 different command, platform, or hosted environment also passed.
 
-The active gate vocabulary and proof boundaries are in
-[Pipeline Gates](../reference/PIPELINE_GATES.md). Formal review is a directed,
+The current method and skill boundaries are in the
+[development method](../agents/DEVELOPMENT_METHOD.md) and
+[skill contract](../agents/SKILL_CONTRACT.md). Formal review is a directed,
 falsifying, and verified judgment, not a second reading of the diff or a relay
 of someone else's conclusion. The review currentness contract is in
 [REVIEW_CURRENTNESS.md](../agents/REVIEW_CURRENTNESS.md).
