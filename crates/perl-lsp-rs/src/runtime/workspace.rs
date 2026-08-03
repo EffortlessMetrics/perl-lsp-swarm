@@ -17,8 +17,8 @@ use crate::runtime::readiness::{
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
 use crate::runtime::window::RequestProgressGuard;
 use crate::runtime::workspace_progress::{
-    send_index_ready_notification, send_progress_begin, send_progress_create, send_progress_end,
-    send_progress_report,
+    WORKSPACE_INDEX_PROGRESS_TOKEN, send_index_ready_notification, send_progress_begin,
+    send_progress_create, send_progress_end, send_progress_report,
 };
 use crate::state::workspace_symbol_cap;
 use perl_module::path::file_path_to_module_name;
@@ -36,7 +36,7 @@ use perl_semantic_facts::{
 use perl_workspace::folder::extract_workspace_folder_change;
 #[cfg(feature = "workspace")]
 use perl_workspace::ignore::is_skipped_dir_name;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 #[cfg(feature = "workspace")]
 use std::path::Path;
 use std::sync::Arc;
@@ -141,6 +141,8 @@ struct IndexingResources {
     invocation_count: Arc<std::sync::atomic::AtomicUsize>,
     outbound: outbound::OutboundSender,
     work_done_progress: bool,
+    progress_tokens: Arc<Mutex<HashSet<String>>>,
+    progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
     next_request_id: Arc<AtomicI32>,
     permission_denied_shown: Arc<AtomicBool>,
     readiness_receipt: Arc<Mutex<crate::runtime::readiness::WorkspaceReadinessReceipt>>,
@@ -149,6 +151,22 @@ struct IndexingResources {
         Arc<std::sync::Mutex<Option<crate::runtime::readiness::WorkspaceIndexingStartGate>>>,
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     readiness_observer_id: u64,
+}
+
+#[cfg(feature = "workspace")]
+struct WorkspaceIndexCancellationGuard {
+    progress_tokens: Arc<Mutex<HashSet<String>>>,
+    progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
+    request_id: JsonRpcId,
+}
+
+#[cfg(feature = "workspace")]
+impl Drop for WorkspaceIndexCancellationGuard {
+    fn drop(&mut self) {
+        self.progress_tokens.lock().remove(WORKSPACE_INDEX_PROGRESS_TOKEN);
+        self.progress_token_to_request.lock().remove(WORKSPACE_INDEX_PROGRESS_TOKEN);
+        GLOBAL_CANCELLATION_REGISTRY.remove_request(&self.request_id);
+    }
 }
 
 #[cfg(feature = "workspace")]
@@ -165,6 +183,11 @@ fn next_indexing_progress_request_id(next_request_id: &AtomicI32) -> ServerReque
             }
         }
     }
+}
+
+#[cfg(feature = "workspace")]
+fn indexing_cancellation_request_id(progress_create_id: ServerRequestId) -> JsonRpcId {
+    JsonRpcId::String(format!("workspace-indexing:{}", progress_create_id.as_i32()))
 }
 
 #[cfg(feature = "workspace")]
@@ -2121,6 +2144,8 @@ impl LspServer {
             invocation_count: Arc::clone(&self.workspace_indexing_invocation_count),
             outbound: self.outbound.clone(),
             work_done_progress: self.client_capabilities.lock().work_done_progress_support,
+            progress_tokens: Arc::clone(&self.progress_tokens),
+            progress_token_to_request: Arc::clone(&self.progress_token_to_request),
             next_request_id: Arc::clone(&self.next_request_id),
             permission_denied_shown: Arc::clone(&self.permission_denied_shown),
             readiness_receipt: Arc::clone(&self.workspace_readiness_receipt),
@@ -2181,6 +2206,28 @@ impl LspServer {
         let progress_create_id = next_indexing_progress_request_id(&resources.next_request_id);
         let outbound = resources.outbound;
         let work_done_progress = resources.work_done_progress;
+        // Keep the cancellation registry identity in a string namespace. The
+        // progress-create request ID is server-generated, while the registry
+        // also contains client request IDs; sharing numeric IDs would allow a
+        // progress registration to overwrite an unrelated client request.
+        let progress_request_id = indexing_cancellation_request_id(progress_create_id);
+        let progress_tokens = resources.progress_tokens;
+        let progress_token_to_request = resources.progress_token_to_request;
+        if work_done_progress {
+            let cancellation_token = PerlLspCancellationToken::new(
+                progress_request_id.clone(),
+                "workspace-indexing".to_string(),
+            );
+            if let Err(error) = GLOBAL_CANCELLATION_REGISTRY.register_token(cancellation_token) {
+                tracing::warn!(%error, "Failed to register workspace indexing cancellation token");
+            } else {
+                progress_tokens.lock().insert(WORKSPACE_INDEX_PROGRESS_TOKEN.to_string());
+                progress_token_to_request.lock().insert(
+                    WORKSPACE_INDEX_PROGRESS_TOKEN.to_string(),
+                    progress_request_id.clone(),
+                );
+            }
+        }
         let permission_denied_shown = resources.permission_denied_shown;
         let readiness_receipt = resources.readiness_receipt;
         #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -2190,6 +2237,11 @@ impl LspServer {
 
         std::thread::spawn(move || {
             let _guard = indexing_guard; // moved into closure, drops when closure exits
+            let _cancellation_guard = work_done_progress.then(|| WorkspaceIndexCancellationGuard {
+                progress_tokens,
+                progress_token_to_request,
+                request_id: progress_request_id.clone(),
+            });
             let budget_start = Instant::now();
             {
                 let mut receipt = readiness_receipt.lock();
@@ -2213,6 +2265,11 @@ impl LspServer {
             let discovery_started = Instant::now();
 
             'scan: for folder_state in workspace_folders {
+                if GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id) {
+                    let elapsed_ms = budget_start.elapsed().as_millis() as u64;
+                    early_exit = Some((EarlyExitReason::Cancelled, elapsed_ms, 0, files.len()));
+                    break 'scan;
+                }
                 let Some(root) =
                     folder_state.path.clone().or_else(|| uri_to_fs_path(&folder_state.uri))
                 else {
@@ -2228,13 +2285,28 @@ impl LspServer {
                     workspace_config.discovery_extra_extensions.clone(),
                     workspace_config.discovery_extra_skipped_dirs.clone(),
                 );
-                let discovery = super::file_discovery::discover_perl_files_with_config(
+                let discovery = super::file_discovery::discover_perl_files_with_config_and_cancel(
                     &root,
                     &workspace_config.include_paths,
                     &discovery_config,
+                    || {
+                        work_done_progress
+                            && GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id)
+                    },
                 );
 
+                if discovery.cancelled {
+                    let elapsed_ms = budget_start.elapsed().as_millis() as u64;
+                    early_exit = Some((EarlyExitReason::Cancelled, elapsed_ms, 0, files.len()));
+                    break 'scan;
+                }
+
                 for path in discovery.files {
+                    if GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id) {
+                        let elapsed_ms = budget_start.elapsed().as_millis() as u64;
+                        early_exit = Some((EarlyExitReason::Cancelled, elapsed_ms, 0, files.len()));
+                        break 'scan;
+                    }
                     files.push(path);
                     let total_files = files.len();
 
@@ -2269,6 +2341,12 @@ impl LspServer {
             let mut last_reported = 0usize;
 
             for path in files {
+                if GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id) {
+                    let elapsed_ms = budget_start.elapsed().as_millis() as u64;
+                    early_exit =
+                        Some((EarlyExitReason::Cancelled, elapsed_ms, indexed_files, total_files));
+                    break;
+                }
                 let elapsed_ms = budget_start.elapsed().as_millis() as u64;
                 if elapsed_ms > caps.initial_scan_budget_ms {
                     early_exit = Some((
@@ -2392,6 +2470,9 @@ impl LspServer {
                 indexing_receipt.log(budget_start.elapsed(), Some(reason));
                 coordinator.record_early_exit(reason, elapsed_ms, indexed_files, total_files);
                 match reason {
+                    EarlyExitReason::Cancelled => {
+                        coordinator.transition_to_degraded(DegradationReason::Cancelled);
+                    }
                     EarlyExitReason::FileLimit => {
                         coordinator.transition_to_degraded(DegradationReason::ResourceLimit {
                             kind: ResourceKind::MaxFiles,
@@ -2403,8 +2484,27 @@ impl LspServer {
                     }
                 }
                 if work_done_progress {
-                    send_progress_end(&outbound, "Indexing stopped early");
+                    let message = if reason == EarlyExitReason::Cancelled {
+                        "Indexing cancelled"
+                    } else {
+                        "Indexing stopped early"
+                    };
+                    send_progress_end(&outbound, message);
                 }
+                readiness_receipt.lock().log();
+                send_index_ready_notification(&outbound, false);
+            } else if work_done_progress
+                && GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id)
+            {
+                let elapsed_ms = budget_start.elapsed().as_millis() as u64;
+                coordinator.transition_to_degraded(DegradationReason::Cancelled);
+                coordinator.record_early_exit(
+                    EarlyExitReason::Cancelled,
+                    elapsed_ms,
+                    indexed_files,
+                    total_files,
+                );
+                send_progress_end(&outbound, "Indexing cancelled");
                 readiness_receipt.lock().log();
                 send_index_ready_notification(&outbound, false);
             } else {
@@ -2929,14 +3029,20 @@ pub(super) fn path_to_module_name(uri: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "workspace")]
+    use super::WORKSPACE_INDEX_PROGRESS_TOKEN;
     use super::{LspServer, module_name_appears_in_text};
+    #[cfg(feature = "workspace")]
+    use crate::cancellation::{GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken};
+    #[cfg(feature = "workspace")]
+    use crate::protocol::JsonRpcId;
     #[cfg(feature = "workspace")]
     use crate::util::read_text_file_with_encoding;
     use parking_lot::Mutex;
     use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
     #[cfg(feature = "workspace")]
     use perl_parser::workspace_index::{
-        IndexCoordinator, IndexPerformanceCaps, IndexResourceLimits,
+        DegradationReason, IndexCoordinator, IndexPerformanceCaps, IndexResourceLimits, IndexState,
     };
     use serde_json::{Value, json};
     use std::io::{self, Write};
@@ -3551,6 +3657,101 @@ mod tests {
         assert_eq!(peak_queued_work, 1);
         let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
         assert_eq!(coordinator.index().file_count(), 1);
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn cancelled_indexing_is_degraded_and_cleans_up_progress_registration()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        for index in 0..128 {
+            std::fs::write(
+                dir.path().join(format!("cancel-{index}.pm")),
+                format!("package Cancel{index};\nsub symbol_{index} {{ 1 }}\n1;\n"),
+            )?;
+        }
+        let folder_uri = url::Url::from_directory_path(dir.path())
+            .map_err(|_| "invalid workspace folder path")?
+            .to_string();
+
+        let (mut server, output) = server_with_output_capture();
+        server.client_capabilities.lock().work_done_progress_support = true;
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps { initial_scan_budget_ms: 30_000, ..Default::default() },
+            )));
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(dir.path().to_path_buf()),
+        );
+
+        let (receipt_tx, receipt_rx) = std::sync::mpsc::channel();
+        let _receipt_observer_guard =
+            crate::runtime::readiness::set_workspace_readiness_receipt_observer(receipt_tx);
+        server
+            .readiness_receipt_observer_id
+            .store(_receipt_observer_guard.id(), std::sync::atomic::Ordering::Relaxed);
+        let client_request_id = JsonRpcId::Integer(1);
+        GLOBAL_CANCELLATION_REGISTRY.remove_request(&client_request_id);
+        GLOBAL_CANCELLATION_REGISTRY.register_token(PerlLspCancellationToken::new(
+            client_request_id.clone(),
+            "client-request".to_string(),
+        ))?;
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        server.test_gate_workspace_indexing_start(started_tx, release_rx);
+
+        server.start_workspace_indexing();
+        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        server.handle_progress_cancel(Some(json!({
+            "token": "workspace-index"
+        })));
+        release_tx.send(())?;
+
+        let receipt = receipt_rx.recv_timeout(std::time::Duration::from_secs(30))?;
+        if receipt["whole_workspace_ready_us"].is_number() {
+            return Err("cancelled indexing reported whole-workspace readiness".into());
+        }
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if !matches!(
+            coordinator.state(),
+            IndexState::Degraded { reason: DegradationReason::Cancelled, .. }
+        ) {
+            return Err("cancelled indexing did not leave the coordinator degraded".into());
+        }
+        if server.progress_tokens.lock().contains(WORKSPACE_INDEX_PROGRESS_TOKEN)
+            || server.progress_token_to_request.lock().contains_key(WORKSPACE_INDEX_PROGRESS_TOKEN)
+        {
+            return Err("cancelled indexing left progress registration behind".into());
+        }
+        let client_request_preserved =
+            GLOBAL_CANCELLATION_REGISTRY.get_token(&client_request_id).is_some();
+        GLOBAL_CANCELLATION_REGISTRY.remove_request(&client_request_id);
+        if !client_request_preserved {
+            return Err("workspace indexing overwrote a client cancellation registration".into());
+        }
+        drop(server);
+        let messages = output.messages()?;
+        if !messages.iter().any(|message| {
+            message.get("method").and_then(Value::as_str) == Some("$/progress")
+                && message.pointer("/params/value/kind").and_then(Value::as_str) == Some("begin")
+                && message.pointer("/params/value/cancellable").and_then(Value::as_bool)
+                    == Some(true)
+        }) {
+            return Err("workspace indexing did not advertise cancellable progress".into());
+        }
+        if !messages.iter().any(|message| {
+            message.get("method").and_then(Value::as_str) == Some("$/progress")
+                && message.pointer("/params/value/kind").and_then(Value::as_str) == Some("end")
+                && message.pointer("/params/value/message").and_then(Value::as_str)
+                    == Some("Indexing cancelled")
+        }) {
+            return Err(
+                "cancelled indexing did not end progress with a cancellation message".into()
+            );
+        }
         Ok(())
     }
 

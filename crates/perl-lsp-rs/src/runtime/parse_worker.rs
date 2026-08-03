@@ -2121,13 +2121,24 @@ mod tests {
         assert!(worker.is_operational(), "freshly spawned pool must be operational");
 
         // Simulate worker death: replace live handles with a handle to a
-        // thread that exits immediately. After a brief sleep the thread will
-        // have exited, so is_finished() returns true even though the handle
-        // is still present in the Vec.
+        // thread that exits immediately. Spin-wait (deterministic) for the
+        // thread to report is_finished() instead of a fragile hard-coded sleep
+        // (graphite/kilo/factory-droid review on #5731).
         let done_handle = std::thread::Builder::new().spawn(|| {}).expect("spawn dummy thread");
         *worker.handles.lock() = vec![done_handle];
-        // Wait for the dummy thread to exit.
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Spin-wait until the dummy thread reports finished (max 2s timeout).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let handles = worker.handles.lock();
+            if handles.iter().all(|h| h.is_finished()) {
+                break;
+            }
+            drop(handles);
+            if std::time::Instant::now() >= deadline {
+                panic!("dummy thread did not finish within 2s timeout");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         assert!(
             !worker.is_operational(),
             "a pool with only finished (dead) handles must report not-operational (#3664)"
