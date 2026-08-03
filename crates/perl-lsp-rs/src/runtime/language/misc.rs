@@ -1327,15 +1327,12 @@ impl LspServer {
                             let abs_end = line_byte_start + m.end();
                             use perl_parser_core::syntax::source_context::RangeClassification;
                             match region_index.classify_range(abs_start, abs_end) {
-                                RangeClassification::Proven { kind }
-                                    if matches!(
-                                        kind,
-                                        perl_parser_core::syntax::source_context::SourceRegionKind::StringLiteral
-                                            | perl_parser_core::syntax::source_context::SourceRegionKind::QuoteLike
-                                            | perl_parser_core::syntax::source_context::SourceRegionKind::Heredoc
-                                            | perl_parser_core::syntax::source_context::SourceRegionKind::RegexLike
-                                    ) =>
-                                {
+                                RangeClassification::Proven {
+                                    kind: perl_parser_core::syntax::source_context::SourceRegionKind::StringLiteral
+                                        | perl_parser_core::syntax::source_context::SourceRegionKind::QuoteLike
+                                        | perl_parser_core::syntax::source_context::SourceRegionKind::Heredoc
+                                        | perl_parser_core::syntax::source_context::SourceRegionKind::RegexLike,
+                                } => {
                                     continue;
                                 }
                                 RangeClassification::Ambiguous | RangeClassification::OutOfBounds => {

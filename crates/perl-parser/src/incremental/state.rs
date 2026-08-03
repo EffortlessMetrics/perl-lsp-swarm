@@ -28,6 +28,7 @@ pub struct IncrementalState {
 }
 
 impl IncrementalState {
+    #[expect(deprecated, reason = "the legacy AST field seeds parse checkpoints for compatibility")]
     pub fn new(source: String) -> Self {
         let rope = Rope::from_str(&source);
         let line_index = LineIndex::new(&source);
