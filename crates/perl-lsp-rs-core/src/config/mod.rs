@@ -128,6 +128,12 @@ pub struct ServerConfig {
     /// Formatter engine used for LSP formatting requests.
     pub formatting_engine: FormatterMode,
 
+    /// Whether to format on save (willSaveWaitUntil). Default `true` for
+    /// backward compatibility. When `false`, manual formatting via
+    /// `textDocument/formatting` still works — only the automatic save
+    /// trigger is disabled (#5678).
+    pub format_on_save: bool,
+
     /// Path to a `.perltidyrc` profile file.
     ///
     /// When `Some`, passes `--profile=<path>` to perltidy. When `None`,
@@ -344,6 +350,7 @@ impl Default for ServerConfig {
             native_critic_exclude: Vec::new(),
             perltidy_enabled: true,
             formatting_engine: FormatterMode::Native,
+            format_on_save: true,
             perltidy_profile: None,
             perltidy_maximum_line_length: Some(80),
             perltidy_indent_columns: Some(4),
@@ -510,6 +517,9 @@ impl ServerConfig {
         if let Some(formatting) = settings.get("formatting") {
             if let Some(enabled) = formatting.get("enabled").and_then(|v| v.as_bool()) {
                 self.perltidy_enabled = enabled;
+            }
+            if let Some(format_on_save) = formatting.get("formatOnSave").and_then(|v| v.as_bool()) {
+                self.format_on_save = format_on_save;
             }
             if let Some(engine) = formatting.get("engine").and_then(|v| v.as_str()) {
                 match parse_formatter_mode(engine) {
@@ -1654,6 +1664,8 @@ pub struct ProjectNextEditConfig {
 pub struct ProjectFormattingConfig {
     /// Whether LSP formatting is enabled.
     pub enabled: Option<bool>,
+    /// Whether to format on save (willSaveWaitUntil). Default `true`.
+    pub format_on_save: Option<bool>,
     /// Formatter engine (`native`, `compat`, `external-perltidy`, or `off`).
     pub engine: Option<String>,
     /// Path to a `.perltidyrc` profile file.
@@ -1944,6 +1956,9 @@ impl ProjectConfig {
         // Apply formatting configuration
         if let Some(enabled) = self.formatting.enabled {
             config.perltidy_enabled = enabled;
+        }
+        if let Some(format_on_save) = self.formatting.format_on_save {
+            config.format_on_save = format_on_save;
         }
         if let Some(ref engine) = self.formatting.engine {
             match parse_formatter_mode(engine) {

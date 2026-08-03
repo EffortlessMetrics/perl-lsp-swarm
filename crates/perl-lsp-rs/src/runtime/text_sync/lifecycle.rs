@@ -260,7 +260,7 @@ impl LspServer {
             // Phase 1: snapshot text under brief lock, then drop.
             // Formatting can shell out to perltidy, so we must NOT hold locks
             // during the format call (#4643 off-lock pattern).
-            if !self.is_formatting_enabled() {
+            if !self.is_formatting_enabled() || !self.config.lock().format_on_save {
                 return Ok(Some(json!([])));
             }
             let text = {
