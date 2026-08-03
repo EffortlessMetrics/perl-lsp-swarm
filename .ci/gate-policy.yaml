@@ -1071,7 +1071,7 @@ gates:
     timeout_seconds: 120
     retry_count: 0
     budgets:
-      max_duration_ms: 90_000
+      max_duration_ms: 90000
     quarantine: false
     tags:
       - policy
