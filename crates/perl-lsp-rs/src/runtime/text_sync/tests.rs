@@ -1452,9 +1452,7 @@ fn test_did_save_text_preserves_client_version() -> Result<(), Box<dyn std::erro
 
     let normalized_uri = server.normalize_uri_key(uri);
     let documents = server.documents.lock();
-    let document = documents
-        .get(&normalized_uri)
-        .ok_or("didSave must retain the open document")?;
+    let document = documents.get(&normalized_uri).ok_or("didSave must retain the open document")?;
     assert_eq!(document.version, 3);
     assert_eq!(document.text, "my $x = 2;\n");
     Ok(())
