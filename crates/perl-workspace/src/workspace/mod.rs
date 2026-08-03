@@ -5,7 +5,6 @@
 //!
 //! - cache configuration and bounded cache implementations
 //! - in-memory document storage for open editor buffers
-//! - production coordination helpers and readiness orchestration
 //! - state-machine and SLO/runtime monitoring integration
 //! - workspace-wide symbol lookup and rename execution
 //!
@@ -21,8 +20,6 @@ pub mod document_store;
 pub mod memory;
 /// Index lifecycle instrumentation and production readiness monitoring helpers.
 pub mod monitoring;
-/// High-level coordinator that integrates state transitions, SLOs, and limits.
-pub mod production_coordinator;
 /// Service-level objective types and trackers used by workspace operations.
 pub mod slo;
 /// State machine defining valid index lifecycle transitions and degraded states.
@@ -38,14 +35,7 @@ pub mod workspace_rename;
 // from `state_machine`, which would cause ambiguous glob import errors.  Callers
 // that need monitoring types use `workspace::monitoring::*` or the top-level
 // `crate::monitoring::*` path directly.
-pub use cache::{
-    AstCacheConfig, BoundedLruCache, CacheConfig, CombinedWorkspaceCacheConfig, EstimateSize,
-    SymbolCacheConfig, WorkspaceCacheConfig,
-};
-pub use production_coordinator::{
-    CoordinatorStatistics, ProductionCoordinatorConfig, ProductionIndexCoordinator,
-    WorkspaceCacheManager,
-};
+pub use cache::{BoundedLruCache, CacheConfig, EstimateSize};
 pub use slo::{OperationResult, OperationType, Regime, SloConfig, SloStatistics, SloTracker};
 pub use state_machine::{
     BuildPhase, DegradationReason, IndexState, IndexStateKind, IndexStateMachine,
