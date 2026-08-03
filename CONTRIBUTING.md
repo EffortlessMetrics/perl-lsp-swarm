@@ -74,6 +74,8 @@ Once all five steps succeed, you're ready to make changes. Before pushing, run `
 
 If you are contributing from an agentic coding environment, use the repo's bounded build profiles so target directories and caches do not grow inside disposable worktrees:
 
+For the provider-native contribution path, read the [agent contributing guide](docs/how-to/AGENT_CONTRIBUTING.md) first, then use the preparation and build profiles below.
+
 ```bash
 just agent-preflight
 just agent-check
