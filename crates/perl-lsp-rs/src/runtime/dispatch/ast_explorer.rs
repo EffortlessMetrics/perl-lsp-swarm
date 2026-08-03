@@ -34,14 +34,17 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        // Extract the `uri` string from params
-        let uri = params.as_ref().and_then(|p| p.get("uri")).and_then(|u| u.as_str()).ok_or_else(
-            || JsonRpcError {
-                code: INVALID_PARAMS,
-                message: "perl/showAst: missing required parameter 'uri'".to_string(),
-                data: None,
-            },
-        )?;
+        // Distinguish an absent request params object from an object missing its URI.
+        let params = params.ok_or_else(|| JsonRpcError {
+            code: INVALID_PARAMS,
+            message: "perl/showAst: missing required parameter 'params'".to_string(),
+            data: None,
+        })?;
+        let uri = params.get("uri").and_then(|u| u.as_str()).ok_or_else(|| JsonRpcError {
+            code: INVALID_PARAMS,
+            message: "perl/showAst: missing required parameter 'uri'".to_string(),
+            data: None,
+        })?;
 
         let docs = self.documents_guard();
 
@@ -75,10 +78,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn show_ast_missing_uri_names_method_and_field() {
+    fn show_ast_missing_params_names_method_and_field() {
         let err = LspServer::new()
             .handle_show_ast_dispatch(None)
             .expect_err("missing showAst params must be rejected");
+
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert_eq!(err.message, "perl/showAst: missing required parameter 'params'");
+    }
+
+    #[test]
+    fn show_ast_missing_uri_names_method_and_field() {
+        let err = LspServer::new()
+            .handle_show_ast_dispatch(Some(json!({})))
+            .expect_err("missing showAst URI must be rejected");
 
         assert_eq!(err.code, INVALID_PARAMS);
         assert_eq!(err.message, "perl/showAst: missing required parameter 'uri'");
