@@ -611,9 +611,11 @@ mod tests {
 
         // Real production edit that drives the binary guard: generation is
         // bumped, `parsed` is reset to `None`, and no re-index is scheduled.
+        // Uses dense NUL content (>5% ratio) to trigger the binary guard
+        // under the ratio heuristic (#5209).
         let changed = json!({
             "textDocument": { "uri": uri, "version": 2 },
-            "contentChanges": [{ "text": "package BecomesUnparseable;\u{0000}\n" }]
+            "contentChanges": [{ "text": "package BecomesUnparseable;\u{0000}\u{0000}\u{0000}\u{0000}\u{0000}\u{0000}\u{0000}\u{0000}\n" }]
         });
         server.test_handle_did_change(Some(changed))?;
 
