@@ -14,8 +14,13 @@ git fetch origin main
 git status --short --branch
 git worktree list
 git rev-parse origin/main
-gh pr list --state open --limit 50 --json number,title,headRefOid,baseRefOid,isDraft,mergeStateStatus
+gh pr list --state open --limit 200 --json number,title,headRefOid,baseRefOid,isDraft,mergeStateStatus
 ```
+
+Use the configured provider-native GitHub connector when the session does not
+have a local `gh` surface. When a local shell is available, the commands above
+are the CLI equivalent; detect the available surface before running them and
+record a missing or partial surface as `NOT_PROVEN`.
 
 Read the issue body, linked specification, current PR, checks, reviews, and
 receipts before editing. A stale comment or historical count is evidence to
@@ -27,11 +32,13 @@ Record one candidate packet containing its issue, PR, head and base SHAs, draft
 state, mergeability, review/thread state, required checks, and known gaps.
 
 ```bash
-gh pr view <PR> --json number,state,headRefOid,baseRefOid,isDraft,mergeable,mergeStateStatus,reviews,statusCheckRollup
+gh pr view <PR> --json number,state,headRefOid,baseRefOid,isDraft,mergeStateStatus,reviews,statusCheckRollup
 gh pr checks <PR>
 ```
 
-Use the live PR, review, thread, check, and ruleset facts for lifecycle decisions.
+`mergeStateStatus` is the live mergeability field used by this runbook; do not
+infer readiness from the deprecated nullable `mergeable` field. Use the live PR,
+review, thread, check, and ruleset facts for lifecycle decisions.
 Labels may provide stable classification such as area, risk, release, blocker,
 or requested attention; they do not establish assignment, review quality, build
 readiness, CI truth, or merge readiness.
@@ -75,7 +82,8 @@ merely because attention moved between workflow stages.
 | --- | --- |
 | Source, test, or review defect | repair the bounded claim and rerun affected proof |
 | Required check failure | inspect the check's own evidence; do not infer a code cause from the name |
-| Runner, disk, billing, or capacity failure | environment/capacity blocked; record `NOT_PROVEN` |
+| Runner, disk, or hosted-capacity failure | environment/capacity blocked; record `NOT_PROVEN` and name the affected execution surface |
+| Billing, quota, or account-plan failure | account intervention required; record `NOT_PROVEN` and stop retrying the lane |
 | Timeout or no output | `NOT_PROVEN` unless a receipt proves termination and result |
 | Rate-limited or partial GitHub data | `NOT_PROVEN`; never treat an empty response as green |
 | Behind-only, conflict-free candidate | leave it untouched until a material decision requires refresh |
@@ -87,9 +95,17 @@ command must not mask an earlier failure.
 ## 6. Finish and clean the lane
 
 Run proof proportional to the changed seam. At minimum, use the repository's
-format and diff checks plus the affected package or policy proof. For a PR, verify
-the current review receipt and hosted checks against the current head before
-protected squash merge.
+format and diff checks plus the affected package or policy proof. For a PR, run
+the repository-owned convergence checker with enforcement before protected
+squash merge, then verify the current review receipt and hosted checks against
+the current head:
+
+```bash
+REVIEW_PROTOCOL_ENFORCE=1 scripts/ci/check-pr-review-convergence <PR> <OWNER>/<REPO>
+```
+
+The checker result is `NOT_PROVEN` when review or instrument data is incomplete;
+it is never an empty-green substitute.
 
 After merge, update the issue body with the final receipt, remaining non-goals,
 and next owner. Remove only worktrees, branches, and scratch artifacts created by
@@ -100,7 +116,9 @@ the lane after confirming they are clean and no longer needed.
 A new session must be able to recover from GitHub and repository artifacts alone.
 Leave the issue or PR with:
 
-- the exact observation or merge SHA;
+- the exact observation SHA (the candidate head or base commit against which a
+  packet/proof was captured), or the post-merge squash SHA when the lane is
+  complete;
 - commands and proof results;
 - current owner and next bounded action;
 - explicit `NOT_PROVEN` gaps;
