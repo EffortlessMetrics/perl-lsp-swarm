@@ -50,14 +50,14 @@ fn shell_quote(value: &str) -> String {
 ///
 /// The remediation is displayed to users on the host that will run it. POSIX
 /// single quotes are literal characters to `cmd.exe`, so use its double-quoted
-/// region convention instead. Percent signs are doubled because variable
-/// expansion occurs before command metacharacter handling.
+/// region convention instead. Percent signs remain single because this command
+/// is intended for an interactive prompt, not a batch file.
 fn windows_shell_quote(value: &str) -> String {
     let mut quoted = String::with_capacity(value.len() + 2);
     quoted.push('"');
     for character in value.chars() {
         match character {
-            '%' => quoted.push_str("%%"),
+            '%' => quoted.push('%'),
             '"' => quoted.push_str("\"\""),
             _ => quoted.push(character),
         }
@@ -171,11 +171,11 @@ fn bind_editor_listener(
 /// accepted-session failure while giving bind failures the same user-facing
 /// context as the external-peer paths.
 fn describe_native_socket_error(port: u16, error: anyhow::Error) -> anyhow::Error {
-    match error.downcast_ref::<DapSocketBindError>() {
-        Some(bind) => {
-            describe_editor_bind_error(port, &EditorListener::native_socket(), &bind.source)
+    match (error.downcast_ref::<DapSocketBindError>(), error.downcast_ref::<std::io::Error>()) {
+        (Some(_), Some(source)) => {
+            describe_editor_bind_error(port, &EditorListener::native_socket(), source)
         }
-        None => error,
+        _ => error,
     }
 }
 
@@ -441,6 +441,7 @@ mod tests {
         describe_editor_bind_error, describe_native_socket_error, editor_port_in_use_message,
         resolve_socket_port, suggested_alternative_ports, windows_shell_quote,
     };
+    use anyhow::Context as _;
     use clap::{CommandFactory, Parser};
 
     /// A taken port must produce an actionable message, not `os error 98`.
@@ -524,7 +525,7 @@ mod tests {
     #[test]
     fn windows_remediation_uses_cmd_quoting() {
         assert_eq!(windows_shell_quote("[::1]:13604"), "\"[::1]:13604\"");
-        assert_eq!(windows_shell_quote("100% ready\"now"), "\"100%% ready\"\"now\"");
+        assert_eq!(windows_shell_quote("100% ready\"now"), "\"100% ready\"\"now\"");
     }
 
     /// A non-`AddrInUse` bind failure must still name the port and the listener.
@@ -545,10 +546,8 @@ mod tests {
 
     #[test]
     fn native_bind_failures_are_contextualized_without_touching_session_errors() {
-        let bind_error = anyhow::Error::new(DapSocketBindError {
-            port: 13_603,
-            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
-        });
+        let bind_error = anyhow::Error::new(DapSocketBindError { port: 13_603 })
+            .context(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
         let rendered = describe_native_socket_error(13_603, bind_error).to_string();
         assert!(rendered.contains("13603"), "must name the port: {rendered}");
         assert!(rendered.contains("DAP socket transport"), "must name the listener: {rendered}");

@@ -72,8 +72,7 @@ impl DebugAdapter {
     /// This binds to `127.0.0.1:<port>`, accepts one client connection, and
     /// serves the DAP session on that stream.
     pub(crate) fn run_socket(&mut self, port: u16) -> anyhow::Result<()> {
-        let listener = TcpListener::bind(("127.0.0.1", port))
-            .map_err(|source| anyhow::Error::new(DapSocketBindError { port, source }))?;
+        let listener = bind_socket_listener(port)?;
         tracing::info!(port, "DAP socket transport listening on 127.0.0.1");
 
         let (stream, peer_addr) = listener.accept()?;
@@ -258,6 +257,17 @@ impl DebugAdapter {
     }
 }
 
+fn bind_socket_listener(port: u16) -> anyhow::Result<TcpListener> {
+    bind_socket_listener_with(port, |port| TcpListener::bind(("127.0.0.1", port)))
+}
+
+fn bind_socket_listener_with<F>(port: u16, bind: F) -> anyhow::Result<TcpListener>
+where
+    F: FnOnce(u16) -> io::Result<TcpListener>,
+{
+    bind(port).map_err(|source| anyhow::Error::new(source).context(DapSocketBindError { port }))
+}
+
 /// Write a framed response payload, then — if `notify_initialized` is set — dispatch the
 /// `initialized` event. DAP requires `initialized` only after a successful `initialize`
 /// response is sent.
@@ -403,6 +413,18 @@ mod tests {
         let writer = FailingWriter::always_failing();
         let result = adapter.run_with_io(input, writer);
         assert!(result.is_err(), "run_with_io must return Err when writer is broken immediately");
+    }
+
+    #[test]
+    fn native_socket_bind_failure_preserves_marker_and_io_downcast() {
+        let error = bind_socket_listener_with(13_603, |_port| {
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "permission denied"))
+        })
+        .expect_err("injected bind failure must be returned");
+
+        assert!(error.downcast_ref::<DapSocketBindError>().is_some());
+        let source = error.downcast_ref::<io::Error>().expect("io source must remain downcastable");
+        assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
     }
 
     /// Regression for issue #5149 / PR #5318 defect 1, exercised against the actual
