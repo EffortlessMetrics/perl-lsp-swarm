@@ -819,6 +819,13 @@ enum Commands {
         command: DevexCommand,
     },
 
+    /// Validate the static provider-native agent-flow topology.
+    #[command(name = "agent-flow")]
+    AgentFlow {
+        #[command(subcommand)]
+        command: AgentFlowCommand,
+    },
+
     /// Plan bounded serial pre-push proof from the shared change set.
     ///
     /// PLANNING ONLY: emits a deterministic proof plan, including the change-set
@@ -922,6 +929,12 @@ enum Commands {
         /// Markdown summary output path.
         #[arg(long, default_value = "target/receipts/ci-contract.md")]
         summary: PathBuf,
+    },
+
+    /// Capture typed evidence for one command or a small serial proof set.
+    CommandEvidence {
+        #[command(subcommand)]
+        command: CommandEvidenceCommand,
     },
 
     /// Run exact-head Taplo and typos checks for changed repository files.
@@ -1220,6 +1233,16 @@ enum Commands {
     GhCandidate {
         #[command(subcommand)]
         command: GhGithubCommand,
+    },
+
+    /// Capture paginated review and thread facts for one GitHub pull request.
+    GhReviewConvergence {
+        /// Pull request number.
+        #[arg(long)]
+        pr: u64,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Generate bindings
@@ -2936,6 +2959,43 @@ enum GhGithubCommand {
 }
 
 #[derive(Subcommand)]
+enum CommandEvidenceCommand {
+    /// Run one command with explicit argv, cwd, candidate identity, and timeout.
+    Run {
+        /// Executable to spawn.
+        #[arg(long)]
+        program: String,
+        /// Working directory for the child process.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Candidate identity supplied by the caller (for example a head SHA).
+        #[arg(long)]
+        candidate: Option<String>,
+        /// Timeout bound in seconds. Omit for no timeout.
+        #[arg(long)]
+        timeout_secs: Option<u64>,
+        /// Directory for full stdout/stderr evidence.
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+        /// Arguments passed verbatim after --.
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+    /// Run a small serial set of direct commands and retain one receipt per command.
+    ProofSet {
+        /// JSON proof-set specification.
+        #[arg(long)]
+        spec: PathBuf,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum MergeReadyCommand {
     /// Evaluate a live current-head fan-in snapshot without mutating GitHub state.
     Evaluate {
@@ -3710,6 +3770,19 @@ enum SmokeCommand {
 }
 
 #[derive(Subcommand)]
+enum AgentFlowCommand {
+    /// Check provider-local skill metadata and route references.
+    Check {
+        /// Restrict the check to one skill name in each provider tree.
+        #[arg(long)]
+        skill: Option<String>,
+        /// Output format: human or json.
+        #[arg(long, default_value = "human")]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum AgentCommand {
     /// Lease lifecycle commands.
     Lease {
@@ -4066,6 +4139,11 @@ fn run_cli(cli: Cli) -> Result<()> {
                 devex_plan::pr_body(devex_plan::DevexPrBodyConfig { base, receipt })
             }
         },
+        Commands::AgentFlow { command } => match command {
+            AgentFlowCommand::Check { skill, format } => {
+                agent_flow::run(agent_flow::CheckConfig { skill, format })
+            }
+        },
         Commands::PrePushPlan { base, head, format } => pre_push_plan::run(base, head, format),
         Commands::ParseRust { source, sexp, ast, bench } => {
             parse_rust::run(source, sexp, ast, bench)
@@ -4149,6 +4227,28 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CiContract { base, head, receipt, summary } => {
             ci_contract::run(ci_contract::CiContractConfig { base, head, receipt, summary })
         }
+        Commands::CommandEvidence { command } => match command {
+            CommandEvidenceCommand::Run {
+                program,
+                cwd,
+                candidate,
+                timeout_secs,
+                out_dir,
+                json,
+                args,
+            } => command_evidence::run(command_evidence::CommandEvidenceConfig {
+                program,
+                args,
+                cwd,
+                candidate,
+                timeout: timeout_secs.map(std::time::Duration::from_secs),
+                out_dir,
+                json_only: json,
+            }),
+            CommandEvidenceCommand::ProofSet { spec, json } => {
+                command_evidence::run_proof_set(&spec, json)
+            }
+        },
         Commands::RepoHygiene { base, head, receipt, summary } => {
             repo_hygiene::run(repo_hygiene::RepoHygieneConfig { base, head, receipt, summary })
         }
@@ -4320,6 +4420,9 @@ fn run_cli(cli: Cli) -> Result<()> {
                 github::run_candidate(pr, expected_head, fixture, json)
             }
         },
+        Commands::GhReviewConvergence { pr, json } => {
+            github_review::run_review_convergence(pr, json)
+        }
         Commands::CorpusAudit { corpus_path, output, check, fresh } => {
             corpus_audit::run(corpus_audit::AuditConfig {
                 corpus_path,

@@ -12,6 +12,16 @@ pub struct IncrementalState {
     pub line_index: LineIndex,
     pub lex_checkpoints: Vec<LexCheckpoint>,
     pub parse_checkpoints: Vec<ParseCheckpoint>,
+    /// Parsed AST.
+    ///
+    /// **Staleness invariant (#5036):** This field is only guaranteed current
+    /// after `new()` or `full_reparse()`. After `apply_single_edit()` it may be
+    /// stale relative to `tokens`/`source`. It is kept solely for
+    /// `create_parse_checkpoints` in `full_reparse`. Production providers
+    /// always use a fresh full reparse via `ParsedSnapshot`, never this field.
+    #[deprecated(
+        note = "Only valid after new()/full_reparse(); may be stale after apply_single_edit(). Use a fresh parse instead."
+    )]
     pub ast: Node,
     pub tokens: Vec<Token>,
     pub source: String,

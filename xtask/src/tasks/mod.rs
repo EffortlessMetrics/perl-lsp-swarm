@@ -2,6 +2,7 @@
 
 pub mod active_goal_manifest;
 pub mod agent_capability_policy;
+pub mod agent_flow;
 pub mod agent_lease;
 pub mod agent_ledgers;
 pub mod agent_receipt;
@@ -35,6 +36,7 @@ pub mod ci_pr_summary;
 pub mod ci_route;
 pub mod ci_scope;
 pub mod clean;
+pub mod command_evidence;
 pub mod commit_checks;
 pub mod compare;
 #[cfg(feature = "parser-tasks")]
@@ -70,6 +72,7 @@ pub mod generate_semantic_snapshot;
 pub mod generated_files;
 pub mod git_context;
 pub mod github;
+pub mod github_review;
 pub mod goals;
 pub mod hardening;
 #[cfg(feature = "parser-tasks")]
@@ -88,6 +91,7 @@ pub mod lsp_318_claims;
 pub mod lsp_318_matrix;
 pub mod lsp_ux_smoke;
 pub mod memory_trends;
+pub mod merge_integration;
 pub mod merge_ready;
 pub mod methodology_gate;
 pub mod metrics;

@@ -17,7 +17,6 @@ Use when: a scout has completed a full investigation and has root cause, options
 gh issue create \
   --title "$TITLE" \
   --label "swarm-discovered" \
-  --label "needs-plan-review" \
   --body "$(cat <<'ISSUE_EOF'
 ## Problem
 

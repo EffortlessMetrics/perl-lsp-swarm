@@ -85,30 +85,32 @@ deliberate, evidence-backed, and reversible-in-principle.
 
 ---
 
-## Issue lifecycle
+## Issue lifecycle and disposition
 
-The desk tracks each issue through explicit body dispositions and current
-GitHub facts. Some stable labels remain useful for navigation, but no label is
-the source of assignment, review, build, or merge state.
+The desk records descriptive issue states in the issue body and linked receipts.
+Some stable labels remain useful for navigation, but no label authorizes a plan
+stage, assignment, build state, review, or merge.
 
 ```text
 candidate     → a raw finding, not yet verified
 researched    → claims grounded against source
 filed         → exists as a GitHub issue
-work packet → issue body contains an explicit builder-ready plan or builder spec
-reviewed → current review decision recorded in the issue/PR evidence
-architecture-reviewed → structural fit confirmed (when relevant; navigation only)
-builder-ready → descriptive quality term, not a routing authority
-implementation → tracked by the PR's live state and merge receipt
-implemented   → PR merged
+ work packet → issue body contains an explicit builder-ready plan or builder spec
+ plan-reviewed → plan disposition recorded in the body and receipts
+ reviewed → current review decision recorded in the issue/PR evidence
+ architecture-reviewed → structural fit recorded when relevant; navigation only
+ builder-ready → work-packet quality recorded in the body and receipts
+ implementation → native PR state, checks, and merge receipt
+ implemented   → native merged PR and closeout receipt
 superseded    → replaced by other work
 duplicate     → folded into another issue
 stale         → invalidated by main moving
 blocked       → waiting on a dependency or authority
 ```
 
-The issue body is the durable work packet. Current review, check, mergeability,
-and closure state comes from GitHub facts and receipts; no lifecycle label is a
+The issue body is the durable work packet. Plan review and builder readiness are
+dispositions, not admission labels. Current review, check, mergeability, and
+closure state comes from GitHub facts and receipts; no lifecycle label is a
 Gate-2 or build authorization.
 
 ### Navigation metadata and body dispositions
@@ -120,8 +122,11 @@ exists** and treats the rest as proposals:
 | Desk concept | Current expression | Optional navigation metadata |
 |--------------|---------------------------|----------------------------------------|
 | Raw finding needs triage | `swarm-discovered` | `needs-triage`, `needs-research` |
-| Work packet present | `## Builder-Ready Plan` or `## Builder Spec` in the body | — |
-| Structural fit confirmed | `architecture-reviewed` | — |
+ | Work packet present | `## Builder-Ready Plan` or `## Builder Spec` in the body | — |
+ | In verification + plan-review | issue body and review receipt | — |
+ | Spec approved | issue body/spec disposition | — |
+ | Structural fit confirmed | issue body/review receipt | — |
+ | Ready to build | work-packet body and acceptance evidence | — |
 | Blocks other work | `structural-blocker` | generic `blocked` |
 | Needs a reproduction | — (note in body) | `needs-repro` |
 | Needs acceptance tests | — (note in body) | `needs-acceptance-tests` |
@@ -131,9 +136,10 @@ exists** and treats the rest as proposals:
 | Folded into another issue | close with `state_reason: duplicate` | — |
 
 **Rule:** labels do not establish assignment, review quality, build readiness,
-or lifecycle stage. Record the decision in the issue body and use current GitHub
-issue/PR facts and receipts for live state. Stable classification, area, risk,
-release, blocker, and human-decision labels remain navigation metadata.
+or lifecycle stage. Record decisions in the issue body and use native issue/PR
+state, checks, reviews, threads, close reasons, and receipts for live state.
+Stable classification, area, risk, release, blocker, and human-decision labels
+remain navigation metadata.
 
 ---
 
@@ -321,8 +327,8 @@ Two GitHub-Forms templates support the desk's entry points:
 
 | Template | File | Entry label | Use |
 |----------|------|-------------|-----|
-| Research Finding | [`research_finding.yml`](../../.github/ISSUE_TEMPLATE/research_finding.yml) | `swarm-discovered` | A raw observation or hypothesis to verify and dedupe before it enters plan review |
-| Builder-Ready Plan | [`builder_ready.yml`](../../.github/ISSUE_TEMPLATE/builder_ready.yml) | `swarm-discovered` | A fully structured work-order proposal recorded in the issue body |
+ | Research Finding | [`research_finding.yml`](../../.github/ISSUE_TEMPLATE/research_finding.yml) | `swarm-discovered`, `needs-triage` | A raw observation or hypothesis to verify and dedupe before it enters plan review |
+ | Builder-Ready Plan | [`builder_ready.yml`](../../.github/ISSUE_TEMPLATE/builder_ready.yml) | `swarm-discovered` | A fully structured work packet whose plan disposition is recorded in the body and linked receipts |
 
 The two templates differ by **depth and intent**, not just fields: a research
 finding is a hypothesis at the `candidate`/`researched` stage; a builder-ready

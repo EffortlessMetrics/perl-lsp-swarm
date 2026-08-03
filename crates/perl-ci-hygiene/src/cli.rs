@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
@@ -130,7 +131,14 @@ pub(crate) enum CliCommand {
     /// Enforce production unwrap/panic-family budgets.
     CheckUnwrapsProd,
     /// Enforce test-code `panic!` budget against `ci/panic_test_baseline.txt`.
-    CheckPanicTest,
+    CheckPanicTest {
+        /// Emit the complete test-source panic identity inventory without applying the legacy count gate.
+        #[arg(long)]
+        inventory: bool,
+        /// Validate the complete inventory against an accepted identity registry.
+        #[arg(long, value_name = "PATH", conflicts_with = "inventory")]
+        identity_registry: Option<PathBuf>,
+    },
     /// Enforce no raw print macros in library source (println!/eprintln! belong in tracing).
     CheckPrintInLib,
     /// Enforce regex constructors live in LazyLock/OnceLock statics, never per-call.

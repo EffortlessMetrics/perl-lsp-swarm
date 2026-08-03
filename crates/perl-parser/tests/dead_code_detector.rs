@@ -336,3 +336,23 @@ fn goto_croak_confess_detected_as_terminators() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn qualified_package_arrow_call_in_expression_parses() -> TestResult {
+    // #4950: the parser now correctly handles bareword qualified package
+    // names in expression position (e.g. `my $x = Foo::Bar->new()`). This
+    // was previously listed as a known limitation in FEATURES.md but is
+    // resolved — pin it with a regression test.
+    let index = WorkspaceIndex::new();
+    index_file_str(&index, "file:///script.pl", "my $x = Foo::Bar->new();\n")?;
+
+    let detector = DeadCodeDetector::new(index);
+    let dead = detector.analyze_file(&PathBuf::from("/script.pl"))?;
+
+    // The file should parse cleanly with no dead-code findings.
+    assert!(
+        dead.iter().all(|d| d.code_type != DeadCodeType::UnreachableCode),
+        "qualified package arrow call in expression must parse cleanly, got: {dead:?}"
+    );
+    Ok(())
+}
