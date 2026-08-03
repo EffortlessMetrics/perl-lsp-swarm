@@ -33,9 +33,8 @@
 ///
 /// If an interpreter-path channel is ever intentionally wired, this constant and
 /// the DAP-side guidance are updated together.
-pub(crate) const PERL_REMEDIATION: &str = "Install Perl (https://strawberryperl.com on Windows, \
-     `brew install perl` on macOS, or your system package manager) and make sure `perl` is on \
-     PATH, then reload the window (Ctrl+Shift+P \u{2192} Developer: Reload Window).";
+pub(crate) const PERL_REMEDIATION: &str = "Install Perl (Windows: strawberryperl.com; macOS: `brew install perl`; \
+     Linux: use your system package manager), add `perl` to PATH, then use Developer: Reload Window.";
 
 #[cfg(test)]
 mod tests {
