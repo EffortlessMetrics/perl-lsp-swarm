@@ -90,6 +90,7 @@ pub mod lsp_318_claims;
 pub mod lsp_318_matrix;
 pub mod lsp_ux_smoke;
 pub mod memory_trends;
+pub mod merge_integration;
 pub mod merge_ready;
 pub mod methodology_gate;
 pub mod metrics;
