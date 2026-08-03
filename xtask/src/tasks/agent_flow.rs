@@ -405,6 +405,7 @@ fn route_tokens(line: &str, in_route_section: bool) -> Vec<String> {
             {
                 let end = start + relative_end;
                 let token = chars[start..end].iter().collect::<String>();
+                let token = token.strip_prefix('$').unwrap_or(&token);
                 if token.chars().next().is_some_and(|character| character.is_ascii_lowercase())
                     && token.chars().all(|character| {
                         character.is_ascii_lowercase()
@@ -412,7 +413,7 @@ fn route_tokens(line: &str, in_route_section: bool) -> Vec<String> {
                             || character == '-'
                     })
                 {
-                    tokens.push(token);
+                    tokens.push(token.to_owned());
                 }
                 index = end + 1;
             } else {
