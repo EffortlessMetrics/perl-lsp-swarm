@@ -1485,6 +1485,40 @@ fn test_did_save_text_preserves_client_version() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+/// A changed same-version didSave replacement must cancel streams that captured
+/// the previous buffer, including streams using the preserved client version.
+#[test]
+fn test_did_save_text_cancels_same_version_streams() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///test_save_stream_cancel.pl";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 3,
+            "text": "my $x = 1;\n"
+        }
+    }))?;
+
+    let session =
+        server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+            uri: uri.to_owned(),
+            document_version: 3,
+            line: 0,
+            character: 0,
+        });
+
+    server.handle_did_save(Some(json!({
+        "textDocument": {"uri": uri, "version": 3},
+        "text": "my $x = 2;\n"
+    })))?;
+
+    assert!(session.is_cancelled(), "changed didSave text must cancel same-version streams");
+    assert_eq!(server.stream_sessions().len(), 0, "cancelled same-version streams must be evicted");
+    Ok(())
+}
+
 /// A parse cancelled via a pre-set flag must return Ok(()) and not store
 /// a document, so the caller behaves as if the parse simply didn't happen.
 #[test]

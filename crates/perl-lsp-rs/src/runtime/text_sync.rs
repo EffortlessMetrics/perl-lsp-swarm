@@ -456,11 +456,17 @@ impl LspServer {
                 params.pointer("/textDocument/version").and_then(|v| v.as_i64());
             let incoming_version = incoming_version_i64.and_then(|v| i32::try_from(v).ok());
 
-            // Cancel any active streaming inline completion sessions for this URI
-            // that are older than the new document version.
+            // A save replacement can preserve the client's document version while
+            // still replacing the buffer. In that case every stream for the URI
+            // captured stale text, including same-version sessions, and must be
+            // cancelled. Ordinary versioned changes retain the older-only policy.
             for key in self.uri_key_variants(uri) {
                 if let Some(version) = incoming_version_i64 {
-                    self.stream_sessions().cancel_for_uri_version(&key, version);
+                    if allow_same_version {
+                        self.stream_sessions().cancel_for_uri(&key);
+                    } else {
+                        self.stream_sessions().cancel_for_uri_version(&key, version);
+                    }
                 } else {
                     self.stream_sessions().cancel_for_uri(&key);
                 }
