@@ -931,6 +931,12 @@ enum Commands {
         summary: PathBuf,
     },
 
+    /// Capture typed evidence for one command or a small serial proof set.
+    CommandEvidence {
+        #[command(subcommand)]
+        command: CommandEvidenceCommand,
+    },
+
     /// Run exact-head Taplo and typos checks for changed repository files.
     ///
     /// The command composes the shared change-set resolver and invokes both
@@ -2953,6 +2959,43 @@ enum GhGithubCommand {
 }
 
 #[derive(Subcommand)]
+enum CommandEvidenceCommand {
+    /// Run one command with explicit argv, cwd, candidate identity, and timeout.
+    Run {
+        /// Executable to spawn.
+        #[arg(long)]
+        program: String,
+        /// Working directory for the child process.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Candidate identity supplied by the caller (for example a head SHA).
+        #[arg(long)]
+        candidate: Option<String>,
+        /// Timeout bound in seconds. Omit for no timeout.
+        #[arg(long)]
+        timeout_secs: Option<u64>,
+        /// Directory for full stdout/stderr evidence.
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+        /// Arguments passed verbatim after --.
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+    /// Run a small serial set of direct commands and retain one receipt per command.
+    ProofSet {
+        /// JSON proof-set specification.
+        #[arg(long)]
+        spec: PathBuf,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum MergeReadyCommand {
     /// Evaluate a live current-head fan-in snapshot without mutating GitHub state.
     Evaluate {
@@ -4184,6 +4227,28 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CiContract { base, head, receipt, summary } => {
             ci_contract::run(ci_contract::CiContractConfig { base, head, receipt, summary })
         }
+        Commands::CommandEvidence { command } => match command {
+            CommandEvidenceCommand::Run {
+                program,
+                cwd,
+                candidate,
+                timeout_secs,
+                out_dir,
+                json,
+                args,
+            } => command_evidence::run(command_evidence::CommandEvidenceConfig {
+                program,
+                args,
+                cwd,
+                candidate,
+                timeout: timeout_secs.map(std::time::Duration::from_secs),
+                out_dir,
+                json_only: json,
+            }),
+            CommandEvidenceCommand::ProofSet { spec, json } => {
+                command_evidence::run_proof_set(&spec, json)
+            }
+        },
         Commands::RepoHygiene { base, head, receipt, summary } => {
             repo_hygiene::run(repo_hygiene::RepoHygieneConfig { base, head, receipt, summary })
         }
