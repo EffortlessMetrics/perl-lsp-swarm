@@ -369,4 +369,67 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn run_git_reports_nonzero_exit_status_and_stderr() -> Result<()> {
+        let scratch = tempdir()?;
+        let result = run_git(scratch.path(), &["rev-parse", "HEAD"]);
+        let error = result.err().ok_or_else(|| eyre!("expected git failure"))?;
+
+        let message = error.to_string();
+        assert!(message.contains("git command failed"), "unexpected error: {message}");
+        Ok(())
+    }
+
+    #[test]
+    fn apply_patch_reports_rejected_input() -> Result<()> {
+        let scratch = tempdir()?;
+        let result = apply_patch(scratch.path(), b"not a git patch\n");
+        let error = result.err().ok_or_else(|| eyre!("expected git apply failure"))?;
+
+        let message = format!("{error:?}");
+        assert!(message.contains("git apply failed"), "unexpected error: {message}");
+        Ok(())
+    }
+
+    #[test]
+    fn construction_reports_patch_failure_and_removes_worktree() -> Result<()> {
+        let scratch = tempdir()?;
+        let repository = scratch.path().join("repository");
+        fs::create_dir(&repository)?;
+        git(&repository, &["init", "--quiet"])?;
+        git(&repository, &["config", "user.email", "test@example.invalid"])?;
+        git(&repository, &["config", "user.name", "synthetic-test"])?;
+
+        fs::write(repository.join("shared.txt"), "base\n")?;
+        git(&repository, &["add", "shared.txt"])?;
+        git(&repository, &["commit", "--quiet", "-m", "base"])?;
+        let pr_base = git(&repository, &["rev-parse", "HEAD"])?.trim().to_owned();
+        git(&repository, &["branch", "integration"])?;
+
+        fs::write(repository.join("shared.txt"), "candidate\n")?;
+        git(&repository, &["add", "shared.txt"])?;
+        git(&repository, &["commit", "--quiet", "-m", "candidate"])?;
+        let pr_head = git(&repository, &["rev-parse", "HEAD"])?.trim().to_owned();
+
+        git(&repository, &["switch", "--quiet", "integration"])?;
+        fs::write(repository.join("shared.txt"), "integration\n")?;
+        git(&repository, &["add", "shared.txt"])?;
+        git(&repository, &["commit", "--quiet", "-m", "integration"])?;
+        let integration_basis = git(&repository, &["rev-parse", "HEAD"])?.trim().to_owned();
+
+        let result = construct_synthetic_squash(SyntheticSquashRequest {
+            repository: &repository,
+            pr_base: &pr_base,
+            pr_head: &pr_head,
+            integration_basis: &integration_basis,
+        });
+        let error = result.err().ok_or_else(|| eyre!("expected patch conflict"))?;
+
+        let message = format!("{error:?}");
+        assert!(message.contains("git apply failed"), "unexpected error: {message}");
+        let worktrees = git(&repository, &["worktree", "list"])?.lines().count();
+        assert_eq!(worktrees, 1, "synthetic worktree should be removed after failure");
+        Ok(())
+    }
 }
