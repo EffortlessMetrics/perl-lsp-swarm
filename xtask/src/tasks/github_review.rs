@@ -220,6 +220,18 @@ pub fn run_review_convergence(pr: u64, json_only: bool) -> Result<()> {
     Ok(())
 }
 
+/// Collect the review snapshot for composition by another factual instrument.
+pub fn review_snapshot(pr: u64) -> Result<ReviewSnapshot> {
+    let repository =
+        command_text("gh", &["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])?
+            .trim()
+            .to_string();
+    let (owner, repo) = repository
+        .split_once('/')
+        .ok_or_else(|| color_eyre::eyre::eyre!("gh returned invalid repository {repository:?}"))?;
+    Ok(collect_snapshot(repository, owner, repo, pr))
+}
+
 fn collect_snapshot(repository: String, owner: &str, repo: &str, pr: u64) -> ReviewSnapshot {
     let mut reviews = Vec::new();
     let mut pending_reviewers = BTreeSet::new();
