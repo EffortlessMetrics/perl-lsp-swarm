@@ -47,6 +47,15 @@ pub struct SyntheticSquashConstruction {
 pub fn construct_synthetic_squash(
     request: SyntheticSquashRequest<'_>,
 ) -> Result<SyntheticSquashConstruction> {
+    with_synthetic_squash(request, |construction, _worktree| Ok(construction.clone()))
+}
+
+/// Construct a synthetic squash, keep its isolated worktree alive while the
+/// caller runs proof, and remove it before returning.
+pub fn with_synthetic_squash<T>(
+    request: SyntheticSquashRequest<'_>,
+    operation: impl FnOnce(&SyntheticSquashConstruction, &Path) -> Result<T>,
+) -> Result<T> {
     for (label, identity) in [
         ("PR base", request.pr_base),
         ("PR head", request.pr_head),
@@ -93,12 +102,13 @@ pub fn construct_synthetic_squash(
         })
     })();
 
+    let operation = construction.and_then(|construction| operation(&construction, &worktree));
     let cleanup = run_git(
         request.repository,
         &["worktree", "remove", "--force", worktree.to_string_lossy().as_ref()],
     );
 
-    match (construction, cleanup) {
+    match (operation, cleanup) {
         (Ok(result), Ok(_)) => Ok(result),
         (Ok(_), Err(cleanup_error)) => {
             Err(eyre!("synthetic integration succeeded but cleanup failed: {cleanup_error}"))

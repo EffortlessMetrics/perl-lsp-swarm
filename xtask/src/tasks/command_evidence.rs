@@ -209,6 +209,33 @@ pub fn run_proof_commands(commands: Vec<ProofSetCommand>) -> Result<ProofSetRece
     Ok(ProofSetReceipt { schema_version: "command-proof-set.v1", commands: items, result })
 }
 
+/// Execute a proof set with every command rooted in the supplied synthetic
+/// worktree. Relative command working directories remain relative to that
+/// root; absolute working directories are rejected so the receipt cannot
+/// claim synthetic-tree proof for a command that ran elsewhere.
+pub fn run_proof_commands_in_dir(
+    commands: Vec<ProofSetCommand>,
+    synthetic_worktree: &Path,
+) -> Result<ProofSetReceipt> {
+    let commands = commands
+        .into_iter()
+        .map(|mut command| {
+            command.cwd = Some(match command.cwd.take() {
+                None => synthetic_worktree.to_path_buf(),
+                Some(cwd) if cwd.is_absolute() => {
+                    return Err(color_eyre::eyre::eyre!(
+                        "proof command {:?} must use a relative cwd inside the synthetic worktree",
+                        command.id
+                    ));
+                }
+                Some(cwd) => synthetic_worktree.join(cwd),
+            });
+            Ok(command)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    run_proof_commands(commands)
+}
+
 fn instrument_failure_receipt(command: &ProofSetCommand, error: String) -> CommandEvidenceReceipt {
     let started = Utc::now();
     CommandEvidenceReceipt {
@@ -885,6 +912,27 @@ mod tests {
         );
         let logs = fs::read_dir(&output)?.count();
         assert_eq!(logs, 4, "each command must retain stdout and stderr evidence");
+        Ok(())
+    }
+
+    #[test]
+    fn synthetic_proof_rejects_absolute_working_directories() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let error = run_proof_commands_in_dir(
+            vec![ProofSetCommand {
+                id: "absolute-cwd".to_string(),
+                program: "git".to_string(),
+                args: vec!["--version".to_string()],
+                cwd: Some(outside.path().to_path_buf()),
+                candidate: Some("candidate".to_string()),
+                timeout_secs: Some(10),
+                out_dir: None,
+            }],
+            root.path(),
+        )
+        .expect_err("absolute working directory must not escape synthetic proof");
+        assert!(error.to_string().contains("relative cwd"));
         Ok(())
     }
 }

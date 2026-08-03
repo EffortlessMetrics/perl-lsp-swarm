@@ -9,8 +9,8 @@ use super::command_evidence::{self, ProofSetCommand, ProofSetItem, ResultClass};
 use super::integration_trigger::{
     IntegrationTriggerPacket, IntegrationTriggerResult, SCHEMA_VERSION as TRIGGER_SCHEMA,
 };
-use super::merge_integration::{SyntheticSquashRequest, construct_synthetic_squash};
-use color_eyre::eyre::{Context, Result, bail};
+use super::merge_integration::{SyntheticSquashRequest, with_synthetic_squash};
+use color_eyre::eyre::{Context, Report, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -100,7 +100,13 @@ pub fn run(spec: IntegrationProofSpec) -> Result<IntegrationProofReceipt> {
             return Ok(receipt);
         }
         IntegrationTriggerResult::Required => {}
-        IntegrationTriggerResult::Blocked | IntegrationTriggerResult::NotProven => {
+        IntegrationTriggerResult::Blocked => {
+            receipt.result = IntegrationProofResult::Blocked;
+            receipt.next_action =
+                "Resolve the blocked integration trigger before invoking proof".to_string();
+            return Ok(receipt);
+        }
+        IntegrationTriggerResult::NotProven => {
             receipt.next_action =
                 "Resolve trigger evidence before invoking integration proof".to_string();
             return Ok(receipt);
@@ -126,37 +132,34 @@ pub fn run(spec: IntegrationProofSpec) -> Result<IntegrationProofReceipt> {
         return Ok(receipt);
     }
 
-    let construction = construct_synthetic_squash(SyntheticSquashRequest {
-        repository: &spec.repository_path,
-        pr_base: &trigger.pr_base_sha,
-        pr_head: &trigger.pr_head_sha,
-        integration_basis: &trigger.current_integration_base_sha,
-    });
-    let construction = match construction {
-        Ok(construction) => construction,
+    let evidence = with_synthetic_squash(
+        SyntheticSquashRequest {
+            repository: &spec.repository_path,
+            pr_base: &trigger.pr_base_sha,
+            pr_head: &trigger.pr_head_sha,
+            integration_basis: &trigger.current_integration_base_sha,
+        },
+        |construction, worktree| {
+            receipt.synthetic_tree_sha = Some(construction.synthetic_tree.clone());
+            command_evidence::run_proof_commands_in_dir(spec.commands, worktree)
+        },
+    );
+    let evidence = match evidence {
+        Ok(evidence) => evidence,
         Err(error) => {
             let message = error.to_string();
-            receipt.findings.push(message.clone());
-            receipt.result = if message.contains("git apply failed") {
+            receipt.findings.push(message);
+            receipt.result = if is_patch_application_failure(&error) {
                 IntegrationProofResult::Blocked
             } else {
                 IntegrationProofResult::NotProven
             };
-            receipt.next_action =
-                "Repair the synthetic integration construction or instrument".to_string();
-            return Ok(receipt);
-        }
-    };
-    receipt.synthetic_tree_sha = Some(construction.synthetic_tree);
-
-    let evidence = match command_evidence::run_proof_commands(spec.commands) {
-        Ok(evidence) => evidence,
-        Err(error) => {
-            receipt.findings.push(error.to_string());
-            receipt.result = IntegrationProofResult::NotProven;
-            receipt.next_action =
+            receipt.next_action = if receipt.result == IntegrationProofResult::Blocked {
+                "Resolve the synthetic integration conflict before rerunning proof".to_string()
+            } else {
                 "Repair the selected command evidence before rerunning integration proof"
-                    .to_string();
+                    .to_string()
+            };
             return Ok(receipt);
         }
     };
@@ -178,6 +181,10 @@ pub fn run(spec: IntegrationProofSpec) -> Result<IntegrationProofReceipt> {
         }
     };
     Ok(receipt)
+}
+
+fn is_patch_application_failure(error: &Report) -> bool {
+    error.chain().any(|cause| cause.to_string().starts_with("git apply failed with "))
 }
 
 pub fn run_from_file(spec_path: &Path, receipt_path: &Path) -> Result<()> {
@@ -308,6 +315,18 @@ mod tests {
     }
 
     #[test]
+    fn blocked_trigger_remains_blocked() -> Result<()> {
+        let receipt = run(IntegrationProofSpec {
+            schema: SCHEMA_VERSION.to_string(),
+            repository_path: PathBuf::from("does-not-exist"),
+            trigger: trigger(IntegrationTriggerResult::Blocked),
+            commands: Vec::new(),
+        })?;
+        assert_eq!(receipt.result, IntegrationProofResult::Blocked);
+        Ok(())
+    }
+
+    #[test]
     fn missing_command_identity_is_not_proven() -> Result<()> {
         let spec = IntegrationProofSpec {
             schema: SCHEMA_VERSION.to_string(),
@@ -396,6 +415,13 @@ mod tests {
         assert!(receipt.synthetic_tree_sha.is_some());
         assert_eq!(receipt.command_evidence.len(), 1);
         assert_eq!(receipt.command_evidence[0].receipt.result, ResultClass::Success);
+        assert_eq!(
+            Path::new(&receipt.command_evidence[0].receipt.cwd)
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("integration"),
+            "proof commands must execute inside the synthetic worktree"
+        );
         Ok(())
     }
 }
