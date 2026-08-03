@@ -133,6 +133,9 @@ pub fn evaluate(input: IntegrationTriggerInput) -> IntegrationTriggerPacket {
     if repository.trim().is_empty() {
         diagnostics.push("repository identity is missing".to_string());
     }
+    if pr == 0 {
+        diagnostics.push("PR number must be positive".to_string());
+    }
     for (label, identity) in [
         ("PR head", pr_head_sha.as_str()),
         ("reviewed head", reviewed_head_sha.as_str()),
@@ -145,12 +148,20 @@ pub fn evaluate(input: IntegrationTriggerInput) -> IntegrationTriggerPacket {
         }
     }
 
-    for evidence in evidence {
+    for evidence in &evidence {
+        if evidence.detail.trim().is_empty() {
+            diagnostics.push(format!("{:?} evidence detail is missing", evidence.kind));
+        }
+        if evidence.references.is_empty()
+            || evidence.references.iter().all(|reference| reference.trim().is_empty())
+        {
+            diagnostics.push(format!("{:?} evidence references are missing", evidence.kind));
+        }
         if evidence.kind.is_required() || evidence.kind == TriggerKind::AuthorityUnavailable {
             findings.push(IntegrationTriggerFinding {
                 kind: evidence.kind,
-                detail: evidence.detail,
-                references: evidence.references,
+                detail: evidence.detail.clone(),
+                references: evidence.references.clone(),
             });
         }
     }
@@ -314,6 +325,28 @@ mod tests {
         let packet = evaluate(input);
         assert_eq!(packet.result, IntegrationTriggerResult::NotProven);
         assert!(!packet.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn zero_pr_is_not_proven() {
+        let mut input = input(Vec::new());
+        input.pr = 0;
+        let packet = evaluate(input);
+        assert_eq!(packet.result, IntegrationTriggerResult::NotProven);
+        assert!(packet.diagnostics.iter().any(|diagnostic| diagnostic.contains("PR number")));
+    }
+
+    #[test]
+    fn evidence_without_source_metadata_is_not_proven() {
+        let mut item = evidence(TriggerKind::SamePublicSymbolSurface);
+        item.detail.clear();
+        item.references.clear();
+        let mut input = input(vec![item]);
+        input.proof_selection = Some(selection());
+        let packet = evaluate(input);
+        assert_eq!(packet.result, IntegrationTriggerResult::NotProven);
+        assert!(packet.diagnostics.iter().any(|diagnostic| diagnostic.contains("detail")));
+        assert!(packet.diagnostics.iter().any(|diagnostic| diagnostic.contains("references")));
     }
 
     #[test]
