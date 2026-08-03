@@ -657,14 +657,19 @@ mod mock_streaming_completion_tests {
         });
     }
 
-    fn request_streaming_completion(server: &LspServer, uri: &str, token: &str) -> Value {
+    fn request_streaming_completion(
+        server: &LspServer,
+        uri: &str,
+        character: u32,
+        token: &str,
+    ) -> Value {
         let request = JsonRpcRequest {
             _jsonrpc: "2.0".into(),
             id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
             method: "textDocument/perlInlineCompletionStream".into(),
             params: Some(json!({
                 "textDocument": { "uri": uri, "version": 1 },
-                "position": { "line": 0, "character": 19 },
+                "position": { "line": 0, "character": character },
                 "partialResultToken": token,
             })),
         };
@@ -716,7 +721,7 @@ mod mock_streaming_completion_tests {
                 -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
         ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
             let _ = sink(perl_lsp_rs_core::providers::inline_completion::StreamChunk {
-                text: "find_".to_string(),
+                text: "1".to_string(),
                 is_final: false,
             });
             Err(perl_lsp_rs_core::providers::inline_completion::BackendError::Provider(
@@ -729,22 +734,19 @@ mod mock_streaming_completion_tests {
     fn streaming_completion_mock_backend_cumulative_chunks() {
         let (server, capture) = create_server();
 
-        let backend = MockChunkBackend {
-            chunks: vec!["fi", "find_", "find_user($id)"],
-            delays_ms: vec![0, 0, 0],
-        };
+        let backend = MockChunkBackend { chunks: vec!["1", "1;"], delays_ms: vec![0, 0] };
         server.test_install_ai_backend(Some(Arc::new(backend)));
 
         let uri = "file:///streaming-mock-chunks.pl";
-        open_doc(&server, uri, "my $obj = Package->");
-        let result = request_streaming_completion(&server, uri, "stream-mock-1");
+        open_doc(&server, uri, "my $value = ");
+        let result = request_streaming_completion(&server, uri, 12, "stream-mock-1");
         assert!(result.is_null());
 
         let progress =
             wait_for_progress_messages(&capture, "stream-mock-1", Duration::from_millis(500));
-        assert_eq!(progress.len(), 3);
+        assert_eq!(progress.len(), 2);
 
-        let expected = ["fi", "find_", "find_user($id)"];
+        let expected = ["1", "1;"];
         let mut last_sequence = None;
         for idx in 0..progress.len() {
             let value = &progress[idx]["params"]["value"];
@@ -757,6 +759,24 @@ mod mock_streaming_completion_tests {
             last_sequence = Some(sequence);
             assert_eq!(value["items"][0]["insertText"], expected[idx]);
         }
+    }
+
+    #[test]
+    fn streaming_completion_filters_parse_unsafe_final_chunk() {
+        let (server, capture) = create_server();
+        let backend = MockChunkBackend { chunks: vec!["my $value = ;"], delays_ms: vec![0] };
+        server.test_install_ai_backend(Some(Arc::new(backend)));
+
+        let uri = "file:///streaming-mock-invalid.pl";
+        open_doc(&server, uri, "");
+        let result = request_streaming_completion(&server, uri, 0, "stream-mock-invalid");
+        assert!(result.is_null());
+
+        let progress =
+            wait_for_progress_messages(&capture, "stream-mock-invalid", Duration::from_millis(500));
+        assert_eq!(progress.len(), 1);
+        assert!(progress[0]["params"]["value"]["isFinal"].as_bool().unwrap_or(false));
+        assert!(progress[0]["params"]["value"]["items"].as_array().is_some_and(Vec::is_empty));
     }
 
     #[test]
@@ -777,12 +797,12 @@ mod mock_streaming_completion_tests {
             let server = Arc::clone(&server);
             let uri = uri.to_string();
             thread::spawn(move || {
-                request_streaming_completion(&server, &uri, "stream-cancel-old");
+                request_streaming_completion(&server, &uri, 19, "stream-cancel-old");
             })
         };
 
         thread::sleep(Duration::from_millis(30));
-        let new_result = request_streaming_completion(&server, uri, "stream-cancel-new");
+        let new_result = request_streaming_completion(&server, uri, 19, "stream-cancel-new");
         assert!(new_result.is_null());
 
         first.join().expect("first streaming request thread panicked");
@@ -814,6 +834,7 @@ mod mock_streaming_completion_tests {
             let result = request_streaming_completion(
                 &server,
                 uri,
+                19,
                 &format!("stream-cancel-storm-{request}"),
             );
             assert!(result.is_null(), "streaming completion should respond with null");
@@ -837,15 +858,28 @@ mod mock_streaming_completion_tests {
         server.test_install_ai_backend(Some(Arc::new(MockErrorChunkBackend)));
 
         let uri = "file:///streaming-mock-error.pl";
-        open_doc(&server, uri, "my $obj = Package->");
+        open_doc(&server, uri, "my $value = ");
 
-        let result = request_streaming_completion(&server, uri, "stream-error-1");
+        let result = request_streaming_completion(&server, uri, 12, "stream-error-1");
         assert!(result.is_null());
 
-        let progress =
-            wait_for_progress_messages(&capture, "stream-error-1", Duration::from_millis(500));
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let progress = loop {
+            let progress =
+                wait_for_progress_messages(&capture, "stream-error-1", Duration::from_millis(50));
+            let has_final = progress.iter().any(|frame| {
+                frame
+                    .pointer("/params/value/isFinal")
+                    .and_then(Value::as_bool)
+                    .is_some_and(|is_final| is_final)
+            });
+            if has_final || Instant::now() >= deadline {
+                break progress;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
         assert!(!progress.is_empty());
-        assert_eq!(progress[0]["params"]["value"]["items"][0]["insertText"], "find_");
+        assert_eq!(progress[0]["params"]["value"]["items"][0]["insertText"], "1");
         let final_progress =
             progress.last().expect("error path should emit at least one progress frame");
         assert!(
@@ -856,7 +890,7 @@ mod mock_streaming_completion_tests {
             "error path should emit a final progress frame"
         );
         assert_eq!(
-            final_progress["params"]["value"]["items"][0]["insertText"], "find_",
+            final_progress["params"]["value"]["items"][0]["insertText"], "1",
             "error path should preserve final cumulative text"
         );
         assert!(
