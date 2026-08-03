@@ -99,8 +99,8 @@ skip = [
     { crate = "wit-bindgen@0.51.0", reason = "wasip3 (getrandom 0.4 tree) pins wit-bindgen 0.51; wasip2 uses 0.57" },
 
     # syn: 2.x vs 3.x split (ecosystem transition).
-    # 2.0.117 — most crates use syn 2.x. 3.0.2 — early adopters pull syn 3.x.
-    { crate = "syn@2.0.117", reason = "ecosystem transition: most crates use syn 2.x; early adopters pull 3.x" },
+    # 2.0.117 — most crates use syn 2.x. 3.0.2 — clap_derive (via criterion) pulls syn 3.x.
+    { crate = "syn@2.0.117", reason = "most crates use syn 2.x; clap_derive (criterion) pulls 3.x" },
 
     # similar: 2.x vs 3.x split.
     # 2.7.0 — insta (dev-deps) pins similar 2.x. 3.1.1 — xtask uses similar 3.x.
