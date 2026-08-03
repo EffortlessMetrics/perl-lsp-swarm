@@ -1389,7 +1389,7 @@ print "result: $final\n";
     fn test_attach_custom_port() -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         let args = json!({
-            "host": "192.168.1.100",
+            "host": "127.0.0.1",
             "port": 9000
         });
         let response = adapter.handle_request(1, "attach", Some(args));
@@ -1400,7 +1400,7 @@ print "result: $final\n";
                 assert_eq!(command, "attach");
                 assert!(message.is_some());
                 let msg = message.ok_or("Expected message")?;
-                assert!(msg.contains("192.168.1.100:9000"));
+                assert!(msg.contains("127.0.0.1:9000"));
             }
             _ => return Err("Expected response".into()),
         }
@@ -1411,7 +1411,7 @@ print "result: $final\n";
     fn test_attach_trims_host_for_tcp_target() -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         let args = json!({
-            "host": " 192.168.1.100 ",
+            "host": " 127.0.0.1 ",
             "port": 9000
         });
         let response = adapter.handle_request(1, "attach", Some(args));
@@ -1422,7 +1422,7 @@ print "result: $final\n";
                 assert_eq!(command, "attach");
                 assert!(message.is_some());
                 let msg = message.ok_or("Expected message")?;
-                assert!(msg.contains("192.168.1.100:9000"));
+                assert!(msg.contains("127.0.0.1:9000"));
             }
             _ => return Err("Expected response".into()),
         }
