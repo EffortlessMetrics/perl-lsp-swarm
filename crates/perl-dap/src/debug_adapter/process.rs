@@ -1965,7 +1965,7 @@ impl DebugAdapter {
         }
     }
 
-    /// Send SIGINT to a Unix process.
+    /// Send SIGINT to a Unix process, with a test-only fallback elsewhere.
     ///
     /// On failure, returns `false` without terminating the debuggee. The
     /// session is left intact for the client to retry or disposition.
