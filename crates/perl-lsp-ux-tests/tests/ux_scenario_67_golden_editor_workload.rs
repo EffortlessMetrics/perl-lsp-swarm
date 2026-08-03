@@ -5,15 +5,15 @@
 //! journey without promoting a support tier or turning a fallback into an
 //! exactness claim.
 
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{anyhow, ensure, Context, Result};
 use perl_lsp_ux_tests::{
-    ProjectFixtureFile, ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available,
-    fixture_content, fixture_scenario_config, load_catalyst_fixture_files,
+    binary_available, fixture_content, fixture_scenario_config, load_catalyst_fixture_files,
     load_dancer2_fixture_files, load_mojolicious_fixture_files, missing_binary_skip,
-    open_all_fixture_files, run_ux_scenario,
+    open_all_fixture_files, run_ux_scenario, ProjectFixtureFile, ScenarioConfig, UxCiTier,
+    UxComponent, UxHarness,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Deserializer, Value};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
@@ -196,6 +196,18 @@ struct ProjectReceipt {
     file_count: usize,
     active_file: String,
     active_document_ready: bool,
+    runtime: RuntimeReceipt,
+}
+
+/// Runtime observations emitted by the server while this project was loaded.
+///
+/// These are deliberately raw structured receipts rather than promoted UX
+/// claims. The readiness receipt may not contain first-correct-answer entries
+/// until the provider observation seam is connected for the E2E runner.
+#[derive(Debug, Default, Serialize)]
+struct RuntimeReceipt {
+    indexing: Vec<Value>,
+    readiness: Vec<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -296,6 +308,7 @@ fn scenario_67_golden_editor_workload_receipt() {
                         + usize::from(project.fixture == "inline_plain_modern_oo"),
                     active_file: project.active_file.clone(),
                     active_document_ready,
+                    runtime: RuntimeReceipt::default(),
                 });
 
                 run_project_workload(
@@ -307,13 +320,18 @@ fn scenario_67_golden_editor_workload_receipt() {
                     active_document_ready,
                     &mut rows,
                 )?;
+                let runtime = collect_runtime_receipt(&harness);
+                let project_receipt = project_receipts
+                    .last_mut()
+                    .context("project receipt missing after workload execution")?;
+                project_receipt.runtime = runtime;
                 protocol_crash_count += count_protocol_crash_events(&harness);
             }
 
             let rollup = build_rollup(&rows, &manifest.error_waivers, protocol_crash_count)?;
             let receipt = WorkloadReceipt {
                 kind: "golden_editor_workload",
-                schema_version: 2,
+                schema_version: 3,
                 measured_at_unix_ms: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
                 manifest_version: manifest.manifest_version,
                 claim_boundary: manifest.claim_boundary,
@@ -469,10 +487,52 @@ fn create_harness(project: &ProjectSpec, files: &[ProjectFixtureFile]) -> Result
             ScenarioConfig { timeout: Duration::from_secs(30), ..Default::default() }
                 .env("PERL_LSP_WORKSPACE", "1")
                 .env("PERL_LSP_E2E", "1")
+                .env("PERL_LSP_LOG", receipt_log_filter())
                 .with_file(PLAIN_ACTIVE_FILE, PLAIN_SOURCE),
         );
     }
-    UxHarness::new(fixture_scenario_config(files).env("PERL_LSP_E2E", "1"))
+    UxHarness::new(
+        fixture_scenario_config(files)
+            .env("PERL_LSP_E2E", "1")
+            .env("PERL_LSP_LOG", receipt_log_filter()),
+    )
+}
+
+fn receipt_log_filter() -> &'static str {
+    "perl_lsp::workspace_readiness=info,perl_lsp::workspace_indexing=info"
+}
+
+fn collect_runtime_receipt(harness: &UxHarness) -> RuntimeReceipt {
+    let mut receipt = RuntimeReceipt::default();
+    for line in harness.client.peek_stderr_lines() {
+        let target = if line.contains("perl_lsp::workspace_indexing") {
+            Some(&mut receipt.indexing)
+        } else if line.contains("perl_lsp::workspace_readiness") {
+            Some(&mut receipt.readiness)
+        } else {
+            None
+        };
+        let Some(target) = target else {
+            continue;
+        };
+        if let Some(value) = parse_receipt_line(&line) {
+            target.push(value);
+        }
+    }
+    receipt
+}
+
+fn parse_receipt_line(line: &str) -> Option<Value> {
+    let receipt_text = line.split_once("receipt=")?.1;
+    Deserializer::from_str(receipt_text).into_iter::<Value>().next()?.ok()
+}
+
+#[test]
+fn receipt_log_parser_accepts_trailing_tracing_fields() -> Result<()> {
+    let line = "2026-08-03T00:00:00Z INFO perl_lsp::workspace_readiness: Workspace readiness receipt receipt={\"workspace_start_us\":1} span=server";
+    let receipt = parse_receipt_line(line).context("receipt should parse")?;
+    ensure!(receipt["workspace_start_us"] == 1);
+    Ok(())
 }
 
 fn run_project_workload(
@@ -952,7 +1012,7 @@ fn write_workload_receipt(receipt: &WorkloadReceipt) -> Result<PathBuf> {
         .unwrap_or_else(|| PathBuf::from("target/receipts/editor-ux"));
     fs::create_dir_all(&directory)
         .with_context(|| format!("creating receipt directory {}", directory.display()))?;
-    let path = directory.join("golden-editor-workload-v1.json");
+    let path = directory.join("golden-editor-workload-v3.json");
     let content = serde_json::to_string_pretty(receipt).context("serializing workload receipt")?;
     fs::write(&path, format!("{content}\n"))
         .with_context(|| format!("writing workload receipt {}", path.display()))?;
