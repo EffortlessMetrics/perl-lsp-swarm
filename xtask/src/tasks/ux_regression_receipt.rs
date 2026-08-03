@@ -26,6 +26,7 @@ pub struct UxRegressionReceiptConfig {
     pub input: PathBuf,
     pub receipt: Option<PathBuf>,
     pub sha: Option<String>,
+    pub exit_status_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,7 +58,18 @@ pub struct UxRegressionReceipt {
 pub fn run(config: UxRegressionReceiptConfig) -> Result<()> {
     let raw = fs::read_to_string(&config.input)
         .with_context(|| format!("reading {}", config.input.display()))?;
-    let receipt = classify(&raw, config.sha);
+    let exit_status = config
+        .exit_status_file
+        .map(|path| {
+            let raw_status = fs::read_to_string(&path)
+                .with_context(|| format!("reading UX test exit status {}", path.display()))?;
+            raw_status
+                .trim()
+                .parse::<i32>()
+                .with_context(|| format!("parsing UX test exit status in {}", path.display()))
+        })
+        .transpose()?;
+    let receipt = classify_with_exit_status(&raw, config.sha, exit_status);
     let payload = serde_json::to_string_pretty(&receipt)?;
 
     if let Some(path) = config.receipt {
@@ -75,6 +87,14 @@ pub fn run(config: UxRegressionReceiptConfig) -> Result<()> {
 }
 
 fn classify(raw: &str, sha: Option<String>) -> UxRegressionReceipt {
+    classify_with_exit_status(raw, sha, None)
+}
+
+fn classify_with_exit_status(
+    raw: &str,
+    sha: Option<String>,
+    exit_status: Option<i32>,
+) -> UxRegressionReceipt {
     let lines: Vec<&str> = raw.lines().collect();
     let first_fail_line =
         lines.iter().find(|line| line.contains("FAILED")).map(|line| (*line).trim().to_string());
@@ -101,7 +121,10 @@ fn classify(raw: &str, sha: Option<String>) -> UxRegressionReceipt {
     let has_failed_test = first_failing_test.is_some()
         || lines.iter().any(|line| line.contains("test result: FAILED"));
     let has_passing_summary = lines.iter().any(|line| line.contains("test result: ok"));
-    let result = if has_passing_summary && !has_failed_test { "pass" } else { "fail" }.to_string();
+    let command_succeeded = exit_status.map(|status| status == 0).unwrap_or(true);
+    let result =
+        if command_succeeded && has_passing_summary && !has_failed_test { "pass" } else { "fail" }
+            .to_string();
     let blocking = result != "pass";
     let merge_action = if !blocking {
         "merge_allowed"
@@ -389,6 +412,16 @@ mod tests {
     #[test]
     fn classify_missing_summary_fails_closed() {
         let receipt = classify("just ux-tests: command failed before test summary", None);
+
+        assert_eq!(receipt.result, "fail");
+        assert!(receipt.blocking);
+        assert_ne!(receipt.merge_action, "merge_allowed");
+    }
+
+    #[test]
+    fn classify_nonzero_command_status_fails_closed_after_earlier_passing_summary() {
+        let log = "running 1 test\ntest helper::setup ... ok\ntest result: ok. 1 passed; 0 failed";
+        let receipt = classify_with_exit_status(log, Some("sha-abort".to_string()), Some(134));
 
         assert_eq!(receipt.result, "fail");
         assert!(receipt.blocking);

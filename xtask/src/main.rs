@@ -1898,6 +1898,9 @@ enum Commands {
         /// Git SHA for receipt metadata
         #[arg(long)]
         sha: Option<String>,
+        /// File containing the exit status of the UX test command
+        #[arg(long)]
+        exit_status_file: Option<PathBuf>,
     },
 
     /// Validate memory profiling functionality
@@ -4881,11 +4884,12 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::SemanticShadowCompare { output, status_md, check } => {
             semantic_shadow_compare::run(output, status_md, check)
         }
-        Commands::UxRegressionReceipt { input, receipt, sha } => {
+        Commands::UxRegressionReceipt { input, receipt, sha, exit_status_file } => {
             ux_regression_receipt::run(ux_regression_receipt::UxRegressionReceiptConfig {
                 input,
                 receipt,
                 sha,
+                exit_status_file,
             })
         }
         Commands::ValidateMemoryProfiler => compare::validate_memory_profiling(),
