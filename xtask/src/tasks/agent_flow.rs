@@ -517,16 +517,26 @@ mod tests {
         providers.insert(
             "codex".to_string(),
             (
-                ["deliver-pr".to_string()].into_iter().collect(),
-                [("deliver-pr".to_string(), ["prepare-issue".to_string()].into_iter().collect())]
-                    .into_iter()
-                    .collect(),
+                [
+                    "deliver-pr".to_string(),
+                    "prepare-issue".to_string(),
+                    "prepare-proof".to_string(),
+                ]
+                .into_iter()
+                .collect(),
+                [
+                    ("deliver-pr".to_string(), ["prepare-issue".to_string()].into_iter().collect()),
+                    (
+                        "prepare-proof".to_string(),
+                        ["prepare-issue".to_string()].into_iter().collect(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
             ),
         );
 
         let errors = check_scenarios(&providers);
-        assert!(errors.iter().any(|error| error.contains("existing_issue_no_proof")));
-        assert!(errors.iter().any(|error| error.contains("missing skill 'prepare-proof'")));
         assert!(
             errors
                 .iter()
