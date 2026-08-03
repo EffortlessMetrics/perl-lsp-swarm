@@ -941,118 +941,119 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            // Extract the symbol to resolve
-            let symbol = params.as_object().ok_or_else(|| JsonRpcError {
-                code: -32602,
-                message: "Invalid params".to_string(),
-                data: None,
-            })?;
+        let params = params.ok_or_else(|| {
+            crate::protocol::invalid_params(
+                "workspace/symbol/resolve: missing required parameter 'params'",
+            )
+        })?;
 
-            // Get the URI and name from the symbol
-            let uri = symbol
-                .get("location")
-                .and_then(|l| l.get("uri"))
-                .and_then(|u| u.as_str())
-                .unwrap_or("");
+        // Extract the symbol to resolve
+        let symbol = params.as_object().ok_or_else(|| {
+            crate::protocol::invalid_params(
+                "workspace/symbol/resolve: parameter 'params' must be an object",
+            )
+        })?;
 
-            let name = symbol.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        // Get the URI and name from the symbol
+        let uri = symbol
+            .get("location")
+            .and_then(|l| l.get("uri"))
+            .and_then(|u| u.as_str())
+            .unwrap_or("");
 
-            // Normalize the URI for lookup
-            let uri_key = self.normalize_uri_key(uri);
+        let name = symbol.get("name").and_then(|n| n.as_str()).unwrap_or("");
 
-            // Look up the symbol in our index to get more details
-            let documents = self.documents.lock();
-            let doc_opt = documents.get(&uri_key).or_else(|| documents.get(uri)); // try raw as a fallback
+        // Normalize the URI for lookup
+        let uri_key = self.normalize_uri_key(uri);
 
-            if let Some(doc) = doc_opt {
-                let parsed = doc.current_parsed();
-                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                    // Find the symbol in the AST to get more accurate information
-                    let extractor = crate::symbol::SymbolExtractor::new_with_source(&doc.text);
-                    let symbol_table = extractor.extract(ast);
+        // Look up the symbol in our index to get more details
+        let documents = self.documents.lock();
+        let doc_opt = documents.get(&uri_key).or_else(|| documents.get(uri)); // try raw as a fallback
 
-                    // Find matching symbol
-                    for symbols in symbol_table.symbols.values() {
-                        for sym in symbols {
-                            if sym.name == name {
-                                // Return enhanced symbol with detail and accurate range
-                                let start_pos = doc
-                                    .line_starts
-                                    .offset_to_position(&doc.text, sym.location.start);
-                                let end_pos =
-                                    doc.line_starts.offset_to_position(&doc.text, sym.location.end);
+        if let Some(doc) = doc_opt {
+            let parsed = doc.current_parsed();
+            if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
+                // Find the symbol in the AST to get more accurate information
+                let extractor = crate::symbol::SymbolExtractor::new_with_source(&doc.text);
+                let symbol_table = extractor.extract(ast);
 
-                                // Start with the provided symbol JSON so we can add
-                                // additional details without panicking if fields are missing
-                                let mut resolved = json!(symbol);
+                // Find matching symbol
+                for symbols in symbol_table.symbols.values() {
+                    for sym in symbols {
+                        if sym.name == name {
+                            // Return enhanced symbol with detail and accurate range
+                            let start_pos =
+                                doc.line_starts.offset_to_position(&doc.text, sym.location.start);
+                            let end_pos =
+                                doc.line_starts.offset_to_position(&doc.text, sym.location.end);
 
-                                use crate::symbol::VarKind;
-                                // Add detail based on symbol kind
-                                let detail = match sym.kind {
-                                    crate::symbol::SymbolKind::Subroutine => {
-                                        format!("sub {}", name)
-                                    }
-                                    crate::symbol::SymbolKind::Method => {
-                                        format!("method {}", name)
-                                    }
-                                    crate::symbol::SymbolKind::Variable(VarKind::Scalar) => {
-                                        format!("${}", name)
-                                    }
-                                    crate::symbol::SymbolKind::Variable(VarKind::Array) => {
-                                        format!("@{}", name)
-                                    }
-                                    crate::symbol::SymbolKind::Variable(VarKind::Hash) => {
-                                        format!("%{}", name)
-                                    }
-                                    crate::symbol::SymbolKind::Package => {
-                                        format!("package {}", name)
-                                    }
-                                    crate::symbol::SymbolKind::Constant => {
-                                        format!("constant {}", name)
-                                    }
-                                    _ => name.to_string(),
-                                };
-                                resolved["detail"] = json!(detail);
-                                if let Some(doc) = &sym.documentation {
-                                    resolved["documentation"] = json!(doc);
+                            // Start with the provided symbol JSON so we can add
+                            // additional details without panicking if fields are missing
+                            let mut resolved = json!(symbol);
+
+                            use crate::symbol::VarKind;
+                            // Add detail based on symbol kind
+                            let detail = match sym.kind {
+                                crate::symbol::SymbolKind::Subroutine => {
+                                    format!("sub {}", name)
                                 }
-
-                                // Update location with accurate range
-                                resolved["location"]["range"] = json!({
-                                    "start": {
-                                        "line": start_pos.0,
-                                        "character": start_pos.1,
-                                    },
-                                    "end": {
-                                        "line": end_pos.0,
-                                        "character": end_pos.1,
-                                    }
-                                });
-
-                                // Add container name derived from qualified symbol name
-                                if let Some(container) =
-                                    perl_parser_core::qualified_name::container_name(
-                                        &sym.qualified_name,
-                                    )
-                                {
-                                    resolved["containerName"] = json!(
-                                        perl_module::path::normalize_package_separator(container)
-                                    );
+                                crate::symbol::SymbolKind::Method => {
+                                    format!("method {}", name)
                                 }
-
-                                return Ok(Some(json!(resolved)));
+                                crate::symbol::SymbolKind::Variable(VarKind::Scalar) => {
+                                    format!("${}", name)
+                                }
+                                crate::symbol::SymbolKind::Variable(VarKind::Array) => {
+                                    format!("@{}", name)
+                                }
+                                crate::symbol::SymbolKind::Variable(VarKind::Hash) => {
+                                    format!("%{}", name)
+                                }
+                                crate::symbol::SymbolKind::Package => {
+                                    format!("package {}", name)
+                                }
+                                crate::symbol::SymbolKind::Constant => {
+                                    format!("constant {}", name)
+                                }
+                                _ => name.to_string(),
+                            };
+                            resolved["detail"] = json!(detail);
+                            if let Some(doc) = &sym.documentation {
+                                resolved["documentation"] = json!(doc);
                             }
+
+                            // Update location with accurate range
+                            resolved["location"]["range"] = json!({
+                                "start": {
+                                    "line": start_pos.0,
+                                    "character": start_pos.1,
+                                },
+                                "end": {
+                                    "line": end_pos.0,
+                                    "character": end_pos.1,
+                                }
+                            });
+
+                            // Add container name derived from qualified symbol name
+                            if let Some(container) =
+                                perl_parser_core::qualified_name::container_name(
+                                    &sym.qualified_name,
+                                )
+                            {
+                                resolved["containerName"] = json!(
+                                    perl_module::path::normalize_package_separator(container)
+                                );
+                            }
+
+                            return Ok(Some(json!(resolved)));
                         }
                     }
                 }
             }
-
-            // Return the original symbol if we couldn't enhance it
-            Ok(Some(json!(symbol)))
-        } else {
-            Err(JsonRpcError { code: -32602, message: "Missing params".to_string(), data: None })
         }
+
+        // Return the original symbol if we couldn't enhance it
+        Ok(Some(json!(symbol)))
     }
 
     /// Handle workspace/configuration request
@@ -2933,6 +2934,16 @@ mod tests {
     use serde_json::{Value, json};
     use std::io::{self, Write};
     use std::sync::Arc;
+
+    #[test]
+    fn workspace_symbol_resolve_missing_params_name_method_and_field() {
+        let err = LspServer::new()
+            .handle_workspace_symbol_resolve(None)
+            .expect_err("missing workspace symbol params must be rejected");
+
+        assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
+        assert_eq!(err.message, "workspace/symbol/resolve: missing required parameter 'params'");
+    }
 
     #[derive(Clone, Default)]
     struct OutputCapture {

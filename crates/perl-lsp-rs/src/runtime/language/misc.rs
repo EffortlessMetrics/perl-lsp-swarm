@@ -884,35 +884,35 @@ impl LspServer {
         let start = Instant::now();
         let deadline = code_lens_resolve_deadline();
 
-        if let Some(params) = params {
-            // Parse the code lens
-            if let Ok(lens) =
-                serde_json::from_value::<crate::code_lens_provider::CodeLens>(params.clone())
-            {
-                // Extract the symbol name and kind from the lens data
-                let symbol_name = lens
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.get("name"))
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("");
+        let params = params.ok_or_else(|| {
+            invalid_params("codeLens/resolve: missing required parameter 'params'")
+        })?;
 
-                let symbol_kind = lens
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.get("kind"))
-                    .and_then(|k| k.as_str())
-                    .unwrap_or("unknown");
+        // Parse the code lens
+        if let Ok(lens) = serde_json::from_value::<crate::code_lens_provider::CodeLens>(params) {
+            // Extract the symbol name and kind from the lens data
+            let symbol_name = lens
+                .data
+                .as_ref()
+                .and_then(|d| d.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
 
-                let total_references =
-                    self.count_code_lens_references(symbol_name, symbol_kind, start, deadline);
+            let symbol_kind = lens
+                .data
+                .as_ref()
+                .and_then(|d| d.get("kind"))
+                .and_then(|k| k.as_str())
+                .unwrap_or("unknown");
 
-                let resolved = resolve_code_lens(lens, total_references);
-                return Ok(Some(json!(resolved)));
-            }
+            let total_references =
+                self.count_code_lens_references(symbol_name, symbol_kind, start, deadline);
+
+            let resolved = resolve_code_lens(lens, total_references);
+            return Ok(Some(json!(resolved)));
         }
 
-        Err(JsonRpcError { code: -32602, message: "Invalid parameters".to_string(), data: None })
+        Err(invalid_params("codeLens/resolve: parameter 'params' must be a code lens object"))
     }
 
     /// Handle textDocument/inlineCompletion request.
@@ -1863,11 +1863,11 @@ impl LspServer {
 
         // Missing params entirely
         Err(JsonRpcError {
-            code: -32602, // InvalidParams
-            message: "Missing parameters for executeCommand request".to_string(),
+            code: INVALID_PARAMS,
+            message: "workspace/executeCommand: missing required parameter 'params'".to_string(),
             data: Some(json!({
                 "errorType": "executeCommand",
-                "originalError": "Missing params"
+                "originalError": "workspace/executeCommand: missing required parameter 'params'"
             })),
         })
     }
@@ -2003,6 +2003,40 @@ mod tests {
             LspServer::with_io(Box::new(Cursor::new(Vec::<u8>::new())), Box::new(Vec::<u8>::new()));
         *server.client_capabilities.lock() = caps;
         server
+    }
+
+    #[test]
+    fn code_lens_resolve_invalid_params_name_method_and_shape() {
+        let err = LspServer::new()
+            .handle_code_lens_resolve(None)
+            .expect_err("missing code lens params must be rejected");
+
+        assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
+        assert_eq!(err.message, "codeLens/resolve: missing required parameter 'params'");
+
+        let err = LspServer::new()
+            .handle_code_lens_resolve(Some(json!({})))
+            .expect_err("malformed code lens params must be rejected");
+
+        assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
+        assert_eq!(err.message, "codeLens/resolve: parameter 'params' must be a code lens object");
+    }
+
+    #[test]
+    fn execute_command_missing_params_name_method_and_field() {
+        let err = LspServer::new()
+            .handle_execute_command(None)
+            .expect_err("missing execute command params must be rejected");
+
+        assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
+        assert_eq!(err.message, "workspace/executeCommand: missing required parameter 'params'");
+        assert_eq!(
+            err.data,
+            Some(json!({
+                "errorType": "executeCommand",
+                "originalError": "workspace/executeCommand: missing required parameter 'params'"
+            }))
+        );
     }
 
     #[test]
