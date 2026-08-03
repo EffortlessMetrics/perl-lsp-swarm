@@ -17,7 +17,7 @@ use crate::perl_remediation::PERL_REMEDIATION;
 /// Kept separate from the emitting code so the wording is directly testable.
 fn perl_fallback_message(path: &std::path::Path, label: &str) -> String {
     format!(
-        "perl-lsp: Perl not found on PATH; using {label} at {}. \
+        "Perl LSP: Perl not found on PATH; using {label} at {}. \
          Add Perl to PATH to suppress this message.",
         path.display()
     )
@@ -35,12 +35,12 @@ fn perl_not_found_message(configured: Option<&str>) -> String {
     match configured.filter(|path| !path.is_empty()) {
         Some(configured) => {
             format!(
-                "perl-lsp: The configured Perl interpreter was not found at `{configured}`. \
+                "Perl LSP: The configured Perl interpreter was not found at `{configured}`. \
                  Check that the path exists and is executable, then restart/reload server. \
                  (VS Code: Developer: Reload Window.)"
             )
         }
-        None => format!("perl-lsp: Perl missing on PATH. {PERL_REMEDIATION}"),
+        None => format!("Perl LSP: Perl missing on PATH. {PERL_REMEDIATION}"),
     }
 }
 
@@ -207,7 +207,7 @@ impl LspServer {
                     }
                     Err(msg) => {
                         let user_msg = format!(
-                            "perl-lsp: {msg} \
+                            "Perl LSP: {msg} \
                              Fix the error in .perl-lsp.toml and reload the window \
                              (Ctrl+Shift+P \u{2192} Developer: Reload Window) to apply your settings.",
                         );
@@ -282,7 +282,7 @@ impl LspServer {
             .collect::<Vec<_>>()
             .join("; ");
         let user_msg = format!(
-            "perl-lsp: multi-root workspace has conflicting .perl-lsp.toml settings across \
+            "Perl LSP: multi-root workspace has conflicting .perl-lsp.toml settings across \
              folders. The first folder wins for each key; others were ignored: {rendered}. \
              See docs/reference/CONFIG.md (Multi-root workspaces) for details."
         );
@@ -312,7 +312,7 @@ impl LspServer {
             .collect::<Vec<_>>()
             .join("; ");
         let user_msg = format!(
-            "perl-lsp: {folder_name}'s .perl-lsp.toml has include_paths entries that were \
+            "Perl LSP: {folder_name}'s .perl-lsp.toml has include_paths entries that were \
              ignored: {rendered}"
         );
         tracing::warn!(folder = %folder_name, rejected = %rendered, "Rejected include_paths entries");
@@ -495,6 +495,13 @@ mod tests {
                 "toast is too long: {} chars: {msg}",
                 msg.chars().count()
             );
+        }
+    }
+
+    #[test]
+    fn interpreter_messages_use_the_canonical_product_prefix() {
+        for msg in all_perl_interpreter_messages() {
+            assert!(msg.starts_with("Perl LSP: "), "unexpected product prefix: {msg}");
         }
     }
 
