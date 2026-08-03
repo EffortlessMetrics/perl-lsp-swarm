@@ -647,6 +647,96 @@ impl ServerConfig {
         warn_on_type_mismatch(settings, "critic", "enabled", "boolean");
         warn_on_type_mismatch(settings, "formatting", "enabled", "boolean");
     }
+
+    /// Return invalid enum values supplied through the LSP client-settings channel.
+    ///
+    /// The normal update path deliberately keeps an invalid value from changing
+    /// the active configuration and emits a tracing warning. Runtime callers can
+    /// use this companion inspection before applying the same payload when they
+    /// need to surface an actionable `window/showMessage` to the editor user.
+    pub fn invalid_client_setting_values(
+        settings: &serde_json::Value,
+    ) -> Vec<InvalidClientSetting> {
+        let mut invalid = Vec::new();
+
+        if let Some(critic) = settings.get("critic") {
+            if let Some(engine) = critic.get("engine") {
+                let invalid_engine = engine
+                    .as_str()
+                    .map(|value| parse_lsp_critic_engine(value).is_none())
+                    .unwrap_or(true);
+                if invalid_engine {
+                    invalid.push(InvalidClientSetting {
+                        setting: "critic.engine",
+                        value: client_setting_display_value(engine),
+                        value_type: client_setting_value_type(engine),
+                        valid_options: CLIENT_CRITIC_ENGINE_VALID_OPTIONS,
+                    });
+                }
+            }
+            if let Some(profile) = critic.get("profile") {
+                let invalid_profile = profile
+                    .as_str()
+                    .map(|value| parse_native_critic_profile(value).is_none())
+                    .unwrap_or(true);
+                if invalid_profile {
+                    invalid.push(InvalidClientSetting {
+                        setting: "critic.profile",
+                        value: client_setting_display_value(profile),
+                        value_type: client_setting_value_type(profile),
+                        valid_options: NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
+                    });
+                }
+            }
+        }
+
+        if let Some(formatting) = settings.get("formatting") {
+            if let Some(engine) = formatting.get("engine") {
+                let invalid_engine = engine
+                    .as_str()
+                    .map(|value| parse_formatter_mode(value).is_none())
+                    .unwrap_or(true);
+                if invalid_engine {
+                    invalid.push(InvalidClientSetting {
+                        setting: "formatting.engine",
+                        value: client_setting_display_value(engine),
+                        value_type: client_setting_value_type(engine),
+                        valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                    });
+                }
+            }
+        }
+
+        invalid
+    }
+}
+
+fn client_setting_display_value(value: &serde_json::Value) -> String {
+    value.as_str().map(ToOwned::to_owned).unwrap_or_else(|| value.to_string())
+}
+
+fn client_setting_value_type(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+/// An invalid enum value found in editor-provided LSP settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidClientSetting {
+    /// Dotted setting path used by the client configuration surface.
+    pub setting: &'static str,
+    /// Value supplied by the client.
+    pub value: String,
+    /// JSON type supplied by the client, used to distinguish values that render identically.
+    pub value_type: &'static str,
+    /// Human-readable accepted values for the setting.
+    pub valid_options: &'static str,
 }
 
 /// Log a warning when a config value has the wrong type. (#5093)
@@ -668,8 +758,17 @@ fn warn_on_type_mismatch(settings: &serde_json::Value, section: &str, field: &st
     }
 }
 
+/// Normalize a formatter mode for comparison and warning deduplication.
+///
+/// This is shared by the parser and the client-setting warning path so aliases
+/// differing only by case, surrounding whitespace, or underscore/hyphen spelling
+/// receive the same semantic treatment.
+pub fn normalize_formatter_mode_value(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace('_', "-")
+}
+
 fn parse_formatter_mode(value: &str) -> Option<FormatterMode> {
-    match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+    match normalize_formatter_mode_value(value).as_str() {
         "native" => Some(FormatterMode::Native),
         "compat" | "perltidy-compat" => Some(FormatterMode::Compat),
         "external-legacy" | "external-perltidy" | "perltidy" => Some(FormatterMode::ExternalLegacy),
@@ -683,6 +782,13 @@ fn parse_critic_engine(value: &str) -> Option<CriticEngine> {
         "legacy" | "external" | "perlcritic" => Some(CriticEngine::Legacy),
         "native" => Some(CriticEngine::Native),
         _ => None,
+    }
+}
+
+fn parse_lsp_critic_engine(value: &str) -> Option<CriticEngine> {
+    match parse_critic_engine(value) {
+        Some(CriticEngine::Native) => Some(CriticEngine::Native),
+        Some(CriticEngine::Legacy) | None => None,
     }
 }
 
@@ -704,6 +810,11 @@ const FORMATTER_MODE_VALID_OPTIONS: &str = "native, compat (perltidy-compat), ex
 /// `tracing::warn!` messages when a user supplies an unrecognized value.
 /// Kept in sync with [`parse_critic_engine`].
 const CRITIC_ENGINE_VALID_OPTIONS: &str = "native, legacy (external, perlcritic)";
+
+/// Human-readable values accepted for `critic.engine` on the LSP client-settings
+/// channel. Legacy subprocess aliases remain available only through trusted
+/// project configuration.
+const CLIENT_CRITIC_ENGINE_VALID_OPTIONS: &str = "native";
 
 /// Human-readable list of accepted `critic.profile` values, used in
 /// `tracing::warn!` messages when a user supplies an unrecognized value.
@@ -3736,6 +3847,68 @@ profile = "recommended"
         });
         assert_eq!(config.formatting_engine, prior);
         assert_warned_contains(&captured, &["formatting.engine", "perltide"]);
+    }
+
+    #[test]
+    fn client_invalid_enum_inspection_covers_all_user_visible_engine_settings() {
+        let invalid = ServerConfig::invalid_client_setting_values(&serde_json::json!({
+            "critic": {
+                "engine": "nativ",
+                "profile": "recomended"
+            },
+            "formatting": { "engine": "perltide" }
+        }));
+
+        assert_eq!(
+            invalid,
+            vec![
+                InvalidClientSetting {
+                    setting: "critic.engine",
+                    value: "nativ".to_string(),
+                    value_type: "string",
+                    valid_options: CLIENT_CRITIC_ENGINE_VALID_OPTIONS,
+                },
+                InvalidClientSetting {
+                    setting: "critic.profile",
+                    value: "recomended".to_string(),
+                    value_type: "string",
+                    valid_options: NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
+                },
+                InvalidClientSetting {
+                    setting: "formatting.engine",
+                    value: "perltide".to_string(),
+                    value_type: "string",
+                    valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                },
+            ]
+        );
+
+        let legacy = ServerConfig::invalid_client_setting_values(&serde_json::json!({
+            "critic": { "engine": " LEGACY ", "profile": "STRICT" },
+            "formatting": { "engine": "external_perltidy" }
+        }));
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].setting, "critic.engine");
+        assert_eq!(legacy[0].valid_options, CLIENT_CRITIC_ENGINE_VALID_OPTIONS);
+    }
+
+    #[test]
+    fn client_invalid_enum_inspection_reports_wrong_value_types() {
+        let invalid = ServerConfig::invalid_client_setting_values(&serde_json::json!({
+            "critic": {
+                "engine": false,
+                "profile": ["recommended"]
+            },
+            "formatting": { "engine": null }
+        }));
+
+        assert_eq!(invalid.len(), 3);
+        assert_eq!(invalid[0].setting, "critic.engine");
+        assert_eq!(invalid[0].value, "false");
+        assert_eq!(invalid[1].setting, "critic.profile");
+        assert_eq!(invalid[1].value, "[\"recommended\"]");
+        assert_eq!(invalid[2].setting, "formatting.engine");
+        assert_eq!(invalid[2].value, "null");
     }
 
     #[test]
