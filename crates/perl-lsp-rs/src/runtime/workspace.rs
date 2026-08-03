@@ -1241,6 +1241,7 @@ impl LspServer {
                         config.update_from_value(perl);
                         tracing::debug!("Updated server config from perl settings");
                     }
+                    self.update_last_formatting_options(perl);
 
                     #[cfg(not(target_arch = "wasm32"))]
                     let critic_config_changed = {
@@ -2504,6 +2505,34 @@ impl LspServer {
         }
 
         Ok(Some(json!({"applied": false, "failureReason": "Invalid parameters"})))
+    }
+
+    /// Cache the editor's formatting options for `willSaveWaitUntil`.
+    ///
+    /// The save request does not carry an `options` object, so accept the
+    /// standard LSP names when clients provide them and the repository's
+    /// existing formatting aliases for clients that configure the formatter
+    /// through `didChangeConfiguration`.
+    fn update_last_formatting_options(&self, settings: &Value) {
+        let Some(formatting) = settings.get("formatting") else {
+            return;
+        };
+
+        let mut options = self.last_formatting_options.lock();
+        if let Some(tab_size) = formatting
+            .get("tabSize")
+            .or_else(|| formatting.get("indentColumns"))
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0)
+        {
+            options.tab_size = tab_size;
+        }
+        if let Some(insert_spaces) = formatting.get("insertSpaces").and_then(Value::as_bool) {
+            options.insert_spaces = insert_spaces;
+        } else if let Some(tabs) = formatting.get("tabs").and_then(Value::as_bool) {
+            options.insert_spaces = !tabs;
+        }
     }
 }
 

@@ -165,6 +165,12 @@ pub struct LspServer {
     symbol_index: Arc<Mutex<SymbolIndex>>,
     /// Server configuration
     pub(crate) config: Arc<Mutex<ServerConfig>>,
+    /// Last formatting options supplied through workspace configuration.
+    ///
+    /// `textDocument/willSaveWaitUntil` has no `options` field, so save-time
+    /// formatting uses the most recent client-provided values instead of
+    /// inventing editor defaults for every save.
+    pub(crate) last_formatting_options: Mutex<FormattingOptions>,
     /// Synchronized input reader
     reader: Arc<Mutex<Box<dyn BufRead + Send>>>,
     /// Outbound message sender (channel-based, decoupled from I/O).

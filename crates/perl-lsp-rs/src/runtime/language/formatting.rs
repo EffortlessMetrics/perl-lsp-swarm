@@ -606,6 +606,70 @@ mod tests {
     }
 
     #[test]
+    fn handle_will_save_wait_until_uses_cached_configuration_options()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///test_save_format_options.pl";
+        let source = "sub test{my$x=1;return$x;}\n";
+        server.test_apply_did_open(uri, source, 1)?;
+
+        server.handle_did_change_configuration(Some(json!({
+            "settings": {
+                "perl": {
+                    "formatting": {
+                        "tabSize": 2,
+                        "insertSpaces": true
+                    }
+                }
+            }
+        })));
+
+        let result = server.handle_will_save_wait_until(Some(json!({
+            "textDocument": { "uri": uri, "version": 1 }
+        })))?;
+        let edits = result
+            .and_then(|value| value.as_array().cloned())
+            .ok_or("expected an array of save-format edits")?;
+        let new_text = edits
+            .first()
+            .and_then(|edit| edit.get("newText"))
+            .and_then(Value::as_str)
+            .ok_or("expected a full-document save-format edit")?;
+
+        assert!(
+            new_text.contains("\n  my $x = 1;"),
+            "save formatting must use the configured two-space indentation, got:\n{new_text}"
+        );
+
+        server.handle_did_change_configuration(Some(json!({
+            "settings": {
+                "perl": {
+                    "formatting": {
+                        "tabSize": 8,
+                        "insertSpaces": false
+                    }
+                }
+            }
+        })));
+        let result = server.handle_will_save_wait_until(Some(json!({
+            "textDocument": { "uri": uri, "version": 1 }
+        })))?;
+        let edits = result
+            .and_then(|value| value.as_array().cloned())
+            .ok_or("expected an array of tabbed save-format edits")?;
+        let new_text = edits
+            .first()
+            .and_then(|edit| edit.get("newText"))
+            .and_then(Value::as_str)
+            .ok_or("expected a tabbed full-document save-format edit")?;
+        assert!(
+            new_text.contains("\n\tmy $x = 1;"),
+            "save formatting must honor insertSpaces=false, got:\n{new_text}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn handle_formatting_lock_not_held_during_formatting() -> Result<(), Box<dyn std::error::Error>>
     {
         // Concurrency test: prove the documents lock is released before the

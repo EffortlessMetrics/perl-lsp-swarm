@@ -275,13 +275,7 @@ impl LspServer {
             // Phase 2: format off-lock using the user's actual perltidy config.
             let config = self.build_perltidy_config();
             let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());
-            let format_options = FormattingOptions {
-                tab_size: 4,
-                insert_spaces: true,
-                trim_trailing_whitespace: Some(true),
-                insert_final_newline: Some(true),
-                trim_final_newlines: Some(true),
-            };
+            let format_options = self.last_formatting_options.lock().clone();
 
             match formatter.format_document(&text, &format_options) {
                 Ok(edits) if !edits.is_empty() => {
