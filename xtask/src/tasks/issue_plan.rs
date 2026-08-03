@@ -3,7 +3,6 @@
 //! Scans GitHub issues (from a JSON fixture or live `gh issue list`) for the
 //! issue-plan quality problems the desk cares about:
 //!
-//! - an explicit builder work packet on a closed issue
 //! - an explicit builder work packet whose body is missing a required section
 //! - a `#0000` placeholder issue reference
 //!
@@ -145,10 +144,27 @@ fn run_checks(issues: &[Issue]) -> Vec<Finding> {
 }
 
 fn is_work_packet(issue: &Issue) -> bool {
-    issue
-        .body_text()
+    body_without_fenced_code(issue.body_text())
         .lines()
         .any(|line| matches!(line.trim(), "## Builder-Ready Plan" | "## Builder Spec"))
+}
+
+fn body_without_fenced_code(body: &str) -> String {
+    let mut in_fence = false;
+    body.lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                in_fence = !in_fence;
+                String::new()
+            } else if in_fence {
+                String::new()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn check_work_packet(issue: &Issue, out: &mut Vec<Finding>) {
@@ -157,17 +173,12 @@ fn check_work_packet(issue: &Issue, out: &mut Vec<Finding>) {
     }
 
     if issue.is_closed() {
-        out.push(Finding {
-            issue: issue.number,
-            check: "work-packet-on-closed".to_string(),
-            severity: "high".to_string(),
-            message: "closed issue still contains a builder work packet".to_string(),
-        });
-        // A closed work packet is stale; section completeness is moot.
+        // The issue body is durable context. Closure is represented by live
+        // issue/PR disposition, not by deleting the historical work packet.
         return;
     }
 
-    let body = issue.body_text();
+    let body = body_without_fenced_code(issue.body_text());
     let sections = [
         ("acceptance tests", &RE_ACCEPTANCE),
         ("reproduction / example", &RE_REPRO),
@@ -218,12 +229,10 @@ fn load_issues(config: &AuditConfig) -> Result<Vec<Issue>> {
 
 /// Build the `gh issue list` argv for the live loader.
 ///
-/// `--state all` is required, not `open`: the `work-packet-on-closed` check
-/// exists specifically to catch closed issues whose bodies still contain an
-/// explicit builder work packet. A `--state open` filter would never retrieve
-/// a closed issue, so that check would be dead code in live mode — it would
-/// only ever fire against fixture-injected test data. The optional `--label`
-/// filter scopes the query for callers but does not activate any audit rule.
+/// `--state all` keeps the report useful for current issue/body reconciliation,
+/// including closed issues whose durable plans remain as historical context.
+/// The optional `--label` filter scopes the query for callers but does not
+/// activate any audit rule.
 fn build_gh_issue_list_args(config: &AuditConfig) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "issue".to_string(),
@@ -318,10 +327,20 @@ mod tests {
     const FULL_BODY: &str = "## Builder-Ready Plan\n## Problem\nx\n## Reproduction / example\nx\n## Suspected root area\nx\n## Acceptance tests\nx\n## Non-goals\nx\n## Dependencies / sequencing\nx\n## Risk / rollback\nx\n## Verification notes\nx";
 
     #[test]
-    fn closed_work_packet_is_flagged() {
+    fn closed_work_packet_is_retained_without_a_finding() {
         let issues = vec![issue(860, &["builder-ready", "plan-reviewed"], "CLOSED", FULL_BODY)];
         let findings = run_checks(&issues);
-        assert!(findings.iter().any(|f| f.check == "work-packet-on-closed"));
+        assert!(
+            findings.is_empty(),
+            "closed durable work packets must not be false alerts: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn fenced_work_packet_examples_are_ignored() {
+        let body = "```markdown\n## Builder-Ready Plan\n## Problem\nexample only\n```";
+        let findings = run_checks(&[issue(861, &[], "OPEN", body)]);
+        assert!(findings.is_empty(), "fenced examples must not activate the audit: {findings:?}");
     }
 
     #[test]
@@ -403,7 +422,10 @@ mod tests {
         );
 
         // The --label filter still scopes the (now-broader) query.
-        assert!(args.windows(2).any(|w| w[0] == "--label" && w[1] == "builder-ready"));
+        assert!(
+            args.windows(2).any(|w| w[0] == "--label" && w[1] == "builder-ready"),
+            "configured labels must remain query filters: {args:?}"
+        );
     }
 
     #[test]
