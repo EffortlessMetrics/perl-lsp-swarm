@@ -31,6 +31,11 @@ impl TcpAttachConfig {
     }
 
     /// Validate the configuration
+    ///
+    /// In addition to the format checks (non-empty host, no whitespace/control
+    /// characters, valid port range), this resolves the host and rejects any
+    /// resolved address in the private/link-local/metadata/CGNAT ranges (except
+    /// loopback) to prevent SSRF via a hostile `.vscode/launch.json` (#5257).
     pub fn validate(&self) -> Result<()> {
         let host = self.host.trim_matches(' ');
         if host.is_empty() {
@@ -44,6 +49,14 @@ impl TcpAttachConfig {
         }
         if self.port == 0 {
             anyhow::bail!("Port must be in range 1-65535");
+        }
+        // SSRF defense: resolve the host and reject disallowed addresses
+        // (private, link-local, cloud metadata 169.254.169.254, CGNAT, …).
+        // Loopback is allowed because the debugger typically runs locally.
+        // Errors here are mapped to anyhow but do not block legitimate
+        // localhost/loopback attach.
+        if let Err(e) = perl_lsp_rs_core::providers::ai::validate_tcp_attach_host(host, self.port) {
+            anyhow::bail!("TCP attach host '{host}' rejected: {e}");
         }
         if let Some(timeout) = self.timeout_ms {
             if timeout == 0 {

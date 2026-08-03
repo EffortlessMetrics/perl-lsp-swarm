@@ -147,17 +147,21 @@ fn test_tcp_attach_session_disconnect() {
 
 #[test]
 fn test_tcp_attach_config_edge_cases() {
-    // Test with IPv6 address
+    // Test with IPv6 loopback address
     let config = TcpAttachConfig::new("::1".to_string(), 13603);
     assert!(config.validate().is_ok());
 
-    // Test with hostname
+    // Test with hostname (resolves to a public IP — allowed)
     let config = TcpAttachConfig::new("example.com".to_string(), 13603);
     assert!(config.validate().is_ok());
 
-    // Test with IP address
+    // SSRF defense (#5257): private IP addresses must be rejected.
     let config = TcpAttachConfig::new("192.168.1.1".to_string(), 13603);
-    assert!(config.validate().is_ok());
+    assert!(config.validate().is_err(), "private IP must be rejected by the SSRF filter");
+
+    // SSRF defense (#5257): cloud metadata endpoint must be rejected.
+    let config = TcpAttachConfig::new("169.254.169.254".to_string(), 13603);
+    assert!(config.validate().is_err(), "cloud metadata IP must be rejected by the SSRF filter");
 
     // Test with maximum valid port
     let config = TcpAttachConfig::new("localhost".to_string(), 65535);
