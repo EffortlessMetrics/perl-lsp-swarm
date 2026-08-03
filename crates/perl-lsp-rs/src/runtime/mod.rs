@@ -552,14 +552,17 @@ impl LspServer {
     /// message: provider responses may contain sensitive or noisy details.
     /// The detailed error remains available to the debug log at the call site.
     pub(crate) fn notify_ai_auth_failure(&self) {
-        if !self.ai_backend_warnings_sent.lock().insert("auth".to_string()) {
+        let mut warnings = self.ai_backend_warnings_sent.lock();
+        if warnings.contains("auth") {
             return;
         }
+        warnings.insert("auth".to_string());
 
         if let Err(error) = self.show_message(
             MessageType::Warning,
             "AI inline completion authentication failed. Check the configured API key and provider settings.",
         ) {
+            warnings.remove("auth");
             tracing::warn!(%error, "failed to notify client about AI authentication failure");
         }
     }

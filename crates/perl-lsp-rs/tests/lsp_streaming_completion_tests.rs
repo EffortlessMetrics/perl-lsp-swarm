@@ -890,17 +890,6 @@ mod mock_streaming_completion_tests {
         let uri = "file:///streaming-auth-error.pl";
         open_doc(&server, uri, "my $obj = Package->");
 
-        let one_shot_request = JsonRpcRequest {
-            _jsonrpc: "2.0".into(),
-            id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
-            method: "textDocument/inlineCompletion".into(),
-            params: Some(json!({
-                "textDocument": { "uri": uri },
-                "position": { "line": 0, "character": 19 }
-            })),
-        };
-        let _ = server.handle_request(one_shot_request);
-
         let _ = request_streaming_completion(&server, uri, "stream-auth-error");
 
         let deadline = Instant::now() + Duration::from_millis(500);
@@ -923,6 +912,58 @@ mod mock_streaming_completion_tests {
         assert_eq!(
             messages[0]["params"]["message"],
             "AI inline completion authentication failed. Check the configured API key and provider settings."
+        );
+
+        server.handle_request(JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: None,
+            method: "workspace/didChangeConfiguration".into(),
+            params: Some(json!({
+                "settings": {
+                    "perl": {
+                        "aiCompletion": { "model": "updated-model" }
+                    }
+                }
+            })),
+        });
+        server.test_install_ai_backend(Some(Arc::new(MockAuthBackend)));
+        let _ = request_streaming_completion(&server, uri, "stream-auth-error-after-config");
+
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let messages_after_config = loop {
+            let messages: Vec<_> = capture
+                .messages()
+                .into_iter()
+                .filter(|message| {
+                    message.get("method").and_then(Value::as_str) == Some("window/showMessage")
+                })
+                .collect();
+            if messages.len() >= 2 || Instant::now() >= deadline {
+                break messages;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(messages_after_config.len(), 2);
+
+        let _ = server.handle_request(JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
+            method: "textDocument/inlineCompletion".into(),
+            params: Some(json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 0, "character": 19 }
+            })),
+        });
+        assert_eq!(
+            capture
+                .messages()
+                .into_iter()
+                .filter(|message| {
+                    message.get("method").and_then(Value::as_str) == Some("window/showMessage")
+                })
+                .count(),
+            2,
+            "one-shot and streaming paths should share the reset deduplication key"
         );
     }
 }

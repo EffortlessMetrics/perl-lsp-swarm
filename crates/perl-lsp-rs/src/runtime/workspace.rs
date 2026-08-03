@@ -1348,6 +1348,10 @@ impl LspServer {
                         }
                     }
 
+                    if perl.get("aiCompletion").is_some() {
+                        self.ai_backend_warnings_sent.lock().clear();
+                    }
+
                     // Refresh AI backend when config changes (constructs or clears provider)
                     self.refresh_ai_backend();
 
