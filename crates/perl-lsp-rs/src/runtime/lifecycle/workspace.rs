@@ -28,45 +28,19 @@ fn perl_fallback_message(path: &std::path::Path, label: &str) -> String {
 /// `configured` is the interpreter path the server was told to use, when one is
 /// set — in that case the path itself is the thing to check, so the generic
 /// install-Perl advice would be misleading.
-fn perl_not_found_message(searched: &[String], configured: Option<&str>) -> String {
+fn perl_not_found_message(configured: Option<&str>) -> String {
     // An empty configured path is not a configuration the user can act on, so it
     // falls through to the generic install guidance rather than telling them to
     // check `` (#5034 review).
     match configured.filter(|path| !path.is_empty()) {
         Some(configured) => {
-            // `find_perl_interpreter` reports a missing configured path as the
-            // sole searched entry (`configured path: <p>`, path trimmed), so
-            // echoing the list verbatim would print the same path twice. Drop
-            // only entries that restate the configured path and nothing else.
-            //
-            // Matched by equality, not `contains`: a configured `/usr` is a
-            // substring of a genuinely distinct `/usr/local/bin` entry, and
-            // suppressing that would lose information rather than dedupe it.
-            let trimmed = configured.trim();
-            let restated = format!("configured path: {trimmed}");
-            let also: Vec<&str> = searched
-                .iter()
-                .map(String::as_str)
-                .filter(|entry| {
-                    let entry = entry.trim();
-                    entry != restated && entry != trimmed
-                })
-                .collect();
-            let also = if also.is_empty() {
-                String::new()
-            } else {
-                format!(" Also searched: {}.", also.join(", "))
-            };
             format!(
-                "perl-lsp: The configured Perl interpreter was not found at `{configured}`.{also} \
-                 Check that the path exists and is executable, then reload the window \
-                 (Ctrl+Shift+P \u{2192} Developer: Reload Window)."
+                "perl-lsp: The configured Perl interpreter was not found at `{configured}`. \
+                 Check that the path exists and is executable, then restart/reload server. \
+                 (VS Code: Developer: Reload Window.)"
             )
         }
-        None => format!(
-            "perl-lsp: Perl interpreter not found on PATH. Searched: {}. {PERL_REMEDIATION}",
-            searched.join(", ")
-        ),
+        None => format!("perl-lsp: Perl missing on PATH. {PERL_REMEDIATION}"),
     }
 }
 
@@ -133,7 +107,7 @@ impl LspServer {
             PerlInterpreterResult::NotFound { ref searched } => {
                 tracing::warn!(searched = ?searched, "Perl interpreter not found");
                 PERL_NOT_FOUND_WARNED.call_once(|| {
-                    let msg = perl_not_found_message(searched, configured_path.as_deref());
+                    let msg = perl_not_found_message(configured_path.as_deref());
                     if let Err(e) = self.show_message(MessageType::Error, &msg) {
                         tracing::warn!(error = %e, "Failed to send showMessage for perl not found");
                     }
@@ -410,8 +384,8 @@ mod tests {
     fn all_perl_interpreter_messages() -> Vec<String> {
         vec![
             perl_fallback_message(std::path::Path::new("/usr/local/bin/perl"), "Homebrew"),
-            perl_not_found_message(&["/usr/bin".to_string(), "/bin".to_string()], None),
-            perl_not_found_message(&["/usr/bin".to_string()], Some("/opt/custom/perl")),
+            perl_not_found_message(None),
+            perl_not_found_message(Some("/opt/custom/perl")),
         ]
     }
 
@@ -446,13 +420,15 @@ mod tests {
 
     #[test]
     fn perl_not_found_message_gives_actionable_install_guidance() {
-        let msg = perl_not_found_message(&["/usr/bin".to_string(), "/bin".to_string()], None);
-        // The searched paths tell the user what was actually tried.
-        assert!(msg.contains("/usr/bin, /bin"), "must list searched paths, got: {msg}");
+        let msg = perl_not_found_message(None);
         // Remediation the user can actually perform.
         assert!(msg.contains("PATH"), "must mention PATH, got: {msg}");
         assert!(msg.contains("Install Perl"), "must tell the user to install Perl, got: {msg}");
         assert!(msg.contains("Reload Window"), "must say how to re-trigger detection, got: {msg}");
+        assert!(
+            !msg.contains("/usr/bin") && !msg.contains("/bin"),
+            "searched paths must remain out of the toast, got: {msg}"
+        );
     }
 
     #[test]
@@ -460,7 +436,7 @@ mod tests {
         // Guards against the remediation being collapsed to one canonical
         // sentence: a Windows user needs the Strawberry Perl link and a macOS
         // user needs the brew line, and neither is inferable from the other.
-        let msg = perl_not_found_message(&["PATH".to_string()], None);
+        let msg = perl_not_found_message(None);
         assert!(msg.contains("strawberryperl.com"), "must name the Windows route, got: {msg}");
         assert!(msg.contains("brew install perl"), "must name the macOS route, got: {msg}");
         assert!(msg.contains("package manager"), "must name the Linux route, got: {msg}");
@@ -470,41 +446,28 @@ mod tests {
     fn configured_path_message_points_at_the_configured_path_not_at_installing_perl() {
         // When a path is configured, the path is the problem — generic
         // "install Perl" advice would be a misdiagnosis.
-        let msg = perl_not_found_message(&["/x".to_string()], Some("/opt/custom/perl"));
+        let msg = perl_not_found_message(Some("/opt/custom/perl"));
         assert!(msg.contains("/opt/custom/perl"), "must name the configured path, got: {msg}");
         assert!(
             !msg.contains("Install Perl"),
             "a configured-but-missing path is not an install problem, got: {msg}"
         );
+        assert!(
+            msg.contains("restart/reload server"),
+            "configured path must provide a client-neutral re-trigger action, got: {msg}"
+        );
     }
 
     #[test]
-    fn configured_path_message_does_not_print_the_same_path_twice() {
-        // `find_perl_interpreter` returns the configured path as the sole
-        // searched entry, so a naive join repeats it.
+    fn configured_path_message_prints_the_configured_path_once() {
         let configured = "/nonexistent/perl";
-        let msg =
-            perl_not_found_message(&[format!("configured path: {configured}")], Some(configured));
+        let msg = perl_not_found_message(Some(configured));
         assert_eq!(
             msg.matches(configured).count(),
             1,
             "configured path should appear exactly once, got: {msg}"
         );
-        assert!(!msg.contains("Also searched"), "nothing extra was searched, got: {msg}");
-    }
-
-    #[test]
-    fn dedup_does_not_suppress_entries_that_merely_start_with_the_configured_path() {
-        // A configured `/usr` is a substring of `/usr/local/bin`, which is a
-        // genuinely different location — a `contains` filter would eat it.
-        let msg = perl_not_found_message(
-            &["configured path: /usr".to_string(), "/usr/local/bin".to_string()],
-            Some("/usr"),
-        );
-        assert!(
-            msg.contains("Also searched: /usr/local/bin"),
-            "a distinct path that merely shares a prefix must survive, got: {msg}"
-        );
+        assert!(!msg.contains("Also searched"), "search detail belongs in logs, got: {msg}");
     }
 
     #[test]
@@ -519,20 +482,27 @@ mod tests {
     }
 
     #[test]
-    fn configured_path_message_still_reports_genuinely_extra_searched_entries() {
-        // Deduping must not swallow entries that add information.
-        let msg = perl_not_found_message(
-            &["configured path: /nonexistent/perl".to_string(), "PATH".to_string()],
-            Some("/nonexistent/perl"),
-        );
-        assert!(msg.contains("Also searched: PATH"), "extra entries must survive, got: {msg}");
+    fn configured_path_message_keeps_search_detail_out_of_the_toast() {
+        let msg = perl_not_found_message(Some("/nonexistent/perl"));
+        assert!(!msg.contains("PATH"), "search detail should remain in tracing, got: {msg}");
+    }
+
+    #[test]
+    fn interpreter_not_found_toasts_keep_the_actionable_text_compact() {
+        for msg in all_perl_interpreter_messages() {
+            assert!(
+                msg.chars().count() <= 240,
+                "toast is too long: {} chars: {msg}",
+                msg.chars().count()
+            );
+        }
     }
 
     #[test]
     fn empty_configured_path_falls_back_to_install_guidance() {
         // An empty string is not something the user can go check, so it must be
         // treated as "nothing configured" rather than producing "not found at ``".
-        let msg = perl_not_found_message(&["PATH".to_string()], Some(""));
+        let msg = perl_not_found_message(Some(""));
         assert!(msg.contains("Install Perl"), "empty config must give install advice, got: {msg}");
         assert!(!msg.contains("not found at"), "must not render an empty path, got: {msg}");
     }

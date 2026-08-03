@@ -8,7 +8,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -67,29 +67,29 @@ struct ProofSetSpec {
     commands: Vec<ProofSetCommand>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ProofSetCommand {
-    id: String,
-    program: String,
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProofSetCommand {
+    pub id: String,
+    pub program: String,
     #[serde(default)]
-    args: Vec<String>,
-    cwd: Option<PathBuf>,
-    candidate: Option<String>,
-    timeout_secs: Option<u64>,
-    out_dir: Option<PathBuf>,
+    pub args: Vec<String>,
+    pub cwd: Option<PathBuf>,
+    pub candidate: Option<String>,
+    pub timeout_secs: Option<u64>,
+    pub out_dir: Option<PathBuf>,
 }
 
-#[derive(Debug, Serialize)]
-struct ProofSetItem {
-    id: String,
-    receipt: CommandEvidenceReceipt,
+#[derive(Debug, Clone, Serialize)]
+pub struct ProofSetItem {
+    pub id: String,
+    pub receipt: CommandEvidenceReceipt,
 }
 
-#[derive(Debug, Serialize)]
-struct ProofSetReceipt {
-    schema_version: &'static str,
-    commands: Vec<ProofSetItem>,
-    result: ResultClass,
+#[derive(Debug, Clone, Serialize)]
+pub struct ProofSetReceipt {
+    pub schema_version: &'static str,
+    pub commands: Vec<ProofSetItem>,
+    pub result: ResultClass,
 }
 
 struct CapturedOutput {
@@ -161,8 +161,32 @@ fn run_proof_set_receipt(path: &Path) -> Result<ProofSetReceipt> {
         }
     }
 
-    let mut items = Vec::with_capacity(spec.commands.len());
-    for command in spec.commands {
+    run_proof_commands(spec.commands)
+}
+
+/// Execute a caller-supplied, ordered proof set and return typed evidence
+/// without printing or writing a second receipt. Integration callers consume
+/// this boundary so command identity and termination state remain intact.
+pub fn run_proof_commands(commands: Vec<ProofSetCommand>) -> Result<ProofSetReceipt> {
+    if commands.is_empty() {
+        bail!("proof-set must contain at least one command");
+    }
+
+    let mut ids = HashSet::new();
+    for command in &commands {
+        if command.id.trim().is_empty() {
+            bail!("proof-set command id must not be empty");
+        }
+        if !ids.insert(command.id.clone()) {
+            bail!("proof-set command id {:?} is duplicated", command.id);
+        }
+        if command.program.trim().is_empty() {
+            bail!("proof-set command {:?} must define a non-empty program", command.id);
+        }
+    }
+
+    let mut items = Vec::with_capacity(commands.len());
+    for command in commands {
         let id = command.id.clone();
         let receipt = execute(CommandEvidenceConfig {
             program: command.program.clone(),
@@ -183,6 +207,40 @@ fn run_proof_set_receipt(path: &Path) -> Result<ProofSetReceipt> {
         .find(|result| *result != ResultClass::Success)
         .unwrap_or(ResultClass::Success);
     Ok(ProofSetReceipt { schema_version: "command-proof-set.v1", commands: items, result })
+}
+
+/// Execute a proof set with every command rooted in the supplied synthetic
+/// worktree. Relative command working directories remain relative to that
+/// root; absolute working directories are rejected so the receipt cannot
+/// claim synthetic-tree proof for a command that ran elsewhere.
+pub fn run_proof_commands_in_dir(
+    commands: Vec<ProofSetCommand>,
+    synthetic_worktree: &Path,
+) -> Result<ProofSetReceipt> {
+    let commands = commands
+        .into_iter()
+        .map(|mut command| {
+            command.cwd = Some(match command.cwd.take() {
+                None => synthetic_worktree.to_path_buf(),
+                Some(cwd)
+                    if cwd.components().any(|component| {
+                        matches!(
+                            component,
+                            Component::Prefix(_) | Component::RootDir | Component::ParentDir
+                        )
+                    }) =>
+                {
+                    return Err(color_eyre::eyre::eyre!(
+                        "proof command {:?} must use a relative cwd without root or parent components",
+                        command.id
+                    ));
+                }
+                Some(cwd) => synthetic_worktree.join(cwd),
+            });
+            Ok(command)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    run_proof_commands(commands)
 }
 
 fn instrument_failure_receipt(command: &ProofSetCommand, error: String) -> CommandEvidenceReceipt {
@@ -861,6 +919,47 @@ mod tests {
         );
         let logs = fs::read_dir(&output)?.count();
         assert_eq!(logs, 4, "each command must retain stdout and stderr evidence");
+        Ok(())
+    }
+
+    #[test]
+    fn synthetic_proof_rejects_absolute_working_directories() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let error = run_proof_commands_in_dir(
+            vec![ProofSetCommand {
+                id: "absolute-cwd".to_string(),
+                program: "git".to_string(),
+                args: vec!["--version".to_string()],
+                cwd: Some(outside.path().to_path_buf()),
+                candidate: Some("candidate".to_string()),
+                timeout_secs: Some(10),
+                out_dir: None,
+            }],
+            root.path(),
+        )
+        .expect_err("absolute working directory must not escape synthetic proof");
+        assert!(error.to_string().contains("relative cwd"));
+        Ok(())
+    }
+
+    #[test]
+    fn synthetic_proof_rejects_parent_working_directories() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let error = run_proof_commands_in_dir(
+            vec![ProofSetCommand {
+                id: "parent-cwd".to_string(),
+                program: "git".to_string(),
+                args: vec!["--version".to_string()],
+                cwd: Some(PathBuf::from("..").join("outside")),
+                candidate: Some("candidate".to_string()),
+                timeout_secs: Some(10),
+                out_dir: None,
+            }],
+            root.path(),
+        )
+        .expect_err("parent working directory must not escape synthetic proof");
+        assert!(error.to_string().contains("parent components"));
         Ok(())
     }
 }
