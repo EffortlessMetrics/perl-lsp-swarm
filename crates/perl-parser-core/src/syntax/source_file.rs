@@ -12,22 +12,78 @@ use std::path::Path;
 /// while being cheap to scan.
 const BINARY_PROBE_BYTES: usize = 4096;
 
+/// Minimum ratio of NUL bytes (within the probe window) required to classify
+/// content as binary.
+///
+/// Real binary files are dominated by NUL bytes (often >10%), while a
+/// legitimate Perl file that carries a small amount of binary data before a
+/// `__DATA__`/`__END__` token has a handful at most. Requiring >5% NUL
+/// density eliminates single-NUL false positives while still catching compact
+/// binary signatures like ZIP (`PK\x03\x04…`, ~14% NUL) and ELF (~56% NUL)
+/// within the probe window (#5209).
+const BINARY_NUL_RATIO: f64 = 0.05;
+
 /// Returns `true` if `text` appears to contain binary (non-text) content.
 ///
-/// The heuristic checks the first [`BINARY_PROBE_BYTES`] bytes for null bytes
-/// (`\0`).  A single null byte is sufficient to classify the content as
-/// binary: valid Perl (or any UTF-8 text) never contains null bytes outside of
-/// raw string literals, and real-world binary formats (ELF, PE/COFF, ZIP,
-/// PNG, …) all begin with or contain null bytes in their headers.
+/// The heuristic scans the first [`BINARY_PROBE_BYTES`] bytes (or the region
+/// before a `__DATA__`/`__END__` token, whichever is smaller) for null bytes
+/// (`\0`). A NUL-byte ratio above [`BINARY_NUL_RATIO`] classifies the content
+/// as binary.
 ///
 /// # Why null bytes?
 ///
-/// - Fast: a single `memchr`-style scan of at most 4 KB.
-/// - Low false-positive rate: Perl source virtually never contains `\0`.
-/// - High true-positive rate: every common compiled binary contains `\0`.
+/// - Fast: a scan of at most 4 KB.
+/// - Low false-positive rate: Perl source virtually never contains `\0`. The
+///   only legitimate case is binary data in `__DATA__`/`__END__` sections,
+///   which is excluded from the scan window.
+/// - High true-positive rate: every common compiled binary contains many `\0`.
+///
+/// # `__DATA__`/`__END__` handling
+///
+/// Perl files may carry binary blobs after a `__DATA__` or `__END__` token
+/// (packed records, images, serialized data). Such files are legitimate Perl
+/// source for everything before the token, so the scan stops at the first
+/// occurrence of either token (#5209).
 #[must_use]
 pub fn is_binary_content(text: &str) -> bool {
-    text.bytes().take(BINARY_PROBE_BYTES).any(|b| b == 0)
+    // Find the probe window: everything before __DATA__/__END__, capped at
+    // BINARY_PROBE_BYTES. If neither token is present, use the full probe.
+    let probe_bytes = text
+        .get(..BINARY_PROBE_BYTES.min(text.len()))
+        .unwrap_or(text);
+    let window = data_section_start(probe_bytes).unwrap_or(probe_bytes.len());
+
+    let scan = &probe_bytes[..window];
+    if scan.is_empty() {
+        return false;
+    }
+    let nul_count = scan.bytes().filter(|&b| b == 0).count();
+    let ratio = nul_count as f64 / scan.len() as f64;
+    ratio > BINARY_NUL_RATIO
+}
+
+/// Returns the byte offset of the first `__DATA__` or `__END__` token in
+/// `text` that appears at the start of a line, or `None` if neither is present.
+///
+/// Both tokens must appear on their own line to be recognized by Perl, so we
+/// only match line-start occurrences.
+fn data_section_start(text: &str) -> Option<usize> {
+    text.lines()
+        .scan(0usize, |offset, line| {
+            let trimmed = line.trim_start();
+            let leading = line.len() - trimmed.len();
+            let start = *offset + leading;
+            *offset += line.len() + 1; // +1 for the newline
+            Some((start, trimmed))
+        })
+        .find_map(|(start, line)| {
+            let rest = line.split_ascii_whitespace().next().unwrap_or("");
+            if rest == "__DATA__" || rest == "__END__" {
+                Some(start)
+            } else {
+                None
+            }
+        })
 }
 
 /// Canonical Perl source file extensions.
@@ -235,15 +291,22 @@ mod tests {
 
     #[test]
     fn binary_content_null_byte_is_detected() {
-        // Simulate a binary file arriving as a string with embedded null bytes
+        // Simulate a binary file arriving as a string with embedded null bytes.
+        // Many NULs well above the ratio threshold.
         let binary = "PK\x00\x03some binary content\x00\x00\x00";
-        assert!(is_binary_content(binary), "null bytes must trigger binary guard");
+        assert!(is_binary_content(binary), "null-byte-heavy content must trigger binary guard");
     }
 
     #[test]
-    fn binary_content_single_null_byte_triggers_guard() {
+    fn binary_content_single_null_byte_does_not_trigger_guard() {
+        // A single stray NUL byte in otherwise-clean Perl source must NOT be
+        // classified as binary — the ratio heuristic requires >1% NUL density
+        // (#5209).
         let text = "use strict;\x00\nuse warnings;\n";
-        assert!(is_binary_content(text), "single null byte must trigger binary guard");
+        assert!(
+            !is_binary_content(text),
+            "single null byte in clean source must not trigger binary guard"
+        );
     }
 
     #[test]
@@ -277,11 +340,16 @@ mod tests {
     }
 
     #[test]
-    fn binary_content_null_byte_at_probe_boundary() {
-        // A null byte exactly at the last probe byte must still be detected
-        let prefix = "a".repeat(BINARY_PROBE_BYTES - 1);
-        let text = format!("{prefix}\x00rest");
-        assert!(is_binary_content(&text), "null byte at probe boundary must trigger binary guard");
+    fn binary_content_high_nul_ratio_at_probe_boundary_is_detected() {
+        // Many NUL bytes near the end of the probe window, dense enough to
+        // exceed the ratio threshold, must still be detected.
+        let prefix = "a".repeat(BINARY_PROBE_BYTES - 250);
+        let nuls = "\x00".repeat(250);
+        let text = format!("{prefix}{nuls}rest");
+        assert!(
+            is_binary_content(&text),
+            "high-density NUL region within probe window must trigger binary guard"
+        );
     }
 
     #[test]
@@ -296,5 +364,37 @@ mod tests {
         // ZIP files start with PK\x03\x04
         let zip_like = "PK\x03\x04\x14\x00\x00\x00\x08\x00";
         assert!(is_binary_content(zip_like), "ZIP-like header with null bytes must be binary");
+    }
+
+    #[test]
+    fn binary_content_data_section_with_binary_is_not_binary() {
+        // A Perl file with binary data after __DATA__ must not be flagged —
+        // the scan stops at the __DATA__ token (#5209).
+        let perl = "package Foo;\nuse strict;\n\n1;\n__DATA__\n\x00\x00\x00binary blob\x00";
+        assert!(
+            !is_binary_content(perl),
+            "binary data after __DATA__ must not trigger binary guard"
+        );
+    }
+
+    #[test]
+    fn binary_content_end_section_with_binary_is_not_binary() {
+        // Same for __END__.
+        let perl = "package Bar;\nuse strict;\n\n1;\n__END__\n\x00\x00\x00\x00\x00\x00blob";
+        assert!(
+            !is_binary_content(perl),
+            "binary data after __END__ must not trigger binary guard"
+        );
+    }
+
+    #[test]
+    fn binary_content_nul_before_data_section_still_ratio_gated() {
+        // A few NULs before __DATA__ must not trigger unless they exceed the
+        // ratio threshold.
+        let perl = "package Foo;\nuse strict;\x00\n1;\n__DATA__\nblob";
+        assert!(
+            !is_binary_content(perl),
+            "single NUL before __DATA__ must not trigger binary guard"
+        );
     }
 }
