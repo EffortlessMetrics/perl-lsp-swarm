@@ -43,10 +43,12 @@ fn test_vscode_disabled_features_match_server_registry() -> TestResult {
         BuildFlags::all().to_feature_ids().into_iter().map(str::to_owned).collect::<Vec<_>>();
     picker_ids.sort_unstable();
     server_ids.sort_unstable();
-    assert_eq!(
-        picker_ids, server_ids,
-        "VS Code disabledFeatures picker must match the server registry"
-    );
+    if picker_ids != server_ids {
+        return Err(format!(
+            "VS Code disabledFeatures picker must match the server registry: picker={picker_ids:?}, server={server_ids:?}"
+        )
+        .into());
+    }
     Ok(())
 }
 
