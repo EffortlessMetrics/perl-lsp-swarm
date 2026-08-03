@@ -3370,6 +3370,28 @@ impl<'a> BodyBuilder2<'a> {
                 self.alloc_expr(HirExpr::Call { args: arg_ids, ast_kind: kind_name }, range)
             }
 
+            NodeKind::MethodCall { object, method, args } => {
+                // Lower method call with structured children so variable
+                // reads in object/arg positions produce correct PIR facts.
+                // The method invocation itself is modeled as a Call (not
+                // Opaque) so effect analysis can see the call site (#5680).
+                let mut arg_ids = vec![self.lower_expr(object)];
+                arg_ids.extend(args.iter().map(|a| self.lower_expr(a)));
+                self.alloc_expr(
+                    HirExpr::Call { args: arg_ids, ast_kind: "MethodCall".to_string() },
+                    range,
+                )
+            }
+
+            NodeKind::AmperCall { name: _, args } => {
+                // Lower ampersand call (&foo) with structured args (#5680).
+                let arg_ids: Vec<HirExprId> = args.iter().map(|a| self.lower_expr(a)).collect();
+                self.alloc_expr(
+                    HirExpr::Call { args: arg_ids, ast_kind: "AmperCall".to_string() },
+                    range,
+                )
+            }
+
             _ => {
                 // Everything else: emit Opaque. This is the "fail closed" path.
                 let kind_name = node.kind.kind_name().to_string();
