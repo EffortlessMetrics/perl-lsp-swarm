@@ -189,6 +189,7 @@ pub(crate) fn route_index_access<T>(_coordinator: Option<&T>) -> IndexAccessMode
 #[cfg(feature = "workspace")]
 fn degradation_reason_str(reason: &DegradationReason) -> &'static str {
     match reason {
+        DegradationReason::Cancelled => "index degraded (cancelled)",
         DegradationReason::ParseStorm { .. } => "index degraded (parse storm)",
         DegradationReason::IoError { .. } => "index degraded (IO error)",
         DegradationReason::ScanTimeout { .. } => "index degraded (scan timeout)",
