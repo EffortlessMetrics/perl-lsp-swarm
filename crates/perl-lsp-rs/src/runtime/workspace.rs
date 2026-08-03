@@ -2486,6 +2486,20 @@ impl LspServer {
                 }
                 readiness_receipt.lock().log();
                 send_index_ready_notification(&outbound, false);
+            } else if work_done_progress
+                && GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id)
+            {
+                let elapsed_ms = budget_start.elapsed().as_millis() as u64;
+                coordinator.transition_to_degraded(DegradationReason::Cancelled);
+                coordinator.record_early_exit(
+                    EarlyExitReason::Cancelled,
+                    elapsed_ms,
+                    indexed_files,
+                    total_files,
+                );
+                send_progress_end(&outbound, "Indexing cancelled");
+                readiness_receipt.lock().log();
+                send_index_ready_notification(&outbound, false);
             } else {
                 indexing_receipt.log(budget_start.elapsed(), None);
                 let resource_limited = matches!(
