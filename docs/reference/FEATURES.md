@@ -163,19 +163,7 @@ This document provides a comprehensive list of all features supported by the Pur
 
 ## ⚠️ Known Limitations (~0.5%)
 
-#### 1. Bareword Qualified Names in Expressions
-```perl
-# WORKS as statement:
-Foo::Bar->new();
-
-# FAILS in expression:
-my $x = Foo::Bar->new();
-
-# WORKAROUND:
-my $x = "Foo::Bar"->new();
-```
-
-#### 2. User-Defined Functions Without Parentheses
+#### 1. User-Defined Functions Without Parentheses
 ```perl
 # FAILS:
 my_function arg1, arg2;
