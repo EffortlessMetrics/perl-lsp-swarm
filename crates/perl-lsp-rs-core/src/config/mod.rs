@@ -3770,6 +3770,46 @@ profile = "recommended"
     }
 
     #[test]
+    fn client_invalid_enum_inspection_covers_all_user_visible_engine_settings() {
+        let invalid = ServerConfig::invalid_client_setting_values(&serde_json::json!({
+            "critic": {
+                "engine": "nativ",
+                "profile": "recomended"
+            },
+            "formatting": { "engine": "perltide" }
+        }));
+
+        assert_eq!(
+            invalid,
+            vec![
+                InvalidClientSetting {
+                    setting: "critic.engine",
+                    value: "nativ".to_string(),
+                    valid_options: CRITIC_ENGINE_VALID_OPTIONS,
+                },
+                InvalidClientSetting {
+                    setting: "critic.profile",
+                    value: "recomended".to_string(),
+                    valid_options: NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
+                },
+                InvalidClientSetting {
+                    setting: "formatting.engine",
+                    value: "perltide".to_string(),
+                    valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                },
+            ]
+        );
+
+        assert!(
+            ServerConfig::invalid_client_setting_values(&serde_json::json!({
+                "critic": { "engine": " LEGACY ", "profile": "STRICT" },
+                "formatting": { "engine": "external_perltidy" }
+            }))
+            .is_empty()
+        );
+    }
+
+    #[test]
     fn json_invalid_perl5lib_precedence_warns_and_keeps_current() {
         let mut config = WorkspaceConfig {
             perl5lib_precedence: Perl5LibPrecedence::Append,
