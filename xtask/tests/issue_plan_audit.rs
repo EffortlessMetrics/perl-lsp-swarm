@@ -49,10 +49,10 @@ fn drift_fixture_reports_findings_but_still_exits_zero() -> Result<()> {
     // Report-only: findings are surfaced, but the command never fails.
     assert!(output.status.success(), "report-only audit must exit 0 even with findings");
     let stdout = String::from_utf8(output.stdout)?;
-    assert!(stdout.contains("builder-ready-on-closed"), "missing closed-drift finding: {stdout}");
+    assert!(stdout.contains("work-packet-on-closed"), "missing closed-drift finding: {stdout}");
     assert!(
-        stdout.contains("routing-label-contradiction"),
-        "missing routing-contradiction finding: {stdout}"
+        stdout.contains("work-packet-missing-section"),
+        "missing work-packet section finding: {stdout}"
     );
     assert!(stdout.contains("placeholder-issue-ref"), "missing #0000 finding: {stdout}");
     Ok(())
