@@ -921,7 +921,14 @@ impl ParseWorker {
     /// installing the worker and fall back to the synchronous path if it is
     /// `false`.
     pub(crate) fn is_operational(&self) -> bool {
-        !self.handles.lock().is_empty()
+        // A worker pool is operational only if at least one worker thread is
+        // still alive. Checking handle presence alone is insufficient: a dead
+        // thread (panic/exit) leaves its JoinHandle in the Vec, so
+        // `!is_empty()` would report operational even when no worker is
+        // actually running. Using `is_finished()` filters out dead handles
+        // (#3664).
+        let handles = self.handles.lock();
+        handles.iter().any(|h| !h.is_finished())
     }
 
     /// Enqueue (or coalesce-replace) a parse job for `normalized_uri`.
@@ -2097,6 +2104,33 @@ mod tests {
             !worker.is_operational(),
             "zero live handles must report not-operational -- this is exactly the state \
              `install_default_parse_worker` must detect and refuse to install"
+        );
+    }
+
+    /// Defense-in-depth for #3664: `is_operational` must report `false` when
+    /// all worker threads have died (finished JoinHandles still present in the
+    /// Vec). Before the fix, `is_operational` checked only handle presence
+    /// (`!is_empty()`), so a dead-thread pool would falsely report
+    /// operational. Now it checks `is_finished()` on each handle.
+    #[test]
+    fn is_operational_reports_false_when_all_threads_are_finished() {
+        let uri = "file:///dead-worker.pl";
+        let (documents, _generation_handle) = one_doc(uri, "my $a = 1;\n");
+        let (cb, _calls) = counting_callback();
+        let worker = ParseWorker::spawn(documents, ast_cache(), cb);
+        assert!(worker.is_operational(), "freshly spawned pool must be operational");
+
+        // Simulate worker death: replace live handles with a handle to a
+        // thread that exits immediately. After a brief sleep the thread will
+        // have exited, so is_finished() returns true even though the handle
+        // is still present in the Vec.
+        let done_handle = std::thread::Builder::new().spawn(|| {}).expect("spawn dummy thread");
+        *worker.handles.lock() = vec![done_handle];
+        // Wait for the dummy thread to exit.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            !worker.is_operational(),
+            "a pool with only finished (dead) handles must report not-operational (#3664)"
         );
     }
 
