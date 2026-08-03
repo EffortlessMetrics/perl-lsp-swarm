@@ -1,6 +1,6 @@
 # Merge-train protocol (operator-run, no auto-merge)
 
-This protocol defines a **bounded merge-train check-and-merge flow** so batch/admin merges do not treat `master` as the first integration branch.
+This protocol defines a **bounded merge-train check-and-merge flow** so batch/admin merges do not treat `main` as the first integration branch.
 
 It is intentionally an **operator playbook**, not a merge bot:
 
@@ -34,8 +34,8 @@ readiness through lifecycle labels.
 A PR is train-eligible only if all required conditions hold at planning time:
 
 1. **Current head SHA known** and recorded in the train plan.
-2. **No active `needs-*` state** (including `needs-ci-fix`, `needs-builder-fix`, etc.).
-3. **CI green**, or **expected-skip-normalized green** (path-conditioned skip that queue reconciler treats as merge-eligible).
+2. **Review and thread convergence is current**, with no unresolved actionable findings.
+3. **Required checks are green**, or an expected-skip result is explicitly explained by live policy.
 4. **Mergeable now**, or explicitly marked as **intentionally ordered** behind a PR expected to resolve dependency/conflict ordering.
 
 If any candidate violates these requirements, the train is not launched.
@@ -52,11 +52,11 @@ Do not mix profiles inside one train run. If scope diverges, split into multiple
 
 ## Train execution checks (required)
 
-Start from **current green `master`** (or `main`, whichever is canonical in the repo mirror).
+Start from **current green `main`**.
 
 For the planned PR order:
 
-1. Check out/update base to current green branch tip.
+1. Check out/update base to the current green `main` tip.
 2. Apply/simulate each PR in order (local merge/cherry-pick simulation is sufficient).
 3. Run conflict-marker check.
 4. Run formatting check.
@@ -85,7 +85,7 @@ Abort the train immediately on any of the following:
 - stale candidate SHA (candidate head changed since plan creation)
 - failed conflict-marker/fmt/pr-fast check
 - unexpected skip outcome (skip not explained by expected path conditioning)
-- base branch no longer green (new red `master` signal)
+- base branch no longer green (new red `main` signal)
 
 On stop, do not continue with remaining candidates.
 
@@ -120,11 +120,11 @@ Suggested template:
 
 ## Recommended operator flow
 
-1. Reconcile queue labels (`merge-ready`/`needs-*`) in dry-run mode.
-2. Select candidates that satisfy requirements.
+1. Capture one protected-preflight/current-GitHub-facts packet per candidate.
+2. Select candidates whose head, review, required checks, and mergeability facts satisfy the requirements.
 3. Choose train profile (3/5/10).
-4. Build ordered plan with explicit SHAs.
-5. Simulate/apply in a disposable integration branch/worktree from green `master`.
+4. Build an ordered plan with explicit SHAs.
+5. Simulate/apply in a disposable integration branch/worktree from green `main`.
 6. Run required checks.
 7. If pass, perform manual merges in tested order.
 8. Post train receipt summary.

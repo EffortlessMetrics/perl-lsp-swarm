@@ -85,8 +85,11 @@ Verification statuses:
 - `blocked`
 - `missing`
 
-## Rollout mode
+## Current operation
 
-Reconciliation defaults to advisory dry-run. Apply mode can be enabled explicitly.
+Use `merge-ready emit`/`verify` for receipt validation and the protected
+GitHub preflight for the live candidate, review, required-check, and
+mergeability snapshot. There is no apply-mode reconciler: operators do not
+repair readiness through lifecycle labels.
 
 See also: [Merge-train protocol](./merge-train-protocol.md).
