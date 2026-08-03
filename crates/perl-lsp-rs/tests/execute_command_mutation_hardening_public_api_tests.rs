@@ -744,11 +744,8 @@ fn test_comprehensive_edge_cases() -> TestResult {
 fn test_supported_commands_structure() -> TestResult {
     let commands = get_supported_commands();
 
-    // MUTATION KILLER: Verify not empty/default list
-    assert!(!commands.is_empty(), "Supported commands should not be empty");
-    assert_eq!(commands.len(), 20, "Should have exactly 20 supported commands");
-
-    // Verify specific commands are present
+    // Verify specific commands are present — keep this list complete and in sync
+    // with get_supported_commands() in provider.rs / capabilities.rs.
     let expected_commands = vec![
         "perl.runTests",
         "perl.runFile",
@@ -771,6 +768,16 @@ fn test_supported_commands_structure() -> TestResult {
         "perl.previewPackageRename",
         "perl.explainMissingModuleLookup",
     ];
+
+    // MUTATION KILLER: Verify not empty/default list and exact count.
+    // Assert against expected_commands.len() so adding a command here is the
+    // only edit required — the count assertion cannot drift independently.
+    assert!(!commands.is_empty(), "Supported commands should not be empty");
+    assert_eq!(
+        commands.len(),
+        expected_commands.len(),
+        "get_supported_commands() count must match expected_commands list"
+    );
 
     for expected in &expected_commands {
         assert!(commands.contains(&expected.to_string()), "Should contain command: {}", expected);
