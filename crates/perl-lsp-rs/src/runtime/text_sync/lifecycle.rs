@@ -89,6 +89,24 @@ impl LspServer {
 
             tracing::debug!("Document saved: {}", uri);
 
+            // When the client sends the full saved text in params.text,
+            // reconcile the document's content to match (#5679). This
+            // ensures diagnostics reflect the on-disk content (which may
+            // differ from the in-memory buffer if an external process
+            // modified the file).
+            if let Some(saved_text) = params.pointer("/text").and_then(|v| v.as_str()) {
+                let mut documents = self.documents.lock();
+                if let Some(doc) = self.get_document_mut(&mut documents, &normalized_uri) {
+                    if doc.text.as_str() != saved_text {
+                        tracing::debug!(
+                            uri,
+                            "didSave text differs from in-memory buffer; reconciling"
+                        );
+                        doc.update_content(saved_text, doc.version + 1);
+                    }
+                }
+            }
+
             // Re-run diagnostics on save to catch any changes. Keep this
             // snapshot lock scoped: the reconciliation below takes the same
             // lock again after diagnostics have been published.
