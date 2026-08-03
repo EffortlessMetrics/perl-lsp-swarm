@@ -498,12 +498,11 @@ fn join_streams_with_deadline(
         &mut process_reaped,
         &mut termination_note,
     )?;
-    let stderr_deadline = timeout.map(|bound| Instant::now() + bound);
     let stderr = join_stream_with_deadline(
         stderr,
         "stderr",
         child,
-        stderr_deadline,
+        deadline,
         &mut timed_out,
         &mut process_reaped,
         &mut termination_note,
