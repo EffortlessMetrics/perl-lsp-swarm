@@ -380,7 +380,7 @@ pub fn non_rust_inventory_check(root: &Path) -> Result<()> {
     let docs_path = root.join("docs/policy/NON_RUST_INVENTORY.md");
     let actual = fs::read_to_string(&docs_path)
         .with_context(|| format!("reading committed inventory {}", docs_path.display()))?;
-    if actual != expected {
+    if normalize_line_endings(&actual) != normalize_line_endings(&expected) {
         bail!(
             "non-Rust inventory is stale at {}; run `cargo xtask non-rust inventory` to regenerate it",
             docs_path.display()
@@ -388,6 +388,10 @@ pub fn non_rust_inventory_check(root: &Path) -> Result<()> {
     }
     println!("Non-Rust inventory is current: {}", docs_path.display());
     Ok(())
+}
+
+fn normalize_line_endings(value: &str) -> String {
+    value.replace("\r\n", "\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -2327,6 +2331,10 @@ mod tests {
         non_rust_inventory_check(temp.path())?;
 
         let docs_path = temp.path().join("docs/policy/NON_RUST_INVENTORY.md");
+        let current = fs::read_to_string(&docs_path)?;
+        fs::write(&docs_path, current.replace('\n', "\r\n"))?;
+        non_rust_inventory_check(temp.path())?;
+
         fs::write(&docs_path, "stale\n")?;
         let error = non_rust_inventory_check(temp.path())
             .err()
