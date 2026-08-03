@@ -817,211 +817,211 @@
     "commands": [
       {
         "command": "perl-lsp.restart",
-        "title": "Restart Perl Language Server",
+        "title": "%command.restart.title%",
         "category": "Perl",
         "icon": "$(refresh)"
       },
       {
         "command": "perl-lsp.openDemoProject",
-        "title": "Open Demo Project",
+        "title": "%command.openDemoProject.title%",
         "category": "Perl",
         "icon": "$(folder-opened)"
       },
       {
         "command": "perl-lsp.showVersion",
-        "title": "Show Server Version",
+        "title": "%command.showVersion.title%",
         "category": "Perl",
         "icon": "$(info)"
       },
       {
         "command": "perl-lsp.showOutput",
-        "title": "Show Output Channel",
+        "title": "%command.showOutput.title%",
         "category": "Perl",
         "icon": "$(output)"
       },
       {
         "command": "perl-lsp.showStatusMenu",
-        "title": "Show Status Menu",
+        "title": "%command.showStatusMenu.title%",
         "category": "Perl",
         "icon": "$(menu)"
       },
       {
         "command": "perl-lsp.reinstall",
-        "title": "Reinstall Server Binary",
+        "title": "%command.reinstall.title%",
         "category": "Perl",
         "icon": "$(cloud-download)"
       },
       {
         "command": "perl-lsp.checkForUpdate",
-        "title": "Check for Binary Updates",
+        "title": "%command.checkForUpdate.title%",
         "category": "Perl",
         "icon": "$(sync)"
       },
       {
         "command": "perl-lsp.organizeImports",
-        "title": "Organize Use Statements",
+        "title": "%command.organizeImports.title%",
         "category": "Perl",
         "icon": "$(organization)"
       },
       {
         "command": "perl-lsp.runTests",
-        "title": "Run Tests in Current File",
+        "title": "%command.runTests.title%",
         "category": "Perl",
         "icon": "$(beaker)"
       },
       {
         "command": "perl-lsp.runPerlCritic",
-        "title": "Run Critic",
+        "title": "%command.runPerlCritic.title%",
         "category": "Perl",
         "icon": "$(checklist)"
       },
       {
         "command": "perl-lsp.setPerlCriticSeverity",
-        "title": "Set Critic Severity",
+        "title": "%command.setPerlCriticSeverity.title%",
         "category": "Perl",
         "icon": "$(symbol-numeric)"
       },
       {
         "command": "perl-lsp.extractVariable",
-        "title": "Extract Variable",
+        "title": "%command.extractVariable.title%",
         "category": "Perl",
         "icon": "$(symbol-variable)"
       },
       {
         "command": "perl-lsp.extractMethod",
-        "title": "Extract Method",
+        "title": "%command.extractMethod.title%",
         "category": "Perl",
         "icon": "$(symbol-method)"
       },
       {
         "command": "perl-lsp.showRefactoringOptions",
-        "title": "Show Refactoring Options",
+        "title": "%command.showRefactoringOptions.title%",
         "category": "Perl",
         "icon": "$(wrench)"
       },
       {
         "command": "perl-lsp.showWhatsNew",
-        "title": "Show What's New",
+        "title": "%command.showWhatsNew.title%",
         "category": "Perl",
         "icon": "$(star-empty)"
       },
       {
         "command": "perl-lsp.createDebugConfig",
-        "title": "Create Debug Configuration",
+        "title": "%command.createDebugConfig.title%",
         "category": "Perl",
         "icon": "$(debug-alt)"
       },
       {
         "command": "perl-lsp.runHealthCheck",
-        "title": "Run Health Check",
+        "title": "%command.runHealthCheck.title%",
         "category": "Perl",
         "icon": "$(pulse)"
       },
       {
         "command": "perl-lsp.checkSyntax",
-        "title": "Check Syntax",
+        "title": "%command.checkSyntax.title%",
         "category": "Perl",
         "icon": "$(check-all)"
       },
       {
         "command": "perl-lsp.runCurrentTest",
-        "title": "Run Current Test",
+        "title": "%command.runCurrentTest.title%",
         "category": "Perl",
         "icon": "$(play)"
       },
       {
         "command": "perl-lsp.runTestAtCursor",
-        "title": "Run Test at Cursor",
+        "title": "%command.runTestAtCursor.title%",
         "category": "Perl",
         "icon": "$(run)"
       },
       {
         "command": "perl-lsp.runAllTests",
-        "title": "Run All Tests",
+        "title": "%command.runAllTests.title%",
         "category": "Perl",
         "icon": "$(beaker)"
       },
       {
         "command": "perl-lsp.formatDocument",
-        "title": "Format Document",
+        "title": "%command.formatDocument.title%",
         "category": "Perl",
         "icon": "$(list-flat)"
       },
       {
         "command": "perl-lsp.showIncPaths",
-        "title": "Show @INC Paths",
+        "title": "%command.showIncPaths.title%",
         "category": "Perl",
         "icon": "$(list-tree)"
       },
       {
         "command": "perl-lsp.openModule",
-        "title": "Open Module",
+        "title": "%command.openModule.title%",
         "category": "Perl",
         "icon": "$(file-code)"
       },
       {
         "command": "perl-lsp.showParserAst",
-        "title": "Show Parser AST",
+        "title": "%command.showParserAst.title%",
         "category": "Perl",
         "icon": "$(symbol-structure)"
       },
       {
         "command": "perl-lsp.openConfigurationGuide",
-        "title": "Open Configuration Guide",
+        "title": "%command.openConfigurationGuide.title%",
         "category": "Perl",
         "icon": "$(gear)"
       },
       {
         "command": "perl-lsp.explainProviderDecision",
-        "title": "Explain Provider Decision",
+        "title": "%command.explainProviderDecision.title%",
         "category": "Perl",
         "icon": "$(debug)"
       },
       {
         "command": "perl-lsp.previewSafeDelete",
-        "title": "Preview Safe Delete",
+        "title": "%command.previewSafeDelete.title%",
         "category": "Perl",
         "icon": "$(shield)"
       },
       {
         "command": "perl-lsp.previewPackageRename",
-        "title": "Preview Package Rename",
+        "title": "%command.previewPackageRename.title%",
         "category": "Perl",
         "icon": "$(symbol-method)"
       },
       {
         "command": "perl-lsp.copyProviderDecisionReceipt",
-        "title": "Copy Provider Decision Receipt",
+        "title": "%command.copyProviderDecisionReceipt.title%",
         "category": "Perl",
         "icon": "$(copy)"
       },
       {
         "command": "perl-lsp.showWorkspaceTrustReport",
-        "title": "Show Workspace Trust Report",
+        "title": "%command.showWorkspaceTrustReport.title%",
         "category": "Perl",
         "icon": "$(checklist)"
       },
       {
         "command": "perl-lsp.explainMissingModuleLookup",
-        "title": "Explain Missing Module Lookup",
+        "title": "%command.explainMissingModuleLookup.title%",
         "category": "Perl",
         "icon": "$(search)"
       },
       {
         "command": "perl-lsp.explainDiagnostic",
-        "title": "Explain This Diagnostic",
+        "title": "%command.explainDiagnostic.title%",
         "category": "Perl",
         "icon": "$(comment-discussion)"
       },
       {
         "command": "perl-lsp.reportIssue",
-        "title": "Report Issue",
+        "title": "%command.reportIssue.title%",
         "category": "Perl",
         "icon": "$(github)"
       },
       {
         "command": "perl-lsp.previewPod",
-        "title": "Preview POD",
+        "title": "%command.previewPod.title%",
         "category": "Perl",
         "icon": "$(preview)"
       }
