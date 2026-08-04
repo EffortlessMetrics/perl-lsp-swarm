@@ -441,7 +441,20 @@ fn find_topmost_ledger_version(content: &str) -> Option<String> {
 /// can backfill the actual publish date if needed.
 fn today_iso_date() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    // On a clock-skew (pre-epoch system time), log a warning instead of
+    // silently falling back to 1970-01-01 via unwrap_or_default() (#2136).
+    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(e) => {
+            eprintln!(
+                "warning: system clock is before UNIX epoch ({}s); \
+                 version-sync date check may produce incorrect results",
+                e.duration().as_secs()
+            );
+            // Best effort: use the absolute duration to compute a plausible date.
+            -(e.duration().as_secs() as i64)
+        }
+    };
     iso_date_from_unix_days(now.div_euclid(86_400))
 }
 
