@@ -137,10 +137,10 @@ function main() {
   let restoreStagedServer = () => {};
   try {
     restoreStagedServer = stageServerForPackage(serverPath);
-    const packageResult = runNpm(
-      ['run', 'package'],
-      { ...process.env, PERL_LSP_CURRENT_SOURCE_SMOKE: '1' },
-    );
+    const packageResult = runNpm(['run', 'package'], {
+      ...process.env,
+      PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
+    });
     if (packageResult.status !== 0) {
       smokeStatus = packageResult.status ?? 1;
     } else {

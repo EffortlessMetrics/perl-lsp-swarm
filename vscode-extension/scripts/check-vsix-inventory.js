@@ -106,11 +106,7 @@ function compareInventory(actual, baseline, platform = process.platform, options
     ) {
       violations.push(`file ${file} grew from ${baseline.files[file]} to ${bytes} bytes`);
     }
-    if (
-      fileTarget !== null &&
-      fileTarget !== target &&
-      !Object.hasOwn(baseline.files, file)
-    ) {
+    if (fileTarget !== null && fileTarget !== target && !Object.hasOwn(baseline.files, file)) {
       violations.push(`unexpected foreign-platform packaged file: ${file}`);
     }
   }
@@ -140,9 +136,7 @@ function main() {
     return;
   }
   const allowedFiles =
-    process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1'
-      ? [currentSourceBundleFile()]
-      : [];
+    process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1' ? [currentSourceBundleFile()] : [];
   const violations = compareInventory(actual, baseline, process.platform, {
     allowedFiles,
     arch: process.arch,
