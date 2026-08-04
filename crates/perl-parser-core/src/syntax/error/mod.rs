@@ -657,13 +657,6 @@ pub struct RecoverySalvageProfile {
     pub catastrophic: bool,
     /// Number of `ParseError::Recovered` diagnostics observed.
     pub recovered_count: usize,
-    /// Number of blocking diagnostics that are not `ParseError::Recovered` —
-    /// e.g. `SyntaxError`, `UnexpectedToken`, `UnexpectedEof`.
-    ///
-    /// These have `blocks_clean_parse() == true` but do not produce a
-    /// `NodeKind::Error` AST node, so they were previously invisible to the
-    /// corpus gate.  A non-zero value here means the file is not `Clean`.
-    pub blocking_non_recovered_count: usize,
     /// Number of `NodeKind::Error` nodes observed in the AST.
     pub error_node_count: usize,
     /// Message from the earliest unrecovered `ERROR` node, if any.
@@ -705,10 +698,7 @@ impl RecoverySalvageProfile {
         // Error node and are not the structured-recovery variant. This catches
         // SyntaxError, UnexpectedToken, UnexpectedEof, etc. which were
         // previously invisible to the gate (they fell through to `Clean`).
-        let blocking_non_recovered_count = diagnostics
-            .iter()
-            .filter(|e| e.blocks_clean_parse() && !matches!(e, ParseError::Recovered { .. }))
-            .count();
+        let blocking_non_recovered_count = count_blocking_non_recovered(diagnostics);
 
         let class = if catastrophic {
             RecoverySalvageClass::CatastrophicFailure
@@ -723,12 +713,24 @@ impl RecoverySalvageProfile {
         Self {
             catastrophic,
             recovered_count,
-            blocking_non_recovered_count,
             error_node_count,
             first_unrecovered_error_node,
             class,
         }
     }
+}
+
+/// Count blocking diagnostics that are not structured recovery diagnostics.
+///
+/// This remains a standalone helper so adding the corpus-gate signal does not
+/// change the public field layout of [`RecoverySalvageProfile`].
+pub fn count_blocking_non_recovered(diagnostics: &[ParseError]) -> usize {
+    diagnostics
+        .iter()
+        .filter(|error| {
+            error.blocks_clean_parse() && !matches!(error, ParseError::Recovered { .. })
+        })
+        .count()
 }
 
 impl ParseOutput {

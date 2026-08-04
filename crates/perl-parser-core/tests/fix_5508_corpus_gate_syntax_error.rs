@@ -10,13 +10,13 @@
 /// This test file contains discriminating checks that:
 /// 1. Confirm a parse producing only `SyntaxError` diagnostics lands in
 ///    `StructuredRecoveryOnly`, not `Clean`.
-/// 2. Confirm `blocking_non_recovered_count` is populated for those
-///    diagnostics.
+/// 2. Confirm the blocking non-recovered helper counts those diagnostics.
 /// 3. Confirm that a clean parse still returns `Clean`.
 /// 4. Confirm that the existing `Recovered` path still yields
 ///    `StructuredRecoveryOnly`.
 use perl_parser_core::{
     ParseError, Parser, RecoveryKind, RecoverySalvageClass, RecoverySalvageProfile, RecoverySite,
+    count_blocking_non_recovered,
 };
 use perl_tdd_support::must;
 
@@ -56,12 +56,13 @@ fn syntax_error_only_is_not_clean() {
 }
 
 #[test]
-fn syntax_error_populates_blocking_non_recovered_count() {
+fn syntax_error_counts_blocking_non_recovered_diagnostics() {
     let syntax_err = ParseError::syntax("test injection", 0);
     let profile = profile_with_diagnostics("my $x = 1;", &[syntax_err]);
     assert_eq!(
-        profile.blocking_non_recovered_count, 1,
-        "blocking_non_recovered_count must be 1 for one SyntaxError: {:?}",
+        count_blocking_non_recovered(&[ParseError::syntax("test injection", 0)]),
+        1,
+        "blocking non-recovered count must be 1 for one SyntaxError: {:?}",
         profile
     );
     assert_eq!(
@@ -80,7 +81,8 @@ fn multiple_syntax_errors_all_counted() {
     ];
     let profile = profile_with_diagnostics("", &diagnostics);
     assert_eq!(
-        profile.blocking_non_recovered_count, 3,
+        count_blocking_non_recovered(&diagnostics),
+        3,
         "all three blocking-non-recovered diagnostics must be counted: {:?}",
         profile
     );
@@ -101,7 +103,7 @@ fn advisory_only_stays_clean() {
         "Advisory-only files must remain Clean: {:?}",
         profile.class
     );
-    assert_eq!(profile.blocking_non_recovered_count, 0);
+    assert_eq!(count_blocking_non_recovered(&[]), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +120,7 @@ fn clean_parse_stays_clean() {
         profile.class
     );
     assert_eq!(profile.recovered_count, 0);
-    assert_eq!(profile.blocking_non_recovered_count, 0);
+    assert_eq!(count_blocking_non_recovered(&[]), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +142,7 @@ fn recovered_diagnostic_still_yields_structured_recovery_only() {
         profile.class
     );
     assert_eq!(profile.recovered_count, 1);
-    assert_eq!(profile.blocking_non_recovered_count, 0);
+    assert_eq!(count_blocking_non_recovered(&[]), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -168,7 +170,7 @@ fn unterminated_heredoc_is_not_clean() {
             profile.class
         );
         assert!(
-            profile.blocking_non_recovered_count > 0,
+            count_blocking_non_recovered(&diagnostics) > 0,
             "blocking_non_recovered_count must be > 0 for a SyntaxError diagnostic: {:?}",
             profile
         );

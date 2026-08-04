@@ -29,5 +29,5 @@ pub mod recovery {
 pub use crate::syntax::error::{
     BudgetTracker, ErrorCategory, ErrorClass, ErrorContext, ParseBudget, ParseDiagnosticSeverity,
     ParseError, ParseOutput, ParseResult, RecoveryKind, RecoverySalvageClass,
-    RecoverySalvageProfile, RecoverySite, get_error_contexts,
+    RecoverySalvageProfile, RecoverySite, count_blocking_non_recovered, get_error_contexts,
 };

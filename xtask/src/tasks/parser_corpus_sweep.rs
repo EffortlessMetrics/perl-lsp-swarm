@@ -1089,15 +1089,12 @@ fn measure_files(
                 total_dirty_files += 1;
                 files_with_structured_recovery_only += 1;
                 if options.verbose {
-                    let total_blocking = salvage
-                        .recovered_count
-                        .saturating_add(salvage.blocking_non_recovered_count);
                     file_results.push(FileResult {
                         path: portable_path.clone(),
                         status: "recovered".to_string(),
                         error_node_count: 0,
                         first_error: None,
-                        recovered_count: Some(total_blocking),
+                        recovered_count: Some(salvage.recovered_count),
                         parse_duration_ms: Some(parse_duration_ms),
                         line_count: Some(line_count),
                     });
@@ -1119,11 +1116,7 @@ fn measure_files(
                         status: "errors".to_string(),
                         error_node_count: salvage.error_node_count,
                         first_error: Some(bucket),
-                        recovered_count: Some(
-                            salvage
-                                .recovered_count
-                                .saturating_add(salvage.blocking_non_recovered_count),
-                        ),
+                        recovered_count: Some(salvage.recovered_count),
                         parse_duration_ms: Some(parse_duration_ms),
                         line_count: Some(line_count),
                     });
