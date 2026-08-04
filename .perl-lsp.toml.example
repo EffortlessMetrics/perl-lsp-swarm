@@ -143,12 +143,17 @@
 # It CANNOT set endpoint, provider, model, api_key_*, timeout, or any other
 # runtime field. A hostile cloned repository could otherwise name an
 # arbitrary environment variable (e.g. AWS_SECRET_ACCESS_KEY) and have its
-# value POSTed to an attacker-chosen endpoint (#4955). Those fields arrive
-# only through the LSP client configuration channel (VS Code settings or
-# initializationOptions), never from workspace config.
+# value POSTed to an attacker-chosen endpoint (#4955).
 #
-# To configure AI completions, use your editor's LSP settings:
-#   VS Code: perl-lsp.aiCompletion.enabled, perl-lsp.aiCompletion.endpoint, etc.
+# User-owned client configuration controls activation and the supported
+# server settings. The primary VS Code extension exposes only the enable and
+# streaming toggles; it does not expose endpoint or credential settings.
+# See docs/reference/AI_COMPLETION.md for the current configuration matrix.
+#
+# To configure AI completions, use a client that supports the server's
+# aiCompletion configuration channel. In the primary VS Code extension,
+# configure only perl-lsp.aiCompletion.enabled and
+# perl-lsp.aiCompletion.streaming.enabled.
 
 [ai_completion]
 # Opt out of AI completions for this project.
