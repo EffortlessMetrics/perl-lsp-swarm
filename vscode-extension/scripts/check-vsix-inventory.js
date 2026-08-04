@@ -54,18 +54,19 @@ function baselineForPlatform(baseline, platform) {
 
 function compareInventory(actual, baseline, platform = process.platform) {
   const effectiveBaseline = baselineForPlatform(baseline, platform);
+  const effectiveActual = baselineForPlatform(actual, platform);
   const violations = [];
-  if (actual.total_files > effectiveBaseline.total_files) {
+  if (effectiveActual.total_files > effectiveBaseline.total_files) {
     violations.push(
-      `file count grew from ${effectiveBaseline.total_files} to ${actual.total_files}`,
+      `file count grew from ${effectiveBaseline.total_files} to ${effectiveActual.total_files}`,
     );
   }
-  if (actual.total_bytes > effectiveBaseline.total_bytes) {
+  if (effectiveActual.total_bytes > effectiveBaseline.total_bytes) {
     violations.push(
-      `total bytes grew from ${effectiveBaseline.total_bytes} to ${actual.total_bytes}`,
+      `total bytes grew from ${effectiveBaseline.total_bytes} to ${effectiveActual.total_bytes}`,
     );
   }
-  for (const [file, bytes] of Object.entries(actual.files)) {
+  for (const [file, bytes] of Object.entries(effectiveActual.files)) {
     if (!Object.hasOwn(effectiveBaseline.files, file)) {
       violations.push(`new packaged file: ${file}`);
     } else if (bytes > effectiveBaseline.files[file]) {
@@ -73,7 +74,7 @@ function compareInventory(actual, baseline, platform = process.platform) {
     }
   }
   for (const file of Object.keys(effectiveBaseline.files)) {
-    if (!Object.hasOwn(actual.files, file)) {
+    if (!Object.hasOwn(effectiveActual.files, file)) {
       violations.push(`baseline packaged file is missing: ${file}`);
     }
   }
