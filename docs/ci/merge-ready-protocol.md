@@ -71,9 +71,10 @@ Inputs are normalized for line endings and sorted to exclude nondeterministic or
 cargo xtask merge-ready emit --pr <N> --receipt target/receipts/merge-readiness.json
 cargo xtask merge-ready verify --pr <N>
 cargo xtask merge-ready verify --fixture xtask/tests/fixtures/merge-ready/valid.json
-cargo xtask merge-ready reconcile --dry-run
-cargo xtask merge-ready reconcile --apply
 ```
+
+There is no `merge-ready reconcile` command. Readiness is a receipt and live
+GitHub fact, not a lifecycle-label projection.
 
 Verification statuses:
 
@@ -83,9 +84,14 @@ Verification statuses:
 - `stale_gate_graph`
 - `blocked`
 - `missing`
+- `not_proven` (the receipt itself records an instrument-incomplete verdict;
+  this is non-ready, not an unknown success)
 
-## Rollout mode
+## Current operation
 
-Reconciliation defaults to advisory dry-run. Apply mode can be enabled explicitly.
+Use `merge-ready emit`/`verify` for receipt validation and the protected
+GitHub preflight for the live candidate, review, required-check, and
+mergeability snapshot. There is no apply-mode reconciler: operators do not
+repair readiness through lifecycle labels.
 
 See also: [Merge-train protocol](./merge-train-protocol.md).

@@ -13,6 +13,7 @@ use crate::ignore::{is_skipped_dir_name_with_extra, path_contains_skipped_compon
 use perl_parser_core::source_file::is_perl_source_path;
 use std::collections::HashSet;
 use std::ffi::OsString;
+use std::io::Read;
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -41,6 +42,8 @@ pub struct DiscoveryResult {
     pub duration: Duration,
     /// Number of entries excluded by extension/skip rules.
     pub excluded_count: usize,
+    /// Whether discovery stopped early because the caller requested cancellation.
+    pub cancelled: bool,
 }
 
 /// Additive discovery policy overrides.
@@ -136,20 +139,48 @@ pub fn discover_perl_files_with_config<P>(
 where
     P: AsRef<Path>,
 {
+    discover_perl_files_with_config_and_cancel(root, include_paths, config, || false)
+}
+
+/// Discover Perl source files while cooperatively observing cancellation.
+///
+/// The callback is checked while waiting for `git ls-files`, while parsing its
+/// output, and during filesystem walking. A cancelled result contains any
+/// files discovered before cancellation and sets [`DiscoveryResult::cancelled`]
+/// to `true`.
+#[must_use]
+pub fn discover_perl_files_with_config_and_cancel<P, F>(
+    root: &Path,
+    include_paths: &[P],
+    config: &DiscoveryConfig,
+    should_cancel: F,
+) -> DiscoveryResult
+where
+    P: AsRef<Path>,
+    F: Fn() -> bool,
+{
     let allowlist = DiscoveryIncludeAllowlist::from_include_paths(root, include_paths, config);
-    discover_perl_files_with_allowlist(root, &allowlist, config)
+    discover_perl_files_with_allowlist(root, &allowlist, config, &should_cancel)
 }
 
 fn discover_perl_files_with_allowlist(
     root: &Path,
     allowlist: &DiscoveryIncludeAllowlist,
     config: &DiscoveryConfig,
+    should_cancel: &impl Fn() -> bool,
 ) -> DiscoveryResult {
     let start = Instant::now();
 
-    match try_git_discovery(root, start, allowlist, config) {
-        Ok(result) => result,
-        Err(_) => walk_discovery_with_allowlist(root, start, allowlist, config),
+    match try_git_discovery(root, start, allowlist, config, should_cancel) {
+        Ok(GitDiscoveryOutcome::Complete(result)) => result,
+        Ok(GitDiscoveryOutcome::Cancelled) => DiscoveryResult {
+            files: Vec::new(),
+            method: DiscoveryMethod::Git,
+            duration: start.elapsed(),
+            excluded_count: 0,
+            cancelled: true,
+        },
+        Err(_) => walk_discovery_with_allowlist(root, start, allowlist, config, should_cancel),
     }
 }
 
@@ -174,29 +205,67 @@ fn try_git_discovery(
     start: Instant,
     allowlist: &DiscoveryIncludeAllowlist,
     config: &DiscoveryConfig,
-) -> Result<DiscoveryResult, std::io::Error> {
-    let output = std::process::Command::new("git")
+    should_cancel: &impl Fn() -> bool,
+) -> Result<GitDiscoveryOutcome, std::io::Error> {
+    if should_cancel() {
+        return Ok(GitDiscoveryOutcome::Cancelled);
+    }
+
+    let mut child = std::process::Command::new("git")
         .args(GIT_LS_FILES_ARGS)
         .current_dir(root)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .output()?;
+        .spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("git ls-files did not provide a stdout pipe"))?;
+    let reader = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        stdout.read_to_end(&mut output).map(|_| output)
+    });
 
-    if !output.status.success() {
+    let status = loop {
+        if should_cancel() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return Ok(GitDiscoveryOutcome::Cancelled);
+        }
+        match child.try_wait()? {
+            Some(status) => break status,
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    let stdout = reader
+        .join()
+        .map_err(|_| std::io::Error::other("git ls-files reader thread panicked"))??;
+
+    if !status.success() {
         return Err(std::io::Error::other("git ls-files failed"));
     }
 
-    let (files, excluded_count) =
-        parse_git_ls_files_output_with_allowlist(root, &output.stdout, allowlist, config);
+    let (files, excluded_count, cancelled) =
+        parse_git_ls_files_output_with_cancel(root, &stdout, allowlist, config, should_cancel);
+    if cancelled {
+        return Ok(GitDiscoveryOutcome::Cancelled);
+    }
     let result = DiscoveryResult {
         files,
         method: DiscoveryMethod::Git,
         duration: start.elapsed(),
         excluded_count,
+        cancelled: false,
     };
 
     log_discovery(&result);
-    Ok(result)
+    Ok(GitDiscoveryOutcome::Complete(result))
+}
+
+enum GitDiscoveryOutcome {
+    Complete(DiscoveryResult),
+    Cancelled,
 }
 
 #[cfg(test)]
@@ -209,17 +278,34 @@ fn parse_git_ls_files_output(root: &Path, stdout: &[u8]) -> (Vec<PathBuf>, usize
     )
 }
 
+#[cfg(test)]
 fn parse_git_ls_files_output_with_allowlist(
     root: &Path,
     stdout: &[u8],
     allowlist: &DiscoveryIncludeAllowlist,
     config: &DiscoveryConfig,
 ) -> (Vec<PathBuf>, usize) {
+    let (files, excluded_count, _) =
+        parse_git_ls_files_output_with_cancel(root, stdout, allowlist, config, &|| false);
+    (files, excluded_count)
+}
+
+fn parse_git_ls_files_output_with_cancel(
+    root: &Path,
+    stdout: &[u8],
+    allowlist: &DiscoveryIncludeAllowlist,
+    config: &DiscoveryConfig,
+    should_cancel: &impl Fn() -> bool,
+) -> (Vec<PathBuf>, usize, bool) {
     let mut files = Vec::new();
     let mut seen = HashSet::new();
     let mut excluded_count: usize = 0;
 
     for entry in stdout.split(|byte| *byte == b'\0') {
+        if should_cancel() {
+            sort_paths_lexically(&mut files);
+            return (files, excluded_count, true);
+        }
         if entry.is_empty() {
             continue;
         }
@@ -254,7 +340,7 @@ fn parse_git_ls_files_output_with_allowlist(
     }
 
     sort_paths_lexically(&mut files);
-    (files, excluded_count)
+    (files, excluded_count, false)
 }
 
 #[cfg(unix)]
@@ -283,6 +369,7 @@ fn walk_discovery(root: &Path, start: Instant) -> DiscoveryResult {
         start,
         &DiscoveryIncludeAllowlist::default(),
         &DiscoveryConfig::default(),
+        &|| false,
     )
 }
 
@@ -291,10 +378,12 @@ fn walk_discovery_with_allowlist(
     start: Instant,
     allowlist: &DiscoveryIncludeAllowlist,
     config: &DiscoveryConfig,
+    should_cancel: &impl Fn() -> bool,
 ) -> DiscoveryResult {
     let mut files = Vec::new();
     let mut excluded_count: usize = 0;
     let mut skipped_dir_count: usize = 0;
+    let mut cancelled = false;
 
     for entry in WalkDir::new(root).follow_links(false).into_iter().filter_entry(|entry| {
         if should_skip_dir_with_allowlist(root, entry, allowlist, config) {
@@ -303,6 +392,10 @@ fn walk_discovery_with_allowlist(
         }
         true
     }) {
+        if should_cancel() {
+            cancelled = true;
+            break;
+        }
         let entry = match entry {
             Ok(entry) => entry,
             Err(_) => continue,
@@ -326,6 +419,7 @@ fn walk_discovery_with_allowlist(
         method: DiscoveryMethod::Walk,
         duration: start.elapsed(),
         excluded_count,
+        cancelled,
     };
 
     log_discovery(&result);
@@ -487,6 +581,7 @@ mod tests {
     use crate::ignore::path_contains_skipped_component;
     use std::fs;
     use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -566,6 +661,28 @@ mod tests {
         assert!(result.files[0].ends_with("lib/Foo.pm"));
         assert_eq!(result.excluded_count, 3);
 
+        Ok(())
+    }
+
+    #[test]
+    fn cancellable_discovery_stops_during_walk() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        for index in 0..256 {
+            create_file(tmp.path(), &format!("lib/Module{index}.pm"))?;
+        }
+        let checks = AtomicUsize::new(0);
+        let result = super::super::discovery::discover_perl_files_with_config_and_cancel(
+            tmp.path(),
+            &[] as &[&Path],
+            &DiscoveryConfig::default(),
+            || checks.fetch_add(1, Ordering::Relaxed) >= 3,
+        );
+
+        assert!(result.cancelled, "discovery should report cooperative cancellation");
+        assert!(
+            result.files.len() < 256,
+            "cancelled discovery should not enumerate the complete workspace"
+        );
         Ok(())
     }
 

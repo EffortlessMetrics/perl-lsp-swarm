@@ -58,7 +58,7 @@ map. Initial entries:
   `vscode-published-extension-smoke.yml`
 - Post-merge utilities: `post-merge-corpus-ratchet.yml`,
   `post-merge-status.yml`, `docs-deploy.yml`
-- Schedule-only / housekeeping: `tokmd.yml`, `merge-ready-reconciler.yml`,
+- Schedule-only / housekeeping: `tokmd.yml`,
   `triage-issues.yml`, `version-bump.yml`, `ci-gate-self-tests.yml`,
   `workflow-trigger-lint.yml`
 

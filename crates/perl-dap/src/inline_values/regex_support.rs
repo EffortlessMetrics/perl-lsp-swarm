@@ -1,21 +1,21 @@
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
 /// Regex for matching Perl variables (scalars, arrays, hashes).
 /// Stored as Option to avoid panics; if compilation fails, inline values are skipped.
-pub(super) static PERL_VAR_RE: Lazy<Option<Regex>> = Lazy::new(|| {
+pub(super) static PERL_VAR_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
     Regex::new(r"[$@%](?:::)?[A-Za-z_][A-Za-z0-9_]*(?:(?:::|')[A-Za-z_][A-Za-z0-9_]*)*").ok()
 });
 
 /// Regex for braced Perl variables (`${name}`, `@{Pkg::arr}`, `%{cfg}`).
-pub(super) static BRACED_PERL_VAR_RE: Lazy<Option<Regex>> = Lazy::new(|| {
+pub(super) static BRACED_PERL_VAR_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
     Regex::new(r"([$@%])\{((?:::)?[A-Za-z_][A-Za-z0-9_]*(?:(?:::|')[A-Za-z_][A-Za-z0-9_]*)*)\}")
         .ok()
 });
 
 /// Regex for scalar-only matching (`$`-sigil), used by the legacy
 /// `collect_inline_values` scalar-only path.
-pub(super) static SCALAR_VAR_RE: Lazy<Option<Regex>> = Lazy::new(|| {
+pub(super) static SCALAR_VAR_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
     Regex::new(r"\$(?:::)?[A-Za-z_][A-Za-z0-9_]*(?:(?:::|')[A-Za-z_][A-Za-z0-9_]*)*").ok()
 });
 

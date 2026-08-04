@@ -132,3 +132,40 @@
 
 # Timeout in seconds (default: 10).
 # perltidy_timeout_secs = 10
+
+# ──────────────────────────────────────────────────────────────────────────────
+# AI Completion
+# ──────────────────────────────────────────────────────────────────────────────
+# AI-powered inline completions using an OpenAI-compatible API endpoint.
+# Disabled by default.
+#
+# SECURITY: The project .perl-lsp.toml may ONLY opt out of AI completions.
+# It CANNOT set endpoint, provider, model, api_key_*, timeout, or any other
+# runtime field. A hostile cloned repository could otherwise name an
+# arbitrary environment variable (e.g. AWS_SECRET_ACCESS_KEY) and have its
+# value POSTed to an attacker-chosen endpoint (#4955).
+#
+# User-owned client configuration controls activation and the supported
+# server settings. The primary VS Code extension exposes only the enable and
+# streaming toggles; it does not expose endpoint or credential settings.
+# See docs/reference/AI_COMPLETION.md for the current configuration matrix.
+#
+# To configure AI completions, use a client that supports the server's
+# aiCompletion configuration channel. In the primary VS Code extension,
+# configure only perl-lsp.aiCompletion.enabled and
+# perl-lsp.aiCompletion.streaming.enabled.
+
+[ai_completion]
+# Opt out of AI completions for this project.
+# When false, disables AI even if the user enabled it in their editor.
+# When true or absent, has no effect (a repository cannot turn AI on).
+# enabled = false
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Next Edit (experimental)
+# ──────────────────────────────────────────────────────────────────────────────
+# Future runtime boundary for next-edit suggestions. Currently dormant.
+
+[next_edit]
+# Enable the next-edit runtime. Experimental.
+# enabled = false

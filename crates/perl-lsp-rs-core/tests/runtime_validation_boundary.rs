@@ -225,18 +225,26 @@ fn validate_lsp_request_text_document_with_untitled_uri_is_ok() -> anyhow::Resul
 
 #[test]
 fn validate_lsp_request_execute_command_all_allowed_commands_pass() -> anyhow::Result<()> {
-    let allowed = [
-        "perl.runCritic",
+    let advertised = perl_lsp_rs_core::protocol::capabilities::get_supported_commands();
+
+    for command in advertised {
+        let method = "workspace/executeCommand";
+        let params = serde_json::json!({ "command": command });
+        validate_lsp_request(method, &params).map_err(|e| {
+            anyhow::anyhow!("Advertised command '{command}' should be allowed but got: {e}")
+        })?;
+    }
+
+    // These are client-owned compatibility commands and intentionally are not
+    // part of the server capability list.
+    let client_owned = [
         "perl.formatDocument",
         "perl.extractVariable",
         "perl.extractSubroutine",
         "perl.optimizeImports",
-        "perl.previewSafeDelete",
-        "perl.safeDeleteSymbol",
-        "perl.previewPackageRename",
     ];
 
-    for command in allowed {
+    for command in client_owned {
         let method = "workspace/executeCommand";
         let params = serde_json::json!({ "command": command });
         validate_lsp_request(method, &params)

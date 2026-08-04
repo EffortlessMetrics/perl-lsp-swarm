@@ -3,6 +3,9 @@
 //! This module provides methods for applying rename edits.
 
 use perl_parser_core::SourceLocation;
+use perl_parser_core::syntax::source_context::{
+    RangeClassification, SourceRegionIndex, SourceRegionKind,
+};
 use perl_semantic_analyzer::symbol::SymbolKind;
 
 use super::types::{RenameOptions, TextEdit};
@@ -20,6 +23,10 @@ pub fn adjust_location_for_sigil(mut location: SourceLocation, kind: SymbolKind)
 ///
 /// The returned [`TextEdit`]s have `new_text` set to `new_name` so callers can
 /// apply them directly without a second rewrite pass.
+///
+/// Source-region classification uses the AST-aware [`SourceRegionIndex`] (#4964)
+/// instead of the previous naive `is_in_comment`/`is_in_string` heuristics that
+/// mistook `#` inside strings for a comment start and miscounted quote parity.
 pub fn find_occurrences_in_text(
     old_name: &str,
     new_name: &str,
@@ -28,6 +35,9 @@ pub fn find_occurrences_in_text(
     source: &str,
 ) -> Vec<TextEdit> {
     let mut edits = Vec::new();
+
+    // Build the AST-aware source-region index once for the entire scan (#4964).
+    let region_index = SourceRegionIndex::build(source);
 
     // Build search pattern (sigil + old name)
     let pattern = if let Some(sigil) = kind.sigil() {
@@ -40,18 +50,40 @@ pub fn find_occurrences_in_text(
     let mut search_pos = 0;
     while let Some(pos) = source[search_pos..].find(&pattern) {
         let absolute_pos = search_pos + pos;
+        let match_end = absolute_pos + pattern.len();
 
-        // Check if this is in a comment or string
-        let in_comment = is_in_comment(absolute_pos, source);
-        let in_string = is_in_string(absolute_pos, source);
+        // Classify the match's source region using the AST-aware index.
+        let classification = region_index.classify_range(absolute_pos, match_end);
+        let region_kind = match classification {
+            RangeClassification::Proven { kind } => Some(kind),
+            // Ambiguous or out-of-bounds: skip — don't risk editing an
+            // uncertain region.
+            _ => None,
+        };
 
-        if (in_comment && options.rename_in_comments) || (in_string && options.rename_in_strings) {
-            // Make sure it's a whole word
-            let before_ok = absolute_pos == 0
-                || source.chars().nth(absolute_pos - 1).is_none_or(|c| !c.is_alphanumeric());
-            let after_pos = absolute_pos + pattern.len();
-            let after_ok = after_pos >= source.len()
-                || source.chars().nth(after_pos).is_none_or(|c| !c.is_alphanumeric());
+        let is_comment = matches!(
+            region_kind,
+            Some(
+                SourceRegionKind::LineComment
+                    | SourceRegionKind::Pod
+                    | SourceRegionKind::DataSection
+            )
+        );
+        let is_string = matches!(
+            region_kind,
+            Some(
+                SourceRegionKind::StringLiteral
+                    | SourceRegionKind::QuoteLike
+                    | SourceRegionKind::Heredoc
+            )
+        );
+
+        if (is_comment && options.rename_in_comments) || (is_string && options.rename_in_strings) {
+            // Make sure it's a whole word using byte-level checks (not
+            // char::nth which is O(n) per call).
+            let bytes = source.as_bytes();
+            let before_ok = absolute_pos == 0 || !bytes[absolute_pos - 1].is_ascii_alphanumeric();
+            let after_ok = match_end >= source.len() || !bytes[match_end].is_ascii_alphanumeric();
 
             if before_ok && after_ok {
                 let start = if let Some(sigil) = kind.sigil() {

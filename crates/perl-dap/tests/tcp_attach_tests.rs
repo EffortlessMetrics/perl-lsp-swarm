@@ -26,27 +26,27 @@ fn create_valid_config() -> TcpAttachConfig {
 #[test]
 fn test_tcp_attach_config_validation() {
     // Test valid configuration
-    let config = create_valid_config();
+    let mut config = create_valid_config();
     assert!(config.validate().is_ok());
 
     // Test with timeout
-    let config = create_valid_config().with_timeout(5000);
+    let mut config = create_valid_config().with_timeout(5000);
     assert!(config.validate().is_ok());
 
     // Test empty host
-    let config = TcpAttachConfig::new("".to_string(), 13603);
+    let mut config = TcpAttachConfig::new("".to_string(), 13603);
     assert!(config.validate().is_err());
 
     // Test invalid port
-    let config = TcpAttachConfig::new("localhost".to_string(), 0);
+    let mut config = TcpAttachConfig::new("localhost".to_string(), 0);
     assert!(config.validate().is_err());
 
     // Test zero timeout
-    let config = create_valid_config().with_timeout(0);
+    let mut config = create_valid_config().with_timeout(0);
     assert!(config.validate().is_err());
 
     // Test timeout too large
-    let config = create_valid_config().with_timeout(300_001);
+    let mut config = create_valid_config().with_timeout(300_001);
     assert!(config.validate().is_err());
 }
 
@@ -147,40 +147,46 @@ fn test_tcp_attach_session_disconnect() {
 
 #[test]
 fn test_tcp_attach_config_edge_cases() {
-    // Test with IPv6 address
-    let config = TcpAttachConfig::new("::1".to_string(), 13603);
+    // Test with IPv6 loopback address
+    let mut config = TcpAttachConfig::new("::1".to_string(), 13603);
     assert!(config.validate().is_ok());
 
-    // Test with hostname
-    let config = TcpAttachConfig::new("example.com".to_string(), 13603);
+    // Test with a numeric public IP (hermetic — no DNS dependency). 93.184.216.34
+    // is example.com's well-known public address, but specified numerically so
+    // the test does not depend on external DNS resolution (chatgpt-codex review).
+    let mut config = TcpAttachConfig::new("93.184.216.34".to_string(), 13603);
     assert!(config.validate().is_ok());
 
-    // Test with IP address
-    let config = TcpAttachConfig::new("192.168.1.1".to_string(), 13603);
-    assert!(config.validate().is_ok());
+    // SSRF defense (#5257): private IP addresses must be rejected.
+    let mut config = TcpAttachConfig::new("192.168.1.1".to_string(), 13603);
+    assert!(config.validate().is_err(), "private IP must be rejected by the SSRF filter");
+
+    // SSRF defense (#5257): cloud metadata endpoint must be rejected.
+    let mut config = TcpAttachConfig::new("169.254.169.254".to_string(), 13603);
+    assert!(config.validate().is_err(), "cloud metadata IP must be rejected by the SSRF filter");
 
     // Test with maximum valid port
-    let config = TcpAttachConfig::new("localhost".to_string(), 65535);
+    let mut config = TcpAttachConfig::new("localhost".to_string(), 65535);
     assert!(config.validate().is_ok());
 
     // Test with minimum valid timeout
-    let config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(1);
+    let mut config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(1);
     assert!(config.validate().is_ok());
 
     // Test with maximum valid timeout
-    let config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(300_000);
+    let mut config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(300_000);
     assert!(config.validate().is_ok());
 }
 
 #[test]
 fn test_tcp_attach_config_whitespace_handling() {
     // Test with whitespace in host - should be trimmed and valid
-    let config = TcpAttachConfig::new("  localhost  ".to_string(), 13603);
+    let mut config = TcpAttachConfig::new("  localhost  ".to_string(), 13603);
     // The validation trims whitespace, so this should be valid
     assert!(config.validate().is_ok());
 
     // Test with only whitespace - should be invalid after trimming
-    let config = TcpAttachConfig::new("   ".to_string(), 13603);
+    let mut config = TcpAttachConfig::new("   ".to_string(), 13603);
     assert!(config.validate().is_err());
 }
 
@@ -254,8 +260,8 @@ fn test_tcp_attach_reader_handles_concatenated_frames() {
     let (event_tx, event_rx) = channel::<DapEvent>();
     session.set_event_sender(event_tx);
 
-    let config = TcpAttachConfig::new("127.0.0.1".to_string(), port).with_timeout(2000);
-    must(session.connect(&config));
+    let mut config = TcpAttachConfig::new("127.0.0.1".to_string(), port).with_timeout(2000);
+    must(session.connect(&mut config));
     must(session.start_reader());
 
     let first = must(event_rx.recv_timeout(Duration::from_secs(2)));
@@ -282,9 +288,9 @@ fn test_tcp_attach_reader_handles_concatenated_frames() {
 #[test]
 fn test_tcp_attach_connect_timeout_for_unreachable_endpoint() {
     let mut session = TcpAttachSession::new();
-    let config = TcpAttachConfig::new("203.0.113.1".to_string(), 6553).with_timeout(50);
+    let mut config = TcpAttachConfig::new("203.0.113.1".to_string(), 6553).with_timeout(50);
 
-    let result = session.connect(&config);
+    let result = session.connect(&mut config);
     assert!(result.is_err(), "expected timeout or network error for unreachable endpoint");
     assert!(!session.is_connected(), "failed connect must keep session disconnected");
 }
@@ -328,8 +334,8 @@ fn test_tcp_attach_reader_emits_stopped_and_terminated_events() {
     let (event_tx, event_rx) = channel::<DapEvent>();
     session.set_event_sender(event_tx);
 
-    let config = TcpAttachConfig::new("127.0.0.1".to_string(), port).with_timeout(2000);
-    must(session.connect(&config));
+    let mut config = TcpAttachConfig::new("127.0.0.1".to_string(), port).with_timeout(2000);
+    must(session.connect(&mut config));
     must(session.start_reader());
 
     let first = must(event_rx.recv_timeout(Duration::from_secs(2)));
@@ -370,7 +376,8 @@ fn test_tcp_attach_disconnect_after_reader_allows_reconnect() {
     });
 
     let mut session = TcpAttachSession::new();
-    must(session.connect(&TcpAttachConfig::new("127.0.0.1".to_string(), port1).with_timeout(2000)));
+    let mut config1 = TcpAttachConfig::new("127.0.0.1".to_string(), port1).with_timeout(2000);
+    must(session.connect(&mut config1));
     must(session.start_reader());
     assert!(session.is_connected());
 
@@ -380,7 +387,8 @@ fn test_tcp_attach_disconnect_after_reader_allows_reconnect() {
         "disconnect should mark reader-backed session as disconnected"
     );
 
-    must(session.connect(&TcpAttachConfig::new("127.0.0.1".to_string(), port2).with_timeout(2000)));
+    let mut config2 = TcpAttachConfig::new("127.0.0.1".to_string(), port2).with_timeout(2000);
+    must(session.connect(&mut config2));
     assert!(session.is_connected(), "session should reconnect cleanly after disconnect");
 
     must(session.disconnect());

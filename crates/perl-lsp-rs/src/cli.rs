@@ -228,6 +228,15 @@ fn run_check(command_name: &str, files: &[String]) -> i32 {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("{path}: error reading file: {e}");
+                // Add concise recovery guidance for common read failures (#1989).
+                let path_obj = std::path::Path::new(path);
+                if path_obj.is_dir() {
+                    eprintln!("  hint: '{path}' is a directory. Use --check-project <dir> to check all files in a directory.");
+                } else if !path_obj.exists() {
+                    eprintln!("  hint: '{path}' does not exist. Check the path for typos.");
+                } else {
+                    eprintln!("  hint: check file permissions or encoding. The file may be binary or use an unsupported encoding.");
+                }
                 errors += 1;
                 continue;
             }
@@ -348,7 +357,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                 Ok(rt) => rt,
                 Err(e) => {
                     eprintln!(
-                        "Perl Language Server failed to start: could not initialize the async \
+                        "Perl LSP: failed to start: could not initialize the async \
                          runtime ({e}). This is usually caused by system resource limits. \
                          Try restarting VS Code or increasing your OS thread limits."
                     );
@@ -403,7 +412,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                 Ok(rt) => rt,
                 Err(e) => {
                     eprintln!(
-                        "Perl Language Server failed to start: could not initialize the async \
+                        "Perl LSP: failed to start: could not initialize the async \
                          runtime ({e}). This is usually caused by system resource limits. \
                          Try restarting VS Code or increasing your OS thread limits."
                     );
@@ -422,7 +431,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                             );
                         } else {
                             eprintln!(
-                                "Perl Language Server could not listen on {addr}: {e}. \
+                                "Perl LSP: could not listen on {addr}: {e}. \
                                  Try a different port with --port or check firewall settings."
                             );
                         }
@@ -433,7 +442,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                     Ok(a) => a,
                     Err(e) => {
                         eprintln!(
-                            "Perl Language Server started but could not determine its \
+                            "Perl LSP: started but could not determine its \
                              listening address: {e}."
                         );
                         process::exit(1);
@@ -543,7 +552,7 @@ fn print_version(command_name: &str) {
     let (label, revision) = build_revision();
     println!("{command_name} {}", env!("CARGO_PKG_VERSION"));
     println!("{label} {revision}");
-    println!("Perl Language Server using perl-parser v3");
+    println!("Perl LSP using perl-parser v3");
 }
 
 #[cfg(test)]

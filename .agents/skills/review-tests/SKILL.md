@@ -7,6 +7,10 @@ description: Explicit atomic skill for adversarially challenging proposed or exi
 
 Try to falsify the proof.
 
+This is a directed, falsifying, and verified proof review: work the applicable
+questions, actively seek a realistic wrong implementation that passes, and rely on
+observed execution or competent authority rather than an impression or CI status.
+
 Require observed execution evidence before declaring proof ready:
 
 - the test or proof artifact executed successfully as an instrument;

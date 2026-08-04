@@ -3349,7 +3349,11 @@ impl<'a> BodyBuilder2<'a> {
                 // in the PIR lowerer), but its arguments are correctly extracted.
                 let arg_ids: Vec<HirExprId> = args.iter().map(|a| self.lower_expr(a)).collect();
                 self.alloc_expr(
-                    HirExpr::Call { args: arg_ids, ast_kind: "FunctionCall".to_string() },
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "FunctionCall".to_string(),
+                        callee_span: None,
+                    },
                     range,
                 )
             }
@@ -3360,14 +3364,50 @@ impl<'a> BodyBuilder2<'a> {
                 let kind_name = node.kind.kind_name().to_string();
                 let mut arg_ids = vec![self.lower_expr(target)];
                 arg_ids.extend(self.lower_slice_operands(indices));
-                self.alloc_expr(HirExpr::Call { args: arg_ids, ast_kind: kind_name }, range)
+                self.alloc_expr(
+                    HirExpr::Call { args: arg_ids, ast_kind: kind_name, callee_span: None },
+                    range,
+                )
             }
 
             NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
                 let kind_name = node.kind.kind_name().to_string();
                 let mut arg_ids = vec![self.lower_expr(target)];
                 arg_ids.extend(self.lower_slice_operands(keys));
-                self.alloc_expr(HirExpr::Call { args: arg_ids, ast_kind: kind_name }, range)
+                self.alloc_expr(
+                    HirExpr::Call { args: arg_ids, ast_kind: kind_name, callee_span: None },
+                    range,
+                )
+            }
+
+            NodeKind::MethodCall { object, method: _, args } => {
+                // Lower method call with structured children so variable
+                // reads in object/arg positions produce correct PIR facts.
+                // The method invocation itself is modeled as a Call (not
+                // Opaque) so effect analysis can see the call site (#5680).
+                let mut arg_ids = vec![self.lower_expr(object)];
+                arg_ids.extend(args.iter().map(|a| self.lower_expr(a)));
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "MethodCall".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::AmperCall { name: _, args } => {
+                // Lower ampersand call (&foo) with structured args (#5680).
+                let arg_ids: Vec<HirExprId> = args.iter().map(|a| self.lower_expr(a)).collect();
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "AmperCall".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
             }
 
             _ => {

@@ -139,7 +139,6 @@ Setting up the Perl LSP extension requires manual configuration:
   "perl-lsp.serverPath": "",
   "perl-lsp.autoDownload": true,
   "perl-lsp.trace.server": "off",
-  "perl-lsp.enableDiagnostics": true,
   "perl-lsp.enableSemanticTokens": true
 }
 ```
