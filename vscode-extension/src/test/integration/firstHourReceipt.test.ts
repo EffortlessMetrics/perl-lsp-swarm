@@ -466,6 +466,7 @@ suite('First-hour VS Code receipt', function () {
           getLanguageClientStartupMetrics?: () => Record<string, unknown>;
           getFeatureActivationMetrics?: () => Record<string, unknown>;
           markLanguageClientStartupMilestone?: (milestone: string) => void;
+          waitForActiveDocumentReady?: (uri: string, timeoutMs?: number) => Promise<void>;
           stop?: () => Promise<void>;
         }
       | undefined;
@@ -626,6 +627,34 @@ suite('First-hour VS Code receipt', function () {
           typeof (restartMilestones as Record<string, unknown>).restart === 'number',
         'restart startup should record the restart milestone',
       );
+      assert.equal(
+        typeof extensionApi?.waitForActiveDocumentReady,
+        'function',
+        'current-source smoke must expose active-document readiness',
+      );
+      try {
+        await withTimeout(
+          'active document readiness after restart',
+          extensionApi!.waitForActiveDocumentReady!(probeDocument.uri.toString(), 30_000),
+          30_000,
+        );
+      } catch (error: unknown) {
+        writeFailureReceipt(
+          'after_restart_readiness',
+          { message: error instanceof Error ? error.message : String(error) },
+          { immediate },
+          {
+            restart: {
+              status: 'error',
+              duration_ms: Math.round(monotonicNow() - restartStart),
+              language_client: restartMetrics,
+              readiness: 'not_observed',
+            },
+          },
+          initialLanguageClientMetrics,
+        );
+        throw error;
+      }
       const restarted = await collectProviderMoment(
         'after_restart',
         'post_restart',

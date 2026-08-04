@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import { execFile } from 'child_process';
 import {
   LanguageClient,
+  NotificationType,
   State as LanguageClientState,
   TransportKind,
   Trace,
@@ -119,6 +120,7 @@ import {
 } from './startupDiagnosis';
 import type { StartupErrorDiagnosis } from './startupDiagnosis';
 import type { ManagedBinarySource, ReinstallCommandResult } from './commandResults';
+import { ActiveDocumentReadiness } from './activeDocumentReadiness';
 
 // Compatibility projections for existing command/provider code. Lifecycle
 // ownership lives in `languageClientLifecycle`; these values are synchronized
@@ -139,6 +141,10 @@ let languageClientLifecycle:
   | ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent>
   | undefined;
 const languageClientStartupMetrics = new LanguageClientStartupMetrics();
+const activeDocumentReadiness = new ActiveDocumentReadiness();
+const activeDocumentReadyNotification = new NotificationType<{ uri?: string }>(
+  'perl-lsp/active-document-ready',
+);
 const featureActivationMetrics = new FeatureActivationMetrics();
 
 export function getLanguageClientStartupMetrics(): LanguageClientStartupMetricsSnapshot {
@@ -153,6 +159,10 @@ export function markLanguageClientStartupMilestone(
   milestone: LanguageClientStartupMilestone,
 ): void {
   languageClientStartupMetrics.markMilestone(milestone);
+}
+
+export function waitForActiveDocumentReady(uri: string, timeoutMs = 30_000): Promise<void> {
+  return activeDocumentReadiness.waitFor(uri, timeoutMs);
 }
 /**
  * Cached startup diagnosis from the last server failure.
@@ -805,6 +815,7 @@ export async function activate(context: vscode.ExtensionContext) {
       getLanguageClientStartupMetrics,
       getFeatureActivationMetrics,
       markLanguageClientStartupMilestone,
+      waitForActiveDocumentReady,
       stop: deactivate,
     };
   }
@@ -825,6 +836,7 @@ export async function activate(context: vscode.ExtensionContext) {
       getLanguageClientStartupMetrics,
       getFeatureActivationMetrics,
       markLanguageClientStartupMilestone,
+      waitForActiveDocumentReady,
       stop: deactivate,
     };
   }
@@ -835,6 +847,7 @@ export async function activate(context: vscode.ExtensionContext) {
     getLanguageClientStartupMetrics,
     getFeatureActivationMetrics,
     markLanguageClientStartupMilestone,
+    waitForActiveDocumentReady,
     stop: deactivate,
   };
 }
@@ -1248,6 +1261,7 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
 }
 
 function createLanguageClient(serverPath: string): LanguageClient {
+  const generation = activeDocumentReadiness.beginGeneration();
   const serverOptions: ServerOptions = {
     run: {
       command: serverPath,
@@ -1331,6 +1345,11 @@ function createLanguageClient(serverPath: string): LanguageClient {
     serverOptions,
     clientOptions,
   );
+  lc.onNotification(activeDocumentReadyNotification, (params) => {
+    if (params?.uri) {
+      activeDocumentReadiness.markReady(params.uri, generation);
+    }
+  });
   void lc.setTrace(getTraceLevel());
   return lc;
 }
