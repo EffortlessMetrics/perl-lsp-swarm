@@ -123,6 +123,7 @@ fn the_narrowings_do_not_disarm_the_check() {
 fn angle_brackets_inside_a_literal_are_not_a_heredoc_introducer() {
     assert_blocking_diagnostic("my $s = \"<<EOF\"\nprint $s;\n");
     assert_blocking_diagnostic("my $s = '<<EOF'\nprint $s;\n");
+    assert_blocking_diagnostic("my $re = qr/<<EOF/\nprint $re;\n");
     assert_blocking_diagnostic("my $x = 1;   # <<EOF in a comment\nmy $y = 2\nprint $y;\n");
     // An escaped quote inside the literal must not end it early and re-expose
     // the `<<` to the scan.

@@ -750,6 +750,16 @@ impl<'a> Parser<'a> {
             || node.children().into_iter().any(Self::contains_heredoc)
     }
 
+    /// Whether the slash at `index` starts a `qr//` quote-like body.
+    ///
+    /// A bare slash is also Perl's division operator, so treating every slash
+    /// as a quote delimiter would hide real heredoc introducers. Restrict this
+    /// guard to the unambiguous `qr` operator form used by the parser's regex
+    /// syntax and by the false-negative regression below.
+    fn starts_qr_slash_body(span: &[u8], index: usize) -> bool {
+        index >= 2 && span[index] == b'/' && &span[index - 2..index] == b"qr"
+    }
+
     /// Whether the source the statement spans contains a heredoc introducer
     /// (`<<"X"`, `<<'X'`, `<<X`, `<<~X`) **in code position**.
     ///
@@ -794,6 +804,11 @@ impl<'a> Parser<'a> {
 
             match byte {
                 b'\'' | b'"' | b'`' | b'#' => {
+                    quote = Some(byte);
+                    index += 1;
+                    continue;
+                }
+                b'/' if Self::starts_qr_slash_body(span, index) => {
                     quote = Some(byte);
                     index += 1;
                     continue;
