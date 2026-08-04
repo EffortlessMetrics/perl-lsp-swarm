@@ -14,9 +14,9 @@
 /// 3. Confirm that a clean parse still returns `Clean`.
 /// 4. Confirm that the existing `Recovered` path still yields
 ///    `StructuredRecoveryOnly`.
+use perl_parser_core::syntax::error::{RecoveryKind, RecoverySite};
 use perl_parser_core::{
-    ParseError, Parser, RecoveryKind, RecoverySalvageClass, RecoverySalvageProfile, RecoverySite,
-    count_blocking_non_recovered,
+    ParseError, Parser, RecoverySalvageClass, RecoverySalvageProfile, count_blocking_non_recovered,
 };
 use perl_tdd_support::must;
 
