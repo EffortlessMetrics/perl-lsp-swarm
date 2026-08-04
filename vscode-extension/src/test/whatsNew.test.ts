@@ -288,6 +288,15 @@ describe('markdownToHtml', () => {
     );
   });
 
+  test('renders http/https links containing balanced parentheses', () => {
+    const html = markdownToHtml(
+      'See [Wikipedia](https://en.wikipedia.org/wiki/Function_(mathematics)) for details.',
+    );
+    expect(html).toContain(
+      '<a href="https://en.wikipedia.org/wiki/Function_(mathematics)">Wikipedia</a>',
+    );
+  });
+
   test('does not render non-http schemes as links (#1993)', () => {
     const html = markdownToHtml('[evil](javascript:alert(1))');
     expect(html).not.toContain('<a ');

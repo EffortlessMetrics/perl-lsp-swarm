@@ -314,7 +314,10 @@ function inlineMarkdown(text: string): string {
   // other schemes (javascript:, mailto:, etc.) remain as plain text for
   // security (#1993). Note: escapeHtml has already escaped & to &amp;,
   // so the URL will contain &amp; for & — that's valid in href.
-  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
+  s = s.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^\s()]+(?:\([^\s()]*\)[^\s()]*)*)\)/g,
+    '<a href="$2">$1</a>',
+  );
   return s;
 }
 
