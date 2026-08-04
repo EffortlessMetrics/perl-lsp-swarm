@@ -2205,3 +2205,37 @@ created = "2026-07-17"
 review_after = "2026-08-17"
 expires = "2026-09-30"
 removal_criteria = "RIPR can trace the exact-head receipt/check runner through its focused contract oracles, or targeted mutation replaces this advisory static path."
+
+# -----------------------------------------------------------------------------
+# Statement-terminator seams in parse_statement_inner (#5474): three call sites
+# that every parse executes, which RIPR 0.9.x classifies activation_unknown
+# because the dominant path into the function is a generic closure.
+#
+# `parse_statement` reaches the body through
+# `with_recursion_guard(|s| s.parse_statement_inner())`, whose parameter is
+# `impl FnOnce(&mut Self) -> ParseResult<T>` and whose body constructs a `Drop`
+# guard. RIPR cannot statically traverse the monomorphized closure, so every
+# seam inside `parse_statement_inner` lands as activation_unknown regardless of
+# the tests that cover it — the same static-traversal class as
+# ripr-suppress-rename-ga-blocker-receipts (cfg guards) and
+# ripr-suppress-oo-method-signature-help-seams.
+#
+# Measured, not assumed: the three gap IDs below are byte-identical across four
+# heads of PR #5503, including one that added
+# `parse_statement_inner_call_presence_observer` — the exact test name the
+# receipt's own review guidance names for these seams. Added tests do not move
+# the classification, which is what identifies it as a static limit rather than
+# a proof gap.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-statement-terminator-seams"
+kind = "activation_unknown"
+paths = ["crates/perl-parser-core/src/engine/parser/statements.rs"]
+classification = ["activation_unknown", "static_unknown"]
+owner = "proof-lane"
+issue = "#5474"
+reason = "PR #5503 (#5474) adds the statement-terminator check to parse_statement_inner. RIPR 0.9.x reports three activation_unknown seams — gap 1104624889044ab2 and aed0a7d14f726854 at the two `self.finish_statement_terminator(&stmt)` call sites, and bf27fdd1586c7ea4 at the `self.drain_pending_heredocs_from(...)` that follows them. All three execute on every parse. Coverage: 12 tests in missing_statement_semicolon_tests.rs, 7 in cpan_missing_semicolon_false_positives.rs asserting on blocks_clean_parse(), 5 in-crate call-observation tests in src/engine/parser/statement_terminator_tests.rs (including the observer name RIPR's own guidance requests), plus a differential sweep over 1472 files of installed Perl 5.38.2 and 1278 in-repo Perl files with zero false positives against `perl -c`. The classification does not move when tests are added: the three gap IDs are identical across four heads of the PR. The cause is static, not evidentiary — `parse_statement` calls the body through `with_recursion_guard(|s| s.parse_statement_inner())`, a generic `impl FnOnce` closure with a Drop guard, which breaks RIPR's call-graph traversal into the function. Narrow: single production file, one PR."
+created = "2026-08-04"
+review_after = "2026-09-04"
+expires = "2026-09-30"
+removal_criteria = "RIPR can traverse `with_recursion_guard`'s generic closure into parse_statement_inner and attribute the existing call-observation tests to these seams, or the seams are re-classified upstream. Verify by removing this entry and confirming the ripr+ New Gap Gate reports no new gaps for statements.rs."
