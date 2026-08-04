@@ -202,12 +202,27 @@ impl<R: perl_subprocess_runtime::SubprocessRuntime> FormattingProvider<R> {
 
         // If we have a perltidy config, use it to generate args
         if let Some(ref config) = self.perltidy_config {
-            // Use config's to_args() but merge with LSP options for tab size/indent
-            let mut config_args = config.to_args();
-
-            // If profile is set, use only the profile (perltidy will read everything from there)
-            if config.profile.is_some() {
-                args.extend(config_args);
+            // A profile owns everything the workspace did not configure, but it
+            // must not silently discard indentation the workspace DID
+            // configure: `to_args` returns after emitting only `--profile` and
+            // `extra_args`. perltidy lets command-line flags override profile
+            // settings, so explicit indent/tabs are appended after the profile
+            // and before `extra_args`, which stays last as the escape hatch.
+            //
+            // The editor `tabSize` / `insertSpaces` fallback is deliberately
+            // NOT applied here: with a profile present, an unset field is the
+            // profile's to decide, and injecting the editor's width would
+            // override the profile's own indentation for workspaces that
+            // configured nothing.
+            if let Some(profile) = config.profile.as_ref() {
+                args.push(format!("--profile={profile}"));
+                if let Some(indent) = config.indent_columns {
+                    args.push(format!("--indent-columns={indent}"));
+                }
+                if let Some(tabs) = config.tabs {
+                    args.push(if tabs { "--tabs".to_string() } else { "--notabs".to_string() });
+                }
+                args.extend(config.extra_args.clone());
             } else {
                 // Merge LSP options with config options.
                 //
@@ -220,7 +235,7 @@ impl<R: perl_subprocess_runtime::SubprocessRuntime> FormattingProvider<R> {
                 let config_sets_indent = config.indent_columns.is_some();
                 let config_sets_tabs = config.tabs.is_some();
 
-                args.append(&mut config_args);
+                args.append(&mut config.to_args());
 
                 if !config_sets_indent {
                     args.push(format!("-i={}", options.tab_size));
@@ -743,6 +758,72 @@ mod tests {
         assert!(args.contains(&"-i=2".to_string()), "{args:?}");
         assert!(args.contains(&"-et=2".to_string()), "{args:?}");
         assert!(!args.iter().any(|arg| arg.starts_with("--indent-columns=")), "{args:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn external_profile_still_applies_configured_indent_columns() -> Result<()> {
+        // A discovered `.perltidyrc` (or explicit perltidy_profile) sets
+        // `profile`, which used to make `to_args` emit only `--profile` and
+        // drop configured indentation entirely. perltidy lets command-line
+        // flags override profile settings, so an explicitly configured width
+        // must still reach the argv.
+        let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let config = PerlTidyConfig {
+            profile: Some("/workspace/.perltidyrc".to_string()),
+            indent_columns: Some(2),
+            tabs: Some(true),
+            extra_args: vec!["--maximum-line-length=120".to_string()],
+            ..PerlTidyConfig::default()
+        };
+        let provider =
+            FormattingProvider::new(ArgRecordingPerltidyRuntime { args: recorded.clone() })
+                .with_perltidy_config(config)
+                .with_formatter_mode(FormatterMode::ExternalLegacy);
+
+        provider.format_document("my $x = 1;\n", &options_with_tab_size(4, true))?;
+
+        let args = recorded.lock().map_err(|_| anyhow::anyhow!("args mutex poisoned"))?.clone();
+        assert!(args.contains(&"--profile=/workspace/.perltidyrc".to_string()), "{args:?}");
+        assert!(args.contains(&"--indent-columns=2".to_string()), "{args:?}");
+        assert!(args.contains(&"--tabs".to_string()), "{args:?}");
+
+        // extra_args stays last so it remains the escape hatch that can
+        // override the typed fields.
+        let indent_at = args.iter().position(|a| a == "--indent-columns=2");
+        let extra_at = args.iter().position(|a| a == "--maximum-line-length=120");
+        assert!(indent_at < extra_at, "extra_args must stay last: {args:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn external_profile_without_configured_indent_defers_to_the_profile() -> Result<()> {
+        // Opposite-direction control for the decision above: when a profile is
+        // present and the workspace configured no indentation, the editor's
+        // tabSize must NOT be injected — that would override the profile's own
+        // indentation for workspaces that configured nothing.
+        let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let config = PerlTidyConfig {
+            profile: Some("/workspace/.perltidyrc".to_string()),
+            ..PerlTidyConfig::default()
+        };
+        let provider =
+            FormattingProvider::new(ArgRecordingPerltidyRuntime { args: recorded.clone() })
+                .with_perltidy_config(config)
+                .with_formatter_mode(FormatterMode::ExternalLegacy);
+
+        provider.format_document("my $x = 1;\n", &options_with_tab_size(2, true))?;
+
+        let args = recorded.lock().map_err(|_| anyhow::anyhow!("args mutex poisoned"))?.clone();
+        assert!(args.contains(&"--profile=/workspace/.perltidyrc".to_string()), "{args:?}");
+        assert!(
+            !args.iter().any(|a| a.starts_with("-i=") || a.starts_with("--indent-columns=")),
+            "the editor's tabSize must not override the profile: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a.starts_with("-et=") || a == "-dt"),
+            "the editor's insertSpaces must not override the profile: {args:?}"
+        );
         Ok(())
     }
 
