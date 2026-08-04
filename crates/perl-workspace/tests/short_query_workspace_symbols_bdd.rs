@@ -90,7 +90,7 @@ fn given_one_char_query_when_searching_workspace_symbols_then_only_exact_and_pre
 
     // "alpha_sub" starts with "a" and must appear.
     assert!(
-        results.iter().any(|s| s.name.contains("alpha_sub")),
+        results.iter().any(|s| s.name == "alpha_sub"),
         "expected 'alpha_sub' (prefix match) in results for query '{}', got: {:?}",
         query,
         results.iter().map(|s| &s.name).collect::<Vec<_>>()
@@ -99,12 +99,12 @@ fn given_one_char_query_when_searching_workspace_symbols_then_only_exact_and_pre
     // "main_alpha_fn" and "get_all_items" are substring-only matches and must
     // not appear in the one-char result set.
     assert!(
-        !results.iter().any(|s| s.name.contains("main_alpha_fn")),
+        !results.iter().any(|s| s.name == "main_alpha_fn"),
         "unexpected substring match 'main_alpha_fn' for one-char query '{}'",
         query,
     );
     assert!(
-        !results.iter().any(|s| s.name.contains("get_all_items")),
+        !results.iter().any(|s| s.name == "get_all_items"),
         "unexpected substring match 'get_all_items' for one-char query '{}'",
         query,
     );
@@ -132,7 +132,7 @@ fn given_two_char_query_when_searching_workspace_symbols_then_loose_matches_retu
     // contains "al" but does not start with "al", so it proves the loose tier
     // is open for this query length.
     assert!(
-        results.iter().any(|s| s.name.contains("main_alpha_fn")),
+        results.iter().any(|s| s.name == "main_alpha_fn"),
         "expected substring match 'main_alpha_fn' for two-char query '{}', got: {:?}",
         query,
         results.iter().map(|s| &s.name).collect::<Vec<_>>()
@@ -140,7 +140,7 @@ fn given_two_char_query_when_searching_workspace_symbols_then_loose_matches_retu
 
     // "get_all_items" also contains "al" — a second loose match.
     assert!(
-        results.iter().any(|s| s.name.contains("get_all_items")),
+        results.iter().any(|s| s.name == "get_all_items"),
         "expected substring match 'get_all_items' for two-char query '{}', got: {:?}",
         query,
         results.iter().map(|s| &s.name).collect::<Vec<_>>()

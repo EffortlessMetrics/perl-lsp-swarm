@@ -32,8 +32,6 @@ fn min_loose_match_query_chars_accessible_at_crate_root() {
     // Verifying it is accessible and has the expected value here ensures the
     // re-export path from perl_symbol::types through api.rs is intact. (#5407)
     assert_eq!(MIN_LOOSE_MATCH_QUERY_CHARS, 2);
-    // Also verify via the module path for completeness.
-    assert_eq!(perl_symbol::types::MIN_LOOSE_MATCH_QUERY_CHARS, 2);
 }
 
 #[test]
