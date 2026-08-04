@@ -3,14 +3,14 @@
 //! All `LspServer::new*` and `LspServer::with_*` constructors live here
 //! so that `mod.rs` is limited to the struct definition and core accessors.
 
-#[cfg(test)]
-use super::*;
 use super::{
     Arc, AstCache, AtomicBool, AtomicI32, BufReader, ClientCapabilities, FeatureProfile, HashMap,
     HashSet, IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
     WorkspaceConfig, Write, io, notebook, outbound, refresh,
 };
 use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+use std::sync::atomic::AtomicU64;
 
 impl LspServer {
     /// Create a new LSP server
