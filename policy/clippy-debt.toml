@@ -1,9 +1,1 @@
 schema = 1
-
-[[debt]]
-lint = "clippy::collapsible_if"
-path = "crates/**/*.rs"
-owner = "parser"
-reason = "Existing parser and provider control-flow shapes predate the strict lint policy; clean up in behavior-preserving follow-up PRs."
-expires = "2026-07-01"
-

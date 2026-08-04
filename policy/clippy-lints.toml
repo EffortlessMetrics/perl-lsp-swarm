@@ -10,9 +10,9 @@ blanket_categories = false
 [[lint]]
 name = "clippy::collapsible_if"
 level = "allow"
-status = "debt"
+status = "active"
 class = "style"
-reason = "Existing parser control-flow debt is tracked in policy/clippy-debt.toml until behavior-preserving cleanup lands."
+reason = "Parser and provider control-flow shapes that predate strict lint policy; debt closed — zero violations confirmed 2026-08-04."
 
 [[lint]]
 name = "rust::unsafe_code"
@@ -213,23 +213,44 @@ reason = "Line iteration must not hide repeated IO errors."
 [[lint]]
 name = "clippy::await_holding_lock"
 level = "deny"
-status = "tracked"
+status = "active"
 class = "async"
 reason = "Do not hold locks across await points."
 
 [[lint]]
 name = "clippy::await_holding_refcell_ref"
 level = "deny"
-status = "tracked"
+status = "active"
 class = "async"
 reason = "Do not hold RefCell borrows across await points."
 
 [[lint]]
 name = "clippy::await_holding_invalid_type"
 level = "deny"
-status = "tracked"
+status = "active"
 class = "async"
 reason = "Do not hold configured invalid guard types across await points."
+
+[[lint]]
+name = "clippy::async_yields_async"
+level = "deny"
+status = "active"
+class = "async"
+reason = "An async fn returning impl Future is almost always a bug; return the value directly."
+
+[[lint]]
+name = "clippy::mutex_atomic"
+level = "deny"
+status = "active"
+class = "async"
+reason = "Single-value Mutex<bool/usize/…> should use the corresponding Atomic type."
+
+[[lint]]
+name = "clippy::unnecessary_mut_passed"
+level = "deny"
+status = "active"
+class = "style"
+reason = "Passing a mutable reference where an immutable one suffices obscures the actual mutation boundary."
 
 [[lint]]
 name = "clippy::future_not_send"

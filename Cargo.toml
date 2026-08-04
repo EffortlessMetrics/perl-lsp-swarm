@@ -407,6 +407,13 @@ manual_ilog2 = "warn"
 unnecessary_trailing_comma = "warn"
 print_stderr = "deny"
 print_stdout = "deny"
+# Async discipline: hold-across-await and related footguns — zero violations confirmed (#2899).
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+await_holding_invalid_type = "deny"
+async_yields_async = "deny"
+mutex_atomic = "deny"
+unnecessary_mut_passed = "deny"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(ci)', 'cfg(feature, values("slow_tests"))'] }
