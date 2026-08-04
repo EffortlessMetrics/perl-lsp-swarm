@@ -4,8 +4,8 @@
 //! into structured [`StackFrame`] representations.
 
 use super::{Source, StackFrame, StackFramePresentationHint};
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 use thiserror::Error;
 
 /// Errors that can occur during stack trace parsing.
@@ -65,8 +65,9 @@ static SIMPLE_FRAME_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(||
 /// Pattern for eval context in stack traces.
 /// Matches formats like:
 /// - `(eval 10)[/path/file.pm:42]`
-static EVAL_CONTEXT_RE: LazyLock<Result<Regex, regex::Error>> =
-    LazyLock::new(|| Regex::new(r"^\(eval\s+(?P<eval_num>\d+)\)\[(?P<file>[^\]:]+):(?P<line>\d+)\]"));
+static EVAL_CONTEXT_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
+    Regex::new(r"^\(eval\s+(?P<eval_num>\d+)\)\[(?P<file>[^\]:]+):(?P<line>\d+)\]")
+});
 
 /// Pattern for extracting a best-effort function name from stack-like lines
 /// that do not include source location information.

@@ -279,6 +279,30 @@ describe('markdownToHtml', () => {
     expect(html).toContain('&amp;');
   });
 
+  test('renders http/https Markdown links as clickable anchors (#1993)', () => {
+    const html = markdownToHtml(
+      'See [PR #123](https://github.com/EffortlessMetrics/perl-lsp/pull/123) for details.',
+    );
+    expect(html).toContain(
+      '<a href="https://github.com/EffortlessMetrics/perl-lsp/pull/123">PR #123</a>',
+    );
+  });
+
+  test('renders http/https links containing balanced parentheses', () => {
+    const html = markdownToHtml(
+      'See [Wikipedia](https://en.wikipedia.org/wiki/Function_(mathematics)) for details.',
+    );
+    expect(html).toContain(
+      '<a href="https://en.wikipedia.org/wiki/Function_(mathematics)">Wikipedia</a>',
+    );
+  });
+
+  test('does not render non-http schemes as links (#1993)', () => {
+    const html = markdownToHtml('[evil](javascript:alert(1))');
+    expect(html).not.toContain('<a ');
+    expect(html).toContain('[evil]');
+  });
+
   test('closes list before next heading', () => {
     const md = '- item\n## Next Section';
     const html = markdownToHtml(md);

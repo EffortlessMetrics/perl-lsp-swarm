@@ -3,8 +3,8 @@
 //! This module defines the patterns used to detect dangerous Perl operations
 //! that should be blocked during safe expression evaluation.
 
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 
 /// List of dangerous Perl operations that can mutate state, perform I/O, or execute code
 ///

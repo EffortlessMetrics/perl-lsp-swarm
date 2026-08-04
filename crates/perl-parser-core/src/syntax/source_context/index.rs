@@ -44,6 +44,18 @@ impl SourceRegionIndex {
         Self::from_regions(source, content_hash, regions)
     }
 
+    /// Like [`build_with_hash`](Self::build_with_hash) but clones the caller's
+    /// `Arc<str>` instead of allocating a new one from `&str`. Use this when the
+    /// caller already owns the source text as `Arc<str>` to avoid a wasteful
+    /// allocate + memcpy round-trip (#5526).
+    #[must_use]
+    pub fn build_with_hash_from_arc(source: Arc<str>, content_hash: u64) -> Self {
+        let regions = collector::collect_regions(&source);
+        let source_len = source.len();
+        let regions = normalize_regions(regions, source_len);
+        Self { content_hash, source, regions }
+    }
+
     /// Construct from pre-normalized regions (tests and `with_overrides`).
     #[must_use]
     pub fn from_regions(source: &str, content_hash: u64, regions: Vec<SourceRegion>) -> Self {

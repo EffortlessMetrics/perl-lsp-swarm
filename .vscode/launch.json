@@ -41,8 +41,13 @@
       "type": "node",
       "request": "launch",
       "name": "Debug Extension (Jest)",
-      "runtimeExecutable": "npx",
-      "args": ["jest", "--config", "${workspaceFolder}/vscode-extension/jest.config.js"],
+      "program": "${workspaceFolder}/vscode-extension/node_modules/jest/bin/jest.js",
+      "args": [
+        "--runInBand",
+        "--config",
+        "${workspaceFolder}/vscode-extension/jest.config.js"
+      ],
+      "preLaunchTask": "vscode-extension: compile:test",
       "cwd": "${workspaceFolder}/vscode-extension",
       "console": "integratedTerminal"
     }

@@ -26,3 +26,20 @@ indent_size = 4
 
 [Makefile]
 indent_style = tab
+
+# These fixtures intentionally preserve their line-ending and whitespace
+# representation; keep EditorConfig from normalizing test input on save.
+[testdata/ux/release_smoke/crlf_links/main.pl]
+end_of_line = crlf
+
+[crates/perl-corpus/fixtures/parser_accuracy/span_coordinates.pl]
+charset = utf-8-bom
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+
+[crates/perl-corpus/fixtures/parser_accuracy/span_bom.pl]
+charset = utf-8-bom
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset
