@@ -37,24 +37,33 @@ void test('rejects package growth and inventory drift', () => {
 
 void test('uses only the current platform baseline entries', () => {
   const baseline = {
-    total_files: 2,
-    total_bytes: 12,
+    total_files: 3,
+    total_bytes: 20,
     files: {
       'README.md': 2,
       'bin/win32-x64/perllsp.exe': 10,
+      'bin/linux-x64/perllsp': 8,
     },
   };
   const linuxBaseline = baselineForPlatform(baseline, 'linux');
 
   assert.deepEqual(linuxBaseline, {
     schema_version: 1,
-    total_files: 1,
-    total_bytes: 2,
-    files: { 'README.md': 2 },
+    total_files: 2,
+    total_bytes: 10,
+    files: { 'README.md': 2, 'bin/linux-x64/perllsp': 8 },
   });
   assert.deepEqual(
     compareInventory(
-      { total_files: 1, total_bytes: 2, files: { 'README.md': 2 } },
+      {
+        total_files: 3,
+        total_bytes: 20,
+        files: {
+          'README.md': 2,
+          'bin/linux-x64/perllsp': 8,
+          'bin/win32-x64/perllsp.exe': 10,
+        },
+      },
       baseline,
       'linux',
     ),
@@ -64,11 +73,12 @@ void test('uses only the current platform baseline entries', () => {
 
 void test('still rejects growth for a platform-owned file', () => {
   const baseline = {
-    total_files: 2,
-    total_bytes: 12,
+    total_files: 3,
+    total_bytes: 20,
     files: {
       'README.md': 2,
       'bin/win32-x64/perllsp.exe': 10,
+      'bin/linux-x64/perllsp': 8,
     },
   };
 
@@ -86,6 +96,35 @@ void test('still rejects growth for a platform-owned file', () => {
       'win32',
     ),
     ['total bytes grew from 12 to 13', 'file bin/win32-x64/perllsp.exe grew from 10 to 11 bytes'],
+  );
+});
+
+void test('ignores foreign platform files in the actual inventory', () => {
+  const baseline = {
+    total_files: 3,
+    total_bytes: 20,
+    files: {
+      'README.md': 2,
+      'bin/win32-x64/perllsp.exe': 10,
+      'bin/linux-x64/perllsp': 8,
+    },
+  };
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 3,
+        total_bytes: 20,
+        files: {
+          'README.md': 2,
+          'bin/linux-x64/perllsp': 8,
+          'bin/win32-x64/perllsp.exe': 10,
+        },
+      },
+      baseline,
+      'linux',
+    ),
+    [],
   );
 });
 
