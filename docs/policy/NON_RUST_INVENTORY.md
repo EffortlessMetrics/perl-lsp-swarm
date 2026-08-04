@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10104 |
-| Rust-family files | 3093 |
-| Non-Rust files | 7011 |
+| Total tracked files | 10109 |
+| Rust-family files | 3097 |
+| Non-Rust files | 7012 |
 | Allowlisted | 4728 |
-| Unclassified | 2283 |
+| Unclassified | 2284 |
 
 ## Non-Rust files by category
 
@@ -22,7 +22,7 @@
 | production | 210 |
 | test | 1711 |
 | tooling | 319 |
-| unclassified | 2283 |
+| unclassified | 2284 |
 
 ## Unclassified files
 
@@ -127,6 +127,7 @@
 | `.changes/unreleased/product-5452-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5472-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5486-Fixed-000000.yaml` | `yaml` |
+| `.changes/unreleased/product-5503-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5523-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5525-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5529-Fixed-000000.yaml` | `yaml` |
