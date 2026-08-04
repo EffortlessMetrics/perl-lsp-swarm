@@ -69,13 +69,7 @@ function stageServerForPackage(serverPath, extensionRoot = root) {
   const createdBinRoot = !fs.existsSync(binRoot);
   const createdPlatformRoot = !fs.existsSync(platformRoot);
 
-  fs.mkdirSync(platformRoot, { recursive: true });
-  fs.copyFileSync(serverPath, destination);
-  if (process.platform !== 'win32') {
-    fs.chmodSync(destination, 0o755);
-  }
-
-  return () => {
+  const restore = () => {
     if (previous) {
       fs.writeFileSync(destination, previous.bytes);
       fs.chmodSync(destination, previous.mode);
@@ -93,6 +87,27 @@ function stageServerForPackage(serverPath, extensionRoot = root) {
       fs.rmSync(binRoot, { recursive: true, force: true });
     }
   };
+
+  try {
+    fs.mkdirSync(platformRoot, { recursive: true });
+    fs.copyFileSync(serverPath, destination);
+    if (process.platform !== 'win32') {
+      fs.chmodSync(destination, 0o755);
+    }
+  } catch (error) {
+    try {
+      restore();
+    } catch (cleanupError) {
+      process.stderr.write(
+        `Unable to clean up failed VSIX server staging: ${
+          cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+        }\n`,
+      );
+    }
+    throw error;
+  }
+
+  return restore;
 }
 
 function main() {
@@ -122,7 +137,10 @@ function main() {
   let restoreStagedServer = () => {};
   try {
     restoreStagedServer = stageServerForPackage(serverPath);
-    const packageResult = runNpm(['run', 'package'], process.env);
+    const packageResult = runNpm(
+      ['run', 'package'],
+      { ...process.env, PERL_LSP_CURRENT_SOURCE_SMOKE: '1' },
+    );
     if (packageResult.status !== 0) {
       smokeStatus = packageResult.status ?? 1;
     } else {

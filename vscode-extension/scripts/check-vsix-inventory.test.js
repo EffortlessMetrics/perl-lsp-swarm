@@ -3,6 +3,7 @@ const { test } = require('node:test');
 const {
   baselineForPlatform,
   compareInventory,
+  currentSourceBundleFile,
   platformForPackagedFile,
   summarizeInventory,
 } = require('./check-vsix-inventory');
@@ -99,7 +100,7 @@ void test('still rejects growth for a platform-owned file', () => {
   );
 });
 
-void test('ignores foreign platform files in the actual inventory', () => {
+void test('accepts a known foreign platform bundle without requiring it on this host', () => {
   const baseline = {
     total_files: 3,
     total_bytes: 20,
@@ -123,6 +124,50 @@ void test('ignores foreign platform files in the actual inventory', () => {
       },
       baseline,
       'linux',
+    ),
+    [],
+  );
+});
+
+void test('rejects an unexpected foreign platform bundle', () => {
+  const baseline = {
+    total_files: 1,
+    total_bytes: 2,
+    files: { 'README.md': 2 },
+  };
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 2,
+        total_bytes: 12,
+        files: { 'README.md': 2, 'bin/darwin-arm64/perllsp': 10 },
+      },
+      baseline,
+      'linux',
+    ),
+    ['unexpected foreign-platform packaged file: bin/darwin-arm64/perllsp'],
+  );
+});
+
+void test('allows the explicitly staged current-source target when no baseline exists', () => {
+  const baseline = {
+    total_files: 1,
+    total_bytes: 2,
+    files: { 'README.md': 2 },
+  };
+  const currentSourceFile = currentSourceBundleFile('darwin', 'arm64');
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 2,
+        total_bytes: 12,
+        files: { 'README.md': 2, [currentSourceFile]: 10 },
+      },
+      baseline,
+      'darwin',
+      { allowedFiles: [currentSourceFile] },
     ),
     [],
   );
