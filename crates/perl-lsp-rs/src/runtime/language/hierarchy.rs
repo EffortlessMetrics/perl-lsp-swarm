@@ -3,7 +3,9 @@
 //! Handles prepareTypeHierarchy, typeHierarchy/supertypes, typeHierarchy/subtypes,
 //! prepareCallHierarchy, callHierarchy/incomingCalls, and callHierarchy/outgoingCalls.
 
-use super::super::*;
+use super::super::{
+    CallHierarchyProvider, JsonRpcError, LspServer, TypeHierarchyProvider, Value, json,
+};
 use crate::protocol::{req_position, req_uri};
 #[cfg(feature = "workspace")]
 use crate::runtime::readiness::IndexReadinessPolicy;

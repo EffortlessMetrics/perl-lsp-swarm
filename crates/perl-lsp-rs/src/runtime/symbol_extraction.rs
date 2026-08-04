@@ -4,7 +4,12 @@
 //! references to a given symbol. They are used by code-lens resolve,
 //! workspace/symbol, and related features.
 
-use super::*;
+#[cfg(not(feature = "workspace"))]
+use super::json;
+use super::{
+    LspServer, LspWorkspaceSymbol, WireLocation, WirePosition, WireRange, byte_to_line_col,
+    normalize_package_separator,
+};
 
 #[allow(dead_code)]
 impl LspServer {
