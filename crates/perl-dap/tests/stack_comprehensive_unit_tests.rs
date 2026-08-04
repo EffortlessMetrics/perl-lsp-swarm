@@ -8,6 +8,7 @@ use perl_dap::stack::{
     SourcePresentationHint, StackFrame, StackFramePresentationHint, StackParseError,
     filter_user_visible_frames, is_internal_frame, is_internal_frame_name_and_path,
 };
+use serial_test::serial;
 
 // ─── StackFrame construction ────────────────────────────────────────────────
 
@@ -501,6 +502,7 @@ fn parser_multi_line_skips_blank_lines() {
 }
 
 #[test]
+#[serial]
 fn parser_multi_line_resets_auto_ids() {
     // Default starting_id is 1.  After the first parse (which increments next_id),
     // parse_stack_trace must reset next_id back to starting_id (1) for the second call.
@@ -514,6 +516,7 @@ fn parser_multi_line_resets_auto_ids() {
 }
 
 #[test]
+#[serial]
 fn parser_custom_starting_id() {
     let mut parser = PerlStackParser::new().with_starting_id(50);
     let frame = parser.parse_frame("  #0  main::foo at a.pl line 1", 0);

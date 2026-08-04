@@ -1,6 +1,6 @@
 //! Request dispatching: handle_request, dispatch_request, response_succeeded_for_command.
 
-use super::*;
+use super::{DapMessage, DebugAdapter, Value};
 
 impl DebugAdapter {
     const SUPPORTED_COMMANDS: [&str; 37] = [

@@ -3,7 +3,12 @@
 //! Methods that look up documents, normalize URIs, convert between byte
 //! offsets and LSP positions, and provide text-based fallback extractors.
 
-use super::*;
+use super::{
+    Arc, CONTENT_MODIFIED, DocumentState, HashMap, JsonRpcError, LspServer, LspWorkspaceSymbol,
+    extract_module_reference, extract_module_reference_extended, extract_text_based_code_lenses,
+    extract_text_based_symbols, get_text_around_offset, get_text_window_around_offset,
+    offset_to_position, position_to_offset,
+};
 
 #[allow(dead_code)]
 impl LspServer {

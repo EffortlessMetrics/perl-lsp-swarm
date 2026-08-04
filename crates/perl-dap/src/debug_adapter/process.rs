@@ -1,6 +1,18 @@
 //! Process lifecycle management: initialize, launch, attach, disconnect, terminate, restart.
 
-use super::*;
+use super::{
+    Arc, BreakpointHitOutcome, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS,
+    DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
+    Instant, Mutex, Read, RestartArguments, ResumeMode, Source, StackFrame, Stdio, SyncSender,
+    TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState, Value, Write,
+    ansi_escape_re, catalog_has_feature, context_re, dispatch_event, emit_event_safe, error_re,
+    exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
+    thread, warning_re,
+};
+#[cfg(unix)]
+use nix::sys::signal::{self, Signal};
+#[cfg(unix)]
+use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 // The internal TCP-attach DapEvent fan-in channel is still unbounded (non-goal of #5149).
@@ -9,6 +21,7 @@ use std::sync::mpsc::channel;
 mod perl_info;
 mod perl_spawn;
 
+use super::variable_cache::VariableCache;
 use perl_info::detect_perl_info;
 use perl_spawn::{format_perl_spawn_error, is_valid_perl_interpreter};
 
@@ -382,9 +395,10 @@ impl DebugAdapter {
         // Users sometimes write "program": "'path/to/script.pl'" or
         // "\"path/to/script.pl\"" — the quotes become part of the path,
         // causing a confusing file-not-found error.
-        if (program.starts_with('\'') && program.ends_with('\'') && program.len() > 1)
-            || (program.starts_with('"') && program.ends_with('"') && program.len() > 1)
-        {
+        let has_surrounding_quotes =
+            (program.starts_with('\'') && program.ends_with('\'') && program.len() > 1)
+                || (program.starts_with('"') && program.ends_with('"') && program.len() > 1);
+        if has_surrounding_quotes && !Path::new(program).is_file() {
             return Err(format!(
                 "The 'program' path '{program}' has surrounding quotes. \
                  Remove the quotes in your launch.json — the path should be just \
@@ -1408,60 +1422,21 @@ impl DebugAdapter {
                 let stop_on_entry =
                     args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
 
-                // Validate arguments.
-                if normalized_host.is_empty() {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some("Host cannot be empty".to_string()),
-                    };
-                }
-
-                if port == 0 {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some("Port must be in range 1-65535".to_string()),
-                    };
-                }
-
-                if let Some(t) = timeout {
-                    if t == 0 {
-                        return DapMessage::Response {
-                            seq,
-                            request_seq,
-                            success: false,
-                            command: "attach".to_string(),
-                            body: None,
-                            message: Some(
-                                "Timeout must be greater than 0 milliseconds".to_string(),
-                            ),
-                        };
-                    }
-                    if t > 300_000 {
-                        return DapMessage::Response {
-                            seq,
-                            request_seq,
-                            success: false,
-                            command: "attach".to_string(),
-                            body: None,
-                            message: Some(
-                                "Timeout cannot exceed 300000 milliseconds (5 minutes)".to_string(),
-                            ),
-                        };
-                    }
-                }
-
                 // TCP attachment mode (IMPLEMENTED)
                 let mut config = TcpAttachConfig::new(normalized_host.to_string(), port);
                 if let Some(t) = timeout {
                     config = config.with_timeout(t);
+                }
+
+                if let Err(error) = config.validate_timeout_bounds() {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(error.to_string()),
+                    };
                 }
 
                 // Create TCP attach session
@@ -2407,6 +2382,51 @@ mod tests {
             }
             other => Err(format!("expected Response from handle_launch; got {other:?}")),
         }
+    }
+
+    #[test]
+    fn launch_preserves_a_real_quote_delimited_filename() -> Result<(), String> {
+        use std::io::Write;
+
+        let mut script = tempfile::Builder::new()
+            .prefix("'perl-dap-quote-test-")
+            .suffix(".pl'")
+            .tempfile_in(".")
+            .map_err(|e| format!("could not create script: {e}"))?;
+        script
+            .as_file_mut()
+            .write_all(b"print 1;\n")
+            .map_err(|e| format!("could not write script: {e}"))?;
+        let script_path = script
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("script filename is not valid UTF-8")?;
+        let missing_perl = std::env::current_dir()
+            .map_err(|e| format!("could not get current directory: {e}"))?
+            .join("missing-perl");
+        let missing_perl = missing_perl.to_str().ok_or("interpreter path is not valid UTF-8")?;
+
+        let mut adapter = DebugAdapter::new();
+        let result = adapter.launch_debugger(
+            script_path,
+            missing_perl,
+            Vec::new(),
+            false,
+            std::collections::HashMap::new(),
+            None,
+            1,
+        );
+        let error = match result {
+            Ok(thread_id) => return Err(format!("unexpectedly launched thread {thread_id}")),
+            Err(error) => error,
+        };
+
+        assert!(
+            !error.contains("surrounding quotes"),
+            "a real quote-delimited filename must not be treated as shell quoting: {error}"
+        );
+        Ok(())
     }
 
     #[test]

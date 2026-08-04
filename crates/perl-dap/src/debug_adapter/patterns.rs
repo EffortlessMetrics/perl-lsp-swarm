@@ -1,7 +1,11 @@
 use regex::Regex;
 use std::collections::VecDeque;
 
-use super::regexes::*;
+use super::regexes::{
+    ANSI_ESCAPE_RE, ASSIGNMENT_OPS_RE, CONTEXT_RE, DANGEROUS_OPS_RE, DEREF_RE, ERROR_RE,
+    EXCEPTION_RE, FUNCTION_BREAKPOINT_NAME_RE, GLOB_RE, INC_RE, PROMPT_RE, REGEX_MUTATION_RE,
+    SET_VARIABLE_NAME_RE, STACK_FRAME_RE, VARIABLE_RE, WARNING_RE,
+};
 
 pub(super) const DEBUG_SESSION_TERMINATE_WAIT_MS: u64 = 250;
 pub(super) const DEBUGGER_QUERY_WAIT_MS: u64 = 75;

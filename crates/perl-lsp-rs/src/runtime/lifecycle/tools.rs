@@ -2,7 +2,7 @@
 //!
 //! Handles detection of external tools like perltidy and perlcritic.
 
-use super::super::*;
+use super::super::LspServer;
 
 impl LspServer {
     /// Detect if a tool is available on the system

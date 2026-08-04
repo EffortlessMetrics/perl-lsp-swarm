@@ -2,7 +2,7 @@
 //!
 //! Wraps workspace/* LSP requests.
 
-use super::super::*;
+use super::super::{JsonRpcError, LspServer, Value};
 
 impl LspServer {
     pub(super) fn handle_workspace_symbols_dispatch(
