@@ -1094,27 +1094,20 @@ mod tests {
     fn not_yet_modeled_kinds_have_correct_multi_axis_flags() -> TestResult {
         // All `NotYetModeled` kinds must fall to `_ => visit_children` and must
         // therefore have `traverses_children=true` and `is_intentional=false`.
-        for kind in [
-            "Binary",
-            "ArraySlice",
-            "HashSlice",
-            "KeyValueSlice",
-            "ChainedComparison",
-            "Heredoc",
-            "Readline",
-            "Glob",
-            "Diamond",
-            "Ellipsis",
-            "Typeglob",
-            "Given",
-            "When",
-            "Default",
-            "Tie",
-            "Untie",
-            "DataSection",
-            "VString",
-            "AmperCall",
-        ] {
+        //
+        // The set is derived from the registry rather than hardcoded: a literal
+        // list is a second source of truth for the same classification, and it
+        // silently rots the moment a kind is promoted out of `NotYetModeled`
+        // (which is exactly how a stale `Heredoc`/`Readline`/`Glob`/`Diamond`
+        // entry survived their promotion in #2210). Membership is already
+        // pinned by `hir_completeness_classification_covers_all_variants` and by
+        // the generated `hir-coverage` status doc; this test owns the flags.
+        let not_yet_modeled = NodeKind::ALL_KIND_NAMES.iter().copied().filter(|name| {
+            disposition_for(name)
+                .is_some_and(|d| d.legacy_category() == LegacyCategory::NotYetModeled)
+        });
+
+        for kind in not_yet_modeled {
             let d = disposition_for(kind).ok_or_else(|| format!("no disposition for {kind}"))?;
             assert!(!d.emits_items, "{kind} (NotYetModeled) must NOT emit HIR items");
             assert!(!d.may_emit_boundary, "{kind} (NotYetModeled) must NOT emit boundaries");
