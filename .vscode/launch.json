@@ -29,20 +29,20 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "Debug xtask",
+      "name": "Debug xtask (gates)",
       "cargo": {
         "args": ["build", "--bin", "xtask", "--package", "xtask"],
         "filter": { "name": "xtask", "kind": "bin" }
       },
-      "args": ["ci", "--shard", "lsp"],
+      "args": ["gates"],
       "cwd": "${workspaceFolder}"
     },
     {
       "type": "node",
       "request": "launch",
       "name": "Debug Extension (Jest)",
-      "program": "${workspaceFolder}/vscode-extension/node_modules/.bin/jest",
-      "args": ["--config", "${workspaceFolder}/vscode-extension/jest.config.js"],
+      "runtimeExecutable": "npx",
+      "args": ["jest", "--config", "${workspaceFolder}/vscode-extension/jest.config.js"],
       "cwd": "${workspaceFolder}/vscode-extension",
       "console": "integratedTerminal"
     }

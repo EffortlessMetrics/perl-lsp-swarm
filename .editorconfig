@@ -13,8 +13,13 @@ indent_size = 4
 [*.{rs,toml}]
 indent_size = 4
 
-[*.{ts,js,json,yml,yaml,md}]
+[*.{ts,js,json,yml,yaml}]
 indent_size = 2
+
+[*.md]
+indent_size = 2
+# Markdown uses trailing spaces for hard line breaks — don't trim them.
+trim_trailing_whitespace = false
 
 [*.{ps1,pl,pm,t}]
 indent_size = 4
