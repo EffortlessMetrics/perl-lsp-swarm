@@ -167,7 +167,33 @@ void test('allows the explicitly staged current-source target when no baseline e
       },
       baseline,
       'darwin',
-      { allowedFiles: [currentSourceFile] },
+      { allowedFiles: [currentSourceFile], arch: 'arm64' },
+    ),
+    [],
+  );
+});
+
+void test('selects the exact platform and architecture baseline', () => {
+  const baseline = {
+    total_files: 3,
+    total_bytes: 30,
+    files: {
+      'README.md': 2,
+      'bin/linux-x64/perllsp': 10,
+      'bin/linux-arm64/perllsp': 18,
+    },
+  };
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 2,
+        total_bytes: 12,
+        files: { 'README.md': 2, 'bin/linux-x64/perllsp': 10 },
+      },
+      baseline,
+      'linux',
+      { arch: 'x64' },
     ),
     [],
   );

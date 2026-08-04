@@ -42,11 +42,17 @@ function platformForPackagedFile(file) {
   return match ? match[1] : null;
 }
 
-function baselineForPlatform(baseline, platform) {
+function bundleTargetForPackagedFile(file) {
+  const match = /^bin\/(linux|darwin|win32)-([^/]+)\//.exec(file);
+  return match ? `${match[1]}-${match[2]}` : null;
+}
+
+function baselineForPlatform(baseline, platform, arch = 'x64') {
+  const target = `${platform}-${arch}`;
   const files = Object.fromEntries(
     Object.entries(baseline.files).filter(([file]) => {
-      const filePlatform = platformForPackagedFile(file);
-      return filePlatform === null || filePlatform === platform;
+      const fileTarget = bundleTargetForPackagedFile(file);
+      return fileTarget === null || fileTarget === target;
     }),
   );
   return summarizeInventory(Object.entries(files).map(([file, bytes]) => ({ file, bytes })));
@@ -54,10 +60,12 @@ function baselineForPlatform(baseline, platform) {
 
 function compareInventory(actual, baseline, platform = process.platform, options = {}) {
   const allowedFiles = new Set(options.allowedFiles ?? []);
-  const effectiveBaseline = baselineForPlatform(baseline, platform);
+  const arch = options.arch ?? process.arch;
+  const target = `${platform}-${arch}`;
+  const effectiveBaseline = baselineForPlatform(baseline, platform, arch);
   const projectedActual = Object.entries(actual.files).filter(([file]) => {
-    const filePlatform = platformForPackagedFile(file);
-    if (filePlatform === null || filePlatform === platform) {
+    const fileTarget = bundleTargetForPackagedFile(file);
+    if (fileTarget === null || fileTarget === target) {
       return !(allowedFiles.has(file) && !Object.hasOwn(baseline.files, file));
     }
     return false;
@@ -86,18 +94,21 @@ function compareInventory(actual, baseline, platform = process.platform, options
     }
   }
   for (const [file, bytes] of Object.entries(actual.files)) {
-    const filePlatform = platformForPackagedFile(file);
+    const fileTarget = bundleTargetForPackagedFile(file);
+    if (allowedFiles.has(file)) {
+      continue;
+    }
     if (
-      filePlatform !== null &&
-      filePlatform !== platform &&
+      fileTarget !== null &&
+      fileTarget !== target &&
       Object.hasOwn(baseline.files, file) &&
       bytes > baseline.files[file]
     ) {
       violations.push(`file ${file} grew from ${baseline.files[file]} to ${bytes} bytes`);
     }
     if (
-      filePlatform !== null &&
-      filePlatform !== platform &&
+      fileTarget !== null &&
+      fileTarget !== target &&
       !Object.hasOwn(baseline.files, file)
     ) {
       violations.push(`unexpected foreign-platform packaged file: ${file}`);
@@ -132,7 +143,10 @@ function main() {
     process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1'
       ? [currentSourceBundleFile()]
       : [];
-  const violations = compareInventory(actual, baseline, process.platform, { allowedFiles });
+  const violations = compareInventory(actual, baseline, process.platform, {
+    allowedFiles,
+    arch: process.arch,
+  });
   process.stdout.write(
     `${JSON.stringify(
       { ...actual, baseline: BASELINE_PATH, platform: process.platform, violations },
@@ -158,6 +172,7 @@ module.exports = {
   baselineForPlatform,
   compareInventory,
   currentSourceBundleFile,
+  bundleTargetForPackagedFile,
   platformForPackagedFile,
   summarizeInventory,
 };
