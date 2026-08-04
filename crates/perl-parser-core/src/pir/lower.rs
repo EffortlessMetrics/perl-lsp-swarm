@@ -1430,6 +1430,24 @@ impl BodyLowerer {
                 self.lower_expr(body, subscript.container, file);
                 self.lower_expr(body, subscript.subscript, file);
             }
+
+            HirExpr::Heredoc { .. } => {
+                // The body-HIR shell records source-backed value facts. PIR-A
+                // does not yet model heredoc evaluation, so remain fail-closed.
+                *self.unsupported.entry("Heredoc").or_insert(0) += 1;
+            }
+
+            HirExpr::Readline { .. } => {
+                // Filehandle and diamond reads are runtime IO, not static PIR-A
+                // facts. Preserve the typed body node while refusing exactness.
+                *self.unsupported.entry("Readline").or_insert(0) += 1;
+            }
+
+            HirExpr::Glob { .. } => {
+                // Glob expansion is runtime filesystem behavior; the typed body
+                // shell must not be mistaken for a known match set.
+                *self.unsupported.entry("Glob").or_insert(0) += 1;
+            }
         }
     }
 

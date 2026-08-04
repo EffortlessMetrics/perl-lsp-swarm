@@ -22,10 +22,10 @@
 //! `NodeKind::Heredoc`/`Readline`/`Diamond`/`Glob` arms).
 
 use perl_parser_core::Parser;
-use perl_parser_core::hir::lower_ast;
 use perl_parser_core::hir::{
-    GlobExpr, HeredocExpr, HirFile, HirKind, ReadlineExpr, ReadlineSource,
+    GlobExpr, HeredocExpr, HirBody, HirExpr, HirFile, HirKind, ReadlineExpr, ReadlineSource,
 };
+use perl_parser_core::hir::{lower_ast, lower_body};
 use perl_parser_core::pir::lower_hir;
 use perl_tdd_support::must_some;
 
@@ -35,6 +35,16 @@ fn lower_source(source: &str) -> HirFile {
     let mut parser = Parser::new(source);
     let output = parser.parse_with_recovery();
     lower_ast(&output.ast)
+}
+
+fn lower_body_source(source: &str) -> HirBody {
+    let mut parser = Parser::new(source);
+    let output = parser.parse_with_recovery();
+    lower_body(&output.ast)
+}
+
+fn body_exprs(body: &HirBody) -> Vec<&HirExpr> {
+    body.exprs.iter().collect()
 }
 
 fn heredocs(file: &HirFile) -> Vec<&HeredocExpr> {
@@ -257,6 +267,29 @@ fn each_string_io_construct_emits_exactly_one_anchored_shell() -> TestResult {
         _ => None,
     }));
     assert_eq!(glob_anchor, "Glob", "the glob shell keeps its own AST anchor");
+    Ok(())
+}
+
+#[test]
+fn body_hir_owns_string_io_semantics_while_pir_remains_fail_closed() -> TestResult {
+    let body = lower_body_source(
+        "my $text = <<\"EOF\";\nhello $name\nEOF\nmy $line = <>;\nmy @files = <$dir/*.txt>;\n",
+    );
+    let exprs = body_exprs(&body);
+
+    assert!(
+        exprs.iter().any(|expr| matches!(
+            expr,
+            HirExpr::Heredoc { interpolated: true, command: false, .. }
+        ))
+    );
+    assert!(
+        exprs.iter().any(|expr| matches!(
+            expr,
+            HirExpr::Readline { source: ReadlineSource::ArgvDiamond, .. }
+        ))
+    );
+    assert!(exprs.iter().any(|expr| matches!(expr, HirExpr::Glob { interpolated: true, .. })));
     Ok(())
 }
 

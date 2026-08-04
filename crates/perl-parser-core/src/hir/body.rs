@@ -25,7 +25,9 @@
 
 use crate::SourceLocation;
 
-use super::model::{BranchKeyword, ControlTransferKind, LoopKind, StatementModifierKind};
+use super::model::{
+    BranchKeyword, ControlTransferKind, LoopKind, ReadlineSource, StatementModifierKind,
+};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Typed arena indices
@@ -426,6 +428,36 @@ pub enum HirExpr {
     /// evaluate-once place. See [`HirSubscript`].
     Subscript(HirSubscript),
 
+    /// Heredoc value shell with source-backed body text.
+    Heredoc {
+        /// Terminator token as written.
+        delimiter: String,
+        /// Whether the body interpolates variables.
+        interpolated: bool,
+        /// Whether the indented heredoc form was used.
+        indented: bool,
+        /// Whether the body executes through the shell.
+        command: bool,
+        /// Source range of the body text, when available.
+        body_range: Option<SourceLocation>,
+    },
+
+    /// Filehandle-read value shell.
+    Readline {
+        /// Read source classification.
+        source: ReadlineSource,
+        /// Filehandle text, absent for the diamond form.
+        filehandle: Option<String>,
+    },
+
+    /// Angle-bracket glob value shell.
+    Glob {
+        /// Pattern without surrounding angle brackets.
+        pattern: String,
+        /// Whether the pattern interpolates variables.
+        interpolated: bool,
+    },
+
     /// Opaque expression — used when the AST shape is not yet modeled.
     Opaque {
         /// The AST node kind name for diagnostics.
@@ -754,9 +786,64 @@ fn lower_expr(builder: &mut BodyBuilder, node: &Node) -> HirExprId {
             )
         }
 
+        NodeKind::Heredoc { delimiter, interpolated, indented, command, body_span, .. } => builder
+            .alloc_expr(
+                HirExpr::Heredoc {
+                    delimiter: delimiter.clone(),
+                    interpolated: *interpolated,
+                    indented: *indented,
+                    command: *command,
+                    body_range: *body_span,
+                },
+                range,
+            ),
+
+        NodeKind::Readline { filehandle } => builder.alloc_expr(
+            HirExpr::Readline {
+                source: readline_source(filehandle.as_deref()),
+                filehandle: filehandle.clone(),
+            },
+            range,
+        ),
+
+        NodeKind::Diamond => builder.alloc_expr(
+            HirExpr::Readline { source: ReadlineSource::ArgvDiamond, filehandle: None },
+            range,
+        ),
+
+        NodeKind::Glob { pattern } => builder.alloc_expr(
+            HirExpr::Glob {
+                pattern: pattern.clone(),
+                interpolated: glob_pattern_interpolates(pattern),
+            },
+            range,
+        ),
+
         _ => {
             let kind_name = node.kind.kind_name().to_string();
             builder.alloc_expr(HirExpr::Opaque { ast_kind: kind_name }, range)
         }
     }
+}
+
+fn readline_source(filehandle: Option<&str>) -> ReadlineSource {
+    match filehandle {
+        Some(name) if name.starts_with('$') => ReadlineSource::ScalarHandle,
+        Some(_) => ReadlineSource::NamedHandle,
+        None => ReadlineSource::ArgvDiamond,
+    }
+}
+
+fn glob_pattern_interpolates(pattern: &str) -> bool {
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                chars.next();
+            }
+            '$' | '@' => return true,
+            _ => {}
+        }
+    }
+    false
 }
