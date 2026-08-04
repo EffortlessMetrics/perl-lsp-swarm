@@ -3085,17 +3085,17 @@ pub struct GlobMigrationAdapter {
 /// lowerer (`hir::body`), which must not disagree about the same construct.
 #[must_use]
 pub(super) fn glob_pattern_interpolates(pattern: &str) -> bool {
-    let chars: Vec<char> = pattern.chars().collect();
-    let mut index = 0;
-    while index < chars.len() {
-        match chars[index] {
+    let mut chars = pattern.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
             // Escaped character: skip the sigil-ness of whatever follows.
-            '\\' => index += 1,
-            '$' if chars.get(index + 1).is_some_and(starts_scalar_name) => return true,
-            '@' if chars.get(index + 1).is_some_and(starts_array_name) => return true,
+            '\\' => {
+                chars.next();
+            }
+            '$' if chars.peek().is_some_and(starts_scalar_name) => return true,
+            '@' if chars.peek().is_some_and(starts_array_name) => return true,
             _ => {}
         }
-        index += 1;
     }
     false
 }
