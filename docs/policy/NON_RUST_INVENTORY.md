@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10098 |
+| Total tracked files | 10101 |
 | Rust-family files | 3092 |
-| Non-Rust files | 7006 |
-| Allowlisted | 4726 |
-| Unclassified | 2280 |
+| Non-Rust files | 7009 |
+| Allowlisted | 4727 |
+| Unclassified | 2282 |
 
 ## Non-Rust files by category
 
@@ -19,10 +19,10 @@
 | config | 236 |
 | documentation | 2251 |
 | generated | 1 |
-| production | 208 |
+| production | 209 |
 | test | 1711 |
 | tooling | 319 |
-| unclassified | 2280 |
+| unclassified | 2282 |
 
 ## Unclassified files
 
@@ -143,6 +143,7 @@
 | `.changes/unreleased/vscode-5305-Fixed-213744.yaml` | `yaml` |
 | `.changie.yaml` | `yaml` |
 | `.codex/hooks.json` | `json` |
+| `.dockerignore` | `` |
 | `.editorconfig` | `` |
 | `.kiro/specs/parser-accuracy-observability/.config.kiro` | `kiro` |
 | `.kiro/specs/rc2-semantic-analysis/.config.kiro` | `kiro` |
@@ -2075,6 +2076,7 @@
 | `tests/test_review_claim_currentness.py` | `py` |
 | `tests/test_review_claim_fail_closed.py` | `py` |
 | `tests/test_review_claim_hidden_comments.py` | `py` |
+| `tests/test_semantic_review_currentness.py` | `py` |
 | `tokmd.toml` | `toml` |
 | `tree-sitter-perl/.clang-format` | `` |
 | `tree-sitter-perl/.editorconfig` | `` |
@@ -6865,6 +6867,7 @@
 | `vscode-extension/scripts/reporter.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/run-jest.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/run-local-vsix-smoke.js` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/scripts/run-local-vsix-smoke.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/run-workspace-capability-smoke.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/sample-local-vsix-smoke.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/sample-local-vsix-smoke.test.js` | production | `non-rust-vscode-extension` | editor/vscode |

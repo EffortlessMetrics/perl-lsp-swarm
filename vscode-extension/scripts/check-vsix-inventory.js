@@ -37,27 +37,90 @@ function summarizeInventory(entries) {
   };
 }
 
-function compareInventory(actual, baseline) {
+function platformForPackagedFile(file) {
+  const match = /^bin\/(linux|darwin|win32)(?:-[^/]+)?\//.exec(file);
+  return match ? match[1] : null;
+}
+
+function bundleTargetForPackagedFile(file) {
+  const match = /^bin\/(linux|darwin|win32)-([^/]+)\//.exec(file);
+  return match ? `${match[1]}-${match[2]}` : null;
+}
+
+function baselineForPlatform(baseline, platform, arch = 'x64') {
+  const target = `${platform}-${arch}`;
+  const files = Object.fromEntries(
+    Object.entries(baseline.files).filter(([file]) => {
+      const fileTarget = bundleTargetForPackagedFile(file);
+      return fileTarget === null || fileTarget === target;
+    }),
+  );
+  return summarizeInventory(Object.entries(files).map(([file, bytes]) => ({ file, bytes })));
+}
+
+function compareInventory(actual, baseline, platform = process.platform, options = {}) {
+  const allowedFiles = new Set(options.allowedFiles ?? []);
+  const arch = options.arch ?? process.arch;
+  const target = `${platform}-${arch}`;
+  const effectiveBaseline = baselineForPlatform(baseline, platform, arch);
+  const projectedActual = Object.entries(actual.files).filter(([file]) => {
+    const fileTarget = bundleTargetForPackagedFile(file);
+    if (fileTarget === null || fileTarget === target) {
+      return !(allowedFiles.has(file) && !Object.hasOwn(baseline.files, file));
+    }
+    return false;
+  });
+  const effectiveActual = summarizeInventory(
+    projectedActual.map(([file, bytes]) => ({ file, bytes })),
+  );
   const violations = [];
-  if (actual.total_files > baseline.total_files) {
-    violations.push(`file count grew from ${baseline.total_files} to ${actual.total_files}`);
+  if (effectiveActual.total_files > effectiveBaseline.total_files) {
+    violations.push(
+      `file count grew from ${effectiveBaseline.total_files} to ${effectiveActual.total_files}`,
+    );
   }
-  if (actual.total_bytes > baseline.total_bytes) {
-    violations.push(`total bytes grew from ${baseline.total_bytes} to ${actual.total_bytes}`);
+  if (effectiveActual.total_bytes > effectiveBaseline.total_bytes) {
+    violations.push(
+      `total bytes grew from ${effectiveBaseline.total_bytes} to ${effectiveActual.total_bytes}`,
+    );
   }
-  for (const [file, bytes] of Object.entries(actual.files)) {
-    if (!Object.hasOwn(baseline.files, file)) {
-      violations.push(`new packaged file: ${file}`);
-    } else if (bytes > baseline.files[file]) {
-      violations.push(`file ${file} grew from ${baseline.files[file]} to ${bytes} bytes`);
+  for (const [file, bytes] of Object.entries(effectiveActual.files)) {
+    if (!Object.hasOwn(effectiveBaseline.files, file)) {
+      if (!allowedFiles.has(file)) {
+        violations.push(`new packaged file: ${file}`);
+      }
+    } else if (bytes > effectiveBaseline.files[file]) {
+      violations.push(`file ${file} grew from ${effectiveBaseline.files[file]} to ${bytes} bytes`);
     }
   }
-  for (const file of Object.keys(baseline.files)) {
-    if (!Object.hasOwn(actual.files, file)) {
+  for (const [file, bytes] of Object.entries(actual.files)) {
+    const fileTarget = bundleTargetForPackagedFile(file);
+    if (allowedFiles.has(file)) {
+      continue;
+    }
+    if (
+      fileTarget !== null &&
+      fileTarget !== target &&
+      Object.hasOwn(baseline.files, file) &&
+      bytes > baseline.files[file]
+    ) {
+      violations.push(`file ${file} grew from ${baseline.files[file]} to ${bytes} bytes`);
+    }
+    if (fileTarget !== null && fileTarget !== target && !Object.hasOwn(baseline.files, file)) {
+      violations.push(`unexpected foreign-platform packaged file: ${file}`);
+    }
+  }
+  for (const file of Object.keys(effectiveBaseline.files)) {
+    if (!Object.hasOwn(effectiveActual.files, file)) {
       violations.push(`baseline packaged file is missing: ${file}`);
     }
   }
   return violations;
+}
+
+function currentSourceBundleFile(platform = process.platform, arch = process.arch) {
+  const binaryName = platform === 'win32' ? 'perllsp.exe' : 'perllsp';
+  return `bin/${platform}-${arch}/${binaryName}`;
 }
 
 function main() {
@@ -72,9 +135,18 @@ function main() {
     process.stdout.write(`Updated ${BASELINE_PATH}\n`);
     return;
   }
-  const violations = compareInventory(actual, baseline);
+  const allowedFiles =
+    process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1' ? [currentSourceBundleFile()] : [];
+  const violations = compareInventory(actual, baseline, process.platform, {
+    allowedFiles,
+    arch: process.arch,
+  });
   process.stdout.write(
-    `${JSON.stringify({ ...actual, baseline: BASELINE_PATH, violations }, null, 2)}\n`,
+    `${JSON.stringify(
+      { ...actual, baseline: BASELINE_PATH, platform: process.platform, violations },
+      null,
+      2,
+    )}\n`,
   );
   if (violations.length > 0) {
     process.exitCode = 1;
@@ -90,4 +162,11 @@ if (require.main === module) {
   }
 }
 
-module.exports = { compareInventory, summarizeInventory };
+module.exports = {
+  baselineForPlatform,
+  compareInventory,
+  currentSourceBundleFile,
+  bundleTargetForPackagedFile,
+  platformForPackagedFile,
+  summarizeInventory,
+};

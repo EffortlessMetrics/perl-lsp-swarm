@@ -301,7 +301,7 @@ export function markdownToHtml(md: string): string {
 }
 
 /**
- * Process inline Markdown: bold, code, and HTML escaping.
+ * Process inline Markdown: bold, code, links, and HTML escaping.
  */
 function inlineMarkdown(text: string): string {
   // Escape HTML first, then apply Markdown inline rules.
@@ -310,6 +310,14 @@ function inlineMarkdown(text: string): string {
   s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
   // **bold**
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  // [label](url) — only http/https links are rendered as anchors;
+  // other schemes (javascript:, mailto:, etc.) remain as plain text for
+  // security (#1993). Note: escapeHtml has already escaped & to &amp;,
+  // so the URL will contain &amp; for & — that's valid in href.
+  s = s.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^\s()]+(?:\([^\s()]*\)[^\s()]*)*)\)/g,
+    '<a href="$2">$1</a>',
+  );
   return s;
 }
 
