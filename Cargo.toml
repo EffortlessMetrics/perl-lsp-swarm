@@ -18,7 +18,6 @@ members = [
     "crates/perl-semantic-analyzer",
     "crates/perl-semantic-facts",
     "crates/perl-workspace",
-    "crates/perl-refactoring",
     "crates/perl-incremental-parsing",
     "crates/perl-tdd-support",
     "crates/perl-test-must",
@@ -317,7 +316,6 @@ perl-diagnostics = { path = "crates/perl-diagnostics", version = "0.17.0" }
 # Tier 3: Two-level dependencies
 perl-workspace = { path = "crates/perl-workspace", version = "0.17.0" }
 perl-incremental-parsing = { path = "crates/perl-incremental-parsing", version = "0.17.0" }
-perl-refactoring = { path = "crates/perl-refactoring", version = "0.17.0" }
 
 # Tier 4: Three-level dependencies
 perl-semantic-analyzer = { path = "crates/perl-semantic-analyzer", version = "0.17.0" }

@@ -74,8 +74,9 @@ mod tdd_workflow_unit_tests {
 mod refactoring_module_tests {
     use std::path::Path;
 
-    // Path to the actual refactoring implementation
-    const REFACTORING_PATH: &str = "../perl-refactoring/src/refactor/refactoring.rs";
+    // Path to the absorbed refactoring implementation (perl-refactoring absorbed into
+    // perl-parser::refactor — Wave 4-Completion)
+    const REFACTORING_PATH: &str = "src/refactor/refactoring.rs";
 
     /// Test that refactoring.rs file exists after implementation
     #[test]

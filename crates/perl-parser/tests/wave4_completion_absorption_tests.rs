@@ -95,31 +95,43 @@ fn test_incremental_submodules_accessible() -> TestResult {
 // Section 2: Cargo.toml Publish Flag Tests
 // =============================================================================
 
-/// Test that perl-dead-code has publish = false set
+/// Test that perl-dead-code has been absorbed: the crate directory must not exist as a workspace
+/// member (it was absorbed into perl-parser::dead_code — Wave 4-Completion).
 #[test]
 fn test_perl_dead_code_publish_false() -> TestResult {
     let cargo_toml_path = ws("crates/perl-dead-code/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml_path)?;
-
-    // After absorption, this file should be marked as not publishable
-    if content.contains("publish = false") {
-        Ok(())
+    // If the directory still exists it must have publish = false.
+    // If it has been fully removed, the test passes unconditionally.
+    if cargo_toml_path.exists() {
+        let content = fs::read_to_string(&cargo_toml_path)?;
+        if content.contains("publish = false") {
+            Ok(())
+        } else {
+            Err("perl-dead-code/Cargo.toml must have publish = false".into())
+        }
     } else {
-        Err("perl-dead-code/Cargo.toml must have publish = false".into())
+        // Crate was fully deleted — absorption is complete.
+        Ok(())
     }
 }
 
-/// Test that perl-refactoring has publish = false set
+/// Test that perl-refactoring has been absorbed: the crate directory must not exist as a workspace
+/// member (it was absorbed into perl-parser::refactor — Wave 4-Completion).
 #[test]
 fn test_perl_refactoring_publish_false() -> TestResult {
     let cargo_toml_path = ws("crates/perl-refactoring/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml_path)?;
-
-    // After absorption, this file should be marked as not publishable
-    if content.contains("publish = false") {
-        Ok(())
+    // If the directory still exists it must have publish = false.
+    // If it has been fully removed, the test passes unconditionally.
+    if cargo_toml_path.exists() {
+        let content = fs::read_to_string(&cargo_toml_path)?;
+        if content.contains("publish = false") {
+            Ok(())
+        } else {
+            Err("perl-refactoring/Cargo.toml must have publish = false".into())
+        }
     } else {
-        Err("perl-refactoring/Cargo.toml must have publish = false".into())
+        // Crate was fully deleted — absorption is complete.
+        Ok(())
     }
 }
 

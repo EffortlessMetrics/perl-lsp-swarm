@@ -604,7 +604,6 @@ mod missing_docs_tests {
                 path: root.join("crates/perl-semantic-analyzer/src"),
             },
             SourceRoot { name: "perl-workspace", path: root.join("crates/perl-workspace/src") },
-            SourceRoot { name: "perl-refactoring", path: root.join("crates/perl-refactoring/src") },
             SourceRoot {
                 name: "perl-incremental-parsing",
                 path: root.join("crates/perl-incremental-parsing/src"),

@@ -38,7 +38,7 @@ fn test_facade_reexports_accessible_from_perl_parser() -> Result<(), Box<dyn std
     // Type inference — from perl-semantic-analyzer::type_inference
     let _type_env: perl_parser::TypeEnvironment = perl_parser::TypeEnvironment::new();
 
-    // Refactoring — from perl-refactoring
+    // Refactoring — from perl-parser::refactor (absorbed from perl-refactoring — Wave 4-Completion)
     let _import_optimizer: perl_parser::ImportOptimizer = perl_parser::ImportOptimizer::new();
 
     // Workspace — from perl-workspace-index

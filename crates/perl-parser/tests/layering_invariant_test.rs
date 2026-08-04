@@ -235,8 +235,8 @@ fn when_refactor_tokens_preserved_then_imports_are_valid() {
     use perl_parser::token_stream::TokenStream;
 
     // ImportOptimizer::new() proves the constructor is accessible via the re-exported path.
-    // If the re-export chain (perl-parser → perl-refactoring) were broken, this would
-    // fail to compile — not just vacuously pass.
+    // If the re-export chain (perl-parser → perl-parser::refactor::import_optimizer) were broken,
+    // this would fail to compile — not just vacuously pass.
     let optimizer = ImportOptimizer::new();
     let result = optimizer.analyze_content("use strict;\nuse warnings;\n");
     assert!(
