@@ -25,6 +25,7 @@ pub(crate) const ALLOWED_TEXT_DOCUMENT_URI_SCHEMES: &[&str] =
 /// Allowed execute-command entries.
 pub(crate) const ALLOWED_COMMANDS: &[&str] = &[
     "perl.runCritic",
+    "perl.explainProviderDecision",
     "perl.formatDocument",
     "perl.extractVariable",
     "perl.extractSubroutine",

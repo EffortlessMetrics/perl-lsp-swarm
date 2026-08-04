@@ -74,6 +74,11 @@ function writeFirstHourReceipt(receipt: Record<string, unknown>): void {
   );
 }
 
+function providerFailureMessage(moment: MomentResult, operation: 'completion'): string {
+  const result = moment[operation];
+  return `${operation} provider result: ${JSON.stringify(result)}`;
+}
+
 function currentSourceSmokeEnabled(): boolean {
   return process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1';
 }
@@ -541,6 +546,37 @@ suite('First-hour VS Code receipt', function () {
       probeText.indexOf(moduleName) + Math.floor(moduleName.length / 2),
     );
 
+    const writeFailureReceipt = (
+      phase: string,
+      failure: Record<string, unknown>,
+      moments: Record<string, unknown>,
+      lifecycle: Record<string, unknown> | null = null,
+      languageClientMetrics: Record<
+        string,
+        unknown
+      > = extensionApi?.getLanguageClientStartupMetrics?.() ?? {
+        status: 'unavailable',
+        limitation: 'extension activation API did not expose startup metrics',
+      },
+    ): void => {
+      writeFirstHourReceipt({
+        ...baseReceipt,
+        outcome: 'failed',
+        startup: {
+          extension_activation_status: 'ok',
+          extension_activation_ms: activationMs,
+          command_registration_ms: commandRegistrationMs,
+          language_client: languageClientMetrics,
+          health,
+          failure_guidance: failureGuidance,
+        },
+        moments,
+        lifecycle,
+        diagnostics_probe: null,
+        failures: [{ phase, ...failure }],
+      });
+    };
+
     const immediate = await collectProviderMoment(
       'immediate',
       'cold',
@@ -549,10 +585,17 @@ suite('First-hour VS Code receipt', function () {
       symbolPosition,
     );
     if (currentSourceSmoke) {
+      if (immediate.completion.status !== 'ok') {
+        writeFailureReceipt(
+          'immediate_provider',
+          { provider: immediate.completion },
+          { immediate },
+        );
+      }
       assert.equal(
         immediate.completion.status,
         'ok',
-        'current-source smoke requires a successful completion provider response',
+        `current-source smoke requires a successful completion provider response; ${providerFailureMessage(immediate, 'completion')}`,
       );
     }
     extensionApi?.markLanguageClientStartupMilestone?.('first_useful_request');
@@ -598,10 +641,26 @@ suite('First-hour VS Code receipt', function () {
               restartMetrics.initialize_status === 'ok'
             ? 'ok'
             : 'error';
+      if (restarted.completion.status !== 'ok') {
+        writeFailureReceipt(
+          'after_restart_provider',
+          { provider: restarted.completion },
+          { immediate, after_restart: restarted },
+          {
+            restart: {
+              status: restartStatus,
+              duration_ms: Math.round(monotonicNow() - restartStart),
+              language_client: restartMetrics,
+              provider: restarted,
+            },
+          },
+          initialLanguageClientMetrics,
+        );
+      }
       assert.equal(
         restarted.completion.status,
         'ok',
-        'current-source smoke requires a successful completion after restart',
+        `current-source smoke requires a successful completion after restart; ${providerFailureMessage(restarted, 'completion')}`,
       );
       restartedMoment = restarted;
 

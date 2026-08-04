@@ -16,7 +16,7 @@ scripts/reviews/run review-start --pr <n> --kind <standard|deep> --reviewer <id>
 
 Capture the returned `comment_id=<id>` with the fixed review subject. Failure to establish the digest, running receipt, or its comment ID is `REVIEW_NOT_PROVEN`.
 
-Review the issue, claim, contract, proof, cumulative diff, production path, current material PR claim sections, hardening, simplification, and applicable lenses. Publish material findings through GitHub review and threads. A clean review is valid.
+Review the issue, claim, contract, proof, cumulative diff, production path, current material PR claim sections, hardening, simplification, and applicable lenses. The judgment is directed at the applicable quality questions, falsifying of realistic wrong behavior, and verified through current evidence or competent authority. Publish material findings through GitHub review and threads. A clean review is valid.
 
 After the submitted review is durable, run:
 

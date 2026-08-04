@@ -18,6 +18,13 @@ pub struct LineIndex {
 
 impl LineIndex {
     /// Build a line index from UTF-8 text.
+    ///
+    /// Only `\n` starts a new line. A preceding `\r` remains part of the
+    /// indexed line, so CRLF input has both bytes addressable on the line that
+    /// ends with `\n`. The input is indexed verbatim: this constructor does not
+    /// strip a leading UTF-8 BOM. Callers that own text normalization must
+    /// remove a BOM before constructing the index and use the normalized text
+    /// consistently for offset mapping.
     #[must_use]
     pub fn new(text: &str) -> Self {
         let mut line_starts = vec![0];
@@ -32,7 +39,11 @@ impl LineIndex {
     /// Convert a byte offset to `(line, column)` using byte columns.
     #[must_use]
     pub fn byte_to_position(&self, byte: usize) -> (usize, usize) {
+        // Clamp to text_len to prevent out-of-range byte offsets from producing
+        // invalid (line, column) pairs (#2279).
+        let byte = byte.min(self.text_len);
         let line = self.line_starts.binary_search(&byte).unwrap_or_else(|i| i.saturating_sub(1));
+        let line = line.min(self.line_starts.len().saturating_sub(1));
         let column = byte - self.line_starts[line];
         (line, column)
     }
@@ -87,7 +98,7 @@ impl LineIndex {
     ///
     /// The returned byte offset is always on a UTF-8 character boundary.
     ///
-    /// [`new`]: Self::new
+    /// [`new`]: LineIndex::new
     /// [`position_to_byte`]: Self::position_to_byte
     #[must_use]
     pub fn position_to_byte_utf16(&self, text: &str, line: usize, column: usize) -> Option<usize> {
@@ -260,6 +271,17 @@ mod tests {
         // position_to_byte_checked: line 0 ends at the \n (col 2), col 3 is the next line.
         assert_eq!(idx.position_to_byte_checked(0, 2), Some(2));
         assert_eq!(idx.position_to_byte_checked(0, 3), None);
+    }
+
+    #[test]
+    fn leading_bom_is_indexed_as_input_content() {
+        // `LineIndex` is a generic byte index, not a text-normalization
+        // boundary. The three-byte BOM remains addressable before `a`.
+        let idx = LineIndex::new("\u{FEFF}a\nb");
+        assert_eq!(idx.byte_to_position(0), (0, 0));
+        assert_eq!(idx.byte_to_position(3), (0, 3));
+        assert_eq!(idx.position_to_byte(0, 4), Some(4));
+        assert_eq!(idx.byte_to_position(5), (1, 0));
     }
 
     #[test]
@@ -482,5 +504,69 @@ mod tests {
         assert_eq!(idx.position_to_byte(2, 0), Some(2));
         assert_eq!(idx.position_to_byte(3, 0), None);
         Ok(())
+    }
+
+    // ── Constructor contract parity tests (#5685) ───────────────────────
+    //
+    // The `new` constructor has a documented contract: only `\n` starts a
+    // new line; `\r` remains part of the line; no BOM stripping. These
+    // tests pin the contract so callers can rely on it and so that adding
+    // a `from_rope` or `from_str` constructor in the future must match.
+
+    #[test]
+    fn contract_crlf_input_keeps_cr_on_line() {
+        let text = "line1\r\nline2\r\n";
+        let idx = LineIndex::new(text);
+        // \r is at byte 5 (column 5 of line 0); \n is at byte 6 (column 6 of line 0);
+        // line 1 starts at byte 7 (after the \n).
+        assert_eq!(idx.byte_to_position(5), (0, 5)); // \r stays on line 0
+        assert_eq!(idx.byte_to_position(6), (0, 6)); // \n also on line 0
+        assert_eq!(idx.byte_to_position(7), (1, 0)); // line 1 starts here
+    }
+
+    #[test]
+    fn contract_bom_is_not_stripped() {
+        let bom = "\u{FEFF}";
+        let text = format!("{bom}line1\nline2\n");
+        let idx = LineIndex::new(&text);
+        // BOM is 3 bytes, so byte 0..3 is the BOM, byte 3 is 'l'
+        assert_eq!(idx.byte_to_position(0), (0, 0));
+        assert_eq!(idx.byte_to_position(3), (0, 3)); // 'l' at column 3
+    }
+
+    #[test]
+    fn contract_lf_only_line_starts() {
+        let text = "a\nb\nc\n";
+        let idx = LineIndex::new(text);
+        // Exactly 4 lines: [0], [2], [4], [6(empty)]
+        assert_eq!(idx.line_starts, vec![0, 2, 4, 6]);
+    }
+
+    #[test]
+    fn contract_empty_input_has_one_line() {
+        let idx = LineIndex::new("");
+        assert_eq!(idx.line_starts, vec![0]);
+        assert_eq!(idx.text_len, 0);
+    }
+
+    #[test]
+    fn contract_no_trailing_newline() {
+        let text = "line1\nline2";
+        let idx = LineIndex::new(text);
+        // No newline after "line2" — it's the last line
+        assert_eq!(idx.byte_to_position(text.len()), (1, 5));
+    }
+
+    #[test]
+    fn contract_roundtrip_all_positions() {
+        let text = "hello\nworld\n";
+        let idx = LineIndex::new(text);
+        // Every byte offset should round-trip through position_to_byte
+        for byte in 0..=text.len() {
+            let (line, col) = idx.byte_to_position(byte);
+            if let Some(roundtrip) = idx.position_to_byte(line, col) {
+                assert_eq!(roundtrip, byte, "roundtrip failed at byte {byte}");
+            }
+        }
     }
 }

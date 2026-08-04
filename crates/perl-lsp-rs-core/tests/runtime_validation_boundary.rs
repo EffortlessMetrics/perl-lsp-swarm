@@ -227,6 +227,7 @@ fn validate_lsp_request_text_document_with_untitled_uri_is_ok() -> anyhow::Resul
 fn validate_lsp_request_execute_command_all_allowed_commands_pass() -> anyhow::Result<()> {
     let allowed = [
         "perl.runCritic",
+        "perl.explainProviderDecision",
         "perl.formatDocument",
         "perl.extractVariable",
         "perl.extractSubroutine",

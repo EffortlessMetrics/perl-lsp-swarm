@@ -3,11 +3,13 @@
 //! README badges stay repo-scoped. These commands produce diff-scoped artifacts
 //! under `target/` for PR review, annotations, and mutation routing.
 
+use crate::tasks::change_set::{self, ArtifactIdentity};
 use crate::tasks::git_context::{default_windows_drive_mount_root, git_output_with_mount_root};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use glob::Pattern;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
@@ -24,6 +26,7 @@ const DEFAULT_HEAD: &str = "HEAD";
 const PR_EVIDENCE_JSON: &str = "target/ripr/pr/repo-exposure.json";
 const PR_EVIDENCE_MD: &str = "target/ripr/pr/repo-exposure.md";
 const PR_DIFF: &str = "target/ripr/pr/pr.diff";
+const PR_DIFF_RECEIPT: &str = "target/ripr/pr/committed-diff.json";
 /// Raw `ripr check --format json` output, uploaded as a CI artifact for diagnostics (#1346).
 /// The `repo-exposure.json` summary only contains per-bucket counts, not the `findings[]`
 /// array.  Without `findings[]` it is impossible to diagnose suppression mismatches offline.
@@ -672,8 +675,9 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     verify_revision(repo, &options.head)?;
     let base_sha = revision_sha(repo, &options.base)?;
     let head_sha = revision_sha(repo, &options.head)?;
-    let changed_files = changed_files(repo, &options.base, &options.head)?;
-    write_pr_diff(repo, &options.base, &options.head)?;
+    let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
+    let changed_file_count = diff_receipt.entries.len();
+    write_pr_diff(repo, &diff_receipt)?;
     let check_json = run_ripr_check(repo, options)?;
     let check_value: Value =
         serde_json::from_str(&check_json).context("ripr check output was not valid JSON")?;
@@ -683,15 +687,15 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     // ripr-pr-evidence artifact upload so it is available without re-running ripr.
     write_text(&repo.join(PR_RAW_CHECK_JSON), &check_json)?;
     let suppressions = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))?;
-    let packet = pr_evidence_packet(
+    let packet = pr_evidence_packet_with_count(
         options,
-        &changed_files,
         &check_value,
         &base_sha,
         &head_sha,
         &suppressions,
+        changed_file_count,
     );
-    validate_pr_evidence_packet(&packet, options, changed_files.len(), true, &base_sha, &head_sha)?;
+    validate_pr_evidence_packet(&packet, options, changed_file_count, true, &base_sha, &head_sha)?;
     write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&packet)?)?;
     write_text(&repo.join(PR_EVIDENCE_MD), &render_pr_evidence_markdown(&packet))?;
     println!("Wrote {PR_RAW_CHECK_JSON}");
@@ -705,7 +709,15 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     verify_revision(repo, &options.head)?;
     let base_sha = revision_sha(repo, &options.base)?;
     let head_sha = revision_sha(repo, &options.head)?;
-    let changed_files = changed_files(repo, &options.base, &options.head)?;
+    let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
+    let changed_file_count = diff_receipt.entries.len();
+    let committed_diff_text = fs::read_to_string(repo.join(PR_DIFF_RECEIPT))
+        .with_context(|| format!("missing or unreadable {PR_DIFF_RECEIPT}"))?;
+    let committed_diff: CommittedDiffReceipt = serde_json::from_str(&committed_diff_text)
+        .with_context(|| format!("{PR_DIFF_RECEIPT} is invalid"))?;
+    if committed_diff != diff_receipt {
+        bail!("{PR_DIFF_RECEIPT} is stale for the requested base/head range");
+    }
     let text = fs::read_to_string(repo.join(PR_EVIDENCE_JSON))
         .with_context(|| format!("missing or unreadable {PR_EVIDENCE_JSON}"))?;
     let packet: Value =
@@ -713,7 +725,7 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     validate_pr_evidence_packet(
         &packet,
         options,
-        changed_files.len(),
+        changed_file_count,
         repo.join(PR_EVIDENCE_MD).exists(),
         &base_sha,
         &head_sha,
@@ -894,6 +906,24 @@ fn pr_evidence_packet(
     head_sha: &str,
     suppressions: &RiprSuppressionRules,
 ) -> Value {
+    pr_evidence_packet_with_count(
+        options,
+        check_value,
+        base_sha,
+        head_sha,
+        suppressions,
+        changed_files.len(),
+    )
+}
+
+fn pr_evidence_packet_with_count(
+    options: &PrEvidenceOptions,
+    check_value: &Value,
+    base_sha: &str,
+    head_sha: &str,
+    suppressions: &RiprSuppressionRules,
+    changed_file_count: usize,
+) -> Value {
     let check_summary = check_value.get("summary").and_then(Value::as_object);
     let summary = ripr_pr_summary_counts(check_value, check_summary, suppressions);
     let weakly_exposed = summary.weakly_exposed;
@@ -928,7 +958,7 @@ fn pr_evidence_packet(
         "head": options.head,
         "head_sha": head_sha,
         "summary": {
-            "changed_files": changed_files.len(),
+            "changed_files": changed_file_count,
             "comments": 0,
             "summary_only": 0,
             "suppressed": 0,
@@ -964,6 +994,14 @@ fn pr_evidence_packet(
                 "kind": "other",
                 "scope": "diff",
                 "available": true
+            },
+            {
+                "label": "Committed diff status receipt",
+                "path": PR_DIFF_RECEIPT,
+                "kind": "json",
+                "scope": "diff",
+                "available": true,
+                "required": true
             }
         ],
         "warnings": warnings,
@@ -1037,7 +1075,7 @@ fn validate_pr_evidence_packet(
         Some(values) if !values.is_empty() => {}
         _ => violations.push("advisory_limits is missing or empty".to_string()),
     }
-    for required in [PR_EVIDENCE_JSON, PR_EVIDENCE_MD] {
+    for required in [PR_EVIDENCE_JSON, PR_EVIDENCE_MD, PR_DIFF_RECEIPT] {
         if !artifact_available(packet, required) {
             violations.push(format!("artifacts[] is missing {required}"));
         }
@@ -1803,16 +1841,124 @@ fn verify_revision(repo: &Path, rev: &str) -> Result<()> {
 }
 
 fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<String>> {
-    let range = format!("{base}...{head}");
-    // A shallow clone (Claude Code on the web, default Actions checkout) has no
-    // common history, so `base...head` has no merge base and git diff fails with
-    // an opaque message. Attach actionable guidance as context while preserving
-    // the underlying git error as the cause; CI is unaffected (ripr.yml uses
-    // fetch-depth: 0).
-    let output =
-        run_git_output(repo, &["diff", "--name-only", "--diff-filter=ACMR", range.as_str()])
-            .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
-    Ok(output.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect())
+    Ok(resolve_committed_diff(repo, base, head)?.changed_paths)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CommittedDiffEntry {
+    status: String,
+    old_path: Option<String>,
+    new_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CommittedDiffReceipt {
+    schema_version: String,
+    base: String,
+    head: String,
+    base_sha: String,
+    head_sha: String,
+    diff_digest: String,
+    changed_paths: Vec<String>,
+    entries: Vec<CommittedDiffEntry>,
+}
+
+fn resolve_committed_diff(repo: &Path, base: &str, head: &str) -> Result<CommittedDiffReceipt> {
+    let resolved = change_set::resolve_change_set(
+        ArtifactIdentity::CommitRange { base: base.to_string(), head: head.to_string() },
+        repo,
+    )
+    .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
+    let (resolved_base, resolved_head) = match resolved.identity {
+        ArtifactIdentity::CommitRange { base, head } => (base, head),
+        ArtifactIdentity::StagedTree { .. } => {
+            return Err(eyre!("committed diff resolver returned a staged-tree identity"));
+        }
+    };
+    let base_sha = resolved.base_sha.ok_or_else(|| eyre!("committed diff has no base SHA"))?;
+    let head_sha = resolved.head_sha.ok_or_else(|| eyre!("committed diff has no head SHA"))?;
+    let range = format!("{resolved_base}...{resolved_head}");
+    let raw = run_git_bytes(
+        repo,
+        &[
+            "diff",
+            "--name-status",
+            "-z",
+            "--find-renames",
+            "--find-copies",
+            "--find-copies-harder",
+            "--diff-filter=ACDMRT",
+            range.as_str(),
+        ],
+    )
+    .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
+    let entries = parse_name_status_z(&raw)?;
+    let changed_paths = entries
+        .iter()
+        .flat_map(|entry| [entry.old_path.as_deref(), entry.new_path.as_deref()])
+        .flatten()
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut hasher = Sha256::new();
+    hasher.update(base_sha.as_bytes());
+    hasher.update([0]);
+    hasher.update(head_sha.as_bytes());
+    hasher.update(serde_json::to_vec(&entries)?);
+    let diff_digest = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(CommittedDiffReceipt {
+        schema_version: "ripr_committed_diff.v1".to_string(),
+        base: resolved_base,
+        head: resolved_head,
+        base_sha,
+        head_sha,
+        diff_digest,
+        changed_paths,
+        entries,
+    })
+}
+
+fn parse_name_status_z(raw: &[u8]) -> Result<Vec<CommittedDiffEntry>> {
+    let fields = raw.split(|byte| *byte == 0).filter(|field| !field.is_empty()).collect::<Vec<_>>();
+    let mut entries = Vec::new();
+    let mut index = 0;
+    while index < fields.len() {
+        let status = String::from_utf8(fields[index].to_vec())
+            .context("git name-status output contained a non-UTF-8 status")?;
+        let code = status.as_bytes().first().copied().unwrap_or_default() as char;
+        let path = |field: &[u8]| {
+            String::from_utf8(field.to_vec())
+                .context("git name-status output contained a non-UTF-8 path")
+        };
+        match code {
+            'R' | 'C' => {
+                let old_path =
+                    fields.get(index + 1).ok_or_else(|| eyre!("missing old path for {status}"))?;
+                let new_path =
+                    fields.get(index + 2).ok_or_else(|| eyre!("missing new path for {status}"))?;
+                entries.push(CommittedDiffEntry {
+                    status,
+                    old_path: Some(path(old_path)?),
+                    new_path: Some(path(new_path)?),
+                });
+                index += 3;
+            }
+            'A' | 'D' | 'M' | 'T' => {
+                let value =
+                    fields.get(index + 1).ok_or_else(|| eyre!("missing path for {status}"))?;
+                let value = path(value)?;
+                entries.push(CommittedDiffEntry {
+                    old_path: (code == 'D' || code == 'M' || code == 'T').then_some(value.clone()),
+                    new_path: (code != 'D').then_some(value),
+                    status,
+                });
+                index += 2;
+            }
+            other => bail!("unsupported git name-status code {other:?} in {status:?}"),
+        }
+    }
+    Ok(entries)
 }
 
 fn is_shallow_clone(repo: &Path) -> bool {
@@ -1840,10 +1986,25 @@ fn merge_base_failure_guidance(base: &str, head: &str, shallow: bool) -> String 
     message
 }
 
-fn write_pr_diff(repo: &Path, base: &str, head: &str) -> Result<()> {
-    let range = format!("{base}...{head}");
+fn write_pr_diff(repo: &Path, receipt: &CommittedDiffReceipt) -> Result<()> {
+    let range = format!("{}...{}", receipt.base, receipt.head);
     let diff = run_git_output(repo, &["diff", "--binary", "--no-ext-diff", range.as_str()])?;
-    write_text(&repo.join(PR_DIFF), &diff)
+    write_text(&repo.join(PR_DIFF), &diff)?;
+    let receipt_json = format_json(&serde_json::to_value(receipt)?)?;
+    write_text(&repo.join(PR_DIFF_RECEIPT), &receipt_json)
+}
+
+fn run_git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let output = git_output_with_mount_root(repo, args, default_windows_drive_mount_root())?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed with status {}\nstderr:\n{}",
+            args.join(" "),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(output.stdout)
 }
 
 fn run_git_output(repo: &Path, args: &[&str]) -> Result<String> {
@@ -4040,6 +4201,27 @@ esac
         // Exercise the shallow probe; its value is environment-dependent, so we
         // only assert it returns without error.
         let _ = is_shallow_clone(&repo);
+        Ok(())
+    }
+
+    #[test]
+    fn name_status_parser_preserves_acdmrt_entries() -> Result<()> {
+        let raw = b"A\0added.rs\0C75\0source.rs\0copy.rs\0D\0deleted.rs\0M\0modified.rs\0R100\0old.rs\0renamed.rs\0T\0typed.rs\0";
+        let entries = parse_name_status_z(raw)?;
+        assert_eq!(entries.len(), 6);
+        assert_eq!(entries[0].status, "A");
+        assert_eq!(entries[0].new_path.as_deref(), Some("added.rs"));
+        assert_eq!(entries[1].status, "C75");
+        assert_eq!(entries[1].old_path.as_deref(), Some("source.rs"));
+        assert_eq!(entries[1].new_path.as_deref(), Some("copy.rs"));
+        assert_eq!(entries[2].old_path.as_deref(), Some("deleted.rs"));
+        assert_eq!(entries[3].new_path.as_deref(), Some("modified.rs"));
+        assert_eq!(entries[3].old_path.as_deref(), Some("modified.rs"));
+        assert_eq!(entries[4].old_path.as_deref(), Some("old.rs"));
+        assert_eq!(entries[4].new_path.as_deref(), Some("renamed.rs"));
+        assert_eq!(entries[5].status, "T");
+        assert_eq!(entries[5].old_path.as_deref(), Some("typed.rs"));
+        assert_eq!(entries[5].new_path.as_deref(), Some("typed.rs"));
         Ok(())
     }
 

@@ -974,7 +974,7 @@ DB<1>"#;
         // to session.stack_frames (populated by output reader).
 
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
 
         // Inject stale frames (simulating a previous stop's state)
         let stale_frame =

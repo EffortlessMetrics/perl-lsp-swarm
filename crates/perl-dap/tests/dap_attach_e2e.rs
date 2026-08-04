@@ -3,6 +3,8 @@
 // Tests use panic! as structured test failure reporters.
 #![allow(clippy::panic)]
 
+mod common;
+
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::transport::framing::frame;
 use serde_json::{Value, json};
@@ -11,7 +13,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -30,25 +32,7 @@ fn wait_for_event(
     event_name: &str,
     timeout: Duration,
 ) -> Result<DapMessage, String> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return Err(format!("timeout waiting for event `{event_name}`"));
-        }
-
-        let remaining = deadline.saturating_duration_since(now);
-        match rx.recv_timeout(remaining) {
-            Ok(message) => {
-                if let DapMessage::Event { event, .. } = &message
-                    && event == event_name
-                {
-                    return Ok(message);
-                }
-            }
-            Err(_) => return Err(format!("channel timeout waiting for `{event_name}`")),
-        }
-    }
+    common::wait_for_event(rx, event_name, timeout)
 }
 
 fn response_success(response: DapMessage, command: &str) -> Result<Option<Value>, String> {

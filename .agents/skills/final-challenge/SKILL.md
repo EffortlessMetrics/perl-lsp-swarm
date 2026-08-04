@@ -25,6 +25,13 @@ Check:
 
 A clean challenge is valid.
 
+The challenge is mutable because repairs remain allowed, not because it is limited
+to pre-publication work. It may run after a PR is published or after accepted
+feedback repair. It is directed at the applicable claim, proof, reachability,
+authority, complexity, and rollback questions; it actively seeks falsifiers and
+uses current execution or competent authority. `review-pr` is the subsequent
+fixed-candidate formal judgment.
+
 ## Runtime-local pass
 
 This is the final mutable attention shift before fixed-candidate formal review. Do not create a `final-challenge` receipt, stage marker, schema, or second durable currentness authority.

@@ -227,23 +227,25 @@ fn find_event<'a>(msgs: &'a [DapMessage], name: &str) -> Option<&'a DapMessage> 
     msgs.iter().find(|m| matches!(m, DapMessage::Event { event, .. } if event == name))
 }
 
-fn as_response(msg: &DapMessage) -> (&str, bool, Option<&serde_json::Value>) {
+fn as_response(
+    msg: &DapMessage,
+) -> Result<(&str, bool, Option<&serde_json::Value>), Box<dyn Error>> {
     match msg {
         DapMessage::Response { command, success, body, .. } => {
-            (command.as_str(), *success, body.as_ref())
+            Ok((command.as_str(), *success, body.as_ref()))
         }
-        other => panic!("expected response, got {other:?}"),
+        other => Err(format!("expected response, got {other:?}").into()),
     }
 }
 
 #[test]
-fn dap_external_peer_launch_queues_breakpoints_before_handshake() {
+fn dap_external_peer_launch_queues_breakpoints_before_handshake() -> TestResult {
     // No peer connected yet: setBreakpoints must be queued and answered with an
     // unverified `pending` response, not sent anywhere or dropped.
     let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
     let init = bridge.dispatch(1, "initialize", Some(serde_json::json!({ "adapterID": "perl" })));
     // Static conservative capabilities are advertised before any peer exists.
-    let caps = as_response(&init[0]).2.expect("caps");
+    let caps = as_response(init.first().ok_or("initialize response missing")?)?.2.expect("caps");
     assert_eq!(caps["supportsConditionalBreakpoints"], true);
     assert_eq!(caps["supportsLogPoints"], false);
 
@@ -256,16 +258,17 @@ fn dap_external_peer_launch_queues_breakpoints_before_handshake() {
         })),
     );
     assert_eq!(bridge.pending_source_count(), 1, "the source's breakpoints are queued");
-    let (_, ok, body) = as_response(&out[0]);
+    let (_, ok, body) = as_response(out.first().ok_or("breakpoint response missing")?)?;
     assert!(ok, "a queued setBreakpoints still returns success");
     let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
     assert_eq!(bps.len(), 2, "response matches the request positionally");
     assert_eq!(bps[0]["verified"], false, "queued breakpoints are unverified until flush");
     assert_eq!(bps[0]["line"], 42);
+    Ok(())
 }
 
 #[test]
-fn dap_external_peer_launch_flushes_breakpoints_after_hello() {
+fn dap_external_peer_launch_flushes_breakpoints_after_hello() -> TestResult {
     let peer = FakePeer::start(FakePeerScript {
         caps: full_caps(),
         emit_after_hello: vec![],
@@ -306,11 +309,12 @@ fn dap_external_peer_launch_flushes_breakpoints_after_hello() {
         assert_eq!(b["breakpoint"]["verified"], true);
         assert_eq!(b["breakpoint"]["line"], 42);
     } else {
-        panic!("breakpoint event had no body");
+        return Err("breakpoint event had no body".into());
     }
 
     drop(bridge);
     let _ = peer.handle.join();
+    Ok(())
 }
 
 #[test]
@@ -442,7 +446,7 @@ fn dap_external_peer_terminated_on_peer_disconnect() {
 }
 
 #[test]
-fn dap_external_peer_rejects_control_in_mirror_mode() {
+fn dap_external_peer_rejects_control_in_mirror_mode() -> TestResult {
     // Even with a fully-capable peer, mirror mode means the peer's UI owns
     // execution: editor-initiated continue/step must be rejected gracefully.
     let peer = FakePeer::start(FakePeerScript {
@@ -457,23 +461,25 @@ fn dap_external_peer_rejects_control_in_mirror_mode() {
 
     for cmd in ["continue", "next", "stepIn", "stepOut", "pause"] {
         let out = bridge.dispatch(10, cmd, Some(serde_json::json!({ "threadId": 1 })));
-        let (rcmd, ok, _) = as_response(&out[0]);
-        assert_eq!(rcmd, cmd);
-        assert!(!ok, "{cmd} must be rejected while in mirror mode");
-        if let DapMessage::Response { message, .. } = &out[0] {
-            let msg = message.as_deref().unwrap_or("");
-            assert!(msg.contains("mirror mode"), "rejection must explain mirror mode: {msg}");
-        } else {
-            panic!("expected a response for {cmd}");
-        }
+        let Some(response) = out.first() else {
+            return Err(format!("expected a response for {cmd}").into());
+        };
+        let DapMessage::Response { command, success, message, .. } = response else {
+            return Err(format!("expected a response for {cmd}").into());
+        };
+        assert_eq!(command, cmd);
+        assert!(!success, "{cmd} must be rejected while in mirror mode");
+        let msg = message.as_deref().unwrap_or("");
+        assert!(msg.contains("mirror mode"), "rejection must explain mirror mode: {msg}");
     }
 
     drop(bridge);
     let _ = peer.handle.join();
+    Ok(())
 }
 
 #[test]
-fn dap_external_peer_launch_queues_function_breakpoints_before_handshake() {
+fn dap_external_peer_launch_queues_function_breakpoints_before_handshake() -> TestResult {
     // No peer connected yet: setFunctionBreakpoints must be queued (mirroring
     // the setBreakpoints queue) and answered with an unverified `pending`
     // response, not silently dropped (CodeRabbit finding: peer_launch.rs:~330).
@@ -491,15 +497,16 @@ fn dap_external_peer_launch_queues_function_breakpoints_before_handshake() {
         bridge.has_pending_function_breakpoints(),
         "function breakpoints set before handshake must be queued, not dropped"
     );
-    let (_, ok, body) = as_response(&out[0]);
+    let (_, ok, body) = as_response(out.first().ok_or("function breakpoint response missing")?)?;
     assert!(ok, "a queued setFunctionBreakpoints still returns success");
     let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
     assert_eq!(bps.len(), 1);
     assert_eq!(bps[0]["verified"], false, "queued function breakpoints are unverified until flush");
+    Ok(())
 }
 
 #[test]
-fn dap_external_peer_launch_flushes_function_breakpoints_after_hello() {
+fn dap_external_peer_launch_flushes_function_breakpoints_after_hello() -> TestResult {
     // The queued function breakpoints must actually reach the peer once it
     // handshakes, proving go_live flushes pending_function_breakpoints.
     let peer = FakePeer::start(FakePeerScript {
@@ -539,15 +546,16 @@ fn dap_external_peer_launch_flushes_function_breakpoints_after_hello() {
         assert_eq!(b["reason"], "changed");
         assert_eq!(b["breakpoint"]["verified"], true);
     } else {
-        panic!("breakpoint event had no body");
+        return Err("breakpoint event had no body".into());
     }
 
     drop(bridge);
     let _ = peer.handle.join();
+    Ok(())
 }
 
 #[test]
-fn dap_external_peer_launch_reports_flush_failure_to_editor() {
+fn dap_external_peer_launch_reports_flush_failure_to_editor() -> TestResult {
     // The peer negotiates *without* source-breakpoint support, so the queued
     // flush in go_live fails; the editor must be told (a `breakpoint` changed
     // event with verified:false and a failure message), not left holding the
@@ -588,15 +596,17 @@ fn dap_external_peer_launch_reports_flush_failure_to_editor() {
             "message must explain the flush failure, got: {message}"
         );
     } else {
-        panic!("breakpoint event had no body");
+        return Err("breakpoint event had no body".into());
     }
 
     drop(bridge);
     let _ = peer.handle.join();
+    Ok(())
 }
 
 #[test]
-fn dap_external_peer_launch_terminate_does_not_duplicate_terminated_after_peer_close() {
+fn dap_external_peer_launch_terminate_does_not_duplicate_terminated_after_peer_close() -> TestResult
+{
     // If the peer already emitted `terminated` (connection closed), a later
     // editor-driven `terminate` must not push a second one (CodeRabbit
     // finding: ~545).
@@ -630,9 +640,10 @@ fn dap_external_peer_launch_terminate_does_not_duplicate_terminated_after_peer_c
         find_event(&out, "terminated").is_none(),
         "terminate after an already-emitted terminated must not duplicate it: {out:?}"
     );
-    let (cmd, ok, _) = as_response(&out[0]);
+    let (cmd, ok, _) = as_response(out.first().ok_or("terminate response missing")?)?;
     assert_eq!(cmd, "terminate");
     assert!(ok, "terminate itself must still succeed");
+    Ok(())
 }
 
 #[test]

@@ -19,7 +19,7 @@ Enter at the earliest absent or stale useful judgment:
 - merged/closed but unreconciled → `merge-reconcile` closeout-only path;
 - already reconciled → return `RECONCILED`.
 
-Candidate or material-claim changes make formal-review evidence stale. Final challenge is a runtime-local pre-review pass, not a second durable stage. If a session resumes before current formal review exists, rerun the bounded challenge and continue directly to `review-pr`. Do not infer review from chat, task state, or teammate identity, and do not review or merge an already merged PR.
+Candidate or material-claim changes make formal-review evidence stale. Final challenge is a runtime-local mutable pass, not a second durable stage or a pre-publication-only step. It may run after publication or accepted repair. If a session resumes before current formal review exists, rerun the bounded challenge and continue directly to `review-pr`. Do not infer review from chat, task state, or teammate identity, and do not review or merge an already merged PR.
 
 One writer mutates this candidate branch/worktree at a time. Focused readers, reviewers, oracles, and subagents may assist without creating rival implementations.
 

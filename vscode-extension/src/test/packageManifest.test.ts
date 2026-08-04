@@ -41,8 +41,12 @@ describe('package manifest demo project command (#1635)', () => {
     const command = packageJson.contributes?.commands?.find(
       (c) => c.command === 'perl-lsp.openDemoProject',
     );
+    const catalog = JSON.parse(
+      fs.readFileSync(path.join(extRoot, 'package.nls.json'), 'utf8'),
+    ) as Record<string, string>;
     expect(command).toBeDefined();
-    expect(command?.title).toBe('Open Demo Project');
+    expect(command?.title).toBe('%command.openDemoProject.title%');
+    expect(catalog['command.openDemoProject.title']).toBe('Open Demo Project');
     expect(command?.category).toBe('Perl');
   });
 

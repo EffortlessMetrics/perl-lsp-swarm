@@ -62,6 +62,24 @@ The user-facing vocabulary is intentionally small:
 
 A fresh or resumed session starts with the narrowest applicable public flow. Once inside the loop, each skill names its normal successor and material backward routes. Agents do not run a lifecycle locator between skills.
 
+## Runtime orchestration
+
+The root may load the internal `orchestrate-work` skill to choose the smallest
+useful execution shape for the current flow or atomic skill. Tiny, tightly coupled
+work often stays direct. Substantive work is normally orchestrated through
+bounded skill-consuming agents or questions; a whole coherent claim may be carried
+by one `deliver-pr` lane; genuinely independent claims may use separate lane
+writers. The root remains accountable for goal meaning, claim selection, authority,
+contradiction resolution, joined evidence, review sufficiency, merge judgment, and
+reconciliation.
+
+Every delegation brief identifies the parent flow/skill, exact target, authority,
+candidate and writer boundary, sufficient result, falsifiers, stop/backward routes,
+and non-goals. An unknown conclusion is still delegable when its search space and
+stopping/output contract are bounded. Join direct evidence and contradictions,
+not agent votes. Issue comments are material handoffs, not leases. Runtime
+topology, retries, liveness, and executor identity remain ephemeral.
+
 ## Claim and lane independence
 
 The normal multi-PR model is simple:
@@ -168,12 +186,52 @@ After implementation, revisit proof from the actual candidate:
 - whether the production seam is exercised;
 - whether the proof runs at the cheapest effective layer.
 
+Review is a directed, falsifying, and verified judgment. It must answer, where
+applicable, discrimination, production reachability, external truth, claim
+honesty, authority, complexity, and risk/rollback. Reading a diff, green CI, or a
+subagent verdict alone is not review. A clean review is valid.
+
+The construction context must not be the only detection surface supporting merge.
+Fresh context is valuable when it changes the source, oracle, threat model, method,
+or attention surface; identity separation alone is neither necessary nor
+sufficient. For a substantive fixed or refuted disposition, enforced review
+convergence still requires a passing verification receipt from a verifier outside
+the writer set. A clean review is a valid result when that applicable protocol is
+satisfied.
+
 Review has two distinct modes:
 
 1. **Mutable candidate challenge:** fixes are expected; inspect correctness, authority, production reachability, compatibility, security, complexity, and claim honesty.
 2. **Fixed-candidate formal review:** bind the judgment to an identified candidate; do not mutate during the judgment; a clean review is valid.
 
-The root may perform a pass directly or delegate focused read-only research, proof, or review inside the selected claim when that changes the evidence surface or reduces elapsed work. Delegation is a runtime choice, not a durable execution topology.
+The mutable/fixed distinction is about method, not publication timing. The
+`final-challenge` pass may run after a PR is published or after accepted repair;
+`review-pr` is the fixed-candidate formal judgment. The normal sequence is writer
+self-check, proof challenge, mutable candidate challenge, repair/simplification,
+final mutable challenge, fixed formal review, accountable integration judgment,
+and landed reconciliation. CI and reviewer/subagent conclusions are evidence for
+the accountable owner, not approval by themselves.
+
+The root may perform a pass directly or delegate focused read-only research, proof, or review inside the selected claim when that changes the evidence surface or reduces elapsed work. Delegate when the evidence-to-answer compression ratio is high: CI or log triage, corpus or repository-wide searches, dependency/API audits, external-source collection, failure bisection, broad inventories, or an independently useful proof adversary. The child returns bounded evidence and references; the warm root keeps decisions, contradictions, and integration. Delegation is a runtime choice, not a durable execution topology, and it is never required merely to relay attention.
+
+### Review standard
+
+Review is **directed, falsifying, and verified**. Aim it at the declared claim and its
+real production seam, and try to disprove the claim rather than merely restating the
+diff or green checks. Where applicable, establish:
+
+- claim honesty against current source and external authority;
+- semantic and external correctness;
+- proof discrimination against a realistic wrong implementation;
+- production-path reachability;
+- negative and fallback behavior;
+- compatibility and rollback;
+- remaining uncertainty and evidence limits.
+
+A clean review is valid when these questions were considered and no actionable finding
+remains. Do not manufacture a finding, edit, or second identity to make review visible.
+Material candidate or claim changes require affected proof and a fresh review of the
+resulting candidate.
 
 ## Hard stops
 

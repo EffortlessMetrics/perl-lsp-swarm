@@ -520,6 +520,44 @@ impl<'a> Parser<'a> {
             if self.pending_heredocs.is_empty() {
                 self.byte_cursor = semi_token.end;
             }
+        } else if !self.tokens.is_eof() {
+            // No semicolon and not at EOF — check if the semicolon is genuinely
+            // missing (not optional). Block-terminated constructs (sub, if, for,
+            // package with block, class, etc.) don't need a trailing semicolon.
+            // Also skip for closing delimiters and format-ended statements.
+            let is_block_terminated = matches!(
+                &stmt.kind,
+                NodeKind::Subroutine { .. }
+                    | NodeKind::Package { block: Some(_), .. }
+                    | NodeKind::Class { .. }
+                    | NodeKind::If { .. }
+                    | NodeKind::While { .. }
+                    | NodeKind::For { .. }
+                    | NodeKind::Foreach { .. }
+                    | NodeKind::Given { .. }
+                    | NodeKind::When { .. }
+                    | NodeKind::Default { .. }
+                    | NodeKind::Try { .. }
+                    | NodeKind::Defer { .. }
+                    | NodeKind::Block { .. }
+                    | NodeKind::Use { .. }
+                    | NodeKind::No { .. }
+                    | NodeKind::PhaseBlock { .. }
+                    | NodeKind::Format { .. }
+                    | NodeKind::Method { .. }
+            );
+            let next_is_closer = matches!(
+                self.peek_kind(),
+                Some(TokenKind::RightBrace) | Some(TokenKind::RightParen) | Some(TokenKind::RightBracket)
+            );
+            if !is_block_terminated && !next_is_closer {
+                let pos = self.current_position();
+                self.errors.push(ParseError::Recovered {
+                    site: RecoverySite::InfixRhs,
+                    kind: RecoveryKind::InferredSemicolon,
+                    location: pos,
+                });
+            }
         }
 
         // Drain pending heredocs after statement completion (attach content to AST)
@@ -1202,11 +1240,14 @@ impl<'a> Parser<'a> {
             if s.peek_kind() == Some(TokenKind::RightBrace) {
                 s.expect(TokenKind::RightBrace)?;
             } else {
-                // Missing closing brace (EOF or recovery break)
-                let pos = s.current_position();
+                // Missing closing brace (EOF or recovery break). Anchor the
+                // diagnostic at the opening `{` (recorded in `start`) rather
+                // than at end-of-input, so the squiggle lands on the brace the
+                // user needs to close and nested unclosed blocks are
+                // distinguishable (#5546).
                 s.errors.push(ParseError::syntax(
                     "Unclosed block: expected '}' but reached end of input",
-                    pos,
+                    start,
                 ));
             }
             let end = s.previous_position();

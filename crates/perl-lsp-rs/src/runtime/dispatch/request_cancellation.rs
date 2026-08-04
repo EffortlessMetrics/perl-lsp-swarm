@@ -67,8 +67,14 @@ pub(super) fn register_request_cancellation(
                 })
                 .ok()
                 .flatten();
+            // Clean up the token/cleanup we just registered so the maps
+            // don't retain entries for requests that never reach the handler
+            // (#5032).
+            GLOBAL_CANCELLATION_REGISTRY.remove_request(&typed_id);
             return Some(enhanced_cancelled_response(&token, cleanup_context.as_ref()));
         }
+        // Same cleanup for the fallback path.
+        GLOBAL_CANCELLATION_REGISTRY.remove_request(&typed_id);
         return Some(cancelled_response_with_method(request_id, &request.method));
     }
 

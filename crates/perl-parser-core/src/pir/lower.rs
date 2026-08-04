@@ -1408,7 +1408,7 @@ impl BodyLowerer {
                 *self.unsupported.entry(ast_kind_to_static(ast_kind)).or_insert(0) += 1;
             }
 
-            HirExpr::Call { args, ast_kind: _ } => {
+            HirExpr::Call { args, ast_kind: _, callee_span: _ } => {
                 // Record the call itself as unsupported — PIR-A does not yet model
                 // calls from body arenas as named PIR nodes. However, we DO walk
                 // the argument expressions so that variable reads in call-arg position

@@ -10,6 +10,8 @@ Carry one claim through one current candidate. Reconstruct only that lane's issu
 
 Before creating a candidate, check whether an equivalent current PR already implements the same claim. Do not inspect sibling lanes, touched-file overlap, nearby symbols, or unrelated worktrees as a routine ownership check.
 
+## Routes
+
 Route to the earliest absent or stale useful flow:
 
 - unsettled concern/plan → `prepare-issue`;

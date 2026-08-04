@@ -99,13 +99,13 @@ Both are separate, necessary conditions. A PR is only review-converged when
    - `totalCount` is connection metadata, accurate independent of how many
      comment `nodes` are actually fetched (the script only fetches
      `first: 1`, for the opening commenter's login).
-5. **No independent review in flight.** The `needs-deep-review` label is
-   treated as a durable, repo-visible blocking marker — while present,
-   `independent_review_pending` is `true` and convergence is `BLOCK`ed
-   regardless of thread/review state. This makes an in-flight correctness
-   review mechanically visible: the other half of the #3647 root cause was
-   that the PR merged while its deep review was still running, with that
-   review existing only in an orchestrator's task list — not in the repo.
+5. **No independent review in flight or unresolved change request.** A native
+   GitHub review request makes an in-flight correctness review visible;
+   `pending_reviewers` is non-empty and the compatibility alias
+   `independent_review_pending` is `true` while it remains. A current-head
+   human `CHANGES_REQUESTED` review also blocks, even after GitHub fulfills
+   the request. This prevents a substantive change request from disappearing
+   when the request is withdrawn.
 
 ## R1 protocol axes (#3693) — advisory by default
 
@@ -197,6 +197,7 @@ scripts/ci/check-pr-review-convergence <pr-number> [owner/repo]
  "unresolved_active": N, "unresolved_outdated": N, "unresolved_total": N,
  "resolved_threads": N, "resolved_without_disposition": N,
  "independent_review_pending": true|false,
+ "current_change_requests": [...],
  "review_protocol_enforce": true|false,
  "review_runs_in_flight": N, "verification_runs_in_flight": N,
  "deep_review_receipt_head_match": true|false,
@@ -208,9 +209,10 @@ scripts/ci/check-pr-review-convergence <pr-number> [owner/repo]
 `unresolved_active` and `unresolved_outdated` both block convergence;
 `unresolved_total` is their sum. `resolved_without_disposition` (count of
 resolved threads with `comments.totalCount <= 1` — see item 4 above) and
-`independent_review_pending` (the `needs-deep-review` label — item 5 above)
-both block convergence too. `stale_bot_reviews` is a non-blocking (ADVISORY)
-count. The R1 fields (`review_protocol_enforce` and everything after it —
+`independent_review_pending` (the native `pending_reviewers` compatibility
+alias — item 5 above), and `current_change_requests` all block convergence.
+`stale_bot_reviews` is a non-blocking (ADVISORY)
+collection. The R1 fields (`review_protocol_enforce` and everything after it —
 items 6–11 above) are **advisory by default**: reported and `WARN`ed but
 non-blocking unless `review_protocol_enforce` is `true` (set
 `REVIEW_PROTOCOL_ENFORCE=1`). `review_protocol_enforce` echoes which mode the

@@ -861,27 +861,6 @@ review_after = "2026-06-11"
 expires = "2026-11-11"
 
 [[lane]]
-id = "pipeline_labels"
-workflow = ".github/workflows/pipeline-labels.yml"
-job = "apply-pipeline-labels"
-tier = "frontdoor"
-kind = "automation"
-blocking = false
-default_pr = true
-runner = "self_hosted_workflow_nano"
-base_lem = 1
-owner = "ci"
-intent = "Apply pipeline state labels (ci-green, merge-ready, etc.)."
-failure_mode = "Labels diverge from PR state, breaking orchestration."
-proof_obligation = "Reconcile pipeline labels against PR state."
-evidence = ["job logs"]
-allowed_triggers = ["pull_request", "pull_request_target"]
-expensive = false
-duplicate_of = []
-review_after = "2026-06-07"
-expires = "2026-11-07"
-
-[[lane]]
 id = "badge_endpoints"
 workflow = ".github/workflows/badge-endpoints.yml"
 job = "refresh"
