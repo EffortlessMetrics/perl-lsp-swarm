@@ -35,16 +35,16 @@ AST kinds tracked: `76`. HIR construct kinds tracked: `28`.
 | `ChainedComparison` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
 | `Ternary` | `lowered` | `BranchShell` | Ternary expression lowered as a branch shell with both arms present. |
 | `Unary` | `lowered` | `DerefExpr`, `DynamicBoundary` | Aggregate dereferences emit `DerefExpr`; proven-symbolic dereferences (string-literal, `.`-concatenation, or interpolated-string operands) under no-strict-refs additionally emit `DynamicBoundary`; operand always traversed. |
-| `Diamond` | `lowered` | `ReadlineMigrationAdapter` | Flat HIR retains the `@ARGV` source fact as a migration adapter; canonical readline semantics live in body HIR. |
+| `Diamond` | `lowered` | `ReadlineMigrationAdapter` | Flat migration adapter retains the diamond source fact; canonical readline semantics live in body HIR. |
 | `Ellipsis` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
 | `Undef` | `lowered` | `LiteralExpr` | Lowered as undef literal shell. |
-| `Readline` | `lowered` | `ReadlineMigrationAdapter` | Flat HIR retains the named/scalar handle fact as a migration adapter; canonical readline semantics live in body HIR. |
-| `Glob` | `lowered` | `GlobMigrationAdapter` | Flat HIR retains the pattern fact as a migration adapter; canonical glob semantics live in body HIR. |
+| `Readline` | `lowered` | `ReadlineMigrationAdapter` | Flat migration adapter retains source facts; canonical readline semantics live in body HIR. |
+| `Glob` | `lowered` | `GlobMigrationAdapter` | Flat migration adapter retains source facts; canonical glob semantics live in body HIR. |
 | `Typeglob` | `not_yet_modeled` | - | No standalone HIR shell yet; typeglob assignments can contribute StashGraph slots or boundaries. |
 | `Number` | `lowered` | `LiteralExpr` | Lowered as numeric literal shell. |
 | `String` | `lowered` | `LiteralExpr` | Lowered as string literal shell. |
 | `VString` | `not_yet_modeled` | - | No standalone HIR literal shell yet; falls through after parser-level v-string classification. |
-| `Heredoc` | `lowered` | `HeredocMigrationAdapter` | Flat HIR retains source facts as a migration adapter; canonical heredoc semantics live in body HIR and the body stays addressable by range. |
+| `Heredoc` | `lowered` | `HeredocMigrationAdapter` | Flat migration adapter retains source facts; canonical heredoc semantics live in body HIR. |
 | `ArrayLiteral` | `lowered` | `LiteralExpr` | Lowered as aggregate literal shell; children (elements) are traversed. |
 | `HashLiteral` | `lowered` | `LiteralExpr` | Lowered as aggregate literal shell; pairs are traversed. |
 | `Block` | `lowered` | `BlockShell` | Lowered as block shell and contributes a ScopeGraph block frame. |
