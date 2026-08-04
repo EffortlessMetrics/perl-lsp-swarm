@@ -1796,11 +1796,10 @@ mod tests {
         let root = std::env::temp_dir().join("perl-B7-indented-subtest-root");
         let t_dir = root.join("t");
         must(std::fs::create_dir_all(&t_dir));
-        std::fs::write(
+        must(std::fs::write(
             t_dir.join("app.t"),
             "use Test::More;\nsubtest 'nested' => sub {\n    my $x = 1;\n    is($x, 1); # trailing comment\n};\n",
-        )
-        .unwrap();
+        ));
 
         let (tests, _oracles, _provenance, _limitations) =
             emit_tests_and_oracles(must_some(root.to_str()));
@@ -1922,16 +1921,14 @@ mod tests {
         let t_dir = root.join("t");
         must(std::fs::create_dir_all(&lib_dir));
         must(std::fs::create_dir_all(&t_dir));
-        std::fs::write(
+        must(std::fs::write(
             lib_dir.join("Pricing.pm"),
             "package Pricing;\nsub calculate_discount { }\n1;",
-        )
-        .unwrap();
-        std::fs::write(
+        ));
+        must(std::fs::write(
             t_dir.join("pricing.t"),
             "use Test::More;\nuse Pricing;\nok(calculate_discount(100));\n",
-        )
-        .unwrap();
+        ));
 
         let (tests, _oracles, _provenance, _limitations) =
             emit_tests_and_oracles(must_some(root.to_str()));
@@ -1997,11 +1994,10 @@ mod tests {
         let root = std::env::temp_dir().join("perl-B8-dispatch-root");
         let lib_dir = root.join("lib");
         must(std::fs::create_dir_all(&lib_dir));
-        std::fs::write(
+        must(std::fs::write(
             lib_dir.join("Dynamic.pm"),
             "package Dynamic;\nsub call { my $m = shift; $obj->$m(); }\n1;",
-        )
-        .unwrap();
+        ));
 
         let (boundaries, limitations, _cmds) =
             emit_boundaries_and_commands(must_some(root.to_str()));
@@ -2469,11 +2465,10 @@ mod tests {
         let temp = std::env::temp_dir().join("ripr_facts_oracle_contract_test");
         let t_dir = temp.join("t");
         must(std::fs::create_dir_all(&t_dir));
-        std::fs::write(
+        must(std::fs::write(
             t_dir.join("app.t"),
             "use Test::More;\nis(disco(100), 50, 'half');\nok(1);\n",
-        )
-        .unwrap();
+        ));
         let (_tests, oracles, _provenance, _limitations) =
             emit_tests_and_oracles(must_some(temp.to_str()));
         let _ = std::fs::remove_dir_all(&temp);
@@ -2546,16 +2541,14 @@ mod tests {
         let t_dir = root.join("t");
         must(std::fs::create_dir_all(&lib_dir));
         must(std::fs::create_dir_all(&t_dir));
-        std::fs::write(
+        must(std::fs::write(
             lib_dir.join("App.pm"),
             "package My::App;\nsub setup { }\nsub target { }\n1;\n",
-        )
-        .unwrap();
-        std::fs::write(
+        ));
+        must(std::fs::write(
             t_dir.join("App.t"),
             "use My::App;\nMy::App::setup();\nMy::App::target();\n",
-        )
-        .unwrap();
+        ));
 
         let (tests, _oracles, _provenance, _limitations) =
             emit_tests_and_oracles(must_some(root.to_str()));
@@ -2782,11 +2775,10 @@ mod tests {
             root.join("lib/V2/Widget.pm"),
             "package V2::Widget;\nsub run { }\n1;\n",
         ));
-        std::fs::write(
+        must(std::fs::write(
             t_dir.join("Widget.t"),
             "use V1::Widget;\nuse V2::Widget;\nrun();\nok(1);\n",
-        )
-        .unwrap();
+        ));
 
         let (tests, _oracles, _provenance, _limitations) =
             emit_tests_and_oracles(must_some(root.to_str()));
@@ -2929,11 +2921,10 @@ mod tests {
         let root = std::env::temp_dir().join("perl-P3-files-owners-root");
         let lib_dir = root.join("lib/My");
         must(std::fs::create_dir_all(&lib_dir));
-        std::fs::write(
+        must(std::fs::write(
             lib_dir.join("App.pm"),
             "package My::App;\nsub discount { return 42; }\nsub total { }\n1;\n",
-        )
-        .unwrap();
+        ));
 
         let (files, owners, provenance, limitations) =
             emit_files_and_owners(must_some(root.to_str()));
