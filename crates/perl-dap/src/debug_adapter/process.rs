@@ -1416,7 +1416,11 @@ impl DebugAdapter {
                         success: false,
                         command: "attach".to_string(),
                         body: None,
-                        message: Some("Host cannot be empty".to_string()),
+                        message: Some(
+                            "Host cannot be empty. Set the 'host' field in your attach \
+                             configuration, e.g. \"host\": \"localhost\" or \"host\": \"127.0.0.1\"."
+                                .to_string(),
+                        ),
                     };
                 }
 
@@ -1427,7 +1431,11 @@ impl DebugAdapter {
                         success: false,
                         command: "attach".to_string(),
                         body: None,
-                        message: Some("Port must be in range 1-65535".to_string()),
+                        message: Some(
+                            "Port must be in range 1-65535. Set the 'port' field in your \
+                             attach configuration, e.g. \"port\": 13603."
+                                .to_string(),
+                        ),
                     };
                 }
 

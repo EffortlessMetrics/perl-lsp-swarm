@@ -1227,6 +1227,44 @@ print "result: $final\n";
     }
 
     #[test]
+    fn test_attach_empty_host_includes_recovery_guidance() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut adapter = DebugAdapter::new();
+        let response =
+            adapter.handle_request(1, "attach", Some(json!({"host": "", "port": 13603})));
+
+        match response {
+            DapMessage::Response { success, message, .. } => {
+                assert!(!success);
+                let message = message.ok_or("Expected attach validation message")?;
+                assert!(message.contains("Set the 'host' field"));
+                assert!(message.contains("localhost"));
+            }
+            _ => return Err("Expected attach validation response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_zero_port_includes_recovery_guidance() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut adapter = DebugAdapter::new();
+        let response =
+            adapter.handle_request(1, "attach", Some(json!({"host": "localhost", "port": 0})));
+
+        match response {
+            DapMessage::Response { success, message, .. } => {
+                assert!(!success);
+                let message = message.ok_or("Expected attach validation message")?;
+                assert!(message.contains("Set the 'port' field"));
+                assert!(message.contains("13603"));
+            }
+            _ => return Err("Expected attach validation response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_attach_process_id_mode() -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         // #4638: use current process PID so verify_attach_target succeeds.
