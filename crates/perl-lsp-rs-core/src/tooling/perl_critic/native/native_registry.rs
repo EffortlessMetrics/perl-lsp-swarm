@@ -190,20 +190,6 @@ impl NativeCriticRegistry {
         ])
     }
 
-    /// Ensure that any rule ID listed in `include` is present in the registry,
-    /// even if it belongs to a stricter profile (#4984 item 3). Rules already
-    /// registered are left untouched; only missing strict-only extras are
-    /// added.
-    pub fn ensure_included(&mut self, include: &[String]) {
-        let existing: std::collections::HashSet<&str> = self.rules.iter().map(|r| r.id()).collect();
-        let strict = Self::strict_profile();
-        for rule in strict.rules {
-            if !existing.contains(rule.id()) && include.iter().any(|id| id == rule.id()) {
-                self.rules.push(rule);
-            }
-        }
-    }
-
     /// Add a rule to the registry.
     pub fn add_rule(&mut self, rule: Box<dyn CriticRule>) {
         self.rules.push(rule);
