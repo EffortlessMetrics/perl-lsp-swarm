@@ -3,7 +3,12 @@
 //! Handles textDocument/codeAction and codeAction/resolve requests.
 //! Provides quick fixes, refactoring actions, and source actions.
 
-use super::super::*;
+use super::super::{
+    BuiltInAnalyzer, CodeActionsProvider, CodeActionsProviderV2, DiagnosticsProvider,
+    EnhancedCodeActionsProvider, GLOBAL_CANCELLATION_REGISTRY, HashMap, InternalCodeActionKind,
+    InternalCodeActionKindV2, JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken,
+    TestGenerator, Value, json,
+};
 use super::misc::{
     DIAGNOSTIC_EXPLANATION_SCHEMA_VERSION, diagnostic_explanation_payload_from_diagnostics,
 };
@@ -602,7 +607,10 @@ impl LspServer {
                         crate::perl_critic::NativeCriticProfile::parse(&native_profile)
                             .unwrap_or(crate::perl_critic::NativeCriticProfile::Strict);
                     let registry =
-                        crate::perl_critic::NativeCriticRegistry::for_profile(native_profile);
+                        crate::perl_critic::NativeCriticRegistry::for_profile_with_config(
+                            native_profile,
+                            &critic_config,
+                        );
                     for finding in registry.check(&critic_context) {
                         // Only findings that carry a Safe automatic edit become
                         // quick-fixes. Suggested fixes need user confirmation

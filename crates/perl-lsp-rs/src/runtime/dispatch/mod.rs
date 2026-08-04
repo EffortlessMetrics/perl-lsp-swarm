@@ -57,7 +57,9 @@ mod workspace;
 
 pub(crate) use cancellation::enhanced_cancelled_response;
 
+#[cfg(test)]
 use super::*;
+use super::{JsonRpcRequest, JsonRpcResponse, LspServer, Value, cancelled_response_with_method};
 
 impl LspServer {
     /// Handle a JSON-RPC request

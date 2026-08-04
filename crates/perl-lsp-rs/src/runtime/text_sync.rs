@@ -8,7 +8,13 @@
 //! reparsed — incremental *parsing* is future work.  The sync kind is about
 //! how document text is transferred, not the parsing strategy.
 
+#[cfg(test)]
 use super::*;
+use super::{
+    Arc, AtomicBool, AtomicU32, CodeFormatter, DiagnosticsProvider, DocumentState,
+    FormattingOptions, HashMap, InternalDiagnosticSeverity, JsonRpcError, LspServer, Mutex, Node,
+    Ordering, Parser, Value, json, parse_worker, source_path_from_uri, workspace_progress,
+};
 use crate::protocol::invalid_params;
 use crate::state::{DegradationTier, ParsedSnapshot};
 #[cfg(feature = "workspace")]
