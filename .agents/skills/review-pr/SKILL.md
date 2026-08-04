@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: Review one pull request cumulatively through GitHub, publishing useful findings or a concise clean conclusion without exact-head or claim-hash receipt ceremony.
+description: Review one pull request cumulatively through GitHub, publishing useful findings or a useful clean conclusion without exact-head or claim-hash receipt ceremony.
 ---
 
 # Review PR
@@ -30,7 +30,7 @@ Review is directed, falsifying, and verified. Seek realistic counterexamples and
 
 Use native Codex review, a read-only reviewer, an external oracle, or direct inspection when that changes the evidence surface. Identity separation alone is neither required nor sufficient.
 
-Publish material findings through GitHub submitted reviews and inline threads. A clean review is valid; record a concise conclusion that helps the next session understand what was checked and what remains unproved.
+Publish material findings through GitHub submitted reviews and inline threads. A clean review is valid; it still records what was examined, what evidence or authority was used, what realistic wrong behavior was challenged, and what remains unproved.
 
 ## Semantic currentness
 
@@ -44,20 +44,37 @@ Review is cumulative and semantic:
 
 Do not restart a full `deep` review after every push. Broaden only when the later change materially broadens the review subject.
 
-## Review record
+## Useful review record
 
-Use GitHub-native evidence:
+Submit a review that helps a fresh agent continue without reconstructing your judgment:
 
-```text
-Reviewed claim and production path
-Review lenses used
-Material findings and evidence, or clean conclusion
-Affected-seam follow-up after later repair where applicable
-What the review establishes
-What remains unproved
+```markdown
+## Review scope
+- Claim, changed seams, consumers, and prior findings examined
+
+## Evidence and falsifiers
+- Commands, tests, sources, or authorities used
+- Realistic wrong behavior challenged
+
+## Findings
+- Material findings with severity and evidence
+
+<!-- Or: ## No material findings -->
+
+## Prior finding dispositions
+- fixed | refuted | superseded | follow-up, with evidence
+
+## What this establishes
+- Conclusions supported by the review
+
+## Residual risk / not proved
+- Local uncertainty and excluded surfaces
+
+## Next action
+- Repair, focused re-review, merge path, or named follow-up
 ```
 
-No public review receipt comment or claim hash is required.
+Do not submit only `LGTM`, `review complete`, reviewer identity, a head SHA, a claim digest, or a status line. No public review receipt comment or claim hash is required.
 
 ## Routes
 
