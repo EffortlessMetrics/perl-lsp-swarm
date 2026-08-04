@@ -168,6 +168,45 @@ fn interpolating_glob_pattern_records_the_interpolation_fact() -> TestResult {
 }
 
 // ---------------------------------------------------------------------------
+// Glob: a sigil only interpolates when it actually starts a variable
+// ---------------------------------------------------------------------------
+
+#[test]
+fn glob_sigil_not_starting_a_variable_stays_static() -> TestResult {
+    // Perl reads a trailing `@` as a literal character, so the match set of
+    // these patterns *is* statically known. Calling them interpolating would
+    // report a knowable pattern as unknowable.
+    for source in ["my @files = <*.txt@>;\n", "my @files = <foo@>;\n"] {
+        let file = lower_source(source);
+        let glob = must_some(globs(&file).first().copied());
+
+        assert!(
+            !glob.interpolated,
+            "a sigil that starts no variable is a literal character, so {:?} is static",
+            glob.pattern
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn glob_array_and_braced_interpolation_are_recognized() -> TestResult {
+    // The opposite control: these really do interpolate, so narrowing the rule
+    // must not have made it blind.
+    for source in ["my @files = <@list>;\n", "my @files = <${dir}/*.c>;\n"] {
+        let file = lower_source(source);
+        let glob = must_some(globs(&file).first().copied());
+
+        assert!(
+            glob.interpolated,
+            "{:?} starts a real variable, so its match set is a runtime property",
+            glob.pattern
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Heredoc: interpolating body
 // ---------------------------------------------------------------------------
 

@@ -3056,23 +3056,46 @@ pub struct GlobExpr {
 }
 
 /// Whether an angle-bracket glob pattern interpolates, so its match set is not
-/// statically known. `\$` and `\@` are escaped literals, not interpolation.
+/// statically known.
+///
+/// A sigil only interpolates when it actually starts a variable. Perl treats a
+/// sigil followed by anything else — end of pattern, `/`, `.`, another sigil —
+/// as a literal character, so `<*.txt@>` and `<foo@>` are fully static patterns.
+/// `\$` and `\@` are escaped literals as well. Reporting those as interpolating
+/// would tell consumers a statically known match set is unknowable.
+///
+/// `$` admits digits (`$1`) and `:` (`$::x`); `@` does not, since `@1` is not a
+/// variable.
 ///
 /// Single source of truth for both the item lowerer (`hir::lower`) and the body
 /// lowerer (`hir::body`), which must not disagree about the same construct.
 #[must_use]
 pub(super) fn glob_pattern_interpolates(pattern: &str) -> bool {
-    let mut chars = pattern.chars();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\\' => {
-                chars.next();
-            }
-            '$' | '@' => return true,
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        match chars[index] {
+            // Escaped character: skip the sigil-ness of whatever follows.
+            '\\' => index += 1,
+            '$' if chars.get(index + 1).is_some_and(starts_scalar_name) => return true,
+            '@' if chars.get(index + 1).is_some_and(starts_array_name) => return true,
             _ => {}
         }
+        index += 1;
     }
     false
+}
+
+/// Whether `ch` can begin the name of an interpolated scalar (`$name`, `${...}`,
+/// `$1`, `$::x`).
+fn starts_scalar_name(ch: &char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '{' | ':')
+}
+
+/// Whether `ch` can begin the name of an interpolated array (`@name`, `@{...}`,
+/// `@::x`). Digits are excluded: `@1` is not a variable.
+fn starts_array_name(ch: &char) -> bool {
+    ch.is_ascii_alphabetic() || matches!(ch, '_' | '{' | ':')
 }
 
 /// Regex literal shell payload (`/pattern/modifiers` or `qr/pattern/modifiers`).
