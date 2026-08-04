@@ -67,6 +67,7 @@ void test('uses only the current platform baseline entries', () => {
       },
       baseline,
       'linux',
+      { arch: 'x64' },
     ),
     [],
   );
@@ -95,6 +96,7 @@ void test('still rejects growth for a platform-owned file', () => {
       },
       baseline,
       'win32',
+      { arch: 'x64' },
     ),
     ['total bytes grew from 12 to 13', 'file bin/win32-x64/perllsp.exe grew from 10 to 11 bytes'],
   );
@@ -124,6 +126,7 @@ void test('accepts a known foreign platform bundle without requiring it on this 
       },
       baseline,
       'linux',
+      { arch: 'x64' },
     ),
     [],
   );
