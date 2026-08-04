@@ -2373,12 +2373,22 @@ mod tests {
 
     #[test]
     fn launch_preserves_a_real_quote_delimited_filename() -> Result<(), String> {
-        use std::fs;
-        use std::path::PathBuf;
+        use std::io::Write;
 
-        let script = PathBuf::from(format!("'perl-dap-quote-test-{}.pl'", std::process::id()));
-        fs::write(&script, "print 1;\n").map_err(|e| format!("could not write script: {e}"))?;
-        let script_path = script.to_str().ok_or("script path is not valid UTF-8")?;
+        let mut script = tempfile::Builder::new()
+            .prefix("'perl-dap-quote-test-")
+            .suffix(".pl'")
+            .tempfile_in(".")
+            .map_err(|e| format!("could not create script: {e}"))?;
+        script
+            .as_file_mut()
+            .write_all(b"print 1;\n")
+            .map_err(|e| format!("could not write script: {e}"))?;
+        let script_path = script
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("script filename is not valid UTF-8")?;
         let missing_perl = std::env::current_dir()
             .map_err(|e| format!("could not get current directory: {e}"))?
             .join("missing-perl");
@@ -2394,7 +2404,6 @@ mod tests {
             None,
             1,
         );
-        fs::remove_file(&script).map_err(|e| format!("could not remove test script: {e}"))?;
         let error = match result {
             Ok(thread_id) => return Err(format!("unexpectedly launched thread {thread_id}")),
             Err(error) => error,

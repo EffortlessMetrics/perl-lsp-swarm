@@ -318,7 +318,7 @@ fn check_path_with_file_parent_reports_missing_path() -> Result<(), Box<dyn std:
     cmd.args(["--check", child.to_str().ok_or("non-UTF-8 temp path")?])
         .assert()
         .failure()
-        .stderr(predicates::str::contains("does not exist"));
+        .stderr(predicates::str::contains("intermediate component"));
     Ok(())
 }
 

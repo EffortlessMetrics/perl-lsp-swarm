@@ -234,11 +234,12 @@ fn run_check(command_name: &str, files: &[String]) -> i32 {
                     eprintln!(
                         "  hint: '{path}' is a directory. Use --check-project <dir> to check all files in a directory."
                     );
-                } else if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                ) {
+                } else if e.kind() == std::io::ErrorKind::NotFound {
                     eprintln!("  hint: '{path}' does not exist. Check the path for typos.");
+                } else if e.kind() == std::io::ErrorKind::NotADirectory {
+                    eprintln!(
+                        "  hint: an intermediate component of '{path}' is a regular file, not a directory. Check the path for typos."
+                    );
                 } else {
                     eprintln!(
                         "  hint: check file permissions or encoding. The file may be binary or use an unsupported encoding."
