@@ -382,9 +382,10 @@ impl DebugAdapter {
         // Users sometimes write "program": "'path/to/script.pl'" or
         // "\"path/to/script.pl\"" — the quotes become part of the path,
         // causing a confusing file-not-found error.
-        if (program.starts_with('\'') && program.ends_with('\'') && program.len() > 1)
-            || (program.starts_with('"') && program.ends_with('"') && program.len() > 1)
-        {
+        let has_surrounding_quotes =
+            (program.starts_with('\'') && program.ends_with('\'') && program.len() > 1)
+                || (program.starts_with('"') && program.ends_with('"') && program.len() > 1);
+        if has_surrounding_quotes && !Path::new(program).is_file() {
             return Err(format!(
                 "The 'program' path '{program}' has surrounding quotes. \
                  Remove the quotes in your launch.json — the path should be just \
@@ -1408,56 +1409,6 @@ impl DebugAdapter {
                 let stop_on_entry =
                     args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
 
-                // Validate arguments.
-                if normalized_host.is_empty() {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some("Host cannot be empty".to_string()),
-                    };
-                }
-
-                if port == 0 {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some("Port must be in range 1-65535".to_string()),
-                    };
-                }
-
-                if let Some(t) = timeout {
-                    if t == 0 {
-                        return DapMessage::Response {
-                            seq,
-                            request_seq,
-                            success: false,
-                            command: "attach".to_string(),
-                            body: None,
-                            message: Some(
-                                "Timeout must be greater than 0 milliseconds".to_string(),
-                            ),
-                        };
-                    }
-                    if t > 300_000 {
-                        return DapMessage::Response {
-                            seq,
-                            request_seq,
-                            success: false,
-                            command: "attach".to_string(),
-                            body: None,
-                            message: Some(
-                                "Timeout cannot exceed 300000 milliseconds (5 minutes)".to_string(),
-                            ),
-                        };
-                    }
-                }
-
                 // TCP attachment mode (IMPLEMENTED)
                 let mut config = TcpAttachConfig::new(normalized_host.to_string(), port);
                 if let Some(t) = timeout {
@@ -2407,6 +2358,38 @@ mod tests {
             }
             other => Err(format!("expected Response from handle_launch; got {other:?}")),
         }
+    }
+
+    #[test]
+    fn launch_preserves_a_real_quote_delimited_filename() -> Result<(), String> {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let dir = tempdir().map_err(|e| format!("could not create temp directory: {e}"))?;
+        let script = dir.path().join("'script.pl'");
+        fs::write(&script, "print 1;\n").map_err(|e| format!("could not write script: {e}"))?;
+        let script_path = script.to_str().ok_or("script path is not valid UTF-8")?;
+        let missing_perl = dir.path().join("missing-perl");
+        let missing_perl = missing_perl.to_str().ok_or("interpreter path is not valid UTF-8")?;
+
+        let mut adapter = DebugAdapter::new();
+        let error = adapter
+            .launch_debugger(
+                script_path,
+                missing_perl,
+                Vec::new(),
+                false,
+                std::collections::HashMap::new(),
+                None,
+                1,
+            )
+            .expect_err("missing interpreter should stop the launch after path validation");
+
+        assert!(
+            !error.contains("surrounding quotes"),
+            "a real quote-delimited filename must not be treated as shell quoting: {error}"
+        );
+        Ok(())
     }
 
     #[test]
