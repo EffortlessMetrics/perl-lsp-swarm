@@ -1900,7 +1900,6 @@ version = "0.17.0"
 dependencies = [
  "perl-parser-core",
  "perl-symbol",
- "perl-tdd-support",
  "serde_json",
  "sha2",
 ]
