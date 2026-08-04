@@ -46,7 +46,7 @@ void test('uses only the current platform baseline entries', () => {
       'bin/linux-x64/perllsp': 8,
     },
   };
-  const linuxBaseline = baselineForPlatform(baseline, 'linux');
+  const linuxBaseline = baselineForPlatform(baseline, 'linux', 'x64');
 
   assert.deepEqual(linuxBaseline, {
     schema_version: 1,
@@ -148,6 +148,7 @@ void test('rejects an unexpected foreign platform bundle', () => {
       },
       baseline,
       'linux',
+      { arch: 'x64' },
     ),
     ['unexpected foreign-platform packaged file: bin/darwin-arm64/perllsp'],
   );
