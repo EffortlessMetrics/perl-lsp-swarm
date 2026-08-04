@@ -923,8 +923,10 @@ fn test_provider_and_protocol_command_lists_are_in_sync() -> TestResult {
 }
 
 // ============= RUN SUBTEST HANDLER SHAPE =============
-// Verifies the perl.runSubtest dispatch arm returns the correct JSON shape
-// (not just that the command is in the supported list).
+// Verifies the perl.runSubtest dispatch arm does not fabricate a success
+// response when only a subtest name is supplied and no executable file target
+// exists.  The command remains capability-visible for the two-argument,
+// whole-file-focused provider path.
 
 #[test]
 fn test_run_subtest_handler_returns_correct_shape() -> TestResult {
@@ -943,12 +945,12 @@ fn test_run_subtest_handler_returns_correct_shape() -> TestResult {
     };
 
     let response = server.handle_request(request).ok_or("No response from perl.runSubtest")?;
-    let result = response.result.ok_or("perl.runSubtest returned error, expected Ok result")?;
-
-    assert_eq!(result["status"], "success", "perl.runSubtest should return status=success");
-    assert_eq!(
-        result["subtest"], "my fancy subtest",
-        "perl.runSubtest should echo back the subtest name"
+    let error =
+        response.error.ok_or("perl.runSubtest returned success for an unsupported target")?;
+    assert_eq!(error.code, -32601, "unsupported selective execution should be MethodNotFound");
+    assert!(
+        error.message.contains("not implemented server-side"),
+        "unsupported selective execution should explain the capability boundary"
     );
     Ok(())
 }
