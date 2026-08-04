@@ -172,6 +172,7 @@ fn validate_lsp_request_known_methods_are_ok() -> anyhow::Result<()> {
     let params = serde_json::json!({});
     validate_lsp_request("textDocument/didChange", &params)?;
     validate_lsp_request("textDocument/didSave", &params)?;
+    validate_lsp_request("$/perl-lsp/clientResponse", &params)?;
     Ok(())
 }
 
@@ -186,7 +187,7 @@ fn validate_lsp_request_method_over_100_chars_errors() {
 #[test]
 fn validate_lsp_request_method_exactly_100_chars_is_ok() -> anyhow::Result<()> {
     // Method of exactly 100 alphanumeric chars — should pass if no special chars
-    // Note: method must use chars that satisfy: alphanumeric || '/' || '$'
+    // Note: method must use chars that satisfy: alphanumeric || '/' || '$' || '-'
     let method = "a".repeat(100);
     let params = serde_json::json!({});
     validate_lsp_request(&method, &params)?;

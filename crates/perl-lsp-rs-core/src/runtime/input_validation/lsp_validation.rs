@@ -44,7 +44,7 @@ pub fn validate_lsp_request(method: &str, params: &serde_json::Value) -> Result<
     if method.len() > MAX_METHOD_LENGTH
         || !method
             .chars()
-            .all(|character| character.is_alphanumeric() || character == '/' || character == '$')
+            .all(|character| character.is_alphanumeric() || matches!(character, '/' | '$' | '-'))
     {
         return Err(anyhow!("Invalid LSP method: {}", method));
     }

@@ -223,11 +223,11 @@ mod tests {
     }
 
     /// Preflight input-validation rejects requests whose method name contains
-    /// characters outside `[a-zA-Z0-9/$]` with JSON-RPC INVALID_REQUEST (-32600).
+    /// characters outside `[a-zA-Z0-9/$-]` with JSON-RPC INVALID_REQUEST (-32600).
     /// This is the end-to-end wiring test for the `validate_lsp_request` call
     /// added to `preflight::prepare_request` (issue #5256).
     #[test]
-    fn invalid_method_charset_returns_32600() {
+    fn invalid_method_charset_returns_32600() -> anyhow::Result<()> {
         let server = LspServer::new();
         // Initialize so the server is past the not-initialized gate.
         let _ = server.handle_request(request(1, "initialize", Some(json!({}))));
@@ -237,13 +237,34 @@ mod tests {
             .handle_request(request(2, "textDocument/<script>", None))
             .and_then(|r| r.error)
             .map(|e| e.code);
-        assert_eq!(code, Some(-32600), "forbidden method charset must return -32600");
+        anyhow::ensure!(
+            code == Some(-32600),
+            "forbidden method charset must return -32600, got {code:?}"
+        );
+        Ok(())
+    }
+
+    /// The server's internal reverse-request response method contains a hyphen.
+    /// It must pass preflight and reach its routing arm rather than being
+    /// rejected as an invalid method before dispatch.
+    #[test]
+    fn internal_client_response_method_reaches_dispatch() -> anyhow::Result<()> {
+        let server = LspServer::new();
+        let _ = server.handle_request(request(1, "initialize", Some(json!({}))));
+
+        let response =
+            server.handle_request(request(2, "$/perl-lsp/clientResponse", Some(json!({}))));
+        anyhow::ensure!(
+            response.is_none(),
+            "internal client response should be handled without a JSON-RPC response"
+        );
+        Ok(())
     }
 
     /// Preflight input-validation rejects requests whose params contain obvious
     /// script-injection payloads with JSON-RPC INVALID_REQUEST (-32600).
     #[test]
-    fn params_with_script_injection_return_32600() {
+    fn params_with_script_injection_return_32600() -> anyhow::Result<()> {
         let server = LspServer::new();
         let _ = server.handle_request(request(1, "initialize", Some(json!({}))));
 
@@ -256,7 +277,11 @@ mod tests {
             ))
             .and_then(|r| r.error)
             .map(|e| e.code);
-        assert_eq!(code, Some(-32600), "script-injection in params must return -32600");
+        anyhow::ensure!(
+            code == Some(-32600),
+            "script-injection in params must return -32600, got {code:?}"
+        );
+        Ok(())
     }
 
     /// Verify that the `$/test/slowOperation` endpoint is cfg-gated when neither
