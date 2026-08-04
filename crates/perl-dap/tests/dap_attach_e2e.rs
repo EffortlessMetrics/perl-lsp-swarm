@@ -277,6 +277,14 @@ fn dap_attach_validation_errors_reach_the_request_response() -> TestResult {
             json!({"host": "localhost", "port": 13603, "timeout": 300_001}),
             "Timeout cannot exceed 300000 milliseconds",
         ),
+        (
+            json!({
+                "host": "does-not-resolve.invalid",
+                "port": 13603,
+                "timeout": 0
+            }),
+            "Timeout must be greater than 0 milliseconds",
+        ),
     ];
 
     for (arguments, expected_guidance) in cases {
