@@ -2,7 +2,13 @@
 
 mod scope_variables;
 
-use super::*;
+#[cfg(test)]
+use super::stack_frame_re;
+use super::{
+    DebugAdapter, HashMap, PerlStackParser, PerlVariableRenderer, RenderedVariable, Source,
+    StackFrame, Variable, VariableParser, VariableRenderer, ansi_escape_re,
+    is_internal_frame_name_and_path, prompt_re,
+};
 
 impl DebugAdapter {
     /// Normalize debugger output lines for deterministic parsing by:
