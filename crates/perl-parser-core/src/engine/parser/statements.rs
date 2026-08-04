@@ -1725,3 +1725,41 @@ impl<'a> Parser<'a> {
     }
 
 }
+
+#[cfg(test)]
+mod statement_terminator_seam_tests {
+    use super::Parser;
+    use crate::error::{ParseError, RecoveryKind, RecoverySite};
+
+    fn inferred_semicolons(source: &str) -> usize {
+        let mut parser = Parser::new(source);
+        let _ = parser.parse();
+        parser
+            .errors()
+            .iter()
+            .filter(|error| {
+                matches!(
+                    error,
+                    ParseError::Recovered {
+                        site: RecoverySite::Statement,
+                        kind: RecoveryKind::InferredSemicolon,
+                        ..
+                    }
+                )
+            })
+            .count()
+    }
+
+    #[test]
+    fn starts_qr_slash_body_boundary_discriminator() {
+        assert!(Parser::starts_qr_slash_body(b"qr/", 2));
+        assert!(!Parser::starts_qr_slash_body(b"/", 0));
+        assert!(!Parser::starts_qr_slash_body(b"ar/", 2));
+    }
+
+    #[test]
+    fn parse_statement_inner_call_presence_observer() {
+        assert_eq!(inferred_semicolons("my %h = (if => 1)\nprint \"after\";\n"), 1);
+        assert_eq!(inferred_semicolons("my $x = 1\nprint \"after\";\n"), 1);
+    }
+}
