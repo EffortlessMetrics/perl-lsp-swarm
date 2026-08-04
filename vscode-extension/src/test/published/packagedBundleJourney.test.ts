@@ -129,15 +129,18 @@ suite('Packaged VSIX bundled-server journey', function () {
     );
 
     const config = vscode.workspace.getConfiguration('perl-lsp');
-    const originalGlobalSettings = ['autoDownload', 'serverPath', 'critic.enabled'].map((key) => ({
-      key,
-      value: config.inspect<unknown>(key)?.globalValue,
-    }));
+    const inspectedSettings = ['autoDownload', 'serverPath', 'critic.enabled'].flatMap((key) => {
+      const inspection = config.inspect<unknown>(key);
+      return inspection ? [{ key, value: inspection.globalValue }] : [];
+    });
+    const criticSettingRegistered = inspectedSettings.some(({ key }) => key === 'critic.enabled');
 
     try {
       await config.update('autoDownload', false, vscode.ConfigurationTarget.Global);
       await config.update('serverPath', '', vscode.ConfigurationTarget.Global);
-      await config.update('critic.enabled', false, vscode.ConfigurationTarget.Global);
+      if (criticSettingRegistered) {
+        await config.update('critic.enabled', false, vscode.ConfigurationTarget.Global);
+      }
 
       const activationStarted = performance.now();
       const activation = (await withTimeout(
@@ -287,6 +290,11 @@ suite('Packaged VSIX bundled-server journey', function () {
           'DAP preview is not exercised by this slice.',
           'The public VS Code API does not expose index generation or semantic exactness.',
           'A rename edit is never applied by this receipt; offered edits are checked for workspace containment first.',
+          ...(criticSettingRegistered
+            ? []
+            : [
+                'The published artifact does not register perl-lsp.critic.enabled; the journey leaves its published default unchanged.',
+              ]),
         ],
         product_blockers: [],
         diagnostics: { count: diagnostics.length },
@@ -338,7 +346,7 @@ suite('Packaged VSIX bundled-server journey', function () {
       assert.notEqual(rename.status, 'unsafe_refusal', JSON.stringify(rename));
     } finally {
       await Promise.all(
-        originalGlobalSettings.map(({ key, value }) =>
+        inspectedSettings.map(({ key, value }) =>
           config.update(key, value, vscode.ConfigurationTarget.Global),
         ),
       );
