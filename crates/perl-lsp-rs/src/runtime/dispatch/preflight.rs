@@ -68,24 +68,6 @@ pub(super) fn prepare_request(
         return PreflightOutcome::Respond(cancelled);
     }
 
-    // Validate request parameters before routing (#5256). Reject malformed
-    // methods, oversized params, disallowed URI schemes, and suspicious
-    // content as JSON-RPC -32600 Invalid Request.
-    if let Some(params) = request.params.as_ref() {
-        if let Err(e) = perl_lsp_rs_core::runtime::input_validation::validate_lsp_request(
-            &request.method,
-            params,
-        ) {
-            tracing::warn!(error = %e, method = %request.method, "rejected LSP request by input validation");
-            return PreflightOutcome::Respond(JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
-                id: context.id.as_ref().and_then(JsonRpcId::from_value),
-                result: None,
-                error: Some(JsonRpcError::new(-32600, e.to_string())),
-            });
-        }
-    }
-
     auto_initialize_for_compat(server, request);
 
     PreflightOutcome::Continue
