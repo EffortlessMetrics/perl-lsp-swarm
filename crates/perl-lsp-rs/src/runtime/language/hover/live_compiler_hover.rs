@@ -1,4 +1,4 @@
-use super::*;
+use super::{LspServer, Value, json};
 use perl_lsp_rs_core::providers::navigation::hover_shadow::{
     HoverCutoverOutcome, HoverCutoverResult, hover_cutover,
 };
@@ -9,6 +9,12 @@ pub(super) struct LiveHoverCompilerContext {
     uri: String,
     symbol: String,
     byte_offset: u32,
+    /// Trace-only metadata from [`perl_parser_core::SourceRegionIndex`]; routing in #4967.
+    #[expect(
+        dead_code,
+        reason = "policy:5003-pr1: trace substrate field for upcoming hover routing"
+    )]
+    source_region_kind: Option<String>,
 }
 
 impl LspServer {
@@ -16,6 +22,7 @@ impl LspServer {
         uri: &str,
         text: &str,
         offset: usize,
+        source_region_kind: Option<String>,
     ) -> Option<LiveHoverCompilerContext> {
         let symbol = Self::get_token_at_position_static(text, offset);
         if symbol.is_empty() {
@@ -23,7 +30,12 @@ impl LspServer {
         }
 
         let byte_offset = u32::try_from(offset).ok()?;
-        Some(LiveHoverCompilerContext { uri: uri.to_string(), symbol, byte_offset })
+        Some(LiveHoverCompilerContext {
+            uri: uri.to_string(),
+            symbol,
+            byte_offset,
+            source_region_kind,
+        })
     }
 
     pub(super) fn try_live_compiler_hover(

@@ -2,7 +2,9 @@
 //!
 //! Wraps textDocument/* LSP requests.
 
+#[cfg(test)]
 use super::super::*;
+use super::super::{JsonRpcError, LspServer, Value, json};
 
 impl LspServer {
     // Text synchronization handlers

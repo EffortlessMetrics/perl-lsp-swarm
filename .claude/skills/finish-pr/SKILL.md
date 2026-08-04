@@ -1,77 +1,72 @@
 ---
 name: finish-pr
-description: Carry one selected PR lane through publication, feedback repair, final challenge, formal review, live integration, squash merge, or reconciliation.
+description: Carry one selected pull request through publication, feedback repair, proportional review, live integration, squash merge, and reconciliation without exact-head review churn.
 argument-hint: "[PR number, branch, or candidate]"
 ---
 
 # Finish PR
 
-Resolve the selected candidate's exact current head and material claim digest, then inspect its live GitHub state, review threads, formal-review receipts, checks, and mergeability. Do not inspect sibling implementations or treat nearby files/crates as lane ownership.
+Read the selected PR, controlling issue, cumulative diff, submitted reviews, inline threads, required checks, draft state, mergeability, and explicit prerequisites. Do not inspect sibling implementations or treat nearby files/crates as lane ownership.
 
-Enter at the earliest absent or stale useful judgment:
+Enter at the earliest useful point:
 
 - no PR + ready candidate → `publish-pr`;
-- draft whose named purpose remains active → complete that purpose;
-- draft whose named purpose is complete → `publish-pr` readiness transition;
-- findings or failed candidate proof → `address-review-comments`;
-- candidate without current formal review → `final-challenge`, then `review-pr`;
-- current review with no substantive findings → `verify-live-ci`;
-- merged/closed but unreconciled → `merge-reconcile` closeout-only path;
-- already reconciled → return `RECONCILED`.
+- draft with a real remote-proof or collaboration purpose → complete that purpose;
+- substantive findings or failed candidate proof → `address-review-comments`;
+- candidate needing proportional review → `final-challenge`, then `review-pr`;
+- no open substantive findings → `verify-live-ci`;
+- merged/closed but unreconciled → `merge-reconcile`;
+- already reconciled → `RECONCILED`.
 
-Candidate or material-claim changes make formal-review evidence stale. Final challenge is a runtime-local pre-review pass, not a second durable stage. If a session resumes before current formal review exists, rerun the bounded challenge and continue directly to `review-pr`. Do not infer review from chat, task state, or teammate identity, and do not review or merge an already merged PR.
+Do not compute a claim digest, require a review receipt tied to the current head, or restart a full `deep` review merely because another commit was pushed.
 
-One writer mutates this candidate branch/worktree at a time. Focused readers, reviewers, oracles, and subagents may assist without creating rival implementations.
+Review is cumulative and semantic. Verify repairs against the finding, proof, and seam they change. Revisit broader claim, authority, risk, rollback, or production-path questions only when the repair materially changes them. Formatting, editorial cleanup, generated receipt refresh, and stronger tests do not automatically invalidate prior review. Conflict or integration repair receives focused review of the repaired seam.
 
-This lane owns its own integration cleanup. Behind-only movement requires no action. If Git reports a conflict, an explicit stack changed, or combined-tree proof exposes a real interaction, rebase or repair this candidate and rerun only affected proof/review. Use a direct issue or PR comment when another lane genuinely needs the result; do not create overlap ledgers or central lane state.
+One writer mutates this candidate branch/worktree at a time. Behind-only movement requires no action. Resolve actual conflicts, explicit stack changes, or combined-tree interactions in this lane and rerun only affected proof and review.
 
-When GitHub owns the next transition—pending checks, requested review, merge queue, or armed auto-merge—record the exact next action once and return `PR_IN_FLIGHT` to `deliver-pr`/`deliver-goal`. Do not poll unchanged state or call the claim blocked merely because it is in flight.
-
-After any candidate or material-claim change, rerun affected supporting evidence, perform the bounded final challenge, and obtain a fresh formal review before merge.
+When GitHub owns the next transition—pending checks, requested review, merge queue, or armed auto-merge—record the pending fact once and return `PR_IN_FLIGHT`. Do not poll unchanged state or call the wider goal blocked.
 
 ## Child outcome routing
 
 ### Publication
 
 - `PR_PUBLISHED_READY` / `PR_RESUMED` → `address-review-comments`
-- `DRAFT_FOR_NAMED_REASON` → complete the named remote proof or collaboration, then repeat `publish-pr`
-- `DRAFT_REASON_COMPLETE` / `DRAFT` → `publish-pr` to recheck the full threshold and perform the explicit ready transition
+- `DRAFT_FOR_NAMED_REASON` → complete the named purpose, then repeat `publish-pr`
+- `DRAFT_REASON_COMPLETE` / `DRAFT` → `publish-pr`
 - `CANDIDATE_NOT_COHERENT` / `LOCAL_PROOF_STALE` / `WORKTREE_DIRTY` → `build-candidate`
-- `DUPLICATE_OR_WRITER_COLLISION` → reuse/resume the equivalent candidate or resolve the actual same-branch/worktree collision
-- `IDENTITY_NOT_PROVEN` → establish branch/candidate identity; if reliable identity cannot be restored, return `NOT_PROVEN`
+- `DUPLICATE_OR_WRITER_COLLISION` → reuse the equivalent candidate or resolve the actual same-branch/worktree collision
+- `IDENTITY_NOT_PROVEN` → establish branch/candidate identity or return `NOT_PROVEN`
 
-### Feedback and mutable challenge
+### Findings and challenge
 
-- `FINDINGS_REPAIRED_OR_DISPOSITIONED` → `final-challenge`
-- `MUTABLE_FINDINGS_OPEN` → `build-candidate`, then repeat affected proof and `final-challenge`
-- `PROOF_WEAKENED` / `PROOF_REVISE` → `prepare-proof`, then repeat affected candidate passes
-- `MATERIAL_PREMISE_CHANGED` → `prepare-issue`
-- `SPLIT_CLAIM` → `prepare-issue` to narrow the current claim and preserve the independent residual claim
-- `FOLLOW_UP_ACCEPTED` → create or link the bounded follow-up, then continue this PR within its current claim
-- `DISPOSITION_INSTRUMENT_FAILURE` → leave the finding unresolved, repair the disposition instrument, and retry; otherwise return `NOT_PROVEN`
+- `FINDINGS_REPAIRED_OR_DISPOSITIONED` → rerun affected proof, then `final-challenge`
+- `MUTABLE_FINDINGS_OPEN` → `build-candidate`
+- `PROOF_WEAKENED` / `PROOF_REVISE` → `prepare-proof`
+- `MATERIAL_PREMISE_CHANGED` / `SPLIT_CLAIM` → `prepare-issue`
+- `FOLLOW_UP_ACCEPTED` → create or link the bounded follow-up, then continue
+- `DISPOSITION_INSTRUMENT_FAILURE` → preserve the unresolved finding and repair the instrument or return `NOT_PROVEN`
 
-### Formal review
+### Review
 
-- `CANDIDATE_FIXED_FOR_FORMAL_REVIEW` → `review-pr`
+- `CANDIDATE_READY_FOR_REVIEW` → `review-pr`
 - `REVIEW_CURRENT` → `verify-live-ci`
 - `REVIEW_FINDINGS_OPEN` → `address-review-comments`
-- `REVIEW_NOT_PROVEN` → resolve candidate/claim identity, evidence, or receipt-instrument failure, then repeat `review-pr`; if evidence cannot be restored, return `NOT_PROVEN`
-- `CLAIM_REVIEW_STALE` → rerun affected proof, `final-challenge`, then `review-pr`
+- `REVIEW_SCOPE_CHANGED` → review the affected dimensions; route backward only if the claim or owner changed
+- `REVIEW_NOT_PROVEN` → resolve missing evidence or authority
 
 ### Live integration
 
-- `PRODUCT_OR_TEST_FAILURE` → `build-candidate`, then repeat affected proof, `final-challenge`, and `review-pr`
-- `PENDING` / `PENDING_REMOTE` / `PR_IN_FLIGHT` → record the exact pending transition once and return control to `deliver-pr` or `deliver-goal`
-- `CONFLICT` → resolve this lane's conflict, then `build-candidate` for affected repair/proof followed by `final-challenge` and `review-pr`
-- `INTEGRATION_INTERACTION` → repair the smallest affected candidate through `build-candidate`, then rerun affected proof, `final-challenge`, and `review-pr`
-- `INSTRUMENT_FAILURE` → identify and repair the failed evidence instrument; if trustworthy evidence cannot be restored, return `NOT_PROVEN`
+- `PRODUCT_OR_TEST_FAILURE` → `build-candidate`, then repeat affected proof and review
+- `PENDING` / `PENDING_REMOTE` / `PR_IN_FLIGHT` → return control to `deliver-pr` or `deliver-goal`
+- `CONFLICT` / `INTEGRATION_INTERACTION` → repair the affected seam, then rerun affected proof and review
+- `INSTRUMENT_FAILURE` / `NOT_PROVEN` → name the missing reliable evidence
 - `INTEGRATION_READY` → `merge-reconcile`
 
 ### Merge and closeout
 
-- `RECONCILED` → return the bounded closeout to the invoking flow
-- `PARTIAL` → preserve remaining acceptance and return the residual graph
-- `SUPERSEDED` / `DELIBERATELY_CLOSED` → preserve the durable disposition and return the residual graph
-- `CANDIDATE_MOVED` / `CLAIM_REVIEW_STALE` → rerun affected proof, `final-challenge`, and `review-pr`
-- `MERGE_BLOCKED` → preserve the exact live blocker; return `PR_IN_FLIGHT` when GitHub owns the pending transition, otherwise return `BLOCKED`
-- `BLOCKED` / `NOT_PROVEN` → preserve the exact live blocker or missing evidence
+- `RECONCILED` → return the closeout
+- `PARTIAL` → preserve remaining acceptance
+- `SUPERSEDED` / `DELIBERATELY_CLOSED` → preserve the durable disposition
+- `CANDIDATE_MOVED` → re-read the live PR; refresh only evidence/review affected by the new commit
+- `MERGE_BLOCKED` → return `PR_IN_FLIGHT` for GitHub-owned waits, otherwise preserve the real blocker
+- `BLOCKED` / `NOT_PROVEN` → preserve the exact blocker or missing evidence

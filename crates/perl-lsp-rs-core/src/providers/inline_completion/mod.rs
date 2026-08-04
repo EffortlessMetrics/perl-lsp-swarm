@@ -1004,7 +1004,11 @@ impl InlineCompletionProvider {
         list
     }
 
-    fn filter_parse_safe_items(
+    /// Retain completion items that do not worsen the current parse damage.
+    ///
+    /// This is shared by deterministic and AI-backed completion paths so an
+    /// external completion provider cannot bypass the parser-safety boundary.
+    pub fn filter_parse_safe_items(
         &self,
         list: InlineCompletionList,
         text: &str,

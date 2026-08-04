@@ -120,11 +120,8 @@ pub fn extract_substitution_parts_strict(
         None => return Err(SubstitutionError::MissingDelimiter),
     };
     // Reject alphanumeric/whitespace delimiters as a distinct error rather than
-    // misreporting a missing closing delimiter. The predicate mirrors the lexer's own
-    // delimiter gate (`!is_alphanumeric() && !is_whitespace()` in perl-lexer's
-    // `is_quote_delim`), so the strict parser's notion of a valid delimiter matches what
-    // the lexer will actually tokenize; it also mirrors `extract_transliteration_parts_strict`.
-    if delimiter.is_alphanumeric() || delimiter.is_whitespace() {
+    // misreporting a missing closing delimiter.
+    if !is_valid_delimiter(delimiter) {
         return Err(SubstitutionError::InvalidDelimiter(delimiter));
     }
     let closing = get_closing_delimiter(delimiter);
@@ -134,13 +131,8 @@ pub fn extract_substitution_parts_strict(
     let (pattern, rest1, pattern_closed) =
         extract_delimited_content_strict(content, delimiter, closing);
 
-    // For non-paired delimiters: if pattern wasn't closed, missing closing delimiter
-    if !is_paired && !pattern_closed {
-        return Err(SubstitutionError::MissingClosingDelimiter);
-    }
-
-    // For paired delimiters: if pattern wasn't closed, missing closing delimiter
-    if is_paired && !pattern_closed {
+    // Paired or not, an unclosed pattern is a missing closing delimiter.
+    if !pattern_closed {
         return Err(SubstitutionError::MissingClosingDelimiter);
     }
 
@@ -155,8 +147,7 @@ pub fn extract_substitution_parts_strict(
 
         // Parse replacement, skipping string literals so that delimiter chars
         // inside "foo/bar" or 'a/b' don't terminate the replacement early.
-        let (body, rest, found_closing) = extract_unpaired_body_skip_strings(rest1, closing);
-        (body, rest, found_closing)
+        extract_unpaired_body_skip_strings(rest1, closing)
     } else {
         // Paired pattern delimiters still allow either paired or non-paired delimiters
         // for the replacement side (e.g. s{foo}/bar/ and s[foo]{bar}).
@@ -166,24 +157,18 @@ pub fn extract_substitution_parts_strict(
             // start with a valid non-alphanumeric, non-whitespace delimiter. An
             // alphanumeric character here (e.g. `s{foo}bar`) is an invalid delimiter,
             // not merely a missing replacement (mirrors the transliteration path).
-            if rd.is_alphanumeric() || rd.is_whitespace() {
+            if !is_valid_delimiter(rd) {
                 return Err(SubstitutionError::InvalidDelimiter(rd));
             }
-            let repl_closing = get_closing_delimiter(rd);
-            extract_delimited_content_strict(trimmed, rd, repl_closing)
+            extract_delimited_content_strict(trimmed, rd, get_closing_delimiter(rd))
         } else {
             // No more content - missing replacement
             return Err(SubstitutionError::MissingReplacement);
         }
     };
 
-    // For non-paired delimiters, must have found the closing delimiter for replacement
-    if !is_paired && !replacement_closed {
-        return Err(SubstitutionError::MissingClosingDelimiter);
-    }
-
-    // For paired delimiters, must have found the closing delimiter for replacement
-    if is_paired && !replacement_closed {
+    // Paired or not, an unclosed replacement is a missing closing delimiter.
+    if !replacement_closed {
         return Err(SubstitutionError::MissingClosingDelimiter);
     }
 
@@ -301,7 +286,7 @@ pub fn extract_substitution_parts(text: &str) -> (String, String, String) {
         Some(d) => d,
         None => return (String::new(), String::new(), String::new()),
     };
-    if delimiter.is_alphanumeric() || delimiter.is_whitespace() {
+    if !is_valid_delimiter(delimiter) {
         if let Some((pattern, replacement, modifiers_str)) = split_on_last_paired_delimiter(content)
         {
             let modifiers = extract_substitution_modifiers(&modifiers_str);
@@ -340,7 +325,7 @@ pub fn extract_substitution_parts(text: &str) -> (String, String, String) {
     } else if is_paired {
         let trimmed = skip_paired_replacement_gap(rest1);
         if let Some(rd) = trimmed.chars().next() {
-            if rd.is_alphanumeric() || rd.is_whitespace() {
+            if !is_valid_delimiter(rd) {
                 (String::new(), Cow::Borrowed(trimmed))
             } else {
                 let repl_closing = get_closing_delimiter(rd);
@@ -370,7 +355,7 @@ pub fn extract_transliteration_parts(text: &str) -> (String, String, String) {
         Some(d) => d,
         None => return (String::new(), String::new(), String::new()),
     };
-    if delimiter.is_alphanumeric() || delimiter.is_whitespace() {
+    if !is_valid_delimiter(delimiter) {
         return (String::new(), String::new(), String::new());
     }
     let closing = get_closing_delimiter(delimiter);
@@ -379,57 +364,23 @@ pub fn extract_transliteration_parts(text: &str) -> (String, String, String) {
     // Parse first body (search pattern)
     let (search, rest1) = extract_delimited_content(content, delimiter, closing);
 
-    // For paired delimiters, skip whitespace and allow any paired opening delimiter for the
-    // replacement list. Perl accepts forms like tr[abc]{xyz} in addition to tr[abc][xyz].
-    let rest2_owned;
-    let rest2 = if is_paired {
-        skip_paired_replacement_gap(rest1)
-    } else {
-        rest2_owned = format!("{}{}", delimiter, rest1);
-        &rest2_owned
-    };
-
     // Parse second body (replacement pattern)
     let (replacement, modifiers_str) = if !is_paired && !rest1.is_empty() {
-        // Manually parse the replacement for non-paired delimiters
-        let chars = rest1.char_indices();
-        let mut body = String::new();
-        let mut escaped = false;
-        let mut end_pos = rest1.len();
-
-        for (i, ch) in chars {
-            if escaped {
-                body.push(ch);
-                escaped = false;
-                continue;
-            }
-
-            match ch {
-                '\\' => {
-                    body.push(ch);
-                    escaped = true;
-                }
-                c if c == closing => {
-                    end_pos = i + ch.len_utf8();
-                    break;
-                }
-                _ => body.push(ch),
-            }
-        }
-
-        (body, &rest1[end_pos..])
+        let (body, rest, _found) = extract_unpaired_body(rest1, closing);
+        (body, rest)
     } else if is_paired {
-        if let Some(repl_delimiter) = starts_with_paired_delimiter(rest2) {
-            let repl_closing = get_closing_delimiter(repl_delimiter);
-            extract_delimited_content(rest2, repl_delimiter, repl_closing)
-        } else if let Some(repl_delimiter) = rest2.chars().next() {
-            if repl_delimiter.is_alphanumeric() || repl_delimiter.is_whitespace() {
-                (String::new(), rest2)
-            } else {
-                extract_delimited_content(rest2, repl_delimiter, repl_delimiter)
+        // Skip whitespace and allow any valid delimiter for the replacement list.
+        // Perl accepts forms like tr[abc]{xyz} in addition to tr[abc][xyz].
+        let rest2 = skip_paired_replacement_gap(rest1);
+        match rest2.chars().next() {
+            Some(repl_delimiter) if is_valid_delimiter(repl_delimiter) => {
+                extract_delimited_content(
+                    rest2,
+                    repl_delimiter,
+                    get_closing_delimiter(repl_delimiter),
+                )
             }
-        } else {
-            (String::new(), rest2)
+            _ => (String::new(), rest2),
         }
     } else {
         (String::new(), rest1)
@@ -440,7 +391,7 @@ pub fn extract_transliteration_parts(text: &str) -> (String, String, String) {
     let modifiers = modifiers_str
         .chars()
         .take_while(|c| c.is_ascii_alphabetic())
-        .filter(|&c| matches!(c, 'c' | 'd' | 's' | 'r'))
+        .filter(|&c| is_transliteration_modifier(c))
         .collect();
 
     (search, replacement, modifiers)
@@ -467,7 +418,7 @@ pub fn extract_transliteration_parts_strict(
         Some(d) => d,
         None => return Err(TransliterationError::MissingDelimiter),
     };
-    if delimiter.is_alphanumeric() || delimiter.is_whitespace() {
+    if !is_valid_delimiter(delimiter) {
         return Err(TransliterationError::InvalidDelimiter(delimiter));
     }
     let closing = get_closing_delimiter(delimiter);
@@ -485,8 +436,7 @@ pub fn extract_transliteration_parts_strict(
         if rest1.is_empty() {
             return Err(TransliterationError::MissingReplacement);
         }
-        let (body, rest, found_closing) = extract_unpaired_body_skip_strings(rest1, closing);
-        (body, rest, found_closing)
+        extract_unpaired_body_skip_strings(rest1, closing)
     } else {
         let trimmed = skip_paired_replacement_gap(rest1);
         if let Some(repl_delimiter) = trimmed.chars().next() {
@@ -494,7 +444,7 @@ pub fn extract_transliteration_parts_strict(
             // also start with a valid non-alphanumeric, non-whitespace delimiter.
             // An alphanumeric character here (e.g. `tr{abc}xyz`) is an invalid
             // delimiter, not merely a missing replacement section.
-            if repl_delimiter.is_alphanumeric() || repl_delimiter.is_whitespace() {
+            if !is_valid_delimiter(repl_delimiter) {
                 return Err(TransliterationError::InvalidDelimiter(repl_delimiter));
             }
             let repl_closing = get_closing_delimiter(repl_delimiter);
@@ -516,7 +466,7 @@ pub fn extract_transliteration_parts_strict(
     // Validate transliteration modifiers strictly.
     let mut modifiers = String::new();
     for modifier in modifiers_str.chars().take_while(|c: &char| c.is_ascii_alphanumeric()) {
-        if matches!(modifier, 'c' | 'd' | 's' | 'r') {
+        if is_transliteration_modifier(modifier) {
             modifiers.push(modifier);
         } else {
             return Err(TransliterationError::InvalidModifier(modifier));
@@ -538,7 +488,21 @@ fn get_closing_delimiter(open: char) -> char {
 }
 
 fn is_paired_open(ch: char) -> bool {
-    matches!(ch, '{' | '[' | '(' | '<')
+    get_closing_delimiter(ch) != ch
+}
+
+/// Whether `ch` may open a quote-like operator body.
+///
+/// Mirrors the lexer's own delimiter gate (`!is_alphanumeric() && !is_whitespace()`
+/// in perl-lexer's `is_quote_delim`), so this module's notion of a valid delimiter
+/// matches what the lexer will actually tokenize.
+fn is_valid_delimiter(ch: char) -> bool {
+    !ch.is_alphanumeric() && !ch.is_whitespace()
+}
+
+/// Valid `tr///` / `y///` modifiers: complement, delete, squeeze, return.
+fn is_transliteration_modifier(ch: char) -> bool {
+    matches!(ch, 'c' | 'd' | 's' | 'r')
 }
 
 fn starts_with_paired_delimiter(text: &str) -> Option<char> {
@@ -549,26 +513,28 @@ fn starts_with_paired_delimiter(text: &str) -> Option<char> {
     }
 }
 
-/// Extract content between delimiters and return (content, rest)
+/// Extract content between delimiters and return (content, rest).
+///
+/// Thin wrapper over [`extract_delimited_content_strict`] for callers that do not
+/// need to distinguish "closed properly" from "ran off the end of the input".
 fn extract_delimited_content(text: &str, open: char, close: char) -> (String, &str) {
-    let mut chars = text.char_indices();
-    let is_paired = open != close;
+    let (body, rest, _found_closing) = extract_delimited_content_strict(text, open, close);
+    (body, rest)
+}
 
-    // Skip opening delimiter
-    if let Some((_, c)) = chars.next() {
-        if c != open {
-            return (String::new(), text);
-        }
-    } else {
-        return (String::new(), "");
-    }
-
+/// Scan an unpaired (self-closing) body starting *after* its opening delimiter,
+/// stopping at the first unescaped `closing` char.
+///
+/// Returns `(body, rest, found_closing)`, where `rest` begins just past the closing
+/// delimiter. Unlike [`extract_unpaired_body_skip_strings`], embedded string literals
+/// are not treated specially: a `closing` char inside `"..."` still ends the body.
+fn extract_unpaired_body(text: &str, closing: char) -> (String, &str, bool) {
     let mut body = String::new();
-    let mut depth = if is_paired { 1 } else { 0 };
     let mut escaped = false;
     let mut end_pos = text.len();
+    let mut found_closing = false;
 
-    for (i, ch) in chars {
+    for (i, ch) in text.char_indices() {
         if escaped {
             body.push(ch);
             escaped = false;
@@ -580,28 +546,16 @@ fn extract_delimited_content(text: &str, open: char, close: char) -> (String, &s
                 body.push(ch);
                 escaped = true;
             }
-            c if c == open && is_paired => {
-                body.push(ch);
-                depth += 1;
-            }
-            c if c == close => {
-                if is_paired {
-                    depth -= 1;
-                    if depth == 0 {
-                        end_pos = i + ch.len_utf8();
-                        break;
-                    }
-                    body.push(ch);
-                } else {
-                    end_pos = i + ch.len_utf8();
-                    break;
-                }
+            c if c == closing => {
+                end_pos = i + ch.len_utf8();
+                found_closing = true;
+                break;
             }
             _ => body.push(ch),
         }
     }
 
-    (body, &text[end_pos..])
+    (body, &text[end_pos..], found_closing)
 }
 
 /// Lookahead helper: determine whether a `quote` char at byte `pos` in `text` is the
@@ -811,37 +765,10 @@ fn extract_substitution_pattern_with_replacement_hint(
     (body, "", false)
 }
 
-fn split_unclosed_substitution_pattern(pattern: &str) -> Option<(String, String, String)> {
+/// Byte offsets of every unescaped paired opening delimiter in `text`, in source order.
+fn paired_open_positions(text: &str) -> Vec<(usize, char)> {
     let mut escaped = false;
-
-    for (idx, ch) in pattern.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-
-        if ch == '\\' {
-            escaped = true;
-            continue;
-        }
-
-        if is_paired_open(ch) {
-            let closing = get_closing_delimiter(ch);
-            let (replacement, rest, found_closing) =
-                extract_delimited_content_strict(&pattern[idx..], ch, closing);
-            if found_closing {
-                let leading = pattern[..idx].to_string();
-                return Some((leading, replacement, rest.to_string()));
-            }
-        }
-    }
-
-    None
-}
-
-fn split_on_last_paired_delimiter(text: &str) -> Option<(String, String, String)> {
-    let mut escaped = false;
-    let mut candidates = Vec::new();
+    let mut positions = Vec::new();
 
     for (idx, ch) in text.char_indices() {
         if escaped {
@@ -855,21 +782,36 @@ fn split_on_last_paired_delimiter(text: &str) -> Option<(String, String, String)
         }
 
         if is_paired_open(ch) {
-            candidates.push((idx, ch));
+            positions.push((idx, ch));
         }
     }
 
-    for (idx, ch) in candidates.into_iter().rev() {
-        let closing = get_closing_delimiter(ch);
-        let (replacement, rest, found_closing) =
-            extract_delimited_content_strict(&text[idx..], ch, closing);
-        if found_closing {
-            let leading = text[..idx].to_string();
-            return Some((leading, replacement, rest.to_string()));
-        }
-    }
+    positions
+}
 
-    None
+/// Split `text` at the paired group opening at `idx`, yielding
+/// `(leading, group_body, trailing)` when that group is actually closed.
+fn split_at_paired_open(text: &str, idx: usize, open: char) -> Option<(String, String, String)> {
+    let (body, rest, found_closing) =
+        extract_delimited_content_strict(&text[idx..], open, get_closing_delimiter(open));
+    found_closing.then(|| (text[..idx].to_string(), body, rest.to_string()))
+}
+
+/// Recover a replacement from an unclosed non-paired pattern by treating the
+/// **first** closed paired group as the replacement (e.g. `s/foo{bar}`).
+fn split_unclosed_substitution_pattern(pattern: &str) -> Option<(String, String, String)> {
+    paired_open_positions(pattern)
+        .into_iter()
+        .find_map(|(idx, ch)| split_at_paired_open(pattern, idx, ch))
+}
+
+/// Recover pattern/replacement/modifiers when the delimiter position held an
+/// invalid (alphanumeric or whitespace) char, using the **last** closed paired group.
+fn split_on_last_paired_delimiter(text: &str) -> Option<(String, String, String)> {
+    paired_open_positions(text)
+        .into_iter()
+        .rev()
+        .find_map(|(idx, ch)| split_at_paired_open(text, idx, ch))
 }
 
 /// Extract and validate substitution modifiers, returning only valid ones
@@ -993,13 +935,7 @@ pub fn validate_substitution_modifiers(modifiers_str: &str) -> Result<String, ch
 /// ```
 pub fn parse_quote_operator_content<'a>(s: &'a str, operator: &str) -> Option<&'a str> {
     let (open, content) = quote_operator_open_and_content(s, operator)?;
-    let close = match open {
-        '(' => ')',
-        '{' => '}',
-        '[' => ']',
-        '<' => '>',
-        other => other,
-    };
+    let close = get_closing_delimiter(open);
     if !content.ends_with(close) {
         return None;
     }
@@ -1039,6 +975,147 @@ pub(crate) fn quote_operator_open_and_content<'a>(
 pub fn parse_qw_words(s: &str) -> Option<Vec<String>> {
     let inner = parse_quote_operator_content(s, "qw")?;
     Some(inner.split_whitespace().map(str::to_string).collect())
+}
+
+// ============================================================================
+// shared_scanner_invariants — pins the contracts the shared quote-scanning
+// helpers must keep, so a future edit to one cannot silently diverge from the
+// callers that now delegate to it.
+// ============================================================================
+#[cfg(test)]
+mod shared_scanner_invariants {
+    use super::*;
+
+    /// Delimiter/body shapes exercised by the substitution, transliteration and
+    /// regex extractors.
+    const BODIES: &[(&str, char)] = &[
+        ("/abc/rest", '/'),
+        ("{a{b}c}rest", '{'),
+        ("[a]rest", '['),
+        ("(a)rest", '('),
+        ("<a>rest", '<'),
+        ("/a\\/b/rest", '/'),
+        ("/unterminated", '/'),
+        ("{unterminated", '{'),
+        ("{a{b}", '{'),
+        ("", '/'),
+        ("x/mismatched/", '/'),
+        ("//", '/'),
+        ("{}", '{'),
+    ];
+
+    /// `extract_delimited_content` is a projection of the strict scanner: it must
+    /// return exactly the strict body and rest, differing only by dropping the flag.
+    #[test]
+    fn extract_delimited_content_projects_strict_scanner() {
+        for &(text, open) in BODIES {
+            let close = get_closing_delimiter(open);
+            let (body, rest) = extract_delimited_content(text, open, close);
+            let (strict_body, strict_rest, _closed) =
+                extract_delimited_content_strict(text, open, close);
+            assert_eq!(
+                (body.as_str(), rest),
+                (strict_body.as_str(), strict_rest),
+                "extract_delimited_content({text:?}, {open:?}) diverged from the strict scanner"
+            );
+        }
+    }
+
+    /// The unpaired scanner starts *after* the opening delimiter, honours escapes,
+    /// and reports whether it actually found the closing delimiter.
+    #[test]
+    fn extract_unpaired_body_reports_closure_and_honours_escapes() {
+        assert_eq!(extract_unpaired_body("abc/tail", '/'), ("abc".to_string(), "tail", true));
+        // An escaped delimiter does not close the body, and the backslash is kept.
+        assert_eq!(extract_unpaired_body("a\\/b/tail", '/'), ("a\\/b".to_string(), "tail", true));
+        // No closing delimiter: whole input is body, rest is empty, found_closing false.
+        assert_eq!(extract_unpaired_body("abc", '/'), ("abc".to_string(), "", false));
+        // Immediate close yields an empty body.
+        assert_eq!(extract_unpaired_body("/tail", '/'), (String::new(), "tail", true));
+    }
+
+    /// Unlike the strict substitution path, the transliteration replacement scan
+    /// deliberately does NOT treat embedded quotes as protected string literals —
+    /// `tr` operates on character lists, not on Perl expressions.
+    #[test]
+    fn transliteration_replacement_does_not_protect_inner_strings() {
+        let (body, _rest, closed) = extract_unpaired_body("\"a/b\"/tail", '/');
+        assert_eq!(body, "\"a", "tr replacement must stop at the first unescaped delimiter");
+        assert!(closed);
+    }
+
+    /// `is_valid_delimiter` mirrors the lexer's quote-delimiter gate.
+    #[test]
+    fn is_valid_delimiter_matches_lexer_gate() {
+        for ch in ['/', '{', '[', '(', '<', '#', '|', '!', '\'', '"', '@', '-'] {
+            assert!(is_valid_delimiter(ch), "{ch:?} should be a valid quote delimiter");
+        }
+        for ch in ['a', 'Z', '0', '9', ' ', '\t', '\n'] {
+            assert!(!is_valid_delimiter(ch), "{ch:?} must be rejected in delimiter position");
+        }
+    }
+
+    /// `is_paired_open` must stay derived from the single delimiter table.
+    #[test]
+    fn is_paired_open_agrees_with_closing_delimiter_table() {
+        for ch in ['(', '[', '{', '<', ')', ']', '}', '>', '/', '#', '|', 'a', ' '] {
+            assert_eq!(
+                is_paired_open(ch),
+                get_closing_delimiter(ch) != ch,
+                "is_paired_open({ch:?}) must agree with get_closing_delimiter"
+            );
+        }
+    }
+
+    /// Escaped opening delimiters are not split candidates.
+    #[test]
+    fn paired_open_positions_skips_escaped_openers() {
+        assert_eq!(paired_open_positions("a{b}c"), vec![(1, '{')]);
+        assert_eq!(paired_open_positions("a\\{b}c"), vec![]);
+        assert_eq!(paired_open_positions("{a}[b]"), vec![(0, '{'), (3, '[')]);
+        assert_eq!(paired_open_positions("no openers here"), vec![]);
+    }
+
+    /// The two recovery splitters differ only in which closed group they select.
+    #[test]
+    fn recovery_splitters_select_first_and_last_closed_group() {
+        let text = "a{one}b{two}c";
+        assert_eq!(
+            split_unclosed_substitution_pattern(text),
+            Some(("a".to_string(), "one".to_string(), "b{two}c".to_string()))
+        );
+        assert_eq!(
+            split_on_last_paired_delimiter(text),
+            Some(("a{one}b".to_string(), "two".to_string(), "c".to_string()))
+        );
+        // An unclosed group is not a split candidate for either splitter.
+        assert_eq!(split_unclosed_substitution_pattern("a{unclosed"), None);
+        assert_eq!(split_on_last_paired_delimiter("a{unclosed"), None);
+    }
+
+    /// `parse_quote_operator_content` must use the shared delimiter table rather
+    /// than an inlined copy of it.
+    #[test]
+    fn quote_operator_content_uses_shared_delimiter_table() {
+        for (input, expected) in [
+            ("qw(a b)", Some("a b")),
+            ("qw[a b]", Some("a b")),
+            ("qw{a b}", Some("a b")),
+            ("qw<a b>", Some("a b")),
+            ("qw/a b/", Some("a b")),
+            ("qw|a b|", Some("a b")),
+            // Mismatched close for a paired opener is rejected.
+            ("qw(a b]", None),
+            // Alphanumeric in delimiter position is a bareword, not a quote op.
+            ("qwfoo", None),
+        ] {
+            assert_eq!(
+                parse_quote_operator_content(input, "qw"),
+                expected,
+                "parse_quote_operator_content({input:?})"
+            );
+        }
+    }
 }
 
 // ============================================================================

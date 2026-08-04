@@ -80,6 +80,22 @@ impl DocumentHighlightProvider {
             &mut highlights,
         );
 
+        // Text-fallback scan: the AST traversal only sees real code nodes, so
+        // variable occurrences in comments, POD, `__END__`/`__DATA__`, and
+        // non-interpolated strings are invisible to it. LSP document-highlight
+        // is expected to mark textual occurrences everywhere (#5409). Scan the
+        // raw source for the variable's `sigil+name` at word boundaries,
+        // classifying text-only hits as `Text`. The dedup pass below merges
+        // these with any AST match at the same location (preferring the more
+        // specific Write/Read kind). Only applies to variables (sigil-bearing
+        // symbols); subs/methods have no reliable textual anchor.
+        self.collect_text_fallback_highlights(
+            source,
+            &symbol_info,
+            enclosing_sub_span,
+            &mut highlights,
+        );
+
         // Deduplicate highlights by location, preferring Write over Read
         self.deduplicate_highlights(highlights)
     }
@@ -733,6 +749,66 @@ impl DocumentHighlightProvider {
                     }
                 }
             }
+        }
+    }
+
+    /// Raw-text fallback scan for variable occurrences the AST cannot see.
+    ///
+    /// The AST traversal only visits real code nodes, so a variable name that
+    /// also appears in a comment, POD block, `__END__`/`__DATA__` section, or a
+    /// non-interpolated string is never highlighted — even though the LSP
+    /// document-highlight semantics expect textual occurrences to be marked
+    /// everywhere (#5409). This scans `source` for the variable's `sigil+name`
+    /// at word boundaries and emits each hit as a `Text` highlight.
+    ///
+    /// Hits that coincide with a real AST occurrence are coalesced by
+    /// `deduplicate_highlights`, which prefers the more specific `Read`/`Write`
+    /// kind. Only applies to variables (symbols with a sigil); subs/methods have
+    /// no reliable textual anchor (a bare `name` substring would match far too
+    /// broadly). The scope filter (`enclosing_sub_span`) is honored so a cursor
+    /// inside a sub does not drag in occurrences from other subs' comments.
+    fn collect_text_fallback_highlights(
+        &self,
+        source: &str,
+        target: &SymbolInfo,
+        enclosing_sub_span: Option<(usize, usize)>,
+        highlights: &mut Vec<DocumentHighlight>,
+    ) {
+        let Some(target_sigil) = &target.sigil else {
+            return;
+        };
+        // An empty name (e.g. a standalone sigil or parser recovery) would
+        // make the needle just the sigil and match every occurrence of it.
+        if target.name.is_empty() {
+            return;
+        }
+        let needle = format!("{target_sigil}{}", target.name);
+        let needle_bytes = needle.as_bytes();
+        // Bound the scan to the relevant scope when the cursor sits inside a
+        // sub; otherwise scan the whole file.
+        let (scan_start, scan_end) = enclosing_sub_span.unwrap_or((0, source.len()));
+        let Some(region) = source.get(scan_start..scan_end.min(source.len())) else {
+            return;
+        };
+        for (relative, _) in region.match_indices(needle.as_str()) {
+            let abs_start = scan_start + relative;
+            // Right-side word boundary: the match must not be a prefix of a
+            // longer identifier (`$foo` must not match inside `$foobar`, and
+            // `$caf` must not match inside `$café`). Inspect the next *char*
+            // (not byte) so multi-byte UTF-8 identifier continuations are
+            // recognized as word characters.
+            let end_pos = relative + needle_bytes.len();
+            if end_pos < region.len() {
+                if let Some(next) = region[end_pos..].chars().next() {
+                    if next.is_alphanumeric() || next == '_' {
+                        continue;
+                    }
+                }
+            }
+            highlights.push(DocumentHighlight {
+                location: SourceLocation { start: abs_start, end: abs_start + needle_bytes.len() },
+                kind: DocumentHighlightKind::Text,
+            });
         }
     }
 

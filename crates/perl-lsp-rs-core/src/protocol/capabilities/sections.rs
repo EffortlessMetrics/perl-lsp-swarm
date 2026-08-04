@@ -1,4 +1,5 @@
 use super::{BuildFlags, completion_trigger_characters, get_supported_commands};
+#[allow(clippy::wildcard_imports)]
 use lsp_types::*;
 
 pub(super) fn apply_document_sync(caps: &mut ServerCapabilities) {

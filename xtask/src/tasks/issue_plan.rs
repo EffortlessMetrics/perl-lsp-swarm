@@ -3,10 +3,7 @@
 //! Scans GitHub issues (from a JSON fixture or live `gh issue list`) for the
 //! issue-plan quality problems the desk cares about:
 //!
-//! - `builder-ready` on a closed issue (label drift)
-//! - `builder-ready` whose body is missing a required work-order section
-//! - a stale routing-label contradiction (`needs-plan-review` co-present with a
-//!   later sign-off such as `builder-ready` or `plan-reviewed`)
+//! - an explicit builder work packet whose body is missing a required section
 //! - a `#0000` placeholder issue reference
 //!
 //! Report-only by design (instrument before enforcement): the command always
@@ -48,24 +45,13 @@ struct Issue {
     /// `OPEN`/`CLOSED` (gh) or `open`/`closed`. Treated as open when absent.
     #[serde(default = "default_state")]
     state: String,
-    #[serde(default)]
-    labels: Vec<LabelObject>,
 }
 
 fn default_state() -> String {
     "OPEN".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct LabelObject {
-    name: String,
-}
-
 impl Issue {
-    fn has_label(&self, name: &str) -> bool {
-        self.labels.iter().any(|label| label.name == name)
-    }
-
     fn is_closed(&self) -> bool {
         self.state.eq_ignore_ascii_case("closed")
     }
@@ -150,31 +136,49 @@ fn re_matches(re: &LazyLock<Option<Regex>>, text: &str) -> bool {
 fn run_checks(issues: &[Issue]) -> Vec<Finding> {
     let mut findings = Vec::new();
     for issue in issues {
-        check_builder_ready(issue, &mut findings);
-        check_routing_contradiction(issue, &mut findings);
+        check_work_packet(issue, &mut findings);
         check_placeholder_ref(issue, &mut findings);
     }
     findings.sort_by(|a, b| a.issue.cmp(&b.issue).then_with(|| a.check.cmp(&b.check)));
     findings
 }
 
-fn check_builder_ready(issue: &Issue, out: &mut Vec<Finding>) {
-    if !issue.has_label("builder-ready") {
+fn is_work_packet(issue: &Issue) -> bool {
+    body_without_fenced_code(issue.body_text())
+        .lines()
+        .any(|line| matches!(line.trim(), "## Builder-Ready Plan" | "## Builder Spec"))
+}
+
+fn body_without_fenced_code(body: &str) -> String {
+    let mut in_fence = false;
+    body.lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                in_fence = !in_fence;
+                String::new()
+            } else if in_fence {
+                String::new()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn check_work_packet(issue: &Issue, out: &mut Vec<Finding>) {
+    if !is_work_packet(issue) {
         return;
     }
 
     if issue.is_closed() {
-        out.push(Finding {
-            issue: issue.number,
-            check: "builder-ready-on-closed".to_string(),
-            severity: "high".to_string(),
-            message: "closed issue still carries the `builder-ready` label".to_string(),
-        });
-        // A closed builder-ready issue is drift; section completeness is moot.
+        // The issue body is durable context. Closure is represented by live
+        // issue/PR disposition, not by deleting the historical work packet.
         return;
     }
 
-    let body = issue.body_text();
+    let body = body_without_fenced_code(issue.body_text());
     let sections = [
         ("acceptance tests", &RE_ACCEPTANCE),
         ("reproduction / example", &RE_REPRO),
@@ -185,30 +189,12 @@ fn check_builder_ready(issue: &Issue, out: &mut Vec<Finding>) {
         ("verification notes", &RE_VERIFICATION),
     ];
     for (label, re) in sections {
-        if !re_matches(re, body) {
+        if !re_matches(re, &body) {
             out.push(Finding {
                 issue: issue.number,
-                check: "builder-ready-missing-section".to_string(),
+                check: "work-packet-missing-section".to_string(),
                 severity: "medium".to_string(),
-                message: format!("`builder-ready` but body is missing a \"{label}\" section"),
-            });
-        }
-    }
-}
-
-fn check_routing_contradiction(issue: &Issue, out: &mut Vec<Finding>) {
-    if !issue.has_label("needs-plan-review") {
-        return;
-    }
-    for later_signoff in ["builder-ready", "plan-reviewed"] {
-        if issue.has_label(later_signoff) {
-            out.push(Finding {
-                issue: issue.number,
-                check: "routing-label-contradiction".to_string(),
-                severity: "high".to_string(),
-                message: format!(
-                    "carries `needs-plan-review` alongside `{later_signoff}` — stale routing label"
-                ),
+                message: format!("builder work packet is missing a \"{label}\" section"),
             });
         }
     }
@@ -243,13 +229,10 @@ fn load_issues(config: &AuditConfig) -> Result<Vec<Issue>> {
 
 /// Build the `gh issue list` argv for the live loader.
 ///
-/// `--state all` is required, not `open`: the `builder-ready-on-closed` drift
-/// check (see `check_builder_ready`) exists specifically to catch closed
-/// issues that still carry the `builder-ready` label. A `--state open` filter
-/// would never retrieve a closed issue, so that check would be dead code in
-/// live mode — it would only ever fire against fixture-injected test data.
-/// The `--label` filter (when configured) already scopes the query to a
-/// small, builder-ready-labeled set, so widening `--state` here stays bounded.
+/// `--state all` keeps the report useful for current issue/body reconciliation,
+/// including closed issues whose durable plans remain as historical context.
+/// The optional `--label` filter scopes the query for callers but does not
+/// activate any audit rule.
 fn build_gh_issue_list_args(config: &AuditConfig) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "issue".to_string(),
@@ -332,37 +315,44 @@ fn write_receipt(config: &AuditConfig, receipt: &AuditReceipt) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn issue(number: u64, labels: &[&str], state: &str, body: &str) -> Issue {
+    fn issue(number: u64, _labels: &[&str], state: &str, body: &str) -> Issue {
         Issue {
             number,
             title: format!("issue {number}"),
             body: Some(body.to_string()),
             state: state.to_string(),
-            labels: labels.iter().map(|name| LabelObject { name: (*name).to_string() }).collect(),
         }
     }
 
-    const FULL_BODY: &str = "## Problem\nx\n## Reproduction / example\nx\n## Suspected root area\nx\n## Acceptance tests\nx\n## Non-goals\nx\n## Dependencies / sequencing\nx\n## Risk / rollback\nx\n## Verification notes\nx";
+    const FULL_BODY: &str = "## Builder-Ready Plan\n## Problem\nx\n## Reproduction / example\nx\n## Suspected root area\nx\n## Acceptance tests\nx\n## Non-goals\nx\n## Dependencies / sequencing\nx\n## Risk / rollback\nx\n## Verification notes\nx";
 
     #[test]
-    fn closed_builder_ready_is_flagged() {
+    fn closed_work_packet_is_retained_without_a_finding() {
         let issues = vec![issue(860, &["builder-ready", "plan-reviewed"], "CLOSED", FULL_BODY)];
         let findings = run_checks(&issues);
-        assert!(findings.iter().any(|f| f.check == "builder-ready-on-closed"));
+        assert!(
+            findings.is_empty(),
+            "closed durable work packets must not be false alerts: {findings:?}"
+        );
     }
 
     #[test]
-    fn routing_contradiction_is_flagged_for_both_signoffs() {
+    fn fenced_work_packet_examples_are_ignored() {
+        let body = "```markdown\n## Builder-Ready Plan\n## Problem\nexample only\n```";
+        let findings = run_checks(&[issue(861, &[], "OPEN", body)]);
+        assert!(findings.is_empty(), "fenced examples must not activate the audit: {findings:?}");
+    }
+
+    #[test]
+    fn lifecycle_labels_do_not_activate_or_block_the_audit() {
         let issues = vec![issue(
             911,
             &["builder-ready", "needs-plan-review", "plan-reviewed"],
             "OPEN",
-            FULL_BODY,
+            "## Problem\nonly a problem",
         )];
         let findings = run_checks(&issues);
-        let contradictions =
-            findings.iter().filter(|f| f.check == "routing-label-contradiction").count();
-        assert_eq!(contradictions, 2, "expected builder-ready + plan-reviewed contradictions");
+        assert!(findings.is_empty(), "labels must not establish audit scope: {findings:?}");
     }
 
     #[test]
@@ -374,22 +364,23 @@ mod tests {
     }
 
     #[test]
-    fn complete_builder_ready_has_no_section_findings() {
+    fn complete_work_packet_has_no_section_findings() {
         let issues = vec![issue(924, &["builder-ready"], "OPEN", FULL_BODY)];
         let findings = run_checks(&issues);
         assert!(
-            !findings.iter().any(|f| f.check == "builder-ready-missing-section"),
+            !findings.iter().any(|f| f.check == "work-packet-missing-section"),
             "unexpected section findings: {findings:?}"
         );
     }
 
     #[test]
-    fn builder_ready_missing_acceptance_is_flagged() {
-        let issues = vec![issue(2, &["builder-ready"], "OPEN", "## Problem\nonly a problem")];
+    fn work_packet_missing_acceptance_is_flagged() {
+        let issues =
+            vec![issue(2, &[], "OPEN", "## Builder-Ready Plan\n## Problem\nonly a problem")];
         let findings = run_checks(&issues);
         assert!(
             findings.iter().any(|f| {
-                f.check == "builder-ready-missing-section" && f.message.contains("acceptance")
+                f.check == "work-packet-missing-section" && f.message.contains("acceptance")
             }),
             "expected a missing-acceptance finding: {findings:?}"
         );
@@ -403,10 +394,8 @@ mod tests {
         // actual argv the live loader sends to `gh issue list`.
         //
         // Without the fix (state hardcoded to "open"), this assertion fails:
-        // args contains "open", not "all" — the `builder-ready-on-closed`
-        // check (see `closed_builder_ready_is_flagged` above) would never
-        // see a closed issue in production, because `gh issue list --state
-        // open` never returns one.
+        // args contains "open", not "all", so the body-driven audit would
+        // never inspect closed durable work packets in production.
         let config = AuditConfig {
             fixture: None,
             repo: Some("EffortlessMetrics/perl-lsp-swarm".to_string()),
@@ -425,22 +414,23 @@ mod tests {
         assert_eq!(
             state_value,
             Some("all"),
-            "live loader must request --state all so closed issues (and the \
-             builder-ready-on-closed drift check) are reachable in \
-             production, not just via --fixture; got args: {args:?}"
+            "live loader must request --state all so closed durable work \
+             packets are inspected in production, not just via --fixture; \
+             got args: {args:?}"
         );
 
         // The --label filter still scopes the (now-broader) query.
-        assert!(args.windows(2).any(|w| w[0] == "--label" && w[1] == "builder-ready"));
+        assert!(
+            args.windows(2).any(|w| w[0] == "--label" && w[1] == "builder-ready"),
+            "configured labels must remain query filters: {args:?}"
+        );
     }
 
     #[test]
-    fn non_builder_ready_issue_is_not_section_checked() {
+    fn issue_without_work_packet_is_not_section_checked() {
         let issues =
             vec![issue(3, &["needs-plan-review", "swarm-discovered"], "OPEN", "bare body")];
         let findings = run_checks(&issues);
-        assert!(!findings.iter().any(|f| f.check == "builder-ready-missing-section"));
-        // needs-plan-review alone (no later sign-off) is not a contradiction.
-        assert!(!findings.iter().any(|f| f.check == "routing-label-contradiction"));
+        assert!(!findings.iter().any(|f| f.check == "work-packet-missing-section"));
     }
 }

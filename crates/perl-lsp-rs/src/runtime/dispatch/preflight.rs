@@ -3,7 +3,9 @@
 //! Keeps cancellation registration and compatibility initialization separate from
 //! method routing and response construction.
 
-use super::super::*;
+use super::super::{
+    JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse, LspServer, Ordering, Value,
+};
 use super::request_cancellation::{handle_cancel_notification, register_request_cancellation};
 
 pub(super) struct RequestContext {
@@ -33,6 +35,35 @@ pub(super) fn prepare_request(
 ) -> PreflightOutcome {
     if handle_cancel_notification(server, request) {
         return PreflightOutcome::NotificationHandled;
+    }
+
+    // Input validation runs *before* cancellation registration, deliberately.
+    //
+    // `register_request_cancellation` inserts a token and a cloned cleanup
+    // context into the global registry, and the entry is normally removed by
+    // `finalize_response` or a handler cleanup guard. Rejecting here returns
+    // early and reaches neither, so validating after registration would leak one
+    // registry entry — holding its cloned params — per rejected request, letting
+    // a client grow server memory without bound by replaying invalid requests
+    // under fresh ids. Nothing in validation needs the registry, so the check
+    // simply moves ahead of it.
+    let null = Value::Null;
+    let params_ref = request.params.as_ref().unwrap_or(&null);
+    if let Err(err) = crate::security::validate_lsp_request(&request.method, params_ref) {
+        tracing::debug!(method = %request.method, %err, "Rejected request: input validation failed");
+        if !context.should_respond {
+            return PreflightOutcome::NotificationHandled;
+        }
+        return PreflightOutcome::Respond(JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: context.id.as_ref().and_then(JsonRpcId::from_value),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32600,
+                message: format!("Invalid request: {err}"),
+                data: None,
+            }),
+        });
     }
 
     if let Some(cancelled) = register_request_cancellation(server, context.id.as_ref(), request) {

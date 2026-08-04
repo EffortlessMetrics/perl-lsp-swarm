@@ -3,7 +3,12 @@
 //! Handles textDocument/codeAction and codeAction/resolve requests.
 //! Provides quick fixes, refactoring actions, and source actions.
 
-use super::super::*;
+use super::super::{
+    BuiltInAnalyzer, CodeActionsProvider, CodeActionsProviderV2, DiagnosticsProvider,
+    EnhancedCodeActionsProvider, GLOBAL_CANCELLATION_REGISTRY, HashMap, InternalCodeActionKind,
+    InternalCodeActionKindV2, JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken,
+    TestGenerator, Value, json,
+};
 use super::misc::{
     DIAGNOSTIC_EXPLANATION_SCHEMA_VERSION, diagnostic_explanation_payload_from_diagnostics,
 };

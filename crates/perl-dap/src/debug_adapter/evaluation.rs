@@ -1,6 +1,12 @@
 //! REPL and expression evaluation: evaluate, set expression, completions.
 
-use super::*;
+use super::{
+    CompletionItem, CompletionsArguments, CompletionsResponseBody, DAP_COMPLETION_KEYWORDS,
+    DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, DebugState, EvaluateArguments,
+    EvaluateResponseBody, Ordering, SafeEvaluator, SetExpressionArguments,
+    SetExpressionResponseBody, Value, Variable, VariableCacheKind, lock_or_recover,
+    module_path_to_name, validate_safe_expression,
+};
 use std::sync::LazyLock;
 
 static SAFE_EVALUATOR: LazyLock<SafeEvaluator> = LazyLock::new(SafeEvaluator::new);
@@ -717,11 +723,12 @@ mod evaluate_allocation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn allocate_returns_nonzero_with_live_session_and_hash_type() {
+    fn allocate_returns_nonzero_with_live_session_and_hash_type()
+    -> Result<(), Box<dyn std::error::Error>> {
         // Covers the session-present branch: raw_counter fetch_add, eval_ref
         // computation (1_000_000 base), Variable construction, cache upsert.
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
 
         let ref_val = adapter.allocate_evaluate_result_ref("$h", "HASH(0x1234)", "HASH");
 
@@ -730,40 +737,44 @@ mod evaluate_allocation_tests {
             "variablesReference must be in the 1_000_000+ range to avoid scope-ref collision; got {ref_val}"
         );
         assert_ne!(ref_val, 0, "session-present HASH must return non-zero variablesReference");
+        Ok(())
     }
 
     #[test]
-    fn allocate_returns_nonzero_with_live_session_and_array_type() {
+    fn allocate_returns_nonzero_with_live_session_and_array_type()
+    -> Result<(), Box<dyn std::error::Error>> {
         // Same session-present coverage path for ARRAY type.
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
 
         let ref_val = adapter.allocate_evaluate_result_ref("@arr", "ARRAY(0xabcd)", "ARRAY");
 
         assert!(ref_val >= 1_000_000, "ARRAY ref must be in 1_000_000+ range; got {ref_val}");
         assert_ne!(ref_val, 0, "session-present ARRAY must return non-zero variablesReference");
+        Ok(())
     }
 
     #[test]
-    fn allocate_refs_are_monotonically_increasing() {
+    fn allocate_refs_are_monotonically_increasing() -> Result<(), Box<dyn std::error::Error>> {
         // Verifies successive allocations increment the counter so refs are
         // unique — covers the fetch_add path through multiple calls.
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
 
         let ref1 = adapter.allocate_evaluate_result_ref("$a", "HASH(0x1)", "HASH");
         let ref2 = adapter.allocate_evaluate_result_ref("$b", "HASH(0x2)", "HASH");
 
         assert!(ref1 >= 1_000_000, "first ref must be in 1_000_000+ range; got {ref1}");
         assert!(ref2 > ref1, "second ref must be greater than first; got ref1={ref1}, ref2={ref2}");
+        Ok(())
     }
 
     #[test]
-    fn allocate_caches_placeholder_variable_in_session() {
+    fn allocate_caches_placeholder_variable_in_session() -> Result<(), Box<dyn std::error::Error>> {
         // Verifies the allocated ref is retrievable from the session cache via
         // get_page — proving the upsert call ran and the placeholder was stored.
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
 
         let expression = "$my_hash";
         let result_val = "HASH(0x5678)";
@@ -782,5 +793,6 @@ mod evaluate_allocation_tests {
         assert_eq!(vars.len(), 1, "exactly one placeholder variable expected; got {}", vars.len());
         assert_eq!(vars[0].name, expression, "placeholder name must match expression");
         assert_eq!(vars[0].value, result_val, "placeholder value must match result");
+        Ok(())
     }
 }

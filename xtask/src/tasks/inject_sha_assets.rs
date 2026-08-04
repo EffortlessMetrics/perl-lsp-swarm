@@ -39,7 +39,8 @@ pub fn run(config: InjectShaAssetsConfig) -> Result<()> {
     let lin_sha_arm = checksum_for(&config, LIN_ARM, &checksums)?;
     let lin_sha_x64 = checksum_for(&config, LIN_X64, &checksums)?;
     let win_sha_x64 = checksum_for(&config, WIN_X64, &checksums)?;
-    let win_sha_arm = checksum_for(&config, WIN_ARM, &checksums)?;
+    // ARM64 Windows artifact may not exist yet — use empty SHA if missing
+    let win_sha_arm = checksum_for(&config, WIN_ARM, &checksums).unwrap_or_else(|_| String::new());
 
     let brew_formula = build_brew_formula(
         &config,

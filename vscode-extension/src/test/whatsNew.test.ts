@@ -279,6 +279,30 @@ describe('markdownToHtml', () => {
     expect(html).toContain('&amp;');
   });
 
+  test('renders http/https Markdown links as clickable anchors (#1993)', () => {
+    const html = markdownToHtml(
+      'See [PR #123](https://github.com/EffortlessMetrics/perl-lsp/pull/123) for details.',
+    );
+    expect(html).toContain(
+      '<a href="https://github.com/EffortlessMetrics/perl-lsp/pull/123">PR #123</a>',
+    );
+  });
+
+  test('renders http/https links containing balanced parentheses', () => {
+    const html = markdownToHtml(
+      'See [Wikipedia](https://en.wikipedia.org/wiki/Function_(mathematics)) for details.',
+    );
+    expect(html).toContain(
+      '<a href="https://en.wikipedia.org/wiki/Function_(mathematics)">Wikipedia</a>',
+    );
+  });
+
+  test('does not render non-http schemes as links (#1993)', () => {
+    const html = markdownToHtml('[evil](javascript:alert(1))');
+    expect(html).not.toContain('<a ');
+    expect(html).toContain('[evil]');
+  });
+
   test('closes list before next heading', () => {
     const md = '- item\n## Next Section';
     const html = markdownToHtml(md);
@@ -358,11 +382,15 @@ describe('package.json showWhatsNew command', () => {
     };
   };
   let pkg: PackageManifest;
+  let localizationCatalog: Record<string, string>;
 
   beforeAll(() => {
     pkg = JSON.parse(
       fs.readFileSync(path.join(EXT_ROOT, 'package.json'), 'utf8'),
     ) as PackageManifest;
+    localizationCatalog = JSON.parse(
+      fs.readFileSync(path.join(EXT_ROOT, 'package.nls.json'), 'utf8'),
+    ) as Record<string, string>;
   });
 
   test('registers perl-lsp.showWhatsNew command', () => {
@@ -385,7 +413,9 @@ describe('package.json showWhatsNew command', () => {
       (c: CommandContribution) => c.command === 'perl-lsp.showWhatsNew',
       'perl-lsp.showWhatsNew command',
     );
-    expect(cmd.title).toBeTruthy();
-    expect(cmd.title.toLowerCase()).toMatch(/what'?s new|release notes|changelog/i);
+    const key = /^%([^%]+)%$/.exec(cmd.title)?.[1];
+    const title = key ? localizationCatalog[key] : cmd.title;
+    expect(title).toBeTruthy();
+    expect(title?.toLowerCase()).toMatch(/what'?s new|release notes|changelog/i);
   });
 });

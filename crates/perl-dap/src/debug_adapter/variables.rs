@@ -1,6 +1,10 @@
 //! Variable inspection: variable display, scope variables, set variable.
 
-use super::*;
+use super::{
+    DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, DebugState, HashMap, SetVariableArguments,
+    SetVariableResponseBody, Value, VariableCacheKind, VariablesArguments, Write,
+    is_valid_set_variable_name, json, lock_or_recover, slice_variables,
+};
 
 impl DebugAdapter {
     /// Handle variables request

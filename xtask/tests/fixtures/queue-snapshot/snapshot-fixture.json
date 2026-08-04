@@ -12,6 +12,7 @@
       "head_sha": "aaa",
       "base_sha": "bbb",
       "is_draft": false,
+      "mergeability": "MERGEABLE",
       "merge_state_status": "CLEAN",
       "labels": ["merge-ready"],
       "status_check_rollup": [{"name": "ci", "state": "SUCCESS"}],
