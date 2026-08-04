@@ -44,11 +44,11 @@ pub fn check_deprecated_syntax(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                         related_information: vec![
                             RelatedInformation {
                                 location: (arg.location.start, arg.location.end),
-                                message: format!("💡 Use 'if ({}{})'  or 'if ({}{}[0])' instead", sigil, name, sigil, name),
+                                message: format!("Suggestion: Use 'if ({}{})'  or 'if ({}{}[0])' instead", sigil, name, sigil, name),
                             },
                             RelatedInformation {
                                 location: (n.location.start, n.location.end),
-                                message: format!("ℹ️ Testing definedness of {} is deprecated because it was rarely useful and often wrong. Empty {}s are false in boolean context.", type_name, type_name),
+                                message: format!("Note: Testing definedness of {} is deprecated because it was rarely useful and often wrong. Empty {}s are false in boolean context.", type_name, type_name),
                             }
                         ],
                         tags: vec![DiagnosticTag::Deprecated],
@@ -68,11 +68,11 @@ pub fn check_deprecated_syntax(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                         related_information: vec![
                             RelatedInformation {
                                 location: (n.location.start, n.location.start + 2),
-                                message: "💡 Remove usage of '$[' - arrays always start at index 0".to_string(),
+                                message: "Suggestion: Remove usage of '$[' - arrays always start at index 0".to_string(),
                             },
                             RelatedInformation {
                                 location: (n.location.start, n.location.start + 2),
-                                message: "ℹ️ The $[ variable was used to change the base index of arrays, but this feature has been deprecated since Perl 5.12 and will be removed in future versions.".to_string(),
+                                message: "Note: The $[ variable was used to change the base index of arrays, but this feature has been deprecated since Perl 5.12 and will be removed in future versions.".to_string(),
                             }
                         ],
                         tags: vec![DiagnosticTag::Deprecated],
@@ -158,6 +158,13 @@ mod tests {
         let diags = deprecated_diags("my @a = (); defined @a;");
         let diag = must_some(diags.iter().find(|d| d.code.as_deref() == Some("PL500")));
         assert!(diag.suggestion.is_some(), "PL500 should carry a suggestion");
+        assert!(
+            diag.related_information
+                .iter()
+                .all(|info| !info.message.contains('💡') && !info.message.contains('ℹ')),
+            "PL500 related information should not use emoji: {:?}",
+            diag.related_information
+        );
     }
 
     // --- $[ deprecated array base ---

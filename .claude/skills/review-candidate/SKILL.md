@@ -8,7 +8,7 @@ user-invocable: false
 
 Before reviewing, resolve the current controlling issue and plan, governing specification/ADR/policy where applicable, relevant product/roadmap/architecture and semantic owner sources, exact cumulative candidate, and current proof with limitations. Do not substitute stale conversation or agent self-report. Missing or contradictory authority is `NOT_PROVEN`; a changed premise returns to issue preparation.
 
-Use differentiated lenses where useful. Review the cumulative candidate and verify real production reachability. One writer integrates accepted repairs. A clean review is valid.
+Use differentiated lenses where useful. Review the cumulative candidate and verify real production reachability. The challenge is directed at applicable authority, external truth, claim, risk, complexity, and proof questions; falsifying of realistic wrong behavior is expected; conclusions require execution or competent authority. One writer integrates accepted repairs. A clean review is valid.
 
 ## Routes
 

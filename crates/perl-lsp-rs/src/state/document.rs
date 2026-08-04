@@ -175,6 +175,9 @@ pub struct ParsedSnapshot {
     /// until first requested via [`Self::type_environment`]; never populated
     /// for a `Minimal` (AST-less) snapshot.
     type_environment: OnceLock<Arc<crate::type_inference::TypeInferenceEngine>>,
+    /// Lazily-built, generation-owned source region index for non-code
+    /// classification evidence (comments, literals, POD, data sections).
+    source_region_index: OnceLock<Arc<perl_parser_core::SourceRegionIndex>>,
     /// Test-only: counts how many times the [`Self::semantic_analyzer`]
     /// construction closure has actually executed. Proves construction
     /// happens at most once per snapshot -- an `Arc::ptr_eq` identity check
@@ -190,6 +193,10 @@ pub struct ParsedSnapshot {
     /// [`Self::type_environment`].
     #[cfg(test)]
     type_environment_build_count: std::cell::Cell<usize>,
+    /// Test-only counterpart to `semantic_analyzer_build_count` for
+    /// [`Self::source_region_index`].
+    #[cfg(test)]
+    source_region_index_build_count: std::cell::Cell<usize>,
 }
 
 impl std::fmt::Debug for ParsedSnapshot {
@@ -205,6 +212,7 @@ impl std::fmt::Debug for ParsedSnapshot {
             .field("source", &self.source)
             .field("semantic_analyzer", &cell_state(self.semantic_analyzer.get().is_some()))
             .field("type_environment", &cell_state(self.type_environment.get().is_some()))
+            .field("source_region_index", &cell_state(self.source_region_index.get().is_some()))
             .finish()
     }
 }
@@ -254,10 +262,13 @@ impl ParsedSnapshot {
             degradation_tier,
             semantic_analyzer: OnceLock::new(),
             type_environment: OnceLock::new(),
+            source_region_index: OnceLock::new(),
             #[cfg(test)]
             semantic_analyzer_build_count: std::cell::Cell::new(0),
             #[cfg(test)]
             type_environment_build_count: std::cell::Cell::new(0),
+            #[cfg(test)]
+            source_region_index_build_count: std::cell::Cell::new(0),
         }
     }
 
@@ -354,6 +365,25 @@ impl ParsedSnapshot {
         })))
     }
 
+    /// The single-file [`perl_parser_core::SourceRegionIndex`] for
+    /// this snapshot's generation, built lazily and exactly once on first
+    /// request and shared (by `Arc`) thereafter.
+    ///
+    /// Unlike [`Self::semantic_analyzer`] / [`Self::type_environment`], this is
+    /// available even when the parse produced no AST — classification is
+    /// source-text-only.
+    pub fn source_region_index(&self) -> Arc<perl_parser_core::SourceRegionIndex> {
+        Arc::clone(self.source_region_index.get_or_init(|| {
+            #[cfg(test)]
+            self.source_region_index_build_count
+                .set(self.source_region_index_build_count.get() + 1);
+            Arc::new(perl_parser_core::SourceRegionIndex::build_with_hash_from_arc(
+                Arc::clone(&self.source),
+                self.content_hash,
+            ))
+        }))
+    }
+
     /// Whether the [`Self::semantic_analyzer`] cell has been materialized.
     ///
     /// Test-only observability for the "a superseded snapshot with no semantic
@@ -388,6 +418,19 @@ impl ParsedSnapshot {
     #[cfg(test)]
     pub(crate) fn type_environment_build_count(&self) -> usize {
         self.type_environment_build_count.get()
+    }
+
+    /// Whether the [`Self::source_region_index`] cell has been materialized.
+    #[cfg(test)]
+    pub(crate) fn source_region_index_initialized(&self) -> bool {
+        self.source_region_index.get().is_some()
+    }
+
+    /// Test-only counterpart to [`Self::semantic_analyzer_build_count`] for
+    /// [`Self::source_region_index`].
+    #[cfg(test)]
+    pub(crate) fn source_region_index_build_count(&self) -> usize {
+        self.source_region_index_build_count.get()
     }
 }
 
@@ -430,6 +473,13 @@ pub struct DocumentState {
     /// This cached copy enables efficient access for parsing and analysis
     /// subsystems that operate on `&str`. Updated lazily when rope changes.
     pub text: String,
+
+    /// `Arc<str>` handle to the same content as `text`, maintained in sync.
+    /// Cloning this handle is O(1) (vs O(n) for `text.clone()`), so the
+    /// diagnostic publish path and other snapshot consumers clone the `Arc`
+    /// instead of deep-copying the full document text on every keystroke
+    /// (#5053).
+    pub text_arc: std::sync::Arc<str>,
 
     /// LSP document version number for synchronization
     pub version: i32,
@@ -493,6 +543,7 @@ impl DocumentState {
 
         Self {
             rope,
+            text_arc: std::sync::Arc::from(content),
             text,
             version,
             parsed: None,
@@ -523,6 +574,7 @@ impl DocumentState {
         let line_starts = LineStartsCache::new_rope(&rope);
         Self {
             rope,
+            text_arc: std::sync::Arc::from(text.as_str()),
             text,
             version,
             parsed: None,
@@ -547,6 +599,7 @@ impl DocumentState {
     pub fn update_content(&mut self, content: &str, version: i32) {
         self.rope = ropey::Rope::from_str(content);
         self.text = content.to_string();
+        self.text_arc = std::sync::Arc::from(content);
         self.version = version;
         self.line_starts = LineStartsCache::new(content);
         self.generation.fetch_add(1, Ordering::SeqCst);
@@ -587,7 +640,8 @@ impl DocumentState {
     pub(crate) fn replace_text_state(&mut self, rope: ropey::Rope, text: String, version: i32) {
         self.line_starts = LineStartsCache::new_rope(&rope);
         self.rope = rope;
-        self.text = text;
+        self.text = text.clone();
+        self.text_arc = std::sync::Arc::from(text);
         self.version = version;
     }
 
@@ -691,6 +745,7 @@ impl DocumentState {
         // Update cached string and caches. `parsed` is deliberately
         // preserved -- see the doc comment on `update_content`.
         self.text = self.rope.to_string();
+        self.text_arc = std::sync::Arc::from(self.text.as_str());
         self.version = version;
         self.line_starts = LineStartsCache::new(&self.text);
         self.generation.fetch_add(1, Ordering::SeqCst);
@@ -1093,7 +1148,102 @@ mod tests {
         );
     }
 
-    /// A snapshot that is published and then immediately superseded by a newer
+    #[test]
+    fn source_region_index_construction_happens_exactly_once() {
+        let snapshot = snapshot_for("my $x = 1; # comment\n", 0);
+
+        for _ in 0..5 {
+            let _ = snapshot.source_region_index();
+        }
+
+        assert_eq!(
+            snapshot.source_region_index_build_count(),
+            1,
+            "source_region_index must build exactly once per snapshot"
+        );
+    }
+
+    #[test]
+    fn source_region_index_is_generation_bound() {
+        let source = "my $x = 1; # comment\n";
+        let snap0 = snapshot_for(source, 0);
+        let snap1 = snapshot_for("sub other {} # other\n", 1);
+        let idx0 = snap0.source_region_index();
+        let idx1 = snap1.source_region_index();
+        assert!(
+            !Arc::ptr_eq(&idx0, &idx1),
+            "distinct generations must not share one source region index allocation"
+        );
+    }
+
+    /// The honesty invariant: a superseded generation's index must never be
+    /// served as the current one. `source_region_index` is a `OnceLock` field on
+    /// `ParsedSnapshot` built from *that snapshot's own* source and
+    /// `content_hash`, so there is no shared cache a stale entry could survive
+    /// in. This asserts the observable consequence — after a real edit through
+    /// `DocumentState`, the newly published snapshot classifies the NEW text and
+    /// carries the NEW content hash — rather than only that two indexes are
+    /// distinct allocations.
+    #[test]
+    fn edit_supersedes_index_content_not_just_allocation() {
+        // gen0: the `#` opens a real line comment.
+        let mut doc = DocumentState::new("my $x = 1; # c\n", 1);
+        let gen0 = doc.current_generation();
+        let snapshot0 = Arc::new(snapshot_for("my $x = 1; # c\n", gen0));
+        assert!(doc.publish_parsed_if_current(gen0, Arc::clone(&snapshot0)));
+        let idx0 = snapshot0.source_region_index();
+        let hash_at = 11;
+        assert_eq!(
+            idx0.kind_at_offset(hash_at),
+            perl_parser_core::SourceRegionKind::LineComment,
+            "gen0 `#` must classify as a line comment"
+        );
+
+        // gen1: the same offset is now inside a string literal, not a comment.
+        let updated = "my $y = \"# c\";\n";
+        doc.apply_change(0, 0, 0, 14, "my $y = \"# c\";", 2);
+        let gen1 = doc.current_generation();
+        let snapshot1 = Arc::new(snapshot_for(updated, gen1));
+        assert!(doc.publish_parsed_if_current(gen1, Arc::clone(&snapshot1)));
+
+        let idx1 = snapshot1.source_region_index();
+        let new_hash_at = updated.find('#').unwrap_or_default();
+        assert_eq!(
+            idx1.kind_at_offset(new_hash_at),
+            perl_parser_core::SourceRegionKind::StringLiteral,
+            "gen1 `#` sits inside a double-quoted string, not a comment"
+        );
+        assert_ne!(
+            idx0.content_hash(),
+            idx1.content_hash(),
+            "a superseded generation's index must not carry the current content hash"
+        );
+        assert_eq!(
+            idx1.content_hash(),
+            snapshot1.content_hash(),
+            "the current index must be bound to the current snapshot's content hash"
+        );
+    }
+
+    #[test]
+    fn superseded_snapshot_without_region_request_stays_lazy() {
+        let mut doc = DocumentState::new("my $x = 1;", 1);
+        let gen0 = doc.current_generation();
+        let snapshot0 = Arc::new(snapshot_for("my $x = 1;", gen0));
+        assert!(doc.publish_parsed_if_current(gen0, Arc::clone(&snapshot0)));
+
+        doc.apply_change(0, 8, 0, 9, "2", 2);
+        let gen1 = doc.current_generation();
+        let snapshot1 = Arc::new(snapshot_for("my $x = 2;", gen1));
+        assert!(doc.publish_parsed_if_current(gen1, snapshot1));
+
+        assert!(
+            !snapshot0.source_region_index_initialized(),
+            "superseded snapshot must not build source region index unless requested"
+        );
+    }
+
+    /// Repeated requests against a single snapshot invoke the underlying
     /// generation, with NO semantic request in between, performs zero semantic
     /// construction: both lazy cells remain unmaterialized. Superseded
     /// generations do not pay the analysis cost.

@@ -122,6 +122,11 @@ impl DeadCodeDetector {
             if let Some((term_line, term_depth, term_kw)) = &terminator {
                 if current_depth < *term_depth {
                     terminator = None;
+                } else if is_block_continuation(trimmed) {
+                    // `} else {`, `} elsif`, `} continue {` etc. open a new
+                    // reachable branch at the same depth, so the terminator
+                    // from the preceding block does not apply (#4656).
+                    terminator = None;
                 } else if current_depth == *term_depth
                     && !trimmed.is_empty()
                     && !trimmed.starts_with('#')
@@ -219,11 +224,36 @@ impl DeadCodeDetector {
 }
 
 fn is_structural_line(trimmed: &str) -> bool {
-    !trimmed.is_empty() && trimmed.chars().all(|ch| ch == '}' || ch == ';')
+    if trimmed.is_empty() {
+        return false;
+    }
+    // Pure closing braces / semicolons: `}`, `};`, `}}`.
+    if trimmed.chars().all(|ch| ch == '}' || ch == ';') {
+        return true;
+    }
+    // Block-continuation constructs that follow a closing `}` and open a new
+    // block at the same depth. Without these, `} else {` after a `return`
+    // would be flagged as unreachable code (#4656).
+    is_block_continuation(trimmed)
+}
+
+/// Whether `trimmed` starts with a block-continuation construct (`} else {`,
+/// `} elsif`, etc.) that opens a new reachable branch and clears any prior
+/// terminator.
+fn is_block_continuation(trimmed: &str) -> bool {
+    const BLOCK_CONTINUATIONS: [&str; 5] =
+        ["} else {", "} elsif", "} continue {", "} unless {", "} while"];
+    BLOCK_CONTINUATIONS.iter().any(|pat| trimmed.starts_with(pat))
 }
 
 fn detect_unconditional_terminator(trimmed: &str) -> Option<&str> {
-    const TERMINATORS: [&str; 4] = ["return", "die", "exit", "CORE::exit"];
+    // Statements that unconditionally end execution of the current scope.
+    // `goto` jumps away, `exec` replaces the process, `croak`/`confess` throw.
+    // (`last`/`next`/`redo` are excluded because they are conditional on loop
+    // context and would cause false positives at file scope — the analyzer is
+    // text-based and cannot track loop nesting.)
+    const TERMINATORS: [&str; 8] =
+        ["return", "die", "exit", "CORE::exit", "goto", "exec", "croak", "confess"];
 
     let first = trimmed
         .split(|ch: char| ch.is_whitespace() || matches!(ch, ';' | '('))

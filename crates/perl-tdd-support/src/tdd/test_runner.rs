@@ -388,11 +388,15 @@ impl TestRunner {
 
     /// Convert byte offset to line/character position
     fn offset_to_position(&self, offset: usize) -> (u32, u32) {
-        let mut line = 0;
-        let mut col = 0;
+        let mut line = 0u32;
+        let mut col = 0u32;
 
-        for (i, ch) in self.source.chars().enumerate() {
-            if i >= offset {
+        // Use byte_indices to correctly handle multi-byte UTF-8 characters.
+        // The previous implementation used chars().enumerate() which produces
+        // char indices, not byte offsets — causing position mismatches on
+        // non-ASCII source files (#3919).
+        for (byte_pos, ch) in self.source.char_indices() {
+            if byte_pos >= offset {
                 break;
             }
             if ch == '\n' {

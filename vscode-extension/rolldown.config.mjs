@@ -35,29 +35,29 @@ const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((m) => `n
 const external = (id) => id === 'vscode' || nodeBuiltins.has(id);
 
 export default defineConfig({
-  input: 'src/extension.ts',
-  tsconfig: './tsconfig.json',
-  platform: 'node',
-  external,
-  output: {
-    file: 'out/extension.js',
-    format: 'cjs',
-    sourcemap: true,
-    // No minification in this first PR — the migration charter is explicit
-    // that this pass proves parity of the bundling step alone. Minification
-    // is a separate, later decision.
-    minify: false,
-    // Strict single-file output. Without this, Rolldown split a facade
-    // chunk (out/commandResults.js) for a type-only `import type {...}
-    // from './commandResults'` in extension.ts even though there is no
-    // runtime dynamic import() anywhere in the source (verified). CJS has
-    // no native async chunk-loading anyway, so a split there would just be
-    // a synchronous `require()` of a sibling file — codeSplitting: false
-    // inlines everything into the one artifact the "single CJS entry" spec
-    // requires, and matches out/extension.js being the sole path referenced
-    // by package.json's "main" and the debugger's "program".
-    codeSplitting: false,
-  },
+    input: 'src/extension.ts',
+    tsconfig: './tsconfig.json',
+    platform: 'node',
+    external,
+    output: {
+        file: 'out/extension.js',
+        format: 'cjs',
+        sourcemap: true,
+        // No minification in this first PR — the migration charter is explicit
+        // that this pass proves parity of the bundling step alone. Minification
+        // is a separate, later decision.
+        minify: false,
+        // Strict single-file output. Without this, Rolldown split a facade
+        // chunk (out/commandResults.js) for a type-only `import type {...}
+        // from './commandResults'` in extension.ts even though there is no
+        // runtime dynamic import() anywhere in the source (verified). CJS has
+        // no native async chunk-loading anyway, so a split there would just be
+        // a synchronous `require()` of a sibling file — codeSplitting: false
+        // inlines everything into the one artifact the "single CJS entry" spec
+        // requires, and matches out/extension.js being the sole path referenced
+        // by package.json's "main" and the debugger's "program".
+        codeSplitting: false,
+    },
 });
 
 // NOTE on out/ hygiene: `output.cleanDir` was tried here but does not apply

@@ -82,14 +82,16 @@ while true; do
   for number in $ISSUES; do
     ISSUE=$(api_call "repos/$REPO/issues/$number")
     LABELS=$(echo "$ISSUE" | jq -r '.labels[].name' | tr '\n' ' ')
-    CREATED=$(echo "$ISSUE" | jq -r '.created_at')
     UPDATED=$(echo "$ISSUE" | jq -r '.updated_at')
-    ASSIGNEES=$(echo "$ISSUE" | jq -r '.assignees | length')
     BODY=$(echo "$ISSUE" | jq -r '.body // ""')
     COMMENTS_COUNT=$(echo "$ISSUE" | jq -r '.comments')
 
     TO_ADD=()
     TO_REMOVE=()
+
+    # needs-assignee is retired lifecycle state; clear historical instances
+    # now that no producer maintains it.
+    TO_REMOVE+=("needs-assignee")
 
     # Age
     NOW=$(date +%s)
@@ -112,21 +114,6 @@ while true; do
       fi
     else
       echo "#$number: WARNING: could not parse updated_at, skipping age labels"
-    fi
-
-    # needs-assignee
-    CREATED_TS=$(parse_date "$CREATED")
-
-    if [ -n "$CREATED_TS" ]; then
-      CREATED_DAYS=$(( (NOW - CREATED_TS) / 86400 ))
-
-      if [ "$ASSIGNEES" -eq 0 ] && [ "$CREATED_DAYS" -ge 3 ]; then
-        TO_ADD+=("needs-assignee")
-      elif [ "$ASSIGNEES" -gt 0 ]; then
-        TO_REMOVE+=("needs-assignee")
-      fi
-    else
-      echo "#$number: WARNING: could not parse created_at, skipping needs-assignee"
     fi
 
     # needs-spec

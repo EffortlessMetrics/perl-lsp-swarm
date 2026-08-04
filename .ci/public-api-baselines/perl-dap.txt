@@ -1330,14 +1330,15 @@ pub struct perl_dap::tcp_attach::TcpAttachConfig
 pub perl_dap::tcp_attach::TcpAttachConfig::host: alloc::string::String
 pub perl_dap::tcp_attach::TcpAttachConfig::port: u16
 pub perl_dap::tcp_attach::TcpAttachConfig::timeout_ms: core::option::Option<u32>
+pub perl_dap::tcp_attach::TcpAttachConfig::resolved_addrs: alloc::vec::Vec<std::net::SocketAddr>
 pub fn perl_dap::tcp_attach::TcpAttachConfig::new(host: alloc::string::String, port: u16) -> Self
 pub fn perl_dap::tcp_attach::TcpAttachConfig::timeout_duration(&self) -> core::time::Duration
-pub fn perl_dap::tcp_attach::TcpAttachConfig::validate(&self) -> anyhow::Result<()>
+pub fn perl_dap::tcp_attach::TcpAttachConfig::validate(&mut self) -> anyhow::Result<()>
 pub fn perl_dap::tcp_attach::TcpAttachConfig::with_timeout(self, timeout_ms: u32) -> Self
 pub fn perl_dap::tcp_attach::TcpAttachConfig::clone(&self) -> perl_dap::tcp_attach::TcpAttachConfig
 pub fn perl_dap::tcp_attach::TcpAttachConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::tcp_attach::TcpAttachSession
-pub fn perl_dap::tcp_attach::TcpAttachSession::connect(&mut self, config: &perl_dap::tcp_attach::TcpAttachConfig) -> anyhow::Result<()>
+pub fn perl_dap::tcp_attach::TcpAttachSession::connect(&mut self, config: &mut perl_dap::tcp_attach::TcpAttachConfig) -> anyhow::Result<()>
 pub fn perl_dap::tcp_attach::TcpAttachSession::disconnect(&mut self) -> anyhow::Result<()>
 pub fn perl_dap::tcp_attach::TcpAttachSession::is_connected(&self) -> bool
 pub fn perl_dap::tcp_attach::TcpAttachSession::new() -> Self

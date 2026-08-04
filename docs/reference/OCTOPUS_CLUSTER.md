@@ -58,7 +58,11 @@ The visibility dividend has a failure mode: stale visibility. If a green-ci agen
 
 The reconciliation dividend is what you get by continuously stripping stale state and re-deriving current routing from live signals. After reconciliation runs, agents can trust what they read. The visibility dividend compounds: more agents, longer history, higher confidence — because the reconciler keeps the record current.
 
-The reconciler implementation lives at `xtask/src/tasks/queue_reconciler.rs`. The principle it encodes: **where ground truth exists as a queryable live signal, query it. Labels record agent activity; they do not record what is currently true.** See [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md) for the full classification.
+The provider-native method keeps the principle without a permanent reconciler:
+**where ground truth exists as a queryable live signal, query it. Labels record
+agent activity; they do not record what is currently true.** See
+[LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md) for the full
+classification.
 
 ---
 
@@ -245,7 +249,7 @@ These terms should be used consistently across all orchestration documentation. 
 
 - **"Octopus Cluster"** — the umbrella system. Use when describing the overall architecture or explaining what we're doing to someone new.
 - **"Trust Conveyor"** — the gate sequence specifically. Use when describing how PRs move from candidate to trusted change.
-- **"Reconciler"** — the specific automation component. Use when describing label cleanup, derived state, or the `queue_reconciler.rs` implementation.
+- **"Reconciliation"** — the act of comparing current provider evidence with a claim; it is not a separate lifecycle-label authority.
 - **"Derived State"** — the output of reconciliation. Use when emphasizing that routing state is computed, not manually maintained.
 - **"Frontdoor Proof"** — the first CI pass on a candidate. Use to distinguish from survivor-level verification.
 - **"Master Bit-Rot Incident"** — a trunk failure pattern. Use specifically when N unrelated PRs fail identically, indicating infrastructure-level failure.

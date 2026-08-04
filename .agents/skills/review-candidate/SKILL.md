@@ -19,6 +19,12 @@ Resolve current, claim-relative authority before reviewing:
 
 Do not substitute stale conversation or agent self-report for those sources. If the controlling claim or applicable authorities cannot be established reliably, return `NOT_PROVEN`; if investigation changes the premise, return the corrected boundary for issue preparation.
 
+The review is directed at the declared claim, falsifying rather than merely descriptive,
+and verified against the relevant proof and source authority. Where applicable, check
+claim honesty, semantic and external correctness, proof discrimination, production-path
+reachability, negative and fallback behavior, compatibility and rollback, and remaining
+uncertainty.
+
 Use applicable lenses:
 
 - candidate-mode vision alignment;
@@ -30,6 +36,12 @@ Use applicable lenses:
 - test economics.
 
 Check the cumulative candidate, not only the latest edit. Verify that real user or protocol paths can reach the changed behavior and that the PR-sized claim remains coherent.
+
+The review is directed at the applicable vision, authority, production path,
+external-truth, claim, security/compatibility, complexity, proof, and rollback
+questions. It is falsifying: identify realistic wrong behavior or residue that the
+candidate should reject. It is verified through execution or competent authority,
+not a diff impression, green CI, or an ungrounded delegate verdict.
 
 A clean review is valid.
 

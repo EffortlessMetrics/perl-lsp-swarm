@@ -10,6 +10,48 @@ use support::lsp_harness::LspHarness;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+/// The VS Code picker must expose the same feature IDs as the server's canonical registry.
+///
+/// This crosses the Rust/extension boundary so a new server feature cannot silently become
+/// unavailable through `perl-lsp.disabledFeatures`.
+#[test]
+fn test_vscode_disabled_features_match_server_registry() -> TestResult {
+    use perl_lsp::protocol::capabilities::BuildFlags;
+    use serde_json::Value;
+    use std::{fs, path::Path};
+
+    let package_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vscode-extension/package.json");
+    let package: Value = serde_json::from_str(&fs::read_to_string(package_path)?)?;
+    let sections = package
+        .get("contributes")
+        .and_then(|value| value.get("configuration"))
+        .and_then(Value::as_array)
+        .ok_or("package.json configuration sections are missing")?;
+    let picker = sections
+        .iter()
+        .filter_map(|section| section.get("properties").and_then(Value::as_object))
+        .find_map(|properties| properties.get("perl-lsp.disabledFeatures"))
+        .and_then(|setting| setting.get("items"))
+        .and_then(|items| items.get("enum"))
+        .and_then(Value::as_array)
+        .ok_or("perl-lsp.disabledFeatures enum is missing")?;
+
+    let mut picker_ids =
+        picker.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>();
+    let mut server_ids =
+        BuildFlags::all().to_feature_ids().into_iter().map(str::to_owned).collect::<Vec<_>>();
+    picker_ids.sort_unstable();
+    server_ids.sort_unstable();
+    if picker_ids != server_ids {
+        return Err(format!(
+            "VS Code disabledFeatures picker must match the server registry: picker={picker_ids:?}, server={server_ids:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// Disabling `lsp.semantic_tokens` must remove the semanticTokensProvider from the
 /// server capabilities response.
 #[test]

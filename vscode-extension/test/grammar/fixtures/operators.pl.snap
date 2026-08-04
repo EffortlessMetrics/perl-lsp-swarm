@@ -67,12 +67,10 @@
 #           ^ source.perl
 #            ^^ source.perl variable.other.scalar.perl
 #              ^ source.perl
-#               ^ source.perl keyword.operator.assignment.perl
-#                ^ source.perl keyword.operator.bitwise.perl
-#                 ^ source.perl
-#                  ^ source.perl keyword.operator.arithmetic.perl
-#                   ^^^^^^^ source.perl
-#                          ^ source.perl keyword.operator.arithmetic.perl
+#               ^^ source.perl string.regexp.perl keyword.operator.assignment.perl
+#                 ^^ source.perl string.regexp.perl
+#                   ^^^^^^^ source.perl string.regexp.perl
+#                          ^ source.perl string.regexp.perl
 #                           ^^ source.perl
 >my $concat = 'a' . 'b';
 #^^ source.perl keyword.other.perl

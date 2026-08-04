@@ -190,47 +190,49 @@ fn seam1_double_diamond_is_diamond() {
 /// `<$fh>` — confirm the AST node is literally `NodeKind::Readline`.
 /// Pinned against sexp-string tricks; requires the real variant.
 #[test]
-fn seam1_angle_fh_nodekind_is_readline_variant() {
+fn seam1_angle_fh_nodekind_is_readline_variant() -> Result<(), String> {
     let mut parser = Parser::new("my $x = <$fh>;");
     let ast = must(parser.parse());
     let NodeKind::Program { ref statements } = ast.kind else {
-        panic!("expected Program");
+        return Err("expected Program".into());
     };
     let stmt = statements.first().expect("no statements");
     // The my_declaration's RHS child holds the Readline node.
     let NodeKind::VariableDeclaration { ref initializer, .. } = stmt.kind else {
-        panic!("expected VariableDeclaration");
+        return Err("expected VariableDeclaration".into());
     };
     let Some(init_node) = initializer else {
-        panic!("initializer missing");
+        return Err("initializer missing".into());
     };
     assert!(
         matches!(init_node.kind, NodeKind::Readline { .. }),
         "expected NodeKind::Readline for <$fh>, got {:?}",
         init_node.kind.kind_name()
     );
+    Ok(())
 }
 
 /// `<$dir/*>` — confirm the AST node is literally `NodeKind::Glob`.
 #[test]
-fn seam1_angle_dir_star_nodekind_is_glob_variant() {
+fn seam1_angle_dir_star_nodekind_is_glob_variant() -> Result<(), String> {
     let mut parser = Parser::new(r"my @f = <$dir/*>;");
     let ast = must(parser.parse());
     let NodeKind::Program { ref statements } = ast.kind else {
-        panic!("expected Program");
+        return Err("expected Program".into());
     };
     let stmt = statements.first().expect("no statements");
     let NodeKind::VariableDeclaration { ref initializer, .. } = stmt.kind else {
-        panic!("expected VariableDeclaration");
+        return Err("expected VariableDeclaration".into());
     };
     let Some(init_node) = initializer else {
-        panic!("initializer missing");
+        return Err("initializer missing".into());
     };
     assert!(
         matches!(init_node.kind, NodeKind::Glob { .. }),
         "expected NodeKind::Glob for <$dir/*>, got {:?}",
         init_node.kind.kind_name()
     );
+    Ok(())
 }
 
 // ── Clean-parse guards ────────────────────────────────────────────────────────
@@ -347,24 +349,25 @@ fn seam2_class_attribute_no_version_unchanged() {
 
 /// Verify the AST node is literally `NodeKind::Class` with a `NodeKind::Block` body.
 #[test]
-fn seam2_class_version_nodekind_is_class_with_block() {
+fn seam2_class_version_nodekind_is_class_with_block() -> Result<(), String> {
     let mut parser = Parser::new("class Foo 1.0 { }");
     let ast = must(parser.parse());
     let NodeKind::Program { ref statements } = ast.kind else {
-        panic!("expected Program");
+        return Err("expected Program".into());
     };
     let class_node = statements
         .iter()
         .find(|s| matches!(s.kind, NodeKind::Class { .. }))
         .expect("expected Class node");
     let NodeKind::Class { ref body, .. } = class_node.kind else {
-        panic!("expected Class kind");
+        return Err("expected Class kind".into());
     };
     assert!(
         matches!(body.kind, NodeKind::Block { .. }),
         "class body must be Block, got {}",
         body.kind.kind_name()
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

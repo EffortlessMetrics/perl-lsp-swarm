@@ -293,8 +293,9 @@ fn test_e2e_attach_workflow_stopped_event() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    // Use an arbitrary non-zero PID (the adapter doesn't validate it exists)
-    let test_pid = 12345u32;
+    // Use the current process PID — the adapter validates that the PID exists
+    // (#5553), so a hardcoded non-existent PID like 12345 now fails.
+    let test_pid = std::process::id();
 
     // Attach without stopOnEntry — should emit stopped(reason=attach)
     session.attach(test_pid, false)?;
@@ -336,7 +337,7 @@ fn test_e2e_attach_workflow_stop_on_entry() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    let test_pid = 12346u32;
+    let test_pid = std::process::id();
 
     // Attach with stopOnEntry=true
     session.attach(test_pid, true)?;

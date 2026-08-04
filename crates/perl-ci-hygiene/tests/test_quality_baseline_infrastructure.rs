@@ -84,16 +84,15 @@ fn match_arm_panic_hits(paths: &[&Path]) -> TestResult<Vec<String>> {
     Ok(hits)
 }
 
-/// Test 1: panic baseline file exists and matches the enforced checker output.
+/// Test 1: the complete panic identity registry is the enforced checker input.
 #[test]
-fn test_panic_test_baseline_file_exists_and_contains_count() -> TestResult {
+fn test_panic_test_identity_registry_is_enforced() -> TestResult {
     use std::process::Command;
 
     let root = workspace_root();
-    let baseline_path = root.join("ci").join("panic_test_baseline.txt");
-    assert!(baseline_path.is_file(), "missing {:?}", baseline_path);
-
-    let baseline = read_usize_baseline(&baseline_path)?;
+    let registry_path = root.join("ci").join("panic_test_identities.json");
+    assert!(registry_path.is_file(), "missing {:?}", registry_path);
+    assert!(!root.join("ci").join("panic_test_baseline.txt").is_file());
     let bin = std::env::var_os("CARGO_BIN_EXE_perl-ci-hygiene")
         .ok_or("CARGO_BIN_EXE_perl-ci-hygiene was not set by cargo")?;
     let output = Command::new(bin).arg("check-panic-test").current_dir(&root).output()?;
@@ -103,16 +102,7 @@ fn test_panic_test_baseline_file_exists_and_contains_count() -> TestResult {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let reported = stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("test panic!: "))
-        .and_then(|line| line.split_whitespace().next())
-        .ok_or("missing panic count from check-panic-test output")?
-        .parse::<usize>()?;
-    assert_eq!(
-        baseline, reported,
-        "ci/panic_test_baseline.txt ({baseline}) must match check-panic-test ({reported})"
-    );
+    assert!(stdout.contains("PASS: every current identity is accepted"), "{stdout}");
     Ok(())
 }
 

@@ -259,7 +259,6 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         "cargo test -p xtask --bin xtask quality_baseline --locked",
         "cargo test -p xtask --bin xtask merge_ready --locked",
         "cargo test -p xtask --bin xtask gates --locked",
-        "cargo test -p xtask --bin xtask queue_reconciler --locked",
         "cargo test -p xtask --bin xtask ci_route --locked",
         "cargo test -p xtask --bin xtask workflow_policy_lint --locked",
         "cargo test -p xtask --bin xtask allocation_tracker --locked",
