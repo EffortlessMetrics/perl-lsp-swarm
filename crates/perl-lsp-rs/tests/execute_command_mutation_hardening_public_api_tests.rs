@@ -982,3 +982,54 @@ fn test_run_subtest_missing_argument_returns_error() -> TestResult {
     assert_eq!(error.code, -32602, "Missing argument should return InvalidParams (-32602)");
     Ok(())
 }
+
+#[test]
+fn test_run_test_preserves_requested_file_identity() -> TestResult {
+    use perl_lsp::JsonRpcRequest;
+
+    let server = setup_initialized_server();
+    let uri = "file:///workspace/requested.t";
+    let source = "use Test::More;\nok(1, 'requested');\ndone_testing();\n";
+
+    server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "textDocument/didOpen".to_string(),
+        params: Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": source,
+            }
+        })),
+        id: None,
+    });
+
+    let response = server
+        .handle_request(JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            method: "workspace/executeCommand".to_string(),
+            params: Some(json!({
+                "command": "perl.runTest",
+                "arguments": [format!("{uri}::test_basic")],
+            })),
+            id: Some(perl_lsp::protocol::JsonRpcId::Integer(3_i64)),
+        })
+        .ok_or("No response from perl.runTest")?;
+    let result = response.result.ok_or("perl.runTest result missing")?;
+    let results =
+        result.get("results").and_then(Value::as_array).ok_or("perl.runTest results missing")?;
+    let test_ids: Vec<&str> =
+        results.iter().filter_map(|item| item.get("testId").and_then(Value::as_str)).collect();
+
+    assert!(!test_ids.is_empty(), "perl.runTest should return a result record");
+    assert!(
+        test_ids.iter().any(|test_id| test_id.contains("requested.t")),
+        "runTest must preserve the requested file target, got {test_ids:?}"
+    );
+    assert!(
+        test_ids.iter().all(|test_id| !test_id.eq_ignore_ascii_case("test_basic")),
+        "runTest must not pass a bare test name to the file-level runner, got {test_ids:?}"
+    );
+    Ok(())
+}
