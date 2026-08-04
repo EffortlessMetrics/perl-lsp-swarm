@@ -5,7 +5,7 @@
 //! workspace/symbol, and related features.
 
 use super::{
-    LspServer, LspWorkspaceSymbol, WireLocation, WirePosition, WireRange, byte_to_line_col,
+    LspServer, LspWorkspaceSymbol, WireLocation, WirePosition, WireRange, byte_to_line_col, json,
     normalize_package_separator,
 };
 
