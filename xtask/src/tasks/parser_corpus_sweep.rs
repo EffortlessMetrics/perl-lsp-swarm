@@ -1065,9 +1065,10 @@ fn measure_files(
             line_count,
             error_node_count: salvage.error_node_count,
         });
-        recovered_node_count = recovered_node_count
-            .saturating_add(salvage.recovered_count)
-            .saturating_add(salvage.blocking_non_recovered_count);
+        // Keep the established metric semantic: this field counts only
+        // structured `Recovered` diagnostics. Blocking non-recovered
+        // diagnostics make the file non-Clean, but are not recovered nodes.
+        recovered_node_count = recovered_node_count.saturating_add(salvage.recovered_count);
         match salvage.class {
             RecoverySalvageClass::Clean => {
                 clean_files += 1;
