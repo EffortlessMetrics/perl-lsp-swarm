@@ -769,6 +769,56 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Shared string/IO payload builders
+// ──────────────────────────────────────────────────────────────────────────────
+//
+// Two body-expression lowerers exist: [`lower_expr`] below (reached by
+// [`lower_body`]) and `Lowerer::lower_expr` in `hir::lower` (reached by
+// `lower_ast`, which populates `HirFile::bodies`). They must agree exactly.
+//
+// These builders own the AST-field-to-payload mapping so the two call sites
+// cannot drift. That is not hypothetical: the first version of this slice added
+// the string/IO arms to only one lowerer, and everything reaching
+// `HirFile::bodies` — which is what PIR-A actually consumes — silently kept
+// emitting `HirExpr::Opaque`. Each lowerer still owns its own `alloc_expr` call.
+
+/// Build the canonical [`HirExpr::Heredoc`] payload from a `NodeKind::Heredoc`.
+pub(super) fn heredoc_expr(
+    delimiter: &str,
+    interpolated: bool,
+    indented: bool,
+    command: bool,
+    body_span: Option<SourceLocation>,
+) -> HirExpr {
+    HirExpr::Heredoc {
+        delimiter: delimiter.to_string(),
+        interpolated,
+        indented,
+        command,
+        body_range: body_span,
+    }
+}
+
+/// Build the canonical [`HirExpr::Readline`] payload for `<FH>` / `<$fh>`.
+pub(super) fn readline_expr(filehandle: Option<&str>) -> HirExpr {
+    HirExpr::Readline {
+        source: ReadlineSource::from_filehandle(filehandle),
+        filehandle: filehandle.map(str::to_string),
+    }
+}
+
+/// Build the canonical [`HirExpr::Readline`] payload for the `<>` / `<<>>`
+/// diamond forms, which read `@ARGV` and carry no filehandle.
+pub(super) fn diamond_expr() -> HirExpr {
+    HirExpr::Readline { source: ReadlineSource::ArgvDiamond, filehandle: None }
+}
+
+/// Build the canonical [`HirExpr::Glob`] payload from a `NodeKind::Glob`.
+pub(super) fn glob_expr(pattern: &str) -> HirExpr {
+    HirExpr::Glob { pattern: pattern.to_string(), interpolated: glob_pattern_interpolates(pattern) }
+}
+
 fn lower_expr(builder: &mut BodyBuilder, node: &Node) -> HirExprId {
     let range = node.location;
 
@@ -801,36 +851,17 @@ fn lower_expr(builder: &mut BodyBuilder, node: &Node) -> HirExprId {
 
         NodeKind::Heredoc { delimiter, interpolated, indented, command, body_span, .. } => builder
             .alloc_expr(
-                HirExpr::Heredoc {
-                    delimiter: delimiter.clone(),
-                    interpolated: *interpolated,
-                    indented: *indented,
-                    command: *command,
-                    body_range: *body_span,
-                },
+                heredoc_expr(delimiter, *interpolated, *indented, *command, *body_span),
                 range,
             ),
 
-        NodeKind::Readline { filehandle } => builder.alloc_expr(
-            HirExpr::Readline {
-                source: ReadlineSource::from_filehandle(filehandle.as_deref()),
-                filehandle: filehandle.clone(),
-            },
-            range,
-        ),
+        NodeKind::Readline { filehandle } => {
+            builder.alloc_expr(readline_expr(filehandle.as_deref()), range)
+        }
 
-        NodeKind::Diamond => builder.alloc_expr(
-            HirExpr::Readline { source: ReadlineSource::ArgvDiamond, filehandle: None },
-            range,
-        ),
+        NodeKind::Diamond => builder.alloc_expr(diamond_expr(), range),
 
-        NodeKind::Glob { pattern } => builder.alloc_expr(
-            HirExpr::Glob {
-                pattern: pattern.clone(),
-                interpolated: glob_pattern_interpolates(pattern),
-            },
-            range,
-        ),
+        NodeKind::Glob { pattern } => builder.alloc_expr(glob_expr(pattern), range),
 
         _ => {
             let kind_name = node.kind.kind_name().to_string();

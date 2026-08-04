@@ -9,6 +9,7 @@ use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
     DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirStmt,
     HirStmtId, HirSubscript, HirVariable, Sigil, SubscriptKind, UnaryMode, VariableKind,
+    diamond_expr, glob_expr, heredoc_expr, readline_expr,
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
@@ -3472,41 +3473,23 @@ impl<'a> BodyBuilder2<'a> {
                 )
             }
 
-            // String/IO value shells. These mirror `hir::body::lower_expr` and
-            // classify through the same shared rules in `hir::model`, so the two
-            // body-lowering paths cannot disagree about the same construct.
+            // String/IO value shells. The payloads are built by the shared
+            // constructors in `hir::body` so this lowerer and
+            // `hir::body::lower_expr` cannot drift apart — they already did once,
+            // when only one of the two gained these arms.
             NodeKind::Heredoc { delimiter, interpolated, indented, command, body_span, .. } => self
                 .alloc_expr(
-                    HirExpr::Heredoc {
-                        delimiter: delimiter.clone(),
-                        interpolated: *interpolated,
-                        indented: *indented,
-                        command: *command,
-                        body_range: *body_span,
-                    },
+                    heredoc_expr(delimiter, *interpolated, *indented, *command, *body_span),
                     range,
                 ),
 
-            NodeKind::Readline { filehandle } => self.alloc_expr(
-                HirExpr::Readline {
-                    source: ReadlineSource::from_filehandle(filehandle.as_deref()),
-                    filehandle: filehandle.clone(),
-                },
-                range,
-            ),
+            NodeKind::Readline { filehandle } => {
+                self.alloc_expr(readline_expr(filehandle.as_deref()), range)
+            }
 
-            NodeKind::Diamond => self.alloc_expr(
-                HirExpr::Readline { source: ReadlineSource::ArgvDiamond, filehandle: None },
-                range,
-            ),
+            NodeKind::Diamond => self.alloc_expr(diamond_expr(), range),
 
-            NodeKind::Glob { pattern } => self.alloc_expr(
-                HirExpr::Glob {
-                    pattern: pattern.clone(),
-                    interpolated: glob_pattern_interpolates(pattern),
-                },
-                range,
-            ),
+            NodeKind::Glob { pattern } => self.alloc_expr(glob_expr(pattern), range),
 
             _ => {
                 // Everything else: emit Opaque. This is the "fail closed" path.
