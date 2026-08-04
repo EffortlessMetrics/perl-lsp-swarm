@@ -680,6 +680,28 @@ compatibility reports can also classify this file against native rule coverage.
 Selects the critic engine independently of whether critic diagnostics are
 enabled.
 
+#### Critic setting precedence
+
+When the same setting is supplied through both critic namespaces, the current
+`perl.critic.*` block wins over the legacy `perl.perlcritic.*` block. This
+allows an existing legacy configuration to keep working while a project
+incrementally adopts the current native-critic settings:
+
+1. `perl.perlcritic.*` is read as the compatibility baseline.
+2. `perl.critic.*` is applied afterward and overrides shared values such as
+   `enabled` and `severity`.
+
+The VS Code extension follows the same boundary. Use `perl-lsp.critic.*` for
+current settings; `perl-lsp.perlcritic.*` is a deprecated compatibility alias,
+and the current namespace wins when both are explicitly configured. Defaults
+that have not been explicitly changed by the user are not sent as overrides.
+
+To use the external Perl::Critic-compatible engine, set
+`perl.critic.engine = "legacy"` (or `"perlcritic"` / `"external"`) and
+configure the compatible profile and enablement settings as needed. Native
+critic diagnostics remain the default and do not require a `perlcritic`
+executable.
+
 #### `perl.critic.engine`
 
 | Property | Value |
