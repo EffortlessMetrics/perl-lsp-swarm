@@ -48,7 +48,7 @@
 //!
 //! - **Invariant.** `recovery_artifact == true` implies
 //!   `safe_for_breakpoint == false`. This is enforced by the table and
-//!   verified by [`NodeKindFlags::validate`].
+//!   verified by `NodeKindFlags::validate()`.
 //!
 //! # Usage
 //!

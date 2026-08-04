@@ -4,27 +4,27 @@
 //! named CSS colors, Term::ANSIColor calls) and provides color presentation
 //! options for editors.
 
-use once_cell::sync::Lazy;
 use perl_position_tracking::{WirePosition, WireRange, offset_to_utf16_line_col};
 use regex::Regex;
 use serde_json::{Value, json};
+use std::sync::LazyLock;
 
 /// Regex for hex color codes: #RGB, #RRGGBB, #RRGGBBAA
-static HEX_COLOR_RE: Lazy<Option<Regex>> =
-    Lazy::new(|| Regex::new(r"#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})\b").ok());
+static HEX_COLOR_RE: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})\b").ok());
 
 /// Regex for Perl ANSI escape code literals: \e[31m, \033[31m, \x1b[31m, \x{1b}[31m.
-static ANSI_COLOR_RE: Lazy<Option<Regex>> =
-    Lazy::new(|| Regex::new(r"\\(?:e|033|x1[bB]|x\{1[bB]\})\[([0-9;]+)m").ok());
+static ANSI_COLOR_RE: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"\\(?:e|033|x1[bB]|x\{1[bB]\})\[([0-9;]+)m").ok());
 
 /// Regex for named CSS colors inside quoted strings
-static NAMED_COLOR_RE: Lazy<Option<Regex>> = Lazy::new(|| {
+static NAMED_COLOR_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(aqua|black|blue|fuchsia|gray|green|lime|maroon|navy|olive|orange|purple|red|silver|teal|white|yellow)\b").ok()
 });
 
 /// Regex for Term::ANSIColor color('name') calls
-static TERM_ANSICOLOR_RE: Lazy<Option<Regex>> =
-    Lazy::new(|| Regex::new(r#"color(?:ed)?\s*\(\s*(?:[^,]*,\s*)?['"](\w+)['"]\s*\)"#).ok());
+static TERM_ANSICOLOR_RE: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r#"color(?:ed)?\s*\(\s*(?:[^,]*,\s*)?['"](\w+)['"]\s*\)"#).ok());
 
 /// The 17 CSS basic named colors with their RGB values
 const NAMED_COLORS: &[(&str, u8, u8, u8)] = &[

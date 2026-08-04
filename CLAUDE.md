@@ -69,10 +69,35 @@ The main Claude thread is the warm accountable owner unless it was explicitly sp
 with a bounded brief. Naming one issue or PR does not convert the main thread into a
 disposable worker.
 
-Direct execution is normal. Use ordinary subagents, context forks, whole-flow agents,
-or Agent Teams only when another context, oracle, tool surface, or review method
-materially changes the evidence or reduces elapsed work. Teams are useful when agents
-must genuinely communicate; they are not the default lifecycle.
+Use the internal `orchestrate-work` skill for proportional execution shape:
+
+```text
+tiny or tightly coupled work
+→ direct root execution is often cheapest
+
+substantive work
+→ the root normally orchestrates
+→ focused agents consume bounded skills or questions
+→ one writer integrates each current candidate
+
+campaign work
+→ whole-flow claim lanes may run under the campaign root
+→ the root retains goal interpretation and reconciliation
+```
+
+Delegation is worth its cost when it preserves root context, changes the source,
+oracle, tool, environment, or review method, compresses high-output evidence, or
+reduces elapsed time. The brief is the control: bound the target, authority,
+mutation boundary, sufficient result, falsifiers, stop conditions, and non-goals.
+An unknown conclusion may be explored when the search boundary is bounded. Agent
+Teams are useful only when genuine communication changes the result; they are not
+the default lifecycle.
+
+Delegate when the evidence-to-answer compression ratio is high: CI or log triage,
+corpus or repository-wide searches, dependency/API audits, external-source collection,
+failure bisection, broad inventories, or an independently useful proof adversary. The
+child returns bounded evidence and references; the warm root keeps decisions,
+contradictions, and integration. This is an evidence-cost trigger, not a required relay.
 
 One coherent claim normally has one current candidate, and one writer mutates that
 candidate at a time. Before creating another candidate, check only for an equivalent
@@ -80,8 +105,7 @@ current PR and explicit prerequisites. Otherwise focus on the selected claim. If
 or required integration evidence later presents a real conflict, the affected lane
 repairs it and refreshes only the affected proof and review.
 
-A compact whole-flow assignment is enough when the repository skills carry the
-method:
+A compact whole-flow assignment is enough when repository skills carry the method:
 
 ```text
 Take issue #123 through `deliver-pr`.
@@ -102,14 +126,16 @@ Detailed method and contracts:
 [`docs/agents/DEVELOPMENT_METHOD.md`](docs/agents/DEVELOPMENT_METHOD.md),
 [`docs/agents/GITHUB_SURFACES.md`](docs/agents/GITHUB_SURFACES.md),
 [`docs/agents/REVIEW_CURRENTNESS.md`](docs/agents/REVIEW_CURRENTNESS.md), and
-[`docs/agents/SKILL_CONTRACT.md`](docs/agents/SKILL_CONTRACT.md).
+[`docs/agents/SKILL_CONTRACT.md`](docs/agents/SKILL_CONTRACT.md). The operator
+recovery and handoff sequence is in
+[`docs/how-to/SESSION_OPERATIONS.md`](docs/how-to/SESSION_OPERATIONS.md).
 
 ## GitHub-native work
 
 - issues hold research, corrections, current synthesis, plans, dependencies, and next
   coherent actions;
 - pull requests hold one acceptance-and-rollback candidate;
-- submitted reviews and inline threads hold formal findings and evidence-backed
+- submitted reviews and inline threads hold findings and evidence-backed
   dispositions;
 - checks and rulesets hold current machine and integration evidence;
 - merge closeout records what landed, what remains, and what becomes actionable next.
@@ -123,22 +149,57 @@ integration experiment.
 
 A clean review is valid. Never manufacture a finding or edit to prove review effort.
 
+## Review
+
+Review is not reading a diff, relaying CI green, posting a head/claim hash, or repeating
+a subagent verdict. For substantive work it is a directed, falsifying, and verified
+judgment:
+
+- **discrimination** — what realistic wrong implementation does the proof reject?
+- **production reachability** — what live request, consumer, or protocol path reaches the change?
+- **external truth** — what competent authority establishes user-visible or protocol semantics?
+- **claim honesty** — what does the evidence establish, and what remains unproved?
+- **authority and complexity** — is this the semantic owner, and is the result free of duplicate authority, residue, or unnecessary API?
+- **risk and rollback** — what compatibility, security, packaging, migration, or support boundary moved?
+
+The construction context must not be the only detection surface supporting merge.
+Fresh context is useful when it brings a different source, oracle, threat model,
+method, or attention surface; identity separation by itself is neither necessary
+nor sufficient.
+
+Review is cumulative and semantic. A submitted review, inline finding, reply, and
+evidence-backed disposition are the durable record. Do not post `Review pass (...) at
+head ... and claim ...` receipt comments. A later commit does not invalidate review
+merely because the SHA changed.
+
+After repair:
+
+- verify the affected finding, proof, and changed seam;
+- revisit claim, authority, reachability, risk, rollback, or compatibility only when
+  the repair materially changes them;
+- do not restart a full `deep` review for formatting, editorial cleanup, generated
+  receipt refresh, or stronger tests unless they change a substantive conclusion;
+- review actual conflict or integration repairs at the affected seam.
+
+A clean review is valid and should leave a concise conclusion that helps the next
+session understand what was checked and what remains unproved.
+
 ## Proof and currentness
 
-Formal review binds to:
+Keep candidate, integration, and landed evidence distinct.
 
-```text
-full candidate head SHA
-+ normalized material PR claim and review-index digest
-```
-
-- candidate or material claim change → rerun affected proof and review;
+- candidate behavior or material claim changes → rerun affected proof and review;
 - actual merge conflict → resolve it, rerun conflict-affected proof, and review the
-  resulting candidate;
-- explicit prerequisite change or actual merge-group or combined-tree failure →
-  perform targeted analysis and lane-local repair;
-- unrelated `main` movement with an unchanged conflict-free candidate and material
-  claim → no rebase, update-branch, empty commit, full CI replay, or review churn.
+  repaired seam;
+- explicit prerequisite change or actual merge-group/combined-tree failure → targeted
+  analysis and lane-local repair;
+- unrelated `main` movement with a conflict-free candidate → no rebase, update-branch,
+  empty commit, full CI replay, or review churn;
+- a head SHA change by itself → no review invalidation.
+
+At merge time, the current head SHA may be used as compare-and-swap protection so the
+branch cannot move between inspection and merge. That is merge safety, not review
+currentness.
 
 This repository squash-merges. GitHub creates the landed squash commit;
 reconciliation verifies its effect on current `main`.

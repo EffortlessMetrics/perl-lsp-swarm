@@ -556,12 +556,16 @@ impl LspServer {
     }
 
     /// Extract parameters from my (...) = @_; pattern in the body
+    ///
+    /// Also handles the common Perl OO idiom `my $self = shift; my (...) = @_;`
+    /// by scanning the first few statements (not just the first one).
     pub(super) fn extract_params_from_body(&self, body: &Node, params: &mut Vec<String>) {
         if let NodeKind::Block { statements } = &body.kind {
-            if let Some(first_stmt) = statements.first() {
+            // Scan up to 3 statements to handle `my $self = shift;` before
+            // the `my (...) = @_;` unpacking pattern (#5410).
+            for stmt in statements.iter().take(3) {
                 // Look for my (...) = @_ pattern
-                if let NodeKind::VariableListDeclaration { variables, initializer, .. } =
-                    &first_stmt.kind
+                if let NodeKind::VariableListDeclaration { variables, initializer, .. } = &stmt.kind
                 {
                     // Check if initializer is @_
                     if let Some(init) = initializer {
@@ -578,7 +582,7 @@ impl LspServer {
                             }
                         }
                     }
-                } else if let NodeKind::Assignment { lhs, rhs, .. } = &first_stmt.kind {
+                } else if let NodeKind::Assignment { lhs, rhs, .. } = &stmt.kind {
                     // Alternative pattern: ($x, $y) = @_
                     if let NodeKind::Variable { sigil, name } = &rhs.kind {
                         if sigil == "@" && name == "_" {

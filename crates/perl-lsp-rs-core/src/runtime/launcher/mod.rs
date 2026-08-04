@@ -863,7 +863,8 @@ pub fn help_text() -> String {
     out.push('\n');
     out.push_str("Tool options:\n");
     out.push_str("  --check <files...>   Validate Perl files and report parse errors\n");
-    out.push_str("  --check-project [dir] Scan project directory for parsability report\n");
+    out.push_str("  --check-project [dir]\n");
+    out.push_str("                       Scan project directory for parsability report\n");
     out.push_str("  --doctor [dir]       Explain Perl path, config, and effective @INC roots\n");
     out.push_str(
         "  --json               Machine-readable JSON output (currently affects --doctor)\n",
@@ -890,18 +891,18 @@ pub fn help_text() -> String {
     );
     out.push('\n');
     out.push_str("Examples:\n");
-    out.push_str("  perllsp --stdio                        # stdio mode (default)\n");
-    out.push_str("  perllsp --mcp                          # stdio mode alias for MCP clients\n");
+    out.push_str("  perllsp --stdio                         # stdio mode (default)\n");
+    out.push_str("  perllsp --mcp                           # stdio mode alias for MCP clients\n");
     out.push_str("  perllsp --stdio --log                   # with logging\n");
     out.push_str("  perllsp --socket --port 9257            # TCP socket mode\n");
     out.push_str("  perllsp --stdio --feature-profile=prod  # production profile\n");
     out.push_str("  perllsp --check lib/MyModule.pm         # syntax check\n");
-    out.push_str("  perllsp --check-project lib/             # project scan\n");
-    out.push_str("  perllsp --doctor .                       # first-run setup report\n");
+    out.push_str("  perllsp --check-project lib/            # project scan\n");
+    out.push_str("  perllsp --doctor .                      # first-run setup report\n");
     out.push_str("  perllsp --perltidy-compat-report .perltidyrc\n");
     out.push_str("  perllsp --perlcritic-compat-report .perlcriticrc\n");
     out.push_str("  perllsp --info                          # server information\n");
-    out.push_str("  perllsp --completion bash >> ~/.bashrc   # install completions\n");
+    out.push_str("  perllsp --completion bash >> ~/.bashrc  # install completions\n");
     out.push('\n');
     out.push_str("Environment:\n");
     out.push_str("  PERL_LSP_LOG=1       Enable logging (alternative to --log)\n");

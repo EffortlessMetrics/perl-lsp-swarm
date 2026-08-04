@@ -627,3 +627,44 @@ pub fn perl_available() -> bool {
     }
     available
 }
+
+/// Wait for a named DAP event on the receiver, returning the full message.
+///
+/// This is the canonical shared copy of the `wait_for_event` helper that was
+/// previously copy-pasted across several DAP integration-test files
+/// (`dap_smoke_e2e`, `dap_attach_e2e`, `dap_module_resolution_smoke`,
+/// `dap_scorecard_harness`). Files whose `wait_for_event` had a materially
+/// different signature (e.g. returning `Option<Value>` or taking `timeout_ms`)
+/// keep their local variant — only the byte-identical copies were consolidated
+/// here (#5232).
+pub fn wait_for_event(
+    rx: &Receiver<DapMessage>,
+    event_name: &str,
+    timeout: Duration,
+) -> Result<DapMessage, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(format!("timeout waiting for event `{event_name}`"));
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        match rx.recv_timeout(remaining) {
+            Ok(message) => {
+                if let DapMessage::Event { event, .. } = &message
+                    && event == event_name
+                {
+                    return Ok(message);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                return Err(format!("timeout waiting for event `{event_name}`"));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(format!(
+                    "channel disconnected waiting for `{event_name}` — debuggee exited or crashed"
+                ));
+            }
+        }
+    }
+}

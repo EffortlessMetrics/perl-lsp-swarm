@@ -1,38 +1,64 @@
 ---
 name: review-pr
-description: Formally review one fixed current PR candidate and material claim through GitHub after mutable repair converges. A clean no-finding result is valid.
+description: Review one pull request cumulatively through GitHub, publishing useful findings or a useful clean conclusion without exact-head or claim-hash receipt ceremony.
 user-invocable: false
 ---
 
 # Review PR
 
-Resolve the full candidate head and compute the normalized material claim/review-index digest with `scripts/reviews/claim-digest --pr <n> [--repo owner/repo]`.
+Review the current cumulative pull request against its controlling issue, accepted claim, changed production path, proof, and applicable compatibility, security, packaging, migration, support, and rollback boundaries.
 
-Hold ordinary candidate and material-claim mutation during judgment. Before review, run:
+The PR head identifies the code currently visible on GitHub. It is not a review-validity token. Do not compute a material-claim digest, call `scripts/reviews/run review-start|review-done`, or post comments that merely repeat a head SHA and claim hash.
 
-```text
-scripts/reviews/run review-start --pr <n> --kind <standard|deep> --reviewer <id> --head <sha> --claim-digest <sha256>
+Review is directed, falsifying, and verified. Seek realistic counterexamples and check claim honesty, semantic and external correctness, proof discrimination, production reachability, negative/fallback behavior, authority, complexity, compatibility, rollback, and uncertainty where applicable. Use native Claude review, a focused read-only reviewer, an external oracle, or direct inspection when that changes the evidence surface. A clean review is valid.
+
+Publish material findings through GitHub submitted reviews and inline threads. A clean result still records what was examined, what evidence or authority was used, what realistic wrong behavior was challenged, and what remains unproved.
+
+Review currentness is semantic:
+
+- a later commit does not invalidate review merely because the SHA changed;
+- a finding repair requires checking the affected finding, proof, and changed seam;
+- a material change to claim, production route, authority, risk, rollback, or proof requires review of the affected dimensions;
+- formatting, editorial cleanup, generated receipt refresh, or test strengthening does not trigger a full review unless it changes a substantive conclusion;
+- conflict or integration repair receives focused review of the repaired seam.
+
+Do not restart a full `deep` review after every push. Broaden only when the later change materially broadens the review subject.
+
+## Useful review record
+
+Submit a review that helps a fresh agent continue:
+
+```markdown
+## Review scope
+- Claim, changed seams, consumers, and prior findings examined
+
+## Evidence and falsifiers
+- Commands, tests, sources, or authorities used
+- Realistic wrong behavior challenged
+
+## Findings
+- Material findings with severity and evidence
+
+<!-- Or: ## No material findings -->
+
+## Prior finding dispositions
+- fixed | refuted | superseded | follow-up, with evidence
+
+## What this establishes
+- Conclusions supported by the review
+
+## Residual risk / not proved
+- Local uncertainty and excluded surfaces
+
+## Next action
+- Repair, focused re-review, merge path, or named follow-up
 ```
 
-Capture the returned `comment_id=<id>` with the fixed review subject. Failure to establish the digest, running receipt, or its comment ID is `REVIEW_NOT_PROVEN`.
-
-Review the issue, claim, contract, proof, cumulative diff, production path, current material PR claim sections, hardening, simplification, and applicable lenses. Publish material findings through GitHub review and threads. A clean review is valid.
-
-After the submitted review is durable, run:
-
-```text
-scripts/reviews/run review-done --pr <n> --kind <standard|deep> --reviewer <id> --head <sha> --claim-digest <sha256> --comment-id <review-start-id>
-```
-
-`review-done` reloads and validates that exact running comment before updating it in place. Do not append a separate manual marker or rediscover the receipt by marker text. A lost/moved comment ID or failed validation/update is `REVIEW_NOT_PROVEN` until durable state is reconciled.
-
-If the material claim changed during review, complete or retire the old subject honestly and return `CLAIM_REVIEW_STALE`; `finish-pr` reruns the bounded final challenge before starting formal review against the new subject.
-
-Do not mutate during formal judgment. Any later head or material claim/review-index change requires a fresh formal review, with supporting proof/lenses rerun proportionately.
+Do not submit only `LGTM`, `review complete`, reviewer identity, a head SHA, a claim digest, or a status line.
 
 ## Routes
 
 - `REVIEW_CURRENT` → `verify-live-ci`
 - `REVIEW_FINDINGS_OPEN` → `address-review-comments`
-- `CLAIM_REVIEW_STALE` → `final-challenge`, then `review-pr`
-- `REVIEW_NOT_PROVEN` → resolve candidate identity, claim identity, evidence, or review-receipt failure
+- `REVIEW_SCOPE_CHANGED` → review the affected dimensions; route to `prepare-issue` only when the claim or owner must change
+- `REVIEW_NOT_PROVEN` → resolve missing evidence, authority, or review instrumentation

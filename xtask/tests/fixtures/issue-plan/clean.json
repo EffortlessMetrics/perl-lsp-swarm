@@ -8,7 +8,7 @@
       { "name": "plan-reviewed" },
       { "name": "swarm-discovered" }
     ],
-    "body": "## Problem\nMissing coverage.\n## Reproduction / example\nRun the smoke harness.\n## Suspected root area\nperl-lsp-rs tests.\n## Acceptance tests\ncargo test passes.\n## Non-goals\nNo production change.\n## Dependencies / sequencing\nNone; blocked by nothing.\n## Risk / rollback\nLOW; revert the test commit.\n## Verification notes\nVerified against main."
+    "body": "## Builder-Ready Plan\n## Problem\nMissing coverage.\n## Reproduction / example\nRun the smoke harness.\n## Suspected root area\nperl-lsp-rs tests.\n## Acceptance tests\ncargo test passes.\n## Non-goals\nNo production change.\n## Dependencies / sequencing\nNone; blocked by nothing.\n## Risk / rollback\nLOW; revert the test commit.\n## Verification notes\nVerified against main."
   },
   {
     "number": 935,

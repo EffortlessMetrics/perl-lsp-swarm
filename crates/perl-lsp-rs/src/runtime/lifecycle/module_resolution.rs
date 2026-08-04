@@ -452,7 +452,7 @@ impl LspServer {
                 if !self.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
                     let _ = self.show_message(
                         MessageType::Warning,
-                        "perl-lsp: workspace root not detected — module resolution disabled. \
+                        "Perl LSP: workspace root not detected — module resolution disabled. \
                          To enable: open the project folder in your editor (File > Open Folder) \
                          rather than individual files. This warning appears once per server session.",
                     );
@@ -491,7 +491,7 @@ impl LspServer {
                 if !self.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
                     let _ = self.show_message(
                         MessageType::Warning,
-                        "perl-lsp: workspace root not detected — module resolution disabled. \
+                        "Perl LSP: workspace root not detected — module resolution disabled. \
                          To enable: open the project folder in your editor (File > Open Folder) \
                          rather than individual files. This warning appears once per server session.",
                     );
@@ -624,7 +624,7 @@ impl LspServer {
                 if !self.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
                     let _ = self.show_message(
                         MessageType::Warning,
-                        "perl-lsp: workspace root not detected — module resolution disabled. \
+                        "Perl LSP: workspace root not detected — module resolution disabled. \
                          To enable: open the project folder in your editor (File > Open Folder) \
                          rather than individual files. This warning appears once per server session.",
                     );

@@ -779,7 +779,7 @@ impl Node {
                 format!("(named_parameter {})", variable.to_sexp())
             }
 
-            NodeKind::Method { name: _, name_span: _, signature, attributes, body } => {
+            NodeKind::Method { name, name_span: _, signature, attributes, body } => {
                 let block_contents = match &body.kind {
                     NodeKind::Block { statements } => {
                         statements.iter().map(|s| s.to_sexp()).collect::<Vec<_>>().join(" ")
@@ -787,7 +787,7 @@ impl Node {
                     _ => body.to_sexp(),
                 };
 
-                let mut parts = vec!["(bareword)".to_string()];
+                let mut parts = vec![format!("(method_name {name})")];
 
                 // Add signature if present
                 if let Some(sig) = signature {
@@ -1979,7 +1979,7 @@ pub enum NodeKind {
     /// precedence level. Semantically equivalent to `($a op1 $b) && ($b op2 $c)`
     /// with each intermediate operand evaluated only once.
     ///
-    /// A single comparison (`$x < 10`) always produces [`Binary`] instead.
+    /// A single comparison (`$x < 10`) always produces [`Binary`](Self::Binary) instead.
     ChainedComparison {
         /// The N+1 operands in declaration order, where N is the number of operators (N >= 2).
         operands: Vec<Node>,

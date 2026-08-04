@@ -12,7 +12,8 @@ pub mod sse;
 
 pub use destination::{
     ApprovedDestination, DestinationError, credential_may_attach, validate_endpoint,
-    validate_endpoint_with_resolver,
+    validate_endpoint_with_resolver, validate_tcp_attach_host,
+    validate_tcp_attach_host_with_resolver,
 };
 pub use openai::{OpenAiConfig, OpenAiProvider};
 pub use rate_limiter::RateLimiter;

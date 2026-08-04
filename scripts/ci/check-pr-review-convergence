@@ -32,6 +32,14 @@ CORE_SUMMARY="$(sed '/^{/,$d' "$TMP_DIR/core.out")"
 if ! jq -e . >/dev/null 2>&1 <<<"$CORE_JSON"; then
     echo "ERROR: review convergence core did not emit its final JSON verdict" >&2
     cat "$TMP_DIR/core.out" >&2
+    jq -n --arg pr "$1" \
+        '{pr: ($pr | tonumber? // $pr), headRefOid: null, converged: false, formal_review: {
+            classification: "NOT_PROVEN",
+            status: "instrument_failure",
+            reason: "github_facts_unavailable",
+            candidate_head: null,
+            claim_review: "not_proven"
+        }}'
     exit 2
 fi
 
@@ -84,6 +92,79 @@ if [[ -s "$TMP_DIR/claim.err" ]]; then
     cat "$TMP_DIR/claim.err" >&2
 fi
 
+# Formal-review classification is an observation composed from the canonical
+# GitHub facts above and the optional material-claim receipt. It is not a merge
+# gate or a second state database. A submitted current human review must be
+# paired with a current material-claim receipt; head-bound review alone does
+# not establish that the visible claim was reviewed.
+CORE_IS_DRAFT="$(jq -r '.is_draft // false' <<<"$CORE_JSON")"
+CORE_PENDING_COUNT="$(jq -r '.pending_reviewers | length' <<<"$CORE_JSON")"
+CORE_REVIEW_RUNS="$(jq -r '.review_runs_in_flight // 0' <<<"$CORE_JSON")"
+CORE_CURRENT_REVIEW_COUNT="$(jq -r '.current_human_review_count // 0' <<<"$CORE_JSON")"
+CORE_HUMAN_REVIEW_COUNT="$(jq -r '.human_review_count // 0' <<<"$CORE_JSON")"
+CORE_STALE_REVIEW_COUNT="$(jq -r '.stale_reviews | length' <<<"$CORE_JSON")"
+CORE_CURRENT_CHANGE_COUNT="$(jq -r '.current_change_requests | length' <<<"$CORE_JSON")"
+CORE_UNRESOLVED_COUNT="$(jq -r '.unresolved_total // 0' <<<"$CORE_JSON")"
+CORE_RESOLVED_WITHOUT_DISPOSITION="$(jq -r '.resolved_without_disposition // 0' <<<"$CORE_JSON")"
+CORE_REVIEW_DECISION="$(jq -r '.review_decision // empty' <<<"$CORE_JSON")"
+CORE_DISMISSED_REVIEW_COUNT="$(jq -r '.dismissed_human_review_count // 0' <<<"$CORE_JSON")"
+CLAIM_RESULT_VALUE="$(jq -r '.result // "not_proven"' <<<"$CLAIM_JSON")"
+
+FORMAL_CLASSIFICATION="NOT_PROVEN"
+FORMAL_REASON="instrument_failure"
+FORMAL_STATUS="unavailable"
+if [[ "$CORE_RC" -ge 2 || "$CLAIM_RC" -ge 2 || "$HEADS_MATCH" != true ]]; then
+    if [[ "$CORE_RC" -ge 2 ]]; then
+        FORMAL_REASON="github_facts_unavailable"
+    elif [[ "$HEADS_MATCH" != true ]]; then
+        FORMAL_REASON="candidate_moved_during_claim_check"
+    else
+        FORMAL_REASON="material_claim_evidence_unusable"
+    fi
+    FORMAL_STATUS="instrument_failure"
+elif [[ "$CORE_IS_DRAFT" == "true" || "$CORE_REVIEW_RUNS" -gt 0 || "$CORE_PENDING_COUNT" -gt 0 ]]; then
+    FORMAL_CLASSIFICATION="PENDING"
+    FORMAL_REASON="review_not_complete"
+    FORMAL_STATUS="pending"
+elif [[ "$CORE_CURRENT_CHANGE_COUNT" -gt 0 || "$CORE_UNRESOLVED_COUNT" -gt 0 || "$CORE_RESOLVED_WITHOUT_DISPOSITION" -gt 0 ]]; then
+    FORMAL_CLASSIFICATION="FINDINGS_OPEN"
+    if [[ "$CORE_CURRENT_CHANGE_COUNT" -gt 0 ]]; then
+        FORMAL_REASON="current_changes_requested"
+    else
+        FORMAL_REASON="review_threads_not_converged"
+    fi
+    FORMAL_STATUS="findings_open"
+elif [[ "$CORE_CURRENT_REVIEW_COUNT" -gt 0 ]]; then
+    if [[ "$CLAIM_RESULT_VALUE" == "current" ]]; then
+        FORMAL_CLASSIFICATION="CURRENT"
+        FORMAL_REASON="submitted_human_review_and_current_material_claim_receipt"
+        FORMAL_STATUS="clean"
+    else
+        FORMAL_CLASSIFICATION="NOT_PROVEN"
+        FORMAL_REASON="current_human_review_without_claim_evidence"
+        FORMAL_STATUS="unusable"
+    fi
+elif [[ "$CORE_STALE_REVIEW_COUNT" -gt 0 ]]; then
+    FORMAL_CLASSIFICATION="STALE"
+    FORMAL_REASON="latest_human_review_predates_candidate_head"
+    FORMAL_STATUS="stale"
+elif [[ "$CORE_DISMISSED_REVIEW_COUNT" -gt 0 ]]; then
+    FORMAL_CLASSIFICATION="STALE"
+    FORMAL_REASON="latest_human_review_dismissed"
+    FORMAL_STATUS="dismissed"
+elif [[ "$CLAIM_RESULT_VALUE" == "current" ]]; then
+    FORMAL_CLASSIFICATION="CURRENT"
+    FORMAL_REASON="current_material_claim_review_receipt"
+    FORMAL_STATUS="clean"
+elif [[ "$CORE_HUMAN_REVIEW_COUNT" -eq 0 && "$CORE_REVIEW_DECISION" == "" && "$CORE_PENDING_COUNT" -eq 0 ]]; then
+    FORMAL_CLASSIFICATION="NOT_APPLICABLE"
+    FORMAL_REASON="native_policy_has_no_required_review_and_no_review_evidence"
+    FORMAL_STATUS="not_applicable"
+else
+    FORMAL_REASON="no_current_formal_review_evidence"
+    FORMAL_STATUS="unusable"
+fi
+
 if [[ "$CLAIM_RC" -eq 0 && "$HEADS_MATCH" == true ]]; then
     CLAIM_RESULT="$(jq -r '.result' <<<"$CLAIM_JSON")"
     echo "OK   PR #$1: material-claim review state=$CLAIM_RESULT at $CORE_HEAD"
@@ -106,6 +187,9 @@ jq -n \
     --argjson coreOk "$CORE_OK" \
     --argjson claimOk "$CLAIM_OK" \
     --argjson headsMatch "$HEADS_MATCH" \
+    --arg formalClassification "$FORMAL_CLASSIFICATION" \
+    --arg formalReason "$FORMAL_REASON" \
+    --arg formalStatus "$FORMAL_STATUS" \
     '$core + {
         converged: ($coreOk and $claimOk),
         material_claim_review: ($claim.result // "not_proven"),
@@ -118,7 +202,14 @@ jq -n \
         material_claim_invalid_trusted_receipts: ($claim.invalid_trusted_receipts // 0),
         material_claim_invalid_untrusted_receipts: ($claim.invalid_untrusted_receipts // 0),
         material_claim_head: ($claim.head // null),
-        material_claim_head_matches_candidate: $headsMatch
+        material_claim_head_matches_candidate: $headsMatch,
+        formal_review: {
+            classification: $formalClassification,
+            status: $formalStatus,
+            reason: $formalReason,
+            candidate_head: ($core.headRefOid // null),
+            claim_review: ($claim.result // "not_proven")
+        }
     }'
 
 if [[ "$CORE_RC" -eq 0 && "$CLAIM_RC" -eq 0 && "$HEADS_MATCH" == true ]]; then

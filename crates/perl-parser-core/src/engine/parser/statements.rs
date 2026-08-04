@@ -1524,11 +1524,14 @@ impl<'a> Parser<'a> {
             if s.peek_kind() == Some(TokenKind::RightBrace) {
                 s.expect(TokenKind::RightBrace)?;
             } else {
-                // Missing closing brace (EOF or recovery break)
-                let pos = s.current_position();
+                // Missing closing brace (EOF or recovery break). Anchor the
+                // diagnostic at the opening `{` (recorded in `start`) rather
+                // than at end-of-input, so the squiggle lands on the brace the
+                // user needs to close and nested unclosed blocks are
+                // distinguishable (#5546).
                 s.errors.push(ParseError::syntax(
                     "Unclosed block: expected '}' but reached end of input",
-                    pos,
+                    start,
                 ));
             }
             let end = s.previous_position();

@@ -195,105 +195,114 @@ impl LspServer {
         if let Some(params) = params {
             let uri = req_uri(&params)?;
 
-            let documents = self.documents_guard();
-            if let Some(doc) = self.get_document(&documents, uri) {
-                let mut lsp_ranges = Vec::new();
-
-                // Add text-based data section folding
-                if let Some(marker_offset) = crate::util::find_data_marker_byte_lexed(&doc.text) {
-                    let marker_line = offset_to_line(&doc.text, marker_offset);
-                    let total_lines = doc.text.lines().count();
-
-                    // Add fold for data section body if it exists
-                    let start_line = marker_line + 1;
-                    let end_line = total_lines.saturating_sub(1);
-                    push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "comment");
+            // Snapshot the document text and parsed AST under the documents
+            // lock, then drop the guard so the expensive scanning, AST walk,
+            // and deduplication run off-lock (#4966). This is the same pattern
+            // already used by the sibling hover and formatting providers.
+            let (text, parsed) = {
+                let documents = self.documents_guard();
+                match self.get_document(&documents, uri) {
+                    Some(doc) => (doc.text.clone(), doc.current_parsed()),
+                    None => return Ok(Some(json!([]))),
                 }
+            };
 
-                // NOTE: Heredoc folding is handled by the AST NodeKind::Heredoc arm
-                // in FoldingRangeExtractor::extract. The previous lexer-based
-                // extract_heredoc_ranges produced overlapping-but-non-identical
-                // ranges that caused double-fold chevrons (#5072).
+            let doc_text = &text;
+            let mut lsp_ranges = Vec::new();
 
-                // Add POD folding ranges (POD is parser trivia — no NodeKind::Pod — so the
-                // AST path cannot fold it).  This scan runs only when the AST is available,
-                // complementing the existing fallback that runs when it is not.  (#5071)
-                for (pod_start_line, pod_end_line) in extract_pod_ranges(&doc.text) {
-                    push_multiline_folding_range(
-                        &mut lsp_ranges,
-                        pod_start_line,
-                        pod_end_line,
-                        "comment",
-                    );
-                }
+            // Add text-based data section folding
+            if let Some(marker_offset) = crate::util::find_data_marker_byte_lexed(doc_text) {
+                let marker_line = offset_to_line(doc_text, marker_offset);
+                let total_lines = doc_text.lines().count();
 
-                // Add #region/#endregion folding ranges
-                let region_ranges =
-                    crate::folding::FoldingRangeExtractor::extract_region_markers(&doc.text);
-                for range in region_ranges {
-                    let start_line = offset_to_line(&doc.text, range.start_offset);
-                    let end_line = offset_to_line(&doc.text, range.end_offset);
-                    push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "region");
-                }
+                // Add fold for data section body if it exists
+                let start_line = marker_line + 1;
+                let end_line = total_lines.saturating_sub(1);
+                push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "comment");
+            }
 
-                let parsed = doc.current_parsed();
-                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                    // Extract folding ranges from AST
-                    let mut extractor = crate::folding::FoldingRangeExtractor::new();
-                    let ranges = extractor.extract(ast);
+            // NOTE: Heredoc folding is handled by the AST NodeKind::Heredoc arm
+            // in FoldingRangeExtractor::extract. The previous lexer-based
+            // extract_heredoc_ranges produced overlapping-but-non-identical
+            // ranges that caused double-fold chevrons (#5072).
 
-                    // Convert to LSP JSON format with proper line offsets
-                    for range in ranges {
-                        // Calculate actual line numbers from document content
-                        let start_line = offset_to_line(&doc.text, range.start_offset);
-                        let end_line = offset_to_line(&doc.text, range.end_offset);
-                        if let Some(lsp_end_line) =
-                            lsp_inclusive_multiline_end_line(start_line, end_line)
-                        {
-                            let mut lsp_range = json!({
-                                "startLine": start_line,
-                                "endLine": lsp_end_line,  // LSP folding ranges are inclusive
-                            });
+            // Add POD folding ranges (POD is parser trivia — no NodeKind::Pod — so the
+            // AST path cannot fold it).  This scan runs only when the AST is available,
+            // complementing the existing fallback that runs when it is not.  (#5071)
+            for (pod_start_line, pod_end_line) in extract_pod_ranges(doc_text) {
+                push_multiline_folding_range(
+                    &mut lsp_ranges,
+                    pod_start_line,
+                    pod_end_line,
+                    "comment",
+                );
+            }
 
-                            if let Some(ref kind) = range.kind {
-                                lsp_range["kind"] = match kind {
-                                    crate::folding::FoldingRangeKind::Comment => json!("comment"),
-                                    crate::folding::FoldingRangeKind::Imports => json!("imports"),
-                                    crate::folding::FoldingRangeKind::Region => json!("region"),
-                                };
-                            }
+            // Add #region/#endregion folding ranges
+            let region_ranges =
+                crate::folding::FoldingRangeExtractor::extract_region_markers(doc_text);
+            for range in region_ranges {
+                let start_line = offset_to_line(doc_text, range.start_offset);
+                let end_line = offset_to_line(doc_text, range.end_offset);
+                push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "region");
+            }
 
-                            lsp_ranges.push(lsp_range);
+            if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
+                // Extract folding ranges from AST
+                let mut extractor = crate::folding::FoldingRangeExtractor::new();
+                let ranges = extractor.extract(ast);
+
+                // Convert to LSP JSON format with proper line offsets
+                for range in ranges {
+                    // Calculate actual line numbers from document content
+                    let start_line = offset_to_line(doc_text, range.start_offset);
+                    let end_line = offset_to_line(doc_text, range.end_offset);
+                    if let Some(lsp_end_line) =
+                        lsp_inclusive_multiline_end_line(start_line, end_line)
+                    {
+                        let mut lsp_range = json!({
+                            "startLine": start_line,
+                            "endLine": lsp_end_line,  // LSP folding ranges are inclusive
+                        });
+
+                        if let Some(ref kind) = range.kind {
+                            lsp_range["kind"] = match kind {
+                                crate::folding::FoldingRangeKind::Comment => json!("comment"),
+                                crate::folding::FoldingRangeKind::Imports => json!("imports"),
+                                crate::folding::FoldingRangeKind::Region => json!("region"),
+                            };
                         }
+
+                        lsp_ranges.push(lsp_range);
                     }
-
-                    // Dedup identical ranges (start+end+kind) that arise when both a
-                    // Subroutine node and its inner Block node map to the same line span.
-                    lsp_ranges.sort_by_key(|r| {
-                        (
-                            r["startLine"].as_u64().unwrap_or(0),
-                            r["endLine"].as_u64().unwrap_or(0),
-                            r.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        )
-                    });
-                    lsp_ranges.dedup_by_key(|r| {
-                        (
-                            r["startLine"].as_u64().unwrap_or(0),
-                            r["endLine"].as_u64().unwrap_or(0),
-                            r.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        )
-                    });
-
-                    // If no ranges from AST, try fallback
-                    if lsp_ranges.is_empty() {
-                        return Ok(Some(json!(folding_ranges_from_text(&doc.text, 1000))));
-                    }
-
-                    return Ok(Some(json!(lsp_ranges)));
-                } else {
-                    // No AST, use fallback
-                    return Ok(Some(json!(folding_ranges_from_text(&doc.text, 1000))));
                 }
+
+                // Dedup identical ranges (start+end+kind) that arise when both a
+                // Subroutine node and its inner Block node map to the same line span.
+                lsp_ranges.sort_by_key(|r| {
+                    (
+                        r["startLine"].as_u64().unwrap_or(0),
+                        r["endLine"].as_u64().unwrap_or(0),
+                        r.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    )
+                });
+                lsp_ranges.dedup_by_key(|r| {
+                    (
+                        r["startLine"].as_u64().unwrap_or(0),
+                        r["endLine"].as_u64().unwrap_or(0),
+                        r.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    )
+                });
+
+                // If no ranges from AST, try fallback
+                if lsp_ranges.is_empty() {
+                    return Ok(Some(json!(folding_ranges_from_text(doc_text, 1000))));
+                }
+
+                return Ok(Some(json!(lsp_ranges)));
+            } else {
+                // No AST, use fallback
+                return Ok(Some(json!(folding_ranges_from_text(doc_text, 1000))));
             }
         }
 

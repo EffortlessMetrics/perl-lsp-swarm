@@ -529,13 +529,12 @@ this: `rtk` reported "Passed: 14, Failed: 0" while `CI Gate (Merge-Blocking)` wa
 `FAILURE` on the latest SHA. Use raw `statusCheckRollup` queries for merge gates.
 See [FAILURE_MODES.md — rtk gh pr checks Masks Aggregator Failure](FAILURE_MODES.md).
 
-### Reconciler Behavior
+### Native merge-state behavior
 
-The reconciler (planned at `xtask/src/tasks/queue_reconciler.rs`, tracked in #7085) continuously:
-1. Queries live CI for each PR's current HEAD SHA
-2. Compares live CI to `ci-green`/`needs-ci-fix` labels, stripping stale ones
-3. For no-live-signal labels (all signoff labels), applies timeline precedence: later-applied wins when contradictions exist
-4. Outputs derived queue state (which PRs are merge-ready, which are routing-blocked)
+There is no permanent lifecycle-label reconciler. Merge decisions use the current
+PR head, live check results, review/thread state, and protected branch rules.
+Labels may record navigation or prior activity, but they do not derive queue
+eligibility or clear stale state on behalf of an operator.
 
 ---
 
@@ -673,7 +672,7 @@ differing only in `metadata.environment.type` ("local" vs "ci").
 - `.github/workflows/ci.yml` — GitHub Actions workflow implementing Frontdoor Proof
 - `xtask/src/tasks/ci_scope.rs` — diff classifier and lane selector
 - `xtask/src/tasks/gates.rs` — gate runner with receipt emission
-- `xtask/src/tasks/queue_reconciler.rs` — reconciler that grounds `ci-green` in live state (planned; tracked in #7085)
+- Live GitHub PR, review, thread, check, and branch-rule state — the authority for merge eligibility
 - Issue #7072 — merge queue implementation (enables `merge_group` trigger)
 
 ## UX Regression pre-merge behavior
@@ -696,6 +695,5 @@ The JSON receipt classifies the first observed failure and provides reproduction
 | `server_crash` | `crash_fix` | Fix crash before merge |
 | `new_test_bug` | `test_fix` | Fix test logic and rerun |
 | `unknown` | `triage` | Inspect logs and add classifier coverage |
-
 
 
