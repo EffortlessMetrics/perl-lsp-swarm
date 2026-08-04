@@ -1,6 +1,11 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { compareInventory, summarizeInventory } = require('./check-vsix-inventory');
+const {
+  baselineForPlatform,
+  compareInventory,
+  platformForPackagedFile,
+  summarizeInventory,
+} = require('./check-vsix-inventory');
 
 void test('summarizes packaged file sizes', () => {
   assert.deepEqual(
@@ -28,4 +33,68 @@ void test('rejects package growth and inventory drift', () => {
     'new packaged file: new.js',
     'baseline packaged file is missing: old.js',
   ]);
+});
+
+void test('uses only the current platform baseline entries', () => {
+  const baseline = {
+    total_files: 2,
+    total_bytes: 12,
+    files: {
+      'README.md': 2,
+      'bin/win32-x64/perllsp.exe': 10,
+    },
+  };
+  const linuxBaseline = baselineForPlatform(baseline, 'linux');
+
+  assert.deepEqual(linuxBaseline, {
+    schema_version: 1,
+    total_files: 1,
+    total_bytes: 2,
+    files: { 'README.md': 2 },
+  });
+  assert.deepEqual(
+    compareInventory(
+      { total_files: 1, total_bytes: 2, files: { 'README.md': 2 } },
+      baseline,
+      'linux',
+    ),
+    [],
+  );
+});
+
+void test('still rejects growth for a platform-owned file', () => {
+  const baseline = {
+    total_files: 2,
+    total_bytes: 12,
+    files: {
+      'README.md': 2,
+      'bin/win32-x64/perllsp.exe': 10,
+    },
+  };
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 2,
+        total_bytes: 13,
+        files: {
+          'README.md': 2,
+          'bin/win32-x64/perllsp.exe': 11,
+        },
+      },
+      baseline,
+      'win32',
+    ),
+    [
+      'total bytes grew from 12 to 13',
+      'file bin/win32-x64/perllsp.exe grew from 10 to 11 bytes',
+    ],
+  );
+});
+
+void test('does not classify ordinary files as platform-owned', () => {
+  assert.equal(platformForPackagedFile('assets/demo-project/main.pl'), null);
+  assert.equal(platformForPackagedFile('bin/win32-x64/perllsp.exe'), 'win32');
+  assert.equal(platformForPackagedFile('bin/linux-x64/perllsp'), 'linux');
+  assert.equal(platformForPackagedFile('bin/darwin-arm64/perllsp'), 'darwin');
 });

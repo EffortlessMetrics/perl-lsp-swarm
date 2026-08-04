@@ -37,22 +37,46 @@ function summarizeInventory(entries) {
   };
 }
 
-function compareInventory(actual, baseline) {
+function platformForPackagedFile(file) {
+  const match = /^bin\/(linux|darwin|win32)(?:-[^/]+)?\//.exec(file);
+  return match ? match[1] : null;
+}
+
+function baselineForPlatform(baseline, platform) {
+  const files = Object.fromEntries(
+    Object.entries(baseline.files).filter(
+      ([file]) => {
+        const filePlatform = platformForPackagedFile(file);
+        return filePlatform === null || filePlatform === platform;
+      },
+    ),
+  );
+  return summarizeInventory(Object.entries(files).map(([file, bytes]) => ({ file, bytes })));
+}
+
+function compareInventory(actual, baseline, platform = process.platform) {
+  const effectiveBaseline = baselineForPlatform(baseline, platform);
   const violations = [];
-  if (actual.total_files > baseline.total_files) {
-    violations.push(`file count grew from ${baseline.total_files} to ${actual.total_files}`);
+  if (actual.total_files > effectiveBaseline.total_files) {
+    violations.push(
+      `file count grew from ${effectiveBaseline.total_files} to ${actual.total_files}`,
+    );
   }
-  if (actual.total_bytes > baseline.total_bytes) {
-    violations.push(`total bytes grew from ${baseline.total_bytes} to ${actual.total_bytes}`);
+  if (actual.total_bytes > effectiveBaseline.total_bytes) {
+    violations.push(
+      `total bytes grew from ${effectiveBaseline.total_bytes} to ${actual.total_bytes}`,
+    );
   }
   for (const [file, bytes] of Object.entries(actual.files)) {
-    if (!Object.hasOwn(baseline.files, file)) {
+    if (!Object.hasOwn(effectiveBaseline.files, file)) {
       violations.push(`new packaged file: ${file}`);
-    } else if (bytes > baseline.files[file]) {
-      violations.push(`file ${file} grew from ${baseline.files[file]} to ${bytes} bytes`);
+    } else if (bytes > effectiveBaseline.files[file]) {
+      violations.push(
+        `file ${file} grew from ${effectiveBaseline.files[file]} to ${bytes} bytes`,
+      );
     }
   }
-  for (const file of Object.keys(baseline.files)) {
+  for (const file of Object.keys(effectiveBaseline.files)) {
     if (!Object.hasOwn(actual.files, file)) {
       violations.push(`baseline packaged file is missing: ${file}`);
     }
@@ -74,7 +98,11 @@ function main() {
   }
   const violations = compareInventory(actual, baseline);
   process.stdout.write(
-    `${JSON.stringify({ ...actual, baseline: BASELINE_PATH, violations }, null, 2)}\n`,
+    `${JSON.stringify(
+      { ...actual, baseline: BASELINE_PATH, platform: process.platform, violations },
+      null,
+      2,
+    )}\n`,
   );
   if (violations.length > 0) {
     process.exitCode = 1;
@@ -90,4 +118,9 @@ if (require.main === module) {
   }
 }
 
-module.exports = { compareInventory, summarizeInventory };
+module.exports = {
+  baselineForPlatform,
+  compareInventory,
+  platformForPackagedFile,
+  summarizeInventory,
+};
