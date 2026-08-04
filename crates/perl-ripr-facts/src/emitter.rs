@@ -1666,6 +1666,7 @@ mod tests {
         reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
     )]
     use super::*;
+    use perl_tdd_support::{must, must_some};
 
     fn parse_src(src: &str) -> Node {
         let mut parser = Parser::new(src);
@@ -1794,17 +1795,16 @@ mod tests {
     fn emit_discriminators_from_indented_is_inside_subtest() {
         let root = std::env::temp_dir().join("perl-B7-indented-subtest-root");
         let t_dir = root.join("t");
-        std::fs::create_dir_all(&t_dir).unwrap();
-        std::fs::write(
+        must(std::fs::create_dir_all(&t_dir));
+        must(std::fs::write(
             t_dir.join("app.t"),
             "use Test::More;\nsubtest 'nested' => sub {\n    my $x = 1;\n    is($x, 1); # trailing comment\n};\n",
-        )
-        .unwrap();
+        ));
 
         let (tests, _oracles, _provenance, _limitations) =
-            emit_tests_and_oracles(root.to_str().unwrap());
+            emit_tests_and_oracles(must_some(root.to_str()));
         let (_relations, _relation_limitations) =
-            emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
+            emit_relations_and_discriminators(must_some(root.to_str()), &tests, &[]);
 
         // Observable/sink emission was removed (#5064) — relations and
         // limitations are the only consumers. The is() discriminator
@@ -1894,16 +1894,16 @@ mod tests {
         let root = std::env::temp_dir().join("perl-B7-relations-root");
         let lib_dir = root.join("lib/My");
         let t_dir = root.join("t");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        std::fs::create_dir_all(&t_dir).unwrap();
-        std::fs::write(lib_dir.join("App.pm"), "package My::App;\nsub discount { }\n1;").unwrap();
-        std::fs::write(t_dir.join("App.t"), "use Test::More;\nok(1);\n").unwrap();
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::create_dir_all(&t_dir));
+        must(std::fs::write(lib_dir.join("App.pm"), "package My::App;\nsub discount { }\n1;"));
+        must(std::fs::write(t_dir.join("App.t"), "use Test::More;\nok(1);\n"));
 
         // First emit tests, then relations.
         let (tests, _oracles, _provenance, _limitations) =
-            emit_tests_and_oracles(root.to_str().unwrap());
+            emit_tests_and_oracles(must_some(root.to_str()));
         let (relations, _relation_limitations) =
-            emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
+            emit_relations_and_discriminators(must_some(root.to_str()), &tests, &[]);
 
         assert!(!relations.is_empty(), "must find at least one relation between App.pm and App.t");
         assert_eq!(
@@ -1919,23 +1919,21 @@ mod tests {
         let root = std::env::temp_dir().join("perl-B7-import-relations-root");
         let lib_dir = root.join("lib");
         let t_dir = root.join("t");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        std::fs::create_dir_all(&t_dir).unwrap();
-        std::fs::write(
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::create_dir_all(&t_dir));
+        must(std::fs::write(
             lib_dir.join("Pricing.pm"),
             "package Pricing;\nsub calculate_discount { }\n1;",
-        )
-        .unwrap();
-        std::fs::write(
+        ));
+        must(std::fs::write(
             t_dir.join("pricing.t"),
             "use Test::More;\nuse Pricing;\nok(calculate_discount(100));\n",
-        )
-        .unwrap();
+        ));
 
         let (tests, _oracles, _provenance, _limitations) =
-            emit_tests_and_oracles(root.to_str().unwrap());
+            emit_tests_and_oracles(must_some(root.to_str()));
         let (relations, _relation_limitations) =
-            emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
+            emit_relations_and_discriminators(must_some(root.to_str()), &tests, &[]);
 
         assert!(
             relations.iter().any(|relation| relation["owner_id"]
@@ -1951,14 +1949,16 @@ mod tests {
     fn emit_discriminators_from_is_assertions() {
         let root = std::env::temp_dir().join("perl-B7-discriminators-root");
         let t_dir = root.join("t");
-        std::fs::create_dir_all(&t_dir).unwrap();
-        std::fs::write(t_dir.join("app.t"), "use Test::More;\nis(discount(100), 50, 'half');\n")
-            .unwrap();
+        must(std::fs::create_dir_all(&t_dir));
+        must(std::fs::write(
+            t_dir.join("app.t"),
+            "use Test::More;\nis(discount(100), 50, 'half');\n",
+        ));
 
         let (tests, _oracles, _provenance, _limitations) =
-            emit_tests_and_oracles(root.to_str().unwrap());
+            emit_tests_and_oracles(must_some(root.to_str()));
         let (_relations, _relation_limitations) =
-            emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
+            emit_relations_and_discriminators(must_some(root.to_str()), &tests, &[]);
 
         // Observable/sink emission was removed (#5064).
 
@@ -1971,11 +1971,14 @@ mod tests {
     fn emit_boundaries_detects_eval() {
         let root = std::env::temp_dir().join("perl-B8-eval-root");
         let lib_dir = root.join("lib/My");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        std::fs::write(lib_dir.join("App.pm"), "package My::App;\nsub run { eval { die }; }\n1;")
-            .unwrap();
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::write(
+            lib_dir.join("App.pm"),
+            "package My::App;\nsub run { eval { die }; }\n1;",
+        ));
 
-        let (boundaries, limitations, _cmds) = emit_boundaries_and_commands(root.to_str().unwrap());
+        let (boundaries, limitations, _cmds) =
+            emit_boundaries_and_commands(must_some(root.to_str()));
         assert!(!boundaries.is_empty(), "eval block must produce a boundary fact");
         assert!(
             boundaries.iter().any(|b| b["kind"] == "eval_or_string_code"),
@@ -1990,14 +1993,14 @@ mod tests {
     fn emit_boundaries_detects_dynamic_dispatch() {
         let root = std::env::temp_dir().join("perl-B8-dispatch-root");
         let lib_dir = root.join("lib");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        std::fs::write(
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::write(
             lib_dir.join("Dynamic.pm"),
             "package Dynamic;\nsub call { my $m = shift; $obj->$m(); }\n1;",
-        )
-        .unwrap();
+        ));
 
-        let (boundaries, limitations, _cmds) = emit_boundaries_and_commands(root.to_str().unwrap());
+        let (boundaries, limitations, _cmds) =
+            emit_boundaries_and_commands(must_some(root.to_str()));
         let boundary = boundaries
             .iter()
             .find(|b| b["kind"] == "dynamic_dispatch")
@@ -2042,12 +2045,12 @@ mod tests {
     fn emit_verify_commands_for_t_files() {
         let root = std::env::temp_dir().join("perl-B8-cmds-root");
         let t_dir = root.join("t");
-        std::fs::create_dir_all(&t_dir).unwrap();
-        std::fs::write(t_dir.join("alpha.t"), "use Test::More;\nok(1);\n").unwrap();
-        std::fs::write(t_dir.join("beta.t"), "use Test::More;\nok(1);\n").unwrap();
+        must(std::fs::create_dir_all(&t_dir));
+        must(std::fs::write(t_dir.join("alpha.t"), "use Test::More;\nok(1);\n"));
+        must(std::fs::write(t_dir.join("beta.t"), "use Test::More;\nok(1);\n"));
 
         let (_boundaries, _limitations, verify_commands) =
-            emit_boundaries_and_commands(root.to_str().unwrap());
+            emit_boundaries_and_commands(must_some(root.to_str()));
 
         assert_eq!(verify_commands.len(), 2, "must emit one verify-command per .t file");
         // Verify commands use 'prove' runner.
@@ -2068,8 +2071,9 @@ mod tests {
     #[test]
     fn emit_boundaries_returns_empty_when_no_source_files() {
         let root = std::env::temp_dir().join("perl-B8-empty-root");
-        std::fs::create_dir_all(&root).unwrap();
-        let (boundaries, limitations, cmds) = emit_boundaries_and_commands(root.to_str().unwrap());
+        must(std::fs::create_dir_all(&root));
+        let (boundaries, limitations, cmds) =
+            emit_boundaries_and_commands(must_some(root.to_str()));
         assert!(boundaries.is_empty());
         assert!(limitations.is_empty());
         assert!(cmds.is_empty());
@@ -2460,14 +2464,13 @@ mod tests {
         // asserts every oracle carries both keys.
         let temp = std::env::temp_dir().join("ripr_facts_oracle_contract_test");
         let t_dir = temp.join("t");
-        std::fs::create_dir_all(&t_dir).unwrap();
-        std::fs::write(
+        must(std::fs::create_dir_all(&t_dir));
+        must(std::fs::write(
             t_dir.join("app.t"),
             "use Test::More;\nis(disco(100), 50, 'half');\nok(1);\n",
-        )
-        .unwrap();
+        ));
         let (_tests, oracles, _provenance, _limitations) =
-            emit_tests_and_oracles(temp.to_str().unwrap());
+            emit_tests_and_oracles(must_some(temp.to_str()));
         let _ = std::fs::remove_dir_all(&temp);
         assert!(!oracles.is_empty(), "expected at least one oracle fact");
         for oracle in &oracles {
@@ -2505,17 +2508,19 @@ mod tests {
         let root = std::env::temp_dir().join("perl-P3-direct-call-root");
         let lib_dir = root.join("lib/My");
         let t_dir = root.join("t");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        std::fs::create_dir_all(&t_dir).unwrap();
-        std::fs::write(lib_dir.join("App.pm"), "package My::App;\nsub discount { }\n1;\n").unwrap();
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::create_dir_all(&t_dir));
+        must(std::fs::write(lib_dir.join("App.pm"), "package My::App;\nsub discount { }\n1;\n"));
         // Test file uses the package directly.
-        std::fs::write(t_dir.join("App.t"), "use My::App;\nis(My::App::discount(100), 50);\n")
-            .unwrap();
+        must(std::fs::write(
+            t_dir.join("App.t"),
+            "use My::App;\nis(My::App::discount(100), 50);\n",
+        ));
 
         let (tests, _oracles, _provenance, _limitations) =
-            emit_tests_and_oracles(root.to_str().unwrap());
+            emit_tests_and_oracles(must_some(root.to_str()));
         let (relations, _relation_limitations) =
-            emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
+            emit_relations_and_discriminators(must_some(root.to_str()), &tests, &[]);
 
         assert!(!relations.is_empty(), "must find at least one relation");
         assert!(
@@ -2534,23 +2539,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let lib_dir = root.join("lib/My");
         let t_dir = root.join("t");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        std::fs::create_dir_all(&t_dir).unwrap();
-        std::fs::write(
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::create_dir_all(&t_dir));
+        must(std::fs::write(
             lib_dir.join("App.pm"),
             "package My::App;\nsub setup { }\nsub target { }\n1;\n",
-        )
-        .unwrap();
-        std::fs::write(
+        ));
+        must(std::fs::write(
             t_dir.join("App.t"),
             "use My::App;\nMy::App::setup();\nMy::App::target();\n",
-        )
-        .unwrap();
+        ));
 
         let (tests, _oracles, _provenance, _limitations) =
-            emit_tests_and_oracles(root.to_str().unwrap());
+            emit_tests_and_oracles(must_some(root.to_str()));
         let (relations, _relation_limitations) =
-            emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
+            emit_relations_and_discriminators(must_some(root.to_str()), &tests, &[]);
 
         let direct: Vec<_> = relations
             .iter()
@@ -2725,15 +2728,15 @@ mod tests {
         let root = std::env::temp_dir().join("perl-P6-bare-call-root");
         let lib_dir = root.join("lib/My");
         let t_dir = root.join("t");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        std::fs::create_dir_all(&t_dir).unwrap();
-        std::fs::write(lib_dir.join("App.pm"), "package My::App;\nsub discount { }\n1;\n").unwrap();
-        std::fs::write(t_dir.join("App.t"), "use My::App;\ndiscount(100);\nok(1);\n").unwrap();
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::create_dir_all(&t_dir));
+        must(std::fs::write(lib_dir.join("App.pm"), "package My::App;\nsub discount { }\n1;\n"));
+        must(std::fs::write(t_dir.join("App.t"), "use My::App;\ndiscount(100);\nok(1);\n"));
 
         let (tests, _oracles, _provenance, _limitations) =
-            emit_tests_and_oracles(root.to_str().unwrap());
+            emit_tests_and_oracles(must_some(root.to_str()));
         let (relations, _relation_limitations) =
-            emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
+            emit_relations_and_discriminators(must_some(root.to_str()), &tests, &[]);
 
         assert!(!relations.is_empty(), "the file_proximity relation is still emitted");
         assert!(
@@ -2761,23 +2764,26 @@ mod tests {
         // have marked both). Qualified calls would disambiguate; bare ones can't.
         let root = std::env::temp_dir().join("perl-P6-shared-basename-root");
         let t_dir = root.join("t");
-        std::fs::create_dir_all(root.join("lib/V1")).unwrap();
-        std::fs::create_dir_all(root.join("lib/V2")).unwrap();
-        std::fs::create_dir_all(&t_dir).unwrap();
-        std::fs::write(root.join("lib/V1/Widget.pm"), "package V1::Widget;\nsub run { }\n1;\n")
-            .unwrap();
-        std::fs::write(root.join("lib/V2/Widget.pm"), "package V2::Widget;\nsub run { }\n1;\n")
-            .unwrap();
-        std::fs::write(
+        must(std::fs::create_dir_all(root.join("lib/V1")));
+        must(std::fs::create_dir_all(root.join("lib/V2")));
+        must(std::fs::create_dir_all(&t_dir));
+        must(std::fs::write(
+            root.join("lib/V1/Widget.pm"),
+            "package V1::Widget;\nsub run { }\n1;\n",
+        ));
+        must(std::fs::write(
+            root.join("lib/V2/Widget.pm"),
+            "package V2::Widget;\nsub run { }\n1;\n",
+        ));
+        must(std::fs::write(
             t_dir.join("Widget.t"),
             "use V1::Widget;\nuse V2::Widget;\nrun();\nok(1);\n",
-        )
-        .unwrap();
+        ));
 
         let (tests, _oracles, _provenance, _limitations) =
-            emit_tests_and_oracles(root.to_str().unwrap());
+            emit_tests_and_oracles(must_some(root.to_str()));
         let (relations, _relation_limitations) =
-            emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
+            emit_relations_and_discriminators(must_some(root.to_str()), &tests, &[]);
 
         assert!(
             relations.iter().all(|r| r["relation_kind"] != "direct_owner_call"),
@@ -2794,16 +2800,18 @@ mod tests {
         let root = std::env::temp_dir().join("perl-P6-comment-mention-root");
         let lib_dir = root.join("lib/My");
         let t_dir = root.join("t");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        std::fs::create_dir_all(&t_dir).unwrap();
-        std::fs::write(lib_dir.join("App.pm"), "package My::App;\nsub discount { }\n1;\n").unwrap();
-        std::fs::write(t_dir.join("App.t"), "# My::App::discount(100) is deprecated\nok(1);\n")
-            .unwrap();
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::create_dir_all(&t_dir));
+        must(std::fs::write(lib_dir.join("App.pm"), "package My::App;\nsub discount { }\n1;\n"));
+        must(std::fs::write(
+            t_dir.join("App.t"),
+            "# My::App::discount(100) is deprecated\nok(1);\n",
+        ));
 
         let (tests, _oracles, _provenance, _limitations) =
-            emit_tests_and_oracles(root.to_str().unwrap());
+            emit_tests_and_oracles(must_some(root.to_str()));
         let (relations, _relation_limitations) =
-            emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
+            emit_relations_and_discriminators(must_some(root.to_str()), &tests, &[]);
 
         assert!(!relations.is_empty(), "must still find a file_proximity relation");
         assert!(
@@ -2819,20 +2827,20 @@ mod tests {
         let root = std::env::temp_dir().join("perl-P6-determinism-root");
         let lib_dir = root.join("lib/My");
         let t_dir = root.join("t");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        std::fs::create_dir_all(&t_dir).unwrap();
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::create_dir_all(&t_dir));
         // Create files in reverse-alphabetical order on disk.
-        std::fs::write(lib_dir.join("Zeta.pm"), "package My::Zeta;\nsub run { }\n1;\n").unwrap();
-        std::fs::write(lib_dir.join("Alpha.pm"), "package My::Alpha;\nsub run { }\n1;\n").unwrap();
-        std::fs::write(t_dir.join("Zeta.t"), "use My::Zeta;\nrun();\nok(1);\n").unwrap();
-        std::fs::write(t_dir.join("Alpha.t"), "use My::Alpha;\nrun();\nok(1);\n").unwrap();
+        must(std::fs::write(lib_dir.join("Zeta.pm"), "package My::Zeta;\nsub run { }\n1;\n"));
+        must(std::fs::write(lib_dir.join("Alpha.pm"), "package My::Alpha;\nsub run { }\n1;\n"));
+        must(std::fs::write(t_dir.join("Zeta.t"), "use My::Zeta;\nrun();\nok(1);\n"));
+        must(std::fs::write(t_dir.join("Alpha.t"), "use My::Alpha;\nrun();\nok(1);\n"));
 
         let (tests, _oracles, _provenance, _limitations) =
-            emit_tests_and_oracles(root.to_str().unwrap());
+            emit_tests_and_oracles(must_some(root.to_str()));
         let (relations_1, _limitations_1) =
-            emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
+            emit_relations_and_discriminators(must_some(root.to_str()), &tests, &[]);
         let (relations_2, _limitations_2) =
-            emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
+            emit_relations_and_discriminators(must_some(root.to_str()), &tests, &[]);
 
         assert_eq!(
             relations_1, relations_2,
@@ -2847,22 +2855,23 @@ mod tests {
         let root = std::env::temp_dir().join("perl-P6-sorted-root");
         let lib_dir = root.join("lib/My");
         let t_dir = root.join("t");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        std::fs::create_dir_all(&t_dir).unwrap();
-        std::fs::write(lib_dir.join("Zeta.pm"), "package My::Zeta;\nsub run { }\n1;\n").unwrap();
-        std::fs::write(lib_dir.join("Mid.pm"), "package My::Mid;\nsub run { }\n1;\n").unwrap();
-        std::fs::write(lib_dir.join("Alpha.pm"), "package My::Alpha;\nsub run { }\n1;\n").unwrap();
-        std::fs::write(t_dir.join("Zeta.t"), "use My::Zeta;\nrun();\n").unwrap();
-        std::fs::write(t_dir.join("Mid.t"), "use My::Mid;\nrun();\n").unwrap();
-        std::fs::write(t_dir.join("Alpha.t"), "use My::Alpha;\nrun();\n").unwrap();
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::create_dir_all(&t_dir));
+        must(std::fs::write(lib_dir.join("Zeta.pm"), "package My::Zeta;\nsub run { }\n1;\n"));
+        must(std::fs::write(lib_dir.join("Mid.pm"), "package My::Mid;\nsub run { }\n1;\n"));
+        must(std::fs::write(lib_dir.join("Alpha.pm"), "package My::Alpha;\nsub run { }\n1;\n"));
+        must(std::fs::write(t_dir.join("Zeta.t"), "use My::Zeta;\nrun();\n"));
+        must(std::fs::write(t_dir.join("Mid.t"), "use My::Mid;\nrun();\n"));
+        must(std::fs::write(t_dir.join("Alpha.t"), "use My::Alpha;\nrun();\n"));
 
         let (tests, _oracles, _provenance, _limitations) =
-            emit_tests_and_oracles(root.to_str().unwrap());
+            emit_tests_and_oracles(must_some(root.to_str()));
         let (relations, _relation_limitations) =
-            emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
+            emit_relations_and_discriminators(must_some(root.to_str()), &tests, &[]);
 
         assert!(relations.len() >= 3, "expected at least 3 relations, got {}", relations.len());
-        let ids: Vec<&str> = relations.iter().map(|r| r["relation_id"].as_str().unwrap()).collect();
+        let ids: Vec<&str> =
+            relations.iter().map(|r| must_some(r["relation_id"].as_str())).collect();
         let mut sorted_ids = ids.clone();
         sorted_ids.sort_unstable();
         assert_eq!(ids, sorted_ids, "relations must be sorted by relation_id");
@@ -2878,20 +2887,20 @@ mod tests {
         let root = std::env::temp_dir().join("perl-3342-owner-id-root");
         let lib_dir = root.join("lib/My");
         let t_dir = root.join("t");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        std::fs::create_dir_all(&t_dir).unwrap();
-        std::fs::write(lib_dir.join("App.pm"), "package My::App;\nsub discount { }\n1;\n").unwrap();
-        std::fs::write(t_dir.join("App.t"), "use My::App;\nMy::App::discount(100);\n").unwrap();
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::create_dir_all(&t_dir));
+        must(std::fs::write(lib_dir.join("App.pm"), "package My::App;\nsub discount { }\n1;\n"));
+        must(std::fs::write(t_dir.join("App.t"), "use My::App;\nMy::App::discount(100);\n"));
 
         let (tests, _oracles, _provenance, _limitations) =
-            emit_tests_and_oracles(root.to_str().unwrap());
+            emit_tests_and_oracles(must_some(root.to_str()));
         let (relations, _relation_limitations) =
-            emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
+            emit_relations_and_discriminators(must_some(root.to_str()), &tests, &[]);
         let (_files, owners, _file_provenance, _file_limitations) =
-            emit_files_and_owners(root.to_str().unwrap());
+            emit_files_and_owners(must_some(root.to_str()));
 
         assert!(!relations.is_empty());
-        let owner_id = relations[0]["owner_id"].as_str().unwrap();
+        let owner_id = must_some(relations[0]["owner_id"].as_str());
         // New shape: `owner:{path}:sub:{qualified_name}:{span}` (not the bare
         // package name), with a byte span so it is not hard-pinned here.
         assert!(
@@ -2911,15 +2920,14 @@ mod tests {
     fn emit_files_and_owners_extracts_packages_and_subs() {
         let root = std::env::temp_dir().join("perl-P3-files-owners-root");
         let lib_dir = root.join("lib/My");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        std::fs::write(
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::write(
             lib_dir.join("App.pm"),
             "package My::App;\nsub discount { return 42; }\nsub total { }\n1;\n",
-        )
-        .unwrap();
+        ));
 
         let (files, owners, provenance, limitations) =
-            emit_files_and_owners(root.to_str().unwrap());
+            emit_files_and_owners(must_some(root.to_str()));
 
         // One file fact for the .pm — source role, a SHA-256 digest, the package name.
         assert_eq!(files.len(), 1, "one .pm file → one file fact");
@@ -2927,7 +2935,7 @@ mod tests {
         assert_eq!(file["path"], "lib/My/App.pm");
         assert_eq!(file["role"], json!(["source"]));
         assert!(
-            file["digest"].as_str().unwrap().starts_with("sha256:"),
+            must_some(file["digest"].as_str()).starts_with("sha256:"),
             "digest is a SHA-256 hex string, got {:?}",
             file["digest"]
         );
@@ -2953,7 +2961,7 @@ mod tests {
         // `sub discount` is declared on the second line (0-based line 1).
         assert_eq!(sub["range"]["start_line"], 1, "discount is on the second line (0-based)");
         // The owner id is byte-span-derived, not traversal-order (no trailing `:N`).
-        let owner_id = sub["owner_id"].as_str().unwrap();
+        let owner_id = must_some(sub["owner_id"].as_str());
         assert!(owner_id.contains("discount"), "owner id names the decl: {owner_id}");
 
         // A per-file `syntax` provenance fact exists without file-digest limitations.

@@ -6,7 +6,9 @@
 //! - [`compute_child_reference`] — stable child-ref arithmetic
 //! - [`render_paged_variable`] — render one variable and its optional children
 
-use super::super::*;
+use super::super::{
+    DebugAdapter, HashSet, PerlVariableRenderer, Variable, VariableParser, VariableRenderer,
+};
 use crate::value::PerlValue;
 
 /// Iterate `lines` in reverse, parse variable assignments, apply scope filter,
