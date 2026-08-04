@@ -50,16 +50,28 @@ impl TcpAttachConfig {
     pub fn validate(&mut self) -> Result<()> {
         let host = self.host.trim_matches(' ');
         if host.is_empty() {
-            anyhow::bail!("Host cannot be empty");
+            anyhow::bail!(
+                "Host cannot be empty. Set the 'host' field in your attach \
+                 configuration, e.g. \"host\": \"localhost\" or \"host\": \"127.0.0.1\"."
+            );
         }
         if host.chars().any(char::is_whitespace) {
-            anyhow::bail!("Host cannot contain whitespace");
+            anyhow::bail!(
+                "Host cannot contain whitespace. Check for stray spaces in the \
+                 'host' field of your attach configuration."
+            );
         }
         if host.chars().any(char::is_control) {
-            anyhow::bail!("Host cannot contain control characters");
+            anyhow::bail!(
+                "Host cannot contain control characters. Check the 'host' field \
+                 for non-printable characters."
+            );
         }
         if self.port == 0 {
-            anyhow::bail!("Port must be in range 1-65535");
+            anyhow::bail!(
+                "Port must be in range 1-65535. Set the 'port' field in your \
+                 attach configuration, e.g. \"port\": 13603."
+            );
         }
         // SSRF defense: resolve the host and reject disallowed addresses
         // (private, link-local, cloud metadata 169.254.169.254, CGNAT, …).

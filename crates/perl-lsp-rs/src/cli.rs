@@ -228,6 +228,15 @@ fn run_check(command_name: &str, files: &[String]) -> i32 {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("{path}: error reading file: {e}");
+                // Add concise recovery guidance for common read failures (#1989).
+                let path_obj = std::path::Path::new(path);
+                if path_obj.is_dir() {
+                    eprintln!("  hint: '{path}' is a directory. Use --check-project <dir> to check all files in a directory.");
+                } else if !path_obj.exists() {
+                    eprintln!("  hint: '{path}' does not exist. Check the path for typos.");
+                } else {
+                    eprintln!("  hint: check file permissions or encoding. The file may be binary or use an unsupported encoding.");
+                }
                 errors += 1;
                 continue;
             }
