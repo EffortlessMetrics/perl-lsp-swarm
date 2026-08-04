@@ -59,6 +59,20 @@ jobs:
         if: runner.os == 'Linux'
         run: xvfb-run -a npm run test:published
 
+      - name: Run packaged bundled-server journey
+        if: runner.os != 'Linux'
+        env:
+          PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1'
+          PERL_LSP_SMOKE_SOURCE_LABEL: packaged-bundle
+        run: npm run test:published
+
+      - name: Run packaged bundled-server journey under Xvfb
+        if: runner.os == 'Linux'
+        env:
+          PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1'
+          PERL_LSP_SMOKE_SOURCE_LABEL: packaged-bundle
+        run: xvfb-run -a npm run test:published
+
       - name: Upload published smoke artifacts
         if: always()
         uses: actions/upload-artifact@v7
