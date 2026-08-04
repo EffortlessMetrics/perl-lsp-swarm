@@ -3696,6 +3696,17 @@ impl<'a> PerlLexer<'a> {
                         expect_name_segment = true;
                         continue;
                     }
+                    // `after_sub` deliberately lexes `v1.2` as `Identifier("v1")`,
+                    // `.` and `Number("2")` so that the valid single-component
+                    // `sub v5 { ... }` form remains a name.  A dotted v-string is
+                    // not a valid named-sub declaration, however; reject the dot
+                    // instead of allowing a later `{` to create a false recovery
+                    // boundary for an unclosed `qw`.
+                    TokenType::Operator(operator)
+                        if keyword == "sub" && operator.as_ref() == "." =>
+                    {
+                        return false;
+                    }
                     TokenType::Operator(operator) if operator.as_ref() == ":" => {
                         expect_attribute_name = true;
                         continue;
