@@ -358,11 +358,15 @@ describe('package.json showWhatsNew command', () => {
     };
   };
   let pkg: PackageManifest;
+  let localizationCatalog: Record<string, string>;
 
   beforeAll(() => {
     pkg = JSON.parse(
       fs.readFileSync(path.join(EXT_ROOT, 'package.json'), 'utf8'),
     ) as PackageManifest;
+    localizationCatalog = JSON.parse(
+      fs.readFileSync(path.join(EXT_ROOT, 'package.nls.json'), 'utf8'),
+    ) as Record<string, string>;
   });
 
   test('registers perl-lsp.showWhatsNew command', () => {
@@ -385,7 +389,9 @@ describe('package.json showWhatsNew command', () => {
       (c: CommandContribution) => c.command === 'perl-lsp.showWhatsNew',
       'perl-lsp.showWhatsNew command',
     );
-    expect(cmd.title).toBeTruthy();
-    expect(cmd.title.toLowerCase()).toMatch(/what'?s new|release notes|changelog/i);
+    const key = /^%([^%]+)%$/.exec(cmd.title)?.[1];
+    const title = key ? localizationCatalog[key] : cmd.title;
+    expect(title).toBeTruthy();
+    expect(title?.toLowerCase()).toMatch(/what'?s new|release notes|changelog/i);
   });
 });

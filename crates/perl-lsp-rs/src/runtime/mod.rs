@@ -375,6 +375,12 @@ pub struct LspServer {
     /// users with identical `window/showMessage` warnings.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) critic_workspace_warnings_sent: Mutex<std::collections::HashSet<String>>,
+    /// Deduplication set for invalid enum warnings from editor-provided settings.
+    ///
+    /// The same client payload can arrive through initialization, configuration
+    /// pulls, and repeated `didChangeConfiguration` notifications. Warn once per
+    /// setting/value pair per server session so a typo is visible without toast spam.
+    pub(crate) client_setting_warnings_sent: Mutex<std::collections::HashSet<String>>,
     /// Test-only hook invoked after push diagnostics capture their document
     /// snapshot and before the stale-generation guard decides whether to
     /// publish. This keeps concurrency boundary tests deterministic without
@@ -389,6 +395,12 @@ pub struct LspServer {
     pub(crate) ai_inline_backend: Mutex<
         Option<Arc<dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend>>,
     >,
+    /// Deduplication set for user-facing AI backend warnings.
+    ///
+    /// Authentication failures are actionable but can recur on every
+    /// completion request. Keep the notification session-scoped so a broken
+    /// credential does not spam the editor while preserving one clear signal.
+    pub(crate) ai_backend_warnings_sent: Mutex<HashSet<String>>,
     /// When `true`, eagerly maintain the per-document incremental parsing state
     /// (`incremental_doc` / `incremental_state`) inside the `didChange` mutation
     /// critical section.
@@ -538,6 +550,27 @@ impl LspServer {
     ) -> Option<Arc<dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend>>
     {
         self.ai_inline_backend.lock().clone()
+    }
+
+    /// Notify the user once when AI completion authentication fails.
+    ///
+    /// The provider error is intentionally not included in the editor-facing
+    /// message: provider responses may contain sensitive or noisy details.
+    /// The detailed error remains available to the debug log at the call site.
+    pub(crate) fn notify_ai_auth_failure(&self) {
+        let mut warnings = self.ai_backend_warnings_sent.lock();
+        if warnings.contains("auth") {
+            return;
+        }
+        warnings.insert("auth".to_string());
+
+        if let Err(error) = self.show_message(
+            MessageType::Warning,
+            "AI inline completion authentication failed. Check the configured API key and provider settings.",
+        ) {
+            warnings.remove("auth");
+            tracing::warn!(%error, "failed to notify client about AI authentication failure");
+        }
     }
 
     /// Runtime feature gate for future next-edit suggestions.

@@ -5,6 +5,7 @@
 //!
 //! Produces a JSON report suitable for baseline comparison and regression gating.
 
+use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 #[cfg(test)]
@@ -952,7 +953,7 @@ pub fn compare_reports(current: &SweepReport, baseline: &SweepReport) -> Vec<Rat
 
 /// Persist a sweep receipt in the canonical profile-scoped location.
 pub fn write_sweep_receipt(report: &SweepReport) -> Result<PathBuf> {
-    let receipt_path = receipt_path_for_profile(&report.corpus_profile);
+    let receipt_path = project_root()?.join(receipt_path_for_profile(&report.corpus_profile));
     if let Some(parent) = receipt_path.parent() {
         fs::create_dir_all(parent).context("Failed to create receipt directory")?;
     }
@@ -2367,11 +2368,17 @@ mod tests {
 
     #[test]
     fn test_write_sweep_receipt_succeeds_for_dirty_manifest_report() -> Result<()> {
-        let report = test_report(0, 1, 3, 0, BTreeMap::new());
+        let mut report = test_report(0, 1, 3, 0, BTreeMap::new());
+        report.corpus_profile = "test-sweep-receipt".to_string();
         let receipt_path = write_sweep_receipt(&report)?;
+        assert_eq!(
+            receipt_path,
+            project_root()?.join("target/receipts/test-sweep-receipt-corpus-sweep.json")
+        );
         assert!(receipt_path.exists());
-        let contents = fs::read_to_string(receipt_path)?;
+        let contents = fs::read_to_string(&receipt_path)?;
         assert!(contents.contains("\"files_with_errors\": 1"));
+        fs::remove_file(receipt_path)?;
         Ok(())
     }
 

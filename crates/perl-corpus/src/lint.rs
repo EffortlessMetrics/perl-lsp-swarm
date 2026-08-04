@@ -281,8 +281,8 @@ pub fn check_sections(sections: &[Section], config: &LintConfig) -> LintResult {
     let mut result = LintResult { errors: Vec::new(), warnings: Vec::new() };
 
     // Regex for valid ID format - pattern is a compile-time constant, so parsing cannot fail
-    static ID_RE: once_cell::sync::Lazy<Option<Regex>> =
-        once_cell::sync::Lazy::new(|| Regex::new(r"^[a-z0-9._-]+$").ok());
+    static ID_RE: std::sync::LazyLock<Option<Regex>> =
+        std::sync::LazyLock::new(|| Regex::new(r"^[a-z0-9._-]+$").ok());
 
     // Track seen IDs for duplicate detection
     let mut seen_ids = BTreeSet::new();

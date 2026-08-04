@@ -10,19 +10,18 @@ impl LspServer {
     pub(crate) fn run_test(&self, test_id: &str) -> Result<Option<Value>, JsonRpcError> {
         tracing::debug!(test_id, "Running test");
 
-        // Parse test ID to get URI and test name
-        let parts: Vec<&str> = test_id.split("::").collect();
-        if parts.len() < 2 {
+        // Parse test ID to get URI and test name. The legacy runner only
+        // supports file-level execution, so preserve the URI as its input;
+        // passing the bare test name would make it resolve a cwd-relative
+        // file unrelated to the requested document.
+        let Some((uri, _test_name)) = test_id.split_once("::") else {
             return Ok(Some(json!({"status": "error", "message": "Invalid test ID"})));
-        }
-
-        let uri = parts[0];
-        let test_name = parts[1..].join("::");
+        };
 
         let documents = self.documents.lock();
         if let Some(doc) = documents.get(uri) {
             let runner = TestRunner::new(doc.text.clone(), uri.to_string());
-            let results = runner.run_test(&test_name);
+            let results = runner.run_test(uri);
 
             // Convert results to JSON
             let json_results: Vec<Value> = results
@@ -46,20 +45,26 @@ impl LspServer {
         Ok(Some(document_not_found_error()))
     }
 
-    /// Run a named subtest
+    /// Run a named subtest — not yet implemented server-side.
+    ///
+    /// Returns an error rather than fabricating success, so the client does
+    /// not silently believe the subtest ran (#4972).
     pub(crate) fn run_subtest(&self, subtest_name: &str) -> Result<Option<Value>, JsonRpcError> {
-        Ok(Some(json!({
-            "status": "success",
-            "subtest": subtest_name
-        })))
+        Err(JsonRpcError::new(
+            crate::protocol::METHOD_NOT_FOUND,
+            format!("runSubtest '{subtest_name}' is not implemented server-side"),
+        ))
     }
 
-    /// Debug a specific test — stub that returns success with the test ID for client-side handling
+    /// Debug a specific test — not yet implemented server-side.
+    ///
+    /// Returns an error rather than fabricating success, so the client does
+    /// not silently believe the debug session started (#4972).
     pub(crate) fn debug_test(&self, test_id: &str) -> Result<Option<Value>, JsonRpcError> {
-        Ok(Some(json!({
-            "status": "success",
-            "debugTest": test_id
-        })))
+        Err(JsonRpcError::new(
+            crate::protocol::METHOD_NOT_FOUND,
+            format!("debugTest '{test_id}' is not implemented server-side"),
+        ))
     }
 
     /// Run all tests in a file

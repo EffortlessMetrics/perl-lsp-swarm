@@ -179,7 +179,6 @@ Copy the provided `.vscode/settings.json` to your project root and customize:
 {
   "perl-lsp.serverPath": "/path/to/your/perllsp",
   "perl-lsp.autoDownload": false,
-  "perl-lsp.enableDiagnostics": true,
   "perl-lsp.enableSemanticTokens": true,
   "perl-lsp.enableFormatting": true,
   "perl-lsp.includePaths": ["lib", "local/lib/perl5", "vendor/lib"]

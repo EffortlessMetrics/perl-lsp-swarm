@@ -71,6 +71,8 @@ pub struct IndexPhaseTransition {
 /// Early-exit reasons for workspace indexing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EarlyExitReason {
+    /// The client cancelled the workspace indexing operation.
+    Cancelled,
     /// Initial scan exceeded the configured time budget.
     InitialTimeBudget,
     /// Incremental update exceeded the configured time budget.
@@ -123,6 +125,8 @@ pub enum ResourceKind {
 /// Reason for index degradation.
 #[derive(Clone, Debug)]
 pub enum DegradationReason {
+    /// Workspace indexing was cancelled before the index became ready.
+    Cancelled,
     /// Parse storm (too many simultaneous changes).
     ParseStorm {
         /// Number of pending parse operations.

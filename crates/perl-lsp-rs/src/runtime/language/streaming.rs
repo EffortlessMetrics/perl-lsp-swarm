@@ -8,6 +8,8 @@
 use super::super::*;
 use crate::protocol::{invalid_params, req_position, req_uri};
 use crate::runtime::stream_session::SessionKey;
+use perl_lsp_rs_core::providers::inline_completion::BackendError;
+use std::time::{Duration, Instant};
 
 impl LspServer {
     /// Handle `textDocument/perlInlineCompletionStream` custom request.
@@ -77,7 +79,7 @@ impl LspServer {
 
         // Build request
         let req = perl_lsp_rs_core::providers::inline_completion::BackendRequest {
-            context,
+            context: context.clone(),
             max_output_tokens: ai_config.max_output_tokens,
             timeout_ms: ai_config.timeout_ms,
         };
@@ -118,11 +120,10 @@ impl LspServer {
         // No document locks are held at this point -- notify() only
         // touches the outbound channel, so it is safe to call during
         // the (potentially slow) network streaming call.
-        let start_line = session.start_line;
-        let start_character = session.start_character;
-
         // Track whether we sent any chunk so we know if a final is needed
         let mut sent_final = false;
+        let debounce = Duration::from_millis(ai_config.streaming.update_debounce_ms);
+        let mut last_emitted_at: Option<Instant> = None;
 
         // Stream from the backend -- each chunk carries cumulative text
         let stream_result = backend.stream(
@@ -138,10 +139,43 @@ impl LspServer {
                     *text = chunk.text.clone();
                 }
 
-                let seq = session.next_sequence();
                 let is_final = chunk.is_final;
                 if is_final {
                     sent_final = true;
+                }
+
+                let candidate = provider.apply_replacement_ranges_for_context(
+                    perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
+                        items: vec![
+                            perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem {
+                                insert_text: chunk.text,
+                                filter_text: None,
+                                range: None,
+                                command: None,
+                            },
+                        ],
+                    },
+                    &context,
+                    line,
+                    character,
+                );
+                let safe_items = provider
+                    .filter_parse_safe_items(candidate, &text, line, character)
+                    .items;
+                if safe_items.is_empty() && !is_final {
+                    return perl_lsp_rs_core::providers::inline_completion::StreamControl::Continue;
+                }
+
+                let seq = session.next_sequence();
+
+                // Keep the first update responsive, then suppress intermediate
+                // chunks until the configured interval has elapsed. A final
+                // chunk always goes through so the client receives the complete
+                // cumulative result even when the provider emits rapidly.
+                let should_emit = is_final
+                    || last_emitted_at.map(|last| last.elapsed() >= debounce).unwrap_or(true);
+                if !should_emit {
+                    return perl_lsp_rs_core::providers::inline_completion::StreamControl::Continue;
                 }
 
                 let progress = json!({
@@ -151,13 +185,25 @@ impl LspServer {
                         "sessionId": session_id,
                         "sequence": seq,
                         "isFinal": is_final,
-                        "items": [{
-                            "insertText": chunk.text,
-                            "range": {
-                                "start": { "line": start_line, "character": start_character },
-                                "end": { "line": start_line, "character": start_character }
-                            }
-                        }]
+                        "items": safe_items.into_iter().map(|item| {
+                            let range = item.range.unwrap_or_else(|| lsp_types::Range {
+                                start: lsp_types::Position {
+                                    line,
+                                    character,
+                                },
+                                end: lsp_types::Position {
+                                    line,
+                                    character,
+                                },
+                            });
+                            json!({
+                                "insertText": item.insert_text,
+                                "range": {
+                                    "start": { "line": range.start.line, "character": range.start.character },
+                                    "end": { "line": range.end.line, "character": range.end.character }
+                                }
+                            })
+                        }).collect::<Vec<_>>()
                     }
                 });
 
@@ -165,6 +211,7 @@ impl LspServer {
                     tracing::debug!("streaming inline completion: failed to send progress: {}", e);
                     return perl_lsp_rs_core::providers::inline_completion::StreamControl::Stop;
                 }
+                last_emitted_at = Some(Instant::now());
 
                 if is_final {
                     perl_lsp_rs_core::providers::inline_completion::StreamControl::Stop
@@ -182,13 +229,39 @@ impl LspServer {
             let items = if cumulative_text.is_empty() {
                 json!([])
             } else {
-                json!([{
-                    "insertText": cumulative_text,
-                    "range": {
-                        "start": { "line": start_line, "character": start_character },
-                        "end": { "line": start_line, "character": start_character }
-                    }
-                }])
+                let candidate = provider.apply_replacement_ranges_for_context(
+                    perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
+                        items: vec![
+                            perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem {
+                                insert_text: cumulative_text,
+                                filter_text: None,
+                                range: None,
+                                command: None,
+                            },
+                        ],
+                    },
+                    &context,
+                    line,
+                    character,
+                );
+                let safe_items =
+                    provider.filter_parse_safe_items(candidate, &text, line, character).items;
+                json!(safe_items
+                    .into_iter()
+                    .map(|item| {
+                        let range = item.range.unwrap_or_else(|| lsp_types::Range {
+                            start: lsp_types::Position { line, character },
+                            end: lsp_types::Position { line, character },
+                        });
+                        json!({
+                            "insertText": item.insert_text,
+                            "range": {
+                                "start": { "line": range.start.line, "character": range.start.character },
+                                "end": { "line": range.end.line, "character": range.end.character }
+                            }
+                        })
+                    })
+                    .collect::<Vec<_>>())
             };
 
             let progress = json!({
@@ -213,6 +286,9 @@ impl LspServer {
         // Log backend errors but don't propagate -- the protocol contract
         // only needs the final isFinal:true notification to be sent.
         if let Err(e) = stream_result {
+            if matches!(e, BackendError::Auth(_)) {
+                self.notify_ai_auth_failure();
+            }
             tracing::debug!("streaming inline completion backend error: {}", e);
         }
 

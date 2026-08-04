@@ -140,11 +140,12 @@ fn check_assignment_in_condition(condition: &Node, diagnostics: &mut Vec<Diagnos
         related_information: vec![
             RelatedInformation {
                 location: range,
-                message: "💡 Use '==' for comparison or 'eq' for string comparison".to_string(),
+                message: "Suggestion: Use '==' for comparison or 'eq' for string comparison"
+                    .to_string(),
             },
             RelatedInformation {
                 location: range,
-                message: "ℹ️ Assignment in conditions is usually a mistake. If intentional, wrap in parentheses: if (($x = value))".to_string(),
+                message: "Note: Assignment in conditions is usually a mistake. If intentional, wrap in parentheses: if (($x = value))".to_string(),
             },
         ],
         tags: Vec::new(),
@@ -328,6 +329,14 @@ mod tests {
         assert!(
             suggestion.contains("==") || suggestion.contains("eq"),
             "PL403 suggestion should mention '==' or 'eq': {suggestion}"
+        );
+        assert!(
+            pl403
+                .related_information
+                .iter()
+                .all(|info| !info.message.contains('💡') && !info.message.contains('ℹ')),
+            "PL403 related information should not use emoji: {:?}",
+            pl403.related_information
         );
     }
 }

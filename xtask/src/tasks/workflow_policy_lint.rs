@@ -36,7 +36,6 @@ const ALLOWLIST_WORKFLOW_LANE_MISSING: &[&str] = &[
     "winget-bump.yml",
     // Schedule/utility workflows tracked separately from the lane economics.
     "ci-gate-self-tests.yml",
-    "merge-ready-reconciler.yml",
     "triage-issues.yml",
     "workflow-trigger-lint.yml",
 ];

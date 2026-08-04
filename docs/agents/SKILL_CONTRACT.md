@@ -66,6 +66,14 @@ merge-reconcile
 
 Public flows are the natural user/root entrypoints. Atomic skills are normally called from a public flow or invoked explicitly for midstream work. Adding, renaming, or removing an atomic skill is a control-plane change and must update both provider implementations and route validation.
 
+The internal `orchestrate-work` operation is root-facing execution guidance, not a
+public flow or atomic artifact stage. It selects direct execution, a bounded
+question, an atomic-skill assignment, a whole-flow lane, or separate independent
+claim lanes for the current runtime. It must preserve one writer per candidate,
+join evidence rather than votes, and return to the invoking flow. It must not
+encode a durable executor graph, lease, reservation, liveness state, provider,
+model, agent count, or team topology.
+
 ## Local route grammar
 
 Use direct callable skill names from the canonical vocabulary in route sections.

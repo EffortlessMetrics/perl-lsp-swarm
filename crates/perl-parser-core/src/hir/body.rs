@@ -420,6 +420,11 @@ pub enum HirExpr {
         args: Vec<HirExprId>,
         /// The AST node kind name, for diagnostics.
         ast_kind: String,
+        /// Source span of the callee (function/method name) sub-expression.
+        /// `None` when the callee has no distinct span (e.g. bare-word in
+        /// `foo()` is not a separate AST node). Enables linking a call site
+        /// back to its declaration for effect analysis (#5682).
+        callee_span: Option<SourceLocation>,
     },
 
     /// Array/hash element access (`$arr[i]`, `$hash{k}`) modeled as an

@@ -651,7 +651,7 @@ impl PullDiagnosticsProvider {
         };
         if let Some(ast) = parsed.ast() {
             let parse_errors = parsed.parse_errors();
-            let provider = DiagnosticsProvider::new(ast, doc_state.text.clone());
+            let provider = DiagnosticsProvider::new(ast, doc_state.text_arc.to_string());
             let source_path =
                 url::Url::parse(&uri.to_string()).ok().and_then(|value| value.to_file_path().ok());
             // Build the baseline include paths (configured + PERL5LIB, without lexical
@@ -659,7 +659,7 @@ impl PullDiagnosticsProvider {
             // offset so that `no lib` cancellations that precede each `use` statement
             // are respected.
             let base_include_paths = context.include_paths.clone();
-            let doc_text = doc_state.text.clone();
+            let doc_text = doc_state.text_arc.to_string();
 
             // Position-aware resolver: for each `use Module` statement, recompute the
             // effective include paths at that statement's byte offset so that `no lib`
