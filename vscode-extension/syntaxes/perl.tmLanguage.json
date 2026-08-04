@@ -22,13 +22,13 @@
             "include": "#keywords"
         },
         {
+            "include": "#regex"
+        },
+        {
             "include": "#operators"
         },
             {
                 "include": "#functions"
-            },
-            {
-                "include": "#regex"
             },
             {
                 "include": "#swig"
@@ -97,6 +97,46 @@
                             "include": "#interpolation"
                         }
                     ]
+                },
+                {
+                    "name": "string.quoted.q.perl",
+                    "begin": "\\b(q[qwrx]?)\\s*(\\()",
+                    "end": "\\)",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.perl"
+                        }
+                    }
+                },
+                {
+                    "name": "string.quoted.q.perl",
+                    "begin": "\\b(q[qwrx]?)\\s*(\\{)",
+                    "end": "\\}",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.perl"
+                        }
+                    }
+                },
+                {
+                    "name": "string.quoted.q.perl",
+                    "begin": "\\b(q[qwrx]?)\\s*(\\[)",
+                    "end": "\\]",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.perl"
+                        }
+                    }
+                },
+                {
+                    "name": "string.quoted.q.perl",
+                    "begin": "\\b(q[qwrx]?)\\s*(<)",
+                    "end": ">",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.perl"
+                        }
+                    }
                 },
                 {
                     "name": "string.quoted.q.perl",
@@ -247,8 +287,13 @@
             "patterns": [
                 {
                     "name": "string.regexp.perl",
-                    "begin": "(?<=[=~!]\\s*)(/)(?![/*+{}?])",
+                    "begin": "(=~|!~)\\s*(/)(?![/*+{}?])",
                     "end": "/[cgimosxpodualn]*",
+                    "beginCaptures": {
+                        "1": {
+                            "name": "keyword.operator.assignment.perl"
+                        }
+                    },
                     "patterns": [
                         {
                             "name": "constant.character.escape.perl",
