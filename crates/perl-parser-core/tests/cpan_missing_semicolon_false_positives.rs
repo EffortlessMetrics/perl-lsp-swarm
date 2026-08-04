@@ -128,3 +128,38 @@ fn angle_brackets_inside_a_literal_are_not_a_heredoc_introducer() {
     // the `<<` to the scan.
     assert_blocking_diagnostic("my $s = \"a\\\"b <<EOF\"\nprint $s;\n");
 }
+
+/// A lone bareword is a real statement in Perl — `use constant foo => 1;` makes
+/// `foo` a call — so exempting the shape wholesale hid a genuine missing
+/// terminator (found in review, #5503). The exemption now requires the
+/// identifier to name a heredoc delimiter introduced above it.
+#[test]
+fn a_bare_identifier_is_only_exempt_when_it_terminates_a_heredoc() {
+    // No `<<foo` above it, so this is a real statement missing its `;`.
+    assert_blocking_diagnostic("use constant foo => 1;\nfoo\nprint \"hi\";\n");
+    assert_blocking_diagnostic("use constant foo => 1;\nfoo\n$x = 1;\n");
+
+    // With the introducer above it, the same bareword is a leaked terminator.
+    assert_no_blocking_diagnostics(concat!(
+        "my $t = $self->oneliner(_sprintf562 <<'CODE', $dir);\n",
+        "chdir '%1$s';\n",
+        "CODE\n",
+        "push @m, \"x\";\n",
+    ));
+}
+
+/// Known remaining false negative, pinned so it is not mistaken for coverage:
+/// `foo\nmy $x = 1;` still reports `ok`. The bareword swallows the following
+/// `my` declaration as a list-operator argument, so no leftover token ever
+/// reaches the terminator seam. That is expression parsing, not this check —
+/// removing the exemption entirely does not fix it.
+#[test]
+fn bareword_followed_by_my_is_a_known_expression_parsing_gap() {
+    let source = "use constant foo => 1;\nfoo\nmy $x = 1;\n";
+    let mut parser = Parser::new(source);
+    let _ = parser.parse();
+    assert!(
+        !parser.errors().iter().any(ParseError::blocks_clean_parse),
+        "if this starts failing the expression-parsing gap was fixed; delete this test"
+    );
+}

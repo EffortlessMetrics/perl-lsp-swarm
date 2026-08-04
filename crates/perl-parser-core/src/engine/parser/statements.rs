@@ -602,12 +602,10 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
 
-        // A statement that is nothing but a bare identifier is the signature of
-        // a heredoc terminator leaking into the token stream after an
-        // introducer the lexer did not recognise. Real programs essentially
-        // never contain a lone bareword statement, so declining to police this
-        // shape costs no coverage.
-        if Self::is_bare_identifier_statement(stmt) {
+        // A bare identifier that names a heredoc delimiter introduced earlier in
+        // the file is that heredoc's terminator leaking into the token stream,
+        // not a statement the user wrote.
+        if self.is_leaked_heredoc_terminator(stmt) {
             return Ok(());
         }
 
@@ -732,16 +730,53 @@ impl<'a> Parser<'a> {
         )
     }
 
-    /// Whether the statement is a single bare identifier — the signature of a
-    /// heredoc terminator that leaked into the token stream.
-    fn is_bare_identifier_statement(node: &Node) -> bool {
+    /// The name, if this statement is a single bare identifier.
+    fn bare_identifier_name(node: &Node) -> Option<&str> {
         match &node.kind {
-            NodeKind::Identifier { .. } => true,
-            NodeKind::ExpressionStatement { expression } => {
-                matches!(expression.kind, NodeKind::Identifier { .. })
-            }
-            _ => false,
+            NodeKind::Identifier { name } => Some(name),
+            NodeKind::ExpressionStatement { expression } => match &expression.kind {
+                NodeKind::Identifier { name } => Some(name),
+                _ => None,
+            },
+            _ => None,
         }
+    }
+
+    /// Whether this statement is a bare identifier that names a heredoc
+    /// delimiter introduced earlier in the file — that heredoc's terminator
+    /// leaking into the token stream, not a statement the user wrote.
+    ///
+    /// Deliberately not "any bare identifier". A lone bareword is a real
+    /// statement in Perl — `use constant foo => 1;` makes `foo` a call — and
+    /// exempting the shape wholesale hid a genuine missing terminator that
+    /// `perl -c` rejects (found in review, #5503). Requiring the identifier to
+    /// match an introducer that actually appears above it keeps the
+    /// `ExtUtils/MM_Any.pm` case suppressed without covering for the rest.
+    fn is_leaked_heredoc_terminator(&mut self, stmt: &Node) -> bool {
+        let Some(name) = Self::bare_identifier_name(stmt) else {
+            return false;
+        };
+        if name.is_empty() {
+            return false;
+        }
+
+        let end = stmt.location.start.min(self.src_bytes.len());
+        let before = &self.src_bytes[..end];
+        let needle = name.as_bytes();
+
+        before.windows(2).enumerate().any(|(index, pair)| {
+            if pair != b"<<" {
+                return false;
+            }
+            let mut rest = &before[index + 2..];
+            if rest.first() == Some(&b'~') {
+                rest = &rest[1..];
+            }
+            if matches!(rest.first(), Some(b'"' | b'\'' | b'`')) {
+                rest = &rest[1..];
+            }
+            rest.starts_with(needle)
+        })
     }
 
     /// Whether the subtree declares a heredoc.
