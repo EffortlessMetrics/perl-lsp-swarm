@@ -3380,7 +3380,7 @@ impl<'a> BodyBuilder2<'a> {
                 )
             }
 
-            NodeKind::MethodCall { object, method, args } => {
+            NodeKind::MethodCall { object, method: _, args } => {
                 // Lower method call with structured children so variable
                 // reads in object/arg positions produce correct PIR facts.
                 // The method invocation itself is modeled as a Call (not
