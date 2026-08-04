@@ -282,14 +282,7 @@ suite('Packaged VSIX bundled-server journey', function () {
       receipt.shutdown = 'not_observable';
     }
 
-    fs.writeFileSync(
-      path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json'),
-      JSON.stringify(receipt, null, 2),
-    );
-
-    assert.equal(metrics.binary_resolution_source, 'bundled', JSON.stringify(metrics));
-    assert.equal(afterEdit.status, 'ok', JSON.stringify(afterEdit));
-    for (const [label, result] of [
+    const providerResults = [
       ['completion', immediate.completion],
       ['hover', immediate.hover],
       ['definition', immediate.definition],
@@ -298,7 +291,19 @@ suite('Packaged VSIX bundled-server journey', function () {
       ['completion after edit', afterEdit.immediate_requery],
       ['formatting', formatting],
       ['rename', rename],
-    ] as const) {
+    ] as const;
+    const providerFailures = providerResults.filter(([, result]) => result.status !== 'ok');
+    receipt.outcome = providerFailures.length === 0 ? 'completed' : 'failed';
+    receipt.product_blockers = providerFailures.map(([label, result]) => ({ label, result }));
+
+    fs.writeFileSync(
+      path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json'),
+      JSON.stringify(receipt, null, 2),
+    );
+
+    assert.equal(metrics.binary_resolution_source, 'bundled', JSON.stringify(metrics));
+    assert.equal(afterEdit.status, 'ok', JSON.stringify(afterEdit));
+    for (const [label, result] of providerResults) {
       assertProviderSucceeded(label, result);
     }
     assert.notEqual(rename.status, 'unsafe_refusal', JSON.stringify(rename));
