@@ -551,11 +551,13 @@ suite('First-hour VS Code receipt', function () {
       failure: Record<string, unknown>,
       moments: Record<string, unknown>,
       lifecycle: Record<string, unknown> | null = null,
-      languageClientMetrics: Record<string, unknown> =
-        extensionApi?.getLanguageClientStartupMetrics?.() ?? {
-          status: 'unavailable',
-          limitation: 'extension activation API did not expose startup metrics',
-        },
+      languageClientMetrics: Record<
+        string,
+        unknown
+      > = extensionApi?.getLanguageClientStartupMetrics?.() ?? {
+        status: 'unavailable',
+        limitation: 'extension activation API did not expose startup metrics',
+      },
     ): void => {
       writeFirstHourReceipt({
         ...baseReceipt,
