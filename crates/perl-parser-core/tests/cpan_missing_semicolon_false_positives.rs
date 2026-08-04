@@ -112,6 +112,17 @@ fn the_narrowings_do_not_disarm_the_check() {
     assert_blocking_diagnostic("my $bits = 1 << 2\nprint \"hi\";\n");
 }
 
+/// A package declaration without a block is an ordinary statement and still
+/// needs its terminator. Only `package NAME { ... }` is self-terminated by the
+/// closing brace; keeping this distinction prevents the brace-terminated
+/// predicate from masking the original missing-semicolon claim.
+#[test]
+fn package_declaration_without_block_still_requires_a_semicolon() {
+    assert_blocking_diagnostic("package MissingTerminator\nprint \"after\";\n");
+    assert_blocking_diagnostic("package Versioned 1.0\nprint \"after\";\n");
+    assert_no_blocking_diagnostics("package Blocked { our $x = 1 }\nprint \"after\";\n");
+}
+
 /// `<<` inside a string literal, a comment, or a quote-like body is not a
 /// heredoc introducer. Treating it as one suppressed the diagnostic for the
 /// statement after it, so `--check` answered `ok` for source `perl -c` rejects
