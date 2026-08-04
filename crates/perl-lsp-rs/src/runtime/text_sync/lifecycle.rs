@@ -106,14 +106,6 @@ impl LspServer {
                 }
             }
 
-            // Refresh through the generation-aware, canonical diagnostics path.
-            // It snapshots the document under a brief lock, computes off-lock,
-            // preserves push/pull policy, and rejects stale generations.
-            self.publish_diagnostics_debounced(uri);
-
-            // Optionally, trigger any post-save hooks here
-            // For example: format on save, run tests, etc.
-
             // Reconcile: if the saved document's index is stale (generation
             // lag from coalesced parse jobs), re-index it now from the
             // in-memory text. This prevents permanent index lag where no
@@ -142,6 +134,21 @@ impl LspServer {
                     }
                 }
             }
+
+            // Refresh through the generation-aware, canonical diagnostics path
+            // after the synchronous stale-index reconciliation above. This
+            // ordering matters when immediate diagnostics are enabled: semantic
+            // projections must observe the same current index generation as the
+            // saved document rather than publishing once from stale workspace
+            // state and waiting for a later edit/save to correct it.
+            //
+            // The publisher snapshots the document under a brief lock, computes
+            // off-lock, preserves push/pull policy, and rejects stale document
+            // generations.
+            self.publish_diagnostics_debounced(uri);
+
+            // Optionally, trigger any post-save hooks here
+            // For example: format on save, run tests, etc.
         }
 
         Ok(())
