@@ -222,10 +222,20 @@ suite('Packaged VSIX bundled-server journey', function () {
           15_000,
         )) as vscode.WorkspaceEdit | undefined;
         const entries = result?.entries() ?? [];
-        const workspacePrefix = path.resolve(workspacePath) + path.sep;
+        const workspaceResolved = path.resolve(workspacePath);
+        const workspacePrefix = workspaceResolved + path.sep;
+        const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
         const safe = entries.every(([uri]) => {
           const resolved = path.resolve(uri.fsPath);
-          return resolved === path.resolve(workspacePath) || resolved.startsWith(workspacePrefix);
+          if (caseInsensitive) {
+            const normalized = resolved.toLowerCase();
+            const normalizedWorkspace = workspaceResolved.toLowerCase();
+            const normalizedPrefix = workspacePrefix.toLowerCase();
+            return (
+              normalized === normalizedWorkspace || normalized.startsWith(normalizedPrefix)
+            );
+          }
+          return resolved === workspaceResolved || resolved.startsWith(workspacePrefix);
         });
         rename = {
           status: result ? (safe ? 'offered_not_applied' : 'unsafe_refusal') : 'safe_refusal',
@@ -286,8 +296,13 @@ suite('Packaged VSIX bundled-server journey', function () {
       };
 
       if (activation?.stop) {
-        await withTimeout('packaged extension shutdown', activation.stop(), 30_000);
-        receipt.shutdown = 'stopped';
+        try {
+          await withTimeout('packaged extension shutdown', activation.stop(), 30_000);
+          receipt.shutdown = 'stopped';
+        } catch (error: unknown) {
+          receipt.shutdown = 'timeout';
+          receipt.shutdown_error = error instanceof Error ? error.message : String(error);
+        }
       } else {
         receipt.shutdown = 'not_observable';
       }
