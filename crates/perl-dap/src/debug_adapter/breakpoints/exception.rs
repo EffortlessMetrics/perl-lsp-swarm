@@ -1,4 +1,6 @@
-use super::*;
+use super::{
+    DapMessage, DebugAdapter, SetExceptionBreakpointsArguments, Value, catalog_has_feature, json,
+};
 
 impl DebugAdapter {
     /// Handle setExceptionBreakpoints request.
