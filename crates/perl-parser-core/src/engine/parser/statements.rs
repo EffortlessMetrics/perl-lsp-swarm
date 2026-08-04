@@ -757,7 +757,9 @@ impl<'a> Parser<'a> {
     /// guard to the unambiguous `qr` operator form used by the parser's regex
     /// syntax and by the false-negative regression below.
     fn starts_qr_slash_body(span: &[u8], index: usize) -> bool {
-        index >= 2 && span[index] == b'/' && &span[index - 2..index] == b"qr"
+        index >= 2
+            && span.get(index) == Some(&b'/')
+            && span.get(index - 2..index) == Some(&b"qr"[..])
     }
 
     /// Whether the source the statement spans contains a heredoc introducer
