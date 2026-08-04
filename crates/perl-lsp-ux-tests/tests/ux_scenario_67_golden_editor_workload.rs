@@ -5,15 +5,15 @@
 //! journey without promoting a support tier or turning a fallback into an
 //! exactness claim.
 
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow, ensure};
 use perl_lsp_ux_tests::{
-    binary_available, fixture_content, fixture_scenario_config, load_catalyst_fixture_files,
+    ProjectFixtureFile, ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available,
+    fixture_content, fixture_scenario_config, load_catalyst_fixture_files,
     load_dancer2_fixture_files, load_mojolicious_fixture_files, missing_binary_skip,
-    open_all_fixture_files, run_ux_scenario, ProjectFixtureFile, ScenarioConfig, UxCiTier,
-    UxComponent, UxHarness,
+    open_all_fixture_files, run_ux_scenario,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Deserializer, Value};
+use serde_json::{Deserializer, Value, json};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
