@@ -17,6 +17,7 @@ function clearPendingTimer(waiter: PendingWaiter): void {
  */
 export class ActiveDocumentReadiness {
   private generation = 0;
+  private indexReady = false;
   private readyUris = new Set<string>();
   private waiters = new Map<string, Set<PendingWaiter>>();
 
@@ -29,6 +30,7 @@ export class ActiveDocumentReadiness {
       }
     }
     this.waiters.clear();
+    this.indexReady = false;
     this.readyUris.clear();
     return this.generation;
   }
@@ -42,6 +44,21 @@ export class ActiveDocumentReadiness {
     }
 
     this.readyUris.add(uri);
+    this.resolveWaiters(uri);
+  }
+
+  public markIndexReady(generation = this.generation): void {
+    if (generation !== this.generation) {
+      return;
+    }
+
+    this.indexReady = true;
+    for (const uri of [...this.waiters.keys()]) {
+      this.resolveWaiters(uri);
+    }
+  }
+
+  private resolveWaiters(uri: string): void {
     const waiters = this.waiters.get(uri);
     if (!waiters) {
       return;
@@ -55,7 +72,7 @@ export class ActiveDocumentReadiness {
   }
 
   public waitFor(uri: string, timeoutMs: number): Promise<void> {
-    if (this.readyUris.has(uri)) {
+    if (this.indexReady || this.readyUris.has(uri)) {
       return Promise.resolve();
     }
 

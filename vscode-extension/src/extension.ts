@@ -1346,6 +1346,11 @@ function createLanguageClient(serverPath: string): LanguageClient {
       activeDocumentReadiness.markReady(params.uri, generation);
     }
   });
+  lc.onNotification('perl-lsp/index-ready', (params: { ready?: boolean }) => {
+    if (params?.ready === true) {
+      activeDocumentReadiness.markIndexReady(generation);
+    }
+  });
   void lc.setTrace(getTraceLevel());
   return lc;
 }
