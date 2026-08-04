@@ -280,8 +280,12 @@ describe('markdownToHtml', () => {
   });
 
   test('renders http/https Markdown links as clickable anchors (#1993)', () => {
-    const html = markdownToHtml('See [PR #123](https://github.com/EffortlessMetrics/perl-lsp/pull/123) for details.');
-    expect(html).toContain('<a href="https://github.com/EffortlessMetrics/perl-lsp/pull/123">PR #123</a>');
+    const html = markdownToHtml(
+      'See [PR #123](https://github.com/EffortlessMetrics/perl-lsp/pull/123) for details.',
+    );
+    expect(html).toContain(
+      '<a href="https://github.com/EffortlessMetrics/perl-lsp/pull/123">PR #123</a>',
+    );
   });
 
   test('does not render non-http schemes as links (#1993)', () => {
