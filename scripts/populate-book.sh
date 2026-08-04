@@ -36,6 +36,27 @@ copy_doc() {
     fi
 }
 
+# The canonical configuration reference is authored in the repository docs tree,
+# but its links must resolve inside the published book tree after copying.
+copy_config_doc() {
+    local source="$1"
+    local dest="$2"
+
+    copy_doc "$source" "$dest"
+    if [ -f "$dest" ]; then
+        sed -i \
+            -e 's#NATIVE_CRITIC_RULE_MATRIX.md#native-critic-rule-matrix.md#g' \
+            -e 's#../tutorials/DAP_USER_GUIDE.md#../dap/user-guide.md#g' \
+            -e 's#../how-to/EDITOR_SETUP.md#editor-setup-canonical.md#g' \
+            -e 's#../how-to/PERFORMANCE_TUNING.md#../advanced/performance-guide.md#g' \
+            -e 's#PERFORMANCE_SLO.md#performance-slo.md#g' \
+            -e 's#LSP_FEATURES.md#../user-guides/lsp-features.md#g' \
+            -e 's#../how-to/THREADING_CONFIGURATION_GUIDE.md#../advanced/threading-configuration.md#g' \
+            -e 's#CONFIGURATION_SCHEMA.md#configuration-schema.md#g' \
+            "$dest"
+    fi
+}
+
 # Getting Started section
 echo "Setting up Getting Started..."
 # editor-setup.md and configuration.md are committed canonical-pointer stubs
@@ -43,7 +64,7 @@ echo "Setting up Getting Started..."
 # the published book drifts back to copies that go stale independently of the
 # docs sources. Copy each canonical source to reference/ for in-book linking.
 copy_doc "$DOCS_DIR/how-to/EDITOR_SETUP.md" "$BOOK_SRC/reference/editor-setup-canonical.md"
-copy_doc "$DOCS_DIR/reference/CONFIG.md" "$BOOK_SRC/reference/configuration-canonical.md"
+copy_config_doc "$DOCS_DIR/reference/CONFIG.md" "$BOOK_SRC/reference/configuration-canonical.md"
 copy_doc "$DOCS_DIR/project/ORIENTATION.md" "$BOOK_SRC/getting-started/first-steps.md"
 
 copy_doc "$DOCS_DIR/tutorials/GETTING_STARTED.md" "$BOOK_SRC/getting-started/installation.md"
@@ -107,6 +128,9 @@ copy_doc "$DOCS_DIR/project/status/quality.md" "$BOOK_SRC/reference/status/quali
 copy_doc "$DOCS_DIR/project/status/release.md" "$BOOK_SRC/reference/status/release.md"
 copy_doc "$DOCS_DIR/project/ROADMAP.md" "$BOOK_SRC/reference/roadmap.md"
 copy_doc "$DOCS_DIR/project/MILESTONES.md" "$BOOK_SRC/reference/milestones.md"
+copy_doc "$DOCS_DIR/reference/NATIVE_CRITIC_RULE_MATRIX.md" "$BOOK_SRC/reference/native-critic-rule-matrix.md"
+copy_doc "$DOCS_DIR/reference/PERFORMANCE_SLO.md" "$BOOK_SRC/reference/performance-slo.md"
+copy_doc "$DOCS_DIR/reference/CONFIGURATION_SCHEMA.md" "$BOOK_SRC/reference/configuration-schema.md"
 # stability.md is a committed mdBook include of the canonical contract. Do not
 # overwrite it with a copied snapshot, which can drift between population runs.
 copy_doc "$DOCS_DIR/how-to/UPGRADING.md" "$BOOK_SRC/reference/upgrading.md"
