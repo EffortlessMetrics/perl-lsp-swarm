@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10101 |
+| Total tracked files | 10100 |
 | Rust-family files | 3092 |
-| Non-Rust files | 7009 |
-| Allowlisted | 4727 |
+| Non-Rust files | 7008 |
+| Allowlisted | 4726 |
 | Unclassified | 2282 |
 
 ## Non-Rust files by category
@@ -19,7 +19,7 @@
 | config | 236 |
 | documentation | 2251 |
 | generated | 1 |
-| production | 209 |
+| production | 208 |
 | test | 1711 |
 | tooling | 319 |
 | unclassified | 2282 |
@@ -6867,7 +6867,6 @@
 | `vscode-extension/scripts/reporter.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/run-jest.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/run-local-vsix-smoke.js` | production | `non-rust-vscode-extension` | editor/vscode |
-| `vscode-extension/scripts/run-local-vsix-smoke.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/run-workspace-capability-smoke.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/sample-local-vsix-smoke.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/sample-local-vsix-smoke.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
