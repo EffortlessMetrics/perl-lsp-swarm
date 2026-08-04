@@ -3020,6 +3020,27 @@ pub enum ReadlineSource {
     ArgvDiamond,
 }
 
+impl ReadlineSource {
+    /// Classify the line source from a parsed filehandle.
+    ///
+    /// A leading `$` is a scalar holding the handle (`<$fh>`); any other text is
+    /// a bareword handle (`<STDIN>`). The parser builds `NodeKind::Diamond` for
+    /// the handle-less forms, so a missing filehandle is the same `@ARGV`/STDIN
+    /// read.
+    ///
+    /// Single source of truth for both the item lowerer (`hir::lower`) and the
+    /// body lowerer (`hir::body`), which must not disagree about the same
+    /// construct.
+    #[must_use]
+    pub fn from_filehandle(filehandle: Option<&str>) -> Self {
+        match filehandle {
+            Some(name) if name.starts_with('$') => Self::ScalarHandle,
+            Some(_) => Self::NamedHandle,
+            None => Self::ArgvDiamond,
+        }
+    }
+}
+
 /// Glob expression shell payload (`<*.txt>`).
 ///
 /// Only the angle-bracket form reaches this shell; `glob("...")` is parsed as a
@@ -3032,6 +3053,26 @@ pub struct GlobExpr {
     /// Whether the pattern interpolates (`<$dir/*.txt>`). An interpolating
     /// pattern has no statically known match set.
     pub interpolated: bool,
+}
+
+/// Whether an angle-bracket glob pattern interpolates, so its match set is not
+/// statically known. `\$` and `\@` are escaped literals, not interpolation.
+///
+/// Single source of truth for both the item lowerer (`hir::lower`) and the body
+/// lowerer (`hir::body`), which must not disagree about the same construct.
+#[must_use]
+pub(super) fn glob_pattern_interpolates(pattern: &str) -> bool {
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                chars.next();
+            }
+            '$' | '@' => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Regex literal shell payload (`/pattern/modifiers` or `qr/pattern/modifiers`).

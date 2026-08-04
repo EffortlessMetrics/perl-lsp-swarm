@@ -27,7 +27,7 @@ use super::model::{
     ScopeFrame, ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary,
     StashDynamicBoundaryKind, StashGraph, StashProvenance, StatementModifierKind,
     StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr, TransliterationExpr, TryExpr,
-    UseDecl, VariableBinding, VariableDecl,
+    UseDecl, VariableBinding, VariableDecl, glob_pattern_interpolates,
 };
 
 /// Lower a parser AST into first-slice HIR items plus canonical body arenas.
@@ -538,7 +538,7 @@ impl Lowerer {
                     None,
                     confidence,
                     HirKind::ReadlineExpr(ReadlineExpr {
-                        source: readline_source(filehandle.as_deref()),
+                        source: ReadlineSource::from_filehandle(filehandle.as_deref()),
                         filehandle: filehandle.clone(),
                     }),
                     self.package_context.clone(),
@@ -2459,36 +2459,6 @@ fn contains_interpolation_marker(value: &str) -> bool {
     value.contains('$') || value.contains('@') || value.contains('%')
 }
 
-/// Classify the line source of a readline operator from its parsed filehandle.
-///
-/// A leading `$` is a scalar holding the handle (`<$fh>`); any other text is a
-/// bareword handle (`<STDIN>`). The parser builds `NodeKind::Diamond` for the
-/// handle-less forms, so a missing filehandle here is treated as the same
-/// `@ARGV`/STDIN read.
-fn readline_source(filehandle: Option<&str>) -> ReadlineSource {
-    match filehandle {
-        Some(name) if name.starts_with('$') => ReadlineSource::ScalarHandle,
-        Some(_) => ReadlineSource::NamedHandle,
-        None => ReadlineSource::ArgvDiamond,
-    }
-}
-
-/// Whether an angle-bracket glob pattern interpolates, so its match set is not
-/// statically known. `\$` and `\@` are escaped literals, not interpolation.
-fn glob_pattern_interpolates(pattern: &str) -> bool {
-    let mut chars = pattern.chars();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\\' => {
-                chars.next();
-            }
-            '$' | '@' => return true,
-            _ => {}
-        }
-    }
-    false
-}
-
 /// Map a Perl block/sigil dereference operator to its selected runtime slot.
 fn deref_aggregate_kind(op: &str) -> Option<DerefAggregateKind> {
     match op {
@@ -3454,6 +3424,42 @@ impl<'a> BodyBuilder2<'a> {
                 arg_ids.extend(self.lower_slice_operands(keys));
                 self.alloc_expr(HirExpr::Call { args: arg_ids, ast_kind: kind_name }, range)
             }
+
+            // String/IO value shells. These mirror `hir::body::lower_expr` and
+            // classify through the same shared rules in `hir::model`, so the two
+            // body-lowering paths cannot disagree about the same construct.
+            NodeKind::Heredoc { delimiter, interpolated, indented, command, body_span, .. } => self
+                .alloc_expr(
+                    HirExpr::Heredoc {
+                        delimiter: delimiter.clone(),
+                        interpolated: *interpolated,
+                        indented: *indented,
+                        command: *command,
+                        body_range: *body_span,
+                    },
+                    range,
+                ),
+
+            NodeKind::Readline { filehandle } => self.alloc_expr(
+                HirExpr::Readline {
+                    source: ReadlineSource::from_filehandle(filehandle.as_deref()),
+                    filehandle: filehandle.clone(),
+                },
+                range,
+            ),
+
+            NodeKind::Diamond => self.alloc_expr(
+                HirExpr::Readline { source: ReadlineSource::ArgvDiamond, filehandle: None },
+                range,
+            ),
+
+            NodeKind::Glob { pattern } => self.alloc_expr(
+                HirExpr::Glob {
+                    pattern: pattern.clone(),
+                    interpolated: glob_pattern_interpolates(pattern),
+                },
+                range,
+            ),
 
             _ => {
                 // Everything else: emit Opaque. This is the "fail closed" path.

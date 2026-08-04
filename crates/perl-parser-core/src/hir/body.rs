@@ -27,6 +27,7 @@ use crate::SourceLocation;
 
 use super::model::{
     BranchKeyword, ControlTransferKind, LoopKind, ReadlineSource, StatementModifierKind,
+    glob_pattern_interpolates,
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -800,7 +801,7 @@ fn lower_expr(builder: &mut BodyBuilder, node: &Node) -> HirExprId {
 
         NodeKind::Readline { filehandle } => builder.alloc_expr(
             HirExpr::Readline {
-                source: readline_source(filehandle.as_deref()),
+                source: ReadlineSource::from_filehandle(filehandle.as_deref()),
                 filehandle: filehandle.clone(),
             },
             range,
@@ -824,26 +825,4 @@ fn lower_expr(builder: &mut BodyBuilder, node: &Node) -> HirExprId {
             builder.alloc_expr(HirExpr::Opaque { ast_kind: kind_name }, range)
         }
     }
-}
-
-fn readline_source(filehandle: Option<&str>) -> ReadlineSource {
-    match filehandle {
-        Some(name) if name.starts_with('$') => ReadlineSource::ScalarHandle,
-        Some(_) => ReadlineSource::NamedHandle,
-        None => ReadlineSource::ArgvDiamond,
-    }
-}
-
-fn glob_pattern_interpolates(pattern: &str) -> bool {
-    let mut chars = pattern.chars();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\\' => {
-                chars.next();
-            }
-            '$' | '@' => return true,
-            _ => {}
-        }
-    }
-    false
 }

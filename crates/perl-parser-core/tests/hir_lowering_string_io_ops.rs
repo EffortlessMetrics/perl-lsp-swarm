@@ -15,18 +15,23 @@
 //!   pattern interpolation;
 //!   a command heredoc (``<<`CMD` ``) is marked rather than presented as a
 //!   literal string;
-//! - the new shells stay visible in the PIR-A receipt's unsupported counts
-//!   instead of being silently dropped by the layer above.
+//! - the same facts are carried by the canonical body arena, not just the item
+//!   shells, so a body-HIR consumer is not told less than an item consumer;
+//! - the new shells stay visible in the PIR-A receipt's unsupported counts on
+//!   both the item and body paths, instead of being silently dropped or
+//!   mistaken for exact facts by the layer above.
 //!
-//! The implementation lives in `crates/perl-parser-core/src/hir/lower.rs` (the
-//! `NodeKind::Heredoc`/`Readline`/`Diamond`/`Glob` arms).
+//! The implementation lives in `crates/perl-parser-core/src/hir/lower.rs` (item
+//! shells) and `crates/perl-parser-core/src/hir/body.rs` (body arena), both
+//! classifying through the shared rules in `hir/model.rs`
+//! (`ReadlineSource::from_filehandle`, `glob_pattern_interpolates`).
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
     GlobExpr, HeredocExpr, HirBody, HirExpr, HirFile, HirKind, ReadlineExpr, ReadlineSource,
 };
 use perl_parser_core::hir::{lower_ast, lower_body};
-use perl_parser_core::pir::lower_hir;
+use perl_parser_core::pir::{lower_hir, lower_hir_bodies};
 use perl_tdd_support::must_some;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -272,24 +277,45 @@ fn each_string_io_construct_emits_exactly_one_anchored_shell() -> TestResult {
 
 #[test]
 fn body_hir_owns_string_io_semantics_while_pir_remains_fail_closed() -> TestResult {
-    let body = lower_body_source(
-        "my $text = <<\"EOF\";\nhello $name\nEOF\nmy $line = <>;\nmy @files = <$dir/*.txt>;\n",
-    );
+    const SOURCE: &str =
+        "my $text = <<\"EOF\";\nhello $name\nEOF\nmy $line = <>;\nmy @files = <$dir/*.txt>;\n";
+
+    // Half one — the body arena carries the same facts as the item shells, so a
+    // consumer reading canonical body HIR is not told less than one reading items.
+    let body = lower_body_source(SOURCE);
     let exprs = body_exprs(&body);
 
     assert!(
         exprs.iter().any(|expr| matches!(
             expr,
             HirExpr::Heredoc { interpolated: true, command: false, .. }
-        ))
+        )),
+        "body HIR must carry the heredoc interpolation and command facts, got {exprs:?}"
     );
     assert!(
         exprs.iter().any(|expr| matches!(
             expr,
             HirExpr::Readline { source: ReadlineSource::ArgvDiamond, .. }
-        ))
+        )),
+        "body HIR must classify `<>` as the @ARGV diamond, got {exprs:?}"
     );
-    assert!(exprs.iter().any(|expr| matches!(expr, HirExpr::Glob { interpolated: true, .. })));
+    assert!(
+        exprs.iter().any(|expr| matches!(expr, HirExpr::Glob { interpolated: true, .. })),
+        "body HIR must record that `<$dir/*.txt>` interpolates, got {exprs:?}"
+    );
+
+    // Half two — the name's second claim. A typed body node must not be read as
+    // PIR-A support: the body path counts these as unsupported constructs rather
+    // than emitting exact operations for runtime IO.
+    let graph = lower_hir_bodies(&lower_source(SOURCE));
+    for construct in ["Heredoc", "Readline", "Glob"] {
+        assert!(
+            graph.receipt.unsupported_construct_counts.contains_key(construct),
+            "PIR-A must stay fail-closed on {construct}, counting it as unsupported \
+             rather than claiming an exact fact: {:?}",
+            graph.receipt.unsupported_construct_counts
+        );
+    }
     Ok(())
 }
 
