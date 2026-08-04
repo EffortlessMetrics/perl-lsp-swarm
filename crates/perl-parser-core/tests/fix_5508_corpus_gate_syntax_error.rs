@@ -18,6 +18,7 @@
 use perl_parser_core::{
     ParseError, Parser, RecoveryKind, RecoverySalvageClass, RecoverySalvageProfile, RecoverySite,
 };
+use perl_tdd_support::must;
 
 /// Build a salvage profile from a freshly-parsed clean snippet and an
 /// explicit diagnostic list injected for testing.  Returns the profile.
@@ -26,7 +27,7 @@ fn profile_with_diagnostics(
     extra_diagnostics: &[ParseError],
 ) -> RecoverySalvageProfile {
     let mut parser = Parser::new(source);
-    let ast = parser.parse().expect("parse() must succeed for this helper");
+    let ast = must(parser.parse());
     let mut diagnostics: Vec<ParseError> = parser.errors().to_vec();
     diagnostics.extend_from_slice(extra_diagnostics);
     RecoverySalvageProfile::from_parse(&ast, &diagnostics, false)
@@ -152,7 +153,7 @@ fn unterminated_heredoc_is_not_clean() {
     // so the old gate would have reported it as Clean.  The fix must surface it.
     let src = "my $text = <<END;\nsome content\n";
     let mut parser = Parser::new(src);
-    let ast = parser.parse().expect("parse() must not catastrophically fail for heredoc");
+    let ast = must(parser.parse());
     let diagnostics = parser.errors().to_vec();
     let profile = RecoverySalvageProfile::from_parse(&ast, &diagnostics, false);
 
