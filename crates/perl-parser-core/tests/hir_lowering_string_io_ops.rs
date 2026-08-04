@@ -190,6 +190,35 @@ fn glob_sigil_not_starting_a_variable_stays_static() -> TestResult {
 }
 
 #[test]
+fn glob_special_variable_patterns_are_recognized_as_interpolating() -> TestResult {
+    // Perl's punctuation variables are variables. The parser routes these to
+    // `NodeKind::Glob` rather than `Readline` (the pattern is not a bare
+    // handle name), so a classifier that only accepted identifier-ish name
+    // starts reported them as statically knowable when their value is a
+    // runtime property. Claiming a dynamic pattern is static is the unsound
+    // direction: a consumer would resolve a match set it cannot know.
+    for source in [
+        "my @files = <$/foo>;\n",  // input record separator
+        "my @files = <$.>;\n",     // current line number
+        "my @files = <$!>;\n",     // errno
+        "my @files = <$@>;\n",     // eval error
+        "my @files = <$$>;\n",     // pid
+        "my @files = <$^V>;\n",    // perl version
+        "my @files = <$/.txt>;\n", // separator followed by a literal suffix
+    ] {
+        let file = lower_source(source);
+        let glob = must_some(globs(&file).first().copied());
+
+        assert!(
+            glob.interpolated,
+            "{:?} begins with a Perl special variable, so its match set is a runtime property",
+            glob.pattern
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn glob_array_and_braced_interpolation_are_recognized() -> TestResult {
     // The opposite control: these really do interpolate, so narrowing the rule
     // must not have made it blind.

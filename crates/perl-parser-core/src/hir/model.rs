@@ -3058,14 +3058,28 @@ pub struct GlobMigrationAdapter {
 /// Whether an angle-bracket glob pattern interpolates, so its match set is not
 /// statically known.
 ///
-/// A sigil only interpolates when it actually starts a variable. Perl treats a
-/// sigil followed by anything else — end of pattern, `/`, `.`, another sigil —
-/// as a literal character, so `<*.txt@>` and `<foo@>` are fully static patterns.
-/// `\$` and `\@` are escaped literals as well. Reporting those as interpolating
-/// would tell consumers a statically known match set is unknowable.
+/// A sigil only interpolates when it actually starts a variable, so a trailing
+/// `@` in `<*.txt@>` or `<foo@>` is a literal character and those patterns are
+/// fully static. `\$` and `\@` are escaped literals as well. Reporting those as
+/// interpolating would tell consumers a statically known match set is
+/// unknowable.
 ///
-/// `$` admits digits (`$1`) and `:` (`$::x`); `@` does not, since `@1` is not a
-/// variable.
+/// The two sigils are not symmetric, because Perl's punctuation variables are
+/// overwhelmingly scalars. Nearly every character that can follow `$` names a
+/// variable: ordinary names (`$name`), digits (`$1`), braces (`${...}`),
+/// package qualification (`$::x`), the control forms (`$^V`), and the
+/// punctuation variables (`$/`, `$.`, `$!`, `$@`, `$$`, `$,`, `$)`, ...). The
+/// rule is therefore stated as the narrow set that does *not* start a scalar —
+/// end of pattern, or whitespace.
+///
+/// `@` is the opposite: `@1` is not a variable, so it admits only name starts,
+/// `{`, `:`, and the two punctuation arrays `@-` and `@+`.
+///
+/// The error directions are not equally costly. Claiming a dynamic pattern is
+/// static is unsound — a consumer would resolve a match set that depends on
+/// runtime state. Claiming a static pattern is dynamic only forfeits an
+/// optimization. Where Perl's own rules are ambiguous (`$*`, removed in 5.10),
+/// this classifier takes the conservative side and reports interpolation.
 ///
 /// Single source of truth for both the item lowerer (`hir::lower`) and the body
 /// lowerer (`hir::body`), which must not disagree about the same construct.
@@ -3087,15 +3101,26 @@ pub(super) fn glob_pattern_interpolates(pattern: &str) -> bool {
 }
 
 /// Whether `ch` can begin the name of an interpolated scalar (`$name`, `${...}`,
-/// `$1`, `$::x`).
+/// `$1`, `$::x`, `$^V`, and the punctuation variables `$/`, `$.`, `$!`, `$@`,
+/// `$$`, `$,`).
+///
+/// Stated as the complement, because the set of characters that follow `$`
+/// without naming a variable is far smaller than the set that does.
+///
+/// The caller's `None` lookahead — a `$` at the very end of the pattern — is a
+/// defensive guard rather than a live case: a pattern ending in `$` does not
+/// reach `NodeKind::Glob` through the current parser at all, so there is no
+/// glob shell to classify. It is left in place because this function's contract
+/// is about characters, not about one production's reachability.
 fn starts_scalar_name(ch: &char) -> bool {
-    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '{' | ':')
+    !ch.is_whitespace()
 }
 
 /// Whether `ch` can begin the name of an interpolated array (`@name`, `@{...}`,
-/// `@::x`). Digits are excluded: `@1` is not a variable.
+/// `@::x`, and the match-offset arrays `@-` and `@+`). Digits are excluded:
+/// `@1` is not a variable.
 fn starts_array_name(ch: &char) -> bool {
-    ch.is_ascii_alphabetic() || matches!(ch, '_' | '{' | ':')
+    ch.is_ascii_alphabetic() || matches!(ch, '_' | '{' | ':' | '-' | '+')
 }
 
 /// Regex literal shell payload (`/pattern/modifiers` or `qr/pattern/modifiers`).
