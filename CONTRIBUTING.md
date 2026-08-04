@@ -129,6 +129,20 @@ cargo build -p perl-lsp-rs --release  # Build the LSP server binary
 cargo test --workspace --lib          # Run all library tests
 ```
 
+#### Windows: Exclude `target/` from Defender
+
+On Windows, Microsoft Defender real-time protection scans every artifact
+written to `target/` during a build, adding 30–50% to build times. Exclude
+the build directories to avoid this tax:
+
+```powershell
+# Run in an elevated PowerShell — adds exclusions for the repo's target/ dirs
+Add-MpPreference -ExclusionPath (Resolve-Path "target").Path
+Add-MpPreference -ExclusionProcess "cargo.exe"
+Add-MpPreference -ExclusionProcess "rustc.exe"
+Add-MpPreference -ExclusionProcess "cl.exe"
+```
+
 If something looks broken, `just doctor` diagnoses common environment issues (missing tools, stale worktrees, drift between generated files and source):
 
 ```bash
