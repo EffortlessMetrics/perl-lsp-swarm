@@ -627,12 +627,12 @@ suite('First-hour VS Code receipt', function () {
           typeof (restartMilestones as Record<string, unknown>).restart === 'number',
         'restart startup should record the restart milestone',
       );
-      assert.equal(
-        typeof extensionApi?.waitForActiveDocumentReady,
-        'function',
-        'current-source smoke must expose active-document readiness',
-      );
       try {
+        assert.equal(
+          typeof extensionApi?.waitForActiveDocumentReady,
+          'function',
+          'current-source smoke must expose active-document readiness',
+        );
         await withTimeout(
           'active document readiness after restart',
           extensionApi!.waitForActiveDocumentReady!(probeDocument.uri.toString(), 30_000),
