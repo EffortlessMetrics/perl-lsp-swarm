@@ -17,7 +17,7 @@ impl LspServer {
         operation: impl FnOnce(String) -> T,
     ) -> Option<T> {
         let document_text = {
-            let documents = self.documents.lock();
+            let documents = self.documents_guard();
             documents.get(uri).map(|doc| doc.text.clone())
         };
         document_text.map(operation)
