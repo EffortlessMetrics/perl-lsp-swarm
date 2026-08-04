@@ -38,3 +38,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+perl-tdd-support = { path = "../perl-tdd-support" }
