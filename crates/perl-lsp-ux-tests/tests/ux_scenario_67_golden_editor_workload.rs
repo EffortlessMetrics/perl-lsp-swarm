@@ -5,15 +5,15 @@
 //! journey without promoting a support tier or turning a fallback into an
 //! exactness claim.
 
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow, ensure};
 use perl_lsp_ux_tests::{
-    binary_available, fixture_content, fixture_scenario_config, load_catalyst_fixture_files,
+    ProjectFixtureFile, ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available,
+    fixture_content, fixture_scenario_config, load_catalyst_fixture_files,
     load_dancer2_fixture_files, load_mojolicious_fixture_files, missing_binary_skip,
-    open_all_fixture_files, run_ux_scenario, ProjectFixtureFile, ScenarioConfig, UxCiTier,
-    UxComponent, UxHarness,
+    open_all_fixture_files, run_ux_scenario,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Deserializer, Value};
+use serde_json::{Deserializer, Value, json};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
@@ -56,6 +56,30 @@ fn waiver_expiry_rejects_malformed_and_expired_dates() -> Result<()> {
     ensure!(validate_waiver_expiry("9999-12-31").is_ok());
     ensure!(validate_waiver_expiry("2026-02-30").is_err());
     ensure!(validate_waiver_expiry("2020-01-01").is_err());
+    Ok(())
+}
+
+#[test]
+fn expired_waiver_error_preserves_debt_identity() -> Result<()> {
+    let error = validate_error_waiver(&ErrorWaiver {
+        project: "mojolicious".to_owned(),
+        journey: "edit_burst_completion".to_owned(),
+        expected_error_class: "request_superseded".to_owned(),
+        issue: 5779,
+        expires_after: "2020-01-01".to_owned(),
+    })
+    .expect_err("expired waiver must remain a validation error");
+    let message = format!("{error:#}");
+    ensure!(message.contains("project=mojolicious"), "missing project identity: {message}");
+    ensure!(
+        message.contains("journey=edit_burst_completion"),
+        "missing journey identity: {message}"
+    );
+    ensure!(
+        message.contains("expected_error_class=request_superseded"),
+        "missing error-class identity: {message}"
+    );
+    ensure!(message.contains("tracking_issue=#5779"), "missing issue identity: {message}");
     Ok(())
 }
 
@@ -425,9 +449,19 @@ fn validate_manifest(manifest: &WorkloadManifest) -> Result<()> {
         );
     }
     for waiver in &manifest.error_waivers {
-        ensure!(waiver.issue > 0, "error waiver must name a tracking issue");
-        validate_waiver_expiry(&waiver.expires_after)?;
+        validate_error_waiver(waiver)?;
     }
+    Ok(())
+}
+
+fn validate_error_waiver(waiver: &ErrorWaiver) -> Result<()> {
+    ensure!(waiver.issue > 0, "error waiver must name a tracking issue");
+    validate_waiver_expiry(&waiver.expires_after).with_context(|| {
+        format!(
+            "Scenario 67 waiver identity: project={} journey={} expected_error_class={} tracking_issue=#{}",
+            waiver.project, waiver.journey, waiver.expected_error_class, waiver.issue
+        )
+    })?;
     Ok(())
 }
 
