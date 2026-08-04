@@ -1,0 +1,8 @@
+[
+  {
+    "id": 707,
+    "author": {"login": "reviewer"},
+    "authorAssociation": "MEMBER",
+    "body": "<!-- review-run:v1 {\"v\":1,\"kind\":\"deep\",\"head\":\"7878787878787878787878787878787878787878\",\"reviewer\":\"reviewer\",\"status\":\"done\",\"comment_id\":\"707\"} -->"
+  }
+]

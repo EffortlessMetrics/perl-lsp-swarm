@@ -52,9 +52,14 @@ pub fn add_variable_completions(
                         .to_string(),
                     ),
                     documentation: symbol.documentation.clone(),
-                    insert_text: Some(insert_text),
+                    insert_text: Some(insert_text.clone()),
                     sort_text: Some(format!("1{scope_sort_key}_{name}")),
-                    filter_text: Some(name.clone()),
+                    // Include the sigil in filter_text so strict-filtering
+                    // clients match when the user types the sigil prefix
+                    // (e.g. `$c` matching `$count`). Without it, filter_text
+                    // is just "count" and the sigil prefix never matches.
+                    // (#5050 item 4)
+                    filter_text: Some(insert_text),
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,

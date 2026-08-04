@@ -93,13 +93,20 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// `validate_file_content`'s only production caller is the LSP buffer
+    /// path (`textDocument/didOpen` et al.), where content is the user's own
+    /// source — not an attacker-controlled disk file. Content-pattern
+    /// scanning was removed from this function for that reason (issue #5256
+    /// follow-up: it made the server refuse to open Mason buffers, whose
+    /// component blocks legitimately start with `<%`). This regression guard
+    /// now asserts such content is accepted, not rejected.
     #[test]
-    fn test_validate_file_content_suspicious_patterns_case_insensitive() {
+    fn test_validate_file_content_html_like_substrings_are_accepted() {
         let content = "print q{<ScRiPt>alert('xss')</script>};";
         let file_path = Path::new("suspicious.pl");
 
         let result = validate_file_content(content, file_path);
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     #[test]

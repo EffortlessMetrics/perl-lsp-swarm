@@ -1392,35 +1392,42 @@ mod tests {
     }
 
     #[test]
-    fn initialize_returns_static_caps_before_any_peer() {
+    fn initialize_returns_static_caps_before_any_peer() -> Result<(), String> {
         let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
         assert!(!bridge.is_live());
         let out = bridge.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
-        let (cmd, ok, body) = as_response(&out[0]);
+        let first = out.first().ok_or_else(|| "initialize produced no messages".to_string())?;
+        let (cmd, ok, body) = as_response(first)?;
         assert_eq!(cmd, "initialize");
         assert!(ok);
-        let caps = body.expect("caps");
+        let caps = body.ok_or_else(|| "initialize response missing capabilities".to_string())?;
         assert_eq!(caps["supportsConditionalBreakpoints"], true);
         assert_eq!(caps["supportsLogPoints"], false);
-        assert_eq!(event_name(&out[1]), "initialized");
+        let initialized = out
+            .get(1)
+            .ok_or_else(|| "initialize response missing initialized event".to_string())?;
+        assert_eq!(event_name(initialized)?, "initialized");
+        Ok(())
     }
 
     #[test]
-    fn mirror_rejects_control_gracefully_without_a_peer() {
+    fn mirror_rejects_control_gracefully_without_a_peer() -> Result<(), String> {
         let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
         for cmd in ["continue", "next", "stepIn", "stepOut", "pause"] {
             let out = bridge.dispatch(2, cmd, Some(json!({ "threadId": 1 })));
-            let (rcmd, ok, _) = as_response(&out[0]);
+            let first = out.first().ok_or_else(|| format!("{cmd} produced no response"))?;
+            let (rcmd, ok, _) = as_response(first)?;
             assert_eq!(rcmd, cmd);
             assert!(!ok, "{cmd} must be rejected in mirror mode");
             if let DapMessage::Response { message, .. } = &out[0] {
                 assert!(message.as_deref().unwrap_or("").contains("mirror mode"));
             }
         }
+        Ok(())
     }
 
     #[test]
-    fn setbreakpoints_before_handshake_queues_and_answers_pending() {
+    fn setbreakpoints_before_handshake_queues_and_answers_pending() -> Result<(), String> {
         let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
         let out = bridge.dispatch(
             3,
@@ -1431,26 +1438,34 @@ mod tests {
             })),
         );
         assert_eq!(bridge.pending_source_count(), 1);
-        let (_, ok, body) = as_response(&out[0]);
+        let first = out.first().ok_or_else(|| "setBreakpoints produced no response".to_string())?;
+        let (_, ok, body) = as_response(first)?;
         assert!(ok, "queued setBreakpoints still returns a success response");
-        let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
+        let bps =
+            body.ok_or_else(|| "setBreakpoints response missing body".to_string())?["breakpoints"]
+                .as_array()
+                .ok_or_else(|| {
+                    "setBreakpoints response body missing breakpoints array".to_string()
+                })?
+                .clone();
         assert_eq!(bps.len(), 2);
         assert_eq!(bps[0]["verified"], false, "queued breakpoints are unverified until flush");
+        Ok(())
     }
 
-    fn as_response(msg: &DapMessage) -> (&str, bool, Option<&Value>) {
+    fn as_response(msg: &DapMessage) -> Result<(&str, bool, Option<&Value>), String> {
         match msg {
             DapMessage::Response { command, success, body, .. } => {
-                (command.as_str(), *success, body.as_ref())
+                Ok((command.as_str(), *success, body.as_ref()))
             }
-            other => panic!("expected response, got {other:?}"),
+            other => Err(format!("expected response, got {other:?}")),
         }
     }
 
-    fn event_name(msg: &DapMessage) -> &str {
+    fn event_name(msg: &DapMessage) -> Result<&str, String> {
         match msg {
-            DapMessage::Event { event, .. } => event.as_str(),
-            other => panic!("expected event, got {other:?}"),
+            DapMessage::Event { event, .. } => Ok(event.as_str()),
+            other => Err(format!("expected event, got {other:?}")),
         }
     }
 }

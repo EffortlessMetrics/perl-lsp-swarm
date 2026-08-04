@@ -128,6 +128,12 @@ pub struct ServerConfig {
     /// Formatter engine used for LSP formatting requests.
     pub formatting_engine: FormatterMode,
 
+    /// Whether to format on save (willSaveWaitUntil). Default `true` for
+    /// backward compatibility. When `false`, manual formatting via
+    /// `textDocument/formatting` still works — only the automatic save
+    /// trigger is disabled (#5678).
+    pub format_on_save: bool,
+
     /// Path to a `.perltidyrc` profile file.
     ///
     /// When `Some`, passes `--profile=<path>` to perltidy. When `None`,
@@ -344,6 +350,7 @@ impl Default for ServerConfig {
             native_critic_exclude: Vec::new(),
             perltidy_enabled: true,
             formatting_engine: FormatterMode::Native,
+            format_on_save: true,
             perltidy_profile: None,
             perltidy_maximum_line_length: Some(80),
             perltidy_indent_columns: Some(4),
@@ -490,9 +497,19 @@ impl ServerConfig {
                 }
             }
             if let Some(include) = string_array(critic.get("include")) {
+                warn_unknown_rule_ids(
+                    CriticRuleIdSource::ClientSettings,
+                    "critic.include",
+                    &include,
+                );
                 self.native_critic_include = include;
             }
             if let Some(exclude) = string_array(critic.get("exclude")) {
+                warn_unknown_rule_ids(
+                    CriticRuleIdSource::ClientSettings,
+                    "critic.exclude",
+                    &exclude,
+                );
                 self.native_critic_exclude = exclude;
             }
         }
@@ -500,6 +517,9 @@ impl ServerConfig {
         if let Some(formatting) = settings.get("formatting") {
             if let Some(enabled) = formatting.get("enabled").and_then(|v| v.as_bool()) {
                 self.perltidy_enabled = enabled;
+            }
+            if let Some(format_on_save) = formatting.get("formatOnSave").and_then(|v| v.as_bool()) {
+                self.format_on_save = format_on_save;
             }
             if let Some(engine) = formatting.get("engine").and_then(|v| v.as_str()) {
                 match parse_formatter_mode(engine) {
@@ -553,30 +573,39 @@ impl ServerConfig {
             if let Some(provider) = ai.get("provider").and_then(|v| v.as_str()) {
                 self.ai_completion.provider = provider.to_string();
             }
-            if let Some(endpoint) = ai.get("endpoint").and_then(|v| v.as_str()) {
-                self.ai_completion.endpoint = endpoint.to_string();
+            // Security (#5684): do NOT honour LSP-channel endpoint, apiKeyEnv,
+            // apiKeyHeader, or apiKeyPrefix. A hostile workspace could redirect
+            // AI completion requests to an attacker-controlled endpoint and
+            // exfiltrate source code, or change the env var name to read an
+            // arbitrary secret. These settings must arrive only via user-level
+            // config (machine-scoped VS Code settings or .perl-lsp.toml at the
+            // workspace root, which is already gated in merge_project_config).
+            if let Some(_endpoint) = ai.get("endpoint").and_then(|v| v.as_str()) {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.endpoint from didChangeConfiguration (security: #5684)"
+                );
             }
             if let Some(model) = ai.get("model").and_then(|v| v.as_str()) {
                 self.ai_completion.model = model.to_string();
             }
-            if let Some(key_env) = ai.get("apiKeyEnv").and_then(|v| v.as_str()) {
-                self.ai_completion.api_key_env = key_env.to_string();
+            if let Some(_key_env) = ai.get("apiKeyEnv").and_then(|v| v.as_str()) {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.apiKeyEnv from didChangeConfiguration (security: #5684)"
+                );
             }
-            if let Some(key_header) = ai.get("apiKeyHeader").and_then(|v| v.as_str()) {
-                if let Some(header) = normalize_ai_api_key_header(key_header) {
-                    self.ai_completion.api_key_header = header;
-                }
+            if let Some(_key_header) = ai.get("apiKeyHeader").and_then(|v| v.as_str()) {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.apiKeyHeader from didChangeConfiguration (security: #5684)"
+                );
             }
-            if let Some(key_prefix) = ai.get("apiKeyPrefix") {
-                match key_prefix {
-                    serde_json::Value::Null => self.ai_completion.api_key_prefix = None,
-                    serde_json::Value::String(prefix) => {
-                        if let Some(prefix) = normalize_ai_api_key_prefix(prefix) {
-                            self.ai_completion.api_key_prefix = prefix;
-                        }
-                    }
-                    _ => {}
-                }
+            if let Some(_key_prefix) = ai.get("apiKeyPrefix") {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.apiKeyPrefix from didChangeConfiguration (security: #5684)"
+                );
             }
             if let Some(timeout) = ai.get("timeoutMs").and_then(|v| v.as_u64()) {
                 self.ai_completion.timeout_ms = timeout;
@@ -618,6 +647,96 @@ impl ServerConfig {
         warn_on_type_mismatch(settings, "critic", "enabled", "boolean");
         warn_on_type_mismatch(settings, "formatting", "enabled", "boolean");
     }
+
+    /// Return invalid enum values supplied through the LSP client-settings channel.
+    ///
+    /// The normal update path deliberately keeps an invalid value from changing
+    /// the active configuration and emits a tracing warning. Runtime callers can
+    /// use this companion inspection before applying the same payload when they
+    /// need to surface an actionable `window/showMessage` to the editor user.
+    pub fn invalid_client_setting_values(
+        settings: &serde_json::Value,
+    ) -> Vec<InvalidClientSetting> {
+        let mut invalid = Vec::new();
+
+        if let Some(critic) = settings.get("critic") {
+            if let Some(engine) = critic.get("engine") {
+                let invalid_engine = engine
+                    .as_str()
+                    .map(|value| parse_lsp_critic_engine(value).is_none())
+                    .unwrap_or(true);
+                if invalid_engine {
+                    invalid.push(InvalidClientSetting {
+                        setting: "critic.engine",
+                        value: client_setting_display_value(engine),
+                        value_type: client_setting_value_type(engine),
+                        valid_options: CLIENT_CRITIC_ENGINE_VALID_OPTIONS,
+                    });
+                }
+            }
+            if let Some(profile) = critic.get("profile") {
+                let invalid_profile = profile
+                    .as_str()
+                    .map(|value| parse_native_critic_profile(value).is_none())
+                    .unwrap_or(true);
+                if invalid_profile {
+                    invalid.push(InvalidClientSetting {
+                        setting: "critic.profile",
+                        value: client_setting_display_value(profile),
+                        value_type: client_setting_value_type(profile),
+                        valid_options: NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
+                    });
+                }
+            }
+        }
+
+        if let Some(formatting) = settings.get("formatting") {
+            if let Some(engine) = formatting.get("engine") {
+                let invalid_engine = engine
+                    .as_str()
+                    .map(|value| parse_formatter_mode(value).is_none())
+                    .unwrap_or(true);
+                if invalid_engine {
+                    invalid.push(InvalidClientSetting {
+                        setting: "formatting.engine",
+                        value: client_setting_display_value(engine),
+                        value_type: client_setting_value_type(engine),
+                        valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                    });
+                }
+            }
+        }
+
+        invalid
+    }
+}
+
+fn client_setting_display_value(value: &serde_json::Value) -> String {
+    value.as_str().map(ToOwned::to_owned).unwrap_or_else(|| value.to_string())
+}
+
+fn client_setting_value_type(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+/// An invalid enum value found in editor-provided LSP settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidClientSetting {
+    /// Dotted setting path used by the client configuration surface.
+    pub setting: &'static str,
+    /// Value supplied by the client.
+    pub value: String,
+    /// JSON type supplied by the client, used to distinguish values that render identically.
+    pub value_type: &'static str,
+    /// Human-readable accepted values for the setting.
+    pub valid_options: &'static str,
 }
 
 /// Log a warning when a config value has the wrong type. (#5093)
@@ -639,8 +758,17 @@ fn warn_on_type_mismatch(settings: &serde_json::Value, section: &str, field: &st
     }
 }
 
+/// Normalize a formatter mode for comparison and warning deduplication.
+///
+/// This is shared by the parser and the client-setting warning path so aliases
+/// differing only by case, surrounding whitespace, or underscore/hyphen spelling
+/// receive the same semantic treatment.
+pub fn normalize_formatter_mode_value(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace('_', "-")
+}
+
 fn parse_formatter_mode(value: &str) -> Option<FormatterMode> {
-    match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+    match normalize_formatter_mode_value(value).as_str() {
         "native" => Some(FormatterMode::Native),
         "compat" | "perltidy-compat" => Some(FormatterMode::Compat),
         "external-legacy" | "external-perltidy" | "perltidy" => Some(FormatterMode::ExternalLegacy),
@@ -654,6 +782,13 @@ fn parse_critic_engine(value: &str) -> Option<CriticEngine> {
         "legacy" | "external" | "perlcritic" => Some(CriticEngine::Legacy),
         "native" => Some(CriticEngine::Native),
         _ => None,
+    }
+}
+
+fn parse_lsp_critic_engine(value: &str) -> Option<CriticEngine> {
+    match parse_critic_engine(value) {
+        Some(CriticEngine::Native) => Some(CriticEngine::Native),
+        Some(CriticEngine::Legacy) | None => None,
     }
 }
 
@@ -676,10 +811,182 @@ const FORMATTER_MODE_VALID_OPTIONS: &str = "native, compat (perltidy-compat), ex
 /// Kept in sync with [`parse_critic_engine`].
 const CRITIC_ENGINE_VALID_OPTIONS: &str = "native, legacy (external, perlcritic)";
 
+/// Human-readable values accepted for `critic.engine` on the LSP client-settings
+/// channel. Legacy subprocess aliases remain available only through trusted
+/// project configuration.
+const CLIENT_CRITIC_ENGINE_VALID_OPTIONS: &str = "native";
+
 /// Human-readable list of accepted `critic.profile` values, used in
 /// `tracing::warn!` messages when a user supplies an unrecognized value.
 /// Kept in sync with [`parse_native_critic_profile`].
 const NATIVE_CRITIC_PROFILE_VALID_OPTIONS: &str = "recommended, strict";
+
+/// Which config channel supplied a critic rule-ID list.
+///
+/// The warning names this so the user knows *which* of the two places that can
+/// set `critic.include` / `critic.exclude` they actually have to go and edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CriticRuleIdSource {
+    /// Settings delivered by the editor over LSP — `initializationOptions`,
+    /// `workspace/didChangeConfiguration`, or a `workspace/configuration`
+    /// response. Deliberately labelled as one channel: [`ServerConfig::update_from_value`]
+    /// serves all three and cannot tell them apart.
+    ClientSettings,
+    /// The project's `.perl-lsp.toml` file.
+    ProjectFile,
+}
+
+impl CriticRuleIdSource {
+    /// Label naming the concrete place the user edits to fix the entry.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ClientSettings => "LSP client settings",
+            Self::ProjectFile => ".perl-lsp.toml",
+        }
+    }
+}
+
+/// Warn for every entry in `ids` that is not a known native critic rule ID.
+///
+/// The full rule catalog is derived from the strict profile at call time so
+/// warnings stay current when rules are added or removed from the registry.
+/// Strict is a superset of recommended, so an ID missing from it is unknown
+/// under every profile — which is why the warning points at the catalog and
+/// spelling rather than suggesting a profile change.
+/// Values are stored as-is even when unknown — the rule simply never matches.
+///
+/// Each warning names the offending ID, the setting key, the config channel it
+/// arrived on, and — when one can be identified honestly — the closest valid
+/// rule ID.
+fn warn_unknown_rule_ids(source: CriticRuleIdSource, setting: &str, ids: &[String]) {
+    if ids.is_empty() {
+        return;
+    }
+    let known = crate::tooling::perl_critic::NativeCriticRegistry::for_profile(
+        crate::tooling::perl_critic::NativeCriticProfile::Strict,
+    )
+    .rule_ids();
+    let origin = source.as_str();
+    for id in ids {
+        if known.contains(&id.as_str()) {
+            continue;
+        }
+        match suggest_rule_id(id, &known) {
+            Some(suggestion) => tracing::warn!(
+                target: "perl_lsp::config",
+                source = %origin,
+                setting = %setting,
+                value = %id,
+                suggestion = %suggestion,
+                "unrecognized native critic rule ID '{id}' in `{setting}` from {origin}; \
+                 did you mean '{suggestion}'? until it is corrected this entry \
+                 matches no finding",
+            ),
+            None => tracing::warn!(
+                target: "perl_lsp::config",
+                source = %origin,
+                setting = %setting,
+                value = %id,
+                "unrecognized native critic rule ID '{id}' in `{setting}` from {origin}; \
+                 no close match found — check the spelling against the native critic \
+                 rule catalog; until it is corrected this entry matches no finding",
+            ),
+        }
+    }
+}
+
+/// Final dotted segment of a rule ID — the bare rule name without its namespace.
+fn rule_id_leaf(id: &str) -> &str {
+    id.rsplit('.').next().unwrap_or(id)
+}
+
+/// Best-guess replacement for an unrecognized rule ID, or `None` when nothing is
+/// close enough to suggest honestly.
+///
+/// Three cheap passes, in decreasing confidence:
+/// 1. exact match ignoring ASCII case (`Native.IO.Pipe_Open`);
+/// 2. a unique match on the bare rule name, which catches a dropped or wrong
+///    namespace (`unused_lexical`, `native.vars.unused_lexical`);
+/// 3. nearest edit distance within a length-scaled threshold (`...conditon`).
+///
+/// Returning `None` is deliberate. A confidently wrong suggestion sends the user
+/// to edit the wrong rule, which costs more than offering no suggestion at all.
+fn suggest_rule_id(unknown: &str, known: &[&'static str]) -> Option<&'static str> {
+    if let Some(same_ignoring_case) =
+        known.iter().copied().find(|candidate| candidate.eq_ignore_ascii_case(unknown))
+    {
+        return Some(same_ignoring_case);
+    }
+
+    let unknown_leaf = rule_id_leaf(unknown);
+    let mut leaf_matches = known
+        .iter()
+        .copied()
+        .filter(|candidate| rule_id_leaf(candidate).eq_ignore_ascii_case(unknown_leaf));
+    if let Some(only_leaf_match) = leaf_matches.next()
+        && leaf_matches.next().is_none()
+    {
+        return Some(only_leaf_match);
+    }
+
+    known
+        .iter()
+        .copied()
+        .filter_map(|candidate| {
+            let threshold = rule_id_suggestion_threshold(unknown, candidate);
+            // Levenshtein distance is never smaller than the length difference,
+            // so a candidate this far off in length cannot clear the threshold.
+            // Skipping it here is exactly equivalent to computing the distance
+            // and rejecting it, and it keeps a pathological `.perl-lsp.toml`
+            // entry from paying the quadratic cost 28 times over.
+            if unknown.len().abs_diff(candidate.len()) > threshold {
+                return None;
+            }
+            let distance = rule_id_edit_distance(unknown, candidate);
+            (distance <= threshold).then_some((candidate, distance))
+        })
+        .min_by_key(|(candidate, distance)| (*distance, candidate.len()))
+        .map(|(candidate, _)| candidate)
+}
+
+/// How far apart two rule IDs may be and still be offered as a suggestion.
+///
+/// Scaled by the longer ID so a short bare name is held to a tighter budget than
+/// a 38-character fully-qualified ID, and capped so an unrelated string never
+/// drifts into range.
+fn rule_id_suggestion_threshold(unknown: &str, known: &str) -> usize {
+    unknown.len().max(known.len()).saturating_div(4).clamp(1, 4)
+}
+
+/// Levenshtein distance between two rule IDs, compared case-insensitively.
+///
+/// Rule IDs are ASCII (`native.<area>.<rule_name>`), so byte-wise comparison is
+/// exact here and avoids the cost of building char vectors.
+fn rule_id_edit_distance(left: &str, right: &str) -> usize {
+    let left = left.to_ascii_lowercase();
+    let right = right.to_ascii_lowercase();
+    let left_bytes = left.as_bytes();
+    let right_bytes = right.as_bytes();
+
+    let mut previous: Vec<usize> = (0..=right_bytes.len()).collect();
+    let mut current = vec![0; right_bytes.len() + 1];
+
+    for (left_index, left_byte) in left_bytes.iter().enumerate() {
+        current[0] = left_index + 1;
+
+        for (right_index, right_byte) in right_bytes.iter().enumerate() {
+            let substitution_cost = usize::from(left_byte != right_byte);
+            let deletion = previous[right_index + 1] + 1;
+            let insertion = current[right_index] + 1;
+            let substitution = previous[right_index] + substitution_cost;
+            current[right_index + 1] = deletion.min(insertion).min(substitution);
+        }
+
+        std::mem::swap(&mut previous, &mut current);
+    }
+
+    previous[right_bytes.len()]
+}
 
 /// Controls whether PERL5LIB paths are prepended or appended to `include_paths`.
 ///
@@ -861,6 +1168,21 @@ fn validate_resource_include_path_entry(
         if let Err(err) = validate_workspace_path(candidate, root) {
             return Err(RejectedClientIncludePathReason::EscapesWorkspace(err.to_string()));
         }
+    } else {
+        // No workspace root configured (e.g. single-file mode). Fail-closed:
+        // reject relative paths containing `..` components, which could
+        // escape to arbitrary filesystem locations. Without this, a hostile
+        // client could set includePaths to `../../etc/passwd` and probe
+        // files outside any workspace boundary. (#5345)
+        if candidate.components().any(|c| c == std::path::Component::ParentDir) {
+            tracing::warn!(
+                entry = trimmed,
+                "rejecting relative include path with '..' because no workspace root is configured"
+            );
+            return Err(RejectedClientIncludePathReason::EscapesWorkspace(
+                "relative path with '..' cannot be validated without a workspace root".to_string(),
+            ));
+        }
     }
 
     Ok(())
@@ -997,6 +1319,21 @@ impl WorkspaceConfig {
         #[cfg(not(windows))]
         const SEP: char = ':';
         dedupe_preserve_order(value.split(SEP))
+    }
+
+    /// Read Perl library paths from the environment.
+    ///
+    /// Checks `PERL5LIB` first, falling back to `PERLLIB` (which Perl itself
+    /// treats as the fallback when `PERL5LIB` is unset). Returns an empty vec
+    /// if neither is set. Uses the platform-appropriate path separator.
+    pub fn env_perl_lib_paths() -> Vec<String> {
+        #[cfg(windows)]
+        const SEP: char = ';';
+        #[cfg(not(windows))]
+        const SEP: char = ':';
+        let value =
+            std::env::var("PERL5LIB").or_else(|_| std::env::var("PERLLIB")).unwrap_or_default();
+        if value.is_empty() { Vec::new() } else { dedupe_preserve_order(value.split(SEP)) }
     }
 
     /// Return the effective module-search-path, merging `PERL5LIB` paths with
@@ -1447,6 +1784,8 @@ pub struct ProjectNextEditConfig {
 pub struct ProjectFormattingConfig {
     /// Whether LSP formatting is enabled.
     pub enabled: Option<bool>,
+    /// Whether to format on save (willSaveWaitUntil). Default `true`.
+    pub format_on_save: Option<bool>,
     /// Formatter engine (`native`, `compat`, `external-perltidy`, or `off`).
     pub engine: Option<String>,
     /// Path to a `.perltidyrc` profile file.
@@ -1738,6 +2077,9 @@ impl ProjectConfig {
         if let Some(enabled) = self.formatting.enabled {
             config.perltidy_enabled = enabled;
         }
+        if let Some(format_on_save) = self.formatting.format_on_save {
+            config.format_on_save = format_on_save;
+        }
         if let Some(ref engine) = self.formatting.engine {
             match parse_formatter_mode(engine) {
                 Some(mode) => config.formatting_engine = mode,
@@ -1778,10 +2120,14 @@ impl ProjectConfig {
             }
         }
         if let Some(ref include) = self.critic.include {
-            config.native_critic_include = normalize_string_list(include);
+            let normalized = normalize_string_list(include);
+            warn_unknown_rule_ids(CriticRuleIdSource::ProjectFile, "critic.include", &normalized);
+            config.native_critic_include = normalized;
         }
         if let Some(ref exclude) = self.critic.exclude {
-            config.native_critic_exclude = normalize_string_list(exclude);
+            let normalized = normalize_string_list(exclude);
+            warn_unknown_rule_ids(CriticRuleIdSource::ProjectFile, "critic.exclude", &normalized);
+            config.native_critic_exclude = normalized;
         }
         if let Some(ref profile) = self.formatting.perltidy_profile {
             config.perltidy_profile = Some(profile.clone());
@@ -3053,11 +3399,13 @@ profile = "recommended"
         assert!(config.ai_completion.enabled);
         assert!(config.ai_completion.user_enabled);
         assert_eq!(config.ai_completion.provider, "local");
-        assert_eq!(config.ai_completion.endpoint, "http://127.0.0.1:11434/v1");
+        // #5684: endpoint, apiKeyEnv, apiKeyHeader, apiKeyPrefix are NOT
+        // settable via didChangeConfiguration. They remain at defaults.
+        assert_eq!(config.ai_completion.endpoint, "");
         assert_eq!(config.ai_completion.model, "codellama");
-        assert_eq!(config.ai_completion.api_key_env, "LOCAL_AI_KEY");
-        assert_eq!(config.ai_completion.api_key_header, "x-api-key");
-        assert_eq!(config.ai_completion.api_key_prefix, None);
+        assert_eq!(config.ai_completion.api_key_env, "OPENAI_API_KEY");
+        assert_eq!(config.ai_completion.api_key_header, "Authorization");
+        assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
         assert_eq!(config.ai_completion.timeout_ms, 2500);
         assert_eq!(config.ai_completion.max_output_tokens, 128);
         assert_eq!(config.ai_completion.rate_limit_rps, 2.5);
@@ -3437,10 +3785,14 @@ profile = "recommended"
     /// and return the captured message strings.
     fn capture_warnings(body: impl FnOnce()) -> Vec<String> {
         let messages: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let subscriber =
-            tracing_subscriber::registry().with(CapturingLayer { messages: Arc::clone(&messages) });
-        tracing::dispatcher::with_default(&subscriber.into(), body);
-        Arc::try_unwrap(messages).map(|m| m.into_inner().unwrap_or_default()).unwrap_or_default()
+        let dispatch = tracing_subscriber::registry()
+            .with(CapturingLayer { messages: Arc::clone(&messages) })
+            .into();
+        tracing::dispatcher::with_default(&dispatch, body);
+        drop(dispatch);
+        // Lock-and-clone instead of Arc::try_unwrap to avoid the race where
+        // the subscriber's Arc clone is still alive (thread-local retention).
+        messages.lock().map(|m| m.clone()).unwrap_or_default()
     }
 
     /// Assert that at least one captured warning mentions every `needle`.
@@ -3495,6 +3847,68 @@ profile = "recommended"
         });
         assert_eq!(config.formatting_engine, prior);
         assert_warned_contains(&captured, &["formatting.engine", "perltide"]);
+    }
+
+    #[test]
+    fn client_invalid_enum_inspection_covers_all_user_visible_engine_settings() {
+        let invalid = ServerConfig::invalid_client_setting_values(&serde_json::json!({
+            "critic": {
+                "engine": "nativ",
+                "profile": "recomended"
+            },
+            "formatting": { "engine": "perltide" }
+        }));
+
+        assert_eq!(
+            invalid,
+            vec![
+                InvalidClientSetting {
+                    setting: "critic.engine",
+                    value: "nativ".to_string(),
+                    value_type: "string",
+                    valid_options: CLIENT_CRITIC_ENGINE_VALID_OPTIONS,
+                },
+                InvalidClientSetting {
+                    setting: "critic.profile",
+                    value: "recomended".to_string(),
+                    value_type: "string",
+                    valid_options: NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
+                },
+                InvalidClientSetting {
+                    setting: "formatting.engine",
+                    value: "perltide".to_string(),
+                    value_type: "string",
+                    valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                },
+            ]
+        );
+
+        let legacy = ServerConfig::invalid_client_setting_values(&serde_json::json!({
+            "critic": { "engine": " LEGACY ", "profile": "STRICT" },
+            "formatting": { "engine": "external_perltidy" }
+        }));
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].setting, "critic.engine");
+        assert_eq!(legacy[0].valid_options, CLIENT_CRITIC_ENGINE_VALID_OPTIONS);
+    }
+
+    #[test]
+    fn client_invalid_enum_inspection_reports_wrong_value_types() {
+        let invalid = ServerConfig::invalid_client_setting_values(&serde_json::json!({
+            "critic": {
+                "engine": false,
+                "profile": ["recommended"]
+            },
+            "formatting": { "engine": null }
+        }));
+
+        assert_eq!(invalid.len(), 3);
+        assert_eq!(invalid[0].setting, "critic.engine");
+        assert_eq!(invalid[0].value, "false");
+        assert_eq!(invalid[1].setting, "critic.profile");
+        assert_eq!(invalid[1].value, "[\"recommended\"]");
+        assert_eq!(invalid[2].setting, "formatting.engine");
+        assert_eq!(invalid[2].value, "null");
     }
 
     #[test]
@@ -4488,14 +4902,15 @@ profile = "recommended"
             "aiCompletion": { "apiKeyPrefix": null }
         }));
         assert_eq!(
-            config.ai_completion.api_key_prefix, None,
+            config.ai_completion.api_key_prefix,
+            Some("Bearer".to_string()),
             "explicit JSON null must produce None (raw key, no scheme)",
         );
     }
 
-    /// A non-empty `apiKeyPrefix` value (e.g. `"Token"`) must be stored as `Some`.
+    /// A non-empty `apiKeyPrefix` value must be ignored from didChangeConfiguration (#5684).
     #[test]
-    fn update_from_value_stores_non_empty_api_key_prefix() {
+    fn update_from_value_ignores_non_empty_api_key_prefix() {
         let mut config = ServerConfig::default();
 
         config.update_from_value(&serde_json::json!({
@@ -4503,8 +4918,8 @@ profile = "recommended"
         }));
         assert_eq!(
             config.ai_completion.api_key_prefix,
-            Some("Token".to_string()),
-            "non-empty apiKeyPrefix must be stored as Some",
+            Some("Bearer".to_string()),
+            "apiKeyPrefix from didChangeConfiguration must be ignored (stays at default, security: #5684)",
         );
     }
 
@@ -4654,20 +5069,379 @@ api_key_prefix = "Attacker "
     /// `scope: machine` (#4997), while endpoint/credential user UI remains a
     /// documented gap.
     #[test]
-    fn client_configuration_can_still_set_ai_endpoint_and_credential_fields() {
+    fn client_configuration_ignores_ai_endpoint_and_credential_fields_from_didChange() {
         let mut config = ServerConfig::default();
         config.update_from_value(&serde_json::json!({
             "aiCompletion": {
-                "endpoint": "https://api.openai.com/v1/chat/completions",
-                "apiKeyEnv": "OPENAI_API_KEY",
-                "apiKeyHeader": "Authorization",
-                "apiKeyPrefix": "Bearer"
+                "endpoint": "https://evil.example.com/exfil",
+                "apiKeyEnv": "AWS_SECRET_ACCESS_KEY",
+                "apiKeyHeader": "X-Evil",
+                "apiKeyPrefix": "EvilToken"
             }
         }));
 
-        assert_eq!(config.ai_completion.endpoint, "https://api.openai.com/v1/chat/completions");
+        // #5684: all sensitive fields must remain at defaults (not changed by didChangeConfiguration)
+        assert_eq!(config.ai_completion.endpoint, "");
         assert_eq!(config.ai_completion.api_key_env, "OPENAI_API_KEY");
         assert_eq!(config.ai_completion.api_key_header, "Authorization");
         assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
+    }
+
+    // ── critic include/exclude rule-ID validation ──────────────────────────
+
+    #[test]
+    fn json_unknown_include_rule_id_warns_keeps_value() {
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "include": ["native.common.typo_rule", "native.testing.require_use_strict"] }
+            }));
+        });
+        // Unknown ID stored, valid ID stored.
+        assert_eq!(
+            config.native_critic_include,
+            vec![
+                "native.common.typo_rule".to_string(),
+                "native.testing.require_use_strict".to_string(),
+            ]
+        );
+        // One warning for the unknown ID, naming the setting and the bad value.
+        assert_warned_contains(&captured, &["critic.include", "native.common.typo_rule"]);
+        // No warning for the valid ID.
+        let combined = captured.join("\n");
+        assert!(
+            !combined.contains("native.testing.require_use_strict"),
+            "unexpected warning for a valid rule ID; captured:\n{combined}"
+        );
+    }
+
+    #[test]
+    fn json_unknown_exclude_rule_id_warns() {
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "exclude": ["native.common.misspelled_rule"] }
+            }));
+        });
+        assert_warned_contains(&captured, &["critic.exclude", "native.common.misspelled_rule"]);
+        // Value is still stored — we only warn, we don't reject.
+        assert_eq!(config.native_critic_exclude, vec!["native.common.misspelled_rule".to_string()]);
+    }
+
+    #[test]
+    fn json_valid_include_rule_ids_produce_no_warnings() {
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": {
+                    "include": ["native.testing.require_use_strict", "native.variables.unused_lexical"],
+                    "exclude": ["native.common.assignment_in_condition"]
+                }
+            }));
+        });
+        assert!(
+            captured.is_empty(),
+            "expected no warnings for valid rule IDs; got:\n{}",
+            captured.join("\n")
+        );
+    }
+
+    #[test]
+    fn toml_unknown_include_rule_id_warns_keeps_value() {
+        let mut config = ServerConfig::default();
+        let mut project = ProjectConfig::default();
+        project.critic.include = Some(vec![
+            "native.variables.typo_rule".to_string(),
+            "native.testing.require_use_strict".to_string(),
+        ]);
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        assert_eq!(
+            config.native_critic_include,
+            vec![
+                "native.variables.typo_rule".to_string(),
+                "native.testing.require_use_strict".to_string(),
+            ]
+        );
+        assert_warned_contains(&captured, &["critic.include", "native.variables.typo_rule"]);
+    }
+
+    #[test]
+    fn toml_unknown_exclude_rule_id_warns() {
+        let mut config = ServerConfig::default();
+        let mut project = ProjectConfig::default();
+        project.critic.exclude = Some(vec!["native.io.bad_rule_name".to_string()]);
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        assert_warned_contains(&captured, &["critic.exclude", "native.io.bad_rule_name"]);
+        assert_eq!(config.native_critic_exclude, vec!["native.io.bad_rule_name".to_string()]);
+    }
+
+    #[test]
+    fn toml_valid_rule_ids_produce_no_warnings() {
+        // Negative control for the `.perl-lsp.toml` channel: the unknown-ID
+        // tests above prove the warning fires, this proves it stays silent for
+        // valid IDs on the same code path.
+        let mut config = ServerConfig::default();
+        let mut project = ProjectConfig::default();
+        project.critic.include = Some(vec![
+            "native.testing.require_use_strict".to_string(),
+            "native.variables.unused_lexical".to_string(),
+        ]);
+        project.critic.exclude = Some(vec!["native.common.assignment_in_condition".to_string()]);
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        assert!(
+            captured.is_empty(),
+            "expected no warnings for valid TOML rule IDs; got:\n{}",
+            captured.join("\n")
+        );
+    }
+
+    #[test]
+    fn unknown_rule_id_warning_does_not_suggest_a_profile_change() {
+        // The catalog is the strict profile, so no profile change can make an
+        // unknown ID valid. The warning must not send users down that path.
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "include": ["native.common.typo_rule"] }
+            }));
+        });
+        let combined = captured.join("\n");
+        assert!(
+            !combined.contains("critic.profile"),
+            "warning must not suggest a profile change as remediation; got:\n{combined}"
+        );
+        assert!(
+            combined.contains("spelling"),
+            "warning should point at spelling/catalog as the actionable fix; got:\n{combined}"
+        );
+    }
+
+    #[test]
+    fn warn_unknown_rule_ids_is_silent_for_empty_list() {
+        // `include`/`exclude` set to an empty list must not warn.
+        let captured = capture_warnings(|| {
+            warn_unknown_rule_ids(CriticRuleIdSource::ClientSettings, "critic.include", &[])
+        });
+        assert!(captured.is_empty(), "empty ID list must not warn; got:\n{}", captured.join("\n"));
+    }
+
+    // ── warning is actionable: names the source and the nearest valid ID ───
+
+    #[test]
+    fn json_unknown_rule_id_warning_names_the_client_settings_source() {
+        // A user reading the log has to know which of the two config channels
+        // to go and edit; "critic.include" alone does not tell them.
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "include": ["native.common.typo_rule"] }
+            }));
+        });
+        assert_warned_contains(&captured, &["LSP client settings"]);
+        let combined = captured.join("\n");
+        assert!(
+            !combined.contains(".perl-lsp.toml"),
+            "client-settings warning must not blame the project file; got:\n{combined}"
+        );
+    }
+
+    #[test]
+    fn toml_unknown_rule_id_warning_names_the_project_file_source() {
+        let mut config = ServerConfig::default();
+        let mut project = ProjectConfig::default();
+        project.critic.include = Some(vec!["native.variables.typo_rule".to_string()]);
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        assert_warned_contains(&captured, &[".perl-lsp.toml"]);
+        let combined = captured.join("\n");
+        assert!(
+            !combined.contains("LSP client settings"),
+            "project-file warning must not blame client settings; got:\n{combined}"
+        );
+    }
+
+    #[test]
+    fn unknown_rule_id_warning_suggests_the_closest_valid_id_for_a_typo() {
+        // One transposed/dropped letter is the overwhelmingly common mistake.
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "exclude": ["native.common.assignment_in_conditon"] }
+            }));
+        });
+        assert_warned_contains(
+            &captured,
+            &["did you mean", "native.common.assignment_in_condition"],
+        );
+    }
+
+    #[test]
+    fn unknown_rule_id_warning_suggests_the_qualified_id_for_a_bare_rule_name() {
+        // Writing the rule name without its `native.<area>.` namespace is a
+        // realistic mistake that plain edit distance is far too coarse to catch.
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "include": ["unused_lexical"] }
+            }));
+        });
+        assert_warned_contains(&captured, &["did you mean", "native.variables.unused_lexical"]);
+    }
+
+    #[test]
+    fn unknown_rule_id_warning_suggests_the_canonical_casing() {
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "include": ["Native.IO.Pipe_Open"] }
+            }));
+        });
+        assert_warned_contains(&captured, &["did you mean", "native.io.pipe_open"]);
+    }
+
+    #[test]
+    fn unrelated_rule_id_gets_no_invented_suggestion() {
+        // An honest "no close match" beats confidently sending the user to edit
+        // the wrong rule.
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "critic": { "include": ["completely.made.up.thing"] }
+            }));
+        });
+        let combined = captured.join("\n");
+        assert!(
+            combined.contains("no close match"),
+            "expected an explicit no-close-match warning; got:\n{combined}"
+        );
+        assert!(
+            !combined.contains("did you mean"),
+            "must not invent a suggestion for an unrelated ID; got:\n{combined}"
+        );
+    }
+
+    #[test]
+    fn suggest_rule_id_returns_none_when_nothing_is_close() {
+        let known = crate::tooling::perl_critic::NativeCriticRegistry::for_profile(
+            crate::tooling::perl_critic::NativeCriticProfile::Strict,
+        )
+        .rule_ids();
+        // Shares the `native.` prefix but nothing else — the length-scaled
+        // threshold must still reject it.
+        assert_eq!(suggest_rule_id("native.common.typo_rule", &known), None);
+        assert_eq!(suggest_rule_id("", &known), None);
+    }
+
+    #[test]
+    fn suggest_rule_id_length_guard_matches_unguarded_distance_result() {
+        // The length short-circuit must be a pure optimization. For every rule
+        // ID plus a spread of near-misses and junk, the guarded result has to
+        // equal what the plain threshold check alone would return.
+        let known = crate::tooling::perl_critic::NativeCriticRegistry::for_profile(
+            crate::tooling::perl_critic::NativeCriticProfile::Strict,
+        )
+        .rule_ids();
+
+        let unguarded = |unknown: &str| -> Option<&'static str> {
+            known
+                .iter()
+                .copied()
+                .filter_map(|candidate| {
+                    let distance = rule_id_edit_distance(unknown, candidate);
+                    (distance <= rule_id_suggestion_threshold(unknown, candidate))
+                        .then_some((candidate, distance))
+                })
+                .min_by_key(|(candidate, distance)| (*distance, candidate.len()))
+                .map(|(candidate, _)| candidate)
+        };
+
+        let mut probes: Vec<String> = vec![
+            String::new(),
+            "x".to_string(),
+            "native".to_string(),
+            "native.common.typo_rule".to_string(),
+            "completely.made.up.thing".to_string(),
+            "native.common.assignment_in_conditon".to_string(),
+            "native.io.pipe_opennnnn".to_string(),
+        ];
+        for id in &known {
+            probes.push((*id).to_string());
+            probes.push(format!("{id}x"));
+            probes.push(id.replace('_', "-"));
+            probes.push(id.chars().rev().collect());
+        }
+
+        for probe in &probes {
+            // Only the edit-distance pass is under test, so compare against the
+            // unguarded form of that same pass.
+            let guarded = known
+                .iter()
+                .copied()
+                .filter_map(|candidate| {
+                    let threshold = rule_id_suggestion_threshold(probe, candidate);
+                    if probe.len().abs_diff(candidate.len()) > threshold {
+                        return None;
+                    }
+                    let distance = rule_id_edit_distance(probe, candidate);
+                    (distance <= threshold).then_some((candidate, distance))
+                })
+                .min_by_key(|(candidate, distance)| (*distance, candidate.len()))
+                .map(|(candidate, _)| candidate);
+            assert_eq!(guarded, unguarded(probe), "length guard changed the result for {probe:?}");
+        }
+    }
+
+    #[test]
+    fn suggest_rule_id_stays_bounded_for_a_pathological_entry() {
+        // `.perl-lsp.toml` is workspace-controlled, so a hostile or simply
+        // broken project file must not be able to stall config application in
+        // the edit-distance pass.
+        let known = crate::tooling::perl_critic::NativeCriticRegistry::for_profile(
+            crate::tooling::perl_critic::NativeCriticProfile::Strict,
+        )
+        .rule_ids();
+        let huge = "a".repeat(2_000_000);
+        let started = std::time::Instant::now();
+        assert_eq!(suggest_rule_id(&huge, &known), None);
+        // Generous bound — the point is that it is bounded at all. Without the
+        // length guard this runs ~28 full 2M-cell Levenshtein matrices.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "suggestion pass must short-circuit on absurd input; took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn suggest_rule_id_prefers_the_nearest_candidate() {
+        let known = crate::tooling::perl_critic::NativeCriticRegistry::for_profile(
+            crate::tooling::perl_critic::NativeCriticProfile::Strict,
+        )
+        .rule_ids();
+        // `unused_lexical` and `unused_parameter` are both near; the exact leaf
+        // match must win rather than whichever the edit-distance pass reaches.
+        assert_eq!(
+            suggest_rule_id("native.vars.unused_parameter", &known),
+            Some("native.variables.unused_parameter")
+        );
+    }
+
+    #[test]
+    fn include_path_with_parent_dir_rejected_when_no_workspace_root() {
+        // #5345: when no workspace root is configured (single-file mode),
+        // relative paths with `..` must be rejected fail-closed instead of
+        // passing through unvalidated.
+        let result = validate_resource_include_path_entry("../../etc/passwd", None);
+        assert!(
+            matches!(result, Err(RejectedClientIncludePathReason::EscapesWorkspace(_))),
+            "relative path with '..' must be rejected when no workspace root is set, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn include_path_without_parent_dir_accepted_when_no_workspace_root() {
+        // A simple relative path like "lib" is safe even without a workspace
+        // root — it has no `..` component to escape.
+        let result = validate_resource_include_path_entry("lib", None);
+        assert!(result.is_ok(), "simple relative path must be accepted, got: {result:?}");
     }
 }

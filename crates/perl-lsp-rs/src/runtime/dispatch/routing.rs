@@ -3,7 +3,12 @@
 //! This module owns the method-to-handler table. Preflight checks and response
 //! rendering live in sibling modules so routing remains focused on dispatch.
 
+#[cfg(test)]
 use super::super::*;
+use super::super::{
+    JsonRpcError, JsonRpcId, JsonRpcRequest, LspServer, METHOD_NOT_FOUND, Ordering, Value,
+    cancelled_response_with_method, enhanced_error,
+};
 use super::response::RoutedResponse;
 
 impl LspServer {
@@ -310,6 +315,14 @@ impl LspServer {
             self.record_lsp_request_latency(&method, request_start);
             return RoutedResponse::Immediate(cancelled_response_with_method(request_id, &method));
         }
+
+        // Create cleanup guard around handler so cancellation state is cleaned
+        // up on both normal return and panic. Without this, a panicking handler
+        // orphans its token in the global cancellation registry (#5369).
+        let typed_id = id.as_ref().and_then(JsonRpcId::from_value);
+        let _cleanup_guard = perl_lsp_rs_core::runtime::cancellation::RequestCleanupGuard::from_ref(
+            typed_id.as_ref(),
+        );
 
         let result = handler(id.as_ref());
         self.record_live_provider_decision_trace(&method, &result);

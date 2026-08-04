@@ -1,0 +1,38 @@
+# Build artifacts — the largest contributor to build context size.
+target/
+build/
+
+# Version control — not needed inside the Docker build context.
+.git/
+.gitignore
+
+# IDE and editor config.
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node.js — the VS Code extension is built separately, not in the Docker image.
+node_modules/
+vscode-extension/node_modules/
+vscode-extension/dist/
+vscode-extension/out/
+
+# CI and tooling receipts.
+.nextest/
+*.profraw
+*.profdata
+
+# Documentation that doesn't affect the build.
+docs/
+book/
+
+# OS-specific files.
+.DS_Store
+Thumbs.db
+nul
+
+# Test fixtures and corpora — not needed for the runtime image.
+crates/*/tests/fixtures/
+.cpan-corpus/

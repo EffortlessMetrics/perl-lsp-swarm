@@ -15,9 +15,6 @@
 //!
 //! Run with: cargo test -p perl-dap --test dap_step_through_tests
 
-// Tests use panic! in match arms as structured test failure reporters.
-#![allow(clippy::panic)]
-
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use serde_json::json;
 use std::fs;
@@ -45,14 +42,14 @@ fn assert_response(
     msg: DapMessage,
     expected_command: &str,
     expected_success: bool,
-) -> Option<serde_json::Value> {
+) -> Result<Option<serde_json::Value>, Box<dyn std::error::Error>> {
     match msg {
         DapMessage::Response { success, command, body, .. } => {
             assert_eq!(command, expected_command, "command mismatch");
             assert_eq!(success, expected_success, "success mismatch for {expected_command}");
-            body
+            Ok(body)
         }
-        other => panic!("expected Response for {expected_command}, got {other:?}"),
+        other => Err(format!("expected Response for {expected_command}, got {other:?}").into()),
     }
 }
 
@@ -546,7 +543,7 @@ fn test_cancel_during_stepping_sequence() -> Result<(), Box<dyn std::error::Erro
     adapter.handle_request(2, "stepIn", Some(json!({"threadId": 1})));
 
     let cancel_response = adapter.handle_request(3, "cancel", None);
-    assert_response(cancel_response, "cancel", true);
+    assert_response(cancel_response, "cancel", true)?;
 
     // #898: next still fails without a session (cancel doesn't create a session).
     let response = adapter.handle_request(4, "next", Some(json!({"threadId": 1})));
@@ -568,7 +565,7 @@ fn test_cancel_with_request_id_argument() -> Result<(), Box<dyn std::error::Erro
 
     let args = json!({ "requestId": 42 });
     let cancel_response = adapter.handle_request(1, "cancel", Some(args));
-    assert_response(cancel_response, "cancel", true);
+    assert_response(cancel_response, "cancel", true)?;
     Ok(())
 }
 

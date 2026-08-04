@@ -2,7 +2,9 @@
 //!
 //! Handles resolution of Perl module names to file paths.
 
+#[cfg(test)]
 use super::super::*;
+use super::super::{LspServer, MessageType, md5, normalize_package_separator};
 use perl_module::resolution::use_lib::{UseLibPath, resolve_use_lib_paths_from_source};
 use perl_module::resolution::{
     ModuleUriResolution, build_effective_inc_roots,
@@ -452,7 +454,7 @@ impl LspServer {
                 if !self.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
                     let _ = self.show_message(
                         MessageType::Warning,
-                        "perl-lsp: workspace root not detected — module resolution disabled. \
+                        "Perl LSP: workspace root not detected — module resolution disabled. \
                          To enable: open the project folder in your editor (File > Open Folder) \
                          rather than individual files. This warning appears once per server session.",
                     );
@@ -491,7 +493,7 @@ impl LspServer {
                 if !self.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
                     let _ = self.show_message(
                         MessageType::Warning,
-                        "perl-lsp: workspace root not detected — module resolution disabled. \
+                        "Perl LSP: workspace root not detected — module resolution disabled. \
                          To enable: open the project folder in your editor (File > Open Folder) \
                          rather than individual files. This warning appears once per server session.",
                     );
@@ -624,7 +626,7 @@ impl LspServer {
                 if !self.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
                     let _ = self.show_message(
                         MessageType::Warning,
-                        "perl-lsp: workspace root not detected — module resolution disabled. \
+                        "Perl LSP: workspace root not detected — module resolution disabled. \
                          To enable: open the project folder in your editor (File > Open Folder) \
                          rather than individual files. This warning appears once per server session.",
                     );

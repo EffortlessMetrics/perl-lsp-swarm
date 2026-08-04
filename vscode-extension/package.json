@@ -30,7 +30,10 @@
     "workspace"
   ],
   "capabilities": {
-    "virtualWorkspaces": true,
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Perl LSP reads files through the OS file system and cannot serve virtual workspaces (vscode.dev, github.dev, GitHub Repositories)."
+    },
     "untrustedWorkspaces": {
       "supported": false
     }
@@ -62,6 +65,32 @@
     "onDebugInitialConfigurations"
   ],
   "contributes": {
+    "semanticTokenColors": {
+      "sql_string": {
+        "foreground": "#56b6c2",
+        "dark_foreground": "#56b6c2",
+        "light_foreground": "#098658",
+        "highContrast_foreground": "#4ec9b0"
+      },
+      "sql_heredoc_keyword": {
+        "foreground": "#c678dd",
+        "dark_foreground": "#c678dd",
+        "light_foreground": "#a31515",
+        "highContrast_foreground": "#d7ba7d"
+      },
+      "json_heredoc_key": {
+        "foreground": "#e5c07b",
+        "dark_foreground": "#e5c07b",
+        "light_foreground": "#8250df",
+        "highContrast_foreground": "#9cdcfe"
+      },
+      "label": {
+        "foreground": "#7f848e",
+        "dark_foreground": "#7f848e",
+        "light_foreground": "#6a737d",
+        "highContrast_foreground": "#dcdcaa"
+      }
+    },
     "languages": [
       {
         "id": "perl",
@@ -531,7 +560,7 @@
             "scope": "machine",
             "order": 43,
             "deprecationMessage": "This setting has no effect and will be removed. Use perl-lsp.critic.profile instead.",
-            "markdownDeprecationMessage": "**No effect.** This setting does nothing — it is a legacy placeholder from an earlier UI design and will be removed. Use `perl-lsp.critic.profile` for Perl::Critic profile selection.",
+            "markdownDeprecationMessage": "**No effect.** This setting does nothing — it is a legacy placeholder from an earlier UI design and will be removed. Use `perl-lsp.critic.profile` to select the native rule profile.",
             "description": "[No effect] Legacy placeholder — will be removed.",
             "markdownDescription": "**[No effect]** Legacy placeholder — will be removed. Use `perl-lsp.critic.profile` instead."
           },
@@ -662,8 +691,8 @@
               "Choose the profile automatically based on the bundled binary.",
               "Lock to the general-availability profile with conservative defaults.",
               "Use the general-availability profile.",
-              "Use the production profile (alias for ga).",
-              "Use the production profile (alias for ga).",
+              "Use the production profile.",
+              "Alias for prod (production profile).",
               "Enable every supported feature, including experimental ones."
             ],
             "default": "auto",
@@ -684,9 +713,12 @@
                 "lsp.references",
                 "lsp.document_symbol",
                 "lsp.workspace_symbol",
+                "lsp.document_link",
                 "lsp.code_action",
                 "lsp.code_lens",
                 "lsp.rename",
+                "lsp.implementation",
+                "lsp.type_definition",
                 "lsp.folding_range",
                 "lsp.selection_range",
                 "lsp.linked_editing_range",
@@ -699,7 +731,15 @@
                 "lsp.signature_help",
                 "lsp.document_highlight",
                 "lsp.formatting",
-                "lsp.range_formatting"
+                "lsp.range_formatting",
+                "lsp.ranges_formatting",
+                "lsp.on_type_formatting",
+                "lsp.inline_completion",
+                "lsp.inline_value",
+                "lsp.notebook_document_sync",
+                "lsp.notebook_cell_execution",
+                "lsp.moniker",
+                "lsp.execute_command"
               ]
             },
             "default": [],
@@ -788,211 +828,211 @@
     "commands": [
       {
         "command": "perl-lsp.restart",
-        "title": "Restart Perl Language Server",
+        "title": "%command.restart.title%",
         "category": "Perl",
         "icon": "$(refresh)"
       },
       {
         "command": "perl-lsp.openDemoProject",
-        "title": "Open Demo Project",
+        "title": "%command.openDemoProject.title%",
         "category": "Perl",
         "icon": "$(folder-opened)"
       },
       {
         "command": "perl-lsp.showVersion",
-        "title": "Show Server Version",
+        "title": "%command.showVersion.title%",
         "category": "Perl",
         "icon": "$(info)"
       },
       {
         "command": "perl-lsp.showOutput",
-        "title": "Show Output Channel",
+        "title": "%command.showOutput.title%",
         "category": "Perl",
         "icon": "$(output)"
       },
       {
         "command": "perl-lsp.showStatusMenu",
-        "title": "Show Status Menu",
+        "title": "%command.showStatusMenu.title%",
         "category": "Perl",
         "icon": "$(menu)"
       },
       {
         "command": "perl-lsp.reinstall",
-        "title": "Reinstall Server Binary",
+        "title": "%command.reinstall.title%",
         "category": "Perl",
         "icon": "$(cloud-download)"
       },
       {
         "command": "perl-lsp.checkForUpdate",
-        "title": "Check for Binary Updates",
+        "title": "%command.checkForUpdate.title%",
         "category": "Perl",
         "icon": "$(sync)"
       },
       {
         "command": "perl-lsp.organizeImports",
-        "title": "Organize Use Statements",
+        "title": "%command.organizeImports.title%",
         "category": "Perl",
         "icon": "$(organization)"
       },
       {
         "command": "perl-lsp.runTests",
-        "title": "Run Tests in Current File",
+        "title": "%command.runTests.title%",
         "category": "Perl",
         "icon": "$(beaker)"
       },
       {
         "command": "perl-lsp.runPerlCritic",
-        "title": "Run Critic",
+        "title": "%command.runPerlCritic.title%",
         "category": "Perl",
         "icon": "$(checklist)"
       },
       {
         "command": "perl-lsp.setPerlCriticSeverity",
-        "title": "Set Critic Severity",
+        "title": "%command.setPerlCriticSeverity.title%",
         "category": "Perl",
         "icon": "$(symbol-numeric)"
       },
       {
         "command": "perl-lsp.extractVariable",
-        "title": "Extract Variable",
+        "title": "%command.extractVariable.title%",
         "category": "Perl",
         "icon": "$(symbol-variable)"
       },
       {
         "command": "perl-lsp.extractMethod",
-        "title": "Extract Method",
+        "title": "%command.extractMethod.title%",
         "category": "Perl",
         "icon": "$(symbol-method)"
       },
       {
         "command": "perl-lsp.showRefactoringOptions",
-        "title": "Show Refactoring Options",
+        "title": "%command.showRefactoringOptions.title%",
         "category": "Perl",
         "icon": "$(wrench)"
       },
       {
         "command": "perl-lsp.showWhatsNew",
-        "title": "Show What's New",
+        "title": "%command.showWhatsNew.title%",
         "category": "Perl",
         "icon": "$(star-empty)"
       },
       {
         "command": "perl-lsp.createDebugConfig",
-        "title": "Create Debug Configuration",
+        "title": "%command.createDebugConfig.title%",
         "category": "Perl",
         "icon": "$(debug-alt)"
       },
       {
         "command": "perl-lsp.runHealthCheck",
-        "title": "Run Health Check",
+        "title": "%command.runHealthCheck.title%",
         "category": "Perl",
         "icon": "$(pulse)"
       },
       {
         "command": "perl-lsp.checkSyntax",
-        "title": "Check Syntax",
+        "title": "%command.checkSyntax.title%",
         "category": "Perl",
         "icon": "$(check-all)"
       },
       {
         "command": "perl-lsp.runCurrentTest",
-        "title": "Run Current Test",
+        "title": "%command.runCurrentTest.title%",
         "category": "Perl",
         "icon": "$(play)"
       },
       {
         "command": "perl-lsp.runTestAtCursor",
-        "title": "Run Test at Cursor",
+        "title": "%command.runTestAtCursor.title%",
         "category": "Perl",
         "icon": "$(run)"
       },
       {
         "command": "perl-lsp.runAllTests",
-        "title": "Run All Tests",
+        "title": "%command.runAllTests.title%",
         "category": "Perl",
         "icon": "$(beaker)"
       },
       {
         "command": "perl-lsp.formatDocument",
-        "title": "Format Document",
+        "title": "%command.formatDocument.title%",
         "category": "Perl",
         "icon": "$(list-flat)"
       },
       {
         "command": "perl-lsp.showIncPaths",
-        "title": "Show @INC Paths",
+        "title": "%command.showIncPaths.title%",
         "category": "Perl",
         "icon": "$(list-tree)"
       },
       {
         "command": "perl-lsp.openModule",
-        "title": "Open Module",
+        "title": "%command.openModule.title%",
         "category": "Perl",
         "icon": "$(file-code)"
       },
       {
         "command": "perl-lsp.showParserAst",
-        "title": "Show Parser AST",
+        "title": "%command.showParserAst.title%",
         "category": "Perl",
         "icon": "$(symbol-structure)"
       },
       {
         "command": "perl-lsp.openConfigurationGuide",
-        "title": "Open Configuration Guide",
+        "title": "%command.openConfigurationGuide.title%",
         "category": "Perl",
         "icon": "$(gear)"
       },
       {
         "command": "perl-lsp.explainProviderDecision",
-        "title": "Explain Provider Decision",
+        "title": "%command.explainProviderDecision.title%",
         "category": "Perl",
         "icon": "$(debug)"
       },
       {
         "command": "perl-lsp.previewSafeDelete",
-        "title": "Preview Safe Delete",
+        "title": "%command.previewSafeDelete.title%",
         "category": "Perl",
         "icon": "$(shield)"
       },
       {
         "command": "perl-lsp.previewPackageRename",
-        "title": "Preview Package Rename",
+        "title": "%command.previewPackageRename.title%",
         "category": "Perl",
         "icon": "$(symbol-method)"
       },
       {
         "command": "perl-lsp.copyProviderDecisionReceipt",
-        "title": "Copy Provider Decision Receipt",
+        "title": "%command.copyProviderDecisionReceipt.title%",
         "category": "Perl",
         "icon": "$(copy)"
       },
       {
         "command": "perl-lsp.showWorkspaceTrustReport",
-        "title": "Show Workspace Trust Report",
+        "title": "%command.showWorkspaceTrustReport.title%",
         "category": "Perl",
         "icon": "$(checklist)"
       },
       {
         "command": "perl-lsp.explainMissingModuleLookup",
-        "title": "Explain Missing Module Lookup",
+        "title": "%command.explainMissingModuleLookup.title%",
         "category": "Perl",
         "icon": "$(search)"
       },
       {
         "command": "perl-lsp.explainDiagnostic",
-        "title": "Explain This Diagnostic",
+        "title": "%command.explainDiagnostic.title%",
         "category": "Perl",
         "icon": "$(comment-discussion)"
       },
       {
         "command": "perl-lsp.reportIssue",
-        "title": "Report Issue",
+        "title": "%command.reportIssue.title%",
         "category": "Perl",
         "icon": "$(github)"
       },
       {
         "command": "perl-lsp.previewPod",
-        "title": "Preview POD",
+        "title": "%command.previewPod.title%",
         "category": "Perl",
         "icon": "$(preview)"
       }
@@ -1331,7 +1371,7 @@
     "test:ci": "npm run compile:test && npm run test:receipt-summary && node scripts/run-jest.js --ci --coverage --verbose",
     "test:grammar": "vscode-tmgrammar-snap --config package.json \"test/grammar/fixtures/*.pl\"",
     "test:grammar:update": "vscode-tmgrammar-snap --config package.json -u \"test/grammar/fixtures/*.pl\"",
-    "test:receipt-summary": "node --test scripts/summarize-vscode-receipts.test.js && node --test scripts/sample-local-vsix-smoke.test.js && node --test scripts/check-vsix-inventory.test.js && node --test scripts/check-publisher-tools.test.js && node --test scripts/vscode-toolchain-workflows.test.js && node --test scripts/check-source-map.test.js && node --test scripts/reporter.test.js",
+    "test:receipt-summary": "node --test scripts/summarize-vscode-receipts.test.js && node --test scripts/sample-local-vsix-smoke.test.js && node --test scripts/run-local-vsix-smoke.test.js && node --test scripts/check-vsix-inventory.test.js && node --test scripts/check-publisher-tools.test.js && node --test scripts/vscode-toolchain-workflows.test.js && node --test scripts/check-source-map.test.js && node --test scripts/reporter.test.js",
     "check:package-inventory": "node scripts/check-vsix-inventory.js",
     "check:source-map": "node scripts/check-source-map.js",
     "summarize:vscode": "node scripts/summarize-vscode-receipts.js",
@@ -1356,7 +1396,7 @@
   "overrides": {
     "brace-expansion@1": "1.1.16",
     "brace-expansion@2": "2.1.3",
-    "brace-expansion@5": "5.0.8"
+    "brace-expansion@5": "5.0.9"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",

@@ -2,7 +2,10 @@
 //!
 //! Provides hover information and function signature help for Perl code.
 
-use super::super::*;
+use super::super::{
+    GLOBAL_CANCELLATION_REGISTRY, JsonRpcError, JsonRpcId, LspServer, Node, NodeKind, Path,
+    PerlLspCancellationToken, PodCacheEntry, REQUEST_CANCELLED, Value, byte_to_line_col, json,
+};
 use crate::cancellation::RequestCleanupGuard;
 use crate::documentation_targets::PerlDocumentationTarget;
 use crate::protocol::{req_position, req_uri};
@@ -20,6 +23,37 @@ mod regex_hover;
 mod signature_help;
 
 use hover_extracted::HoverExtracted;
+
+thread_local! {
+    /// Trace-only source-region kind for the hover request running on *this*
+    /// thread (#5003 PR1).
+    ///
+    /// A read request runs start to finish inside one `spawn_blocking` closure
+    /// (`scheduler::run_handler`), and `dispatch::routing::route_cancellable`
+    /// records the dispatcher receipt on that same thread, synchronously, before
+    /// returning. A thread-local slot is therefore request-scoped.
+    ///
+    /// The previous design — a single `Arc<Mutex<Option<String>>>` on the
+    /// singleton `LspServer` — was not: the read dispatcher runs up to
+    /// `scheduler::READ_WORKERS` handlers concurrently, so a second hover could
+    /// overwrite or clear the first hover's value before the first read it back,
+    /// making the recorded trace non-deterministic by construction.
+    static HOVER_TRACE_SOURCE_REGION_KIND: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Record the trace-only source-region kind for the hover on this thread.
+pub(crate) fn set_hover_trace_source_region_kind(kind: Option<String>) {
+    HOVER_TRACE_SOURCE_REGION_KIND.with(|slot| *slot.borrow_mut() = kind);
+}
+
+/// Take this thread's hover source-region kind, clearing the slot.
+///
+/// Clearing on read keeps a value from leaking into a later request scheduled
+/// onto the same worker thread that never sets the slot itself.
+pub(crate) fn take_hover_trace_source_region_kind() -> Option<String> {
+    HOVER_TRACE_SOURCE_REGION_KIND.with(|slot| slot.borrow_mut().take())
+}
 
 impl LspServer {
     /// Handle textDocument/hover request for symbol information display
@@ -101,8 +135,15 @@ impl LspServer {
             let t_analyze_start = std::time::Instant::now();
             let (extracted, live_compiler_context, hover_range) = match locked {
                 Some((offset, parsed, text, range)) => {
+                    // Trace-only source-region classification (#5003). Recorded for the
+                    // dispatcher receipt in `runtime::language::misc`; it does not select
+                    // a hover branch and does not change the hover response payload.
+                    let source_region_kind = parsed.as_ref().map(|snapshot| {
+                        snapshot.source_region_index().kind_at_offset(offset).as_str().to_string()
+                    });
+                    set_hover_trace_source_region_kind(source_region_kind.clone());
                     let live_compiler_context =
-                        Self::live_hover_compiler_context(uri, &text, offset);
+                        Self::live_hover_compiler_context(uri, &text, offset, source_region_kind);
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                         // Check for `use Module` at this offset first
                         let extracted = if let Some(module_name) =
@@ -151,7 +192,10 @@ impl LspServer {
                         )
                     }
                 }
-                None => (HoverExtracted::None, None, None),
+                None => {
+                    set_hover_trace_source_region_kind(None);
+                    (HoverExtracted::None, None, None)
+                }
             };
             if timing_on {
                 crate::runtime::timing::emit(crate::runtime::timing::TimingSpan::labeled(
@@ -1593,9 +1637,7 @@ impl LspServer {
         // give the user a next step instead of a bare "not found" card.
         let config =
             self.config_for_doc(doc_uri).unwrap_or_else(|| self.workspace_config.lock().clone());
-        let perl5lib_paths = std::env::var("PERL5LIB")
-            .map(|value| perl_lsp_rs_core::config::WorkspaceConfig::parse_perl5lib(&value))
-            .unwrap_or_default();
+        let perl5lib_paths = perl_lsp_rs_core::config::WorkspaceConfig::env_perl_lib_paths();
         let include_paths = config.effective_include_paths(&perl5lib_paths);
         let searched_paths = Self::format_missing_module_search_paths(&include_paths);
         let system_inc_status = if config.use_system_inc { "enabled" } else { "disabled" };

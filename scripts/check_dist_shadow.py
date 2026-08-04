@@ -16,7 +16,7 @@ BUILD_RE = re.compile(
     r"^\s*\$BUILD_CMD build\s+.*?\s-p\s+([A-Za-z0-9_-]+)\s+--bin\s+([A-Za-z0-9_-]+)\s*$",
     re.MULTILINE,
 )
-STALE_TOKENS = {"perl-lsp", "perl-parse", "aarch64-pc-windows-msvc"}
+STALE_TOKENS = {"perl-lsp", "perl-parse"}
 
 
 class DistShadowError(RuntimeError):

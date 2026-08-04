@@ -1404,7 +1404,7 @@ impl BodyLowerer {
                 *self.unsupported.entry(ast_kind_to_static(ast_kind)).or_insert(0) += 1;
             }
 
-            HirExpr::Call { args, ast_kind: _ } => {
+            HirExpr::Call { args, ast_kind: _, callee_span: _ } => {
                 // Record the call itself as unsupported — PIR-A does not yet model
                 // calls from body arenas as named PIR nodes. However, we DO walk
                 // the argument expressions so that variable reads in call-arg position
@@ -1797,7 +1797,7 @@ mod tests {
     }
 
     #[test]
-    fn our_declaration_is_stash_write() {
+    fn our_declaration_is_stash_write() -> Result<(), String> {
         let graph = lower("package Acme; our @items = (1, 2);");
         let stash = must_some(
             graph.nodes.iter().find(|n| matches!(n.operation, PirOperation::StashWrite { .. })),
@@ -1807,12 +1807,13 @@ mod tests {
             assert_eq!(symbol.name, "items");
             assert_eq!(symbol.package.as_deref(), Some("Acme"));
         } else {
-            panic!("expected StashWrite");
+            return Err("expected StashWrite".to_string());
         }
+        Ok(())
     }
 
     #[test]
-    fn local_declaration_is_stash_write() {
+    fn local_declaration_is_stash_write() -> Result<(), String> {
         let graph = lower("local $x;");
         let stash = must_some(
             graph.nodes.iter().find(|n| matches!(n.operation, PirOperation::StashWrite { .. })),
@@ -1821,8 +1822,9 @@ mod tests {
             assert_eq!(symbol.sigil, "$");
             assert_eq!(symbol.name, "x");
         } else {
-            panic!("expected StashWrite");
+            return Err("expected StashWrite".to_string());
         }
+        Ok(())
     }
 
     #[test]
@@ -1849,7 +1851,7 @@ mod tests {
     }
 
     #[test]
-    fn named_call_with_package_qualifier() {
+    fn named_call_with_package_qualifier() -> Result<(), String> {
         let graph = lower("Bar::baz();");
         let call = must_some(
             graph.nodes.iter().find(|n| matches!(n.operation, PirOperation::Call { .. })),
@@ -1861,12 +1863,13 @@ mod tests {
             );
             assert_eq!(*arg_count, 0);
         } else {
-            panic!("expected Call");
+            return Err("expected Call".to_string());
         }
+        Ok(())
     }
 
     #[test]
-    fn deep_package_qualified_call() {
+    fn deep_package_qualified_call() -> Result<(), String> {
         let graph = lower("A::B::foo();");
         let call = must_some(
             graph.nodes.iter().find(|n| matches!(n.operation, PirOperation::Call { .. })),
@@ -1877,12 +1880,13 @@ mod tests {
                 PirCallee::Named { name: "foo".to_string(), package: Some("A::B".to_string()) }
             );
         } else {
-            panic!("expected Call");
+            return Err("expected Call".to_string());
         }
+        Ok(())
     }
 
     #[test]
-    fn unqualified_call_has_no_package() {
+    fn unqualified_call_has_no_package() -> Result<(), String> {
         let graph = lower("foo(1, 2, 3);");
         let call = must_some(
             graph.nodes.iter().find(|n| matches!(n.operation, PirOperation::Call { .. })),
@@ -1891,12 +1895,13 @@ mod tests {
             assert_eq!(*callee, PirCallee::Named { name: "foo".to_string(), package: None });
             assert_eq!(*arg_count, 3);
         } else {
-            panic!("expected Call");
+            return Err("expected Call".to_string());
         }
+        Ok(())
     }
 
     #[test]
-    fn method_call_preserves_method_and_args() {
+    fn method_call_preserves_method_and_args() -> Result<(), String> {
         let graph = lower("$obj->frobnicate(1, 2);");
         let method = must_some(
             graph.nodes.iter().find(|n| matches!(n.operation, PirOperation::MethodCall { .. })),
@@ -1905,12 +1910,13 @@ mod tests {
             assert_eq!(*method, PirMethod::Named("frobnicate".to_string()));
             assert_eq!(*arg_count, 2);
         } else {
-            panic!("expected MethodCall");
+            return Err("expected MethodCall".to_string());
         }
+        Ok(())
     }
 
     #[test]
-    fn coderef_call_links_to_dynamic_boundary() {
+    fn coderef_call_links_to_dynamic_boundary() -> Result<(), String> {
         let graph = lower("my $cb; $cb->(1);");
         let call = must_some(graph.nodes.iter().find(|n| {
             matches!(n.operation, PirOperation::Call { callee: PirCallee::Dynamic, .. })
@@ -1920,8 +1926,9 @@ mod tests {
         if let PirOperation::DynamicBoundary { kind, .. } = &boundary.operation {
             assert_eq!(*kind, PirDynamicBoundaryKind::DynamicCallee);
         } else {
-            panic!("expected DynamicBoundary");
+            return Err("expected DynamicBoundary".to_string());
         }
+        Ok(())
     }
 
     #[test]
@@ -2180,7 +2187,7 @@ $x = 1 if $y;
     }
 
     #[test]
-    fn leading_colons_not_empty_package() {
+    fn leading_colons_not_empty_package() -> Result<(), String> {
         let graph = lower("::foo();");
         let call = must_some(
             graph.nodes.iter().find(|n| matches!(n.operation, PirOperation::Call { .. })),
@@ -2188,8 +2195,9 @@ $x = 1 if $y;
         if let PirOperation::Call { callee, .. } = &call.operation {
             assert_eq!(*callee, PirCallee::Named { name: "foo".to_string(), package: None });
         } else {
-            panic!("expected Call");
+            return Err("expected Call".to_string());
         }
+        Ok(())
     }
 
     #[test]

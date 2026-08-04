@@ -610,6 +610,65 @@ pub fn trivial_type_hints(
             NodeKind::Subroutine { name: None, .. } => {
                 Some(("CodeRef".to_string(), Some("Anonymous subroutine (code reference)")))
             }
+            // Variable declarations with initializers: infer the type from the
+            // initializer and show it at the variable position (#1692).
+            NodeKind::VariableDeclaration { variable, initializer, .. } => {
+                if let Some(init) = initializer {
+                    // Infer the type from the initializer expression.
+                    let inferred = match &init.kind {
+                        NodeKind::Number { .. } => {
+                            Some(("Num".to_string(), Some("Numeric literal")))
+                        }
+                        NodeKind::String { .. } => {
+                            Some(("Str".to_string(), Some("String literal")))
+                        }
+                        NodeKind::HashLiteral { .. } => {
+                            Some(("Hash".to_string(), Some("Hash reference")))
+                        }
+                        NodeKind::ArrayLiteral { .. } => {
+                            Some(("Array".to_string(), Some("Array reference")))
+                        }
+                        NodeKind::Regex { .. } => {
+                            Some(("Regex".to_string(), Some("Regular expression")))
+                        }
+                        NodeKind::Subroutine { name: None, .. } => Some((
+                            "CodeRef".to_string(),
+                            Some("Anonymous subroutine (code reference)"),
+                        )),
+                        _ => infer_semantic_type(init).map(|t| (t, None)),
+                    };
+                    if let Some((hint, tooltip)) = inferred {
+                        // Emit the hint at the variable's position, not the
+                        // initializer's. This shows `: Num` after the declarator.
+                        let (vl, vc) = to_pos16(variable.location.end);
+                        if let Some(filter_range) = range {
+                            let hint_pos = Position::new(vl, vc);
+                            if !pos_in_range(hint_pos, filter_range) {
+                                return true;
+                            }
+                        }
+                        let mut val = json!({
+                            "position": {"line": vl, "character": vc},
+                            "label": format!(": {}", hint),
+                            "kind": 1, // type
+                            "paddingLeft": true,
+                            "paddingRight": false
+                        });
+                        if let Some(tt) = tooltip {
+                            val["data"] = json!({ "tooltip": tt });
+                        }
+                        out.push(val);
+                    }
+                }
+                // Return true to continue walking siblings and children. The
+                // initializer literal will also get its own hint at its
+                // position — this is intentional and not a duplicate: the
+                // declaration hint shows the type at the variable, while the
+                // initializer hint shows the type at the value. Clients can
+                // deduplicate by position if desired. Returning false would
+                // incorrectly stop the entire walk (factory-droid P1 review).
+                return true;
+            }
             // Fall through to semantic type inference for non-literal nodes
             _ => infer_semantic_type(node).map(|t| (t, None)),
         };
@@ -662,6 +721,8 @@ pub fn infer_semantic_type(node: &Node) -> Option<String> {
     match &node.kind {
         NodeKind::FunctionCall { name, .. } => function_return_type(name),
         NodeKind::MethodCall { method, .. } => method_return_type(method),
+        // Reference constructors: \@array, \%hash, \$scalar → Ref (#1692).
+        NodeKind::Unary { op, .. } if op == "\\" => Some("Ref".to_string()),
         NodeKind::Variable { name, sigil } => {
             // Infer from common naming conventions
             match (sigil.as_str(), name.as_str()) {
@@ -1085,6 +1146,66 @@ $obj->render("hello", 10);"#;
         assert!(
             no_method_labels.is_empty(),
             "tiny range should suppress all method hints via `continue`; labels: {no_method_labels:?}"
+        );
+    }
+
+    // ── Variable declaration type hints (#1692) ─────────────────────────────
+
+    #[test]
+    fn test_variable_declaration_num_hint() {
+        let ast = ast_for("my $x = 42;");
+        let hints = trivial_type_hints(&ast, &dummy_pos, None);
+        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        assert!(
+            labels.contains(&": Num"),
+            "my $x = 42 should emit a : Num type hint, got: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn test_variable_declaration_str_hint() {
+        let ast = ast_for("my $s = \"hello\";");
+        let hints = trivial_type_hints(&ast, &dummy_pos, None);
+        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        assert!(
+            labels.contains(&": Str"),
+            "my $s = \"hello\" should emit a : Str type hint, got: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn test_variable_declaration_no_hint_without_initializer() {
+        // my $uninit; should NOT emit a type hint.
+        let ast = ast_for("my $uninit;");
+        let hints = trivial_type_hints(&ast, &dummy_pos, None);
+        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        assert!(
+            !labels.iter().any(|l| l.starts_with(": ")),
+            "my $uninit; (no initializer) should not emit any type hint, got: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn test_variable_declaration_coderef_hint() {
+        // my $coderef = sub { ... } should emit : CodeRef.
+        let ast = ast_for("my $coderef = sub { 1 };");
+        let hints = trivial_type_hints(&ast, &dummy_pos, None);
+        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        assert!(
+            labels.contains(&": CodeRef"),
+            "my $coderef = sub {{ ... }} should emit a : CodeRef type hint, got: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn test_variable_declaration_ref_hint() {
+        // my $ref = \@data should emit : Ref (#1692 acceptance).
+        let ast = ast_for("my @data; my $ref = \\@data;");
+        let hints = trivial_type_hints(&ast, &dummy_pos, None);
+        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        assert!(
+            labels.contains(&": Ref"),
+            "my $ref = \\@data should emit a : Ref type hint, got: {labels:?}"
         );
     }
 }

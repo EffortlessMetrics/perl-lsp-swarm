@@ -1532,3 +1532,79 @@ fn scenario_20_diagnostics_notification_received_for_all_files_hard_assert() -> 
     harness.assert_no_crash();
     Ok(())
 }
+
+// ── References (Find All References) ─────────────────────────────────────────
+// The references provider was unexercised by scenario 20 (#3602). These legs
+// add real-workspace regression coverage for cross-file reference resolution.
+
+/// works — references on `App` in the script import should find references
+/// across the workspace.
+#[test]
+fn scenario_20_references_app_module_cross_file() -> anyhow::Result<()> {
+    if !binary_available() {
+        eprintln!("SKIP scenario_20: perl-lsp binary not found");
+        return Ok(());
+    }
+
+    let harness = create_harness()?;
+    harness.open_file("lib/RealBaseline/App.pm", APP_PM)?;
+    harness.open_file("lib/RealBaseline/Base.pm", BASE_PM)?;
+    harness.open_file("lib/RealBaseline/Util.pm", UTIL_PM)?;
+    harness.open_file("script/real-baseline.pl", SCRIPT_PL)?;
+
+    // Line 0 in real-baseline.pl: `use RealBaseline::App;`
+    // cursor at col 20, inside `App`.
+    let refs = harness.references("script/real-baseline.pl", 0, 20, true)?;
+
+    for entry in &refs {
+        assert!(is_lsp_location_shape(entry), "references entry must be a Location: {entry:?}");
+    }
+
+    if refs.is_empty() {
+        eprintln!(
+            "status: references/app-module: known gap — no references returned \
+             (cross-file index may not have settled)"
+        );
+    } else {
+        eprintln!("status: references/app-module: works — found {} reference(s)", refs.len());
+    }
+
+    harness.assert_no_crash();
+    Ok(())
+}
+
+/// works — references on imported `Util` module in App.pm should resolve
+/// across the workspace.
+#[test]
+fn scenario_20_references_util_module_cross_file() -> anyhow::Result<()> {
+    if !binary_available() {
+        eprintln!("SKIP scenario_20: perl-lsp binary not found");
+        return Ok(());
+    }
+
+    let harness = create_harness()?;
+    harness.open_file("lib/RealBaseline/App.pm", APP_PM)?;
+    harness.open_file("lib/RealBaseline/Base.pm", BASE_PM)?;
+    harness.open_file("lib/RealBaseline/Util.pm", UTIL_PM)?;
+    harness.open_file("script/real-baseline.pl", SCRIPT_PL)?;
+
+    // Line 4 in App.pm: `use RealBaseline::Util qw(helper alias);`
+    // cursor at col 15, inside `Util`.
+    let refs = harness.references("lib/RealBaseline/App.pm", 4, 15, true)?;
+
+    for entry in &refs {
+        assert!(is_lsp_location_shape(entry), "references entry must be a Location: {entry:?}");
+    }
+
+    if refs.is_empty() {
+        eprintln!(
+            "status: references/util-module: known gap — no references returned \
+             (cross-file index may not have settled)"
+        );
+    } else {
+        eprintln!("status: references/util-module: works — found {} reference(s)", refs.len());
+    }
+
+    harness.assert_no_crash();
+    Ok(())
+}

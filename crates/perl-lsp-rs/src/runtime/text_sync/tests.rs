@@ -1430,6 +1430,95 @@ fn test_did_save_publishes_diagnostics_with_original_uri() -> Result<(), Box<dyn
     Ok(())
 }
 
+/// didSave text reconciliation must preserve the client document version.
+#[test]
+fn test_did_save_text_preserves_client_version() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///test_save_version.pl";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 3,
+            "text": "my $x = 1;\n"
+        }
+    }))?;
+
+    let initial_generation = server
+        .documents
+        .lock()
+        .get(&server.normalize_uri_key(uri))
+        .ok_or("didSave test document must be open")?
+        .current_generation();
+
+    server.handle_did_save(Some(json!({
+        "textDocument": {"uri": uri, "version": 3},
+        "text": "my $x = 2;\n"
+    })))?;
+
+    let normalized_uri = server.normalize_uri_key(uri);
+    let documents = server.documents.lock();
+    let document = documents.get(&normalized_uri).ok_or("didSave must retain the open document")?;
+    assert_eq!(document.version, 3);
+    assert_eq!(document.text, "my $x = 2;\n");
+    assert!(
+        document.current_generation() > initial_generation,
+        "changed didSave text must advance the document generation"
+    );
+    assert_eq!(
+        document.current_parsed().map(|snapshot| snapshot.generation()),
+        Some(document.current_generation()),
+        "changed didSave text must be parsed and published for the new generation"
+    );
+    drop(documents);
+
+    server.handle_did_save(Some(json!({
+        "textDocument": {"uri": uri},
+        "text": "my $x = 4;\n"
+    })))?;
+
+    let documents = server.documents.lock();
+    let document = documents.get(&normalized_uri).ok_or("didSave must retain the open document")?;
+    assert_eq!(document.version, 3);
+    assert_eq!(document.text, "my $x = 4;\n");
+    Ok(())
+}
+
+/// A changed same-version didSave replacement must cancel streams that captured
+/// the previous buffer, including streams using the preserved client version.
+#[test]
+fn test_did_save_text_cancels_same_version_streams() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///test_save_stream_cancel.pl";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 3,
+            "text": "my $x = 1;\n"
+        }
+    }))?;
+
+    let session =
+        server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+            uri: uri.to_owned(),
+            document_version: 3,
+            line: 0,
+            character: 0,
+        });
+
+    server.handle_did_save(Some(json!({
+        "textDocument": {"uri": uri, "version": 3},
+        "text": "my $x = 2;\n"
+    })))?;
+
+    assert!(session.is_cancelled(), "changed didSave text must cancel same-version streams");
+    assert_eq!(server.stream_sessions().len(), 0, "cancelled same-version streams must be evicted");
+    Ok(())
+}
+
 /// A parse cancelled via a pre-set flag must return Ok(()) and not store
 /// a document, so the caller behaves as if the parse simply didn't happen.
 #[test]
@@ -1505,10 +1594,12 @@ fn test_binary_file_guard_did_open_skips_parse() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
-/// Binary content guard — a single null byte is sufficient to trigger the guard.
+/// Binary content guard — a single null byte must NOT trigger the guard
+/// under the ratio heuristic (the file is still parsed normally). This is the
+/// corrected contract from #5209: only NUL densities above 5% are binary.
 #[test]
-fn test_binary_file_guard_single_null_byte_triggers_guard() -> Result<(), Box<dyn std::error::Error>>
-{
+fn test_binary_file_guard_single_null_byte_does_not_trigger_guard()
+-> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     let uri = "file:///test_null.pl";
     let content_with_null = "#!/usr/bin/perl\nmy $x = 1;\x00\n";
@@ -1524,14 +1615,44 @@ fn test_binary_file_guard_single_null_byte_triggers_guard() -> Result<(), Box<dy
 
     let docs = server.documents.lock();
     let doc = docs.get(uri).ok_or("document not stored after single-null didOpen")?;
+    // A single NUL byte is below the 5% ratio threshold, so the file must
+    // still be parsed normally (#5209).
+    assert_ne!(
+        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier()),
+        DegradationTier::Minimal,
+        "a single null byte must NOT trigger the binary guard (ratio heuristic)"
+    );
+    Ok(())
+}
+
+/// Binary content guard — high-density NUL content must trigger the guard.
+#[test]
+fn test_binary_file_guard_dense_null_bytes_trigger_guard() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = LspServer::new();
+    let uri = "file:///test_binary.pl";
+    // 20 NUL bytes in a 35-byte string (~57% density), well above the 5% threshold.
+    let binary_content = "#!/usr/bin/perl\n\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": binary_content
+        }
+    }))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("document not stored after binary didOpen")?;
     assert_eq!(
         doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier()),
         DegradationTier::Minimal,
-        "a single null byte must trigger the binary guard"
+        "dense null bytes must trigger the binary guard"
     );
     assert!(
         doc.current_parsed().is_none_or(|p| p.ast().is_none()),
-        "parser must not be called when null byte is present"
+        "parser must not be called when binary content is detected"
     );
     Ok(())
 }

@@ -119,6 +119,7 @@ pub(crate) fn apply_single_edit(
     Ok(SingleEditReparse { range: cp.byte..last, reused_tokens, token_count: state.tokens.len() })
 }
 
+#[expect(deprecated, reason = "full reparse is the legacy AST field's supported refresh boundary")]
 pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult> {
     let mut parser = Parser::new(&state.source);
     state.ast = match parser.parse() {

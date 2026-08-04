@@ -57,6 +57,7 @@ executeCommandProvider:
   commands:
     - perl.runTests
     - perl.runFile
+    - perl.runScript
     - perl.runTestSub
     - perl.runCritic
     - perl.runTest

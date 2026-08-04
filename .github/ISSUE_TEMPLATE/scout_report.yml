@@ -1,6 +1,6 @@
 name: Scout Report
 description: Investigation report filed by a scout agent — includes full analysis, options, and builder spec
-labels: ["swarm-discovered", "needs-plan-review"]
+labels: ["swarm-discovered"]
 body:
   - type: markdown
     attributes:

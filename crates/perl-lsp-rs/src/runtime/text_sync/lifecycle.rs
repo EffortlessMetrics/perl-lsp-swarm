@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Arc, CodeFormatter, DiagnosticsProvider, FormattingOptions, InternalDiagnosticSeverity,
+    JsonRpcError, LspServer, Value, invalid_params, json, source_path_from_uri,
+};
 
 impl LspServer {
     /// Handle didClose notification
@@ -39,6 +42,17 @@ impl LspServer {
                             coordinator.index().remove_file(&key);
                         }
                     }
+                } else {
+                    // File is on disk: retain the index entry (symbols are still
+                    // valid) but reset the generation counters so the reopened
+                    // document — which starts at generation 0 — is not blocked
+                    // by the stale high-water mark from the previous session
+                    // (#5438).
+                    if let Some(coordinator) = self.coordinator() {
+                        for key in self.uri_key_variants(uri) {
+                            coordinator.index().reset_generation_for_close(&key);
+                        }
+                    }
                 }
             }
 
@@ -71,12 +85,26 @@ impl LspServer {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
             let normalized_uri = self.normalize_uri_key(uri);
-            let _version = params
-                .pointer("/textDocument/version")
-                .and_then(|v| v.as_i64())
-                .and_then(|v| i32::try_from(v).ok());
-
             tracing::debug!("Document saved: {}", uri);
+
+            // When the client sends the full saved text in params.text,
+            // reconcile the document's content through the normal full
+            // replacement lifecycle (#4963/#5679). This ensures diagnostics
+            // reflect the saved content without pairing new text with the
+            // previous generation's parse snapshot.
+            if let Some(saved_text) = params.pointer("/text").and_then(|v| v.as_str()) {
+                let replacement = {
+                    let documents = self.documents.lock();
+                    self.get_document(&documents, &normalized_uri).and_then(|doc| {
+                        (doc.text.as_str() != saved_text)
+                            .then(|| (saved_text.to_owned(), doc.version))
+                    })
+                };
+                if let Some((saved_text, version)) = replacement {
+                    tracing::debug!(uri, "didSave text differs from in-memory buffer; reconciling");
+                    return self.handle_did_save_text_replacement(uri, &saved_text, version);
+                }
+            }
 
             // Re-run diagnostics on save to catch any changes. Keep this
             // snapshot lock scoped: the reconciliation below takes the same
@@ -238,10 +266,18 @@ impl LspServer {
 
             tracing::debug!("Document will save wait until: {}", uri);
 
+            // Reject stale requests: if the document version in the request is
+            // older than the current version, the edit would apply to outdated
+            // content (#5054). The non-save handle_formatting handler does the
+            // same check (formatting.rs:129-131).
+            let req_version =
+                params["textDocument"]["version"].as_i64().and_then(|n| i32::try_from(n).ok());
+            self.ensure_latest(uri, req_version)?;
+
             // Phase 1: snapshot text under brief lock, then drop.
             // Formatting can shell out to perltidy, so we must NOT hold locks
             // during the format call (#4643 off-lock pattern).
-            if !self.is_formatting_enabled() {
+            if !self.is_formatting_enabled() || !self.config.lock().format_on_save {
                 return Ok(Some(json!([])));
             }
             let text = {
@@ -255,10 +291,12 @@ impl LspServer {
 
             // Phase 2: format off-lock using the user's actual perltidy config.
             let config = self.build_perltidy_config();
+            let tab_size = config.indent_columns.unwrap_or(4);
+            let insert_spaces = !config.tabs.unwrap_or(false);
             let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());
             let format_options = FormattingOptions {
-                tab_size: 4,
-                insert_spaces: true,
+                tab_size,
+                insert_spaces,
                 trim_trailing_whitespace: Some(true),
                 insert_final_newline: Some(true),
                 trim_final_newlines: Some(true),

@@ -2,7 +2,7 @@
 //!
 //! Handles registration of file watchers for workspace files.
 
-use super::super::*;
+use super::super::{LspServer, json};
 use lsp_types::{
     DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, GlobPattern, OneOf, Registration,
     RegistrationParams, RelativePattern, Uri, WatchKind,

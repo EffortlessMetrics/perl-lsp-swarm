@@ -225,6 +225,26 @@ fn test_ai_enabled_success_backend_returns_ai_result() -> Result<(), Box<dyn std
     Ok(())
 }
 
+/// AI output that worsens the current parse state must not reach the client.
+#[test]
+fn test_ai_invalid_parse_output_is_filtered() -> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_invalid_parse.pl";
+    let source = "";
+    open_doc(&server, uri, source);
+
+    server.test_configure_ai_completion(true, false);
+    server.test_install_ai_backend(Some(Arc::new(MockSuccessBackend {
+        response: "my $value = ;".into(),
+    })));
+
+    let result = inline_completion(&server, uri, 0, source.encode_utf16().count() as u32)?;
+    let items = result["items"].as_array().ok_or("items array")?;
+
+    assert!(items.is_empty(), "parse-unsafe AI output must be filtered: {items:?}");
+    Ok(())
+}
+
 /// When AI is enabled with fallback=true and the backend times out,
 /// the handler falls back to deterministic completions.
 #[test]
