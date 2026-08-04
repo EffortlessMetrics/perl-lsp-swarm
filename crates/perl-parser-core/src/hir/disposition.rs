@@ -182,10 +182,10 @@ pub fn hir_kinds_for(ast_kind: &str) -> &'static [&'static str] {
         "Try" => &["TryExpr"],
         "Class" => &["ClassDecl"],
         "Defer" => &["DeferExpr"],
-        "Heredoc" => &["HeredocExpr"],
-        "Readline" => &["ReadlineExpr"],
-        "Diamond" => &["ReadlineExpr"],
-        "Glob" => &["GlobExpr"],
+        "Heredoc" => &["HeredocMigrationAdapter"],
+        "Readline" => &["ReadlineMigrationAdapter"],
+        "Diamond" => &["ReadlineMigrationAdapter"],
+        "Glob" => &["GlobMigrationAdapter"],
         _ => &[],
     }
 }
@@ -291,7 +291,7 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
             false,
             false,
             true,
-            "Lowered as heredoc shell with delimiter, interpolation, indent, and command facts; the body stays addressable by range."
+            "Flat migration adapter retains source facts; canonical heredoc semantics live in body HIR."
         ),
         "Readline" => disp!(
             true,
@@ -299,7 +299,7 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
             false,
             false,
             true,
-            "Lowered as readline shell classified as a named or scalar filehandle."
+            "Flat migration adapter retains source facts; canonical readline semantics live in body HIR."
         ),
         "Diamond" => disp!(
             true,
@@ -307,7 +307,7 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
             false,
             false,
             true,
-            "`<>`/`<<>>` lowered as a readline shell reading the `@ARGV` diamond source."
+            "Flat migration adapter retains the diamond source fact; canonical readline semantics live in body HIR."
         ),
         "Glob" => disp!(
             true,
@@ -315,7 +315,7 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
             false,
             false,
             true,
-            "Angle-bracket glob lowered as a glob shell recording whether the pattern interpolates."
+            "Flat migration adapter retains source facts; canonical glob semantics live in body HIR."
         ),
         "Subroutine" => disp!(
             true,

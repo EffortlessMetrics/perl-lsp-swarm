@@ -2781,12 +2781,12 @@ pub enum HirKind {
     ClassDecl(ClassDecl),
     /// `defer { ... }` shell (Perl 5.36+ experimental, stable in 5.40).
     DeferExpr(DeferExpr),
-    /// Heredoc literal shell (`<<EOF`, `<<~EOF`, ``<<`CMD` ``).
-    HeredocExpr(HeredocExpr),
-    /// Readline shell (`<STDIN>`, `<$fh>`, `<>`, `<<>>`).
-    ReadlineExpr(ReadlineExpr),
-    /// Glob shell (`<*.txt>`).
-    GlobExpr(GlobExpr),
+    /// Heredoc migration adapter; canonical value semantics live in [`HirExpr`].
+    HeredocMigrationAdapter(HeredocMigrationAdapter),
+    /// Readline migration adapter; canonical value semantics live in [`HirExpr`].
+    ReadlineMigrationAdapter(ReadlineMigrationAdapter),
+    /// Glob migration adapter; canonical value semantics live in [`HirExpr`].
+    GlobMigrationAdapter(GlobMigrationAdapter),
 }
 
 impl HirKind {
@@ -2804,8 +2804,8 @@ impl HirKind {
         "DeferExpr",
         "DerefExpr",
         "DynamicBoundary",
-        "GlobExpr",
-        "HeredocExpr",
+        "GlobMigrationAdapter",
+        "HeredocMigrationAdapter",
         "IndirectCallExpr",
         "LiteralExpr",
         "LoopShell",
@@ -2813,7 +2813,7 @@ impl HirKind {
         "MethodCallExpr",
         "MethodDecl",
         "PackageDecl",
-        "ReadlineExpr",
+        "ReadlineMigrationAdapter",
         "RegexExpr",
         "RequireDecl",
         "StatementModifierShell",
@@ -2972,19 +2972,17 @@ pub struct BarewordExpr {
     pub name: String,
 }
 
-/// Heredoc literal shell payload (`<<EOF`, `<<~EOF`, ``<<`CMD` ``).
+/// Heredoc migration payload (`<<EOF`, `<<~EOF`, ``<<`CMD` ``).
 ///
-/// First slice: the heredoc body text itself is not copied into HIR. The body
-/// is addressable through [`HeredocExpr::body_range`] when the parser recorded
-/// one, so consumers read it from the source buffer instead of holding a second
-/// copy of a potentially large literal.
+/// This is retained only for flat-HIR migration receipts. Canonical heredoc
+/// value semantics are carried by [`HirExpr::Heredoc`] in body HIR.
 ///
 /// `command` marks the ``<<`CMD` `` form, which runs its body through the shell
 /// at runtime. That is a runtime effect, not a static string value; consumers
 /// must not treat a command heredoc as a known literal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct HeredocExpr {
+pub struct HeredocMigrationAdapter {
     /// Terminator token as written (`EOF`, `"EOF"`, `` `CMD` ``, …).
     pub delimiter: String,
     /// Whether the body interpolates variables (`<<"EOF"` / bare `<<EOF`).
@@ -2997,17 +2995,17 @@ pub struct HeredocExpr {
     pub body_range: Option<SourceLocation>,
 }
 
-/// Readline expression shell payload (`<STDIN>`, `<$fh>`, `<>`, `<<>>`).
+/// Readline migration payload (`<STDIN>`, `<$fh>`, `<>`, `<<>>`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct ReadlineExpr {
+pub struct ReadlineMigrationAdapter {
     /// Where the lines come from.
     pub source: ReadlineSource,
     /// Filehandle text as parsed (`STDIN`, `$fh`), absent for the diamond forms.
     pub filehandle: Option<String>,
 }
 
-/// Line source selected by a [`ReadlineExpr`].
+/// Line source selected by a [`ReadlineMigrationAdapter`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ReadlineSource {
@@ -3041,13 +3039,15 @@ impl ReadlineSource {
     }
 }
 
-/// Glob expression shell payload (`<*.txt>`).
+/// Glob migration payload (`<*.txt>`).
 ///
-/// Only the angle-bracket form reaches this shell; `glob("...")` is parsed as a
+/// This is retained only for flat-HIR migration receipts. Canonical glob
+/// semantics are carried by [`HirExpr::Glob`] in body HIR. Only the
+/// angle-bracket form reaches this adapter; `glob("...")` is parsed as a
 /// function call and lowers to [`CallExpr`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct GlobExpr {
+pub struct GlobMigrationAdapter {
     /// Glob pattern as parsed, without the surrounding angle brackets.
     pub pattern: String,
     /// Whether the pattern interpolates (`<$dir/*.txt>`). An interpolating

@@ -810,9 +810,9 @@ fn hir_kind_name(kind: &HirKind) -> &'static str {
         HirKind::TryExpr(_) => "TryExpr",
         HirKind::ClassDecl(_) => "ClassDecl",
         HirKind::DeferExpr(_) => "DeferExpr",
-        HirKind::HeredocExpr(_) => "HeredocExpr",
-        HirKind::ReadlineExpr(_) => "ReadlineExpr",
-        HirKind::GlobExpr(_) => "GlobExpr",
+        HirKind::HeredocMigrationAdapter(_) => "HeredocMigrationAdapter",
+        HirKind::ReadlineMigrationAdapter(_) => "ReadlineMigrationAdapter",
+        HirKind::GlobMigrationAdapter(_) => "GlobMigrationAdapter",
     }
 }
 

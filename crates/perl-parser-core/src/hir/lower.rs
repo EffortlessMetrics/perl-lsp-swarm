@@ -17,17 +17,18 @@ use super::model::{
     CompileEnvironmentBoundary, CompileEnvironmentBoundaryKind, CompilePhase, CompilePhaseBlock,
     CompileProvenance, ControlTransfer, ControlTransferKind, DeferExpr, DerefAggregateKind,
     DerefExpr, DerefOperandKind, DynamicBoundary, DynamicBoundaryKind, ExportDeclaration,
-    ExportDeclarationKind, GlobExpr, GlobSlot, GlobSlotKind, GlobSlotSource,
-    HIR_BODY_MODEL_VERSION, HeredocExpr, HirBindingId, HirFile, HirId, HirItem, HirKind,
-    HirScopeId, IncRootAction, IncRootFact, IncRootKind, IndirectCallExpr, InheritanceSource,
-    LiteralExpr, LiteralKind, LoopKind, LoopShell, MatchExpr, MethodCallExpr, MethodDecl,
-    ModuleRequest, ModuleRequestKind, ModuleResolutionStatus, PackageDecl, PackageInheritanceEdge,
-    PackageStash, PragmaArgumentKind, PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable,
-    ReadlineExpr, ReadlineSource, RecoveryConfidence, RegexExpr, RegexTargetKind, RequireDecl,
-    ScopeFrame, ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary,
-    StashDynamicBoundaryKind, StashGraph, StashProvenance, StatementModifierKind,
-    StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr, TransliterationExpr, TryExpr,
-    UseDecl, VariableBinding, VariableDecl, glob_pattern_interpolates,
+    ExportDeclarationKind, GlobMigrationAdapter, GlobSlot, GlobSlotKind, GlobSlotSource,
+    HIR_BODY_MODEL_VERSION, HeredocMigrationAdapter, HirBindingId, HirFile, HirId, HirItem,
+    HirKind, HirScopeId, IncRootAction, IncRootFact, IncRootKind, IndirectCallExpr,
+    InheritanceSource, LiteralExpr, LiteralKind, LoopKind, LoopShell, MatchExpr, MethodCallExpr,
+    MethodDecl, ModuleRequest, ModuleRequestKind, ModuleResolutionStatus, PackageDecl,
+    PackageInheritanceEdge, PackageStash, PragmaArgumentKind, PragmaEffect, PragmaStateFact,
+    PrototypeFact, PrototypeTable, ReadlineMigrationAdapter, ReadlineSource, RecoveryConfidence,
+    RegexExpr, RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence,
+    StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
+    StatementModifierKind, StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr,
+    TransliterationExpr, TryExpr, UseDecl, VariableBinding, VariableDecl,
+    glob_pattern_interpolates,
 };
 
 /// Lower a parser AST into first-slice HIR items plus canonical body arenas.
@@ -521,7 +522,7 @@ impl Lowerer {
                     node,
                     None,
                     confidence,
-                    HirKind::HeredocExpr(HeredocExpr {
+                    HirKind::HeredocMigrationAdapter(HeredocMigrationAdapter {
                         delimiter: delimiter.clone(),
                         interpolated: *interpolated,
                         indented: *indented,
@@ -537,7 +538,7 @@ impl Lowerer {
                     node,
                     None,
                     confidence,
-                    HirKind::ReadlineExpr(ReadlineExpr {
+                    HirKind::ReadlineMigrationAdapter(ReadlineMigrationAdapter {
                         source: ReadlineSource::from_filehandle(filehandle.as_deref()),
                         filehandle: filehandle.clone(),
                     }),
@@ -552,7 +553,7 @@ impl Lowerer {
                     node,
                     None,
                     confidence,
-                    HirKind::ReadlineExpr(ReadlineExpr {
+                    HirKind::ReadlineMigrationAdapter(ReadlineMigrationAdapter {
                         source: ReadlineSource::ArgvDiamond,
                         filehandle: None,
                     }),
@@ -565,7 +566,7 @@ impl Lowerer {
                     node,
                     None,
                     confidence,
-                    HirKind::GlobExpr(GlobExpr {
+                    HirKind::GlobMigrationAdapter(GlobMigrationAdapter {
                         pattern: pattern.clone(),
                         interpolated: glob_pattern_interpolates(pattern),
                     }),

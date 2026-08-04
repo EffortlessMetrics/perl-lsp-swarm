@@ -1,34 +1,34 @@
 //! HIR lowering tests for the Wave 4 string/IO ops (issue #2210).
 //!
-//! Pins the item-level HIR shells for `NodeKind::Heredoc`, `Readline`,
+//! Pins the flat-HIR migration adapters for `NodeKind::Heredoc`, `Readline`,
 //! `Diamond`, and `Glob`. Before this slice each of those AST kinds fell to the
 //! `_ => visit_children` arm in `crates/perl-parser-core/src/hir/lower.rs` and
-//! left no HIR item at all, so a heredoc body, a filehandle read, and a file
-//! glob were indistinguishable from empty source at the compiler-substrate
-//! layer.
+//! left no HIR item at all. The adapters preserve source-ordered migration
+//! visibility, while canonical intra-body semantics live only in body HIR.
 //!
 //! The claims proved here:
 //!
-//! - each construct emits exactly one typed shell, anchored on its own AST kind;
+//! - each construct emits exactly one typed migration adapter, anchored on its own AST kind;
 //! - the facts that decide whether a value is statically knowable are recorded:
 //!   heredoc interpolation/indent/command form, readline line source, and glob
 //!   pattern interpolation;
 //!   a command heredoc (``<<`CMD` ``) is marked rather than presented as a
 //!   literal string;
-//! - the same facts are carried by the canonical body arena, not just the item
-//!   shells, so a body-HIR consumer is not told less than an item consumer;
+//! - the canonical body arena carries the semantic facts; the flat adapters are
+//!   not presented as a second semantic authority;
 //! - the new shells stay visible in the PIR-A receipt's unsupported counts on
 //!   both the item and body paths, instead of being silently dropped or
 //!   mistaken for exact facts by the layer above.
 //!
-//! The implementation lives in `crates/perl-parser-core/src/hir/lower.rs` (item
-//! shells) and `crates/perl-parser-core/src/hir/body.rs` (body arena), both
+//! The implementation lives in `crates/perl-parser-core/src/hir/lower.rs` (flat
+//! migration adapters) and `crates/perl-parser-core/src/hir/body.rs` (canonical body arena), both
 //! classifying through the shared rules in `hir/model.rs`
 //! (`ReadlineSource::from_filehandle`, `glob_pattern_interpolates`).
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
-    GlobExpr, HeredocExpr, HirBody, HirExpr, HirFile, HirKind, ReadlineExpr, ReadlineSource,
+    GlobMigrationAdapter, HeredocMigrationAdapter, HirBody, HirExpr, HirFile, HirKind,
+    ReadlineMigrationAdapter, ReadlineSource,
 };
 use perl_parser_core::hir::{lower_ast, lower_body};
 use perl_parser_core::pir::{lower_hir, lower_hir_bodies};
@@ -52,31 +52,31 @@ fn body_exprs(body: &HirBody) -> Vec<&HirExpr> {
     body.exprs.iter().collect()
 }
 
-fn heredocs(file: &HirFile) -> Vec<&HeredocExpr> {
+fn heredocs(file: &HirFile) -> Vec<&HeredocMigrationAdapter> {
     file.items
         .iter()
         .filter_map(|item| match &item.kind {
-            HirKind::HeredocExpr(heredoc) => Some(heredoc),
+            HirKind::HeredocMigrationAdapter(heredoc) => Some(heredoc),
             _ => None,
         })
         .collect()
 }
 
-fn readlines(file: &HirFile) -> Vec<&ReadlineExpr> {
+fn readlines(file: &HirFile) -> Vec<&ReadlineMigrationAdapter> {
     file.items
         .iter()
         .filter_map(|item| match &item.kind {
-            HirKind::ReadlineExpr(readline) => Some(readline),
+            HirKind::ReadlineMigrationAdapter(readline) => Some(readline),
             _ => None,
         })
         .collect()
 }
 
-fn globs(file: &HirFile) -> Vec<&GlobExpr> {
+fn globs(file: &HirFile) -> Vec<&GlobMigrationAdapter> {
     file.items
         .iter()
         .filter_map(|item| match &item.kind {
-            HirKind::GlobExpr(glob) => Some(glob),
+            HirKind::GlobMigrationAdapter(glob) => Some(glob),
             _ => None,
         })
         .collect()
@@ -301,13 +301,13 @@ fn each_string_io_construct_emits_exactly_one_anchored_shell() -> TestResult {
     assert_eq!(globs(&file).len(), 1, "one glob construct, one glob shell");
 
     let readline_anchor = must_some(file.items.iter().find_map(|item| match &item.kind {
-        HirKind::ReadlineExpr(_) => Some(item.anchor.node_kind),
+        HirKind::ReadlineMigrationAdapter(_) => Some(item.anchor.node_kind),
         _ => None,
     }));
     assert_eq!(readline_anchor, "Readline", "the readline shell keeps its own AST anchor");
 
     let glob_anchor = must_some(file.items.iter().find_map(|item| match &item.kind {
-        HirKind::GlobExpr(_) => Some(item.anchor.node_kind),
+        HirKind::GlobMigrationAdapter(_) => Some(item.anchor.node_kind),
         _ => None,
     }));
     assert_eq!(glob_anchor, "Glob", "the glob shell keeps its own AST anchor");
@@ -363,7 +363,7 @@ fn diamond_shell_keeps_its_own_ast_anchor() -> TestResult {
     let file = lower_source("while (my $line = <>) { }\n");
 
     let anchor = must_some(file.items.iter().find_map(|item| match &item.kind {
-        HirKind::ReadlineExpr(_) => Some(item.anchor.node_kind),
+        HirKind::ReadlineMigrationAdapter(_) => Some(item.anchor.node_kind),
         _ => None,
     }));
     assert_eq!(
@@ -385,15 +385,15 @@ fn string_io_shells_stay_visible_in_the_pir_receipt() -> TestResult {
     // PIR-A v0 does not lower these families yet. The contract is that they are
     // counted as unsupported constructs rather than disappearing between layers.
     assert_eq!(
-        graph.receipt.unsupported_construct_counts.get("ReadlineExpr"),
+        graph.receipt.unsupported_construct_counts.get("ReadlineMigrationAdapter"),
         Some(&1),
-        "ReadlineExpr must be counted, not dropped: {:?}",
+        "ReadlineMigrationAdapter must be counted, not dropped: {:?}",
         graph.receipt.unsupported_construct_counts
     );
     assert_eq!(
-        graph.receipt.unsupported_construct_counts.get("GlobExpr"),
+        graph.receipt.unsupported_construct_counts.get("GlobMigrationAdapter"),
         Some(&1),
-        "GlobExpr must be counted, not dropped: {:?}",
+        "GlobMigrationAdapter must be counted, not dropped: {:?}",
         graph.receipt.unsupported_construct_counts
     );
     Ok(())
