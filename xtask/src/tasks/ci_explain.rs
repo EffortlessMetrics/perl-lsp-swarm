@@ -117,8 +117,14 @@ impl FailureClass {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-pub fn run(receipt_path: Option<PathBuf>) -> color_eyre::eyre::Result<()> {
-    let path = resolve_receipt_path(receipt_path.as_deref());
+pub fn run(receipt_path: Option<PathBuf>, run_id: Option<String>) -> color_eyre::eyre::Result<()> {
+    let path = if let Some(id) = &run_id {
+        // Download the receipt from a CI run via `gh run download`.
+        let download_dir = download_run_receipt(id)?;
+        resolve_run_id_receipt_path(&download_dir, id)
+    } else {
+        resolve_receipt_path(receipt_path.as_deref())
+    };
     let out = match load_receipt(&path) {
         Ok(r) => format_explanation(&explain(&r)),
         Err(e) => format_load_error(&e),
@@ -136,6 +142,53 @@ pub fn run(receipt_path: Option<PathBuf>) -> color_eyre::eyre::Result<()> {
 /// 2. Otherwise return `target/receipts/receipt.json`.
 fn resolve_receipt_path(explicit: Option<&Path>) -> PathBuf {
     explicit.map_or_else(|| PathBuf::from("target/receipts/receipt.json"), Path::to_path_buf)
+}
+
+/// Compute the path to the gate receipt JSON downloaded from a CI run (pure — no I/O).
+///
+/// `gh run download` places artifacts under `<download_dir>/<artifact_name>/`.
+/// The gate receipt artifact is named `gate-receipts` and contains `receipt.json`.
+///
+/// # Arguments
+/// * `download_dir` - The directory passed to `gh run download --dir`
+/// * `_run_id` - The CI run ID (unused in path resolution, but kept for logging)
+fn resolve_run_id_receipt_path(download_dir: &Path, _run_id: &str) -> PathBuf {
+    download_dir.join("gate-receipts").join("receipt.json")
+}
+
+/// Download a CI run's gate receipt artifact via `gh run download`.
+///
+/// Creates a temporary directory, downloads the `gate-receipts` artifact
+/// from the specified run, and returns the download directory path.
+fn download_run_receipt(run_id: &str) -> color_eyre::eyre::Result<PathBuf> {
+    let download_dir = std::env::temp_dir().join(format!("perl-lsp-ci-{run_id}"));
+    // Clean up any stale download from a previous invocation.
+    let _ = fs::remove_dir_all(&download_dir);
+    fs::create_dir_all(&download_dir)?;
+
+    let status = std::process::Command::new("gh")
+        .args([
+            "run",
+            "download",
+            run_id,
+            "--repo",
+            "EffortlessMetrics/perl-lsp-swarm",
+            "--dir",
+            download_dir.to_str().unwrap_or("."),
+            "-n",
+            "gate-receipts",
+        ])
+        .status()
+        .map_err(|e| color_eyre::eyre::eyre!("failed to run `gh run download`: {e}"))?;
+
+    if !status.success() {
+        color_eyre::eyre::bail!(
+            "`gh run download {run_id}` exited with status {status}. \
+             Check that the run ID is valid and the artifact exists."
+        );
+    }
+
+    Ok(download_dir)
 }
 
 fn load_receipt(path: &Path) -> std::result::Result<Receipt, ReceiptLoadError> {
@@ -700,5 +753,21 @@ mod tests {
             output,
             "inconclusive: unsupported receipt schema \"gates.v99\" (expected \"gates.v1\"); upgrade xtask\n"
         );
+    }
+
+    // ── resolve_run_id_receipt_path (#2652) ────────────────────────────────────
+
+    #[test]
+    fn resolve_run_id_receipt_path_points_to_gate_receipts_dir() {
+        let dir = Path::new("/tmp/perl-lsp-ci-12345");
+        let path = resolve_run_id_receipt_path(dir, "12345");
+        assert_eq!(path, Path::new("/tmp/perl-lsp-ci-12345/gate-receipts/receipt.json"));
+    }
+
+    #[test]
+    fn resolve_run_id_receipt_path_works_with_relative_dir() {
+        let dir = Path::new("target/ci-download");
+        let path = resolve_run_id_receipt_path(dir, "99999");
+        assert_eq!(path, Path::new("target/ci-download/gate-receipts/receipt.json"));
     }
 }
