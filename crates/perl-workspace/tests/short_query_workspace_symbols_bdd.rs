@@ -196,18 +196,17 @@ has callback_ref => (is => 'ro');
         );
     }
 
-    // "attr_value" starts with "a" and must appear if generated members are
-    // present. If no generated members were produced, skip the membership check
-    // (the BDD guard above already validates the narrowing contract is upheld).
-    if !results.is_empty() {
-        assert!(
-            results.iter().any(|s| s.name.starts_with("attr_value")),
-            "expected 'attr_value' (prefix match) in generated results for query '{}', \
-             got: {:?}",
-            query,
-            results.iter().map(|s| &s.name).collect::<Vec<_>>()
-        );
-    }
+    assert!(
+        !results.is_empty(),
+        "fixture must synthesize generated members before the query boundary is tested"
+    );
+    // "attr_value" starts with "a" and must appear.
+    assert!(
+        results.iter().any(|s| s.name.starts_with("attr_value")),
+        "expected 'attr_value' (prefix match) in generated results for query '{}', got: {:?}",
+        query,
+        results.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
 
     // "callback_ref" contains 'a' but does not start with 'a' — must be absent.
     assert!(
@@ -247,23 +246,23 @@ has callback_ref => (is => 'ro');
 
     let results = index.search_generated_workspace_symbols(query, None);
 
-    // "callback_ref" contains "ll" (cal-l-back-ref → position 3-4). If
-    // generated members are returned, at least one must be the loose match.
-    // If no generated members were synthesized for this fixture, the test
-    // passes trivially (the guard above already validates the one-char path).
-    if !results.is_empty() {
-        let has_loose_match = results.iter().any(|s| {
-            let bare = s.name.split_once(' ').map_or(s.name.as_str(), |(b, _)| b);
-            !is_exact_or_prefix(bare, query)
-        });
-        assert!(
-            has_loose_match,
-            "expected at least one loose (substring/fuzzy) match for two-char query '{}', \
-             got only exact/prefix results: {:?}",
-            query,
-            results.iter().map(|s| &s.name).collect::<Vec<_>>()
-        );
-    }
+    assert!(
+        !results.is_empty(),
+        "fixture must synthesize generated members before the loose tier is tested"
+    );
+    // "callback_ref" contains "ll" (cal-l-back-ref -> positions 3-4), so
+    // at least one result must exercise the loose tier.
+    let has_loose_match = results.iter().any(|s| {
+        let bare = s.name.split_once(' ').map_or(s.name.as_str(), |(b, _)| b);
+        !is_exact_or_prefix(bare, query)
+    });
+    assert!(
+        has_loose_match,
+        "expected at least one loose (substring/fuzzy) match for two-char query '{}', \
+         got only exact/prefix results: {:?}",
+        query,
+        results.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
 
     Ok(())
 }
