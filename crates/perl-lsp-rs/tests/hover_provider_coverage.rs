@@ -679,7 +679,7 @@ my $limit = MAX;
         let resp = hover_at(code, "file:///helper.pl", "$x", 1)?;
 
         // Use the assertion helper from test_utils
-        assertions::assert_hover_contains(&resp, "$x");
+        assertions::assert_hover_contains(&resp, "$x")?;
         Ok(())
     }
 
@@ -688,7 +688,7 @@ my $limit = MAX;
         let code = "my @list = (1, 2);\n";
         let resp = hover_at(code, "file:///helper2.pl", "@list", 0)?;
 
-        assertions::assert_hover_contains_any(&resp, &["Array Variable", "@list", "list"]);
+        assertions::assert_hover_contains_any(&resp, &["Array Variable", "@list", "list"])?;
         Ok(())
     }
 

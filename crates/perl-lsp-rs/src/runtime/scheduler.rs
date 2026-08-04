@@ -913,9 +913,24 @@ impl Scheduler {
             let _permit = permit;
 
             // Wait for all mutations that were enqueued before this read.
+            // Use the standard Tokio Notify pattern: create the `notified()`
+            // future BEFORE re-checking the condition so a `notify_waiters()`
+            // that fires in the gap between the load and the park is not lost
+            // (#5041). The previous check-then-await loop could park
+            // indefinitely if the mutation completed between the `load` and
+            // the `notified().await`.
             let t_read_wait = std::time::Instant::now();
-            while seq_done.load(Ordering::SeqCst) < wait_for {
-                notify.notified().await;
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            loop {
+                if seq_done.load(Ordering::SeqCst) >= wait_for {
+                    break;
+                }
+                notified.as_mut().await;
+                // Re-arm for the next iteration — `notify_waiters()` only
+                // wakes permit-saved futures, so each iteration needs a fresh
+                // subscription.
+                notified.set(notify.notified());
             }
             // The read blocked here until the mutation barrier cleared — this is
             // the keystroke-to-completion wait a queued parse storm inflates.

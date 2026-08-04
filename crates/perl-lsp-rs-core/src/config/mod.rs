@@ -128,6 +128,12 @@ pub struct ServerConfig {
     /// Formatter engine used for LSP formatting requests.
     pub formatting_engine: FormatterMode,
 
+    /// Whether to format on save (willSaveWaitUntil). Default `true` for
+    /// backward compatibility. When `false`, manual formatting via
+    /// `textDocument/formatting` still works — only the automatic save
+    /// trigger is disabled (#5678).
+    pub format_on_save: bool,
+
     /// Path to a `.perltidyrc` profile file.
     ///
     /// When `Some`, passes `--profile=<path>` to perltidy. When `None`,
@@ -354,6 +360,7 @@ impl Default for ServerConfig {
             native_critic_exclude: Vec::new(),
             perltidy_enabled: true,
             formatting_engine: FormatterMode::Native,
+            format_on_save: true,
             perltidy_profile: None,
             perltidy_maximum_line_length: Some(80),
             // Unset by default: unconfigured workspaces defer to the editor's
@@ -523,6 +530,9 @@ impl ServerConfig {
             if let Some(enabled) = formatting.get("enabled").and_then(|v| v.as_bool()) {
                 self.perltidy_enabled = enabled;
             }
+            if let Some(format_on_save) = formatting.get("formatOnSave").and_then(|v| v.as_bool()) {
+                self.format_on_save = format_on_save;
+            }
             if let Some(engine) = formatting.get("engine").and_then(|v| v.as_str()) {
                 match parse_formatter_mode(engine) {
                     Some(mode) => self.formatting_engine = mode,
@@ -575,30 +585,39 @@ impl ServerConfig {
             if let Some(provider) = ai.get("provider").and_then(|v| v.as_str()) {
                 self.ai_completion.provider = provider.to_string();
             }
-            if let Some(endpoint) = ai.get("endpoint").and_then(|v| v.as_str()) {
-                self.ai_completion.endpoint = endpoint.to_string();
+            // Security (#5684): do NOT honour LSP-channel endpoint, apiKeyEnv,
+            // apiKeyHeader, or apiKeyPrefix. A hostile workspace could redirect
+            // AI completion requests to an attacker-controlled endpoint and
+            // exfiltrate source code, or change the env var name to read an
+            // arbitrary secret. These settings must arrive only via user-level
+            // config (machine-scoped VS Code settings or .perl-lsp.toml at the
+            // workspace root, which is already gated in merge_project_config).
+            if let Some(_endpoint) = ai.get("endpoint").and_then(|v| v.as_str()) {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.endpoint from didChangeConfiguration (security: #5684)"
+                );
             }
             if let Some(model) = ai.get("model").and_then(|v| v.as_str()) {
                 self.ai_completion.model = model.to_string();
             }
-            if let Some(key_env) = ai.get("apiKeyEnv").and_then(|v| v.as_str()) {
-                self.ai_completion.api_key_env = key_env.to_string();
+            if let Some(_key_env) = ai.get("apiKeyEnv").and_then(|v| v.as_str()) {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.apiKeyEnv from didChangeConfiguration (security: #5684)"
+                );
             }
-            if let Some(key_header) = ai.get("apiKeyHeader").and_then(|v| v.as_str()) {
-                if let Some(header) = normalize_ai_api_key_header(key_header) {
-                    self.ai_completion.api_key_header = header;
-                }
+            if let Some(_key_header) = ai.get("apiKeyHeader").and_then(|v| v.as_str()) {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.apiKeyHeader from didChangeConfiguration (security: #5684)"
+                );
             }
-            if let Some(key_prefix) = ai.get("apiKeyPrefix") {
-                match key_prefix {
-                    serde_json::Value::Null => self.ai_completion.api_key_prefix = None,
-                    serde_json::Value::String(prefix) => {
-                        if let Some(prefix) = normalize_ai_api_key_prefix(prefix) {
-                            self.ai_completion.api_key_prefix = prefix;
-                        }
-                    }
-                    _ => {}
-                }
+            if let Some(_key_prefix) = ai.get("apiKeyPrefix") {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.apiKeyPrefix from didChangeConfiguration (security: #5684)"
+                );
             }
             if let Some(timeout) = ai.get("timeoutMs").and_then(|v| v.as_u64()) {
                 self.ai_completion.timeout_ms = timeout;
@@ -640,6 +659,96 @@ impl ServerConfig {
         warn_on_type_mismatch(settings, "critic", "enabled", "boolean");
         warn_on_type_mismatch(settings, "formatting", "enabled", "boolean");
     }
+
+    /// Return invalid enum values supplied through the LSP client-settings channel.
+    ///
+    /// The normal update path deliberately keeps an invalid value from changing
+    /// the active configuration and emits a tracing warning. Runtime callers can
+    /// use this companion inspection before applying the same payload when they
+    /// need to surface an actionable `window/showMessage` to the editor user.
+    pub fn invalid_client_setting_values(
+        settings: &serde_json::Value,
+    ) -> Vec<InvalidClientSetting> {
+        let mut invalid = Vec::new();
+
+        if let Some(critic) = settings.get("critic") {
+            if let Some(engine) = critic.get("engine") {
+                let invalid_engine = engine
+                    .as_str()
+                    .map(|value| parse_lsp_critic_engine(value).is_none())
+                    .unwrap_or(true);
+                if invalid_engine {
+                    invalid.push(InvalidClientSetting {
+                        setting: "critic.engine",
+                        value: client_setting_display_value(engine),
+                        value_type: client_setting_value_type(engine),
+                        valid_options: CLIENT_CRITIC_ENGINE_VALID_OPTIONS,
+                    });
+                }
+            }
+            if let Some(profile) = critic.get("profile") {
+                let invalid_profile = profile
+                    .as_str()
+                    .map(|value| parse_native_critic_profile(value).is_none())
+                    .unwrap_or(true);
+                if invalid_profile {
+                    invalid.push(InvalidClientSetting {
+                        setting: "critic.profile",
+                        value: client_setting_display_value(profile),
+                        value_type: client_setting_value_type(profile),
+                        valid_options: NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
+                    });
+                }
+            }
+        }
+
+        if let Some(formatting) = settings.get("formatting") {
+            if let Some(engine) = formatting.get("engine") {
+                let invalid_engine = engine
+                    .as_str()
+                    .map(|value| parse_formatter_mode(value).is_none())
+                    .unwrap_or(true);
+                if invalid_engine {
+                    invalid.push(InvalidClientSetting {
+                        setting: "formatting.engine",
+                        value: client_setting_display_value(engine),
+                        value_type: client_setting_value_type(engine),
+                        valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                    });
+                }
+            }
+        }
+
+        invalid
+    }
+}
+
+fn client_setting_display_value(value: &serde_json::Value) -> String {
+    value.as_str().map(ToOwned::to_owned).unwrap_or_else(|| value.to_string())
+}
+
+fn client_setting_value_type(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+/// An invalid enum value found in editor-provided LSP settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidClientSetting {
+    /// Dotted setting path used by the client configuration surface.
+    pub setting: &'static str,
+    /// Value supplied by the client.
+    pub value: String,
+    /// JSON type supplied by the client, used to distinguish values that render identically.
+    pub value_type: &'static str,
+    /// Human-readable accepted values for the setting.
+    pub valid_options: &'static str,
 }
 
 /// Log a warning when a config value has the wrong type. (#5093)
@@ -661,8 +770,17 @@ fn warn_on_type_mismatch(settings: &serde_json::Value, section: &str, field: &st
     }
 }
 
+/// Normalize a formatter mode for comparison and warning deduplication.
+///
+/// This is shared by the parser and the client-setting warning path so aliases
+/// differing only by case, surrounding whitespace, or underscore/hyphen spelling
+/// receive the same semantic treatment.
+pub fn normalize_formatter_mode_value(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace('_', "-")
+}
+
 fn parse_formatter_mode(value: &str) -> Option<FormatterMode> {
-    match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+    match normalize_formatter_mode_value(value).as_str() {
         "native" => Some(FormatterMode::Native),
         "compat" | "perltidy-compat" => Some(FormatterMode::Compat),
         "external-legacy" | "external-perltidy" | "perltidy" => Some(FormatterMode::ExternalLegacy),
@@ -676,6 +794,13 @@ fn parse_critic_engine(value: &str) -> Option<CriticEngine> {
         "legacy" | "external" | "perlcritic" => Some(CriticEngine::Legacy),
         "native" => Some(CriticEngine::Native),
         _ => None,
+    }
+}
+
+fn parse_lsp_critic_engine(value: &str) -> Option<CriticEngine> {
+    match parse_critic_engine(value) {
+        Some(CriticEngine::Native) => Some(CriticEngine::Native),
+        Some(CriticEngine::Legacy) | None => None,
     }
 }
 
@@ -697,6 +822,11 @@ const FORMATTER_MODE_VALID_OPTIONS: &str = "native, compat (perltidy-compat), ex
 /// `tracing::warn!` messages when a user supplies an unrecognized value.
 /// Kept in sync with [`parse_critic_engine`].
 const CRITIC_ENGINE_VALID_OPTIONS: &str = "native, legacy (external, perlcritic)";
+
+/// Human-readable values accepted for `critic.engine` on the LSP client-settings
+/// channel. Legacy subprocess aliases remain available only through trusted
+/// project configuration.
+const CLIENT_CRITIC_ENGINE_VALID_OPTIONS: &str = "native";
 
 /// Human-readable list of accepted `critic.profile` values, used in
 /// `tracing::warn!` messages when a user supplies an unrecognized value.
@@ -1049,6 +1179,21 @@ fn validate_resource_include_path_entry(
     if let Some(root) = workspace_root {
         if let Err(err) = validate_workspace_path(candidate, root) {
             return Err(RejectedClientIncludePathReason::EscapesWorkspace(err.to_string()));
+        }
+    } else {
+        // No workspace root configured (e.g. single-file mode). Fail-closed:
+        // reject relative paths containing `..` components, which could
+        // escape to arbitrary filesystem locations. Without this, a hostile
+        // client could set includePaths to `../../etc/passwd` and probe
+        // files outside any workspace boundary. (#5345)
+        if candidate.components().any(|c| c == std::path::Component::ParentDir) {
+            tracing::warn!(
+                entry = trimmed,
+                "rejecting relative include path with '..' because no workspace root is configured"
+            );
+            return Err(RejectedClientIncludePathReason::EscapesWorkspace(
+                "relative path with '..' cannot be validated without a workspace root".to_string(),
+            ));
         }
     }
 
@@ -1651,6 +1796,8 @@ pub struct ProjectNextEditConfig {
 pub struct ProjectFormattingConfig {
     /// Whether LSP formatting is enabled.
     pub enabled: Option<bool>,
+    /// Whether to format on save (willSaveWaitUntil). Default `true`.
+    pub format_on_save: Option<bool>,
     /// Formatter engine (`native`, `compat`, `external-perltidy`, or `off`).
     pub engine: Option<String>,
     /// Path to a `.perltidyrc` profile file.
@@ -1941,6 +2088,9 @@ impl ProjectConfig {
         // Apply formatting configuration
         if let Some(enabled) = self.formatting.enabled {
             config.perltidy_enabled = enabled;
+        }
+        if let Some(format_on_save) = self.formatting.format_on_save {
+            config.format_on_save = format_on_save;
         }
         if let Some(ref engine) = self.formatting.engine {
             match parse_formatter_mode(engine) {
@@ -3276,11 +3426,13 @@ profile = "recommended"
         assert!(config.ai_completion.enabled);
         assert!(config.ai_completion.user_enabled);
         assert_eq!(config.ai_completion.provider, "local");
-        assert_eq!(config.ai_completion.endpoint, "http://127.0.0.1:11434/v1");
+        // #5684: endpoint, apiKeyEnv, apiKeyHeader, apiKeyPrefix are NOT
+        // settable via didChangeConfiguration. They remain at defaults.
+        assert_eq!(config.ai_completion.endpoint, "");
         assert_eq!(config.ai_completion.model, "codellama");
-        assert_eq!(config.ai_completion.api_key_env, "LOCAL_AI_KEY");
-        assert_eq!(config.ai_completion.api_key_header, "x-api-key");
-        assert_eq!(config.ai_completion.api_key_prefix, None);
+        assert_eq!(config.ai_completion.api_key_env, "OPENAI_API_KEY");
+        assert_eq!(config.ai_completion.api_key_header, "Authorization");
+        assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
         assert_eq!(config.ai_completion.timeout_ms, 2500);
         assert_eq!(config.ai_completion.max_output_tokens, 128);
         assert_eq!(config.ai_completion.rate_limit_rps, 2.5);
@@ -3722,6 +3874,68 @@ profile = "recommended"
         });
         assert_eq!(config.formatting_engine, prior);
         assert_warned_contains(&captured, &["formatting.engine", "perltide"]);
+    }
+
+    #[test]
+    fn client_invalid_enum_inspection_covers_all_user_visible_engine_settings() {
+        let invalid = ServerConfig::invalid_client_setting_values(&serde_json::json!({
+            "critic": {
+                "engine": "nativ",
+                "profile": "recomended"
+            },
+            "formatting": { "engine": "perltide" }
+        }));
+
+        assert_eq!(
+            invalid,
+            vec![
+                InvalidClientSetting {
+                    setting: "critic.engine",
+                    value: "nativ".to_string(),
+                    value_type: "string",
+                    valid_options: CLIENT_CRITIC_ENGINE_VALID_OPTIONS,
+                },
+                InvalidClientSetting {
+                    setting: "critic.profile",
+                    value: "recomended".to_string(),
+                    value_type: "string",
+                    valid_options: NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
+                },
+                InvalidClientSetting {
+                    setting: "formatting.engine",
+                    value: "perltide".to_string(),
+                    value_type: "string",
+                    valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                },
+            ]
+        );
+
+        let legacy = ServerConfig::invalid_client_setting_values(&serde_json::json!({
+            "critic": { "engine": " LEGACY ", "profile": "STRICT" },
+            "formatting": { "engine": "external_perltidy" }
+        }));
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].setting, "critic.engine");
+        assert_eq!(legacy[0].valid_options, CLIENT_CRITIC_ENGINE_VALID_OPTIONS);
+    }
+
+    #[test]
+    fn client_invalid_enum_inspection_reports_wrong_value_types() {
+        let invalid = ServerConfig::invalid_client_setting_values(&serde_json::json!({
+            "critic": {
+                "engine": false,
+                "profile": ["recommended"]
+            },
+            "formatting": { "engine": null }
+        }));
+
+        assert_eq!(invalid.len(), 3);
+        assert_eq!(invalid[0].setting, "critic.engine");
+        assert_eq!(invalid[0].value, "false");
+        assert_eq!(invalid[1].setting, "critic.profile");
+        assert_eq!(invalid[1].value, "[\"recommended\"]");
+        assert_eq!(invalid[2].setting, "formatting.engine");
+        assert_eq!(invalid[2].value, "null");
     }
 
     #[test]
@@ -4715,14 +4929,15 @@ profile = "recommended"
             "aiCompletion": { "apiKeyPrefix": null }
         }));
         assert_eq!(
-            config.ai_completion.api_key_prefix, None,
+            config.ai_completion.api_key_prefix,
+            Some("Bearer".to_string()),
             "explicit JSON null must produce None (raw key, no scheme)",
         );
     }
 
-    /// A non-empty `apiKeyPrefix` value (e.g. `"Token"`) must be stored as `Some`.
+    /// A non-empty `apiKeyPrefix` value must be ignored from didChangeConfiguration (#5684).
     #[test]
-    fn update_from_value_stores_non_empty_api_key_prefix() {
+    fn update_from_value_ignores_non_empty_api_key_prefix() {
         let mut config = ServerConfig::default();
 
         config.update_from_value(&serde_json::json!({
@@ -4730,8 +4945,8 @@ profile = "recommended"
         }));
         assert_eq!(
             config.ai_completion.api_key_prefix,
-            Some("Token".to_string()),
-            "non-empty apiKeyPrefix must be stored as Some",
+            Some("Bearer".to_string()),
+            "apiKeyPrefix from didChangeConfiguration must be ignored (stays at default, security: #5684)",
         );
     }
 
@@ -4881,18 +5096,19 @@ api_key_prefix = "Attacker "
     /// `scope: machine` (#4997), while endpoint/credential user UI remains a
     /// documented gap.
     #[test]
-    fn client_configuration_can_still_set_ai_endpoint_and_credential_fields() {
+    fn client_configuration_ignores_ai_endpoint_and_credential_fields_from_didChange() {
         let mut config = ServerConfig::default();
         config.update_from_value(&serde_json::json!({
             "aiCompletion": {
-                "endpoint": "https://api.openai.com/v1/chat/completions",
-                "apiKeyEnv": "OPENAI_API_KEY",
-                "apiKeyHeader": "Authorization",
-                "apiKeyPrefix": "Bearer"
+                "endpoint": "https://evil.example.com/exfil",
+                "apiKeyEnv": "AWS_SECRET_ACCESS_KEY",
+                "apiKeyHeader": "X-Evil",
+                "apiKeyPrefix": "EvilToken"
             }
         }));
 
-        assert_eq!(config.ai_completion.endpoint, "https://api.openai.com/v1/chat/completions");
+        // #5684: all sensitive fields must remain at defaults (not changed by didChangeConfiguration)
+        assert_eq!(config.ai_completion.endpoint, "");
         assert_eq!(config.ai_completion.api_key_env, "OPENAI_API_KEY");
         assert_eq!(config.ai_completion.api_key_header, "Authorization");
         assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
@@ -5234,5 +5450,25 @@ api_key_prefix = "Attacker "
             suggest_rule_id("native.vars.unused_parameter", &known),
             Some("native.variables.unused_parameter")
         );
+    }
+
+    #[test]
+    fn include_path_with_parent_dir_rejected_when_no_workspace_root() {
+        // #5345: when no workspace root is configured (single-file mode),
+        // relative paths with `..` must be rejected fail-closed instead of
+        // passing through unvalidated.
+        let result = validate_resource_include_path_entry("../../etc/passwd", None);
+        assert!(
+            matches!(result, Err(RejectedClientIncludePathReason::EscapesWorkspace(_))),
+            "relative path with '..' must be rejected when no workspace root is set, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn include_path_without_parent_dir_accepted_when_no_workspace_root() {
+        // A simple relative path like "lib" is safe even without a workspace
+        // root — it has no `..` component to escape.
+        let result = validate_resource_include_path_entry("lib", None);
+        assert!(result.is_ok(), "simple relative path must be accepted, got: {result:?}");
     }
 }

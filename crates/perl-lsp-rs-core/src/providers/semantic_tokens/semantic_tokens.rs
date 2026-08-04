@@ -1040,14 +1040,19 @@ fn declaration_readonly_flags(ast: &Node) -> FxHashMap<(usize, usize), bool> {
     walk_ast_full(ast, &mut |node| {
         match &node.kind {
             NodeKind::VariableDeclaration { declarator, variable, .. } => {
-                let is_readonly = declarator == "our";
+                // `our` creates a package-variable alias in lexical scope; it
+                // does not make the variable immutable. Only `Const::Fast` /
+                // `Readonly` produce true readonly semantics (#4968).
+                let is_readonly = false;
+                let _ = declarator;
                 flags
                     .entry((variable.location.start, variable.location.end))
                     .and_modify(|flag| *flag |= is_readonly)
                     .or_insert(is_readonly);
             }
             NodeKind::VariableListDeclaration { declarator, variables, .. } => {
-                let is_readonly = declarator == "our";
+                let is_readonly = false;
+                let _ = declarator;
                 for variable in variables {
                     flags
                         .entry((variable.location.start, variable.location.end))

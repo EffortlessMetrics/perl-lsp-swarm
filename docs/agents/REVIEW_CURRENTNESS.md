@@ -1,108 +1,108 @@
 # Review and proof currentness
 
-## Three evidence identities
+## Three evidence subjects
 
 Keep three questions distinct:
 
-1. **Candidate evidence:** what the authored PR candidate establishes.
-2. **Integration-basis evidence:** whether this candidate can be applied and evaluated against the current base or merge group.
-3. **Landed evidence:** what the final squash result establishes after merge.
+1. **Candidate evidence:** what the pull request's cumulative change establishes.
+2. **Integration evidence:** whether that candidate combines safely with the current base or merge group.
+3. **Landed evidence:** what the final squash result establishes on `main`.
 
-These are separate subjects. Movement in one does not automatically invalidate the others.
+Movement in one does not automatically invalidate the others.
 
-## Candidate-bound evidence
+## Review is semantic, not exact-head
 
-A review, test, or check records the candidate and material claim it actually examined. The head SHA is evidence identity, not an instruction to continuously synchronize ancestry.
+A review is a judgment about a claim, implementation, proof, production path, and risk. The PR head SHA identifies the code currently visible on GitHub, but it is not a review-validity token.
 
-Candidate evidence becomes stale when the candidate or semantic subject changes in a way that can affect the conclusion.
+Do not require:
 
-Examples:
+- a review submitted on the latest commit solely because the SHA changed;
+- a material-claim digest;
+- `review-start` / `review-done` receipt comments;
+- a full `deep` review after every repair push.
 
-- implementation changes invalidate affected behavior and candidate review;
-- test stimulus or oracle changes invalidate proof review;
-- production wiring changes invalidate reachability review;
-- material claim, establishment, non-goal, risk, rollback, or review-index changes invalidate claim review even when the Git head is unchanged;
-- an authority or support-boundary change may route back to issue preparation.
+The durable review record is the useful GitHub review itself:
 
-Unrelated `main` movement does not change the candidate and therefore does not stale candidate proof or review.
+- submitted review conclusions;
+- inline findings;
+- replies and evidence-backed dispositions;
+- follow-up review of the seams changed by later repairs.
 
-## Formal-review currentness
+A clean review is valid and should state concisely what was checked and what remains unproved.
 
-A formal review is a disposition of one complete review subject:
+## Semantic invalidation
+
+Later work changes review currentness only where it can change the conclusion.
+
+| Later change | Review response |
+| --- | --- |
+| formatting or editorial cleanup | no review refresh unless meaning changed |
+| generated receipt or inventory refresh | verify the generator/input relation; no full review |
+| stronger or additional tests with unchanged production behavior | review proof implications only |
+| fix for one review finding | verify that finding, its proof, and the changed seam |
+| local implementation repair | focused behavior and changed-seam review |
+| material claim or non-goal change | review the changed claim boundary |
+| production route or consumer change | review reachability and dependent conclusions |
+| authority, compatibility, security, packaging, migration, support, or rollback change | review the affected risk dimensions |
+| actual conflict resolution | review the conflict-affected seam and proof |
+| combined-tree failure and repair | review the concrete interaction and repair |
+
+A SHA change by itself appears nowhere in this table.
+
+## Review-forward repair
+
+Review is cumulative. Earlier findings and clean conclusions remain useful unless later work materially changes their subject.
+
+After a repair:
 
 ```text
-full candidate head SHA
-+ normalized material PR claim/review index
+identify changed semantic subjects
+→ rerun affected proof
+→ verify addressed findings
+→ review newly changed risk/claim dimensions
+→ continue
 ```
 
-The review record should preserve both the reviewed head and a digest or exact stable representation of the material PR claim sections. At minimum those sections include `Claim`, `What this establishes`, `What this does not establish`, `Risk and rollback`, and the substantive `Review index`.
+Do not restart the entire review sequence merely to manufacture a new current-head receipt.
 
-Any head change or material claim/review-index change after formal review requires a new formal-review record before merge. Editorial changes that do not alter the claim, evidence boundary, risk, rollback, or reviewer map do not require review churn.
+## GitHub-native merge blockers
 
-The depth of supporting re-examination remains proportional:
+The live merge decision remains governed by current GitHub facts:
 
-- rerun focused proof and specialist lenses only where their semantic subjects changed;
-- inspect the new cumulative candidate and material claim sufficiently to verify that the changed-seam classification is itself sound;
-- then submit a fresh `REVIEW_CURRENT`, `REVIEW_FINDINGS_OPEN`, or `REVIEW_NOT_PROVEN` judgment for the new review subject.
+- draft state;
+- unresolved review threads;
+- current `CHANGES_REQUESTED` reviews;
+- deliberately requested reviewers still pending where their review is part of the claim;
+- required checks;
+- actual conflicts and mergeability;
+- rulesets, merge queue, and applicable release/changelog policy.
 
-This preserves affected-only proof economics without allowing an unreviewed candidate revision or claim change to inherit a formal disposition from an older review subject.
+Stale bot or human review timestamps may be reported as context. They do not block by themselves.
 
 ## Squash-merge currentness
 
-This repository squash-merges. Therefore:
+This repository squash-merges.
 
 ```text
-candidate head unchanged
-+ material claim unchanged
-+ main advances
-+ no actual Git conflict
-+ no required merge-group or combined-tree check has failed
-→ candidate proof and review remain current
+candidate remains conflict-free
++ unrelated main work lands
+→ do nothing
 ```
 
-Do not rebase, update-branch, merge `main`, create empty commits, rerun formal review, or replay full CI merely because the branch is behind.
+Do not rebase, update the branch, create empty commits, replay full CI, or rerun review merely because `main` advanced.
 
-Do not proactively inspect sibling PR implementations, touched-file overlap, or nearby semantic surfaces to predict interactions. The candidate lane normally learns about integration through Git mergeability, an explicit stacked prerequisite, current GitHub merge-queue or required-check behavior, or an actual synthetic or hosted combined-tree result.
+If Git reports a real conflict, the later lane resolves it and refreshes only the affected proof/review. If an explicit stack or combined-tree check exposes a real interaction, repair that interaction rather than predicting overlap in advance.
 
-A changed integration basis may require a fresh merge-group or combined-tree check when current GitHub branch protection, rulesets, merge queue, or required checks require it. It does not by itself require branch mutation or fresh candidate review.
+## Expected-head merge safety
 
-## Actual conflict or integration failure
+At the instant of merge, use the current PR head SHA as compare-and-swap protection so a branch cannot move between inspection and merge:
 
 ```text
-actual merge conflict
-→ affected lane resolves conflict
-→ candidate changed
-→ rerun affected proof and specialist review
-→ submit fresh formal review for the resulting candidate and claim
+gh pr merge <n> --squash --match-head-commit <current-head-sha>
 ```
 
-```text
-combined-tree or merge-group proof fails without a text conflict
-→ report the concrete interaction to the affected lane
-→ repair the smallest coherent candidate
-→ rerun affected proof/review
-```
+This is merge race protection. It is not review currentness and does not justify exact-head review comments.
 
-A lane does not need advance knowledge of another lane's implementation. A direct issue or PR comment is sufficient when a prerequisite or concrete integration finding materially affects it.
+## Landed reconciliation
 
-## Affected-only invalidation
-
-After repair or claim revision, rerun supporting evidence dimensions whose semantic subjects changed, then issue a fresh formal-review disposition for the current review subject where required.
-
-| Change | Supporting evidence to refresh |
-| --- | --- |
-| editorial PR-body wording outside material claim sections | none or local editorial review |
-| material claim / establishment / non-goal / risk / rollback / review-index change | claim review plus fresh formal-review record |
-| test-only repair | test review and dependent conclusions plus fresh formal-review record for the new head |
-| local implementation repair | focused behavior proof and changed-seam candidate review plus fresh formal-review record |
-| conflict resolution | conflict-affected proof/review plus fresh formal-review record |
-| owner/consumer change | plan, authority review, proof seam, and fresh formal-review record |
-| external protocol change | external-truth judgment, dependent claims, and fresh formal-review record |
-| integration basis changes but candidate remains unchanged | merge-group or combined-tree checks only where current GitHub branch protection, rulesets, merge queue, or required checks require them |
-| any head change after formal review | fresh formal-review record; supporting depth remains proportional |
-
-## Merge boundary
-
-Merge eligibility is determined by current GitHub branch protection, rulesets, merge queue, or required checks, substantive review convergence, actual mergeability, and any merge-group or combined-tree check required for the selected candidate by that GitHub policy.
-
-After squash merge, reconciliation verifies the landed effect on current `main`; it does not pretend the future squash commit could have been reviewed in advance.
+After squash merge, verify the landed effect on current `main`, update the controlling issue and durable claims, preserve residual work, and clean the branch/worktree. The future squash commit was not—and did not need to be—the formal review subject.

@@ -134,6 +134,84 @@ cat ripr/review/comments.json
 
 Each entry names the exact `file:line` seam that needs a mutation-killing test.
 
+### When the gate blocks without naming the seams
+
+`comments.json` can be empty while the count is positive. That is a real state,
+not a corrupt artifact, and the gate distinguishes it from an ordinary
+named-seam failure (#5459). The `new_ripr_gap` action carries:
+
+```json
+{
+  "new_unresolved": 25,
+  "top_gaps": [],
+  "gap_list_proven": false,
+  "guidance_status": "error",
+  "guidance_unavailable_reason": "ripr timed out after 600s"
+}
+```
+
+`gap_list_proven: false` means the count is trustworthy but the list is not.
+The job summary spells out which of the two routes you are on:
+
+- **Guidance never completed** — `guidance_status` is any value other than
+  `present`, currently `error`, `incomplete`, `stale`, `missing`, or
+  `invalid`, and the summary reads *"NOT_PROVEN: the new-seam list could not
+  be produced …"*. The gate branches on `!= "present"` rather than on this
+  list, so a status added later lands here too.
+
+  `guidance_unavailable_reason` is the producer's own message, recovered from
+  the receipt's first `tool_error` warning, or failing that its first warning
+  carrying any message. It is `null` whenever there is no such warning — which
+  is not the same as "something went wrong with the receipt":
+
+  - `missing` and `invalid` never read a payload at all, so the reason is
+    always `null` and `guidance_status` is the whole explanation.
+  - `error`, `incomplete`, and `stale` parse a payload and recover a warning
+    *if one is there*. A `stale` receipt frequently has none — it is often a
+    perfectly good run against an older HEAD, whose `warnings` array is empty
+    because nothing failed.
+
+  So a blocking action with `guidance_status: "stale"` and a `null` reason is
+  well-formed, not corrupt — don't hunt for a message that was never produced.
+
+  Either way the fix is to re-run guidance for the current HEAD, against your
+  PR's base branch — `origin/main` unless you targeted something else. Raise
+  `--timeout-seconds` only if the reason says it timed out; a `stale` receipt
+  just needs a re-run at the current SHA:
+
+  ```bash
+  cargo xtask ripr-review-comments --base origin/main --head HEAD \
+    --timeout-seconds 1200
+  ```
+
+  (The workflow spells this `--base "origin/$BASE_REF"`, but `BASE_REF` is a
+  CI-only variable; locally it expands to `origin/`, which is not a revision.)
+
+  The budget is not uniform today: `.github/workflows/ripr.yml` passes `600`
+  at lines 724 and 883, but `210` at lines 327 and 575. If a lane times out
+  reproducibly, check which budget it actually ran under before concluding the
+  diff is too large.
+
+- **Guidance completed and named nothing** — `guidance_status` is `present`
+  and the summary reads *"NOT_PROVEN: review guidance completed but named no
+  seam, which contradicts the count above."* Nothing timed out here; the
+  producer and the counter disagree. Re-running will not change it. Capture the
+  receipt pair and treat the disagreement itself as the finding.
+
+In both cases the seams are unidentified, so **do not guess at them from the
+count and do not add suppressions to clear the gate.** A `NOT_PROVEN` gate is
+missing evidence, and this repository's contract forbids treating guesswork or
+suppression as proof. If guidance cannot be made to finish, record `NOT_PROVEN`
+on the PR and route the seams to the `ripr-total-burndown` lane
+([#3121](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3121))
+rather than weakening the gate.
+
+Live instance: [#5026](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5026),
+which recorded `new_unresolved: 25` with an empty `top_gaps` after a 600s
+timeout. Reducing how often this fires is
+[#3067](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3067)
+(analyzer invocation cost).
+
 ### Fix options
 
 **Option 1 (preferred): production call-observation test.** Add a test that

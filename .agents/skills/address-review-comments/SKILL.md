@@ -25,7 +25,7 @@ follow-up
 5. Let the helper append the `<!-- disposition:v1 ... -->` marker to that supplied reply, post it, and only then resolve the thread.
 6. If the reviewer applied a repair, treat the resulting head as a new authored candidate and invalidate affected review dimensions.
 
-Do not call raw thread-resolution APIs, resolve performatively, or use `pr-responded` or reviewer-persona labels as evidence.
+Do not call raw thread-resolution APIs, resolve performatively, or use pr-responded or reviewer-persona labels as evidence.
 
 ## Orchestration
 

@@ -82,7 +82,6 @@ For most users:
 {
   "perl-lsp.autoDownload": true,
   "perl-lsp.trace.server": "off",
-  "perl-lsp.enableDiagnostics": true,
   "perl-lsp.enableSemanticTokens": true,
   "perl-lsp.enableFormatting": true,
   "perl-lsp.formatOnSave": false,

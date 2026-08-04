@@ -26,6 +26,7 @@ pub struct UxRegressionReceiptConfig {
     pub input: PathBuf,
     pub receipt: Option<PathBuf>,
     pub sha: Option<String>,
+    pub exit_status_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,7 +58,18 @@ pub struct UxRegressionReceipt {
 pub fn run(config: UxRegressionReceiptConfig) -> Result<()> {
     let raw = fs::read_to_string(&config.input)
         .with_context(|| format!("reading {}", config.input.display()))?;
-    let receipt = classify(&raw, config.sha);
+    let exit_status = config
+        .exit_status_file
+        .map(|path| {
+            let raw_status = fs::read_to_string(&path)
+                .with_context(|| format!("reading UX test exit status {}", path.display()))?;
+            raw_status
+                .trim()
+                .parse::<i32>()
+                .with_context(|| format!("parsing UX test exit status in {}", path.display()))
+        })
+        .transpose()?;
+    let receipt = classify_with_exit_status(&raw, config.sha, exit_status);
     let payload = serde_json::to_string_pretty(&receipt)?;
 
     if let Some(path) = config.receipt {
@@ -75,6 +87,14 @@ pub fn run(config: UxRegressionReceiptConfig) -> Result<()> {
 }
 
 fn classify(raw: &str, sha: Option<String>) -> UxRegressionReceipt {
+    classify_with_exit_status(raw, sha, None)
+}
+
+fn classify_with_exit_status(
+    raw: &str,
+    sha: Option<String>,
+    exit_status: Option<i32>,
+) -> UxRegressionReceipt {
     let lines: Vec<&str> = raw.lines().collect();
     let first_fail_line =
         lines.iter().find(|line| line.contains("FAILED")).map(|line| (*line).trim().to_string());
@@ -85,7 +105,7 @@ fn classify(raw: &str, sha: Option<String>) -> UxRegressionReceipt {
     let scenario = first_failing_test.as_ref().and_then(|name| scenario_from_test_name(name));
     let workflow = first_failing_test.as_ref().and_then(|name| workflow_from_test_name(name));
 
-    let failure_class = infer_failure_class(raw);
+    let failure_class = infer_failure_class(&classification_input(raw));
 
     let canonical_repro = first_failing_test.as_ref().map(|name| {
         format!("cargo test -p perl-lsp-ux-tests {name} -- --test-threads=1 --nocapture")
@@ -98,7 +118,13 @@ fn classify(raw: &str, sha: Option<String>) -> UxRegressionReceipt {
     });
 
     let route = route_for_failure_class(failure_class);
-    let result = if raw.contains("test result: ok") { "pass" } else { "fail" }.to_string();
+    let has_failed_test = first_failing_test.is_some()
+        || lines.iter().any(|line| line.contains("test result: FAILED"));
+    let has_passing_summary = lines.iter().any(|line| line.contains("test result: ok"));
+    let command_succeeded = exit_status.map(|status| status == 0).unwrap_or(true);
+    let result =
+        if command_succeeded && has_passing_summary && !has_failed_test { "pass" } else { "fail" }
+            .to_string();
     let blocking = result != "pass";
     let merge_action = if !blocking {
         "merge_allowed"
@@ -149,6 +175,22 @@ fn classify(raw: &str, sha: Option<String>) -> UxRegressionReceipt {
         attempt: None,
         platform: None,
     }
+}
+
+fn classification_input(raw: &str) -> String {
+    let mut in_detail = false;
+    let mut retained = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("UX_SCENARIO_DETAIL_BEGIN:") {
+            in_detail = true;
+        } else if trimmed == "UX_SCENARIO_DETAIL_END" {
+            in_detail = false;
+        } else if !in_detail {
+            retained.push(line);
+        }
+    }
+    retained.join("\n")
 }
 
 fn scenario_from_test_name(test: &str) -> Option<String> {
@@ -261,7 +303,7 @@ mod tests {
         );
         assert_eq!(receipt.route, UxRoute::TimeoutTriage, "Timeout routes to TimeoutTriage");
         assert_eq!(receipt.result, "fail");
-        assert!(receipt.blocking);
+        assert!(receipt.blocking, "selected test failure must block the receipt");
         assert_eq!(receipt.merge_action, "triage_timeout");
     }
 
@@ -361,6 +403,61 @@ mod tests {
         assert_eq!(receipt.result, "pass", "log with 'test result: ok' should produce result=pass");
         assert!(!receipt.blocking);
         assert_eq!(receipt.merge_action, "merge_allowed");
+    }
+
+    #[test]
+    fn classify_ignores_diagnostic_detail_lines() {
+        let log = "running 1 test\n\
+test ux_scenario_44_editor_trust::scenario_44_real_editor_trust_smoke_receipt ... FAILED\n\
+UX_SCENARIO_DETAIL_BEGIN: `scenario_44`\n\
+workspace/executeCommand rejected the request: command not allowed; timeout details are diagnostic only\n\
+UX_SCENARIO_DETAIL_END\n\
+test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, Some("sha-detail".to_string()));
+        assert!(
+            matches!(receipt.failure_class, UxFailureClass::Unknown),
+            "diagnostic detail must not change the scenario receipt classification: {:?}",
+            receipt.failure_class
+        );
+    }
+
+    #[test]
+    fn classify_mixed_nested_results_fails_closed_on_selected_failure() {
+        let log = "running 1 test\n\
+            test helper::setup ... ok\n\
+            test result: ok. 1 passed; 0 failed\n\
+            test ux_scenario_44_real_editor_trust_smoke_receipt::scenario_44_real_editor_trust_smoke_receipt ... FAILED\n\
+            test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, Some("sha-mixed".to_string()));
+
+        assert_eq!(receipt.result, "fail");
+        assert!(receipt.blocking, "selected test failure must block the receipt");
+        assert_ne!(receipt.merge_action, "merge_allowed");
+        assert_eq!(
+            receipt.first_failing_test.as_deref(),
+            Some(
+                "ux_scenario_44_real_editor_trust_smoke_receipt::scenario_44_real_editor_trust_smoke_receipt"
+            )
+        );
+    }
+
+    #[test]
+    fn classify_missing_summary_fails_closed() {
+        let receipt = classify("just ux-tests: command failed before test summary", None);
+
+        assert_eq!(receipt.result, "fail");
+        assert!(receipt.blocking, "missing test summary must block the receipt");
+        assert_ne!(receipt.merge_action, "merge_allowed");
+    }
+
+    #[test]
+    fn classify_nonzero_command_status_fails_closed_after_earlier_passing_summary() {
+        let log = "running 1 test\ntest helper::setup ... ok\ntest result: ok. 1 passed; 0 failed";
+        let receipt = classify_with_exit_status(log, Some("sha-abort".to_string()), Some(134));
+
+        assert_eq!(receipt.result, "fail");
+        assert!(receipt.blocking, "nonzero command status must block the receipt");
+        assert_ne!(receipt.merge_action, "merge_allowed");
     }
 
     #[test]

@@ -65,7 +65,11 @@ impl DebugAdapter {
             "supportsEvaluateForHovers": supports_core,
             "supportsStepBack": false,
             "supportsSetVariable": supports_core,
-            "supportsRestartFrame": true,
+            // restartFrame is advertised but the handler unconditionally returns
+            // success: false ("Perl does not support restarting execution from a
+            // specific stack frame"). Stop advertising it so the client UI does
+            // not offer an action that always fails (#5045).
+            "supportsRestartFrame": false,
             "supportsGotoTargetsRequest": supports_core,
             "supportsStepInTargetsRequest": true,
             "supportsCompletionsRequest": supports_completions,
@@ -78,7 +82,10 @@ impl DebugAdapter {
             "supportsDelayedStackTraceLoading": false,
             "supportsLoadedSourcesRequest": true,
             "supportsLogPoints": supports_log_points,
-            "supportsTerminateThreadsRequest": true,
+            // terminateThreads is advertised but the handler unconditionally
+            // returns success: false ("Perl threading model does not support
+            // targeted thread termination"). Stop advertising it (#5045).
+            "supportsTerminateThreadsRequest": false,
             "supportsSetExpression": supports_core,
             "supportsTerminateRequest": supports_core,
             "supportsDataBreakpoints": supports_watchpoints,
@@ -1443,18 +1450,6 @@ impl DebugAdapter {
                     config = config.with_timeout(t);
                 }
 
-                // Validate configuration
-                if let Err(e) = config.validate() {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some(format!("Invalid attach configuration: {}", e)),
-                    };
-                }
-
                 // Create TCP attach session
                 let mut session = TcpAttachSession::new();
 
@@ -1462,8 +1457,10 @@ impl DebugAdapter {
                 let (tx, rx) = channel::<DapEvent>();
                 session.set_event_sender(tx);
 
-                // Attempt to connect
-                match session.connect(&config) {
+                // Attempt to connect (validate is called inside connect,
+                // which also pins the resolved addresses for DNS-rebinding
+                // defense #5257)
+                match session.connect(&mut config) {
                     Ok(()) => {
                         if let Err(e) = session.start_reader() {
                             tracing::error!(error = %e, "Failed to start TCP reader");
@@ -1958,13 +1955,11 @@ impl DebugAdapter {
         }
     }
 
-    /// Send interrupt signal to process (cross-platform).
+    /// Send SIGINT to a Unix process, with a test-only fallback elsewhere.
     ///
-    /// On Unix, sends SIGINT. On Windows, writes the interrupt character to
-    /// debugger stdin for a launched session; PID-attached pause is unsupported.
-    /// On stdin-write failure, returns `false` without terminating the debuggee
-    /// (the session is left intact for the client to retry or disposition).
-    /// Returns `false` on unsupported platforms.
+    /// On failure, returns `false` without terminating the debuggee. The
+    /// session is left intact for the client to retry or disposition.
+    #[cfg(any(unix, test))]
     pub(super) fn send_interrupt_signal(&self, pid: u32) -> bool {
         if pid == 0 {
             tracing::warn!("send_interrupt_signal called with pid 0, ignoring");
@@ -1984,44 +1979,9 @@ impl DebugAdapter {
                 }
             }
         }
-        #[cfg(windows)]
+        #[cfg(all(test, not(unix)))]
         {
-            // Write the interrupt character to debugger stdin (session mode only).
-            // On stdin-write failure, return `false` — do NOT terminate the debuggee.
-            if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
-            {
-                if let Some(stdin) = session.process.stdin.as_mut() {
-                    match stdin.write_all(b"\x03\n") {
-                        Ok(()) => {
-                            let _ = stdin.flush();
-                            tracing::info!("Sent interrupt via stdin to process {}", pid);
-                            true
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to send interrupt to process {} via stdin: {}. \
-                                 Pause delivery failed — session left intact (not terminated).",
-                                pid,
-                                e
-                            );
-                            false
-                        }
-                    }
-                } else {
-                    tracing::warn!("No stdin handle for process {}", pid);
-                    false
-                }
-            } else {
-                tracing::warn!(
-                    pid,
-                    "PID-attached pause is unsupported on Windows; refusing to signal the target"
-                );
-                false
-            }
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            tracing::warn!("send_interrupt_signal: unsupported platform for pid {}", pid);
+            tracing::warn!("send_interrupt_signal is unavailable on this test platform");
             false
         }
     }

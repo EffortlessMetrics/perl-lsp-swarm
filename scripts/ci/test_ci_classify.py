@@ -33,6 +33,7 @@ from ci_classify import (  # noqa: E402
     CLASS_PRODUCT_DEFECT,
     CLASS_REVIEW_GATE,
     CLASS_UNKNOWN,
+    ROUTING,
     classify_one,
     filter_failing,
     load_check_runs,
@@ -325,6 +326,17 @@ class TestUnknown(unittest.TestCase):
         )
         self.assertEqual(cls, CLASS_UNKNOWN)
         self.assertIn("no classification pattern matched", rationale)
+
+
+class TestRoutingRecommendations(unittest.TestCase):
+    """Routing is descriptive output, not a lifecycle-label command."""
+
+    def test_actionable_routes_do_not_emit_lifecycle_labels(self) -> None:
+        for classification in (CLASS_PRODUCT_DEFECT, CLASS_POLICY_MISMATCH):
+            route = ROUTING[classification]
+            self.assertNotIn("needs-builder-fix", route)
+            self.assertNotIn("needs-ci-fix", route)
+            self.assertNotIn("merge-ready", route)
 
     def test_empty_name(self) -> None:
         cls, _ = classify_one(

@@ -9,6 +9,7 @@ use crate::features::diagnostics::{
     Diagnostic as InternalDiagnostic, DiagnosticTag as InternalDiagnosticTag,
     PullDiagnosticsContext,
 };
+use crate::runtime::window::RequestProgressGuard;
 use perl_diagnostics::codes::DiagnosticCode;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -292,7 +293,9 @@ impl PullDiagnosticsOrchestrator {
         // Run analysis
         let result = {
             let mut guard = self.critic_analyzer.lock();
-            guard.as_mut().map(|a| a.analyze_file_with_hash(&file_path, content_hash))
+            guard
+                .as_mut()
+                .map(|a| a.analyze_file_with_hash(&file_path, content_hash, Some(doc_text)))
         };
 
         match result {
@@ -479,7 +482,7 @@ impl LspServer {
                 let parsed = doc.current_parsed()?;
                 Some((
                     parsed.ast().cloned(),
-                    doc.text.clone(),
+                    std::sync::Arc::clone(&doc.text_arc),
                     parsed.parse_errors_arc(),
                     doc.version,
                     parsed.degradation_tier(),
@@ -527,7 +530,7 @@ impl LspServer {
             // `resolve_use_lib_paths_from_source_at_offset` instead of the whole-file
             // scan, ensuring `no lib 'lib'` strips the path before `use GoneModule` is
             // checked.
-            let provider = DiagnosticsProvider::new(ast, text.clone());
+            let provider = DiagnosticsProvider::new(ast, text.to_string());
             let resolver = |module: &str, use_site_offset: usize| {
                 self.resolve_module_to_path_with_doc_at_offset(
                     module,
@@ -842,7 +845,7 @@ impl LspServer {
                 let parsed = doc.current_parsed()?;
                 Some((
                     parsed.parse_errors_arc(),
-                    doc.text.clone(),
+                    std::sync::Arc::clone(&doc.text_arc),
                     doc.version,
                     doc.line_starts.clone(),
                     doc.rope.clone(),
@@ -932,7 +935,7 @@ impl LspServer {
                     doc.version,
                     doc.line_starts.clone(),
                     doc.rope.clone(),
-                    doc.text.clone(),
+                    std::sync::Arc::clone(&doc.text_arc),
                 )
             })
             // lock is released here
@@ -1121,6 +1124,13 @@ impl LspServer {
         };
 
         if let Some((doc, generation, gen_at_snapshot)) = doc_snapshot {
+            // Coarse workDoneProgress for the full pull-diagnostics path, which
+            // may spawn the perlcritic subprocess over large trees. Initialized
+            // here (after the document-existence check) so that immediately-
+            // failing or empty requests don't trigger an unnecessary
+            // workDoneProgress/create round-trip (#4626, gemini review).
+            let _progress = RequestProgressGuard::new(self, "diagnostics", "Running diagnostics");
+
             // Build context from server state
             let context = self.pull_diagnostics_orchestrator.build_context(self, uri_str);
 
@@ -1481,6 +1491,16 @@ impl LspServer {
                 .collect()
         };
 
+        // Coarse workDoneProgress for the workspace diagnostic path, which
+        // iterates over every open document and invokes perlcritic per
+        // document — the path most consistent with #4626's "may spawn the
+        // perlcritic subprocess over large trees" rationale (#4626, factory-droid review).
+        let _workspace_progress = RequestProgressGuard::new(
+            self,
+            "workspace-diagnostics",
+            "Scanning workspace diagnostics",
+        );
+
         for (i, (uri_str, doc, generation, gen_at_snapshot)) in docs_snapshot.iter().enumerate() {
             // Cooperative yield every 8 documents
             if i & 0x7 == 0 {
@@ -1494,7 +1514,7 @@ impl LspServer {
             let Some(parsed) = doc.current_parsed() else { continue };
             if let Some(ast) = parsed.ast() {
                 let parse_errors = parsed.parse_errors();
-                let provider = DiagnosticsProvider::new(ast, doc.text.clone());
+                let provider = DiagnosticsProvider::new(ast, doc.text_arc.to_string());
                 // Position-aware resolver: each `use` statement is checked against only
                 // the @INC roots that are lexically active at its offset, so `no lib`
                 // cancellations that precede the statement are respected.
@@ -1880,7 +1900,10 @@ impl LspServer {
             crate::perl_critic::CriticContext::new(doc_text, ast.as_ref(), &critic_config);
         let profile = crate::perl_critic::NativeCriticProfile::parse(&native_profile)
             .unwrap_or(crate::perl_critic::NativeCriticProfile::Strict);
-        let registry = crate::perl_critic::NativeCriticRegistry::for_profile(profile);
+        let mut registry = crate::perl_critic::NativeCriticRegistry::for_profile(profile);
+        // Add strict-only rules that the user explicitly included via
+        // include=[...] even when the active profile is 'recommended' (#4984).
+        registry.ensure_included(&critic_config.include);
 
         diagnostics
             .extend(registry.check(&critic_context).into_iter().map(native_finding_to_diagnostic));
@@ -2035,7 +2058,9 @@ impl LspServer {
         // only for the duration of the `analyze_file_with_hash` call.
         let result = {
             let mut guard = self.critic_analyzer.lock();
-            guard.as_mut().map(|a| a.analyze_file_with_hash(&file_path, content_hash))
+            guard
+                .as_mut()
+                .map(|a| a.analyze_file_with_hash(&file_path, content_hash, Some(doc_text)))
         };
 
         match result {

@@ -127,7 +127,7 @@ fn quality_gate_cli_writes_and_checks_patch_gate_receipts() -> TestResult {
     assert_repair_contract(action)?;
 
     let markdown = fs::read_to_string(&summary)?;
-    assert!(markdown.contains("## Quality Gates"), "{markdown}");
+    assert!(markdown.contains("## Quality-gate effect"), "{markdown}");
     assert!(markdown.contains("patch coverage: `97.10%` / `95.00%`"), "{markdown}");
     assert!(markdown.contains("project coverage: `60.00%` / `95.00%`"), "{markdown}");
     assert!(markdown.contains("coverage scope: `unspecified`"), "{markdown}");

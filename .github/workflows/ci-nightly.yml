@@ -245,13 +245,15 @@ jobs:
         cargo test -p perl-lsp-rs --test real_project_latency \
           -- --ignored first_diagnostics_5000_line_catalyst --nocapture
 
-    # Regression gating stays advisory (continue-on-error) until a real,
-    # calibrated baseline exists: benchmarks/baselines/v0.9.0.json
-    # self-identifies as a placeholder with fabricated values
-    # ("Placeholder baseline - run 'just bench' and compare to update with
-    # real values"), so it is not authoritative and must not gate merges.
+    # Regression gating stays advisory (continue-on-error) because GitHub
+    # Actions runners have high variance in absolute timings — a real
+    # baseline (benchmarks/baselines/v0.10.0.json) exists and the
+    # comparison is meaningful, but promoting it to a blocking gate would
+    # produce false positives from runner speed differences. The nightly
+    # report captures the trend; a sustained regression triggers a manual
+    # investigation rather than an automatic merge block (#3979, #5282).
     # Integrity (did the harness actually run, see above) and regression
-    # policy (did performance get worse) are deliberately separate (#3979).
+    # policy (did performance get worse) are deliberately separate.
     - name: Compare against baseline
       id: compare
       continue-on-error: true

@@ -14,7 +14,7 @@ Classes
 -------
 product_defect
     Gate fails, quarantine=false, retries exhausted, in a unit/LSP/corpus
-    gate.  Routing: needs-builder-fix → builder.
+    gate.  Routing: open or link a focused builder issue; do not merge.
 
 coverage_artifact
     quarantine=true OR required=false; or a baseline-drift failure.
@@ -29,7 +29,7 @@ policy_mismatch
     Gate in the mechanical-correctness set {fmt, check_conflict_markers,
     layer_check, publish_manifest_check, v2_bundle_sync, nested_lock_check};
     quarantine=false.
-    Routing: needs-builder-fix → pr-responder (mechanical).
+    Routing: repair the mechanical check in the PR; do not merge.
 
 review_gate
     draft-pr-check run_ci=false; preflight-latest-check is_latest=false.
@@ -145,10 +145,10 @@ REVIEW_GATE_NAMES: frozenset[str] = frozenset(
 INFRA_CONCLUSIONS: frozenset[str] = frozenset({"cancelled", "timed_out"})
 
 ROUTING: dict[str, str] = {
-    CLASS_PRODUCT_DEFECT: "needs-builder-fix → builder",
+    CLASS_PRODUCT_DEFECT: "open or link a focused builder issue; do not merge",
     CLASS_COVERAGE_ARTIFACT: "log & ignore; do not block merge",
     CLASS_INFRA_ISSUE: "retry once; escalate if stable across retries",
-    CLASS_POLICY_MISMATCH: "needs-builder-fix → pr-responder (mechanical)",
+    CLASS_POLICY_MISMATCH: "repair the mechanical check in the PR; do not merge",
     CLASS_REVIEW_GATE: "ignore — expected path",
     CLASS_EXPECTED_PATH_SKIP: "ignore — policy-sanctioned",
     CLASS_UNKNOWN: "human triage; do not merge",

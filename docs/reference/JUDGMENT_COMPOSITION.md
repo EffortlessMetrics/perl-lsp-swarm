@@ -203,20 +203,17 @@ These lenses are not equal weight on the question of "does this code produce cor
 
 ---
 
-## The Reconciler's Role
+## Native state composition
 
-The reconciler (`xtask/src/tasks/queue_reconciler.rs`) handles label-state contradictions mechanically:
+There is no permanent lifecycle-label reconciler. Judgment composition uses
+current PR, review, thread, check, and branch-rule evidence. Labels can record
+navigation or prior activity, but they neither resolve contradictions nor decide
+whether a PR may merge. The orchestrator owns synthesis and routes follow-up
+work from the current evidence.
 
-- For labels with live ground truth (CI state): grounds the verdict in live CI, not label history
-- For labels without live ground truth: uses GitHub timeline (later-applied wins)
-- Strips stale labels automatically
-- Does not make judgment calls
-
-**The reconciler is not a synthesizer.** It resolves mechanical contradictions. It cannot assess whether a reviewer-deep finding is addressed by a different lens's pass. It cannot judge whether a diff-auditor bounce's premise is still valid after the builder's explanation in the commit message.
-
-Judgment composition is orchestrator-level work. The reconciler produces a clean label state; the orchestrator reads that clean state and applies synthesis rules to decide what to route next.
-
-See [LIVE_SIGNALS_VS_LABELS.md](./LIVE_SIGNALS_VS_LABELS.md) for what the reconciler does and does not own. See [OCTOPUS_CLUSTER.md](./OCTOPUS_CLUSTER.md) for the broader reconciliation dividend.
+See [LIVE_SIGNALS_VS_LABELS.md](./LIVE_SIGNALS_VS_LABELS.md) for the live-signal
+boundary and [OCTOPUS_CLUSTER.md](./OCTOPUS_CLUSTER.md) for the
+provider-native method.
 
 ---
 

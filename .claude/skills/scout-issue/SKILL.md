@@ -1,4 +1,5 @@
 ---
+name: scout-issue
 description: Canonical issue templates for scout agents filing GitHub issues
 ---
 
@@ -17,7 +18,6 @@ Use when: a scout has completed a full investigation and has root cause, options
 gh issue create \
   --title "$TITLE" \
   --label "swarm-discovered" \
-  --label "needs-plan-review" \
   --body "$(cat <<'ISSUE_EOF'
 ## Problem
 

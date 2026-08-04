@@ -74,24 +74,7 @@ fn wait_for_event(
     event_name: &str,
     timeout: Duration,
 ) -> Result<DapMessage, String> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return Err(format!("timeout waiting for event `{event_name}`"));
-        }
-        let remaining = deadline.saturating_duration_since(now);
-        match rx.recv_timeout(remaining) {
-            Ok(message) => {
-                if let DapMessage::Event { event, .. } = &message
-                    && event == event_name
-                {
-                    return Ok(message);
-                }
-            }
-            Err(_) => return Err(format!("channel closed/timeout waiting for `{event_name}`")),
-        }
-    }
+    common::wait_for_event(rx, event_name, timeout)
 }
 
 fn response_success(response: DapMessage, command: &str) -> Result<Option<Value>, String> {
