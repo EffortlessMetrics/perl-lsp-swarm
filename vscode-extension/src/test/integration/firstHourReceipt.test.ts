@@ -551,6 +551,11 @@ suite('First-hour VS Code receipt', function () {
       failure: Record<string, unknown>,
       moments: Record<string, unknown>,
       lifecycle: Record<string, unknown> | null = null,
+      languageClientMetrics: Record<string, unknown> =
+        extensionApi?.getLanguageClientStartupMetrics?.() ?? {
+          status: 'unavailable',
+          limitation: 'extension activation API did not expose startup metrics',
+        },
     ): void => {
       writeFirstHourReceipt({
         ...baseReceipt,
@@ -559,10 +564,7 @@ suite('First-hour VS Code receipt', function () {
           extension_activation_status: 'ok',
           extension_activation_ms: activationMs,
           command_registration_ms: commandRegistrationMs,
-          language_client: extensionApi?.getLanguageClientStartupMetrics?.() ?? {
-            status: 'unavailable',
-            limitation: 'extension activation API did not expose startup metrics',
-          },
+          language_client: languageClientMetrics,
           health,
           failure_guidance: failureGuidance,
         },
@@ -650,6 +652,7 @@ suite('First-hour VS Code receipt', function () {
               provider: restarted,
             },
           },
+          initialLanguageClientMetrics,
         );
       }
       assert.equal(
