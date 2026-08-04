@@ -4,7 +4,6 @@ import * as fs from 'fs';
 import { execFile } from 'child_process';
 import {
   LanguageClient,
-  NotificationType,
   State as LanguageClientState,
   TransportKind,
   Trace,
@@ -142,9 +141,6 @@ let languageClientLifecycle:
   | undefined;
 const languageClientStartupMetrics = new LanguageClientStartupMetrics();
 const activeDocumentReadiness = new ActiveDocumentReadiness();
-const activeDocumentReadyNotification = new NotificationType<{ uri?: string }>(
-  'perl-lsp/active-document-ready',
-);
 const featureActivationMetrics = new FeatureActivationMetrics();
 
 export function getLanguageClientStartupMetrics(): LanguageClientStartupMetricsSnapshot {
@@ -1345,7 +1341,7 @@ function createLanguageClient(serverPath: string): LanguageClient {
     serverOptions,
     clientOptions,
   );
-  lc.onNotification(activeDocumentReadyNotification, (params) => {
+  lc.onNotification('perl-lsp/active-document-ready', (params: { uri?: string }) => {
     if (params?.uri) {
       activeDocumentReadiness.markReady(params.uri, generation);
     }
