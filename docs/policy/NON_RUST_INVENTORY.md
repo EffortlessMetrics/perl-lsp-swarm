@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10104 |
+| Total tracked files | 10105 |
 | Rust-family files | 3093 |
-| Non-Rust files | 7011 |
+| Non-Rust files | 7012 |
 | Allowlisted | 4728 |
-| Unclassified | 2283 |
+| Unclassified | 2284 |
 
 ## Non-Rust files by category
 
@@ -22,7 +22,7 @@
 | production | 210 |
 | test | 1711 |
 | tooling | 319 |
-| unclassified | 2283 |
+| unclassified | 2284 |
 
 ## Unclassified files
 
@@ -2191,6 +2191,7 @@
 | `xtask/tests/fixtures/aggregator/pass/advisory.json` | `json` |
 | `xtask/tests/fixtures/aggregator/pass/lint.json` | `json` |
 | `xtask/tests/fixtures/aggregator/pass/tests.json` | `json` |
+| `xtask/tests/fixtures/ci-explain-run/gate-receipts/receipt.json` | `json` |
 | `xtask/tests/fixtures/ci-scope/parser-ratchet/ci-scope-change.json` | `json` |
 | `xtask/tests/fixtures/ci-scope/parser-ratchet/docs-only-non-parser.json` | `json` |
 | `xtask/tests/fixtures/ci-scope/parser-ratchet/lexer-token-change.json` | `json` |
