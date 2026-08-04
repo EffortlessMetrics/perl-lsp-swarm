@@ -3167,12 +3167,13 @@ fn format_binary_operator(op: &str) -> String {
 /// Escape a string for safe embedding in an S-expression (#2130).
 ///
 /// Wraps the string in double quotes and escapes special characters
-/// (parentheses, double quotes, backslashes) so that variable names or
-/// other identifiers containing these characters don't produce malformed
-/// S-expression output.
+/// (parentheses, whitespace, double quotes, backslashes, and control
+/// characters) so that variable names or other identifiers containing these
+/// characters don't produce malformed S-expression output.
 fn sexp_escape(s: &str) -> String {
-    if s.chars().any(|c| c == '(' || c == ')' || c == '"' || c == '\\' || c == ' ') {
-        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    if s.chars().any(|c| c == '(' || c == ')' || c == '"' || c == '\\' || c.is_whitespace()) {
+        let escaped = s.chars().flat_map(char::escape_default).collect::<String>();
+        format!("\"{escaped}\"")
     } else {
         s.to_string()
     }
