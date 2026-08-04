@@ -103,7 +103,8 @@ async function providerResult(
 
 function providerPosition(document: vscode.TextDocument): vscode.Position {
   const offset = document.getText().indexOf('$value');
-  return document.positionAt(Math.max(offset, 0));
+  assert.notEqual(offset, -1, 'packaged journey fixture must contain the $value probe');
+  return document.positionAt(offset);
 }
 
 function assertProviderSucceeded(label: string, result: ReceiptValue): void {
@@ -128,184 +129,206 @@ suite('Packaged VSIX bundled-server journey', function () {
     );
 
     const config = vscode.workspace.getConfiguration('perl-lsp');
-    await config.update('autoDownload', false, vscode.ConfigurationTarget.Global);
-    await config.update('serverPath', '', vscode.ConfigurationTarget.Global);
-    await config.update('critic.enabled', false, vscode.ConfigurationTarget.Global);
+    const originalGlobalSettings = ['autoDownload', 'serverPath', 'critic.enabled'].map((key) => ({
+      key,
+      value: config.inspect<unknown>(key)?.globalValue,
+    }));
 
-    const activationStarted = performance.now();
-    const activation = (await withTimeout(
-      'packaged extension activation',
-      extension.activate(),
-      90_000,
-    )) as
-      | { getLanguageClientStartupMetrics?: () => ReceiptValue; stop?: () => Promise<void> }
-      | undefined;
-    const document = await vscode.workspace.openTextDocument(workspaceFile);
-    await vscode.window.showTextDocument(document);
-    const position = providerPosition(document);
-
-    const immediate = {
-      completion: await providerResult(
-        'bundled completion',
-        'vscode.executeCompletionItemProvider',
-        document.uri,
-        position,
-      ),
-      hover: await providerResult(
-        'bundled hover',
-        'vscode.executeHoverProvider',
-        document.uri,
-        position,
-      ),
-      definition: await providerResult(
-        'bundled definition',
-        'vscode.executeDefinitionProvider',
-        document.uri,
-        position,
-      ),
-      references: await providerResult(
-        'bundled references',
-        'vscode.executeReferenceProvider',
-        document.uri,
-        position,
-        { includeDeclaration: true },
-      ),
-      symbols: await providerResult(
-        'bundled symbols',
-        'vscode.executeDocumentSymbolProvider',
-        document.uri,
-      ),
-    };
-
-    const editStarted = performance.now();
-    const edit = new vscode.WorkspaceEdit();
-    edit.insert(document.uri, new vscode.Position(document.lineCount, 0), '# packaged edit\n');
-    const editApplied = await vscode.workspace.applyEdit(edit);
-    const editedText = document.getText();
-    const afterEdit = {
-      status: editApplied && editedText.includes('# packaged edit') ? 'ok' : 'error',
-      duration_ms: Math.round(performance.now() - editStarted),
-      immediate_requery: await providerResult(
-        'bundled completion after edit',
-        'vscode.executeCompletionItemProvider',
-        document.uri,
-        position,
-      ),
-    };
-
-    const formatting = await providerResult(
-      'bundled formatting',
-      'vscode.executeFormatDocumentProvider',
-      document.uri,
-      { tabSize: 4, insertSpaces: true },
-    );
-
-    const renameStarted = performance.now();
-    let rename: ReceiptValue;
     try {
-      const result = (await withTimeout(
-        'bundled rename/refusal',
-        vscode.commands.executeCommand(
-          'vscode.executeDocumentRenameProvider',
+      await config.update('autoDownload', false, vscode.ConfigurationTarget.Global);
+      await config.update('serverPath', '', vscode.ConfigurationTarget.Global);
+      await config.update('critic.enabled', false, vscode.ConfigurationTarget.Global);
+
+      const activationStarted = performance.now();
+      const activation = (await withTimeout(
+        'packaged extension activation',
+        extension.activate(),
+        90_000,
+      )) as
+        | { getLanguageClientStartupMetrics?: () => ReceiptValue; stop?: () => Promise<void> }
+        | undefined;
+      const activationCompleted = performance.now();
+      const document = await vscode.workspace.openTextDocument(workspaceFile);
+      await vscode.window.showTextDocument(document);
+      const position = providerPosition(document);
+
+      const immediate = {
+        completion: await providerResult(
+          'bundled completion',
+          'vscode.executeCompletionItemProvider',
           document.uri,
           position,
-          'renamed_value',
         ),
-        15_000,
-      )) as vscode.WorkspaceEdit | undefined;
-      const entries = result?.entries() ?? [];
-      const workspacePrefix = path.resolve(workspacePath) + path.sep;
-      const safe = entries.every(([uri]) => {
-        const resolved = path.resolve(uri.fsPath);
-        return resolved === path.resolve(workspacePath) || resolved.startsWith(workspacePrefix);
-      });
-      rename = {
-        status: result ? (safe ? 'offered_not_applied' : 'unsafe_refusal') : 'safe_refusal',
-        edit_count: entries.length,
-        duration_ms: Math.round(performance.now() - renameStarted),
+        hover: await providerResult(
+          'bundled hover',
+          'vscode.executeHoverProvider',
+          document.uri,
+          position,
+        ),
+        definition: await providerResult(
+          'bundled definition',
+          'vscode.executeDefinitionProvider',
+          document.uri,
+          position,
+        ),
+        references: await providerResult(
+          'bundled references',
+          'vscode.executeReferenceProvider',
+          document.uri,
+          position,
+          { includeDeclaration: true },
+        ),
+        symbols: await providerResult(
+          'bundled symbols',
+          'vscode.executeDocumentSymbolProvider',
+          document.uri,
+        ),
       };
-    } catch (error: unknown) {
-      rename = {
-        status: 'error',
-        duration_ms: Math.round(performance.now() - renameStarted),
-        message: error instanceof Error ? error.message : String(error),
+
+      const editStarted = performance.now();
+      const edit = new vscode.WorkspaceEdit();
+      edit.insert(document.uri, new vscode.Position(document.lineCount, 0), '# packaged edit\n');
+      const editApplied = await vscode.workspace.applyEdit(edit);
+      const editedText = document.getText();
+      const afterEdit = {
+        status: editApplied && editedText.includes('# packaged edit') ? 'ok' : 'error',
+        duration_ms: Math.round(performance.now() - editStarted),
+        immediate_requery: await providerResult(
+          'bundled completion after edit',
+          'vscode.executeCompletionItemProvider',
+          document.uri,
+          position,
+        ),
       };
+
+      const formatting = await providerResult(
+        'bundled formatting',
+        'vscode.executeFormatDocumentProvider',
+        document.uri,
+        { tabSize: 4, insertSpaces: true },
+      );
+
+      const renameStarted = performance.now();
+      let rename: ReceiptValue;
+      try {
+        const result = (await withTimeout(
+          'bundled rename/refusal',
+          vscode.commands.executeCommand(
+            'vscode.executeDocumentRenameProvider',
+            document.uri,
+            position,
+            'renamed_value',
+          ),
+          15_000,
+        )) as vscode.WorkspaceEdit | undefined;
+        const entries = result?.entries() ?? [];
+        const workspacePrefix = path.resolve(workspacePath) + path.sep;
+        const safe = entries.every(([uri]) => {
+          const resolved = path.resolve(uri.fsPath);
+          return resolved === path.resolve(workspacePath) || resolved.startsWith(workspacePrefix);
+        });
+        rename = {
+          status: result ? (safe ? 'offered_not_applied' : 'unsafe_refusal') : 'safe_refusal',
+          edit_count: entries.length,
+          duration_ms: Math.round(performance.now() - renameStarted),
+        };
+      } catch (error: unknown) {
+        rename = {
+          status: 'error',
+          duration_ms: Math.round(performance.now() - renameStarted),
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+
+      const diagnostics = vscode.languages.getDiagnostics(document.uri);
+      const metrics = activation?.getLanguageClientStartupMetrics?.() ?? {};
+      const receipt: ReceiptValue = {
+        schema_version: 1,
+        outcome: 'completed',
+        repository_sha: process.env.PERL_LSP_CURRENT_SOURCE_SHA ?? null,
+        artifact_hashes: {
+          vsix_sha256: process.env.PERL_LSP_VSIX_SHA256 ?? null,
+          bundled_server_sha256: sha256(bundledServerPath),
+        },
+        server_identity: {
+          path: bundledServerPath,
+          source: 'packaged_vsix_bundle',
+          version: process.env.PERL_LSP_PUBLISHED_EXTENSION_VERSION ?? null,
+          startup_source: metrics.binary_resolution_source ?? null,
+        },
+        vsix_identity: {
+          extension_id: extension.id,
+          version: extension.packageJSON?.version ?? null,
+          path: extension.extensionPath,
+        },
+        vscode_version: vscode.version,
+        workspaces: [
+          { path: workspacePath, mode: 'single-root', trust: vscode.workspace.isTrusted },
+        ],
+        requests: { immediate, after_edit: afterEdit, formatting, rename },
+        index_generation: 'not_observable_from_public_extension_api',
+        answering_tier: 'bundled_server_provider',
+        fallback_or_refusal_reason:
+          rename.status === 'safe_refusal' ? 'rename provider returned no edit' : null,
+        latency: { activation_ms: Math.round(activationCompleted - activationStarted) },
+        false_exact: 'not_scored',
+        stale_exact: 'not_scored',
+        unsafe_edits: rename.status === 'unsafe_refusal' ? 1 : 0,
+        unexplained_empty: 'not_scored',
+        known_limitations: [
+          'DAP preview is not exercised by this slice.',
+          'The public VS Code API does not expose index generation or semantic exactness.',
+          'A rename edit is never applied by this receipt; offered edits are checked for workspace containment first.',
+        ],
+        product_blockers: [],
+        diagnostics: { count: diagnostics.length },
+        shutdown: 'pending',
+      };
+
+      if (activation?.stop) {
+        await withTimeout('packaged extension shutdown', activation.stop(), 30_000);
+        receipt.shutdown = 'stopped';
+      } else {
+        receipt.shutdown = 'not_observable';
+      }
+
+      const providerResults = [
+        ['completion', immediate.completion],
+        ['hover', immediate.hover],
+        ['definition', immediate.definition],
+        ['references', immediate.references],
+        ['symbols', immediate.symbols],
+        ['completion after edit', afterEdit.immediate_requery],
+        ['formatting', formatting],
+        ['rename', rename],
+      ] as const;
+      const providerFailures = providerResults.filter(
+        ([label, result]) =>
+          result.status === 'error' || (label === 'rename' && result.status === 'unsafe_refusal'),
+      );
+      receipt.outcome = providerFailures.length === 0 ? 'completed' : 'failed';
+      receipt.product_blockers = providerFailures.map(([label, result]) => ({ label, result }));
+
+      fs.writeFileSync(
+        path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json'),
+        JSON.stringify(receipt, null, 2),
+      );
+
+      assert.equal(metrics.binary_resolution_source, 'bundled', JSON.stringify(metrics));
+      assert.equal(metrics.binary_resolution_status, 'ok', JSON.stringify(metrics));
+      assert.equal(metrics.server_start_status, 'ok', JSON.stringify(metrics));
+      assert.equal(metrics.initialize_status, 'ok', JSON.stringify(metrics));
+      assert.equal(afterEdit.status, 'ok', JSON.stringify(afterEdit));
+      for (const [label, result] of providerResults) {
+        assertProviderSucceeded(label, result);
+      }
+      assert.notEqual(rename.status, 'unsafe_refusal', JSON.stringify(rename));
+    } finally {
+      await Promise.all(
+        originalGlobalSettings.map(({ key, value }) =>
+          config.update(key, value, vscode.ConfigurationTarget.Global),
+        ),
+      );
     }
-
-    const diagnostics = vscode.languages.getDiagnostics(document.uri);
-    const metrics = activation?.getLanguageClientStartupMetrics?.() ?? {};
-    const receipt: ReceiptValue = {
-      schema_version: 1,
-      outcome: 'completed',
-      repository_sha: process.env.PERL_LSP_CURRENT_SOURCE_SHA ?? null,
-      artifact_hashes: {
-        vsix_sha256: process.env.PERL_LSP_VSIX_SHA256 ?? null,
-        bundled_server_sha256: sha256(bundledServerPath),
-      },
-      server_identity: {
-        path: bundledServerPath,
-        source: 'packaged_vsix_bundle',
-        version: process.env.PERL_LSP_PUBLISHED_EXTENSION_VERSION ?? null,
-        startup_source: metrics.binary_resolution_source ?? null,
-      },
-      vsix_identity: {
-        extension_id: extension.id,
-        version: extension.packageJSON?.version ?? null,
-        path: extension.extensionPath,
-      },
-      vscode_version: vscode.version,
-      workspaces: [{ path: workspacePath, mode: 'single-root', trust: vscode.workspace.isTrusted }],
-      requests: { immediate, after_edit: afterEdit, formatting, rename },
-      index_generation: 'not_observable_from_public_extension_api',
-      answering_tier: 'bundled_server_provider',
-      fallback_or_refusal_reason:
-        rename.status === 'safe_refusal' ? 'rename provider returned no edit' : null,
-      latency: { activation_ms: Math.round(performance.now() - activationStarted) },
-      false_exact: 'not_scored',
-      stale_exact: 'not_scored',
-      unsafe_edits: rename.status === 'unsafe_refusal' ? 1 : 0,
-      unexplained_empty: 'not_scored',
-      known_limitations: [
-        'DAP preview is not exercised by this slice.',
-        'The public VS Code API does not expose index generation or semantic exactness.',
-        'A rename edit is never applied by this receipt; offered edits are checked for workspace containment first.',
-      ],
-      product_blockers: [],
-      diagnostics: { count: diagnostics.length },
-      shutdown: 'pending',
-    };
-
-    if (activation?.stop) {
-      await withTimeout('packaged extension shutdown', activation.stop(), 30_000);
-      receipt.shutdown = 'stopped';
-    } else {
-      receipt.shutdown = 'not_observable';
-    }
-
-    const providerResults = [
-      ['completion', immediate.completion],
-      ['hover', immediate.hover],
-      ['definition', immediate.definition],
-      ['references', immediate.references],
-      ['symbols', immediate.symbols],
-      ['completion after edit', afterEdit.immediate_requery],
-      ['formatting', formatting],
-      ['rename', rename],
-    ] as const;
-    const providerFailures = providerResults.filter(([, result]) => result.status !== 'ok');
-    receipt.outcome = providerFailures.length === 0 ? 'completed' : 'failed';
-    receipt.product_blockers = providerFailures.map(([label, result]) => ({ label, result }));
-
-    fs.writeFileSync(
-      path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json'),
-      JSON.stringify(receipt, null, 2),
-    );
-
-    assert.equal(metrics.binary_resolution_source, 'bundled', JSON.stringify(metrics));
-    assert.equal(afterEdit.status, 'ok', JSON.stringify(afterEdit));
-    for (const [label, result] of providerResults) {
-      assertProviderSucceeded(label, result);
-    }
-    assert.notEqual(rename.status, 'unsafe_refusal', JSON.stringify(rename));
   });
 });
