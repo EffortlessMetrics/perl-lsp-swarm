@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10102 |
-| Rust-family files | 3092 |
-| Non-Rust files | 7010 |
+| Total tracked files | 10104 |
+| Rust-family files | 3093 |
+| Non-Rust files | 7011 |
 | Allowlisted | 4728 |
-| Unclassified | 2282 |
+| Unclassified | 2283 |
 
 ## Non-Rust files by category
 
@@ -22,7 +22,7 @@
 | production | 210 |
 | test | 1711 |
 | tooling | 319 |
-| unclassified | 2282 |
+| unclassified | 2283 |
 
 ## Unclassified files
 
@@ -128,6 +128,7 @@
 | `.changes/unreleased/product-5472-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5486-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5523-Fixed-000000.yaml` | `yaml` |
+| `.changes/unreleased/product-5525-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5529-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/vscode-3904-Changed-232653.yaml` | `yaml` |
 | `.changes/unreleased/vscode-4712-Fixed-002852.yaml` | `yaml` |
