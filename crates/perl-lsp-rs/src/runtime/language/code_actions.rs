@@ -607,7 +607,10 @@ impl LspServer {
                         crate::perl_critic::NativeCriticProfile::parse(&native_profile)
                             .unwrap_or(crate::perl_critic::NativeCriticProfile::Strict);
                     let registry =
-                        crate::perl_critic::NativeCriticRegistry::for_profile(native_profile);
+                        crate::perl_critic::NativeCriticRegistry::for_profile_with_config(
+                            native_profile,
+                            &critic_config,
+                        );
                     for finding in registry.check(&critic_context) {
                         // Only findings that carry a Safe automatic edit become
                         // quick-fixes. Suggested fixes need user confirmation
