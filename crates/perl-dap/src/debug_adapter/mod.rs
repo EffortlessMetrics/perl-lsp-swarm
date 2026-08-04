@@ -67,13 +67,21 @@ use std::time::{Duration, Instant};
 use crate::breakpoints::{BreakpointHitOutcome, BreakpointStore};
 use crate::debug_adapter::data_breakpoints::DataBreakpointRecord;
 use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
-use crate::debug_adapter::variable_cache::{VariableCache, VariableCacheKind, slice_variables};
+#[cfg(test)]
+use crate::debug_adapter::variable_cache::VariableCache;
+use crate::debug_adapter::variable_cache::{VariableCacheKind, slice_variables};
 use crate::security;
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
 #[cfg(unix)]
 use nix::unistd::Pid;
-use patterns::*;
+use patterns::{
+    DEBUG_SESSION_TERMINATE_WAIT_MS, DEBUGGER_FRAME_POLL_MS, DEBUGGER_QUERY_WAIT_MS,
+    EVENT_QUEUE_CAPACITY, RECENT_OUTPUT_MAX_LINES, RecentOutputBuffer, RecentOutputLine,
+    ansi_escape_re, assignment_ops_re, context_re, dangerous_ops_re, deref_re, error_re,
+    exception_re, glob_re, inc_re, is_valid_function_breakpoint_name, is_valid_set_variable_name,
+    prompt_re, regex_mutation_re, stack_frame_re, warning_re,
+};
 use safe_eval::validate_safe_expression;
 use sync_utils::{dispatch_event, emit_event_safe, lock_or_recover};
 
