@@ -10,8 +10,8 @@
 //! nested-subtest indentation) and does not attempt to statically reconstruct
 //! anything the producer did not print.
 
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 
 /// A TODO/SKIP directive attached to a test line.
 #[derive(Debug, Clone, PartialEq, Eq)]

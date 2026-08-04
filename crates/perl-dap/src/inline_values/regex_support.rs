@@ -1,5 +1,5 @@
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 
 /// Regex for matching Perl variables (scalars, arrays, hashes).
 /// Stored as Option to avoid panics; if compilation fails, inline values are skipped.
