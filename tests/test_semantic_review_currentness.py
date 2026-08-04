@@ -11,11 +11,13 @@ ACTIVE_REVIEW_SURFACES = [
     ROOT / ".agents/skills/finish-pr/SKILL.md",
     ROOT / ".agents/skills/verify-live-ci/SKILL.md",
     ROOT / ".agents/skills/merge-reconcile/SKILL.md",
+    ROOT / ".agents/skills/orchestrate-work/SKILL.md",
     ROOT / ".claude/skills/review-pr/SKILL.md",
     ROOT / ".claude/skills/final-challenge/SKILL.md",
     ROOT / ".claude/skills/finish-pr/SKILL.md",
     ROOT / ".claude/skills/verify-live-ci/SKILL.md",
     ROOT / ".claude/skills/merge-reconcile/SKILL.md",
+    ROOT / ".claude/skills/orchestrate-work/SKILL.md",
     ROOT / "scripts/pre-merge-check.sh",
 ]
 
@@ -57,3 +59,13 @@ def test_merge_skill_keeps_expected_head_race_protection() -> None:
         assert "--match-head-commit" in text
         assert "compare-and-swap" in text
         assert "does not make review validity depend on the SHA" in text
+
+
+def test_orchestration_briefs_are_semantic_not_claim_hashed() -> None:
+    for relative in (
+        ".agents/skills/orchestrate-work/SKILL.md",
+        ".claude/skills/orchestrate-work/SKILL.md",
+    ):
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        assert "reviewed semantic seams" in text
+        assert "Do not include a claim digest" in text
