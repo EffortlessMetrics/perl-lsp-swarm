@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10101 |
-| Rust-family files | 3092 |
-| Non-Rust files | 7009 |
-| Allowlisted | 4727 |
-| Unclassified | 2282 |
+| Total tracked files | 10104 |
+| Rust-family files | 3093 |
+| Non-Rust files | 7011 |
+| Allowlisted | 4728 |
+| Unclassified | 2283 |
 
 ## Non-Rust files by category
 
@@ -19,10 +19,10 @@
 | config | 236 |
 | documentation | 2251 |
 | generated | 1 |
-| production | 209 |
+| production | 210 |
 | test | 1711 |
 | tooling | 319 |
-| unclassified | 2282 |
+| unclassified | 2283 |
 
 ## Unclassified files
 
@@ -128,6 +128,7 @@
 | `.changes/unreleased/product-5472-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5486-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5523-Fixed-000000.yaml` | `yaml` |
+| `.changes/unreleased/product-5525-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5529-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/vscode-3904-Changed-232653.yaml` | `yaml` |
 | `.changes/unreleased/vscode-4712-Fixed-002852.yaml` | `yaml` |
@@ -6965,6 +6966,7 @@
 | `vscode-extension/src/test/published/harness/extension.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/harness/package.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/managedBinaryPublishedSmoke.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/published/packagedBundleJourney.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/runPublishedSmoke.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/suite/index.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/readmeCommandCoverage.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |

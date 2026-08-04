@@ -55,7 +55,3 @@ pub(crate) const ALLOWED_COMMANDS: &[&str] = &[
     "perl.extractSubroutine",
     "perl.optimizeImports",
 ];
-
-/// Suspicious patterns rejected in generic payloads.
-pub(crate) const SUSPICIOUS_PATTERNS: &[&str] =
-    &["<script", "javascript:", "data:text/html", "<?php", "<%"];
