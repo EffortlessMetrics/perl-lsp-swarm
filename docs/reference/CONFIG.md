@@ -696,11 +696,12 @@ current settings; `perl-lsp.perlcritic.*` is a deprecated compatibility alias,
 and the current namespace wins when both are explicitly configured. Defaults
 that have not been explicitly changed by the user are not sent as overrides.
 
-To use the external Perl::Critic-compatible engine, set
-`perl.critic.engine = "legacy"` (or `"perlcritic"` / `"external"`) and
-configure the compatible profile and enablement settings as needed. Native
-critic diagnostics remain the default and do not require a `perlcritic`
-executable.
+The LSP and VS Code settings channels can select native critic settings, but
+they cannot enable the external Perl::Critic-compatible engine. To use that
+engine, set `[critic] engine = "legacy"` (or another accepted external alias)
+in the trusted `.perl-lsp.toml` project configuration, then configure the
+compatible profile and enablement settings as needed. Native critic
+diagnostics remain the default and do not require a `perlcritic` executable.
 
 #### `perl.critic.engine`
 
