@@ -1,6 +1,12 @@
 //! REPL and expression evaluation: evaluate, set expression, completions.
 
-use super::*;
+use super::{
+    CompletionItem, CompletionsArguments, CompletionsResponseBody, DAP_COMPLETION_KEYWORDS,
+    DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, DebugState, EvaluateArguments,
+    EvaluateResponseBody, Ordering, SafeEvaluator, SetExpressionArguments,
+    SetExpressionResponseBody, Value, Variable, VariableCacheKind, lock_or_recover,
+    module_path_to_name, validate_safe_expression,
+};
 use std::sync::LazyLock;
 
 static SAFE_EVALUATOR: LazyLock<SafeEvaluator> = LazyLock::new(SafeEvaluator::new);

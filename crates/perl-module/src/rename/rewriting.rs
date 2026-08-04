@@ -37,13 +37,16 @@ pub fn replace_module_name_prefix(line: &str, old_module: &str, new_module: &str
             let after = abs + needle_len;
 
             let before_ok = abs == 0 || {
-                let ch = line_bytes[abs - 1] as char;
-                !ch.is_alphanumeric() && ch != '_' && ch != ':'
+                // Check the byte directly — identifier boundary characters
+                // (alphanumeric, _, :) are all ASCII, so we can safely check
+                // the raw byte without a byte-to-char cast (#2371).
+                let b = line_bytes[abs - 1];
+                !b.is_ascii_alphanumeric() && b != b'_' && b != b':'
             };
 
             let after_ok = after < line_bytes.len() && {
-                let ch = line_bytes[after] as char;
-                ch.is_alphabetic() || ch == '_'
+                let b = line_bytes[after];
+                b.is_ascii_alphabetic() || b == b'_'
             };
 
             if before_ok && after_ok && !index_is_in_quote_or_comment(&out, abs) {
@@ -78,44 +81,46 @@ pub(super) fn index_is_in_quote_or_comment(line: &str, index: usize) -> bool {
             return in_single || in_double;
         }
 
-        let ch = byte as char;
+        // Use ASCII byte comparison for quote/escape characters (#2371).
+        // These are all ASCII so the raw byte check is correct and avoids
+        // the invalid byte-to-char cast.
         if escaped {
             escaped = false;
             continue;
         }
 
         if in_single {
-            if ch == '\\' {
+            if byte == b'\\' {
                 escaped = true;
                 continue;
             }
-            if ch == '\'' {
+            if byte == b'\'' {
                 in_single = false;
             }
             continue;
         }
 
         if in_double {
-            if ch == '\\' {
+            if byte == b'\\' {
                 escaped = true;
                 continue;
             }
-            if ch == '"' {
+            if byte == b'"' {
                 in_double = false;
             }
             continue;
         }
 
-        if ch == '#' {
+        if byte == b'#' {
             return i < index;
         }
 
-        if ch == '\'' {
+        if byte == b'\'' {
             in_single = true;
             continue;
         }
 
-        if ch == '"' {
+        if byte == b'"' {
             in_double = true;
         }
     }

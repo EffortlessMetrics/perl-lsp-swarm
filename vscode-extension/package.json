@@ -496,8 +496,8 @@
             "default": [],
             "scope": "resource",
             "order": 36,
-            "description": "Native critic rule IDs to force-enable (e.g. native.testing.require_use_strict). Overrides the profile default for the listed rules.",
-            "markdownDescription": "Native critic rule IDs to force-enable (e.g. `native.testing.require_use_strict`). Overrides the profile default for the listed rules."
+            "description": "Only these native critic rule IDs run, including ones outside the selected profile (e.g. native.variables.unused_lexical).",
+            "markdownDescription": "Only these native critic rule IDs run, including ones outside the selected profile (e.g. `native.variables.unused_lexical`)."
           },
           "perl-lsp.critic.exclude": {
             "type": "array",

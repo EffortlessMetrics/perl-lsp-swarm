@@ -89,7 +89,7 @@ pub fn utf16_line_col_to_offset(text: &str, line: u32, col: u32) -> usize {
                     return offset + bi;
                 }
             }
-            return offset + line_end.min(text.len() - offset);
+            return offset + line_end.min(text.len().saturating_sub(offset));
         }
         offset += lt.len();
     }

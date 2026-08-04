@@ -3562,13 +3562,19 @@ enum CiSubcommand {
     /// Degrades gracefully when no receipts exist — prints an inconclusive message
     /// and hints to run `cargo xtask gates` first.
     ///
-    /// Remote run artifact download (`--run-id`) is tracked in #2652.
-    /// Base-branch comparison (`--base`) is tracked in #2653.
+    /// Use `--run-id <id>` to download and explain a CI run's gate receipt (#2652).
+    /// Use `--base <path>` to compare against a base-branch receipt (#2653).
     #[command(name = "explain")]
     Explain {
         /// Receipt JSON path to parse (default: target/receipts/receipt.json).
         #[arg(long)]
         receipt: Option<PathBuf>,
+        /// Download and explain a CI run's gate receipt via `gh run download`.
+        #[arg(long, value_name = "RUN_ID")]
+        run_id: Option<String>,
+        /// Base-branch receipt JSON path for exists_on_base comparison.
+        #[arg(long, value_name = "BASE_RECEIPT")]
+        base: Option<PathBuf>,
     },
 }
 
@@ -3913,7 +3919,9 @@ fn run_cli(cli: Cli) -> Result<()> {
                     changed_files: changed_file,
                 })
             }
-            Some(CiSubcommand::Explain { receipt }) => ci_explain::run(receipt),
+            Some(CiSubcommand::Explain { receipt, run_id, base }) => {
+                ci_explain::run(receipt, run_id, base)
+            }
         },
         Commands::CheckOnly => ci::check_only(),
         Commands::CheckAgentContext => check_agent_context::run(),

@@ -8,7 +8,12 @@
 //! - **Ready state**: Full workspace index search with cooperative yielding
 //! - **Building/Degraded state**: Open document search only (partial results)
 
-use super::*;
+use super::{
+    AtomicBool, AtomicI32, GLOBAL_CANCELLATION_REGISTRY, IndexCoordinator, JsonRpcError, JsonRpcId,
+    LspServer, LspWorkspaceSymbol, Mutex, Ordering, PendingWorkspaceConfigurationRequest,
+    PerlLspCancellationToken, ServerRequestId, Value, WorkspaceFolderState,
+    best_workspace_folder_for_doc, json, outbound, uri_to_fs_path,
+};
 #[cfg(feature = "workspace")]
 use crate::runtime::readiness::{
     IndexReadinessOutcome, IndexReadinessPolicy, ReadinessMilestone, check_readiness,

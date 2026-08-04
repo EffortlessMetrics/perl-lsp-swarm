@@ -2,7 +2,9 @@
 //!
 //! Wraps experimental and test-only LSP requests.
 
-use super::super::*;
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+use super::super::JsonRpcId;
+use super::super::{JsonRpcError, LspServer, Value};
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 use crate::protocol::{request_cancelled_error, server_cancelled_error};
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
