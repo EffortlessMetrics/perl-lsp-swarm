@@ -116,7 +116,11 @@ impl FailureClass {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-pub fn run(receipt_path: Option<PathBuf>, run_id: Option<String>) -> color_eyre::eyre::Result<()> {
+pub fn run(
+    receipt_path: Option<PathBuf>,
+    run_id: Option<String>,
+    base_receipt_path: Option<PathBuf>,
+) -> color_eyre::eyre::Result<()> {
     if receipt_path.is_some() && run_id.is_some() {
         color_eyre::eyre::bail!("choose either `--receipt` or `--run-id`, not both");
     }
@@ -124,16 +128,17 @@ pub fn run(receipt_path: Option<PathBuf>, run_id: Option<String>) -> color_eyre:
     // Keep the temporary directory alive until the receipt has been read, then
     // let TempDir remove it even when explanation formatting fails.
     let downloaded_dir = run_id.as_deref().map(download_run_receipt).transpose()?;
-    let path = match (run_id.as_deref(), downloaded_dir.as_ref()) {
-        (Some(id), Some(download_dir)) => {
-            // Download the receipt from a CI run via `gh run download`.
-            resolve_run_id_receipt_path(download_dir.path(), id)
-        }
-        (Some(_), None) => color_eyre::eyre::bail!("run-id download directory was not created"),
-        (None, _) => resolve_receipt_path(receipt_path.as_deref()),
+    let path = if let Some(download_dir) = downloaded_dir.as_ref() {
+        resolve_run_id_receipt_path(download_dir.path())
+    } else {
+        resolve_receipt_path(receipt_path.as_deref())
     };
+
+    // Optionally load a base-branch receipt for exists_on_base comparison (#2653).
+    let base_receipt = base_receipt_path.as_deref().and_then(|p| load_receipt(p).ok());
+
     let out = match load_receipt(&path) {
-        Ok(r) => format_explanation(&explain(&r)),
+        Ok(r) => format_explanation(&explain(&r, base_receipt.as_ref())),
         Err(e) => format_load_error(&e),
     };
     print!("{out}");
@@ -153,19 +158,19 @@ fn resolve_receipt_path(explicit: Option<&Path>) -> PathBuf {
 
 /// Compute the path to the gate receipt JSON downloaded from a CI run (pure — no I/O).
 ///
-/// `gh run download` places artifacts under `<download_dir>/<artifact_name>/`.
-/// The gate receipt artifact is named `gate-receipts` and contains `receipt.json`.
+/// When a single artifact is selected with `gh run download --pattern`, GitHub
+/// extracts its files directly under the requested output directory. The
+/// PR-fast workflow emits exactly one receipt at the artifact root.
 ///
 /// # Arguments
 /// * `download_dir` - The directory passed to `gh run download --dir`
-/// * `_run_id` - The CI run ID (unused in path resolution, but kept for logging)
-fn resolve_run_id_receipt_path(download_dir: &Path, _run_id: &str) -> PathBuf {
-    download_dir.join("gate-receipts").join("receipt.json")
+fn resolve_run_id_receipt_path(download_dir: &Path) -> PathBuf {
+    download_dir.join("receipt.json")
 }
 
 /// Download a CI run's gate receipt artifact via `gh run download`.
 ///
-/// Creates a unique temporary directory, downloads the `gate-receipts`
+/// Creates a unique temporary directory, downloads the `pr-fast-receipt-*`
 /// artifact from the specified run, and returns its owner. The owner must stay
 /// alive until the caller has loaded the downloaded receipt.
 fn download_run_receipt(run_id: &str) -> color_eyre::eyre::Result<tempfile::TempDir> {
@@ -184,8 +189,8 @@ fn download_run_receipt(run_id: &str) -> color_eyre::eyre::Result<tempfile::Temp
             "EffortlessMetrics/perl-lsp-swarm",
             "--dir",
             download_path,
-            "-n",
-            "gate-receipts",
+            "-p",
+            "pr-fast-receipt-*",
         ])
         .status()
         .map_err(|e| color_eyre::eyre::eyre!("failed to run `gh run download`: {e}"))?;
@@ -344,7 +349,7 @@ fn build_repro_command(gate: &GateResult) -> Option<String> {
     })
 }
 
-fn explain(receipt: &Receipt) -> ExplainReceipt {
+fn explain(receipt: &Receipt, base_receipt: Option<&Receipt>) -> ExplainReceipt {
     let blocking = find_blocking_gate(receipt);
 
     let Some(gate) = blocking else {
@@ -352,7 +357,7 @@ fn explain(receipt: &Receipt) -> ExplainReceipt {
             blocking_check_name: None,
             failure_class: "none".to_string(),
             source_file_line: None,
-            exists_on_base: "unknown".to_string(), // see #2653
+            exists_on_base: "unknown".to_string(),
             local_reproduction_command: None,
         };
     };
@@ -361,11 +366,22 @@ fn explain(receipt: &Receipt) -> ExplainReceipt {
     let source_file_line = extract_source_file_line(gate);
     let repro = build_repro_command(gate);
 
+    // Check if the same blocking gate also fails on the base branch (#2653).
+    let exists_on_base = if let Some(base) = base_receipt {
+        let base_blocking = find_blocking_gate(base);
+        match base_blocking {
+            Some(bg) if bg.gate_name == gate.gate_name => "yes".to_string(),
+            _ => "no".to_string(),
+        }
+    } else {
+        "unknown".to_string()
+    };
+
     ExplainReceipt {
         blocking_check_name: Some(gate.gate_name.clone()),
         failure_class: class.as_str().to_string(),
         source_file_line,
-        exists_on_base: "unknown".to_string(), // see #2653
+        exists_on_base,
         local_reproduction_command: repro,
     }
 }
@@ -671,7 +687,7 @@ mod tests {
     #[test]
     fn explain_all_passing_returns_none_blocking() {
         let receipt = make_receipt(vec![make_gate("lint", "pass", true)]);
-        let result = explain(&receipt);
+        let result = explain(&receipt, None);
         assert!(result.blocking_check_name.is_none());
         assert_eq!(result.failure_class, "none");
         assert_eq!(result.exists_on_base, "unknown");
@@ -684,7 +700,7 @@ mod tests {
             Some("crates/foo/src/lib.rs:10"),
             None,
         )]);
-        let result = explain(&receipt);
+        let result = explain(&receipt, None);
         assert_eq!(result.blocking_check_name, Some("test".to_string()));
         assert_eq!(result.failure_class, "code_regression");
         assert_eq!(result.source_file_line, Some("crates/foo/src/lib.rs:10".to_string()));
@@ -696,7 +712,7 @@ mod tests {
     #[test]
     fn format_explanation_all_passing() {
         let receipt = make_receipt(vec![make_gate("lint", "pass", true)]);
-        let explanation = explain(&receipt);
+        let explanation = explain(&receipt, None);
         let output = format_explanation(&explanation);
         assert_eq!(output, "All gates passing\n");
     }
@@ -708,7 +724,7 @@ mod tests {
             Some("xtask/src/tasks/ci_explain.rs:42"),
             None,
         )]);
-        let explanation = explain(&receipt);
+        let explanation = explain(&receipt, None);
         let output = format_explanation(&explanation);
         assert!(output.contains("blocking_check:   fmt\n"));
         assert!(output.contains("failure_class:    code_regression\n"));
@@ -720,7 +736,7 @@ mod tests {
     #[test]
     fn format_explanation_blocking_without_site() {
         let receipt = make_receipt(vec![make_gate("test", "fail", true)]);
-        let explanation = explain(&receipt);
+        let explanation = explain(&receipt, None);
         let output = format_explanation(&explanation);
         assert!(output.contains("blocking_check:   test\n"));
         assert!(output.contains("failure_class:    unknown\n"));
@@ -734,7 +750,7 @@ mod tests {
         let mut gate = make_gate("test", "fail", true);
         gate.output_summary = Some("PR is stale and behind master".to_string());
         let receipt = make_receipt(vec![gate]);
-        let explanation = explain(&receipt);
+        let explanation = explain(&receipt, None);
         let output = format_explanation(&explanation);
         assert!(output.contains("failure_class:    stale_base\n"));
     }
@@ -767,31 +783,63 @@ mod tests {
     // ── resolve_run_id_receipt_path (#2652) ────────────────────────────────────
 
     #[test]
-    fn resolve_run_id_receipt_path_points_to_gate_receipts_dir() {
+    fn resolve_run_id_receipt_path_points_to_artifact_root() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = resolve_run_id_receipt_path(dir.path(), "12345");
-        assert_eq!(path, dir.path().join("gate-receipts/receipt.json"));
+        let path = resolve_run_id_receipt_path(dir.path());
+        assert_eq!(path, dir.path().join("receipt.json"));
     }
 
     #[test]
     fn resolve_run_id_receipt_path_works_with_relative_dir() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = resolve_run_id_receipt_path(dir.path(), "99999");
-        assert_eq!(path, dir.path().join("gate-receipts/receipt.json"));
+        let path = resolve_run_id_receipt_path(dir.path());
+        assert_eq!(path, dir.path().join("receipt.json"));
     }
 
     #[test]
     fn downloaded_artifact_layout_loads_real_gate_receipt_fixture() {
         let download_dir = tempfile::tempdir().expect("tempdir");
-        let artifact_dir = download_dir.path().join("gate-receipts");
-        fs::create_dir_all(&artifact_dir).expect("create artifact directory");
+        let artifact_path = download_dir.path().join("receipt.json");
         let fixture =
             include_str!("../../tests/fixtures/ci-explain-run/gate-receipts/receipt.json");
-        fs::write(artifact_dir.join("receipt.json"), fixture).expect("write fixture");
+        fs::write(&artifact_path, fixture).expect("write fixture");
 
-        let receipt_path = resolve_run_id_receipt_path(download_dir.path(), "fixture-run");
+        let receipt_path = resolve_run_id_receipt_path(download_dir.path());
         let receipt = load_receipt(&receipt_path).expect("load downloaded artifact layout");
         assert_eq!(receipt.gates.len(), 1);
         assert_eq!(receipt.gates[0].gate_name, "fmt");
+    }
+
+    // ── exists_on_base (#2653) ─────────────────────────────────────────────────
+
+    #[test]
+    fn exists_on_base_yes_when_same_gate_fails_in_base_receipt() {
+        let pr_receipt = make_receipt(vec![make_gate("fmt", "fail", true)]);
+        let base_receipt = make_receipt(vec![make_gate("fmt", "fail", true)]);
+        let result = explain(&pr_receipt, Some(&base_receipt));
+        assert_eq!(result.exists_on_base, "yes");
+    }
+
+    #[test]
+    fn exists_on_base_no_when_different_gate_fails_in_base_receipt() {
+        let pr_receipt = make_receipt(vec![make_gate("fmt", "fail", true)]);
+        let base_receipt = make_receipt(vec![make_gate("test", "fail", true)]);
+        let result = explain(&pr_receipt, Some(&base_receipt));
+        assert_eq!(result.exists_on_base, "no");
+    }
+
+    #[test]
+    fn exists_on_base_unknown_when_no_base_receipt() {
+        let pr_receipt = make_receipt(vec![make_gate("fmt", "fail", true)]);
+        let result = explain(&pr_receipt, None);
+        assert_eq!(result.exists_on_base, "unknown");
+    }
+
+    #[test]
+    fn exists_on_base_no_when_base_receipt_has_no_failures() {
+        let pr_receipt = make_receipt(vec![make_gate("fmt", "fail", true)]);
+        let base_receipt = make_receipt(vec![make_gate("fmt", "pass", true)]);
+        let result = explain(&pr_receipt, Some(&base_receipt));
+        assert_eq!(result.exists_on_base, "no");
     }
 }
