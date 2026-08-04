@@ -378,6 +378,20 @@ impl DebugAdapter {
             );
         }
 
+        // Detect shell-style quotes around the program path (#1985).
+        // Users sometimes write "program": "'path/to/script.pl'" or
+        // "\"path/to/script.pl\"" — the quotes become part of the path,
+        // causing a confusing file-not-found error.
+        if (program.starts_with('\'') && program.ends_with('\'') && program.len() > 1)
+            || (program.starts_with('"') && program.ends_with('"') && program.len() > 1)
+        {
+            return Err(format!(
+                "The 'program' path '{program}' has surrounding quotes. \
+                 Remove the quotes in your launch.json — the path should be just \
+                 the script path, e.g. \"program\": \"script.pl\"."
+            ));
+        }
+
         // Validate that the program is a regular file (not a directory, device, etc.)
         // Using metadata().is_file() is more robust than exists() because:
         // - exists() returns true for directories
