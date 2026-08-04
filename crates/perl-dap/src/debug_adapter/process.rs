@@ -4,10 +4,10 @@ use super::{
     Arc, BreakpointHitOutcome, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS,
     DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
     Instant, Mutex, Read, RestartArguments, ResumeMode, Source, StackFrame, Stdio, SyncSender,
-    TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState, Value, VariableCache,
-    Write, ansi_escape_re, catalog_has_feature, context_re, dispatch_event, emit_event_safe,
-    error_re, exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security,
-    stack_frame_re, thread, warning_re,
+    TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState, Value, Write,
+    ansi_escape_re, catalog_has_feature, context_re, dispatch_event, emit_event_safe, error_re,
+    exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
+    thread, warning_re,
 };
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
@@ -21,6 +21,7 @@ use std::sync::mpsc::channel;
 mod perl_info;
 mod perl_spawn;
 
+use super::variable_cache::VariableCache;
 use perl_info::detect_perl_info;
 use perl_spawn::{format_perl_spawn_error, is_valid_perl_interpreter};
 
