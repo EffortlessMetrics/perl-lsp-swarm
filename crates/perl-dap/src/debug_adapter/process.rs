@@ -9,6 +9,10 @@ use super::{
     error_re, exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security,
     stack_frame_re, thread, warning_re,
 };
+#[cfg(unix)]
+use nix::sys::signal::{self, Signal};
+#[cfg(unix)]
+use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 // The internal TCP-attach DapEvent fan-in channel is still unbounded (non-goal of #5149).
