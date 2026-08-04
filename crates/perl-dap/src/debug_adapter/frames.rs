@@ -1,6 +1,9 @@
 //! Stack frame management: stack trace parsing, scopes.
 
-use super::*;
+use super::{
+    DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, Scope, ScopesArguments, ScopesResponseBody,
+    Source, StackFrame, StackTraceArguments, Value, Write, json, lock_or_recover,
+};
 
 impl DebugAdapter {
     /// Handle stackTrace request
