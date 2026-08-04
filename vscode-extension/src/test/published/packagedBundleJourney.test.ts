@@ -231,9 +231,7 @@ suite('Packaged VSIX bundled-server journey', function () {
             const normalized = resolved.toLowerCase();
             const normalizedWorkspace = workspaceResolved.toLowerCase();
             const normalizedPrefix = workspacePrefix.toLowerCase();
-            return (
-              normalized === normalizedWorkspace || normalized.startsWith(normalizedPrefix)
-            );
+            return normalized === normalizedWorkspace || normalized.startsWith(normalizedPrefix);
           }
           return resolved === workspaceResolved || resolved.startsWith(workspacePrefix);
         });
