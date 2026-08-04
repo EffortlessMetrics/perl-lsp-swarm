@@ -173,6 +173,32 @@ void test('allows the explicitly staged current-source target when no baseline e
   );
 });
 
+void test('checks an explicitly staged current-source target already in the baseline', () => {
+  const baseline = {
+    total_files: 2,
+    total_bytes: 12,
+    files: { 'README.md': 2, 'bin/darwin-arm64/perllsp': 10 },
+  };
+  const currentSourceFile = currentSourceBundleFile('darwin', 'arm64');
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 2,
+        total_bytes: 13,
+        files: { 'README.md': 2, [currentSourceFile]: 11 },
+      },
+      baseline,
+      'darwin',
+      { allowedFiles: [currentSourceFile], arch: 'arm64' },
+    ),
+    [
+      'total bytes grew from 12 to 13',
+      'file bin/darwin-arm64/perllsp grew from 10 to 11 bytes',
+    ],
+  );
+});
+
 void test('selects the exact platform and architecture baseline', () => {
   const baseline = {
     total_files: 3,
