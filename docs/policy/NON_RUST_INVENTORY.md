@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10105 |
+| Total tracked files | 10106 |
 | Rust-family files | 3093 |
-| Non-Rust files | 7012 |
-| Allowlisted | 4728 |
-| Unclassified | 2284 |
+| Non-Rust files | 7013 |
+| Allowlisted | 4730 |
+| Unclassified | 2283 |
 
 ## Non-Rust files by category
 
@@ -19,10 +19,10 @@
 | config | 236 |
 | documentation | 2251 |
 | generated | 1 |
-| production | 210 |
-| test | 1711 |
+| production | 211 |
+| test | 1712 |
 | tooling | 319 |
-| unclassified | 2284 |
+| unclassified | 2283 |
 
 ## Unclassified files
 
@@ -2191,7 +2191,6 @@
 | `xtask/tests/fixtures/aggregator/pass/advisory.json` | `json` |
 | `xtask/tests/fixtures/aggregator/pass/lint.json` | `json` |
 | `xtask/tests/fixtures/aggregator/pass/tests.json` | `json` |
-| `xtask/tests/fixtures/ci-explain-run/gate-receipts/receipt.json` | `json` |
 | `xtask/tests/fixtures/ci-scope/parser-ratchet/ci-scope-change.json` | `json` |
 | `xtask/tests/fixtures/ci-scope/parser-ratchet/docs-only-non-parser.json` | `json` |
 | `xtask/tests/fixtures/ci-scope/parser-ratchet/lexer-token-change.json` | `json` |
@@ -6880,6 +6879,7 @@
 | `vscode-extension/scripts/vsix-inventory-baseline.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/snippets/launch.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/snippets/perl.json` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/activeDocumentReadiness.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/commandResults.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/criticCommandGroup.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/debugAdapter.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -6920,6 +6920,7 @@
 | `vscode-extension/src/supportCommands.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/__mocks__/vscode.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/activationStartup.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/activeDocumentReadiness.test.ts` | test | `non-rust-vscode-active-document-readiness-test` | editor/vscode |
 | `vscode-extension/src/test/arrowCompletion.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/commandResults.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/commands.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
