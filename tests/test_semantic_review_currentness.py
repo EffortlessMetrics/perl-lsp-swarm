@@ -32,6 +32,17 @@ RETIRED_ACTIVE_COMMANDS = [
     ),
 ]
 
+USEFUL_REVIEW_MARKERS = [
+    "## Review scope",
+    "## Evidence and falsifiers",
+    "## Findings",
+    "## No material findings",
+    "## Prior finding dispositions",
+    "## What this establishes",
+    "## Residual risk / not proved",
+    "## Next action",
+]
+
 
 def test_active_review_surfaces_do_not_invoke_exact_head_receipts() -> None:
     violations: list[str] = []
@@ -48,6 +59,19 @@ def test_active_review_surfaces_do_not_invoke_exact_head_receipts() -> None:
     assert not violations, "retired review receipt commands remain active:\n" + "\n".join(
         violations
     )
+
+
+def test_review_skills_require_useful_durable_records() -> None:
+    for relative in (
+        ".agents/skills/review-pr/SKILL.md",
+        ".claude/skills/review-pr/SKILL.md",
+    ):
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        missing = [marker for marker in USEFUL_REVIEW_MARKERS if marker not in text]
+        assert not missing, f"{relative} is missing useful review fields: {missing}"
+        assert "Do not submit only `LGTM`" in text
+        assert "head SHA" in text
+        assert "claim digest" in text
 
 
 def test_roots_define_semantic_review_currentness() -> None:
