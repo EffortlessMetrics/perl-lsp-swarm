@@ -263,3 +263,42 @@ fn dap_attach_e2e_tcp_attach_timeout_returns_actionable_message() -> TestResult 
 
     Ok(())
 }
+
+#[test]
+fn dap_attach_validation_errors_reach_the_request_response() -> TestResult {
+    let cases = [
+        (json!({"host": "", "port": 13603}), "Set the 'host' field"),
+        (json!({"host": "localhost", "port": 0}), "Set the 'port' field"),
+        (
+            json!({"host": "127.0.0.1", "port": 13603, "timeout": 0}),
+            "Timeout must be greater than 0 milliseconds",
+        ),
+        (
+            json!({"host": "127.0.0.1", "port": 13603, "timeout": 300_001}),
+            "Timeout cannot exceed 300000 milliseconds",
+        ),
+        (
+            json!({
+                "host": "does-not-resolve.invalid",
+                "port": 13603,
+                "timeout": 0
+            }),
+            "Timeout must be greater than 0 milliseconds",
+        ),
+    ];
+
+    for (arguments, expected_guidance) in cases {
+        let mut adapter = DebugAdapter::new();
+        response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
+        let message = response_failure_message(
+            adapter.handle_request(2, "attach", Some(arguments)),
+            "attach",
+        )?;
+        assert!(
+            message.contains(expected_guidance),
+            "expected attach response to contain {expected_guidance:?}, got {message:?}"
+        );
+    }
+
+    Ok(())
+}
