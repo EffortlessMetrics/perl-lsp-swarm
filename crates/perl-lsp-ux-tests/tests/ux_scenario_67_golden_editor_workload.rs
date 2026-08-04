@@ -60,6 +60,30 @@ fn waiver_expiry_rejects_malformed_and_expired_dates() -> Result<()> {
 }
 
 #[test]
+fn expired_waiver_error_preserves_debt_identity() -> Result<()> {
+    let error = validate_error_waiver(&ErrorWaiver {
+        project: "mojolicious".to_owned(),
+        journey: "edit_burst_completion".to_owned(),
+        expected_error_class: "request_superseded".to_owned(),
+        issue: 5779,
+        expires_after: "2020-01-01".to_owned(),
+    })
+    .expect_err("expired waiver must remain a validation error");
+    let message = format!("{error:#}");
+    ensure!(message.contains("project=mojolicious"), "missing project identity: {message}");
+    ensure!(
+        message.contains("journey=edit_burst_completion"),
+        "missing journey identity: {message}"
+    );
+    ensure!(
+        message.contains("expected_error_class=request_superseded"),
+        "missing error-class identity: {message}"
+    );
+    ensure!(message.contains("tracking_issue=#5779"), "missing issue identity: {message}");
+    Ok(())
+}
+
+#[test]
 fn cursor_positions_use_utf16_code_units() -> Result<()> {
     let cursor = position_from_offset("x😀", "x😀".len())?;
     ensure!(cursor.line == 0 && cursor.character == 3, "unexpected UTF-16 cursor: {cursor:?}");
@@ -425,9 +449,19 @@ fn validate_manifest(manifest: &WorkloadManifest) -> Result<()> {
         );
     }
     for waiver in &manifest.error_waivers {
-        ensure!(waiver.issue > 0, "error waiver must name a tracking issue");
-        validate_waiver_expiry(&waiver.expires_after)?;
+        validate_error_waiver(waiver)?;
     }
+    Ok(())
+}
+
+fn validate_error_waiver(waiver: &ErrorWaiver) -> Result<()> {
+    ensure!(waiver.issue > 0, "error waiver must name a tracking issue");
+    validate_waiver_expiry(&waiver.expires_after).with_context(|| {
+        format!(
+            "Scenario 67 waiver identity: project={} journey={} expected_error_class={} tracking_issue=#{}",
+            waiver.project, waiver.journey, waiver.expected_error_class, waiver.issue
+        )
+    })?;
     Ok(())
 }
 
