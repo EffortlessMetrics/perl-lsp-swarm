@@ -23,7 +23,7 @@ The native critic is configured by the `[critic]` table in `.perl-lsp.toml`
 |-----|---------|---------|
 | `[critic] engine` | `native` | `native` (built-in) or `legacy` (external `perlcritic`). |
 | `[critic] profile` | `recommended` | Base rule set: `recommended` (16 rules) or `strict` (all 28). |
-| `[critic] include` | `[]` | **Whitelist within the selected profile.** When non-empty, only the listed rule IDs run — and only if they are already in the profile. It does **not** add rules from outside the profile. |
+| `[critic] include` | `[]` | **Whitelist, resolved against the full rule catalog.** When non-empty, exactly the listed rule IDs run. A listed rule that the profile does not contain is pulled in from the full catalog, so `include` can enable a strict-only rule without switching profile. Unknown IDs match nothing and are warned about at config load. |
 | `[critic] exclude` | `[]` | Rule IDs to remove from the selected profile. |
 
 **Severity threshold** is configured separately, **not** under `[critic]`. It is
@@ -32,10 +32,12 @@ The native critic is configured by the `[critic]` table in `.perl-lsp.toml`
 it applies to the native engine too: a rule is reported only when its severity
 is at or above the threshold (default `3`).
 
-> To run a strict-only rule (e.g. `native.variables.unused_lexical`), set
-> `profile = "strict"` — adding it to `include` under the `recommended` profile
-> will **not** enable it, because `include` only whitelists rules that the
-> profile already contains.
+> To run a strict-only rule (e.g. `native.variables.unused_lexical`) on its
+> own, add it to `include`; the rule is resolved from the full catalog and runs
+> even under the `recommended` profile. Remember that a non-empty `include` is
+> still a whitelist: only the listed rules run, so list every rule you want. To
+> keep the whole recommended set *plus* extra rules, either list them all or set
+> `profile = "strict"` and `exclude` what you don't want.
 
 ## Severity model
 
@@ -63,8 +65,8 @@ always `WARNING`.
 `profile` selects the active rule set. **Recommended** is the balanced
 default (16 rules). **Strict** is a strict superset — the same 16 plus 12 more
 (28 total). `include` (whitelist) / `exclude` (blacklist) then narrow that set
-by rule ID — they filter *within* the profile and cannot pull in a rule the
-profile does not contain.
+by rule ID. `exclude` only removes; `include` resolves against the full 28-rule
+catalog, so it can name a rule the profile does not contain.
 
 ## Rule matrix
 
@@ -122,9 +124,10 @@ but no shipped rule uses them.)
 ## Suppressing a rule
 
 - Disable one rule from the active profile: add its ID to `[critic] exclude`.
-- Run a strict-only rule: set `[critic] profile = "strict"` (then optionally
-  `exclude` the ones you don't want). Adding it to `include` under `recommended`
-  will not enable it — `include` only whitelists rules the profile contains.
+- Run a strict-only rule: add its ID to `[critic] include` (it is resolved from
+  the full catalog under any profile), remembering that a non-empty `include`
+  runs *only* the listed rules. To run the whole strict set instead, set
+  `[critic] profile = "strict"` and `exclude` the ones you don't want.
 - Suppress inline: a `## no critic` comment on the offending line.
 
 ## Related

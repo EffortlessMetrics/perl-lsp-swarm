@@ -3,7 +3,7 @@
 //! Provides support for workspace/textDocumentContent to serve virtual documents
 //! like perldoc:// URIs for Perl documentation.
 
-use super::super::*;
+use super::super::{JsonRpcError, LspServer, Value, io, json};
 use crate::documentation_targets::PerlDocumentationTarget;
 #[cfg(not(target_arch = "wasm32"))]
 use perl_lsp_rs_core::config::PerlOracleEnv;

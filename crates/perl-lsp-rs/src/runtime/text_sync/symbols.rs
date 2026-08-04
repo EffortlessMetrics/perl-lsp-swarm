@@ -1,4 +1,4 @@
-use super::*;
+use super::{LspServer, Node};
 
 impl LspServer {
     pub(super) fn reindex_document_symbols(&self, uri: &str, ast: &Node, source: &str) {

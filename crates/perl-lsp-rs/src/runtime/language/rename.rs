@@ -10,7 +10,10 @@
 //! - **Building/Degraded state**: Local renames can still use same-file proof;
 //!   package-scoped workspace renames fail closed instead of editing from stale facts
 
-use super::super::*;
+use super::super::{
+    GLOBAL_CANCELLATION_REGISTRY, JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken,
+    Value, best_workspace_folder_for_doc, json, workspace_folder_path,
+};
 use crate::cancellation::RequestCleanupGuard;
 use crate::protocol::{REQUEST_CANCELLED, REQUEST_FAILED, req_position, req_uri};
 #[cfg(feature = "workspace")]
