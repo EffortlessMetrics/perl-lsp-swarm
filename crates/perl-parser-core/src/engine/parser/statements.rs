@@ -763,8 +763,16 @@ impl<'a> Parser<'a> {
         let end = stmt.location.start.min(self.src_bytes.len());
         let needle = name.as_bytes();
 
-        Self::scan_for_heredoc_introducer(&self.src_bytes[..end], |delimiter| {
-            delimiter.starts_with(needle)
+        // The delimiter must match in full, not as a prefix: `<<LONGNAME`
+        // above must not exempt a bare `LONG` below (found in review, #5503).
+        // `scan_for_heredoc_introducer` hands over everything after the
+        // introducer, so "in full" means the byte after the name cannot
+        // continue an identifier — a closing quote, `;`, or end of line.
+        Self::scan_for_heredoc_introducer(&self.src_bytes[..end], |rest| {
+            rest.starts_with(needle)
+                && !rest.get(needle.len()).is_some_and(|byte| {
+                    byte.is_ascii_alphanumeric() || *byte == b'_'
+                })
         })
     }
 

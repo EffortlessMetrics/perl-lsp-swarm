@@ -177,3 +177,14 @@ fn a_heredoc_name_inside_a_literal_does_not_exempt_a_later_bareword() {
     assert_blocking_diagnostic("my $s = '<<FOO';\nprint $s;\nFOO\nprint \"hi\";\n");
     assert_blocking_diagnostic("# <<FOO in a comment\nmy $x = 1;\nFOO\nprint \"hi\";\n");
 }
+
+/// The delimiter must match in full. `<<LONGNAME` above must not exempt a bare
+/// `LONG` below — a prefix match is a false negative in the direction that
+/// matters for a check gating a release (#5503).
+#[test]
+fn a_prefix_of_a_heredoc_delimiter_is_not_a_terminator() {
+    assert_blocking_diagnostic("my $t = f(<<LONGNAME);\nbody\nLONGNAME\nLONG\nprint \"hi\";\n");
+    // The full delimiter still is one, in both bare and quoted forms.
+    assert_no_blocking_diagnostics("my $t = f(<<LONGNAME);\nbody\nLONGNAME\nprint \"hi\";\n");
+    assert_no_blocking_diagnostics("my $t = f(<<'LONGNAME');\nbody\nLONGNAME\nprint \"hi\";\n");
+}
