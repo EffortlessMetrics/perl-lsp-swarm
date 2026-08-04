@@ -4,6 +4,7 @@
 //! The `BuildFlags` shape is the single source of truth for runtime-constructed
 //! capability toggles, while `AdvertisedFeatures` is the runtime-facing projection
 //! used by server startup and protocol responses.
+#[allow(clippy::wildcard_imports)]
 use crate::features::ids::*;
 
 /// LSP features advertised to clients for Perl script development

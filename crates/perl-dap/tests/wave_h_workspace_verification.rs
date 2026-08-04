@@ -65,15 +65,31 @@ fn test_executable_binary_builds_successfully() -> Result<(), Box<dyn std::error
 
 #[test]
 fn test_clippy_has_no_warnings_in_new_modules() -> Result<(), Box<dyn std::error::Error>> {
-    // Verify that the new module code doesn't introduce clippy warnings
+    // Verify that the new module code doesn't introduce clippy warnings.
+    // This test MUST fail on clippy warnings — a silent-pass version that
+    // only logs was identified as a false-confidence pattern (#954).
+    //
+    // Temporarily allows wildcard_imports warnings until Phase 2 of #2333
+    // (crate-by-crate wildcard fix) reaches perl-dap's 19 use super::* sites.
 
     let output = Command::new("cargo")
-        .args(["clippy", "-p", "perl-dap", "--lib", "--", "-D", "warnings"])
+        .args([
+            "clippy",
+            "-p",
+            "perl-dap",
+            "--lib",
+            "--",
+            "-D",
+            "warnings",
+            "-A",
+            "clippy::wildcard_imports",
+        ])
         .output()?;
     if !output.status.success() {
-        // Log but don't fail (pre-existing warnings may exist)
         let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("clippy warnings detected (may be pre-existing):\n{}", stderr);
+        return Err(format!(
+            "clippy warnings detected in perl-dap lib (run: cargo clippy -p perl-dap --lib -- -D warnings):\n{stderr}"
+        ).into());
     }
     Ok(())
 }
