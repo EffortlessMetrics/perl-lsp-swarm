@@ -325,7 +325,14 @@ impl BinaryOp {
 ///
 /// Every variant that has child expressions carries explicit [`HirExprId`]
 /// references — there are no flat shells.
+///
+/// `#[non_exhaustive]` for the same reason as [`HirKind`]: this taxonomy grows
+/// as construct families are modeled, and a downstream exhaustive match must
+/// not break each time a family lands.
+///
+/// [`HirKind`]: super::model::HirKind
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HirExpr {
     /// Variable read or write-place reference.
     Variable(HirVariable),

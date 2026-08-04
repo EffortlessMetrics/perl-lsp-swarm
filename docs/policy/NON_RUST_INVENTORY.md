@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10092 |
-| Rust-family files | 3090 |
-| Non-Rust files | 7002 |
-| Allowlisted | 4723 |
-| Unclassified | 2279 |
+| Total tracked files | 10098 |
+| Rust-family files | 3093 |
+| Non-Rust files | 7005 |
+| Allowlisted | 4725 |
+| Unclassified | 2280 |
 
 ## Non-Rust files by category
 
@@ -19,10 +19,10 @@
 | config | 236 |
 | documentation | 2251 |
 | generated | 1 |
-| production | 207 |
+| production | 208 |
 | test | 1711 |
-| tooling | 317 |
-| unclassified | 2279 |
+| tooling | 318 |
+| unclassified | 2280 |
 
 ## Unclassified files
 
@@ -143,6 +143,7 @@
 | `.changes/unreleased/vscode-5305-Fixed-213744.yaml` | `yaml` |
 | `.changie.yaml` | `yaml` |
 | `.codex/hooks.json` | `json` |
+| `.editorconfig` | `` |
 | `.kiro/specs/parser-accuracy-observability/.config.kiro` | `kiro` |
 | `.kiro/specs/rc2-semantic-analysis/.config.kiro` | `kiro` |
 | `.kiro/specs/ux-readiness-system/.config.kiro` | `kiro` |
@@ -2773,6 +2774,7 @@
 | `.spec/wave-f/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.tokeignore` | config | `non-rust-tokeignore` | developer-experience |
 | `.trivyignore` | config | `non-rust-trivyignore` | release/ci |
+| `.vscode/launch.json` | tooling | `non-rust-vscode-config` | developer-experience |
 | `.vscode/settings.json` | tooling | `non-rust-vscode-config` | developer-experience |
 | `.zcode/plans/plan-sess_8094bd17-142f-4e1d-9a99-33e0cb1c8564.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `AGENTS.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6845,6 +6847,7 @@
 | `vscode-extension/media/walkthrough/welcome.svg` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/package-lock.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/package.json` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/package.nls.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/rolldown.config.mjs` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/build-release-local.sh` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/bundle-lsp.js` | production | `non-rust-vscode-extension` | editor/vscode |
