@@ -2,7 +2,7 @@
 //!
 //! Keeps document-link feature logic isolated from other language handlers.
 
-use super::super::*;
+use super::super::{INVALID_PARAMS, INVALID_REQUEST, JsonRpcError, LspServer, Value, json};
 use crate::documentation_targets::PerlDocumentationTarget;
 use crate::protocol::req_uri;
 use std::borrow::Cow;

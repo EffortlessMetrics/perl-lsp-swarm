@@ -4,7 +4,12 @@
 //! - Push diagnostics: Server-initiated via `textDocument/publishDiagnostics`
 //! - Pull diagnostics: Client-initiated via `textDocument/diagnostic` and `workspace/diagnostic`
 
+#[cfg(test)]
 use super::*;
+use super::{
+    Arc, BuiltInAnalyzer, DiagnosticsProvider, DocumentState, InternalDiagnosticSeverity,
+    JsonRpcError, LspServer, Mutex, Ordering, Value, json, md5, source_path_from_uri,
+};
 use crate::features::diagnostics::{
     Diagnostic as InternalDiagnostic, DiagnosticTag as InternalDiagnosticTag,
     PullDiagnosticsContext,
