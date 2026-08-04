@@ -320,17 +320,8 @@ fn scenario_67_golden_editor_workload_receipt() {
                     active_document_ready,
                     &mut rows,
                 )?;
-                let runtime = collect_runtime_receipt(&harness);
-                ensure!(
-                    !runtime.indexing.is_empty(),
-                    "project {} emitted no workspace indexing receipt",
-                    project.name
-                );
-                ensure!(
-                    !runtime.readiness.is_empty(),
-                    "project {} emitted no workspace readiness receipt",
-                    project.name
-                );
+                let runtime = wait_for_runtime_receipt(&harness, Duration::from_secs(10))
+                    .with_context(|| format!("collecting runtime receipt for {}", project.name))?;
                 let project_receipt = project_receipts
                     .last_mut()
                     .context("project receipt missing after workload execution")?;
@@ -497,6 +488,7 @@ fn create_harness(project: &ProjectSpec, files: &[ProjectFixtureFile]) -> Result
             ScenarioConfig { timeout: Duration::from_secs(30), ..Default::default() }
                 .env("PERL_LSP_WORKSPACE", "1")
                 .env("PERL_LSP_E2E", "1")
+                .env("PERL_LSP_EAGER_WORKSPACE_INDEXING", "true")
                 .env("PERL_LSP_LOG", receipt_log_filter())
                 .with_file(PLAIN_ACTIVE_FILE, PLAIN_SOURCE),
         );
@@ -504,6 +496,7 @@ fn create_harness(project: &ProjectSpec, files: &[ProjectFixtureFile]) -> Result
     UxHarness::new(
         fixture_scenario_config(files)
             .env("PERL_LSP_E2E", "1")
+            .env("PERL_LSP_EAGER_WORKSPACE_INDEXING", "true")
             .env("PERL_LSP_LOG", receipt_log_filter()),
     )
 }
@@ -530,6 +523,23 @@ fn collect_runtime_receipt(harness: &UxHarness) -> RuntimeReceipt {
         }
     }
     receipt
+}
+
+fn wait_for_runtime_receipt(harness: &UxHarness, timeout: Duration) -> Result<RuntimeReceipt> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let receipt = collect_runtime_receipt(harness);
+        if !receipt.indexing.is_empty() && !receipt.readiness.is_empty() {
+            return Ok(receipt);
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow!(
+                "runtime receipt barrier timed out; stderr={:?}",
+                harness.client.peek_stderr_lines()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 fn parse_receipt_line(line: &str) -> Option<Value> {
