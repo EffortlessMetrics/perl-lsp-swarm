@@ -308,6 +308,21 @@ fn check_nonexistent_file() {
 }
 
 #[test]
+fn check_path_with_file_parent_reports_missing_path() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let file_parent = dir.path().join("not-a-directory");
+    std::fs::write(&file_parent, "not a directory")?;
+    let child = file_parent.join("file.pl");
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.args(["--check", child.to_str().ok_or("non-UTF-8 temp path")?])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("does not exist"));
+    Ok(())
+}
+
+#[test]
 fn completion_bash_produces_output() {
     let mut cmd = cargo_bin_cmd!("perl-lsp");
     cmd.args(["--completion", "bash"])

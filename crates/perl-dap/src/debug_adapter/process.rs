@@ -1415,6 +1415,17 @@ impl DebugAdapter {
                     config = config.with_timeout(t);
                 }
 
+                if let Err(error) = config.validate_timeout_bounds() {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(error.to_string()),
+                    };
+                }
+
                 // Create TCP attach session
                 let mut session = TcpAttachSession::new();
 
@@ -2363,27 +2374,31 @@ mod tests {
     #[test]
     fn launch_preserves_a_real_quote_delimited_filename() -> Result<(), String> {
         use std::fs;
-        use tempfile::tempdir;
+        use std::path::PathBuf;
 
-        let dir = tempdir().map_err(|e| format!("could not create temp directory: {e}"))?;
-        let script = dir.path().join("'script.pl'");
+        let script = PathBuf::from(format!("'perl-dap-quote-test-{}.pl'", std::process::id()));
         fs::write(&script, "print 1;\n").map_err(|e| format!("could not write script: {e}"))?;
         let script_path = script.to_str().ok_or("script path is not valid UTF-8")?;
-        let missing_perl = dir.path().join("missing-perl");
+        let missing_perl = std::env::current_dir()
+            .map_err(|e| format!("could not get current directory: {e}"))?
+            .join("missing-perl");
         let missing_perl = missing_perl.to_str().ok_or("interpreter path is not valid UTF-8")?;
 
         let mut adapter = DebugAdapter::new();
-        let error = adapter
-            .launch_debugger(
-                script_path,
-                missing_perl,
-                Vec::new(),
-                false,
-                std::collections::HashMap::new(),
-                None,
-                1,
-            )
-            .expect_err("missing interpreter should stop the launch after path validation");
+        let result = adapter.launch_debugger(
+            script_path,
+            missing_perl,
+            Vec::new(),
+            false,
+            std::collections::HashMap::new(),
+            None,
+            1,
+        );
+        fs::remove_file(&script).map_err(|e| format!("could not remove test script: {e}"))?;
+        let error = match result {
+            Ok(thread_id) => return Err(format!("unexpectedly launched thread {thread_id}")),
+            Err(error) => error,
+        };
 
         assert!(
             !error.contains("surrounding quotes"),

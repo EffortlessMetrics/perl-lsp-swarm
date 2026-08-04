@@ -234,7 +234,10 @@ fn run_check(command_name: &str, files: &[String]) -> i32 {
                     eprintln!(
                         "  hint: '{path}' is a directory. Use --check-project <dir> to check all files in a directory."
                     );
-                } else if e.kind() == std::io::ErrorKind::NotFound {
+                } else if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) {
                     eprintln!("  hint: '{path}' does not exist. Check the path for typos.");
                 } else {
                     eprintln!(
