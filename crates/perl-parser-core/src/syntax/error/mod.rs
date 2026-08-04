@@ -724,7 +724,7 @@ impl RecoverySalvageProfile {
 ///
 /// This remains a standalone helper so adding the corpus-gate signal does not
 /// change the public field layout of [`RecoverySalvageProfile`].
-pub fn count_blocking_non_recovered(diagnostics: &[ParseError]) -> usize {
+pub(crate) fn count_blocking_non_recovered(diagnostics: &[ParseError]) -> usize {
     diagnostics
         .iter()
         .filter(|error| {
@@ -1257,6 +1257,28 @@ mod tests {
 
         assert_eq!(output.recovered_count, 1);
         assert!(!output.terminated_early);
+    }
+
+    #[test]
+    fn blocking_non_recovered_counter_covers_blocking_families_only() {
+        let diagnostics = [
+            ParseError::syntax("syntax", 0),
+            ParseError::UnexpectedEof,
+            ParseError::UnexpectedToken {
+                expected: "identifier".to_string(),
+                found: "}".to_string(),
+                location: 3,
+            },
+            ParseError::LexerError { message: "invalid byte".to_string() },
+            ParseError::Advisory { message: "style".to_string(), location: 0 },
+            ParseError::Recovered {
+                site: RecoverySite::ArgList,
+                kind: RecoveryKind::InsertedCloser,
+                location: 0,
+            },
+        ];
+
+        assert_eq!(count_blocking_non_recovered(&diagnostics), 4);
     }
 
     #[test]

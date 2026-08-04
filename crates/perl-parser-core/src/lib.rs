@@ -165,7 +165,6 @@ pub use error::classifier::{RecoverySalvageMetrics, classify_recovery_salvage};
 pub use error::{
     BudgetTracker, ErrorCategory, ErrorClass, ParseBudget, ParseDiagnosticSeverity, ParseError,
     ParseOutput, ParseResult, RecoverySalvageClass, RecoverySalvageProfile,
-    count_blocking_non_recovered,
 };
 
 /// Builtin function signature lookup tables.
