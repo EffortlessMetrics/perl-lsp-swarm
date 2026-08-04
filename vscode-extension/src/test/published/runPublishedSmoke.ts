@@ -288,24 +288,28 @@ async function main(): Promise<void> {
     configureCurrentSourceSmoke(userDataDir, extensionsDir, workspaceTrustMode);
     await installExtension(vscodeExecutablePath, installTarget, userDataDir, extensionsDir);
     const vsixSha256 = selectedVsixSha256(installTarget);
+    const extensionTestsEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      PERL_LSP_EXTENSION_TEST_SKIP_STARTUP: '1',
+      PERL_LSP_PUBLISHED_EXTENSION_ID: envValue('PERL_LSP_PUBLISHED_EXTENSION_ID') || EXTENSION_ID,
+      PERL_LSP_PUBLISHED_EXTENSION_SOURCE: source,
+      PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot,
+      PERL_LSP_SMOKE_SOURCE_LABEL: process.env.PERL_LSP_SMOKE_SOURCE_LABEL || source,
+      PERL_LSP_TOOLCHAIN_NODE_VERSION: toolchainNodeVersion,
+      PERL_LSP_TOOLCHAIN_NPM_VERSION: toolchainNpmVersionValue,
+      PERL_LSP_VSCODE_VERSION: vscodeVersion,
+    };
+    if (vsixSha256 === undefined) {
+      delete extensionTestsEnv.PERL_LSP_VSIX_SHA256;
+    } else {
+      extensionTestsEnv.PERL_LSP_VSIX_SHA256 = vsixSha256;
+    }
 
     const testOptions = {
       vscodeExecutablePath,
       extensionDevelopmentPath: harnessExtensionPath,
       extensionTestsPath,
-      extensionTestsEnv: {
-        ...process.env,
-        PERL_LSP_EXTENSION_TEST_SKIP_STARTUP: '1',
-        PERL_LSP_PUBLISHED_EXTENSION_ID:
-          envValue('PERL_LSP_PUBLISHED_EXTENSION_ID') || EXTENSION_ID,
-        PERL_LSP_PUBLISHED_EXTENSION_SOURCE: source,
-        PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot,
-        PERL_LSP_SMOKE_SOURCE_LABEL: process.env.PERL_LSP_SMOKE_SOURCE_LABEL || source,
-        PERL_LSP_VSIX_SHA256: vsixSha256,
-        PERL_LSP_TOOLCHAIN_NODE_VERSION: toolchainNodeVersion,
-        PERL_LSP_TOOLCHAIN_NPM_VERSION: toolchainNpmVersionValue,
-        PERL_LSP_VSCODE_VERSION: vscodeVersion,
-      },
+      extensionTestsEnv,
       launchArgs: [
         ...workspaceSmokeLaunchArgs(workspacePath),
         `--user-data-dir=${userDataDir}`,
