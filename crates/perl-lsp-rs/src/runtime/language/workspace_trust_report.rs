@@ -4,7 +4,7 @@
 //! already has instead of scanning files, probing Perl, or recomputing provider
 //! evidence.
 
-use super::super::*;
+use super::super::{JsonRpcError, LspServer, Value, json, md5};
 use perl_lsp_rs_core::config::{Perl5LibPrecedence, WorkspaceConfig};
 use std::sync::atomic::Ordering;
 

@@ -2,7 +2,10 @@
 //!
 //! Handles textDocument/documentSymbol and textDocument/foldingRange requests.
 
-use super::super::{byte_to_utf16_col, *};
+use super::super::{
+    GLOBAL_CANCELLATION_REGISTRY, JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken,
+    Value, byte_to_utf16_col, json,
+};
 use crate::cancellation::RequestCleanupGuard;
 use crate::fallback::text::folding_ranges_from_text;
 use crate::protocol::{REQUEST_CANCELLED, req_uri};

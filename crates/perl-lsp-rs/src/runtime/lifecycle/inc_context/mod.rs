@@ -4,7 +4,7 @@
 //! module-resolution consumers. It preserves source labels so diagnostics and
 //! completion can later consume the same root set without rebuilding it.
 
-use super::super::*;
+use super::super::LspServer;
 use perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay;
 use perl_module::resolution::{IncRoot, build_effective_inc_roots};
 use std::cell::OnceCell;

@@ -53,7 +53,7 @@ mod tools;
 mod watchers;
 mod workspace;
 
-use super::*;
+use super::{LspServer, io};
 use serde_json::json;
 
 impl LspServer {
