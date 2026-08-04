@@ -146,6 +146,7 @@ jobs:
             target/receipts/ux-regression.json
             target/receipts/ux-regression.log
             target/receipts/ux-regression.exit
+            target/receipts/editor-ux/golden-editor-workload-v3.json
           if-no-files-found: warn
           retention-days: 7
 
