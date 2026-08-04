@@ -85,10 +85,7 @@ void test('still rejects growth for a platform-owned file', () => {
       baseline,
       'win32',
     ),
-    [
-      'total bytes grew from 12 to 13',
-      'file bin/win32-x64/perllsp.exe grew from 10 to 11 bytes',
-    ],
+    ['total bytes grew from 12 to 13', 'file bin/win32-x64/perllsp.exe grew from 10 to 11 bytes'],
   );
 });
 

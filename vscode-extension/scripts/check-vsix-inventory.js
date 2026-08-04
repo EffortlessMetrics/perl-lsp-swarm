@@ -44,12 +44,10 @@ function platformForPackagedFile(file) {
 
 function baselineForPlatform(baseline, platform) {
   const files = Object.fromEntries(
-    Object.entries(baseline.files).filter(
-      ([file]) => {
-        const filePlatform = platformForPackagedFile(file);
-        return filePlatform === null || filePlatform === platform;
-      },
-    ),
+    Object.entries(baseline.files).filter(([file]) => {
+      const filePlatform = platformForPackagedFile(file);
+      return filePlatform === null || filePlatform === platform;
+    }),
   );
   return summarizeInventory(Object.entries(files).map(([file, bytes]) => ({ file, bytes })));
 }
@@ -71,9 +69,7 @@ function compareInventory(actual, baseline, platform = process.platform) {
     if (!Object.hasOwn(effectiveBaseline.files, file)) {
       violations.push(`new packaged file: ${file}`);
     } else if (bytes > effectiveBaseline.files[file]) {
-      violations.push(
-        `file ${file} grew from ${effectiveBaseline.files[file]} to ${bytes} bytes`,
-      );
+      violations.push(`file ${file} grew from ${effectiveBaseline.files[file]} to ${bytes} bytes`);
     }
   }
   for (const file of Object.keys(effectiveBaseline.files)) {
