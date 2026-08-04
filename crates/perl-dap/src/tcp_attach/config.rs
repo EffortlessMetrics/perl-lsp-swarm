@@ -48,6 +48,7 @@ impl TcpAttachConfig {
     /// The validated resolved addresses are stored in `resolved_addrs` so that
     /// the connect path can pin to them, preventing DNS-rebinding TOCTOU.
     pub fn validate(&mut self) -> Result<()> {
+        self.validate_timeout_bounds()?;
         let host = self.host.trim_matches(' ');
         if host.is_empty() {
             anyhow::bail!(
@@ -87,6 +88,15 @@ impl TcpAttachConfig {
                 anyhow::bail!("TCP attach host '{host}' rejected: {e}");
             }
         }
+        Ok(())
+    }
+
+    /// Validate timeout bounds without resolving the attach host.
+    ///
+    /// Request handlers use this cheap owner-local check before DNS/SSRF
+    /// validation so an invalid timeout remains actionable even when the host
+    /// is malformed or unavailable.
+    pub(crate) fn validate_timeout_bounds(&self) -> Result<()> {
         if let Some(timeout) = self.timeout_ms {
             if timeout == 0 {
                 anyhow::bail!("Timeout must be greater than 0 milliseconds");
