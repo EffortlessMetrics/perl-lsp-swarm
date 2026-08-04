@@ -129,11 +129,24 @@ suite('Packaged VSIX bundled-server journey', function () {
     );
 
     const config = vscode.workspace.getConfiguration('perl-lsp');
-    const inspectedSettings = ['autoDownload', 'serverPath', 'critic.enabled'].flatMap((key) => {
-      const inspection = config.inspect<unknown>(key);
-      return inspection ? [{ key, value: inspection.globalValue }] : [];
-    });
-    const criticSettingRegistered = inspectedSettings.some(({ key }) => key === 'critic.enabled');
+    const configurationContributions = extension.packageJSON?.contributes?.configuration;
+    const registeredConfigurationKeys = new Set(
+      (Array.isArray(configurationContributions)
+        ? configurationContributions
+        : configurationContributions
+          ? [configurationContributions]
+          : []
+      ).flatMap((section: { properties?: Record<string, unknown> }) =>
+        Object.keys(section.properties ?? {}),
+      ),
+    );
+    const inspectedSettings = ['autoDownload', 'serverPath', 'critic.enabled']
+      .filter((key) => registeredConfigurationKeys.has(`perl-lsp.${key}`))
+      .map((key) => ({
+        key,
+        value: config.inspect<unknown>(key)?.globalValue,
+      }));
+    const criticSettingRegistered = registeredConfigurationKeys.has('perl-lsp.critic.enabled');
 
     try {
       await config.update('autoDownload', false, vscode.ConfigurationTarget.Global);
