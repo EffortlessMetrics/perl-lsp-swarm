@@ -186,7 +186,7 @@ impl LspServer {
                         "sequence": seq,
                         "isFinal": is_final,
                         "items": safe_items.into_iter().map(|item| {
-                            let range = item.range.unwrap_or_else(|| lsp_types::Range {
+                            let range = item.range.unwrap_or(lsp_types::Range {
                                 start: lsp_types::Position {
                                     line,
                                     character,
@@ -249,7 +249,7 @@ impl LspServer {
                 json!(safe_items
                     .into_iter()
                     .map(|item| {
-                        let range = item.range.unwrap_or_else(|| lsp_types::Range {
+                        let range = item.range.unwrap_or(lsp_types::Range {
                             start: lsp_types::Position { line, character },
                             end: lsp_types::Position { line, character },
                         });
