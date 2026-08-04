@@ -137,42 +137,24 @@
 # AI Completion
 # ──────────────────────────────────────────────────────────────────────────────
 # AI-powered inline completions using an OpenAI-compatible API endpoint.
-# Disabled by default. Project config may only opt OUT (enabled = false),
-# never opt in — the user must enable AI via their editor's LSP settings
-# (e.g. perl-lsp.aiCompletion.enabled in VS Code).
+# Disabled by default.
 #
-# IMPORTANT: endpoint, model, and API key fields set here are accepted, but
-# for security reasons the API key is always read from an environment
-# variable — never hardcode it in this file.
+# SECURITY: The project .perl-lsp.toml may ONLY opt out of AI completions.
+# It CANNOT set endpoint, provider, model, api_key_*, timeout, or any other
+# runtime field. A hostile cloned repository could otherwise name an
+# arbitrary environment variable (e.g. AWS_SECRET_ACCESS_KEY) and have its
+# value POSTed to an attacker-chosen endpoint (#4955). Those fields arrive
+# only through the LSP client configuration channel (VS Code settings or
+# initializationOptions), never from workspace config.
+#
+# To configure AI completions, use your editor's LSP settings:
+#   VS Code: perl-lsp.aiCompletion.enabled, perl-lsp.aiCompletion.endpoint, etc.
 
 [ai_completion]
-# Opt out of AI completions for this project (default: false).
-# Set to true to force-disable AI even if the user enabled it in their editor.
+# Opt out of AI completions for this project.
+# When false, disables AI even if the user enabled it in their editor.
+# When true or absent, has no effect (a repository cannot turn AI on).
 # enabled = false
-
-# Provider type (default: "openai_compat"). Currently the only supported value.
-# provider = "openai_compat"
-
-# API endpoint URL (default: ""). Required when AI is enabled.
-# Example: "https://api.openai.com/v1/chat/completions"
-# endpoint = ""
-
-# Model identifier (default: ""). Example: "gpt-4o-mini".
-# model = ""
-
-# Environment variable name containing the API key (default: "OPENAI_API_KEY").
-# The server reads the key from this env var at runtime.
-# api_key_env = "OPENAI_API_KEY"
-
-# HTTP header used to send the API key (default: "Authorization").
-# Some providers use "x-api-key" instead.
-# api_key_header = "Authorization"
-
-# Scheme prepended to the key (default: "Bearer"). Set to "" for bare tokens.
-# api_key_prefix = "Bearer"
-
-# Request timeout in milliseconds (default: 5000).
-# timeout_ms = 5000
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Next Edit (experimental)
@@ -180,5 +162,5 @@
 # Future runtime boundary for next-edit suggestions. Currently dormant.
 
 [next_edit]
-# Enable the next-edit runtime (default: false). Experimental.
+# Enable the next-edit runtime. Experimental.
 # enabled = false
