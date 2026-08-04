@@ -65,9 +65,7 @@ function stageServerForPackage(serverPath, extensionRoot = root) {
   if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
     throw new Error(`Refusing to replace non-regular packaged server path: ${destination}`);
   }
-  const previous = existing
-    ? { bytes: fs.readFileSync(destination), mode: existing.mode }
-    : null;
+  const previous = existing ? { bytes: fs.readFileSync(destination), mode: existing.mode } : null;
   const createdBinRoot = !fs.existsSync(binRoot);
   const createdPlatformRoot = !fs.existsSync(platformRoot);
 
@@ -84,7 +82,11 @@ function stageServerForPackage(serverPath, extensionRoot = root) {
     } else {
       fs.rmSync(destination, { force: true });
     }
-    if (createdPlatformRoot && fs.existsSync(platformRoot) && fs.readdirSync(platformRoot).length === 0) {
+    if (
+      createdPlatformRoot &&
+      fs.existsSync(platformRoot) &&
+      fs.readdirSync(platformRoot).length === 0
+    ) {
       fs.rmSync(platformRoot, { recursive: true, force: true });
     }
     if (createdBinRoot && fs.existsSync(binRoot) && fs.readdirSync(binRoot).length === 0) {
