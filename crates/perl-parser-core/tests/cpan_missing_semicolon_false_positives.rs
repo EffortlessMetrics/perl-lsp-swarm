@@ -163,3 +163,17 @@ fn bareword_followed_by_my_is_a_known_expression_parsing_gap() {
         "if this starts failing the expression-parsing gap was fixed; delete this test"
     );
 }
+
+/// The literal-context bug, on the *other* scanner. `is_leaked_heredoc_terminator`
+/// repeated the naive byte scan two commits after it was fixed in its sibling,
+/// so a `<<FOO` inside a string literal exempted a later bare `FOO` (#5503).
+///
+/// Both callers now share one scanner, so this and
+/// `angle_brackets_inside_a_literal_are_not_a_heredoc_introducer` pin the same
+/// property from the two directions that reach it.
+#[test]
+fn a_heredoc_name_inside_a_literal_does_not_exempt_a_later_bareword() {
+    assert_blocking_diagnostic("my $s = \"<<FOO\";\nprint $s;\nFOO\nprint \"hi\";\n");
+    assert_blocking_diagnostic("my $s = '<<FOO';\nprint $s;\nFOO\nprint \"hi\";\n");
+    assert_blocking_diagnostic("# <<FOO in a comment\nmy $x = 1;\nFOO\nprint \"hi\";\n");
+}

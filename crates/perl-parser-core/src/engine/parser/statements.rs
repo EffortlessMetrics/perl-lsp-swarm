@@ -761,21 +761,10 @@ impl<'a> Parser<'a> {
         }
 
         let end = stmt.location.start.min(self.src_bytes.len());
-        let before = &self.src_bytes[..end];
         let needle = name.as_bytes();
 
-        before.windows(2).enumerate().any(|(index, pair)| {
-            if pair != b"<<" {
-                return false;
-            }
-            let mut rest = &before[index + 2..];
-            if rest.first() == Some(&b'~') {
-                rest = &rest[1..];
-            }
-            if matches!(rest.first(), Some(b'"' | b'\'' | b'`')) {
-                rest = &rest[1..];
-            }
-            rest.starts_with(needle)
+        Self::scan_for_heredoc_introducer(&self.src_bytes[..end], |delimiter| {
+            delimiter.starts_with(needle)
         })
     }
 
@@ -806,10 +795,30 @@ impl<'a> Parser<'a> {
     fn statement_span_has_heredoc_introducer(&mut self, stmt: &Node) -> bool {
         let end = self.current_position().min(self.src_bytes.len());
         let start = stmt.location.start.min(end);
-        let span = &self.src_bytes[start..end];
 
+        Self::scan_for_heredoc_introducer(&self.src_bytes[start..end], |delimiter| {
+            matches!(delimiter.first(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+        })
+    }
+
+    /// Scan `span` for a heredoc introducer in **code position** and hand the
+    /// bytes that follow it to `accepts_delimiter`.
+    ///
+    /// One scanner for both callers on purpose. The quote tracking was written
+    /// once, then the naive byte scan was written again in
+    /// `is_leaked_heredoc_terminator` and reintroduced the identical
+    /// literal-context bug two commits later (#5503). Sharing it means the next
+    /// caller cannot repeat that.
+    ///
+    /// `'`, `"`, `` ` `` and `#`-to-end-of-line are tracked, which is what
+    /// distinguishes a literal from code for this purpose; `<<` used as left
+    /// shift is not matched because a digit or space fails every caller's
+    /// delimiter test. It errs toward *reporting*: an unmatched quote resolves
+    /// at end of span, so a real introducer is never hidden behind one.
+    fn scan_for_heredoc_introducer(span: &[u8], accepts_delimiter: impl Fn(&[u8]) -> bool) -> bool {
         let mut quote: Option<u8> = None;
         let mut index = 0;
+
         while index < span.len() {
             let byte = span[index];
 
@@ -831,20 +840,19 @@ impl<'a> Parser<'a> {
                 b'\'' | b'"' | b'`' | b'#' => {
                     quote = Some(byte);
                     index += 1;
-                    continue;
                 }
                 b'<' if span.get(index + 1) == Some(&b'<') => {
-                    let mut rest = span[index + 2..].iter();
-                    let next = match rest.next() {
-                        Some(b'~') => rest.next(),
-                        other => other,
-                    };
-                    if matches!(next, Some(b'"' | b'\'' | b'`' | b'A'..=b'Z' | b'a'..=b'z' | b'_'))
-                    {
+                    let mut rest = &span[index + 2..];
+                    if rest.first() == Some(&b'~') {
+                        rest = &rest[1..];
+                    }
+                    if matches!(rest.first(), Some(b'"' | b'\'' | b'`')) {
+                        rest = &rest[1..];
+                    }
+                    if accepts_delimiter(rest) {
                         return true;
                     }
                     index += 2;
-                    continue;
                 }
                 _ => index += 1,
             }
