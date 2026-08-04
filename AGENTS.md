@@ -118,7 +118,7 @@ Detailed method and contracts:
 - issues hold research, corrections, current synthesis, plans, dependencies, and next
   coherent actions;
 - pull requests hold one acceptance-and-rollback candidate;
-- submitted reviews and inline threads hold formal findings and evidence-backed
+- submitted reviews and inline threads hold findings and evidence-backed
   dispositions;
 - checks and rulesets hold current machine and integration evidence;
 - merge closeout records what landed, what remains, and what becomes actionable next.
@@ -134,8 +134,9 @@ A clean review is valid. Never manufacture a finding or edit to prove review eff
 
 ## Review
 
-Review is not reading a diff, relaying CI green, or repeating a subagent verdict.
-For substantive work it is a directed, falsifying, and verified judgment:
+Review is not reading a diff, relaying CI green, posting a head/claim hash, or repeating
+a subagent verdict. For substantive work it is a directed, falsifying, and verified
+judgment:
 
 - **discrimination** — what realistic wrong implementation does the proof reject?
 - **production reachability** — what live request, consumer, or protocol path reaches the change?
@@ -147,44 +148,41 @@ For substantive work it is a directed, falsifying, and verified judgment:
 The construction context must not be the only detection surface supporting merge.
 Fresh context is useful when it brings a different source, oracle, threat model,
 method, or attention surface; identity separation by itself is neither necessary
-nor sufficient. For a substantive fixed or refuted disposition, enforced review
-convergence still requires a passing verification receipt from a verifier outside
-the writer set. A clean review is a valid result when that applicable protocol is
-satisfied.
+nor sufficient.
 
-The review sequence is:
+Review is cumulative and semantic. A submitted review, inline finding, reply, and
+evidence-backed disposition are the durable record. Do not post `Review pass (...) at
+head ... and claim ...` receipt comments. A later commit does not invalidate review
+merely because the SHA changed.
 
-```text
-writer self-check
-→ proof challenge
-→ mutable candidate challenge
-→ repair and simplification
-→ final mutable challenge
-→ fixed-candidate formal review
-→ accountable integration judgment
-```
+After repair:
 
-“Mutable” describes the challenge method, not a pre-publication time window.
-`final-challenge` may run after publication or after accepted repair. `review-pr`
-is fixed-candidate formal judgment; CI and reviewer/subagent conclusions are
-evidence for the accountable owner, not approval by themselves.
+- verify the affected finding, proof, and changed seam;
+- revisit claim, authority, reachability, risk, rollback, or compatibility only when
+  the repair materially changes them;
+- do not restart a full `deep` review for formatting, editorial cleanup, generated
+  receipt refresh, or stronger tests unless they change a substantive conclusion;
+- review actual conflict or integration repairs at the affected seam.
+
+A clean review is valid and should leave a concise conclusion that helps the next
+session understand what was checked and what remains unproved.
 
 ## Proof and currentness
 
-Formal review binds to:
+Keep candidate, integration, and landed evidence distinct.
 
-```text
-full candidate head SHA
-+ normalized material PR claim and review-index digest
-```
-
-- candidate or material claim change → rerun affected proof and review;
+- candidate behavior or material claim changes → rerun affected proof and review;
 - actual merge conflict → resolve it, rerun conflict-affected proof, and review the
-  resulting candidate;
-- explicit prerequisite change or actual merge-group or combined-tree failure →
-  perform targeted analysis and lane-local repair;
-- unrelated `main` movement with an unchanged conflict-free candidate and material
-  claim → no rebase, update-branch, empty commit, full CI replay, or review churn.
+  repaired seam;
+- explicit prerequisite change or actual merge-group/combined-tree failure → targeted
+  analysis and lane-local repair;
+- unrelated `main` movement with a conflict-free candidate → no rebase, update-branch,
+  empty commit, full CI replay, or review churn;
+- a head SHA change by itself → no review invalidation.
+
+At merge time, the current head SHA may be used as compare-and-swap protection so the
+branch cannot move between inspection and merge. That is merge safety, not review
+currentness.
 
 This repository squash-merges. GitHub creates the landed squash commit;
 reconciliation verifies its effect on current `main`.

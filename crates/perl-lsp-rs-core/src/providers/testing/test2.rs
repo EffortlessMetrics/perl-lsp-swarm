@@ -32,9 +32,9 @@
 //! the LSP from emitting false "unknown subroutine" diagnostics for tools we do
 //! not enumerate. Exclusions and renames are applied on top of the default set.
 
-use std::sync::LazyLock;
 use regex::Regex;
 use std::collections::BTreeSet;
+use std::sync::LazyLock;
 
 // ---------------------------------------------------------------------------
 // Per-tool export constants (traceable to individual Test2::Tools::* modules).

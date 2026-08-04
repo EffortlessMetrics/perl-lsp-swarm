@@ -4,10 +4,10 @@
 //! named CSS colors, Term::ANSIColor calls) and provides color presentation
 //! options for editors.
 
-use std::sync::LazyLock;
 use perl_position_tracking::{WirePosition, WireRange, offset_to_utf16_line_col};
 use regex::Regex;
 use serde_json::{Value, json};
+use std::sync::LazyLock;
 
 /// Regex for hex color codes: #RGB, #RRGGBB, #RRGGBBAA
 static HEX_COLOR_RE: LazyLock<Option<Regex>> =

@@ -4,8 +4,8 @@
 //! into structured [`PerlValue`] representations.
 
 use crate::value::PerlValue;
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 use thiserror::Error;
 
 /// Errors that can occur during variable parsing.
@@ -67,8 +67,9 @@ static GLOB_RE: LazyLock<Result<Regex, regex::Error>> =
 
 /// Regex for parsing compiled regexp values (reserved for future use)
 #[allow(dead_code)]
-static REGEX_RE: LazyLock<Result<Regex, regex::Error>> =
-    LazyLock::new(|| Regex::new(r"^(?:\(\?(?P<flags>[xism-]*)(?:-[xism]+)?:)?(?P<pattern>.*?)\)?$"));
+static REGEX_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
+    Regex::new(r"^(?:\(\?(?P<flags>[xism-]*)(?:-[xism]+)?:)?(?P<pattern>.*?)\)?$")
+});
 
 // Accessor functions - return Option<&Regex>, treating compile failure as "no match"
 fn scalar_var_re() -> Option<&'static Regex> {

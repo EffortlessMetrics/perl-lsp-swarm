@@ -12,8 +12,8 @@ GitHub is the native interaction and asynchronous handoff layer for the developm
 | Branch or worktree | one current candidate's mutation surface and writer |
 | Pull request | one coherent acceptance-and-rollback candidate |
 | Draft or ready state | whether broad review is useful now |
-| Review request | visible pending formal judgment |
-| Submitted review | candidate-and-material-claim-bound formal judgment |
+| Review request | visible pending judgment where deliberately requested |
+| Submitted review | useful review conclusion and findings over the cumulative PR |
 | Inline review thread | one localized finding and its evidence/discussion |
 | Review reply and resolution | supported finding disposition |
 | Checks and artifacts | candidate-bound machine evidence and instrument state |
@@ -53,7 +53,7 @@ Each lane owns:
 - its current candidate;
 - proof and review repair;
 - branch/worktree safety;
-- its eventual rebase, merge-conflict resolution, or integration repair;
+- its eventual merge-conflict resolution or integration repair;
 - current issue/PR closeout.
 
 Do not use GitHub to project touched-file overlap, lane liveness, writer reservations, candidate frontiers, or executor telemetry.
@@ -83,7 +83,7 @@ needs-human-decision
 needs-reproduction
 ```
 
-Do not use labels as proof of build, review, CI, response, or merge completion. Native PR, review, thread, check, and merge state already owns those facts.
+Do not use labels as proof of build, review, CI, response, or merge completion. Native PR, review, thread, check, and merge state owns those facts.
 
 ## Pull request review index
 
@@ -106,38 +106,31 @@ A substantive PR should make its claim and proof legible:
 
 Publish ready by default. Draft is an explicit exception for remote-only proof, real collaboration on the same candidate branch, or a protected integration experiment that requires remote evidence before broad review is useful.
 
-## Formal review
+## Review
 
-Formal review uses GitHub's review interface and identifies the complete review subject: exact candidate plus normalized material claim/review index.
+Review uses GitHub's review interface, inline threads, and useful top-level conclusions. It is cumulative and semantic, not an exact-head receipt protocol.
+
+A helpful review record contains:
 
 ```text
-Reviewed candidate: <full head SHA>
-Reviewed material claim: <digest or exact stable representation>
-Reviewed claim summary
+Reviewed claim and production path
 Review lenses used
-REVIEW_CURRENT | REVIEW_FINDINGS_OPEN | REVIEW_NOT_PROVEN
-Material findings with evidence
+Material findings and evidence, or clean conclusion
+Affected-seam follow-up after repair where applicable
 What the review establishes
 What remains unproved
 ```
 
-Use the repository-owned claim-digest/currentness helper where present rather than inventing a second normalization. A clean review is valid.
+Do not post comments that merely say a review ran at a head SHA and claim digest. Do not require a new full review merely because another commit was pushed.
 
-The canonical convergence command also reports a factual `formal_review`
-observation. Its `classification` is one of:
+A later change receives additional review only where it can change the conclusion:
 
-```text
-CURRENT | FINDINGS_OPEN | PENDING | STALE | NOT_APPLICABLE | NOT_PROVEN
-```
+- verify repaired findings and affected proof;
+- review material claim, production-route, authority, risk, rollback, or compatibility changes;
+- review actual conflict or integration repairs;
+- do not restart broad review for formatting, editorial cleanup, generated receipt refresh, or stronger tests unless they change a substantive conclusion.
 
-`CURRENT` means a submitted human review is attached to the candidate head;
-`FINDINGS_OPEN` means current change requests or unresolved review evidence
-remains; `PENDING` means a native request, draft, or in-flight review remains;
-`STALE` means the latest human review predates the candidate; and
-`NOT_APPLICABLE` is reserved for the provider's no-required-review case with
-no review evidence. Fetch, snapshot, or claim-instrument failures are
-`NOT_PROVEN`. This is an observation surface, not merge authorization, a
-review quota, or a requirement for a magic phrase or receipt marker.
+A clean review is valid.
 
 ## Finding disposition
 
@@ -150,8 +143,14 @@ Evidence: current candidate, focused test or oracle, governing source, or linked
 
 Thread resolution is not itself evidence.
 
+## Merge safety
+
+Use live required checks, unresolved threads, current change requests, draft state, mergeability, rulesets, and queue state as integration authority.
+
+The current PR head SHA may be used as compare-and-swap protection at merge time. That prevents racing a moving branch; it does not make review currentness depend on the SHA.
+
 ## Focused helpers
 
-Repository-owned helpers may centralize difficult factual questions such as candidate identity, complete review-thread enumeration, required-check currentness, material-claim identity, and merge preflight for the selected PR.
+Repository-owned helpers may centralize difficult factual questions such as candidate identity, complete review-thread enumeration, required-check currentness, and merge preflight for the selected PR.
 
-They must not answer which lifecycle stage the PR is in, which agent works next, which issue should be prioritized, or how neighbouring lanes overlap.
+They must not create a second review lifecycle, require claim-hash receipt comments, answer which agent works next, or predict neighbouring-lane overlap.
