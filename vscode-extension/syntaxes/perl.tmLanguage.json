@@ -126,6 +126,10 @@
                 },
                 {
                     "name": "constant.numeric.octal.perl",
+                    "match": "\\b0o[0-7_]+\\b"
+                },
+                {
+                    "name": "constant.numeric.octal.perl",
                     "match": "\\b0[0-7_]+\\b"
                 },
                 {
@@ -138,7 +142,7 @@
                 },
                 {
                     "name": "constant.numeric.integer.perl",
-                    "match": "\\b\\d+\\b"
+                    "match": "\\b\\d[\\d_]*\\b"
                 }
             ]
         },
