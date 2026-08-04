@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10098 |
+| Total tracked files | 10100 |
 | Rust-family files | 3092 |
-| Non-Rust files | 7006 |
+| Non-Rust files | 7008 |
 | Allowlisted | 4726 |
-| Unclassified | 2280 |
+| Unclassified | 2282 |
 
 ## Non-Rust files by category
 
@@ -22,7 +22,7 @@
 | production | 208 |
 | test | 1711 |
 | tooling | 319 |
-| unclassified | 2280 |
+| unclassified | 2282 |
 
 ## Unclassified files
 
@@ -143,6 +143,7 @@
 | `.changes/unreleased/vscode-5305-Fixed-213744.yaml` | `yaml` |
 | `.changie.yaml` | `yaml` |
 | `.codex/hooks.json` | `json` |
+| `.dockerignore` | `` |
 | `.editorconfig` | `` |
 | `.kiro/specs/parser-accuracy-observability/.config.kiro` | `kiro` |
 | `.kiro/specs/rc2-semantic-analysis/.config.kiro` | `kiro` |
@@ -2075,6 +2076,7 @@
 | `tests/test_review_claim_currentness.py` | `py` |
 | `tests/test_review_claim_fail_closed.py` | `py` |
 | `tests/test_review_claim_hidden_comments.py` | `py` |
+| `tests/test_semantic_review_currentness.py` | `py` |
 | `tokmd.toml` | `toml` |
 | `tree-sitter-perl/.clang-format` | `` |
 | `tree-sitter-perl/.editorconfig` | `` |
