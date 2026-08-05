@@ -1170,6 +1170,9 @@ impl<'a> Parser<'a> {
                         // (e.g. `qw [FOO BAR]`), so trim before the delimiter check.
                         let qw_token = self.consume_token()?;
                         let text: &str = qw_token.text.as_ref();
+                        let had_space_before_delimiter = text
+                            .strip_prefix("qw")
+                            .is_some_and(|suffix| suffix.chars().next().is_some_and(char::is_whitespace));
                         if let Some(content) = text
                             .strip_prefix("qw")
                             .map(str::trim_start)
@@ -1188,8 +1191,16 @@ impl<'a> Parser<'a> {
                                 }
                             })
                         {
-                            // Reformat as "qw(FOO BAR)" for consistency, stripping # comments first.
-                            let cleaned = strip_qw_comments(content);
+                            // Reformat as "qw(FOO BAR)" for consistency. A `#` token
+                            // inside a spaced `qw` list is still a list word in Perl
+                            // (the interpreter warns but preserves it); retain it here
+                            // rather than dropping the following words. Keep the
+                            // legacy comment stripping for adjacent forms unchanged.
+                            let cleaned = if had_space_before_delimiter {
+                                content.to_string()
+                            } else {
+                                strip_qw_comments(content)
+                            };
                             let words: Vec<&str> = cleaned.split_whitespace().collect();
                             let qw_str = format!("qw({})", words.join(" "));
                             args.push(qw_str);
