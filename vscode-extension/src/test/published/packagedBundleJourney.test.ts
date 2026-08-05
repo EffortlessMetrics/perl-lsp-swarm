@@ -264,6 +264,7 @@ suite('Packaged VSIX bundled-server journey', function () {
           version: process.env.PERL_LSP_PUBLISHED_EXTENSION_VERSION ?? null,
           startup_source: metrics.binary_resolution_source ?? null,
         },
+        startup: metrics,
         vsix_identity: {
           extension_id: extension.id,
           version: extension.packageJSON?.version ?? null,
@@ -319,8 +320,28 @@ suite('Packaged VSIX bundled-server journey', function () {
         ([label, result]) =>
           result.status === 'error' || (label === 'rename' && result.status === 'unsafe_refusal'),
       );
-      receipt.outcome = providerFailures.length === 0 ? 'completed' : 'failed';
-      receipt.product_blockers = providerFailures.map(([label, result]) => ({ label, result }));
+      const lifecycleExpectations: Array<[string, string]> = [
+        ['binary_resolution_source', 'bundled'],
+        ['binary_resolution_status', 'ok'],
+        ['server_start_status', 'ok'],
+        ['initialize_status', 'ok'],
+      ];
+      const lifecycleFailures = lifecycleExpectations
+        .filter(([field, expected]) => metrics[field] !== expected)
+        .map(([field, expected]) => ({
+          label: `lifecycle.${field}`,
+          result: {
+            expected,
+            actual: metrics[field] ?? null,
+            metrics,
+          },
+        }));
+      const productBlockers = [
+        ...lifecycleFailures,
+        ...providerFailures.map(([label, result]) => ({ label, result })),
+      ];
+      receipt.outcome = productBlockers.length === 0 ? 'completed' : 'failed';
+      receipt.product_blockers = productBlockers;
 
       fs.writeFileSync(
         path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json'),
