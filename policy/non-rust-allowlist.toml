@@ -281,6 +281,22 @@ review_after = "2026-08-07"
 # =============================================================================
 
 [[allow]]
+id = "non-rust-vscode-active-document-readiness-test"
+path = "vscode-extension/src/test/activeDocumentReadiness.test.ts"
+kind = "editor_extension_test"
+language = "typescript"
+surface = "editor"
+classification = "test"
+owner = "editor/vscode"
+reason = "Focused readiness tracker regression tests execute only in the extension test suite and are not shipped in the packaged extension."
+covered_by = [
+  "cd vscode-extension && npm run test:ci",
+  "vscode-managed-binary-smoke",
+]
+created = "2026-08-04"
+review_after = "2026-11-04"
+
+[[allow]]
 id = "non-rust-vscode-extension"
 glob = "vscode-extension/**"
 kind = "editor_extension"

@@ -101,6 +101,7 @@ impl<R: perl_subprocess_runtime::SubprocessRuntime> FormattingProvider<R> {
         options: &FormattingOptions,
     ) -> Result<FormattedDocument, FormattingError> {
         match self.mode {
+            // Compat mode is currently a no-op alias for Native (#5054 item 6).
             FormatterMode::Native | FormatterMode::Compat => {
                 Ok(native_format_document(content, options, self.perltidy_config.as_ref()))
             }
@@ -131,6 +132,7 @@ impl<R: perl_subprocess_runtime::SubprocessRuntime> FormattingProvider<R> {
         }
 
         match self.mode {
+            // Compat mode is currently a no-op alias for Native (#5054 item 6).
             FormatterMode::Native | FormatterMode::Compat => {
                 Ok(native_format_range(content, range, options, self.perltidy_config.as_ref()))
             }
@@ -288,6 +290,18 @@ fn native_format_document(
     let config = native_format_config(options, perltidy_config, true);
     let result = NativeFormatter::new().format_document(content, &config);
     if result.diagnostics.is_empty() {
+        let edits: Vec<_> = result.edits.into_iter().map(native_edit_to_format_edit).collect();
+        // Log when the native formatter produces no edits on a non-trivial document,
+        // so users understand why their code wasn't reformatted (#5054 item 7).
+        // The native formatter supports only a subset of Perl (lexical/assignment/
+        // call/if-else/for-sub); complex constructs pass through unchanged.
+        if edits.is_empty() && content.trim().len() > 20 {
+            tracing::debug!(
+                len = content.len(),
+                "native formatter produced no edits — document may contain unsupported constructs \
+                 (print, grep/map blocks, ternaries, heredocs, regex); consider using external perltidy"
+            );
+        }
         let formatted = apply_lsp_whitespace_options(&result.formatted, options);
         if formatted != result.formatted {
             return FormattedDocument {
@@ -299,10 +313,7 @@ fn native_format_document(
             };
         }
 
-        return FormattedDocument {
-            text: result.formatted,
-            edits: result.edits.into_iter().map(native_edit_to_format_edit).collect(),
-        };
+        return FormattedDocument { text: result.formatted, edits };
     }
 
     FormattedDocument { text: content.to_string(), edits: vec![] }

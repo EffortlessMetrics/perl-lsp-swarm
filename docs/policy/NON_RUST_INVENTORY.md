@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10100 |
-| Rust-family files | 3092 |
-| Non-Rust files | 7008 |
-| Allowlisted | 4726 |
-| Unclassified | 2282 |
+| Total tracked files | 10114 |
+| Rust-family files | 3098 |
+| Non-Rust files | 7016 |
+| Allowlisted | 4732 |
+| Unclassified | 2284 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
 | config | 236 |
-| documentation | 2251 |
+| documentation | 2253 |
 | generated | 1 |
-| production | 208 |
-| test | 1711 |
+| production | 211 |
+| test | 1712 |
 | tooling | 319 |
-| unclassified | 2282 |
+| unclassified | 2284 |
 
 ## Unclassified files
 
@@ -128,6 +128,7 @@
 | `.changes/unreleased/product-5472-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5486-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5523-Fixed-000000.yaml` | `yaml` |
+| `.changes/unreleased/product-5525-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5529-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/vscode-3904-Changed-232653.yaml` | `yaml` |
 | `.changes/unreleased/vscode-4712-Fixed-002852.yaml` | `yaml` |
@@ -2190,6 +2191,7 @@
 | `xtask/tests/fixtures/aggregator/pass/advisory.json` | `json` |
 | `xtask/tests/fixtures/aggregator/pass/lint.json` | `json` |
 | `xtask/tests/fixtures/aggregator/pass/tests.json` | `json` |
+| `xtask/tests/fixtures/ci-explain-run/gate-receipts/receipt.json` | `json` |
 | `xtask/tests/fixtures/ci-scope/parser-ratchet/ci-scope-change.json` | `json` |
 | `xtask/tests/fixtures/ci-scope/parser-ratchet/docs-only-non-parser.json` | `json` |
 | `xtask/tests/fixtures/ci-scope/parser-ratchet/lexer-token-change.json` | `json` |
@@ -3824,6 +3826,8 @@
 | `docs/ci/workflow-security-policy.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/ci/workflow-trigger-policy.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/ci/worktree-allocator.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/compiler/profiles/lsp_exactness_v1.yaml` | documentation | `non-rust-docs-tree` | docs |
+| `docs/compiler/profiles/selected_upstream_v1.yaml` | documentation | `non-rust-docs-tree` | docs |
 | `docs/concepts/cache-aware-agent-lanes.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/concepts/doctrine-is-a-hypothesis.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/concepts/enforcement-over-doctrine.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6867,6 +6871,7 @@
 | `vscode-extension/scripts/reporter.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/run-jest.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/run-local-vsix-smoke.js` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/scripts/run-local-vsix-smoke.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/run-workspace-capability-smoke.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/sample-local-vsix-smoke.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/sample-local-vsix-smoke.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -6877,6 +6882,7 @@
 | `vscode-extension/scripts/vsix-inventory-baseline.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/snippets/launch.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/snippets/perl.json` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/activeDocumentReadiness.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/commandResults.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/criticCommandGroup.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/debugAdapter.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -6917,6 +6923,7 @@
 | `vscode-extension/src/supportCommands.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/__mocks__/vscode.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/activationStartup.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/activeDocumentReadiness.test.ts` | test | `non-rust-vscode-active-document-readiness-test` | editor/vscode |
 | `vscode-extension/src/test/arrowCompletion.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/commandResults.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/commands.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -6964,6 +6971,7 @@
 | `vscode-extension/src/test/published/harness/extension.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/harness/package.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/managedBinaryPublishedSmoke.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/published/packagedBundleJourney.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/runPublishedSmoke.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/suite/index.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/readmeCommandCoverage.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |

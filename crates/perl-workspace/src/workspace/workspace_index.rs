@@ -93,6 +93,7 @@ pub use crate::workspace::monitoring::{
     IndexMetrics, IndexPerformanceCaps, IndexPhase, IndexPhaseTransition, IndexResourceLimits,
     IndexStateKind, IndexStateTransition, ResourceKind,
 };
+pub use perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS;
 use perl_symbol::surface::decl::extract_symbol_decls;
 use perl_symbol::surface::facts::{symbol_decls_to_semantic_facts, symbol_refs_to_semantic_facts};
 // Only used by `build_canonical_fact_shard_for_ast`, which is now
@@ -2117,10 +2118,15 @@ impl WorkspaceIndex {
         // indexing. document_store has its own internal RwLock, and its
         // version check handles concurrent writes independently.
         {
+            // Use generation as the document version so the document_store's
+            // stale-write check becomes load-bearing. Ensure version >= 1 to
+            // avoid rejecting updates to batch-indexed files (which open with
+            // version 1) when generation is 0 (#3686).
+            let doc_version = (generation as i32).max(1);
             if self.document_store.is_open(&uri_str) {
-                self.document_store.update(&uri_str, 1, text.clone());
+                self.document_store.update(&uri_str, doc_version, text.clone());
             } else {
-                self.document_store.open(uri_str.clone(), 1, text.clone());
+                self.document_store.open(uri_str.clone(), doc_version, text.clone());
             }
         }
         let mut parser = Parser::new(&text);
@@ -13018,20 +13024,6 @@ sub bar { return $greeting; }
         );
     }
 }
-
-/// Minimum query length (in `char`s of the lowercased query) that admits the
-/// loose match tiers -- substring and subsequence. (#5335)
-///
-/// A one-character query is too weak to justify loose matching: every symbol
-/// whose name contains that character anywhere would match, which is nearly
-/// the whole workspace. Such queries are restricted to the exact and prefix
-/// tiers instead.
-///
-/// The same threshold is applied by the open-document fallback matcher,
-/// `perl_lsp_rs_core::providers::symbol_query::matches_query`. The two
-/// matchers are independent implementations, so the constant is deliberately
-/// duplicated rather than shared across the crate boundary.
-pub const MIN_LOOSE_MATCH_QUERY_CHARS: usize = 2;
 
 /// Check if `needle` is a subsequence of `haystack` (fuzzy match).
 /// E.g. "gpn" is a subsequence of "get_page_name". (#5087)

@@ -1,6 +1,6 @@
 //! Request latency instrumentation for first-use LSP hot paths.
 
-use super::*;
+use super::LspServer;
 use std::time::Instant;
 
 pub(crate) const FIRST_USE_LATENCY_METHODS: &[&str] = &[
@@ -57,6 +57,7 @@ fn duration_ms_since(start: Instant) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(test)]
     use super::*;
 
     #[test]

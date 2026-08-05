@@ -8,7 +8,7 @@
 //! - **Ready state**: Full workspace index + text search across all files
 //! - **Building/Degraded state**: Same-file semantic analysis + open document scan
 
-use super::super::{byte_to_utf16_col, *};
+use super::super::{DocumentHighlightProvider, LspServer, Value, byte_to_utf16_col, json};
 use crate::protocol::{JsonRpcError, JsonRpcId, REQUEST_CANCELLED, req_position, req_uri};
 use crate::runtime::window::RequestProgressGuard;
 use crate::state::{reference_search_deadline, references_cap};
@@ -1981,6 +1981,7 @@ impl LspServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::CONTENT_MODIFIED;
     use std::error::Error;
 
     // ── ReferencesAnsweringTier unit tests ─────────────────────────────────

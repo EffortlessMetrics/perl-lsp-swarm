@@ -63,7 +63,13 @@ fn test_package_without_leading_colon_still_parses() {
 
 #[test]
 fn test_package_leading_double_colon_with_version() {
-    // The leading-:: name must not swallow a following version number.
-    assert_clean_parse(r#"package ::My::App 1.23;"#);
-    assert_eq!(package_name(r#"package ::My::App 1.23;"#), Some("::My::App 1.23".to_string()),);
+    let source = r#"package ::My::App 1.23;"#;
+
+    // The leading-:: name must not swallow a following version number. The
+    // parser consumes that version but NodeKind::Package does not currently
+    // retain it, so pin the package-name boundary and the fact that the
+    // version does not leak as a second top-level statement.
+    assert_clean_parse(source);
+    assert_eq!(top_level_kinds(&parse(source)), vec!["Package"]);
+    assert_eq!(package_name(source), Some("::My::App".to_string()));
 }

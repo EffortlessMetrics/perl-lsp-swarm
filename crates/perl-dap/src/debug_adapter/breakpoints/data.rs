@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    DapMessage, DataBreakpointInfoArguments, DataBreakpointInfoResponseBody, DataBreakpointRecord,
+    DebugAdapter, SetDataBreakpointsArguments, SetDataBreakpointsResponseBody, Value,
+    is_valid_set_variable_name, lock_or_recover,
+};
 
 impl DebugAdapter {
     /// Handle dataBreakpointInfo request — check if a variable can be watched.

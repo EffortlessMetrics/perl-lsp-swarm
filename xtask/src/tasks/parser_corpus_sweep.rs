@@ -1066,6 +1066,9 @@ fn measure_files(
             line_count,
             error_node_count: salvage.error_node_count,
         });
+        // Keep the established metric semantic: this field counts only
+        // structured `Recovered` diagnostics. Blocking non-recovered
+        // diagnostics make the file non-Clean, but are not recovered nodes.
         recovered_node_count = recovered_node_count.saturating_add(salvage.recovered_count);
         match salvage.class {
             RecoverySalvageClass::Clean => {
@@ -1085,11 +1088,18 @@ fn measure_files(
             RecoverySalvageClass::StructuredRecoveryOnly => {
                 files_with_errors += 1;
                 total_dirty_files += 1;
-                files_with_structured_recovery_only += 1;
+                let has_structured_recovery = salvage.recovered_count > 0;
+                if has_structured_recovery {
+                    files_with_structured_recovery_only += 1;
+                }
                 if options.verbose {
                     file_results.push(FileResult {
                         path: portable_path.clone(),
-                        status: "recovered".to_string(),
+                        status: if has_structured_recovery {
+                            "recovered".to_string()
+                        } else {
+                            "blocking".to_string()
+                        },
                         error_node_count: 0,
                         first_error: None,
                         recovered_count: Some(salvage.recovered_count),

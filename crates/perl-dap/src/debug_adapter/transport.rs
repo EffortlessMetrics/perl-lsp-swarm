@@ -1,6 +1,10 @@
 //! Transport layer: run (stdin/stdout), run_socket, run_with_io.
 
-use super::*;
+use super::{
+    Arc, AtomicBool, BufReader, ContentLengthFramer, DapMessage, DebugAdapter,
+    EVENT_QUEUE_CAPACITY, Mutex, Read, TcpListener, Write, dispatch_event, io, lock_or_recover,
+    sync_channel, thread,
+};
 use crate::server::DapSocketBindError;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::TryRecvError;
@@ -305,9 +309,10 @@ fn write_response_then_notify_initialized<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debug_adapter::sync_utils;
     use std::io::Cursor;
     use std::sync::atomic::{AtomicUsize, Ordering as AOrdering};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     // ── Minimal Write impl that always fails ──────────────────────────────────
 

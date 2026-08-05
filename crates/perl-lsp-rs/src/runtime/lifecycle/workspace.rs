@@ -2,7 +2,9 @@
 //!
 //! Handles workspace folders and root URI/path management.
 
+#[cfg(test)]
 use super::super::*;
+use super::super::{LspServer, MessageType};
 use perl_dap::platform::{PerlInterpreterResult, find_perl_interpreter};
 use perl_lsp_rs_core::config::WorkspaceConfig;
 use std::sync::Once;

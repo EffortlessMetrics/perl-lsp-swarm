@@ -2762,6 +2762,121 @@ mod tests {
     }
 
     #[test]
+    fn native_include_adds_strict_only_rule_to_recommended_profile() {
+        // The reported bug: `profile = "recommended"` plus
+        // `include = ["native.variables.unused_lexical"]` produced no findings
+        // at all, because the rule was never in the profile registry for the
+        // include whitelist to select.
+        let source = "use strict;\nuse warnings;\nmy $unused = 1;\nprint 1;\n";
+        let ast = parse_source(source);
+        let config = CriticConfig {
+            include: vec!["native.variables.unused_lexical".to_string()],
+            ..Default::default()
+        };
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::for_profile_with_config(
+            NativeCriticProfile::Recommended,
+            &config,
+        );
+
+        assert!(registry.rule_ids().contains(&"native.variables.unused_lexical"));
+
+        let findings = registry.check(&ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "native.variables.unused_lexical");
+    }
+
+    #[test]
+    fn native_include_of_in_profile_rule_does_not_duplicate_it() {
+        let config = CriticConfig {
+            include: vec!["native.testing.require_use_strict".to_string()],
+            ..Default::default()
+        };
+        let widened = NativeCriticRegistry::for_profile_with_config(
+            NativeCriticProfile::Recommended,
+            &config,
+        );
+
+        assert_eq!(
+            widened.rule_ids(),
+            NativeCriticRegistry::for_profile(NativeCriticProfile::Recommended).rule_ids()
+        );
+    }
+
+    #[test]
+    fn native_include_of_unknown_rule_id_leaves_the_profile_roster_alone() {
+        // Unknown IDs are reported by config load, not silently resolved to a
+        // neighbouring rule here.
+        let config = CriticConfig {
+            include: vec!["native.variables.unused_lexicals".to_string()],
+            ..Default::default()
+        };
+        let widened = NativeCriticRegistry::for_profile_with_config(
+            NativeCriticProfile::Recommended,
+            &config,
+        );
+
+        assert_eq!(
+            widened.rule_ids(),
+            NativeCriticRegistry::for_profile(NativeCriticProfile::Recommended).rule_ids()
+        );
+    }
+
+    #[test]
+    fn native_empty_include_keeps_the_plain_profile_roster() {
+        for profile in [NativeCriticProfile::Recommended, NativeCriticProfile::Strict] {
+            let config = CriticConfig::default();
+            assert_eq!(
+                NativeCriticRegistry::for_profile_with_config(profile, &config).rule_ids(),
+                NativeCriticRegistry::for_profile(profile).rule_ids(),
+                "empty include changed the {} roster",
+                profile.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn native_exclude_still_wins_over_an_include_widened_rule() {
+        let source = "use strict;\nuse warnings;\nmy $unused = 1;\nprint 1;\n";
+        let ast = parse_source(source);
+        let config = CriticConfig {
+            include: vec!["native.variables.unused_lexical".to_string()],
+            exclude: vec!["native.variables.unused_lexical".to_string()],
+            ..Default::default()
+        };
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::for_profile_with_config(
+            NativeCriticProfile::Recommended,
+            &config,
+        );
+
+        assert!(registry.check(&ctx).is_empty());
+    }
+
+    #[test]
+    fn native_include_still_narrows_execution_within_the_profile() {
+        // Widening the registry must not turn `include` into a no-op: with a
+        // non-empty include list the other profile rules stay silent.
+        let source = "print 1;\n";
+        let ast = parse_source(source);
+        let config = CriticConfig {
+            include: vec!["native.testing.require_use_strict".to_string()],
+            ..Default::default()
+        };
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::for_profile_with_config(
+            NativeCriticProfile::Recommended,
+            &config,
+        );
+
+        let findings = registry.check(&ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "native.testing.require_use_strict");
+    }
+
+    #[test]
     fn native_critic_profile_parser_accepts_stable_labels() {
         assert_eq!(
             NativeCriticProfile::parse("recommended").map(NativeCriticProfile::as_str),
