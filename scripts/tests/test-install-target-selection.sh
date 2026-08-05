@@ -260,6 +260,27 @@ assert_only_built_windows_targets \
     "extension downloader requests only built Windows targets" \
     "$ROOT/vscode-extension/src/downloader.ts"
 
+assert_windows_arm64_version_guard() {
+    local label="$1" file="$2"
+
+    if [[ ! -f "$file" ]]; then
+        fail "$label" "missing $file"
+        return
+    fi
+
+    if ! grep -Fq '22000' "$file" || \
+        ! grep -Fq 'Windows 10 ARM64' "$file" || \
+        ! grep -Fq 'Get-WindowsBuildNumber' "$file"; then
+        fail "$label" "must classify the Windows 11 build boundary and reject Windows 10 ARM64"
+        return
+    fi
+
+    pass "$label"
+}
+
+assert_windows_arm64_version_guard \
+    "PowerShell installer rejects unsupported Windows 10 ARM64 fallback" "$ROOT/install.ps1"
+
 if [[ "$(uname -s)" != "Linux" ]]; then
     skip "Linux target-selection checks (host is $(uname -s))"
 else

@@ -29,6 +29,60 @@ interface Release {
 // running perllsp.exe both fit comfortably.
 const MANAGED_INSTALL_RETRY_DELAYS_MS = [100, 250, 500, 1000, 2000, 4000, 8000, 16000];
 const TRANSIENT_MANAGED_INSTALL_ERROR_CODES = new Set(['EBUSY', 'EPERM', 'EACCES', 'ETXTBSY']);
+const WINDOWS_11_MIN_BUILD = 22000;
+
+export type WindowsArm64Support =
+  | 'not-applicable'
+  | 'windows-11-or-newer'
+  | 'windows-10-or-earlier'
+  | 'unknown';
+
+export function parseWindowsBuildNumber(release: string): number | null {
+  const match = /(?:^|[^\d])10\.0\.(\d+)(?:$|[^\d])/.exec(release);
+  if (!match?.[1]) {
+    return null;
+  }
+
+  const build = Number(match[1]);
+  return Number.isSafeInteger(build) ? build : null;
+}
+
+export function classifyWindowsArm64Support(
+  platform = process.platform,
+  arch = process.arch,
+  release = os.release(),
+): WindowsArm64Support {
+  if (platform !== 'win32' || arch !== 'arm64') {
+    return 'not-applicable';
+  }
+
+  const build = parseWindowsBuildNumber(release);
+  if (build === null) {
+    return 'unknown';
+  }
+
+  return build >= WINDOWS_11_MIN_BUILD ? 'windows-11-or-newer' : 'windows-10-or-earlier';
+}
+
+export function getUnsupportedWindowsArm64Message(
+  platform = process.platform,
+  arch = process.arch,
+  release = os.release(),
+): string | undefined {
+  const support = classifyWindowsArm64Support(platform, arch, release);
+  if (support !== 'windows-10-or-earlier' && support !== 'unknown') {
+    return undefined;
+  }
+
+  const detected = release
+    ? `detected OS release ${release}`
+    : 'the Windows build could not be detected';
+  return (
+    `Windows ARM64 x64 emulation requires Windows 11 (build ${WINDOWS_11_MIN_BUILD} or newer); ${detected}. ` +
+    'Windows 10 ARM64 cannot run the published x86_64 binary. Build from source with ' +
+    '`cargo install --locked --path crates/perllsp` and configure perl-lsp.serverPath instead.'
+  );
+}
 
 // Module-level singleflight: coalesce concurrent managed-install calls so
 // activation auto-download, manual reinstall, and silent update-check do not
@@ -266,6 +320,10 @@ export class BinaryDownloader {
 
     // Download binary
     try {
+      const unsupportedPlatformMessage = getUnsupportedWindowsArm64Message();
+      if (unsupportedPlatformMessage) {
+        throw new Error(unsupportedPlatformMessage);
+      }
       return await this.downloadWithProgress();
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -279,7 +337,10 @@ export class BinaryDownloader {
       let message: string;
       let buttons: string[];
 
-      if (
+      if (errorMsg.includes('Windows ARM64 x64 emulation')) {
+        message = `perl-lsp: ${errorMsg} ${manualInstallNote}`;
+        buttons = ['Install Manually', 'View Logs'];
+      } else if (
         errorMsg.includes('ECONNREFUSED') ||
         errorMsg.includes('ETIMEDOUT') ||
         errorMsg.includes('timeout')
@@ -889,7 +950,7 @@ export class BinaryDownloader {
     });
   }
 
-  private getPlatformTarget(): string {
+  private getPlatformTarget(release = os.release()): string {
     const platform = process.platform;
     const arch = process.arch;
 
@@ -923,6 +984,10 @@ export class BinaryDownloader {
       // asking for one produced a 404 that surfaced as a generic download
       // failure (#5007). ARM64 Windows runs x64 binaries under emulation, so
       // the x64 asset is the working answer rather than merely a better error.
+      const unsupportedPlatformMessage = getUnsupportedWindowsArm64Message(platform, arch, release);
+      if (unsupportedPlatformMessage) {
+        throw new Error(unsupportedPlatformMessage);
+      }
       if (arch === 'arm64') {
         this.outputChannel.appendLine(
           'Windows on ARM64 detected: installing the x86_64 build, which runs under ' +

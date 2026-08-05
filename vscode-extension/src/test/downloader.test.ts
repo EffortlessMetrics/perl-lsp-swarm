@@ -17,6 +17,8 @@ import {
   buildBinaryAssetCandidateNames,
   compareVersions,
   copyManagedFileWithRetry,
+  classifyWindowsArm64Support,
+  getUnsupportedWindowsArm64Message,
   findReleaseAssetName,
   isTransientManagedInstallError,
   parseLocalVersion,
@@ -30,7 +32,7 @@ interface DownloaderPrivateSurface {
   isTermuxEnvironment(): boolean;
   isAndroidEnvironment(): boolean;
   detectMusl(): boolean;
-  getPlatformTarget(): string;
+  getPlatformTarget(release?: string): string;
   getLocalBinaryPath(): string;
   buildVersionedInstallDirName(versionTag: string): string;
   commitVersionedInstall(installDirName: string): void;
@@ -108,8 +110,8 @@ describe('BinaryDownloader.getPlatformTarget', () => {
     jest.restoreAllMocks();
   });
 
-  function getPlatformTarget(dl: TestDownloader): string {
-    return dl.getPlatformTarget();
+  function getPlatformTarget(dl: TestDownloader, release?: string): string {
+    return dl.getPlatformTarget(release);
   }
 
   function mockConfig(overrides: Record<string, unknown>): void {
@@ -206,9 +208,21 @@ describe('BinaryDownloader.getPlatformTarget', () => {
   }
 
   test('Windows on ARM64 resolves to the published x86_64 build', () => {
-    expect(withProcess('win32', 'arm64', () => getPlatformTarget(downloader))).toBe(
+    expect(withProcess('win32', 'arm64', () => getPlatformTarget(downloader, '10.0.22631'))).toBe(
       'x86_64-pc-windows-msvc',
     );
+  });
+
+  test('Windows 10 ARM64 refuses the x64 fallback', () => {
+    expect(classifyWindowsArm64Support('win32', 'arm64', '10.0.19045')).toBe(
+      'windows-10-or-earlier',
+    );
+    expect(getUnsupportedWindowsArm64Message('win32', 'arm64', '10.0.19045')).toMatch(
+      /Windows ARM64 x64 emulation requires Windows 11.*Windows 10 ARM64 cannot run/,
+    );
+    expect(() =>
+      withProcess('win32', 'arm64', () => getPlatformTarget(downloader, '10.0.19045')),
+    ).toThrow(/Build from source/);
   });
 
   test('Windows on x64 is unaffected', () => {
@@ -230,7 +244,7 @@ describe('BinaryDownloader.getPlatformTarget', () => {
   // fails if the matrix and this constant ever diverge.
   test('every Windows arch resolves to the one published Windows target', () => {
     for (const arch of ['arm64', 'x64', 'ia32', 'ppc64']) {
-      expect(withProcess('win32', arch, () => getPlatformTarget(downloader))).toBe(
+      expect(withProcess('win32', arch, () => getPlatformTarget(downloader, '10.0.22631'))).toBe(
         'x86_64-pc-windows-msvc',
       );
     }
@@ -240,7 +254,7 @@ describe('BinaryDownloader.getPlatformTarget', () => {
     const channel = makeOutputChannel();
     const dl = new BinaryDownloader(makeContext(), channel) as unknown as TestDownloader;
 
-    withProcess('win32', 'arm64', () => dl.getPlatformTarget());
+    withProcess('win32', 'arm64', () => dl.getPlatformTarget('10.0.22631'));
 
     const logged = (channel.appendLine as jest.Mock).mock.calls.map((c) => String(c[0])).join('\n');
     expect(logged).toMatch(/ARM64/);
