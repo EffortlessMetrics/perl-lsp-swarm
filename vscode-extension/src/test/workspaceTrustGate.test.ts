@@ -18,11 +18,13 @@ const mockLanguageClientStop = jest.fn(async () => undefined);
 const mockLanguageClientDispose = jest.fn(async () => undefined);
 const mockLanguageClientSetTrace = jest.fn(async () => undefined);
 const mockLanguageClientOnDidChangeState = jest.fn(() => ({ dispose: jest.fn() }));
+const mockLanguageClientOnNotification = jest.fn(() => ({ dispose: jest.fn() }));
 
 jest.mock('vscode-languageclient/node', () => ({
   LanguageClient: jest.fn().mockImplementation(() => ({
     initializeResult: { capabilities: {} },
     onDidChangeState: mockLanguageClientOnDidChangeState,
+    onNotification: mockLanguageClientOnNotification,
     setTrace: mockLanguageClientSetTrace,
     start: mockLanguageClientStart,
     stop: mockLanguageClientStop,

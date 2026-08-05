@@ -919,7 +919,11 @@ pub fn collect_semantic_tokens(
                     _ => 0,      // "&" (code ref), "*" (glob), others
                 };
                 let mods = match decl_info {
-                    Some((_, _, true)) => 1 | 4 | special_mod | sigil_mod, // declaration | readonly (our)
+                    // `our` creates a package-variable alias — it does NOT make
+                    // the variable immutable, so the `readonly` modifier (bit 2)
+                    // must not be applied (#4968). Use `declaration` only, same
+                    // as my/local/state.
+                    Some((_, _, true)) => 1 | special_mod | sigil_mod, // declaration (our)
                     Some((_, _, false)) => 1 | special_mod | sigil_mod, // declaration (my/local/state)
                     None => {
                         // Apply "modification" modifier (bit 7 = 128) when the variable is

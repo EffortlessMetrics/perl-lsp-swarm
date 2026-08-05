@@ -780,6 +780,26 @@ fn sexp_string_escapes_backslashes() {
 }
 
 #[test]
+fn sexp_variable_escapes_delimiters_quotes_and_backslashes() {
+    let cases = [
+        ("plain_name", "(variable $ plain_name)"),
+        ("name(with)", r#"(variable $ "name(with)")"#),
+        (r#"name"with\slash"#, r#"(variable $ "name\"with\\slash")"#),
+    ];
+
+    for (name, expected) in cases {
+        let sexp = var_node("$", name).to_sexp();
+        assert_eq!(sexp, expected, "variable name {name:?}");
+    }
+}
+
+#[test]
+fn sexp_variable_escapes_whitespace_as_a_quoted_string() {
+    let sexp = var_node("$", "name\twith space").to_sexp();
+    assert_eq!(sexp, r#"(variable $ "name\twith space")"#);
+}
+
+#[test]
 fn sexp_heredoc_command_variant() {
     let node = Node::new(
         NodeKind::Heredoc {

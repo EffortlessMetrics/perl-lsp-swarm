@@ -179,6 +179,12 @@ pub struct LspServer {
     client_capabilities: Mutex<ClientCapabilities>,
     /// Cancelled request IDs
     cancelled: Arc<Mutex<HashSet<JsonRpcId>>>,
+    /// Request IDs that are queued or executing in the async scheduler.
+    ///
+    /// This lets bounded cancellation-marker cleanup distinguish stale
+    /// tombstones from cancellation signals that still belong to work the
+    /// scheduler has not fully settled.
+    pending_request_ids: Arc<Mutex<HashSet<JsonRpcId>>>,
     /// Workspace folders with full state representation
     ///
     /// This replaces the previous `Vec<String>` approach to support multi-root

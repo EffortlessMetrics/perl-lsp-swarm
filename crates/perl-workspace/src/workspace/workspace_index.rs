@@ -2117,10 +2117,15 @@ impl WorkspaceIndex {
         // indexing. document_store has its own internal RwLock, and its
         // version check handles concurrent writes independently.
         {
+            // Use generation as the document version so the document_store's
+            // stale-write check becomes load-bearing. Ensure version >= 1 to
+            // avoid rejecting updates to batch-indexed files (which open with
+            // version 1) when generation is 0 (#3686).
+            let doc_version = (generation as i32).max(1);
             if self.document_store.is_open(&uri_str) {
-                self.document_store.update(&uri_str, 1, text.clone());
+                self.document_store.update(&uri_str, doc_version, text.clone());
             } else {
-                self.document_store.open(uri_str.clone(), 1, text.clone());
+                self.document_store.open(uri_str.clone(), doc_version, text.clone());
             }
         }
         let mut parser = Parser::new(&text);
