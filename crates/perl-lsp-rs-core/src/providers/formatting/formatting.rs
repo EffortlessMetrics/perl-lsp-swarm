@@ -36,6 +36,10 @@ pub enum FormattingError {
     #[error("perltidy error (check Perl syntax): {0}")]
     PerltidyError(String),
 
+    /// Perltidy returned bytes that are not valid UTF-8 source text.
+    #[error("perltidy returned invalid UTF-8 output")]
+    InvalidOutputEncoding,
+
     /// I/O error during file operations.
     #[error("IO error: {0}")]
     IoError(String),
@@ -51,6 +55,7 @@ impl FormattingError {
         match self {
             Self::PerltidyNotFound(_) => "perltidy_not_found",
             Self::PerltidyError(_) => "perltidy_error",
+            Self::InvalidOutputEncoding => "invalid_output_encoding",
             Self::IoError(_) => "io_error",
         }
     }
@@ -269,7 +274,7 @@ impl<R: perl_subprocess_runtime::SubprocessRuntime> FormattingProvider<R> {
             ));
         }
 
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        String::from_utf8(output.stdout).map_err(|_| FormattingError::InvalidOutputEncoding)
     }
 }
 
@@ -509,6 +514,23 @@ mod tests {
         ) -> std::result::Result<SubprocessOutput, SubprocessError> {
             Ok(SubprocessOutput {
                 stdout: b"my $external = 1;\n".to_vec(),
+                stderr: Vec::new(),
+                status_code: 0,
+            })
+        }
+    }
+
+    struct InvalidUtf8PerltidyRuntime;
+
+    impl SubprocessRuntime for InvalidUtf8PerltidyRuntime {
+        fn run_command(
+            &self,
+            _program: &str,
+            _args: &[&str],
+            _stdin: Option<&[u8]>,
+        ) -> std::result::Result<SubprocessOutput, SubprocessError> {
+            Ok(SubprocessOutput {
+                stdout: vec![b'm', b'y', b' ', 0xff, b'\n'],
                 stderr: Vec::new(),
                 status_code: 0,
             })
@@ -912,6 +934,20 @@ mod tests {
             anyhow::anyhow!("explicit external legacy mode must report missing perltidy")
         })?;
         assert_eq!(error.error_kind(), "perltidy_not_found");
+        Ok(())
+    }
+
+    #[test]
+    fn format_document_external_legacy_rejects_invalid_utf8_output() -> Result<()> {
+        let provider = FormattingProvider::new(InvalidUtf8PerltidyRuntime)
+            .with_formatter_mode(FormatterMode::ExternalLegacy);
+
+        let error = provider
+            .format_document("my $x = 1;\n", &options_with_tab_size(4, true))
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("invalid perltidy output must fail closed"))?;
+
+        assert_eq!(error.error_kind(), "invalid_output_encoding");
         Ok(())
     }
 
