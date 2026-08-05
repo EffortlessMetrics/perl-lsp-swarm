@@ -957,13 +957,18 @@ impl LspServer {
                         (Some(label.clone()), None)
                     };
                     seen.insert(label.clone());
+                    let sort_text = format!("9_workspace_{label}");
 
                     completions.push(crate::completion::CompletionItem {
                         label,
                         kind: Self::workspace_symbol_kind(&symbol),
                         detail,
                         insert_text,
-                        sort_text: None,
+                        // Workspace enrichment is a fallback tier. Give it an
+                        // explicit low-priority rank so unranked labels (for
+                        // example `$...` variables) cannot displace ranked
+                        // in-file methods when the final response is capped.
+                        sort_text: Some(sort_text),
                         filter_text: None,
                         documentation: Self::workspace_symbol_documentation(&symbol),
                         additional_edits: Vec::new(),
